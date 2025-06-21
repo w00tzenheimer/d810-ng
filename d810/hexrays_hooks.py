@@ -238,7 +238,7 @@ class BlockOptimizerManager(optblock_t):
 
     def optimize(self, blk: mblock_t):
         for cfg_rule in self.cfg_rules:
-            if self.check_if_rule_is_activated_for_address(cfg_rule, blk.mba.entry_ea):
+            if (blk.mba != None and blk.mba.entry_ea != None) and self.check_if_rule_is_activated_for_address(cfg_rule, blk.mba.entry_ea):
                 nb_patch = cfg_rule.optimize(blk)
                 if nb_patch > 0:
                     optimizer_logger.info("Rule {0} matched: {1} patches".format(cfg_rule.name, nb_patch))

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from copy import deepcopy
 import logging
 from typing import List, Union, Tuple
 
@@ -276,7 +277,7 @@ class GenericDispatcherCollector(minsn_visitor_t):
 
 
 class GenericUnflatteningRule(FlowOptimizationRule):
-    DEFAULT_UNFLATTENING_MATURITIES = [MMAT_CALLS, MMAT_GLBOPT1, MMAT_GLBOPT2]
+    DEFAULT_UNFLATTENING_MATURITIES = [MMAT_CALLS, MMAT_GLBOPT1, MMAT_GLBOPT2,MMAT_GLBOPT3]
 
     def __init__(self):
         super().__init__()
@@ -370,6 +371,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     def ensure_dispatcher_father_is_resolvable(self, dispatcher_father: mblock_t,
                                                dispatcher_entry_block: GenericDispatcherBlockInfo) -> int:
         father_histories = self.get_dispatcher_father_histories(dispatcher_father, dispatcher_entry_block)
+
         father_histories_cst = get_all_possibles_values(father_histories, dispatcher_entry_block.use_before_def_list,
                                                         verbose=False)
         father_is_resolvable = self.check_if_histories_are_resolved(father_histories)
@@ -388,7 +390,328 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         nb_duplication, nb_change = duplicate_histories(father_histories, max_nb_pass=self.max_duplication_passes)
         unflat_logger.info("Dispatcher {0} predecessor {1} duplication: {2} blocks created, {3} changes made"
                            .format(dispatcher_entry_block.serial, dispatcher_father.serial, nb_duplication, nb_change))
-        return nb_duplication + nb_change
+        return 0
+
+    def father_patcher_abc_extract_mop(self,target_instruction):
+        cnst = None
+        compare_mop = None
+        if target_instruction.opcode == m_sub:
+            if target_instruction.l.t == 2:
+                cnst = target_instruction.l.signed_value()
+                compare_mop = mop_t(target_instruction.r)
+        elif target_instruction.opcode == m_add:
+            if target_instruction.r.t == 2:
+                cnst = target_instruction.r.signed_value()
+                compare_mop = mop_t(target_instruction.l)
+        elif target_instruction.opcode == m_or:
+            if target_instruction.r.t == 2:
+                cnst = target_instruction.r.signed_value()
+                compare_mop = mop_t(target_instruction.l)
+        elif target_instruction.opcode == m_xor:
+            if target_instruction.r.t == 2:
+                cnst = target_instruction.r.signed_value()
+                compare_mop = mop_t(target_instruction.l)
+        return cnst,compare_mop,target_instruction.opcode
+
+    def father_patcher_abc_check_instruction(self,target_instruction)->bool:
+        #TODO reimplement here
+        compare_mop_left = None
+        compare_mop_right = None
+        cnst = None
+        instruction_opcode = None
+        opcodes_interested_in = [m_add,m_sub,m_or,m_xor,m_xdu,m_high]
+        # if target_instruction.d.r != jtbl_r:
+        # return cnst,compare_mop_left,compare_mop_right,instruction_opcode
+        if target_instruction.opcode in opcodes_interested_in:
+            trgt_opcode = target_instruction.opcode
+            #check add or sub
+            if trgt_opcode == m_xdu:
+                if target_instruction.l.t == mop_d:
+                    if target_instruction.l.d.opcode == m_high:
+                        high_i = target_instruction.l.d
+                        if high_i.l.t == mop_d:
+                            sub_instruction = high_i.l.d
+                            if sub_instruction.opcode == m_sub:
+                                if sub_instruction.l.t == mop_d:
+                                    compare_mop_right = mop_t(sub_instruction.r)
+                                    sub_sub_instruction = sub_instruction.l.d
+                                    if sub_sub_instruction.opcode == m_or:
+                                        if sub_sub_instruction.r.t == 2:
+                                            cnst = sub_sub_instruction.r.signed_value()
+                                            cnst = cnst >> 32
+                                            compare_mop_left = mop_t(sub_sub_instruction.l)
+                                            instruction_opcode = m_sub
+                                elif sub_instruction.l.t == mop_n:
+                                    #9. 0 high   (#0xF6A120000005F.8-xdu.8(ebx.4)), ecx.4{11}
+                                    compare_mop_right = mop_t(sub_instruction.r)
+                                    cnst = sub_instruction.l.signed_value()
+                                    cnst = cnst >> 32
+                                    compare_mop_left = mop_t()
+                                    compare_mop_left.make_number(sub_instruction.l.signed_value()&0xffffffff,8,target_instruction.ea)
+                                    instruction_opcode = m_sub
+                    else:
+                        sub_instruction = target_instruction.l.d
+                        cnst,compare_mop_left,trgt_opcode = self.father_patcher_abc_extract_mop(sub_instruction)
+                        compare_mop_right = mop_t()
+                        compare_mop_right.make_number(0,4,target_instruction.ea)
+                        instruction_opcode = trgt_opcode
+                else:
+                    return cnst,compare_mop_left,compare_mop_right,instruction_opcode
+            elif trgt_opcode == m_high:
+                if target_instruction.l.t == mop_d:
+                    sub_instruction = target_instruction.l.d
+                    if sub_instruction.opcode == m_sub:
+                        if sub_instruction.l.t == mop_d:
+                            compare_mop_right = mop_t(sub_instruction.r)
+                            sub_sub_instruction = sub_instruction.l.d
+                            if sub_sub_instruction.opcode == m_or:
+                                if sub_sub_instruction.r.t == 2:
+                                    cnst = sub_sub_instruction.r.signed_value()
+                                    cnst = cnst >> 32
+                                    compare_mop_left = mop_t(sub_sub_instruction.l)
+                                    instruction_opcode = m_sub
+                        elif sub_instruction.l.t == mop_n:
+                            #9. 0 high   (#0xF6A120000005F.8-xdu.8(ebx.4)), ecx.4{11}
+                            compare_mop_right = mop_t(sub_instruction.r)
+                            cnst = sub_instruction.l.signed_value()
+                            cnst = cnst >> 32
+                            compare_mop_left = mop_t()
+                            compare_mop_left.make_number(sub_instruction.l.signed_value()&0xffffffff,8,target_instruction.ea)
+                            instruction_opcode = m_sub
+                        else:
+                            pass
+            else:
+                cnst,compare_mop_left,trgt_opcode = self.father_patcher_abc_extract_mop(target_instruction)
+                compare_mop_right = mop_t()
+                compare_mop_right.make_number(0,4,target_instruction.ea)
+                instruction_opcode = trgt_opcode
+
+        return cnst,compare_mop_left,compare_mop_right,instruction_opcode
+
+    def father_patcher_abc_create_blocks(self,dispatcher_father,curr_inst,cnst,compare_mop_left,compare_mop_right,opcode):
+
+        mba = dispatcher_father.mba
+        if dispatcher_father.tail.opcode == m_goto:
+            dispatcher_father.remove_from_block(dispatcher_father.tail)
+        new_id0_serial = dispatcher_father.serial + 1
+        new_id1_serial = dispatcher_father.serial + 2
+        dispatcher_reg0 = mop_t(curr_inst.d)
+        dispatcher_reg0.size = 4
+        dispatcher_reg1 = mop_t(curr_inst.d)
+        dispatcher_reg1.size = 4
+        if dispatcher_father.type != BLT_1WAY:
+            print('father is not 1 way')
+            return
+
+        ea = curr_inst.ea
+        block0_const = 0
+        block1_const = 0
+        if opcode == m_sub:
+            block0_const = cnst-0
+            block1_const = cnst-1
+        elif opcode == m_add:
+            block0_const = cnst+0
+            block1_const = cnst+1
+        elif opcode == m_or:
+            block0_const = cnst|0
+            block1_const = cnst|1
+        elif opcode == m_xor:
+            block0_const = cnst^0
+            block1_const = cnst^1
+
+        #create first block
+        new_block0 = mba.insert_block(new_id0_serial)
+        new_block1 = mba.insert_block(new_id1_serial)
+
+        #get father succset after creation of new childs, since it will increase auto
+        childs_goto0 = mop_t()
+        childs_goto1 = mop_t()
+        childs_goto_serial = dispatcher_father.succset[0]
+        childs_goto0.make_blkref(childs_goto_serial)
+        childs_goto_serial = dispatcher_father.succset[0]
+        childs_goto1.make_blkref(childs_goto_serial)
+        dispatcher_tail = dispatcher_father.tail
+        while dispatcher_tail.dstr() != curr_inst.dstr():
+            innsert_inst0 = minsn_t(dispatcher_tail)
+            innsert_inst1 = minsn_t(dispatcher_tail)
+            innsert_inst0.setaddr(ea)
+            innsert_inst1.setaddr(ea)
+
+            new_block0.insert_into_block(innsert_inst0,new_block0.head)
+            new_block1.insert_into_block(innsert_inst1,new_block1.head)
+            dispatcher_tail = dispatcher_tail.prev
+        #generate block0 instructions
+        if new_block0.tail != None and new_block1.tail != None:
+            new_block0.tail.next = None
+            new_block1.tail.next = None
+
+        mov_inst0 = minsn_t(ea)
+        mov_inst0.opcode = m_mov
+        mov_inst0.l = mop_t()
+        mov_inst0.l.make_number(block0_const,4,ea)
+        mov_inst0.d = dispatcher_reg0
+        new_block0.insert_into_block(mov_inst0,new_block0.tail)
+
+        goto_inst0 = minsn_t(ea)
+        goto_inst0.opcode = m_goto
+        goto_inst0.l = childs_goto0
+        new_block0.insert_into_block(goto_inst0,new_block0.tail)
+
+        #generate block1 instructions
+        mov_inst1 = minsn_t(ea)
+        mov_inst1.opcode = m_mov
+        mov_inst1.l = mop_t()
+        mov_inst1.l.make_number(block1_const,4,ea)
+        mov_inst1.d = dispatcher_reg1
+        new_block1.insert_into_block(mov_inst1,new_block1.tail)
+
+        goto_inst1 = minsn_t(ea)
+        goto_inst1.opcode = m_goto
+        goto_inst1.l = childs_goto1
+        new_block1.insert_into_block(goto_inst1,new_block1.tail)
+        #
+        while curr_inst:
+            n = curr_inst.next
+            dispatcher_father.remove_from_block(curr_inst)
+            curr_inst = n
+        # ┌──────────────┐
+        # │x             │
+        # │y             │
+        # │z             │
+        # │add k+0xff,eax│
+        # │a             │
+        # │b             │
+        # │c             │
+        # └──────────────┘
+        # remove after add
+        # we alread copied those instructions to childs
+
+        # add jz to end of block
+        # dispatcher_father.tail = minsn_t(curr_inst.ea) # do not create new instruction to keep references to earlier instructions
+        jz_to_childs = minsn_t(ea)
+        jz_to_childs.opcode = m_jz
+        jz_to_childs.l = compare_mop_left
+        jz_to_childs.r = compare_mop_right
+        jz_to_childs.d = mop_t()
+        jz_to_childs.d.make_blkref(new_id1_serial)
+        dispatcher_father.insert_into_block(jz_to_childs, dispatcher_father.tail)
+
+
+        #housekeeping
+        #replace father serial with childs serial in dispatcher block
+        prev_successor_serials = [x for x in dispatcher_father.succset]
+        for prev_successor_serial in prev_successor_serials:
+            prev_succ = mba.get_mblock(prev_successor_serial)
+            prev_succ.predset._del(dispatcher_father.serial)
+            prev_succ.predset.add_unique(new_id0_serial)
+            prev_succ.predset.add_unique(new_id1_serial)
+            if prev_succ.serial != mba.qty - 1:
+                prev_succ.mark_lists_dirty()
+
+        #clean block0
+        succset_serials = [x for x in new_block0.succset]
+        for succ in succset_serials:
+            new_block0.succset._del(succ)
+        predset_serials = [x for x in new_block0.predset]
+        for pred in predset_serials:
+            new_block0.predset._del(pred)
+
+        #clean block1
+        succset_serials = [x for x in new_block1.succset]
+        for succ in succset_serials:
+            new_block1.succset._del(succ)
+        predset_serials = [x for x in new_block1.predset]
+        for pred in predset_serials:
+            new_block1.predset._del(pred)
+
+        #add father as pred to new blocks
+        new_block0.predset.add_unique(dispatcher_father.serial)
+        new_block1.predset.add_unique(dispatcher_father.serial)
+
+        #add dispatcher block as succset
+        new_block0.succset.add_unique(childs_goto_serial)
+        new_block1.succset.add_unique(childs_goto_serial)
+
+        #mark lists dirty
+        new_block0.mark_lists_dirty()
+        new_block1.mark_lists_dirty()
+
+        #clean father succset
+        succset_serials = [x for x in dispatcher_father.succset]
+        for succ_serial in succset_serials:
+            dispatcher_father.succset._del(succ_serial)
+
+        #add childs to father succset
+        dispatcher_father.succset.add_unique(new_id0_serial)
+        dispatcher_father.succset.add_unique(new_id1_serial)
+        dispatcher_father.mark_lists_dirty()
+
+        dispatcher_father.type = BLT_2WAY
+        new_block0.type = BLT_1WAY
+        new_block1.type = BLT_1WAY
+        new_block0.start = dispatcher_father.start
+        new_block1.start = dispatcher_father.start
+        new_block0.end = dispatcher_father.end
+        new_block1.end = dispatcher_father.end
+
+
+        mba.mark_chains_dirty()
+        try:
+            mba.verify(True)
+            return new_block0,new_block1
+        except RuntimeError as e:
+            print(e)
+            raise e
+
+
+    def father_history_patcher_abc(self, father_history: mblock_t) -> List[MopHistory]:
+        # father can have instructions that we are not interested in but need to copy and remove from generated childs.
+        curr_inst = father_history.head
+        while curr_inst:
+            cnst,compare_mop_left,compare_mop_right,instruction_opcode = self.father_patcher_abc_check_instruction(curr_inst)
+            l = [cnst,compare_mop_left,compare_mop_right,instruction_opcode]
+            if all([x != None for x in l]):
+                if cnst > 1010000 and cnst < 1011999:
+                    try:
+                        block0, block1 = self.father_patcher_abc_create_blocks(father_history,curr_inst,cnst,compare_mop_left,compare_mop_right,instruction_opcode)
+                        bblock0_n = self.father_history_patcher_abc(block0)
+                        bblock1_n = self.father_history_patcher_abc(block1)
+                        return 1 + bblock0_n + bblock1_n
+                    except Exception as e:
+                        raise e
+            curr_inst = curr_inst.next
+        return 0
+
+
+    def dispatcher_fixer_abc(self,dispatcher_list):
+        for dispatcher in dispatcher_list:
+            if dispatcher.entry_block.blk.tail.opcode == m_jtbl:
+                # check jtbl have 3 case where one is default to itsel
+                jtbl_minst = dispatcher.entry_block.blk.tail
+                #jtbl left is mop_d -> minst
+                if jtbl_minst.l.t == mop_d:
+                    # jtbl left is m_sub
+                    # jtbl   (#0xF6BBE.4-xdu.4((rax17.8 == #0.8))), {0xF6BBB => 22, 0xF6BBD => 19, 0xF6BBE => 20, def => 18}
+                    if jtbl_minst.l.d.opcode == m_sub:
+                        sub_minst = jtbl_minst.l.d
+                        #sub left is constant
+                        if sub_minst.l.t == 2:
+                            cnst = jtbl_minst.l.signed_value()
+                            compare_mop = mop_t(jtbl_minst.r)
+                    # jtbl left is m_xdu
+                    # jtbl   xdu.4((rax17.4{26} == varD8.4)), {-2,1 => 22, 0 => 21, def => 20}
+                    if jtbl_minst.l.d.opcode == m_xdu:
+                        sub_minst = jtbl_minst.l.d
+                        #sub left is constant
+                        if sub_minst.l.t == 2:
+                            cnst = jtbl_minst.l.signed_value()
+                            compare_mop = mop_t(jtbl_minst.r)
+                            # remove jtbl
+                            # create jz with compare mop
+                            # get 2 case from jtbl cases
+                            # create 2 block with goto to jtbl case
+
+
 
     def resolve_dispatcher_father(self, dispatcher_father: mblock_t, dispatcher_info: GenericDispatcherInfo) -> int:
         dispatcher_father_histories = self.get_dispatcher_father_histories(dispatcher_father,
@@ -419,7 +742,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 unflat_logger.info("Instruction copied: {0}: {1}"
                                    .format(len(ins_to_copy),
                                            ", ".join([format_minsn_t(ins_copied) for ins_copied in ins_to_copy])))
-                dispatcher_side_effect_blk = create_block(self.mba.get_mblock(self.mba.qty - 2), ins_to_copy,
+                tail_serial = self.mba.qty-1
+                block_to_copy = self.mba.get_mblock(tail_serial)
+                while block_to_copy.type == BLT_XTRN or block_to_copy.type == BLT_STOP:
+                    block_to_copy = self.mba.get_mblock(tail_serial)
+                    tail_serial -= 1
+                dispatcher_side_effect_blk = create_block(block_to_copy, ins_to_copy,
                                                           is_0_way=(target_blk.type == BLT_0WAY))
                 change_1way_block_successor(dispatcher_father, dispatcher_side_effect_blk.serial)
                 change_1way_block_successor(dispatcher_side_effect_blk, target_blk.serial)
@@ -429,19 +757,51 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
         raise NotResolvableFatherException("Can't fix block {0}: no block for key: {1}"
                                            .format(dispatcher_father.serial, mop_searched_values_list))
+    def fix_fathers_from_mop_history(self,dispatcher_father,dispatcher_entry_block):
+        father_histories = self.get_dispatcher_father_histories(dispatcher_father, dispatcher_entry_block)
+        total_n = 0
+        for father_history in father_histories:
+            for block in father_history.block_path:
+                total_n += self.father_history_patcher_abc(block)
+        return total_n
+
+    def find_bad_while_loops(self,blk):
+        # find from mov x,eax
+        if blk.tail.opcode == m_mov and blk.tail.l.t == mop_n:
+            left_cnst = blk.tail.l.signed_value()
+            if left_cnst > 0xf6000 and left_cnst < 0xf6fff:
+                if blk.next.opcode == m_jz and blk.next.tail.r.t == mop_n:
+                    jz0_cnst = blk.next.tail.r.signed_value()
+                    if blk.next.next.opcode == m_jz and blk.next.next.tail.r.t == mop_n:
+                        jz1_cnst = blk.next.ntext.tail.r.signed_value()
+                        if jz1_cnst > 0xf6000 and jz1_cnst < 0xf6fff and jz0_cnst > 0xf6000 and jz0_cnst < 0xf6fff:
+                            print('whoo found it')
+
+
+
+
 
     def remove_flattening(self) -> int:
         total_nb_change = 0
+        breakpoint()
         self.non_significant_changes = ensure_last_block_is_goto(self.mba)
         self.non_significant_changes += self.ensure_all_dispatcher_fathers_are_direct()
+
+
         for dispatcher_info in self.dispatcher_list:
-            dump_microcode_for_debug(self.mba, self.log_dir, "unflat_{0}_dispatcher_{1}_before_duplication"
+            dump_microcode_for_debug(self.mba, self.log_dir, "unflat_{0}_dispatcher_{1}_after_fix_abc_before_duplication"
                                      .format(self.cur_maturity_pass, dispatcher_info.entry_block.serial))
             unflat_logger.info("Searching dispatcher for entry block {0} {1} ->  with variables ({2})..."
                                .format(dispatcher_info.entry_block.serial, format_mop_t(dispatcher_info.mop_compared),
                                        format_mop_list(dispatcher_info.entry_block.use_before_def_list)))
+            #editing dispatcher fathers:
+            # for dispatcher_father in tmp_dispatcher_father_list:
+            # self.father_patcher_abc(dispatcher_father,dispatcher_info.entry_block)
+
+            #redine dispatcher father since we changed entry block succ/pred sets
             dispatcher_father_list = [self.mba.get_mblock(x) for x in dispatcher_info.entry_block.blk.predset]
             for dispatcher_father in dispatcher_father_list:
+
                 try:
                     total_nb_change += self.ensure_dispatcher_father_is_resolvable(dispatcher_father,
                                                                                    dispatcher_info.entry_block)
@@ -479,8 +839,19 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             return 0
         else:
             unflat_logger.info("Unflattening: {0} dispatcher(s) found".format(len(self.dispatcher_list)))
+            # self.dispatcher_fixer_abc(self.dispatcher_list)
             for dispatcher_info in self.dispatcher_list:
                 dispatcher_info.print_info()
+                dispatcher_father_list = [self.mba.get_mblock(x) for x in dispatcher_info.entry_block.blk.predset]
+                total_fixed_father_block = 0
+                dump_microcode_for_debug(self.mba, self.log_dir, "unflat_{0}_dispatcher_{1}_before_fix_abc"
+                                            .format(self.cur_maturity_pass, dispatcher_info.entry_block.serial))
+                for dispatcher_father in dispatcher_father_list:
+                    try:
+                        total_fixed_father_block += self.fix_fathers_from_mop_history(dispatcher_father,dispatcher_info.entry_block)
+                    except Exception as e:
+                        print(e)
+                unflat_logger.info(f"Fixed {total_fixed_father_block} instructions in father history")
             self.last_pass_nb_patch_done = self.remove_flattening()
         unflat_logger.info("Unflattening at maturity {0} pass {1}: {2} changes"
                            .format(self.cur_maturity, self.cur_maturity_pass, self.last_pass_nb_patch_done))

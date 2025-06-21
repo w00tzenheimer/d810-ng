@@ -2,7 +2,8 @@ from ida_hexrays import *
 
 from d810.ast import AstLeaf, AstConstant, AstNode
 from d810.optimizers.flow.jumps.handler import JumpOptimizationRule
-
+from d810.z3_utils import z3_check_mop_equality, z3_check_mop_inequality
+from d810.ast import mop_to_ast
 
 class JnzRule1(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [m_jnz, m_jz]
@@ -182,3 +183,22 @@ class JaeRule1(JumpOptimizationRule):
             return False
         self.jump_replacement_block_serial = self.direct_block_serial
         return True
+
+
+class JmpRuleZ3Const(JumpOptimizationRule):
+    ORIGINAL_JUMP_OPCODES = [m_jnz, m_jz]
+    LEFT_PATTERN = AstLeaf("x_0")
+    RIGHT_PATTERN = AstLeaf("x_1")
+    REPLACEMENT_OPCODE = m_goto
+
+    def check_candidate(self, opcode, left_candidate, right_candidate):
+        # print(mop_to_ast(left_candidate.mop))
+        # print(repr(left_candidate.mop))
+        # print(dir(left_candidate.mop))
+        if z3_check_mop_equality(left_candidate.mop, right_candidate.mop):
+            self.jump_replacement_block_serial = self.direct_block_serial if opcode == m_jnz else self.jump_original_block_serial
+            return True
+        if z3_check_mop_inequality(left_candidate.mop, right_candidate.mop):
+            self.jump_replacement_block_serial = self.direct_block_serial if opcode != m_jnz else self.jump_original_block_serial
+            return True
+        return False

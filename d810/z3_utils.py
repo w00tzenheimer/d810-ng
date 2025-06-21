@@ -91,6 +91,26 @@ def ast_to_z3_expression(ast: Union[AstNode, AstLeaf], use_bitvecval=False):
         return z3.LShR(ast_to_z3_expression(ast.left, use_bitvecval), ast_to_z3_expression(ast.right, use_bitvecval))
     elif ast.opcode == m_sar:
         return (ast_to_z3_expression(ast.left, use_bitvecval)) >> (ast_to_z3_expression(ast.right, use_bitvecval))
+    elif ast.opcode == m_setnz:
+        return z3.If((ast_to_z3_expression(ast.left, use_bitvecval)) != z3.BitVecVal(0, 32), z3.BitVecVal(1,32), z3.BitVecVal(0,32))
+    elif ast.opcode == m_setz:
+        return z3.If((ast_to_z3_expression(ast.left, use_bitvecval)) == z3.BitVecVal(0, 32), z3.BitVecVal(1,32), z3.BitVecVal(0,32))
+    elif ast.opcode == m_setae:
+        return z3.If(z3.UGE(ast_to_z3_expression(ast.left, use_bitvecval), ast_to_z3_expression(ast.right, use_bitvecval)), z3.BitVecVal(1,32), z3.BitVecVal(0,32))
+    elif ast.opcode == m_setb:
+        return z3.If(z3.ULT(ast_to_z3_expression(ast.left, use_bitvecval), ast_to_z3_expression(ast.right, use_bitvecval)), z3.BitVecVal(1,32), z3.BitVecVal(0,32))
+    elif ast.opcode == m_seta:
+        return z3.If(z3.UGT(ast_to_z3_expression(ast.left, use_bitvecval), ast_to_z3_expression(ast.right, use_bitvecval)), z3.BitVecVal(1,32), z3.BitVecVal(0,32))
+    elif ast.opcode == m_setbe:
+        return z3.If(z3.ULE(ast_to_z3_expression(ast.left, use_bitvecval), ast_to_z3_expression(ast.right, use_bitvecval)), z3.BitVecVal(1,32), z3.BitVecVal(0,32))
+    elif ast.opcode == m_setg:
+        return z3.If((ast_to_z3_expression(ast.left, use_bitvecval)) > (ast_to_z3_expression(ast.right, use_bitvecval)), z3.BitVecVal(1,32), z3.BitVecVal(0,32))
+    elif ast.opcode == m_setge:
+        return z3.If((ast_to_z3_expression(ast.left, use_bitvecval)) >= (ast_to_z3_expression(ast.right, use_bitvecval)), z3.BitVecVal(1,32), z3.BitVecVal(0,32))
+    elif ast.opcode == m_setl:
+        return z3.If((ast_to_z3_expression(ast.left, use_bitvecval)) < (ast_to_z3_expression(ast.right, use_bitvecval)), z3.BitVecVal(1,32), z3.BitVecVal(0,32))
+    elif ast.opcode == m_setle:
+        return z3.If((ast_to_z3_expression(ast.left, use_bitvecval)) <= (ast_to_z3_expression(ast.right, use_bitvecval)), z3.BitVecVal(1,32), z3.BitVecVal(0,32))
     elif ast.opcode in [m_xdu, m_xds, m_low, m_high]:
         return ast_to_z3_expression(ast.left, use_bitvecval)
     raise D810Z3Exception("Z3 evaluation: Unknown opcode {0} for {1}".format(opcode_to_string(ast.opcode), ast))
