@@ -949,7 +949,8 @@
           "JnzRule5",
           "JnzRule6",
           "JnzRule7",
-          "JnzRule8"
+          "JnzRule8",
+          "JmpRuleZ3Const"
         ]
       }
     }

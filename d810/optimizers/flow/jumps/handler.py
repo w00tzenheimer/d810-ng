@@ -119,9 +119,9 @@ class JumpOptimizationRule(InstructionOptimizationRule):
         new_ins = minsn_t(original_ins)
         new_ins.opcode = self.REPLACEMENT_OPCODE
         if self.REPLACEMENT_OPCODE == m_goto:
-            new_ins.l = new_dst_mop
+            new_ins.l.erase()
             new_ins.r.erase()
-            new_ins.d.erase()
+            new_ins.d = new_dst_mop
             return new_ins
         new_ins.l = new_left_mop
         if new_right_mop is not None:
