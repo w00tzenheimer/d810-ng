@@ -29,36 +29,62 @@ def _is_const(mop):
     return mop is not None and mop.t == ida_hexrays.mop_n
 
 
+# def _fold_const_in_mop(mop: ida_hexrays.mop_t, bits: int) -> bool:
+#     """
+#     Recursively rewrites 'mop' in place; returns True if something changed.
+#     """
+#     changed = False
+
+#     if mop is None:
+#         return False
+
+#     if mop.t == ida_hexrays.mop_d and mop.d is not None:
+#         # sub-instruction:  build AST → fold → regenerate mop
+#         sub_ast = minsn_to_ast(mop.d)
+#         if sub_ast:
+#             new_ast, ch = _fold_bottom_up(sub_ast, bits)
+#             if ch and isinstance(new_ast, AstNode):
+#                 # regenerate sub-insn from AST and overwrite
+#                 new_sub = new_ast.create_minsn(mop.d.ea)  # this helper exists in d810
+#                 mop.d = new_sub
+#                 changed = True
+
+#     # argument list of a call lives in a mop_a
+#     if mop.t == ida_hexrays.mop_a:
+#         for a in mop.a:  # mop.a is the list< mop_t >
+#             changed |= _fold_const_in_mop(a, bits)
+
+#     # binary mops (l/r)
+#     if hasattr(mop, "l"):
+#         changed |= _fold_const_in_mop(mop.l, bits)
+#     if hasattr(mop, "r"):
+#         changed |= _fold_const_in_mop(mop.r, bits)
+
+
+#     return changed
 def _fold_const_in_mop(mop: ida_hexrays.mop_t, bits: int) -> bool:
     """
-    Recursively rewrites 'mop' in place; returns True if something changed.
+    Walk a mop tree, try to constant-fold, return True if anything changed.
     """
-    changed = False
-
-    if mop is None:
+    if mop is None or not isinstance(mop, ida_hexrays.mop_t):
         return False
 
+    changed = False
+
+    # Recurse only if this is an embedded instruction (mop_d)
     if mop.t == ida_hexrays.mop_d and mop.d is not None:
-        # sub-instruction:  build AST → fold → regenerate mop
-        sub_ast = minsn_to_ast(mop.d)
-        if sub_ast:
-            new_ast, ch = _fold_bottom_up(sub_ast, bits)
-            if ch and isinstance(new_ast, AstNode):
-                # regenerate sub-insn from AST and overwrite
-                new_sub = new_ast.create_minsn(mop.d.ea)  # this helper exists in d810
-                mop.d = new_sub
-                changed = True
+        ins = mop.d
+        changed |= _fold_const_in_mop(ins.l, bits)
+        changed |= _fold_const_in_mop(ins.r, bits)
 
-    # argument list of a call lives in a mop_a
-    if mop.t == ida_hexrays.mop_a:
-        for a in mop.a:  # mop.a is the list< mop_t >
-            changed |= _fold_const_in_mop(a, bits)
-
-    # binary mops (l/r)
-    if hasattr(mop, "l"):
-        changed |= _fold_const_in_mop(mop.l, bits)
-    if hasattr(mop, "r"):
-        changed |= _fold_const_in_mop(mop.r, bits)
+        # After children are folded, see if *this* minsn collapses
+        ast = minsn_to_ast(ins)
+        val = _eval_subtree(ast, bits)
+        if val is not None:
+            cst = ida_hexrays.mop_t()
+            cst.make_number(val, ins.d.size)
+            mop.copy(cst)  # replace subtree with constant
+            changed = True
 
     return changed
 
