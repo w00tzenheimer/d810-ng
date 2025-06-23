@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
-import os
 import json
 import logging
-import idaapi
-import ida_kernwin
-from PyQt5 import QtCore, QtWidgets, QtGui
+import os
+import pathlib
 
 from d810.conf import ProjectConfiguration, RuleConfiguration
+from PyQt5 import QtCore, QtGui, QtWidgets
 
-logger = logging.getLogger('D810.ui')
+import ida_kernwin
+import idaapi
+
+logger = logging.getLogger("D810.ui")
 
 
 class PluginConfigurationFileForm_t(QtWidgets.QDialog):
@@ -21,7 +23,9 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         self.log_dir = self.state.d810_config.get("log_dir")
         self.erase_logs_on_reload = self.state.d810_config.get("erase_logs_on_reload")
         self.generate_z3_code = self.state.d810_config.get("generate_z3_code")
-        self.dump_intermediate_microcode = self.state.d810_config.get("dump_intermediate_microcode")
+        self.dump_intermediate_microcode = self.state.d810_config.get(
+            "dump_intermediate_microcode"
+        )
 
         self.resize(1000, 500)
         self.setWindowTitle("Plugin Configuration")
@@ -43,14 +47,26 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
 
         self.config_layout.addLayout(self.layout_log_dir)
 
-        self.checkbox_generate_z3_code = QtWidgets.QCheckBox("Generate Z3 code for simplification performed", self)
-        self.checkbox_generate_z3_code.setChecked(self.state.d810_config.get("generate_z3_code"))
+        self.checkbox_generate_z3_code = QtWidgets.QCheckBox(
+            "Generate Z3 code for simplification performed", self
+        )
+        self.checkbox_generate_z3_code.setChecked(
+            self.state.d810_config.get("generate_z3_code")
+        )
         self.config_layout.addWidget(self.checkbox_generate_z3_code)
-        self.checkbox_dump_intermediate_microcode = QtWidgets.QCheckBox("Dump functions microcode at each maturity", self)
-        self.checkbox_dump_intermediate_microcode.setChecked(self.state.d810_config.get("dump_intermediate_microcode"))
+        self.checkbox_dump_intermediate_microcode = QtWidgets.QCheckBox(
+            "Dump functions microcode at each maturity", self
+        )
+        self.checkbox_dump_intermediate_microcode.setChecked(
+            self.state.d810_config.get("dump_intermediate_microcode")
+        )
         self.config_layout.addWidget(self.checkbox_dump_intermediate_microcode)
-        self.checkbox_erase_logs_on_reload = QtWidgets.QCheckBox("Erase log directory content when plugin is reloaded", self)
-        self.checkbox_erase_logs_on_reload.setChecked(self.state.d810_config.get("erase_logs_on_reload"))
+        self.checkbox_erase_logs_on_reload = QtWidgets.QCheckBox(
+            "Erase log directory content when plugin is reloaded", self
+        )
+        self.checkbox_erase_logs_on_reload.setChecked(
+            self.state.d810_config.get("erase_logs_on_reload")
+        )
         self.config_layout.addWidget(self.checkbox_erase_logs_on_reload)
 
         self.layout_button = QtWidgets.QHBoxLayout()
@@ -68,9 +84,13 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
 
     def choose_log_dir(self):
         logger.debug("Calling save_rule_configuration")
-        log_dir = QtWidgets.QFileDialog.getExistingDirectory(self, "Open Directory", os.path.expanduser("~"),
-                                                                  QtWidgets.QFileDialog.ShowDirsOnly |
-                                                                  QtWidgets.QFileDialog.DontResolveSymlinks)
+        log_dir = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Open Directory",
+            os.path.expanduser("~"),
+            QtWidgets.QFileDialog.ShowDirsOnly
+            | QtWidgets.QFileDialog.DontResolveSymlinks,
+        )
         if log_dir != "":
             self.log_dir = log_dir
             self.log_dir_changed = True
@@ -79,9 +99,16 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
     def save_config(self):
         if self.log_dir_changed:
             self.state.d810_config.set("log_dir", self.log_dir)
-        self.state.d810_config.set("erase_logs_on_reload", self.checkbox_erase_logs_on_reload.isChecked())
-        self.state.d810_config.set("generate_z3_code", self.checkbox_generate_z3_code.isChecked())
-        self.state.d810_config.set("dump_intermediate_microcode", self.checkbox_dump_intermediate_microcode.isChecked())
+        self.state.d810_config.set(
+            "erase_logs_on_reload", self.checkbox_erase_logs_on_reload.isChecked()
+        )
+        self.state.d810_config.set(
+            "generate_z3_code", self.checkbox_generate_z3_code.isChecked()
+        )
+        self.state.d810_config.set(
+            "dump_intermediate_microcode",
+            self.checkbox_dump_intermediate_microcode.isChecked(),
+        )
         self.state.d810_config.save()
         self.accept()
 
@@ -170,16 +197,29 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
         self.config_rules = []
         self.update_table_rule_selection()
 
-    def update_form(self, config_description=None, activated_ins_rule_config_list=None, activated_blk_rule_config_list=None, config_path=None):
+    def update_form(
+        self,
+        config_description=None,
+        activated_ins_rule_config_list=None,
+        activated_blk_rule_config_list=None,
+        config_path=None,
+    ):
         logger.debug("Calling update_form")
         if config_description is not None:
             self.in_cfg_name.setText(config_description)
-        if activated_ins_rule_config_list is not None or activated_blk_rule_config_list is not None:
-            self.update_table_rule_selection(activated_ins_rule_config_list, activated_blk_rule_config_list)
+        if (
+            activated_ins_rule_config_list is not None
+            or activated_blk_rule_config_list is not None
+        ):
+            self.update_table_rule_selection(
+                activated_ins_rule_config_list, activated_blk_rule_config_list
+            )
         if config_path is not None:
             self.config_path = config_path
 
-    def update_table_rule_selection(self, activated_ins_rule_config_list=None, activated_blk_rule_config_list=None):
+    def update_table_rule_selection(
+        self, activated_ins_rule_config_list=None, activated_blk_rule_config_list=None
+    ):
         logger.debug("Calling update_table_rule_selection")
         self.update_table_ins_rule_selection(activated_ins_rule_config_list)
         self.update_table_blk_rule_selection(activated_blk_rule_config_list)
@@ -199,7 +239,9 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
             activated_ins_rule_config_list = []
         self.table_ins_rule_selection.setRowCount(len(self.state.known_ins_rules))
         for i, rule in enumerate(self.state.known_ins_rules):
-            rule_config = self._get_rule_config(rule.name, activated_ins_rule_config_list)
+            rule_config = self._get_rule_config(
+                rule.name, activated_ins_rule_config_list
+            )
             item = QtWidgets.QTableWidgetItem()
             item.setTextAlignment(QtCore.Qt.AlignCenter)
             if rule_config is not None and rule_config.is_activated:
@@ -229,7 +271,9 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
             activated_blk_rule_config_list = []
         self.table_blk_rule_selection.setRowCount(len(self.state.known_blk_rules))
         for i, rule in enumerate(self.state.known_blk_rules):
-            rule_config = self._get_rule_config(rule.name, activated_blk_rule_config_list)
+            rule_config = self._get_rule_config(
+                rule.name, activated_blk_rule_config_list
+            )
             item = QtWidgets.QTableWidgetItem()
             item.setTextAlignment(QtCore.Qt.AlignCenter)
             if rule_config is not None and rule_config.is_activated:
@@ -255,9 +299,11 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
 
     def save_rule_configuration(self):
         logger.debug("Calling save_rule_configuration")
-        fname, _ = QtWidgets.QFileDialog.getSaveFileName(self, 'Save file', self.config_path, "Project configuration (*.json)")
+        fname, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save file", str(self.config_path), "Project configuration (*.json)"
+        )
         if fname:
-            self.config_path = fname
+            self.config_path = pathlib.Path(fname)
             self.config_description = self.in_cfg_name.text()
             self.config_ins_rules = self.get_ins_rules()
             self.config_blk_rules = self.get_blk_rules()
@@ -269,9 +315,12 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
         nb_rules = self.table_ins_rule_selection.rowCount()
         for i in range(nb_rules):
             if self.table_ins_rule_selection.item(i, 0).checkState():
-                rule_conf = RuleConfiguration(name=self.table_ins_rule_selection.item(i, 1).text(),
-                                              is_activated=self.table_ins_rule_selection.item(i, 0).checkState() == QtCore.Qt.Checked,
-                                              config=json.loads(self.table_ins_rule_selection.item(i, 3).text()))
+                rule_conf = RuleConfiguration(
+                    name=self.table_ins_rule_selection.item(i, 1).text(),
+                    is_activated=self.table_ins_rule_selection.item(i, 0).checkState()
+                    == QtCore.Qt.Checked,
+                    config=json.loads(self.table_ins_rule_selection.item(i, 3).text()),
+                )
                 activated_rule_names.append(rule_conf)
                 # activated_rule_names.append(self.table_ins_rule_selection.item(i, 1).text())
         return activated_rule_names
@@ -282,9 +331,12 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
         nb_rules = self.table_blk_rule_selection.rowCount()
         for i in range(nb_rules):
             if self.table_blk_rule_selection.item(i, 0).checkState():
-                rule_conf = RuleConfiguration(name=self.table_blk_rule_selection.item(i, 1).text(),
-                                              is_activated=self.table_blk_rule_selection.item(i, 0).checkState() == QtCore.Qt.Checked,
-                                              config=json.loads(self.table_blk_rule_selection.item(i, 3).text()))
+                rule_conf = RuleConfiguration(
+                    name=self.table_blk_rule_selection.item(i, 1).text(),
+                    is_activated=self.table_blk_rule_selection.item(i, 0).checkState()
+                    == QtCore.Qt.Checked,
+                    config=json.loads(self.table_blk_rule_selection.item(i, 3).text()),
+                )
                 activated_rule_names.append(rule_conf)
                 # activated_rule_names.append(self.table_blk_rule_selection.item(i, 1).text())
         return activated_rule_names
@@ -309,12 +361,16 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             return
         self.shown = True
         return ida_kernwin.PluginForm.Show(
-            self, "D-810 Configuration",
-            options=(ida_kernwin.PluginForm.WOPN_PERSIST |
-                     ida_kernwin.PluginForm.WCLS_SAVE |
-                     ida_kernwin.PluginForm.WOPN_MENU |
-                     ida_kernwin.PluginForm.WOPN_RESTORE |
-                     ida_kernwin.PluginForm.WOPN_TAB))
+            self,
+            "D-810 Configuration",
+            options=(
+                ida_kernwin.PluginForm.WOPN_PERSIST
+                | ida_kernwin.PluginForm.WCLS_SAVE
+                | ida_kernwin.PluginForm.WOPN_MENU
+                | ida_kernwin.PluginForm.WOPN_RESTORE
+                | ida_kernwin.PluginForm.WOPN_TAB
+            ),
+        )
 
     def OnCreate(self, form):
         logger.debug("Calling OnCreate")
@@ -329,25 +385,25 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         cfg_split = QtWidgets.QSplitter(self.parent)
         layout.addWidget(cfg_split, 0, 0)
         # Config name label
-        self.curlabel = QtWidgets.QLabel('Current file loaded:')
+        self.curlabel = QtWidgets.QLabel("Current file loaded:")
         cfg_split.addWidget(self.curlabel)
 
         self.cfg_select = QtWidgets.QComboBox(self.parent)
         cfg_split.addWidget(self.cfg_select)
 
-        self.btn_new_cfg = QtWidgets.QPushButton('New')
+        self.btn_new_cfg = QtWidgets.QPushButton("New")
         self.btn_new_cfg.clicked.connect(self._create_config)
         cfg_split.addWidget(self.btn_new_cfg)
 
-        self.btn_duplicate_cfg = QtWidgets.QPushButton('Duplicate')
+        self.btn_duplicate_cfg = QtWidgets.QPushButton("Duplicate")
         self.btn_duplicate_cfg.clicked.connect(self._duplicate_config)
         cfg_split.addWidget(self.btn_duplicate_cfg)
 
-        self.btn_edit_cfg = QtWidgets.QPushButton('Edit')
+        self.btn_edit_cfg = QtWidgets.QPushButton("Edit")
         self.btn_edit_cfg.clicked.connect(self._edit_config)
         cfg_split.addWidget(self.btn_edit_cfg)
 
-        self.btn_delele_cfg = QtWidgets.QPushButton('Delete')
+        self.btn_delele_cfg = QtWidgets.QPushButton("Delete")
         self.btn_delele_cfg.clicked.connect(self._delete_config)
         cfg_split.addWidget(self.btn_delele_cfg)
 
@@ -378,24 +434,24 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         btn_split = QtWidgets.QSplitter(self.parent)
         layout.addWidget(btn_split, 4, 0)
 
-        self.btn_config = QtWidgets.QPushButton('Configuration')
+        self.btn_config = QtWidgets.QPushButton("Configuration")
         self.btn_config.clicked.connect(self._configure_plugin)
         btn_split.addWidget(self.btn_config)
 
-
-        self.btn_start = QtWidgets.QPushButton('Start')
+        self.btn_start = QtWidgets.QPushButton("Start")
         self.btn_start.clicked.connect(self._start_d810)
         btn_split.addWidget(self.btn_start)
 
-        self.btn_stop = QtWidgets.QPushButton('Stop')
+        self.btn_stop = QtWidgets.QPushButton("Stop")
         self.btn_stop.clicked.connect(self._stop_d810)
         btn_split.addWidget(self.btn_stop)
 
         self.plugin_status = QtWidgets.QLabel()
-        self.plugin_status.setText("<span style=\" font-size:8pt; font-weight:600; color:#ff0000;\" >Not Loaded</span>")
+        self.plugin_status.setText(
+            '<span style=" font-size:8pt; font-weight:600; color:#ff0000;" >Not Loaded</span>'
+        )
         description_split.addWidget(self.plugin_status)
         btn_split.addWidget(self.plugin_status)
-
 
         self.update_cfg_select()
         self.cfg_select.setCurrentIndex(self.state.current_project_index)
@@ -411,18 +467,26 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         logger.debug("Calling update_cfg_ins_preview")
         self.cfg_ins_preview.setRowCount(len(self.state.current_ins_rules))
         self.cfg_ins_preview.setColumnCount(3)
-        self.cfg_ins_preview.setHorizontalHeaderLabels(("Name", "Description", "Configuration"))
+        self.cfg_ins_preview.setHorizontalHeaderLabels(
+            ("Name", "Description", "Configuration")
+        )
         self.cfg_ins_preview.horizontalHeader().setStretchLastSection(True)
         self.cfg_ins_preview.setSortingEnabled(True)
         # self.cfg_ins_preview.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustToContents)
         i = 0
         for rule in self.state.current_ins_rules:
             cell_file_path = QtWidgets.QTableWidgetItem(rule.name)
-            cell_file_path.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
+            cell_file_path.setFlags(
+                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
+            )
             cell_rule_description = QtWidgets.QTableWidgetItem(rule.description)
-            cell_rule_description.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
+            cell_rule_description.setFlags(
+                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
+            )
             cell_rule_config = QtWidgets.QTableWidgetItem(json.dumps(rule.config))
-            cell_rule_config.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
+            cell_rule_config.setFlags(
+                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
+            )
             self.cfg_ins_preview.setItem(i, 0, cell_file_path)
             self.cfg_ins_preview.setItem(i, 1, cell_rule_description)
             self.cfg_ins_preview.setItem(i, 2, cell_rule_config)
@@ -433,18 +497,26 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         logger.debug("Calling update_cfg_blk_preview")
         self.cfg_blk_preview.setRowCount(len(self.state.current_blk_rules))
         self.cfg_blk_preview.setColumnCount(3)
-        self.cfg_blk_preview.setHorizontalHeaderLabels(("Name", "Description", "Configuration"))
+        self.cfg_blk_preview.setHorizontalHeaderLabels(
+            ("Name", "Description", "Configuration")
+        )
         self.cfg_blk_preview.horizontalHeader().setStretchLastSection(True)
         self.cfg_blk_preview.setSortingEnabled(True)
         # self.cfg_blk_preview.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustToContents)
         i = 0
         for rule in self.state.current_blk_rules:
             cell_file_path = QtWidgets.QTableWidgetItem(rule.name)
-            cell_file_path.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
+            cell_file_path.setFlags(
+                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
+            )
             cell_rule_description = QtWidgets.QTableWidgetItem(rule.description)
-            cell_rule_description.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
+            cell_rule_description.setFlags(
+                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
+            )
             cell_rule_config = QtWidgets.QTableWidgetItem(json.dumps(rule.config))
-            cell_rule_config.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
+            cell_rule_config.setFlags(
+                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
+            )
             self.cfg_blk_preview.setItem(i, 0, cell_file_path)
             self.cfg_blk_preview.setItem(i, 1, cell_rule_description)
             self.cfg_blk_preview.setItem(i, 2, cell_rule_config)
@@ -455,29 +527,49 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         logger.debug("Calling update_cfg_select")
         tmp = self.state.current_project_index
         self.cfg_select.clear()
-        self.cfg_select.addItems([proj.path for proj in self.state.projects])
+        self.cfg_select.addItems([str(proj.path) for proj in self.state.projects])
         self.cfg_select.setCurrentIndex(tmp)
 
     def _create_config(self):
         logger.debug("Calling _create_config")
-        self._internal_config_creation(None, None, None, self.state.d810_config.config_dir)
+        self._internal_config_creation(
+            None, None, None, self.state.d810_config.config_dir
+        )
 
     def _duplicate_config(self):
         logger.debug("Calling _duplicate_config")
         cur_cfg = self.state.current_project
-        self._internal_config_creation(None, cur_cfg.ins_rules, cur_cfg.blk_rules, self.state.d810_config.config_dir)
+        self._internal_config_creation(
+            None,
+            cur_cfg.ins_rules,
+            cur_cfg.blk_rules,
+            self.state.d810_config.config_dir,
+        )
 
     def _edit_config(self):
         logger.debug("Calling _edit_config")
         cur_cfg = self.state.current_project
-        self._internal_config_creation(cur_cfg.description, cur_cfg.ins_rules, cur_cfg.blk_rules, cur_cfg.path, cur_cfg)
+        self._internal_config_creation(
+            cur_cfg.description,
+            cur_cfg.ins_rules,
+            cur_cfg.blk_rules,
+            cur_cfg.path,
+            cur_cfg,
+        )
 
-    def _internal_config_creation(self, description, start_ins_rules, start_blk_rules, path, old_conf=None):
+    def _internal_config_creation(
+        self, description, start_ins_rules, start_blk_rules, path, old_conf=None
+    ):
         logger.debug("Calling _internal_config_creation")
         editdlg = EditConfigurationFileForm_t(self.parent, self.state)
         editdlg.update_form(description, start_ins_rules, start_blk_rules, path)
         if editdlg.exec_() == QtWidgets.QDialog.Accepted:
-            new_config = ProjectConfiguration(editdlg.config_path, editdlg.config_description, editdlg.config_ins_rules, editdlg.config_blk_rules)
+            new_config = ProjectConfiguration(
+                editdlg.config_path,
+                editdlg.config_description,
+                editdlg.config_ins_rules,
+                editdlg.config_blk_rules,
+            )
             new_config.save()
             if old_conf is None:
                 self.state.add_project(new_config)
@@ -511,14 +603,18 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         logger.debug("Calling _start_d810")
         self.state.start_d810()
         # self.plugin_status.clear()
-        self.plugin_status.setText("<span style=\" font-size:8pt; font-weight:600; color:#00FF00;\" >Loaded</span>")
+        self.plugin_status.setText(
+            '<span style=" font-size:8pt; font-weight:600; color:#00FF00;" >Loaded</span>'
+        )
         return
 
     def _stop_d810(self):
         logger.debug("Calling _stop_d810")
         self.state.stop_d810()
         # self.plugin_status.clear()
-        self.plugin_status.setText("<span style=\" font-size:8pt; font-weight:600; color:#FF0000;\" >Not Loaded</span>")
+        self.plugin_status.setText(
+            '<span style=" font-size:8pt; font-weight:600; color:#FF0000;" >Not Loaded</span>'
+        )
         return
 
 
