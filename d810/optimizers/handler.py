@@ -1,9 +1,16 @@
-from ida_hexrays import *
-
 from d810.hexrays_formatters import string_to_maturity
 
-DEFAULT_INSTRUCTION_MATURITIES = [MMAT_LOCOPT, MMAT_CALLS, MMAT_GLBOPT1]
-DEFAULT_FLOW_MATURITIES = [MMAT_CALLS, MMAT_GLBOPT1]
+import ida_hexrays
+
+DEFAULT_INSTRUCTION_MATURITIES = [
+    ida_hexrays.MMAT_LOCOPT,
+    ida_hexrays.MMAT_CALLS,
+    ida_hexrays.MMAT_GLBOPT1,
+    ida_hexrays.MMAT_GLBOPT2,
+    ida_hexrays.MMAT_GLBOPT3,
+    ida_hexrays.MMAT_LVARS,
+]
+DEFAULT_FLOW_MATURITIES = [ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1]
 
 
 class OptimizationRule(object):

@@ -1,16 +1,17 @@
 from __future__ import annotations
+
 import logging
 from typing import List
-from ida_hexrays import *
 
-from d810.optimizers.handler import OptimizationRule
-from d810.hexrays_formatters import format_minsn_t
-from d810.ast import minsn_to_ast, AstNode
+from d810.ast import AstNode, minsn_to_ast
 from d810.errors import D810Exception
+from d810.hexrays_formatters import format_minsn_t, maturity_to_string
+from d810.optimizers.handler import OptimizationRule
 
+import ida_hexrays
 
-d810_logger = logging.getLogger('D810')
-optimizer_logger = logging.getLogger('D810.optimizer')
+d810_logger = logging.getLogger("D810")
+optimizer_logger = logging.getLogger("D810.optimizer")
 
 
 class InstructionOptimizationRule(OptimizationRule):
@@ -37,12 +38,14 @@ class GenericPatternRule(InstructionOptimizationRule):
         # Perform rule specific checks
         return False
 
-    def get_valid_candidates(self, instruction: minsn_t, stop_early=True):
+    def get_valid_candidates(self, instruction: ida_hexrays.minsn_t, stop_early=True):
         valid_candidates = []
         tmp = minsn_to_ast(instruction)
         if tmp is None:
             return []
         for candidate_pattern in self.pattern_candidates:
+            if not candidate_pattern:
+                continue
             if not candidate_pattern.check_pattern_and_copy_mops(tmp):
                 continue
             if not self.check_candidate(candidate_pattern):
@@ -52,14 +55,18 @@ class GenericPatternRule(InstructionOptimizationRule):
                 return valid_candidates
         return []
 
-    def get_replacement(self, candidate: AstNode):
+    def get_replacement(self, candidate: AstNode) -> ida_hexrays.minsn_t | None:
+        if not self.REPLACEMENT_PATTERN:
+            return None
         is_ok = self.REPLACEMENT_PATTERN.update_leafs_mop(candidate)
         if not is_ok:
             return None
         new_ins = self.REPLACEMENT_PATTERN.create_minsn(candidate.ea, candidate.dst_mop)
         return new_ins
 
-    def check_and_replace(self, blk: mblock_t, instruction: minsn_t):
+    def check_and_replace(
+        self, blk: ida_hexrays.mblock_t, instruction: ida_hexrays.minsn_t
+    ) -> ida_hexrays.minsn_t | None:
         valid_candidates = self.get_valid_candidates(instruction, stop_early=True)
         if len(valid_candidates) == 0:
             return None
@@ -86,9 +93,9 @@ class InstructionOptimizer(object):
         self.rules_usage_info = {}
         self.maturities = maturities
         self.log_dir = log_dir
-        self.cur_maturity = MMAT_PREOPTIMIZED
+        self.cur_maturity = ida_hexrays.MMAT_PREOPTIMIZED
 
-    def add_rule(self, rule: InstructionOptimizationRule):
+    def add_rule(self, rule: InstructionOptimizationRule) -> bool:
         is_valid_rule_class = False
         for rule_class in self.RULE_CLASSES:
             if isinstance(rule, rule_class):
@@ -111,11 +118,21 @@ class InstructionOptimizer(object):
     def show_rule_usage_statistic(self):
         for rule_name, rule_nb_match in self.rules_usage_info.items():
             if rule_nb_match > 0:
-                d810_logger.info("Instruction Rule '{0}' has been used {1} times".format(rule_name, rule_nb_match))
+                d810_logger.info(
+                    "Instruction Rule '{0}' has been used {1} times".format(
+                        rule_name, rule_nb_match
+                    )
+                )
 
-    def get_optimized_instruction(self, blk: mblock_t, ins: minsn_t):
+    def get_optimized_instruction(
+        self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t
+    ) -> ida_hexrays.minsn_t | None:
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
+        # This was commented out in the original code,
+        # and it looks like the entire instruction optimizer can be skipped
+        # if the maturity level isn't desired for this specific optimizer.
+        # TODO: we should check to see if this is still relevant?
         # if self.cur_maturity not in self.maturities:
         #     return None
         for rule in self.rules:
@@ -125,14 +142,30 @@ class InstructionOptimizer(object):
                 new_ins = rule.check_and_replace(blk, ins)
                 if new_ins is not None:
                     self.rules_usage_info[rule.name] += 1
-                    optimizer_logger.info("Rule {0} matched:".format(rule.name))
-                    optimizer_logger.info("  orig: {0}".format(format_minsn_t(ins)))
-                    optimizer_logger.info("  new : {0}".format(format_minsn_t(new_ins)))
+                    optimizer_logger.info(
+                        "Rule %s matched in maturity %s:",
+                        rule.name,
+                        maturity_to_string(self.cur_maturity),
+                    )
+                    optimizer_logger.info("  orig: %s", format_minsn_t(ins))
+                    optimizer_logger.info("  new : %s", format_minsn_t(new_ins))
                     return new_ins
             except RuntimeError as e:
-                optimizer_logger.error("Runtime error during rule {0} for instruction {1}: {2}".format(rule, format_minsn_t(ins), e))
+                optimizer_logger.error(
+                    "Runtime error during rule %s in maturity %s for instruction %s: %s",
+                    rule,
+                    maturity_to_string(self.cur_maturity),
+                    format_minsn_t(ins),
+                    e,
+                )
             except D810Exception as e:
-                optimizer_logger.error("D810Exception during rule {0} for instruction {1}: {2}".format(rule, format_minsn_t(ins), e))
+                optimizer_logger.error(
+                    "D810Exception during rule %s in maturity %s for instruction %s: %s",
+                    rule,
+                    maturity_to_string(self.cur_maturity),
+                    format_minsn_t(ins),
+                    e,
+                )
         return None
 
     @property

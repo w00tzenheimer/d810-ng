@@ -7,7 +7,6 @@ from d810.optimizers.instructions.pattern_matching.handler import (
 from d810.optimizers.instructions.pattern_matching.rewrite_add import *
 from d810.optimizers.instructions.pattern_matching.rewrite_and import *
 from d810.optimizers.instructions.pattern_matching.rewrite_bnot import *
-from d810.optimizers.instructions.pattern_matching.rewrite_const import *
 from d810.optimizers.instructions.pattern_matching.rewrite_cst import *
 from d810.optimizers.instructions.pattern_matching.rewrite_mov import *
 from d810.optimizers.instructions.pattern_matching.rewrite_mul import *

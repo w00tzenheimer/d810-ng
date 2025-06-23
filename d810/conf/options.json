@@ -1,15 +1,16 @@
 {
-  "erase_logs_on_reload": true,
-  "generate_z3_code": true,
-  "dump_intermediate_microcode": true,
-  "log_dir": null,
-  "configurations": [
-    "default_instruction_only.json",
-    "default_unflattening_ollvm.json",
-    "default_unflattening_switch_case.json",
-    "default_unflattening_approov.json",
-    "example_anel.json",
-    "example_libobfuscated.json"
-  ],
-  "last_project_index": 3
+    "erase_logs_on_reload": true,
+    "generate_z3_code": true,
+    "dump_intermediate_microcode": true,
+    "log_dir": null,
+    "configurations": [
+        "default_instruction_only.json",
+        "default_unflattening_ollvm.json",
+        "default_unflattening_switch_case.json",
+        "default_unflattening_approov.json",
+        "example_anel.json",
+        "example_libobfuscated.json",
+        "eidolon.json"
+    ],
+    "last_project_index": 3
 }
