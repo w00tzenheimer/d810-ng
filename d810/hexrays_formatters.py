@@ -43,8 +43,8 @@ def maturity_to_string(maturity_level: int) -> str:
     )
 
 
-def string_to_maturity(maturity_string: str) -> int:
-    return STRING_TO_MATURITY_DICT.get(maturity_string, -1)
+def string_to_maturity(maturity_string: str) -> int | None:
+    return STRING_TO_MATURITY_DICT.get(maturity_string)
 
 
 def mop_type_to_string(mop_type: int) -> str:

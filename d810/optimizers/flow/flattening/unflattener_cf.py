@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import hashlib
 import logging
 import typing
 import weakref
@@ -1381,6 +1382,20 @@ class assign_searcher_t(ida_hexrays.minsn_visitor_t):
             return 0
 
 
+def compute_cfg_fingerprint(mba: ida_hexrays.mba_t) -> str:
+    """
+    Stable fingerprint of the CFG at this maturity level.
+    We sort blocks by start_ea to avoid serial re-ordering issues.
+    """
+    lines = []
+    for blk in sorted(
+        [mba.get_mblock(i) for i in range(mba.qty)], key=lambda b: b.start
+    ):
+        succ_eas = sorted(mba.get_mblock(s).start for s in blk.succset)
+        lines.append(f"{hex(blk.start)}:{','.join(hex(e) for e in succ_eas)}")
+    return hashlib.sha1("\n".join(lines).encode()).hexdigest()
+
+
 class cf_unflattener_t:
     """
     Main unflattener class.
@@ -1777,6 +1792,18 @@ class cf_unflattener_t:
         if changed != 0:
             mba.verify(True)
 
+        fp = compute_cfg_fingerprint(mba)
+        cache_key = (mba.entry_ea, mba.maturity, fp)
+        edges = self.plugin.edge_cache.get(cache_key)
+        if edges:
+            # Fast replay
+            dgm = deferred_graph_modifier_t()
+            dgm.edges = [deferred_graph_modifier_t.edgeinfo_t(*e) for e in edges]
+            changed += dgm.apply(mba, self.cfi)
+            return changed
+
+        # Otherwise, we need to do the full unflattening.
+        # (This is the slow path.)
         # collect assignment and comp. variables
         # main routine to collect cfg information
         if not self.cfi.get_assigned_and_comparison_variables(blk):
@@ -2006,17 +2033,15 @@ class cf_unflattener_t:
         if changed:
             logger.info(f"UNFLATTENER: blk.start={hex(blk.start)} (changed={changed})")
             mba.verify(True)
+            self.plugin.edge_cache[cache_key] = [
+                (e.src, e.dst1, e.dst2) for e in dgm.edges
+            ]
 
         # if safe mode, deactivate the plugin after usage to prevent the annoying crashes
         if self.plugin.SAFE_MODE:
             self.plugin.activated = False
 
         return changed
-
-
-# Rename cf_unflattener_t.func → cf_unflattener_t.run_one_mba or similar
-# so it doesn't clash with FlowOptimizer internals.
-# (We'll call it explicitly from the rule.)
 
 
 class UnflattenControlFlowRule(FlowOptimizationRule):
@@ -2031,12 +2056,21 @@ class UnflattenControlFlowRule(FlowOptimizationRule):
         super().__init__()
         # restrict to LOCOPT if you like:
         self.maturities = [ida_hexrays.MMAT_LOCOPT]
-        # cf_unflattener_t expects a plugin-like object; we can pass `self`
         self.cfu: cf_unflattener_t | None = None  # lazy init
         self.SAFE_MODE = False
         self.RUN_MLTPL_DISPATCHERS = True
         self.activated = True
-        self._done: dict[int, int] = {}  # func_ea -> patch_count
+        self.edge_cache: dict[tuple[int, int, str], list[tuple[int, int, int]]] = {}
+
+    def configure(self, cfg: dict[str, typing.Any]):
+        super().configure(cfg)
+        self.reset = cfg.get("FORCE_UNFLATTEN", False)
+        self.SAFE_MODE = cfg.get("SAFE_MODE", False)
+        self.RUN_MLTPL_DISPATCHERS = cfg.get("RUN_MLTPL_DISPATCHERS", True)
+        if self.reset:
+            self.reset_maturity()
+            self.edge_cache.clear()
+            self.reset = False
 
     # D-810 will invoke this once per function (& maturity)
     # @typing.override  # todo: add upstream method
@@ -2053,9 +2087,6 @@ class UnflattenControlFlowRule(FlowOptimizationRule):
         if self.use_blacklist and ea in self.blacklisted_function_ea_list:
             return 0
 
-        if ea in self._done:
-            return 0
-
         changed = 0
         try:
             if self.cfu is None:
@@ -2064,12 +2095,13 @@ class UnflattenControlFlowRule(FlowOptimizationRule):
             # cf_unflattener_t originally expected a block; give it the head
             blk0 = mba.get_mblock(0)
             changed = self.cfu.func(blk0)
-            self._done[ea] = changed
+
         except Exception as exc:
             logger.error("Unflattening failed for %s: %s", hex(ea), exc, exc_info=True)
         finally:
             # Reset maturity so the pass can run again on the next function
-            self.reset_maturity()
+            # self.reset_maturity()
+            pass
         return changed
 
     def enforce_unflatten(self, vaddr):
