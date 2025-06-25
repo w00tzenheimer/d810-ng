@@ -1,10 +1,14 @@
 from __future__ import annotations
-import os
+
 import json
 import logging
+import os
+from typing import TYPE_CHECKING, List
+
+import pyinstrument
+
 import idaapi
 
-from typing import TYPE_CHECKING, List
 if TYPE_CHECKING:
     from d810.conf import D810Configuration, ProjectConfiguration
 
@@ -16,11 +20,13 @@ d810_state = None
 D810_LOG_DIR_NAME = "d810_logs"
 
 MANAGER_INFO_FILENAME = "manager_info.json"
-logger = logging.getLogger('D810')
+logger = logging.getLogger("D810")
 
 
 def reload_all_modules():
-    manager_info_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), MANAGER_INFO_FILENAME)
+    manager_info_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), MANAGER_INFO_FILENAME
+    )
 
     with open(manager_info_path, "r") as f:
         manager_info = json.load(f)
@@ -40,15 +46,29 @@ class D810Manager(object):
         self.hx_decompiler_hook = None
         self.log_dir = log_dir
         self.config = {}
+        self.profiler = pyinstrument.Profiler()
 
     def configure(self, **kwargs):
         self.config = kwargs
+
+    def start_profiling(self):
+        if not self.profiler.is_running:
+            self.profiler.start()
+
+    def stop_profiling(self):
+        if self.profiler.is_running:
+            self.profiler.stop()
+            self.profiler.print()
 
     def reload(self):
         self.stop()
         logger.debug("Reloading manager...")
 
-        from d810.hexrays_hooks import InstructionOptimizerManager, BlockOptimizerManager, HexraysDecompilationHook
+        from d810.hexrays_hooks import (
+            BlockOptimizerManager,
+            HexraysDecompilationHook,
+            InstructionOptimizerManager,
+        )
 
         self.instruction_optimizer = InstructionOptimizerManager(self)
         self.instruction_optimizer.configure(**self.instruction_optimizer_config)
@@ -104,8 +124,9 @@ class D810State(object):
         self.log_dir = os.path.join(self.d810_config.get("log_dir"), D810_LOG_DIR_NAME)
         self.manager = D810Manager(self.log_dir)
 
-        from d810.optimizers.instructions import KNOWN_INS_RULES
         from d810.optimizers.flow import KNOWN_BLK_RULES
+        from d810.optimizers.instructions import KNOWN_INS_RULES
+
         self.known_ins_rules = [x for x in KNOWN_INS_RULES]
         self.known_blk_rules = [x for x in KNOWN_BLK_RULES]
 
@@ -121,10 +142,12 @@ class D810State(object):
 
     def register_default_projects(self):
         from d810.conf import ProjectConfiguration
+
         self.projects = []
         for project_configuration_path in self.d810_config.get("configurations"):
-            project_configuration = ProjectConfiguration(project_configuration_path,
-                                                         conf_dir=self.d810_config.config_dir)
+            project_configuration = ProjectConfiguration(
+                project_configuration_path, conf_dir=self.d810_config.config_dir
+            )
             project_configuration.load()
             self.projects.append(project_configuration)
         logger.debug("Rule configurations loaded: {0}".format(self.projects))
@@ -134,7 +157,9 @@ class D810State(object):
         self.d810_config.get("configurations").append(config.path)
         self.d810_config.save()
 
-    def update_project(self, old_config: ProjectConfiguration, new_config: ProjectConfiguration):
+    def update_project(
+        self, old_config: ProjectConfiguration, new_config: ProjectConfiguration
+    ):
         old_config_index = self.projects.index(old_config)
         self.projects[old_config_index] = new_config
 
@@ -169,13 +194,18 @@ class D810State(object):
 
     def start_d810(self):
         print("D-810 ready to deobfuscate...")
-        self.manager.configure_instruction_optimizer([rule for rule in self.current_ins_rules],
-                                                     generate_z3_code=self.d810_config.get("generate_z3_code"),
-                                                     dump_intermediate_microcode=self.d810_config.get(
-                                                         "dump_intermediate_microcode"),
-                                                     **self.current_project.additional_configuration)
-        self.manager.configure_block_optimizer([rule for rule in self.current_blk_rules],
-                                               **self.current_project.additional_configuration)
+        self.manager.configure_instruction_optimizer(
+            [rule for rule in self.current_ins_rules],
+            generate_z3_code=self.d810_config.get("generate_z3_code"),
+            dump_intermediate_microcode=self.d810_config.get(
+                "dump_intermediate_microcode"
+            ),
+            **self.current_project.additional_configuration,
+        )
+        self.manager.configure_block_optimizer(
+            [rule for rule in self.current_blk_rules],
+            **self.current_project.additional_configuration,
+        )
         self.manager.reload()
         self.d810_config.set("last_project_index", self.current_project_index)
         self.d810_config.save()
@@ -186,6 +216,7 @@ class D810State(object):
 
     def start_plugin(self):
         from d810.ida_ui import D810GUI
+
         self.gui = D810GUI(self)
         self.gui.show_windows()
 

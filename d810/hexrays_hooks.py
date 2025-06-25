@@ -378,6 +378,7 @@ class HexraysDecompilationHook(Hexrays_Hooks):
         main_logger.info(
             "Starting decompilation of function at 0x{0:x}".format(mba.entry_ea)
         )
+        self.manager.start_profiling()
         self.manager.instruction_optimizer.reset_rule_usage_statistic()
         self.manager.block_optimizer.reset_rule_usage_statistic()
         return 0
@@ -394,6 +395,7 @@ class HexraysDecompilationHook(Hexrays_Hooks):
         return 0
 
     def glbopt(self, mba: mbl_array_t) -> "int":
+        self.manager.stop_profiling()
         main_logger.info("glbopt finished for function at 0x{0:x}".format(mba.entry_ea))
         self.manager.instruction_optimizer.show_rule_usage_statistic()
         self.manager.block_optimizer.show_rule_usage_statistic()
