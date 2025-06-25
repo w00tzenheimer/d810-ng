@@ -59,13 +59,17 @@ def create_z3_vars(leaf_list: List[AstLeaf]):
     return known_leaf_z3_var_list
 
 
-def ast_to_z3_expression(ast: Union[AstNode, AstLeaf], use_bitvecval=False):
+def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
     if not Z3_INSTALLED:
         raise D810Z3Exception("Z3 is not installed")
-    if isinstance(ast, AstLeaf):
+    if ast is None:
+        raise ValueError("ast is None")
+    if ast.is_leaf():
+        ast = typing.cast(AstLeaf, ast)
         if ast.is_constant():
             return z3.BitVecVal(ast.value, 32)
         return ast.z3_var
+    ast = typing.cast(AstNode, ast)
     if ast.opcode == m_neg:
         return -(ast_to_z3_expression(ast.left, use_bitvecval))
     elif ast.opcode == m_lnot:

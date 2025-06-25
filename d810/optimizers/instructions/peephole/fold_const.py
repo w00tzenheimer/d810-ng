@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import typing
 
-from d810.ast import AstLeaf, AstNode, minsn_to_ast
+from d810.ast import AstBase, AstLeaf, AstNode, minsn_to_ast
 from d810.hexrays_helpers import AND_TABLE, OPCODES_INFO  # already maps size→mask
 from d810.optimizers.instructions.peephole.handler import PeepholeSimplificationRule
 from d810.utils import get_parity_flag, rol1, rol2, rol4, rol8, ror1, ror2, ror4, ror8
@@ -89,7 +89,7 @@ def _fold_const_in_mop(mop: ida_hexrays.mop_t, bits: int) -> bool:
     return changed
 
 
-def _fold_bottom_up(ast: AstNode | AstLeaf, bits) -> tuple[AstNode | AstLeaf, bool]:
+def _fold_bottom_up(ast: AstBase, bits) -> tuple[AstBase, bool]:
     """
     Constant-fold every binary/unary node whose children are constants.
     Returns (new_node, changed?).
@@ -97,8 +97,9 @@ def _fold_bottom_up(ast: AstNode | AstLeaf, bits) -> tuple[AstNode | AstLeaf, bo
     changed = False
 
     # leaves
-    if isinstance(ast, AstLeaf):
+    if ast.is_leaf():
         return ast, False
+    ast = typing.cast(AstNode, ast)
 
     # recurse first
     if ast.left is not None:
@@ -186,34 +187,38 @@ def _fold(op, a, b, bits):
     return None
 
 
-def _eval_subtree(ast: AstNode | AstLeaf, bits) -> int | None:
+def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     """returns an int if subtree is constant, else None"""
     if ast is None:
         return None
 
-    if isinstance(ast, AstLeaf):
+    if ast.is_leaf():
+        ast = typing.cast(AstLeaf, ast)
         mop = ast.mop
         if _is_const(mop):
             return mop.nnn.value & AND_TABLE[bits // 8]  # type: ignore
         return None
 
     # unary
-    if ast.right is None:
-        val = _eval_subtree(ast.left, bits)  # type: ignore
-        if val is None:
+    if ast.is_node():
+        ast = typing.cast(AstNode, ast)
+        if ast.right is None:
+            ast = typing.cast(AstNode, ast)
+            val = _eval_subtree(ast.left, bits)
+            if val is None:
+                return None
+            if ast.opcode == ida_hexrays.m_neg:
+                return (-val) & AND_TABLE[bits // 8]
+            if ast.opcode == ida_hexrays.m_bnot:
+                return (~val) & AND_TABLE[bits // 8]
             return None
-        if ast.opcode == ida_hexrays.m_neg:
-            return (-val) & AND_TABLE[bits // 8]
-        if ast.opcode == ida_hexrays.m_bnot:
-            return (~val) & AND_TABLE[bits // 8]
-        return None
 
     # binary
     l = _eval_subtree(ast.left, bits)  # type: ignore
-    r = _eval_subtree(ast.right, bits)
+    r = _eval_subtree(ast.right, bits)  # type: ignore
     if l is None or r is None:
         return None
-    return _fold(ast.opcode, l, r, bits)
+    return _fold(ast.opcode, l, r, bits)  # type: ignore
 
 
 # ────────────────────────────────────────────────────────────────────

@@ -1792,16 +1792,6 @@ class cf_unflattener_t:
         if changed != 0:
             mba.verify(True)
 
-        fp = compute_cfg_fingerprint(mba)
-        cache_key = (mba.entry_ea, mba.maturity, fp)
-        edges = self.plugin.edge_cache.get(cache_key)
-        if edges:
-            # Fast replay
-            dgm = deferred_graph_modifier_t()
-            dgm.edges = [deferred_graph_modifier_t.edgeinfo_t(*e) for e in edges]
-            changed += dgm.apply(mba, self.cfi)
-            return changed
-
         # Otherwise, we need to do the full unflattening.
         # (This is the slow path.)
         # collect assignment and comp. variables
@@ -2033,9 +2023,6 @@ class cf_unflattener_t:
         if changed:
             logger.info(f"UNFLATTENER: blk.start={hex(blk.start)} (changed={changed})")
             mba.verify(True)
-            self.plugin.edge_cache[cache_key] = [
-                (e.src, e.dst1, e.dst2) for e in dgm.edges
-            ]
 
         # if safe mode, deactivate the plugin after usage to prevent the annoying crashes
         if self.plugin.SAFE_MODE:
@@ -2060,7 +2047,6 @@ class UnflattenControlFlowRule(FlowOptimizationRule):
         self.SAFE_MODE = False
         self.RUN_MLTPL_DISPATCHERS = True
         self.activated = True
-        self.edge_cache: dict[tuple[int, int, str], list[tuple[int, int, int]]] = {}
 
     def configure(self, cfg: dict[str, typing.Any]):
         super().configure(cfg)
@@ -2069,7 +2055,6 @@ class UnflattenControlFlowRule(FlowOptimizationRule):
         self.RUN_MLTPL_DISPATCHERS = cfg.get("RUN_MLTPL_DISPATCHERS", True)
         if self.reset:
             self.reset_maturity()
-            self.edge_cache.clear()
             self.reset = False
 
     # D-810 will invoke this once per function (& maturity)
@@ -2100,8 +2085,7 @@ class UnflattenControlFlowRule(FlowOptimizationRule):
             logger.error("Unflattening failed for %s: %s", hex(ea), exc, exc_info=True)
         finally:
             # Reset maturity so the pass can run again on the next function
-            # self.reset_maturity()
-            pass
+            self.reset_maturity()
         return changed
 
     def enforce_unflatten(self, vaddr):

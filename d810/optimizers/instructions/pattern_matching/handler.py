@@ -1,13 +1,20 @@
-import logging
 import itertools
-from ida_hexrays import *
+import logging
+import typing
 from typing import List, Union
-from d810.optimizers.instructions.handler import GenericPatternRule, InstructionOptimizer, InstructionOptimizationRule
-from d810.ast import minsn_to_ast, AstNode, AstLeaf
-from d810.hexrays_formatters import format_minsn_t, format_mop_t
 
-optimizer_logger = logging.getLogger('D810.optimizer')
-pattern_search_logger = logging.getLogger('D810.pattern_search')
+from d810.ast import AstBase, AstLeaf, AstNode, minsn_to_ast
+from d810.hexrays_formatters import format_minsn_t, format_mop_t
+from d810.optimizers.instructions.handler import (
+    GenericPatternRule,
+    InstructionOptimizationRule,
+    InstructionOptimizer,
+)
+
+from ida_hexrays import *
+
+optimizer_logger = logging.getLogger("D810.optimizer")
+pattern_search_logger = logging.getLogger("D810.pattern_search")
 
 
 class PatternMatchingRule(GenericPatternRule):
@@ -25,8 +32,11 @@ class PatternMatchingRule(GenericPatternRule):
         if fuzz_pattern is not None:
             self.fuzz_pattern = fuzz_pattern
         self._generate_pattern_candidates()
-        pattern_search_logger.debug("Rule {0} configured with {1} patterns"
-                                    .format(self.__class__.__name__, len(self.pattern_candidates)))
+        pattern_search_logger.debug(
+            "Rule {0} configured with {1} patterns".format(
+                self.__class__.__name__, len(self.pattern_candidates)
+            )
+        )
 
     def _generate_pattern_candidates(self):
         self.fuzz_pattern = self.FUZZ_PATTERN
@@ -63,7 +73,7 @@ class RulePatternInfo(object):
 def signature_generator(ref_sig):
     for i, x in enumerate(ref_sig):
         if x not in ["N", "L"]:
-            for sig_suffix in signature_generator(ref_sig[i + 1:]):
+            for sig_suffix in signature_generator(ref_sig[i + 1 :]):
                 yield ref_sig[:i] + ["L"] + sig_suffix
     yield ref_sig
 
@@ -80,26 +90,39 @@ class PatternStorage(object):
         self.rule_resolved = []
 
     def add_pattern_for_rule(self, pattern: AstNode, rule: InstructionOptimizationRule):
-        layer_signature = self.layer_signature_to_key(pattern.get_depth_signature(self.depth))
+        layer_signature = self.layer_signature_to_key(
+            pattern.get_depth_signature(self.depth)
+        )
         if len(layer_signature.replace(",", "")) == (layer_signature.count("N")):
             self.rule_resolved.append(RulePatternInfo(rule, pattern))
         else:
             if layer_signature not in self.next_layer_patterns.keys():
-                self.next_layer_patterns[layer_signature] = PatternStorage(self.depth + 1)
-            self.next_layer_patterns[layer_signature].add_pattern_for_rule(pattern, rule)
+                self.next_layer_patterns[layer_signature] = PatternStorage(
+                    self.depth + 1
+                )
+            self.next_layer_patterns[layer_signature].add_pattern_for_rule(
+                pattern, rule
+            )
 
     @staticmethod
     def layer_signature_to_key(sig: List[str]) -> str:
         return ",".join(sig)
 
     @staticmethod
-    def is_layer_signature_compatible(instruction_signature: str, pattern_signature: str) -> bool:
+    def is_layer_signature_compatible(
+        instruction_signature: str, pattern_signature: str
+    ) -> bool:
         if instruction_signature == pattern_signature:
             return True
         instruction_node_list = instruction_signature.split(",")
         pattern_node_list = pattern_signature.split(",")
-        for ins_node_sig, pattern_node_sig in zip(instruction_node_list, pattern_node_list):
-            if pattern_node_sig not in ["L", "C", "N"] and ins_node_sig != pattern_node_sig:
+        for ins_node_sig, pattern_node_sig in zip(
+            instruction_node_list, pattern_node_list
+        ):
+            if (
+                pattern_node_sig not in ["L", "C", "N"]
+                and ins_node_sig != pattern_node_sig
+            ):
                 return False
         return True
 
@@ -117,11 +140,19 @@ class PatternStorage(object):
         if len(self.next_layer_patterns) == 0:
             return []
         searched_layer_signature = searched_pattern.get_depth_signature(cur_level)
-        nb_possible_signature = 2 ** (len(searched_layer_signature) - searched_layer_signature.count("N") - \
-                                searched_layer_signature.count("L"))
-        pattern_search_logger.debug("  Layer {0}: {1} -> {2} variations (storage has {3} signature)"
-                                    .format(cur_level, searched_layer_signature, nb_possible_signature,
-                                            len(self.next_layer_patterns)))
+        nb_possible_signature = 2 ** (
+            len(searched_layer_signature)
+            - searched_layer_signature.count("N")
+            - searched_layer_signature.count("L")
+        )
+        pattern_search_logger.debug(
+            "  Layer {0}: {1} -> {2} variations (storage has {3} signature)".format(
+                cur_level,
+                searched_layer_signature,
+                nb_possible_signature,
+                len(self.next_layer_patterns),
+            )
+        )
         matched_rule_pattern_info = []
         if nb_possible_signature < len(self.next_layer_patterns):
             pattern_search_logger.debug("  => Using method 1")
@@ -129,21 +160,35 @@ class PatternStorage(object):
                 try:
                     test_sig = self.layer_signature_to_key(possible_sig)
                     pattern_storage = self.next_layer_patterns[test_sig]
-                    pattern_search_logger.info("    Compatible signature: {0} -> resolved: {1}"
-                                               .format(test_sig, pattern_storage.rule_resolved))
+                    pattern_search_logger.info(
+                        "    Compatible signature: {0} -> resolved: {1}".format(
+                            test_sig, pattern_storage.rule_resolved
+                        )
+                    )
                     matched_rule_pattern_info += pattern_storage.rule_resolved
-                    matched_rule_pattern_info += pattern_storage.explore_one_level(searched_pattern, cur_level + 1)
+                    matched_rule_pattern_info += pattern_storage.explore_one_level(
+                        searched_pattern, cur_level + 1
+                    )
                 except KeyError:
                     pass
         else:
             pattern_search_logger.debug("  => Using method 2")
-            searched_layer_signature_key = self.layer_signature_to_key(searched_layer_signature)
+            searched_layer_signature_key = self.layer_signature_to_key(
+                searched_layer_signature
+            )
             for test_sig, pattern_storage in self.next_layer_patterns.items():
-                if self.is_layer_signature_compatible(searched_layer_signature_key, test_sig):
-                    pattern_search_logger.info("    Compatible signature: {0} -> resolved: {1}"
-                                               .format(test_sig, pattern_storage.rule_resolved))
+                if self.is_layer_signature_compatible(
+                    searched_layer_signature_key, test_sig
+                ):
+                    pattern_search_logger.info(
+                        "    Compatible signature: {0} -> resolved: {1}".format(
+                            test_sig, pattern_storage.rule_resolved
+                        )
+                    )
                     matched_rule_pattern_info += pattern_storage.rule_resolved
-                    matched_rule_pattern_info += pattern_storage.explore_one_level(searched_pattern, cur_level + 1)
+                    matched_rule_pattern_info += pattern_storage.explore_one_level(
+                        searched_pattern, cur_level + 1
+                    )
         return matched_rule_pattern_info
 
 
@@ -171,7 +216,9 @@ class PatternOptimizer(InstructionOptimizer):
             self.pattern_storage.add_pattern_for_rule(pattern, rule)
         return True
 
-    def get_optimized_instruction(self, blk: mblock_t, ins: minsn_t) -> Union[None, minsn_t]:
+    def get_optimized_instruction(
+        self, blk: mblock_t, ins: minsn_t
+    ) -> Union[None, minsn_t]:
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
         if self.cur_maturity not in self.maturities:
@@ -183,17 +230,25 @@ class PatternOptimizer(InstructionOptimizer):
         all_matchs = self.pattern_storage.get_matching_rule_pattern_info(tmp)
         for rule_pattern_info in all_matchs:
             try:
-                new_ins = rule_pattern_info.rule.check_pattern_and_replace(rule_pattern_info.pattern, tmp)
+                new_ins = rule_pattern_info.rule.check_pattern_and_replace(
+                    rule_pattern_info.pattern, tmp
+                )
                 if new_ins is not None:
                     self.rules_usage_info[rule_pattern_info.rule.name] += 1
-                    optimizer_logger.info("Rule {0} matched:".format(rule_pattern_info.rule.name))
+                    optimizer_logger.info(
+                        "Rule {0} matched:".format(rule_pattern_info.rule.name)
+                    )
                     optimizer_logger.info("  orig: {0}".format(format_minsn_t(ins)))
                     optimizer_logger.info("  new : {0}".format(format_minsn_t(new_ins)))
                     return new_ins
             except RuntimeError as e:
-                optimizer_logger.error("Error during rule {0} for instruction {1}: {2}"
-                                       .format(rule_pattern_info.rule, format_minsn_t(ins), e))
+                optimizer_logger.error(
+                    "Error during rule {0} for instruction {1}: {2}".format(
+                        rule_pattern_info.rule, format_minsn_t(ins), e
+                    )
+                )
         return None
+
 
 # AST equivalent pattern generation stuff
 # TODO: refactor/clean this
@@ -230,21 +285,24 @@ def get_all_binary_tree_representation(all_elt):
 
 
 def generate_ast(opcode, leafs):
-    if isinstance(leafs, AstLeaf):
-        return leafs
-    if isinstance(leafs, AstNode):
+    if isinstance(leafs, AstBase):
         return leafs
     if len(leafs) == 1:
         return leafs[0]
     if len(leafs) == 2:
-        return AstNode(opcode, generate_ast(opcode, leafs[0]), generate_ast(opcode, leafs[1]))
+        return AstNode(
+            opcode, generate_ast(opcode, leafs[0]), generate_ast(opcode, leafs[1])
+        )
 
 
 def get_addition_operands(ast_node):
-    if not isinstance(ast_node, AstNode):
+    if not isinstance(ast_node, AstBase) or not ast_node.is_node():
         return [ast_node]
+    ast_node = typing.cast(AstNode, ast_node)
     if ast_node.opcode == m_add:
-        return get_addition_operands(ast_node.left) + get_addition_operands(ast_node.right)
+        return get_addition_operands(ast_node.left) + get_addition_operands(
+            ast_node.right
+        )
     elif ast_node.opcode == m_sub:
         tmp = get_addition_operands(ast_node.left)
         for aaa in get_addition_operands(ast_node.right):
@@ -255,10 +313,13 @@ def get_addition_operands(ast_node):
 
 
 def get_opcode_operands(ref_opcode, ast_node):
-    if not isinstance(ast_node, AstNode):
+    if not isinstance(ast_node, AstBase) or not ast_node.is_node():
         return [ast_node]
+    ast_node = typing.cast(AstNode, ast_node)
     if ast_node.opcode == ref_opcode:
-        return get_opcode_operands(ref_opcode, ast_node.left) + get_opcode_operands(ref_opcode, ast_node.right)
+        return get_opcode_operands(ref_opcode, ast_node.left) + get_opcode_operands(
+            ref_opcode, ast_node.right
+        )
     else:
         return [ast_node]
 
@@ -286,37 +347,55 @@ def get_similar_opcode_operands(ast_node):
 def get_ast_variations_with_add_sub(opcode, left, right):
     possible_ast = [AstNode(opcode, left, right)]
     if opcode == m_add:
-        if isinstance(left, AstNode) and isinstance(right, AstNode):
+        if left.is_node() and right.is_node():
+            left = typing.cast(AstNode, left)
+            right = typing.cast(AstNode, right)
             if (left.opcode == m_neg) and (right.opcode == m_neg):
-                possible_ast.append(AstNode(m_neg, AstNode(m_add, left.left, right.left)))
-        if isinstance(right, AstNode) and (right.opcode == m_neg):
+                possible_ast.append(
+                    AstNode(m_neg, AstNode(m_add, left.left, right.left))
+                )
+        if right.is_node() and (right.opcode == m_neg):
+            right = typing.cast(AstNode, right)
             possible_ast.append(AstNode(m_sub, left, right.left))
     return possible_ast
 
 
 def ast_generator(ast_node, excluded_opcodes=None):
-    if not isinstance(ast_node, AstNode):
+    if not isinstance(ast_node, AstBase) or not ast_node.is_node():
         return [ast_node]
+    ast_node = typing.cast(AstNode, ast_node)
     res_ast = []
     excluded_opcodes = excluded_opcodes if excluded_opcodes is not None else []
     if ast_node.opcode not in excluded_opcodes:
         if ast_node.opcode in [m_add, m_sub]:
             similar_ast_list = get_similar_opcode_operands(ast_node)
             for similar_ast in similar_ast_list:
-                sub_ast_left_list = ast_generator(similar_ast.left, excluded_opcodes=[m_add, m_sub])
-                sub_ast_right_list = ast_generator(similar_ast.right, excluded_opcodes=[m_add, m_sub])
+                sub_ast_left_list = ast_generator(
+                    similar_ast.left, excluded_opcodes=[m_add, m_sub]
+                )
+                sub_ast_right_list = ast_generator(
+                    similar_ast.right, excluded_opcodes=[m_add, m_sub]
+                )
                 for sub_ast_left in sub_ast_left_list:
                     for sub_ast_right in sub_ast_right_list:
-                        res_ast += get_ast_variations_with_add_sub(m_add, sub_ast_left, sub_ast_right)
+                        res_ast += get_ast_variations_with_add_sub(
+                            m_add, sub_ast_left, sub_ast_right
+                        )
             return res_ast
         if ast_node.opcode in [m_xor, m_or, m_and, m_mul]:
             similar_ast_list = get_similar_opcode_operands(ast_node)
             for similar_ast in similar_ast_list:
-                sub_ast_left_list = ast_generator(similar_ast.left, excluded_opcodes=[ast_node.opcode])
-                sub_ast_right_list = ast_generator(similar_ast.right, excluded_opcodes=[ast_node.opcode])
+                sub_ast_left_list = ast_generator(
+                    similar_ast.left, excluded_opcodes=[ast_node.opcode]
+                )
+                sub_ast_right_list = ast_generator(
+                    similar_ast.right, excluded_opcodes=[ast_node.opcode]
+                )
                 for sub_ast_left in sub_ast_left_list:
                     for sub_ast_right in sub_ast_right_list:
-                        res_ast += get_ast_variations_with_add_sub(ast_node.opcode, sub_ast_left, sub_ast_right)
+                        res_ast += get_ast_variations_with_add_sub(
+                            ast_node.opcode, sub_ast_left, sub_ast_right
+                        )
             return res_ast
     if ast_node.opcode not in [m_add, m_sub, m_or, m_and, m_mul]:
         excluded_opcodes = []
@@ -331,10 +410,16 @@ def ast_generator(ast_node, excluded_opcodes=None):
             res_ast.append(AstNode(ast_node.opcode, sub_ast))
         return res_ast
     if nb_operands == 2:
-        sub_ast_left_list = ast_generator(ast_node.left, excluded_opcodes=excluded_opcodes)
-        sub_ast_right_list = ast_generator(ast_node.right, excluded_opcodes=excluded_opcodes)
+        sub_ast_left_list = ast_generator(
+            ast_node.left, excluded_opcodes=excluded_opcodes
+        )
+        sub_ast_right_list = ast_generator(
+            ast_node.right, excluded_opcodes=excluded_opcodes
+        )
         for sub_ast_left in sub_ast_left_list:
             for sub_ast_right in sub_ast_right_list:
-                res_ast += get_ast_variations_with_add_sub(ast_node.opcode, sub_ast_left, sub_ast_right)
+                res_ast += get_ast_variations_with_add_sub(
+                    ast_node.opcode, sub_ast_left, sub_ast_right
+                )
         return res_ast
     return []
