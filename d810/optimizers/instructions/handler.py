@@ -119,9 +119,9 @@ class InstructionOptimizer(object):
         for rule_name, rule_nb_match in self.rules_usage_info.items():
             if rule_nb_match > 0:
                 d810_logger.info(
-                    "Instruction Rule '{0}' has been used {1} times".format(
-                        rule_name, rule_nb_match
-                    )
+                    "Instruction Rule '%s' has been used %d times",
+                    rule_name,
+                    rule_nb_match,
                 )
 
     def get_optimized_instruction(

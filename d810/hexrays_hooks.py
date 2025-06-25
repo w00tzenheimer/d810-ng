@@ -195,9 +195,9 @@ class InstructionOptimizerManager(optinsn_t):
         for optimizer_name, optimizer_nb_match in self.optimizer_usage_info.items():
             if optimizer_nb_match > 0:
                 main_logger.info(
-                    "Instruction optimizer '{0}' has been used {1} times".format(
-                        optimizer_name, optimizer_nb_match
-                    )
+                    "Instruction optimizer '%s' has been used %d times",
+                    optimizer_name,
+                    optimizer_nb_match,
                 )
         for ins_optimizer in self.instruction_optimizers:
             ins_optimizer.show_rule_usage_statistic()
@@ -313,9 +313,10 @@ class BlockOptimizerManager(optblock_t):
             nb_use = len(rule_nb_patch_list)
             if nb_use > 0:
                 main_logger.info(
-                    "BlkRule '{0}' has been used {1} times for a total of {2} patches".format(
-                        rule_name, nb_use, sum(rule_nb_patch_list)
-                    )
+                    "BlkRule '%s' has been used %d times for a total of %d patches",
+                    rule_name,
+                    nb_use,
+                    sum(rule_nb_patch_list),
                 )
 
     def log_info_on_input(self, blk: mblock_t):
@@ -375,9 +376,7 @@ class HexraysDecompilationHook(Hexrays_Hooks):
         self.manager = manager
 
     def prolog(self, mba: mbl_array_t, fc, reachable_blocks, decomp_flags) -> "int":
-        main_logger.info(
-            "Starting decompilation of function at 0x{0:x}".format(mba.entry_ea)
-        )
+        main_logger.info("Starting decompilation of function at %s", hex(mba.entry_ea))
         self.manager.start_profiling()
         self.manager.instruction_optimizer.reset_rule_usage_statistic()
         self.manager.block_optimizer.reset_rule_usage_statistic()
@@ -396,7 +395,7 @@ class HexraysDecompilationHook(Hexrays_Hooks):
 
     def glbopt(self, mba: mbl_array_t) -> "int":
         self.manager.stop_profiling()
-        main_logger.info("glbopt finished for function at 0x{0:x}".format(mba.entry_ea))
+        main_logger.info("glbopt finished for function at %s", hex(mba.entry_ea))
         self.manager.instruction_optimizer.show_rule_usage_statistic()
         self.manager.block_optimizer.show_rule_usage_statistic()
         return 0

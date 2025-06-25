@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "d810-ng"
+requires-python = ">= 3.12"
+version = "0.1.0"
+authors = [
+    { name = "w00tzenheimer", email = "w00tzenheimer@gmail.com" },
+    { name = "Boris Batteux", email = "boris.batteux@eshard.com" },
+]
+description = "This is a next generation version of D-810, an IDA Pro plugin which can be used to deobfuscate code at decompilation time by modifying IDA Pro microcode."
+dependencies = ["z3-solver"]
+
+[project.optional-dependencies]
+dev = ["pyinstrument"]
+
+[tool.setuptools.packages.find]
+where = ["."]

@@ -1,7 +1,7 @@
 {
     "erase_logs_on_reload": true,
-    "generate_z3_code": true,
-    "dump_intermediate_microcode": true,
+    "generate_z3_code": false,
+    "dump_intermediate_microcode": false,
     "log_dir": null,
     "configurations": [
         "default_instruction_only.json",
