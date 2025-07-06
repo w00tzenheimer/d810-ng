@@ -1,26 +1,17 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
 from d810.errors import D810Exception
-from d810.hexrays_formatters import (
+from d810.expr.z3_utils import log_z3_instructions
+from d810.hexrays.hexrays_formatters import (
     dump_microcode_for_debug,
     format_minsn_t,
-    format_mop_t,
     maturity_to_string,
-    mop_type_to_string,
 )
-from d810.hexrays_helpers import append_mop_if_not_in_list, check_ins_mop_size_are_ok
-from d810.optimizers.instructions import (
-    ChainOptimizer,
-    EarlyOptimizer,
-    InstructionAnalyzer,
-    PatternOptimizer,
-    PeepholeOptimizer,
-    Z3Optimizer,
-)
-from d810.z3_utils import log_z3_instructions
+from d810.hexrays.hexrays_helpers import check_ins_mop_size_are_ok
+from d810.optimizers.instructions.handler import InstructionOptimizer
 
 from ida_hexrays import *
 
@@ -63,53 +54,14 @@ DEFAULT_ANALYZER_MATURITIES = [
 ]
 
 
-class InstructionDefUseCollector(mop_visitor_t):
-    def __init__(self):
-        super().__init__()
-        self.unresolved_ins_mops = []
-        self.memory_unresolved_ins_mops = []
-        self.target_mops = []
-
-    def visit_mop(self, op: mop_t, op_type: int, is_target: bool):
-        if is_target:
-            append_mop_if_not_in_list(op, self.target_mops)
-        else:
-            # TODO whatever the case, in the end we will always return 0. May be this code can be better optimized.
-            # TODO handle other special case (e.g. ldx ins, ...)
-            if op.t == mop_S:
-                append_mop_if_not_in_list(op, self.unresolved_ins_mops)
-            elif op.t == mop_r:
-                append_mop_if_not_in_list(op, self.unresolved_ins_mops)
-            elif op.t == mop_v:
-                append_mop_if_not_in_list(op, self.memory_unresolved_ins_mops)
-            elif op.t == mop_a:
-                if op.a.t == mop_v:
-                    return 0
-                elif op.a.t == mop_S:
-                    return 0
-                helper_logger.warning(
-                    "Calling visit_mop with unsupported mop type {0} - {1}: '{2}'".format(
-                        mop_type_to_string(op.t),
-                        mop_type_to_string(op.a.t),
-                        format_mop_t(op),
-                    )
-                )
-                return 0
-            elif op.t == mop_n:
-                return 0
-            elif op.t == mop_d:
-                return 0
-            elif op.t == mop_h:
-                return 0
-            elif op.t == mop_b:
-                return 0
-            else:
-                helper_logger.warning(
-                    "Calling visit_mop with unsupported mop type {0}: '{1}'".format(
-                        mop_type_to_string(op.t), format_mop_t(op)
-                    )
-                )
-        return 0
+# from d810.optimizers.instructions import (
+#     ChainOptimizer,
+#     EarlyOptimizer,
+#     InstructionAnalyzer,
+#     PatternOptimizer,
+#     PeepholeOptimizer,
+#     Z3Optimizer,
+# )
 
 
 class InstructionOptimizerManager(optinsn_t):
@@ -126,6 +78,12 @@ class InstructionOptimizerManager(optinsn_t):
 
         self.instruction_optimizers = []
         self.optimizer_usage_info = {}
+        ChainOptimizer = InstructionOptimizer.get("ChainOptimizer")
+        EarlyOptimizer = InstructionOptimizer.get("EarlyOptimizer")
+        InstructionAnalyzer = InstructionOptimizer.get("InstructionAnalyzer")
+        PatternOptimizer = InstructionOptimizer.get("PatternOptimizer")
+        PeepholeOptimizer = InstructionOptimizer.get("PeepholeOptimizer")
+        Z3Optimizer = InstructionOptimizer.get("Z3Optimizer")
         self.add_optimizer(
             PatternOptimizer(
                 DEFAULT_OPTIMIZATION_PATTERN_MATURITIES, log_dir=self.manager.log_dir

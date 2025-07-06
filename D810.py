@@ -1,19 +1,20 @@
 import abc
 import contextlib
-import dataclasses
-import os
+import importlib
+import importlib.machinery
+import importlib.util
+import inspect
+import pathlib
+import pkgutil
 import sys
 import types
 import typing
 
-from d810.conf import D810Configuration
-from d810.log import clear_logs, configure_loggers
-from d810.manager import D810_LOG_DIR_NAME, D810State
+import d810
+from d810.manager import D810State
 
 import ida_hexrays
-import ida_idp
 import ida_kernwin
-import ida_loader
 import idaapi
 
 D810_VERSION = "0.1"
@@ -39,6 +40,129 @@ def init_hexrays() -> bool:
         return False
 
 
+# reload one module (depth-first). sort_key controls sibling reload order.
+def reload_module(
+    module,
+    to_reload: set,
+    disallow_reload: set[str],
+    *,
+    sort_key: typing.Callable[[typing.Any], typing.Any] | None = None,
+):
+    """Depth-first reload of *module* and its (already imported) sub-modules.
+
+    Parameters
+    ----------
+    module
+        The root module from which the traversal starts.
+    to_reload
+        Set of all modules to reload; mutated to avoid repeats.
+    disallow_reload
+        Names of modules to skip.
+    sort_key
+        Optional key to sort dependencies before reload.
+    """
+
+    # Skip modules not scheduled or explicitly disallowed
+    if module not in to_reload or module.__name__ in disallow_reload:
+        return
+
+    # Mark as processed to prevent cycles
+    to_reload.remove(module)
+
+    # Reload dependencies first (depth-first)
+    children = [
+        dep
+        for _, dep in inspect.getmembers(module, lambda k: inspect.ismodule(k))
+        if dep in to_reload and dep.__name__ not in disallow_reload
+    ]
+    if sort_key is not None:
+        children.sort(key=sort_key)
+    for child in children:
+        reload_module(child, to_reload, disallow_reload, sort_key=sort_key)
+
+    # Finally reload this module
+    print(f"Reloading {module.__name__} ..")
+    importlib.reload(module)
+
+
+# reload all code
+def reload_plugin(
+    pkgname: str,
+    *,
+    disallow_reload: set[str] | None = None,
+    sort_key: typing.Callable[[typing.Any], typing.Any] | None = None,
+):
+
+    to_reload = set()
+    disallow_reload = disallow_reload or set()
+    for k, mod in sys.modules.items():
+        if k.startswith(pkgname) and k not in disallow_reload:
+            to_reload.add(mod)
+
+    # Copy the set because *to_reload* will be mutated during traversal.
+    for mod in list(to_reload):
+        reload_module(mod, to_reload, disallow_reload, sort_key=sort_key)
+
+
+class _Scanner:
+
+    @classmethod
+    def _load_module(
+        cls, spec: importlib.machinery.ModuleSpec, callback: typing.Callable | None
+    ):
+        if spec.loader is None:
+            return
+
+        module = importlib.util.module_from_spec(spec)
+        # print(f"Loading module {module.__name__}")
+        # module is already loaded
+        if module.__name__ in sys.modules:
+            module = sys.modules[module.__name__]
+
+        # load the module
+        else:
+            sys.modules[module.__name__] = module
+            try:
+                spec.loader.exec_module(module)
+            except BaseException as e:  # //NOSONAR
+                sys.modules.pop(module.__name__)
+                print(
+                    f"Error while loading extension {spec.name}: {e}",
+                    file=sys.stderr,
+                )
+                return
+
+        if callback is not None:
+            callback(module)
+
+    @classmethod
+    def scan(
+        cls,
+        package_path: pathlib.Path | typing.Iterable[str] | str,
+        prefix: str,
+        callback=None,
+    ):
+        if isinstance(package_path, pathlib.Path):
+            package_path = str(package_path)
+        print(f"Scanning package {package_path} with prefix {prefix}")
+        for mod_info in pkgutil.walk_packages(package_path, prefix=prefix):
+            print(f"Scanning module {mod_info.name}, ispkg? {mod_info.ispkg}")
+            if mod_info.ispkg:
+                continue
+
+            spec = mod_info.module_finder.find_spec(mod_info.name, None)
+            if spec is None:
+                continue
+
+            cls._load_module(spec, callback)
+
+
+class _UIHooks(idaapi.UI_Hooks):
+
+    def ready_to_run(self):
+        pass
+
+
 class Plugin(abc.ABC, idaapi.plugin_t):
 
     @abc.abstractmethod
@@ -51,12 +175,6 @@ class Plugin(abc.ABC, idaapi.plugin_t):
     @typing.override
     @abc.abstractmethod
     def term(self): ...
-
-
-class _UIHooks(idaapi.UI_Hooks):
-
-    def ready_to_run(self):
-        pass
 
 
 class LateInitPlugin(Plugin):
@@ -74,7 +192,6 @@ class LateInitPlugin(Plugin):
         return idaapi.PLUGIN_OK
 
     def ready_to_run(self):
-        super(_UIHooks, self._ui_hooks).ready_to_run()
         self.late_init()
         self._ui_hooks.unhook()
 
@@ -94,6 +211,7 @@ class ReloadablePlugin(LateInitPlugin, idaapi.action_handler_t):
         self.global_name = global_name
         self.base_package_name = base_package_name
         self.plugin_class = plugin_class
+        self.plugin = plugin_class()
 
     @typing.override
     def update(self, ctx: ida_kernwin.action_ctx_base_t) -> int:
@@ -101,7 +219,8 @@ class ReloadablePlugin(LateInitPlugin, idaapi.action_handler_t):
 
     @typing.override
     def activate(self, ctx: ida_kernwin.action_ctx_base_t):
-        self.reload()
+        with self.plugin_setup_reload():
+            self.reload()
         return 1
 
     @typing.override
@@ -112,8 +231,8 @@ class ReloadablePlugin(LateInitPlugin, idaapi.action_handler_t):
     @typing.override
     def term(self):
         self.unregister_reload_action()
-        if self.plugin_class is not None and hasattr(self.plugin_class, "unload"):
-            self.plugin_class.unload()
+        if self.plugin is not None and hasattr(self.plugin, "unload"):
+            self.plugin.unload()
 
     def register_reload_action(self):
         idaapi.register_action(
@@ -131,43 +250,40 @@ class ReloadablePlugin(LateInitPlugin, idaapi.action_handler_t):
         # add plugin to the IDA python console scope, for test/dev/cli access
         setattr(sys.modules["__main__"], self.global_name, self)
 
-    def reload(self):
+    @contextlib.contextmanager
+    def plugin_setup_reload(self):
         """Hot-reload the plugin core."""
-        print(f"[{getattr(self, 'wanted_name', 'plugin')}] Reloading...")
+        # Collect all modules via scanner callback
 
-        # # Unload the core and all its components
-        # was_mounted = self.plugin.mounted if self.plugin else True
-        # if self.plugin is not None:
-        #     self.plugin.unload()
+        # Unload existing plugin if loaded
+        if self.plugin.is_loaded():
+            self.unregister_reload_action()
+            self.term()
+            self.plugin = self.plugin_class()
 
-        # # Reload all modules in the base package
-        # modules_to_reload = [
-        #     module_name
-        #     for module_name in sys.modules
-        #     if module_name.startswith(self.base_package_name)
-        # ]
-        # for module_name in modules_to_reload:
-        #     with contextlib.suppress(ModuleNotFoundError):
-        #         idaapi.require(module_name)
+        yield
 
-        # # Load the plugin core
-        # self.plugin = self.plugin_class()
+        # Re-register action and load plugin
+        self.register_reload_action()
+        print(f"{self.global_name} reloading...")
+        self.add_plugin_to_console()
+        self.plugin.load()
 
-        # self.term()
+    @abc.abstractmethod
+    def reload(self): ...
 
-        # self.d810_config = D810Configuration()
 
-        # # TO-DO: if [...].get raises an exception because log_dir is not found, handle exception
-        # real_log_dir = os.path.join(self.d810_config.get("log_dir"), D810_LOG_DIR_NAME)
-
-        # # TO-DO: if [...].get raises an exception because erase_logs_on_reload is not found, handle exception
-        # if self.d810_config.get("erase_logs_on_reload"):
-        #     clear_logs(real_log_dir)
-
-        # configure_loggers(real_log_dir)
-        # self.state = D810State(self.d810_config)
-        # print("D-810 reloading...")
-        # self.state.start_plugin()
+def module_sort_key(module) -> tuple[bool, str]:
+    """
+    Sort modules alphabetically by their qualified name, except
+    if the module's last path segment is 'optimizers', which
+    will always sort after all others.
+    """
+    full_name = module.__name__
+    print(">>>>>>>>>>", "module_sort_key: ", full_name)
+    _, _, submodule = full_name.partition(".")
+    # (is_optimizers, name) → False sorts before True, then by name
+    return submodule.startswith("optimizers."), full_name
 
 
 class D810Plugin(ReloadablePlugin):
@@ -192,6 +308,7 @@ class D810Plugin(ReloadablePlugin):
             base_package_name="d810",
             plugin_class=D810State,
         )
+        self.suppress_reload_errors = False
 
     @typing.override
     def init(self):
@@ -215,12 +332,48 @@ class D810Plugin(ReloadablePlugin):
 
     @typing.override
     def run(self, args):
-        self.reload()
+        with self.plugin_setup_reload():
+            self.reload()
 
     @typing.override
     def term(self):
         super().term()
         print(f"Terminating {self.wanted_name}...")
+
+    @typing.override
+    def reload(self):
+        modules: list[types.ModuleType] = []
+        _Scanner.scan(
+            d810.__path__,
+            self.base_package_name + ".",
+            callback=modules.append,
+        )
+
+        # Filter out disallowed modules (e.g., registry)
+        disallowed = {f"{self.base_package_name}.registry"}
+        filtered = [
+            m
+            for m in modules
+            if m.__name__.startswith(self.base_package_name)
+            and m.__name__ not in disallowed
+        ]
+        # Sort so that 'optimizers' packages come last, then alphabetically
+        filtered.sort(
+            key=lambda m: (
+                m.__name__.startswith(f"{self.base_package_name}.optimizers"),
+                m.__name__,
+            )
+        )
+        # Reload each module in sorted order
+        for m in filtered:
+            print(f"Reloading {m.__name__} ..")
+            if self.suppress_reload_errors:
+                with contextlib.suppress(ModuleNotFoundError):
+                    # idaapi.require(m)
+                    importlib.reload(m)
+            else:
+                # idaapi.require(m)
+                importlib.reload(m)
 
 
 def PLUGIN_ENTRY():

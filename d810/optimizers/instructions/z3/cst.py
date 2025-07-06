@@ -1,9 +1,9 @@
-from ida_hexrays import *
-from d810.optimizers.instructions.z3.handler import Z3Rule
-from d810.ast import AstConstant, AstNode
-from d810.ast import minsn_to_ast
 from d810.errors import AstEvaluationException
-from d810.z3_utils import z3_check_mop_equality
+from d810.expr.ast import AstConstant, AstNode, minsn_to_ast
+from d810.expr.z3_utils import z3_check_mop_equality
+from d810.optimizers.instructions.z3.handler import Z3Rule
+
+from ida_hexrays import *
 
 
 class Z3ConstantOptimization(Z3Rule):
@@ -27,12 +27,14 @@ class Z3ConstantOptimization(Z3Rule):
         if tmp is None:
             return None
         leaf_info_list, cst_leaf_values, opcodes = tmp.get_information()
-        if len(leaf_info_list) == 1 and \
-                len(opcodes) >= self.min_nb_opcode and \
-                (len(cst_leaf_values) >= self.min_nb_constant):
+        if (
+            len(leaf_info_list) == 1
+            and len(opcodes) >= self.min_nb_opcode
+            and (len(cst_leaf_values) >= self.min_nb_constant)
+        ):
             try:
                 val_0 = tmp.evaluate_with_leaf_info(leaf_info_list, [0])
-                val_1 = tmp.evaluate_with_leaf_info(leaf_info_list, [0xffffffff])
+                val_1 = tmp.evaluate_with_leaf_info(leaf_info_list, [0xFFFFFFFF])
 
                 if val_0 == val_1:
                     c_res_mop = mop_t()

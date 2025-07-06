@@ -1,7 +1,7 @@
 import logging
 from ida_hexrays import *
 
-from d810.hexrays_helpers import append_mop_if_not_in_list
+from d810.hexrays.hexrays_helpers import append_mop_if_not_in_list
 from d810.optimizers.flow.flattening.generic import GenericDispatcherBlockInfo, GenericDispatcherInfo, \
     GenericDispatcherCollector, GenericDispatcherUnflatteningRule
 

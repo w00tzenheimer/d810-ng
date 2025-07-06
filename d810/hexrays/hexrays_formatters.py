@@ -4,7 +4,7 @@ import os
 import typing
 from typing import List
 
-from d810.hexrays_helpers import (
+from d810.hexrays.hexrays_helpers import (
     MATURITY_TO_STRING_DICT,
     MOP_TYPE_TO_STRING_DICT,
     OPCODES_INFO,

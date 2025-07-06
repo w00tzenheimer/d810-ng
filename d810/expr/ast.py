@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import abc
-import copy
 import logging
 import typing
 from typing import Dict, List, Tuple, Union
 
 from d810.errors import AstEvaluationException
-from d810.hexrays_formatters import format_minsn_t, format_mop_t
-from d810.hexrays_helpers import (
+from d810.hexrays.hexrays_formatters import format_minsn_t, format_mop_t
+from d810.hexrays.hexrays_helpers import (
     AND_TABLE,
     MBA_RELATED_OPCODES,
     MINSN_TO_AST_FORBIDDEN_OPCODES,
@@ -16,7 +15,7 @@ from d810.hexrays_helpers import (
     Z3_SPECIAL_OPERANDS,
     equal_mops_ignore_size,
 )
-from d810.utils import (
+from d810.expr.utils import (
     get_add_cf,
     get_add_of,
     get_parity_flag,

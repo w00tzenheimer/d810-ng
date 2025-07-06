@@ -1,29 +1,29 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Union
+from typing import Dict
 
-from d810.cfg_utils import get_block_serials_by_address
+from d810.hexrays.cfg_utils import get_block_serials_by_address
 from d810.errors import (
     EmulationException,
     EmulationIndirectJumpException,
     UnresolvedMopException,
     WritableMemoryReadException,
 )
-from d810.hexrays_formatters import (
+from d810.hexrays.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,
     mop_type_to_string,
     opcode_to_string,
 )
-from d810.hexrays_helpers import (
+from d810.hexrays.hexrays_helpers import (
     AND_TABLE,
     CONDITIONAL_JUMP_OPCODES,
     CONTROL_FLOW_OPCODES,
     equal_mops_ignore_size,
     get_mop_index,
 )
-from d810.utils import (
+from d810.expr.utils import (
     get_add_cf,
     get_add_of,
     get_parity_flag,
