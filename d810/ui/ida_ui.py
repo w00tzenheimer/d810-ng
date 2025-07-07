@@ -12,6 +12,18 @@ import idaapi
 
 logger = logging.getLogger("D810.ui")
 
+# ---------------------------------------------------------------------------
+# External dependencies
+# ---------------------------------------------------------------------------
+from d810.conf import ProjectConfiguration, RuleConfiguration
+
+# Test-runner integration
+try:
+    from d810.ui.testbed import IDATestRunner, TestRunnerForm
+except ModuleNotFoundError:  # pragma: no cover – tests package may not exist yet
+    IDATestRunner = None  # type: ignore
+    TestRunnerForm = None  # type: ignore
+
 
 class PluginConfigurationFileForm_t(QtWidgets.QDialog):
     def __init__(self, parent, state):
@@ -626,6 +638,14 @@ class D810GUI(object):
         logger.debug("Initializing D810GUI")
         self.state = state
         self.d810_config_form = D810ConfigForm_t(self.state)
+
+        # ---------------------------------------------------------------
+        # Unit-test runner (optional if tests package available)
+        # ---------------------------------------------------------------
+        if TestRunnerForm is not None and IDATestRunner is not None:
+            self.test_runner = TestRunnerForm(IDATestRunner())
+        else:
+            self.test_runner = None
         # XXX fix
         idaapi.set_dock_pos("D-810", "IDA View-A", idaapi.DP_TAB)
 
@@ -633,6 +653,22 @@ class D810GUI(object):
         logger.debug("Calling show_windows")
         self.d810_config_form.Show()
 
+        # Show the test-runner GUI if available
+        if self.test_runner is not None:
+            self.test_runner.Show(
+                "D810 Test Runner",
+                options=(
+                    ida_kernwin.PluginForm.WOPN_PERSIST
+                    | ida_kernwin.PluginForm.WCLS_SAVE
+                    | ida_kernwin.PluginForm.WOPN_RESTORE
+                    | ida_kernwin.PluginForm.WOPN_TAB
+                ),
+            )
+
     def term(self):
         logger.debug("Calling term")
         self.d810_config_form.Close(ida_kernwin.PluginForm.WCLS_SAVE)
+
+        # Close test-runner form
+        if self.test_runner is not None:
+            self.test_runner.Close(ida_kernwin.PluginForm.WCLS_SAVE)
