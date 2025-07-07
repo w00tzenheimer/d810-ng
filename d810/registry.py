@@ -220,7 +220,7 @@ class Registry(ABCMeta):
     def __init__(cls, name: str, bases: tuple[type, ...], attrs: dict[str, Any]):
         super().__init__(name, bases, attrs)
         # Don't register resource base classes
-        print(f"Registry.__init__ {name}")
+        # print(f"Registry.__init__ {name}")
         if name != "Registrant":
             # Register only Registrant subclass subclasses
             if Registrant in cls.__bases__:
@@ -244,7 +244,7 @@ class Registrant(metaclass=Registry):
 
     def __init_subclass__(cls):
         # Only register subclasses of Resource subclasses
-        print(f"Registrant.__init_subclass__ {cls.__name__}")
+        # print(f"Registrant.__init_subclass__ {cls.__name__}")
         if Registrant not in cls.__bases__:
             cls.register(cls)
 
@@ -305,17 +305,6 @@ class Registrant(metaclass=Registry):
 
     @classmethod
     def get_subclasses(cls, base: type | None = None) -> list[type]:
-        #     """Return all subclasses that ultimately derive from *base*.
-
-        #     Useful when *base* itself is not a Registrant but one of its
-        #     descendants is – e.g. asking ``Registrant.get_subclasses(SomeRule)``
-        #     before *SomeRule* has been imported would otherwise raise ``KeyError``.
-        #     """
-        #     subclasses: list[type] = []
-        #     for subclass in cls.registry.values():
-        #         if issubclass(subclass, base):
-        #             subclasses.append(subclass)
-        #     return subclasses
         """Return every concrete subclass of *base* that has been registered.
 
         Parameters
@@ -350,4 +339,11 @@ class Registrant(metaclass=Registry):
                 _collect(child)
 
         _collect(base)
-        return collected
+        # Remove duplicates while preserving order
+        unique: list[type] = []
+        seen = set()
+        for subcls in collected:
+            if subcls not in seen:
+                unique.append(subcls)
+                seen.add(subcls)
+        return unique
