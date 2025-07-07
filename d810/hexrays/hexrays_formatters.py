@@ -66,7 +66,13 @@ def maturity_to_string(maturity_level: int) -> str:
 
 
 def string_to_maturity(maturity_string: str) -> int | None:
-    return STRING_TO_MATURITY_DICT.get(maturity_string)
+    """Convert a maturity name (with or without 'MMAT_' prefix) to its integer code."""
+    # Normalize to upper-case
+    key = maturity_string.upper()
+    # Add prefix if missing
+    if not key.startswith("MMAT_"):
+        key = f"MMAT_{key}"
+    return STRING_TO_MATURITY_DICT.get(key)
 
 
 def mop_type_to_string(mop_type: int) -> str:

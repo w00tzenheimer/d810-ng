@@ -1,14 +1,11 @@
 import importlib
-import inspect
 import logging
+import os
 import pkgutil
-import types
 import unittest
-from typing import Iterable, List, Type
+from typing import Iterable
 
-import ida_hexrays  # noqa: F401 – required so tests can rely on Hex-Rays being loaded
 import ida_kernwin
-import idaapi
 
 LOGGER = logging.getLogger(__name__)
 print("logger name", __name__)
@@ -52,8 +49,8 @@ class IDATestRunner:
 
     def __init__(self):
         self.loader = IDATestLoader()
-        self.stream = types.SimpleNamespace(write=lambda _: None, flush=lambda: None)  # type: ignore[attr-defined]
-        self.runner = unittest.TextTestRunner(stream=self.stream, verbosity=2)
+        # self.stream = types.SimpleNamespace(write=lambda _: None, flush=lambda: None)  # type: ignore[attr-defined]
+        self.runner = unittest.TextTestRunner(verbosity=2)
         self.last_result: unittest.TestResult | None = None
 
     # ---------------------------------------------------------------------
@@ -73,13 +70,18 @@ class IDATestRunner:
                 yield mod_info.name
 
     def discover_tests(self, package: str = "d810.tests.system") -> unittest.TestSuite:
-        """Discover test cases located under *package* and return a suite."""
+        """Discover test cases under *package* using unittest.TestLoader.discover."""
         LOGGER.debug("Discovering tests under package %s", package)
-        modules = list(self._iter_modules(package))
-        for mod_name in modules:
-            LOGGER.debug("Importing test module %s", mod_name)
-            importlib.import_module(mod_name)
-        return self.loader.loadTestsFromNames(modules)
+        pkg = importlib.import_module(package)
+        if not hasattr(pkg, "__path__"):
+            raise ValueError(f"{package} is not a package")
+        start_dir = pkg.__path__[0]
+        top_level_dir = os.path.dirname(os.path.dirname(start_dir))
+        LOGGER.debug(f"start_dir={start_dir}, top_level_dir={top_level_dir}")
+        suite = self.loader.discover(
+            start_dir=start_dir, pattern="test*.py", top_level_dir=top_level_dir
+        )
+        return suite
 
     # ------------------------------------------------------------------
     # Execution helpers
@@ -124,7 +126,9 @@ class TestRunnerForm(ida_kernwin.PluginForm):
     @staticmethod
     def _get_qt_modules():
         """Return a tuple *(QtWidgets, QtCore)* for the active Qt binding."""
-        for binding in ("PyQt5", "PySide2", "PySide6", "PyQt6"):
+        # future proofing, PySide6/pyqt6 looks like it's coming in a later version of IDA
+        # and is not _CURRENTLY_ supported by IDA
+        for binding in ("PyQt5", "PySide6", "PyQt6"):
             try:
                 qt_widgets = importlib.import_module(f"{binding}.QtWidgets")
                 qt_core = importlib.import_module(f"{binding}.QtCore")
