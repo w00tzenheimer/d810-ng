@@ -5,6 +5,8 @@ import pkgutil
 import unittest
 from typing import Iterable
 
+from PyQt5 import QtCore, QtGui, QtWidgets
+
 import ida_kernwin
 
 LOGGER = logging.getLogger(__name__)
@@ -147,12 +149,15 @@ class TestRunnerForm(ida_kernwin.PluginForm):
         # Root widget provided by IDA – we must wrap it with Qt
         layout = QtWidgets.QVBoxLayout()
 
-        self.text_edit = QtWidgets.QTextEdit()
-        self.text_edit.setReadOnly(True)
-        font = self.text_edit.font()
-        font.setFamily("monospace")
-        self.text_edit.setFont(font)
-        layout.addWidget(self.text_edit)
+        # Tree widget to display test hierarchy and status
+        self.tree = QtWidgets.QTreeWidget()
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderLabels(["Test", "Status"])
+        self.tree.setRootIsDecorated(True)
+        self.tree.setIndentation(20)
+        self.tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._show_context_menu)
+        layout.addWidget(self.tree)
 
         self.run_button = QtWidgets.QPushButton("Run tests")
         self.run_button.clicked.connect(self._on_run_clicked)  # type: ignore[attr-defined]
@@ -167,30 +172,83 @@ class TestRunnerForm(ida_kernwin.PluginForm):
     def OnCreate(self, ctx):  # pylint: disable=invalid-name
         self._populate(ctx)
 
-    def _append_output(self, text: str):
-        if self.text_edit is None:
+    # Context menu for tree widget
+    def _show_context_menu(self, pos):
+        item = self.tree.itemAt(pos)
+        if not item or not item.data(0, QtCore.Qt.UserRole):
             return
-        self.text_edit.append(text)
-        self.text_edit.ensureCursorVisible()
+        menu = QtWidgets.QMenu()
+        run_action = menu.addAction("Run Test")
+        action = menu.exec_(self.tree.viewport().mapToGlobal(pos))
+        if action == run_action:
+            test_name = item.data(0, QtCore.Qt.UserRole)
+            self._run_single_test(test_name)
+
+    def _run_single_test(self, test_name):
+        suite = unittest.TestSuite()
+        suite.addTest(self.runner.loader.loadTestsFromName(test_name))
+        result = self.runner.runner.run(suite)
+        self._populate_tree(suite, result)
+
+    def _iter_tests(self, suite):
+        for test in suite:
+            if isinstance(test, unittest.TestSuite):
+                yield from self._iter_tests(test)
+            elif test is not None:
+                yield test
+
+    def _populate_tree(self, suite, result):
+        # Debug: log discovered tests
+        # tests = list(self._iter_tests(suite))
+        # print(
+        #     "Populating tree: discovered %d tests: %s",
+        #     len(tests),
+        #     [t.id() for t in tests],
+        # )
+        self.tree.clear()
+        tests = list(self._iter_tests(suite))
+        print(
+            "Populating tree: discovered %d tests: %s",
+            len(tests),
+            [t.id() for t in tests],
+        )
+        if not tests:
+            # Show placeholder if no tests found
+            QtWidgets.QTreeWidgetItem(self.tree, ["<No tests found>", ""])
+            return
+        # Group tests by class name
+        groups: dict[str, list[tuple[unittest.TestCase, str]]] = {}
+        for test in tests:
+            test_id = test.id()
+            parts = test_id.split(".")
+            cls_name = parts[-2]
+            method_name = parts[-1]
+            groups.setdefault(cls_name, []).append((test, method_name))
+        # Populate tree
+        for cls_name, tests in groups.items():
+            parent = QtWidgets.QTreeWidgetItem(self.tree, [cls_name])
+            for test, method in tests:
+                item = QtWidgets.QTreeWidgetItem(parent, [method, ""])
+                # Determine status
+                failed = any(f[0] is test for f in result.failures + result.errors)
+                status = "Failed" if failed else "Passed"
+                brush = QtGui.QBrush(QtGui.QColor("red" if failed else "green"))
+                item.setText(1, status)
+                item.setForeground(0, brush)
+                item.setForeground(1, brush)
+                # Store full test id for re-running
+                item.setData(0, QtCore.Qt.UserRole, test.id())
+        self.tree.expandAll()
 
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
 
     def _on_run_clicked(self):
-        self._append_output("Running tests …\n")
-        result = self.runner.run_all()
-        summary = (
-            f"Ran {result.testsRun} test(s) – "
-            f"Failures: {len(result.failures)}, "
-            f"Errors: {len(result.errors)}, "
-            f"Skipped: {len(result.skipped)}"
-        )
-        self._append_output(summary + "\n")
-        if result.failures or result.errors:
-            self._append_output("\nDetails:\n")
-            for test_case, err in result.failures + result.errors:
-                self._append_output(f"{test_case}:\n{err}\n")
+        self.tree.clear()
+        suite = self.runner.discover_tests()
+        result = self.runner.runner.run(suite)
+        self._populate_tree(suite, result)
 
 
 # ----------------------------------------------------------------------
