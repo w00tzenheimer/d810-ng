@@ -1,19 +1,18 @@
 import logging
+
+from d810.hexrays.hexrays_helpers import AND_TABLE, append_mop_if_not_in_list
+from d810.hexrays.tracker import MopHistory, MopTracker
+from d810.optimizers.flow.flattening.generic import (
+    GenericDispatcherBlockInfo,
+    GenericDispatcherCollector,
+    GenericDispatcherInfo,
+    GenericDispatcherUnflatteningRule,
+)
+
 import idaapi
-from typing import List
 from ida_hexrays import *
 
-from d810.hexrays_helpers import append_mop_if_not_in_list, AND_TABLE, CONTROL_FLOW_OPCODES
-from d810.tracker import MopTracker, MopHistory
-from d810.optimizers.flow.flattening.generic import GenericDispatcherBlockInfo, GenericDispatcherInfo, \
-    GenericDispatcherCollector, GenericDispatcherUnflatteningRule, NotDuplicableFatherException, DispatcherUnflatteningException, NotResolvableFatherException
-from d810.optimizers.flow.flattening.utils import configure_mop_tracker_log_verbosity, restore_mop_tracker_log_verbosity
-from d810.tracker import duplicate_histories
-from d810.cfg_utils import create_block, change_1way_block_successor
-from d810.hexrays_formatters import format_minsn_t, format_mop_t
-from d810.emulator import MicroCodeEnvironment, MicroCodeInterpreter
-
-unflat_logger = logging.getLogger('D810.unflat')
+unflat_logger = logging.getLogger("D810.unflat")
 FLATTENING_JUMP_OPCODES = [m_jtbl]
 
 
@@ -74,7 +73,10 @@ class LabelTableInfo(object):
             tmp_mop.erase()
             tmp_mop._make_stkvar(mba, stack_array_base_address + self.ptr_size * i)
             tmp_mop.size = self.ptr_size
-            mem_val = idaapi.get_qword(self.mem_offset + self.ptr_size * i) & AND_TABLE[self.ptr_size]
+            mem_val = (
+                idaapi.get_qword(self.mem_offset + self.ptr_size * i)
+                & AND_TABLE[self.ptr_size]
+            )
             mop_tracker.add_mop_definition(tmp_mop, mem_val)
 
 
@@ -94,9 +96,11 @@ class UnflattenerTigressIndirect(GenericDispatcherUnflatteningRule):
         super().configure(kwargs)
         if "goto_table_info" in self.config.keys():
             for ea_str, table_info in self.config["goto_table_info"].items():
-                self.goto_table_info[int(ea_str, 16)] = LabelTableInfo(sp_offset=int(table_info["stack_table_offset"], 16),
-                                                                       mem_offset=int(table_info["table_address"], 16),
-                                                                       nb_elt=table_info["table_nb_elt"])
+                self.goto_table_info[int(ea_str, 16)] = LabelTableInfo(
+                    sp_offset=int(table_info["stack_table_offset"], 16),
+                    mem_offset=int(table_info["table_address"], 16),
+                    nb_elt=table_info["table_nb_elt"],
+                )
 
     def check_if_rule_should_be_used(self, blk: mblock_t):
         if not super().check_if_rule_should_be_used(blk):

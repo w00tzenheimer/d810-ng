@@ -1,6 +1,6 @@
 import logging
 from ida_hexrays import *
-from d810.hexrays_formatters import format_minsn_t
+from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.optimizers.instructions.handler import InstructionOptimizer, InstructionOptimizationRule
 
 

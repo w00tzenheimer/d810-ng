@@ -1,17 +1,15 @@
+from d810.expr.ast import AstConstant, AstLeaf, AstNode, mop_to_ast
+from d810.expr.z3_utils import z3_check_mop_equality, z3_check_mop_inequality
+from d810.optimizers.flow.jumps.handler import JumpOptimizationRule
+
 from ida_hexrays import *
 
-from d810.ast import AstLeaf, AstConstant, AstNode
-from d810.optimizers.flow.jumps.handler import JumpOptimizationRule
-from d810.z3_utils import z3_check_mop_equality, z3_check_mop_inequality
-from d810.ast import mop_to_ast
 
 class JnzRule1(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [m_jnz, m_jz]
-    LEFT_PATTERN = AstNode(m_neg,
-                           AstNode(m_and,
-                                   AstNode(m_bnot,
-                                           AstLeaf("x_0")),
-                                   AstConstant("1", 1)))
+    LEFT_PATTERN = AstNode(
+        m_neg, AstNode(m_and, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("1", 1))
+    )
     RIGHT_PATTERN = AstLeaf("x_0")
     REPLACEMENT_OPCODE = m_goto
 
@@ -25,10 +23,7 @@ class JnzRule1(JumpOptimizationRule):
 
 class JnzRule2(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [m_jnz, m_jz]
-    LEFT_PATTERN = AstNode(m_or,
-                           AstNode(m_bnot,
-                                   AstLeaf("x_0")),
-                           AstConstant("1", 1))
+    LEFT_PATTERN = AstNode(m_or, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("1", 1))
     RIGHT_PATTERN = AstConstant("0", 0)
     REPLACEMENT_OPCODE = m_goto
 
@@ -42,13 +37,11 @@ class JnzRule2(JumpOptimizationRule):
 
 class JnzRule3(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [m_jnz, m_jz]
-    LEFT_PATTERN = AstNode(m_xor,
-                           AstNode(m_xor,
-                                   AstLeaf("x_0"),
-                                   AstConstant("c_1")),
-                           AstNode(m_and,
-                                   AstLeaf("x_0"),
-                                   AstConstant("c_2")))
+    LEFT_PATTERN = AstNode(
+        m_xor,
+        AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_1")),
+        AstNode(m_and, AstLeaf("x_0"), AstConstant("c_2")),
+    )
     RIGHT_PATTERN = AstConstant("0", 0)
     REPLACEMENT_OPCODE = m_goto
 
@@ -65,9 +58,7 @@ class JnzRule3(JumpOptimizationRule):
 
 class JnzRule4(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [m_jnz, m_jz]
-    LEFT_PATTERN = AstNode(m_sub,
-                           AstConstant("3", 3),
-                           AstLeaf("x_0"))
+    LEFT_PATTERN = AstNode(m_sub, AstConstant("3", 3), AstLeaf("x_0"))
     RIGHT_PATTERN = AstLeaf("x_0")
     REPLACEMENT_OPCODE = m_goto
 
@@ -81,11 +72,9 @@ class JnzRule4(JumpOptimizationRule):
 
 class JnzRule5(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [m_jnz, m_jz]
-    LEFT_PATTERN = AstNode(m_xor,
-                           AstNode(m_sub,
-                                   AstConstant("3", 3),
-                                   AstLeaf("x_0")),
-                           AstLeaf("x_0"))
+    LEFT_PATTERN = AstNode(
+        m_xor, AstNode(m_sub, AstConstant("3", 3), AstLeaf("x_0")), AstLeaf("x_0")
+    )
     RIGHT_PATTERN = AstConstant("0", 0)
     REPLACEMENT_OPCODE = m_goto
 
@@ -99,13 +88,11 @@ class JnzRule5(JumpOptimizationRule):
 
 class JnzRule6(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [m_jnz, m_jz]
-    LEFT_PATTERN = AstNode(m_xor,
-                           AstNode(m_bnot,
-                                   AstNode(m_sub,
-                                           AstConstant("3", 3),
-                                           AstLeaf("x_0"))),
-                           AstNode(m_bnot,
-                                   AstLeaf("x_0")))
+    LEFT_PATTERN = AstNode(
+        m_xor,
+        AstNode(m_bnot, AstNode(m_sub, AstConstant("3", 3), AstLeaf("x_0"))),
+        AstNode(m_bnot, AstLeaf("x_0")),
+    )
     RIGHT_PATTERN = AstConstant("0", 0)
     REPLACEMENT_OPCODE = m_goto
 
@@ -119,9 +106,7 @@ class JnzRule6(JumpOptimizationRule):
 
 class JnzRule7(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [m_jnz, m_jz]
-    LEFT_PATTERN = AstNode(m_and,
-                           AstLeaf("x_0"),
-                           AstConstant("c_1"))
+    LEFT_PATTERN = AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1"))
     RIGHT_PATTERN = AstConstant("c_2")
     REPLACEMENT_OPCODE = m_goto
 
@@ -138,9 +123,7 @@ class JnzRule7(JumpOptimizationRule):
 
 class JnzRule8(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [m_jnz, m_jz]
-    PATTERN = AstNode(m_or,
-                      AstLeaf("x_0"),
-                      AstConstant("c_1"))
+    PATTERN = AstNode(m_or, AstLeaf("x_0"), AstConstant("c_1"))
     RIGHT_PATTERN = AstConstant("c_2")
     REPLACEMENT_OPCODE = m_goto
 
@@ -158,10 +141,7 @@ class JnzRule8(JumpOptimizationRule):
 
 class JbRule1(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [m_jb]
-    PATTERN = AstNode(m_xdu,
-                      AstNode(m_and,
-                              AstLeaf("x_0"),
-                              AstConstant("1", 1)))
+    PATTERN = AstNode(m_xdu, AstNode(m_and, AstLeaf("x_0"), AstConstant("1", 1)))
     RIGHT_PATTERN = AstConstant("2", 2)
     REPLACEMENT_OPCODE = m_goto
 
@@ -172,9 +152,7 @@ class JbRule1(JumpOptimizationRule):
 
 class JaeRule1(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [m_jae]
-    PATTERN = AstNode(m_and,
-                      AstLeaf("x_0"),
-                      AstConstant("c_1"))
+    PATTERN = AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1"))
     RIGHT_PATTERN = AstConstant("c_2")
     REPLACEMENT_OPCODE = m_goto
 
@@ -196,9 +174,17 @@ class JmpRuleZ3Const(JumpOptimizationRule):
         # print(repr(left_candidate.mop))
         # print(dir(left_candidate.mop))
         if z3_check_mop_equality(left_candidate.mop, right_candidate.mop):
-            self.jump_replacement_block_serial = self.direct_block_serial if opcode == m_jnz else self.jump_original_block_serial
+            self.jump_replacement_block_serial = (
+                self.direct_block_serial
+                if opcode == m_jnz
+                else self.jump_original_block_serial
+            )
             return True
         if z3_check_mop_inequality(left_candidate.mop, right_candidate.mop):
-            self.jump_replacement_block_serial = self.direct_block_serial if opcode != m_jnz else self.jump_original_block_serial
+            self.jump_replacement_block_serial = (
+                self.direct_block_serial
+                if opcode != m_jnz
+                else self.jump_original_block_serial
+            )
             return True
         return False

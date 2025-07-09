@@ -1,8 +1,17 @@
-from ida_hexrays import *
-from idaapi import SEGPERM_READ, SEGPERM_WRITE, xrefblk_t, getseg, segment_t, XREF_DATA, dr_W, is_loaded
-
+from d810.expr.ast import AstConstant, AstLeaf, AstNode
 from d810.optimizers.instructions.early.handler import EarlyRule
-from d810.ast import AstLeaf, AstConstant, AstNode
+
+from ida_hexrays import *
+from idaapi import (
+    SEGPERM_READ,
+    SEGPERM_WRITE,
+    XREF_DATA,
+    dr_W,
+    getseg,
+    is_loaded,
+    segment_t,
+    xrefblk_t,
+)
 
 
 class SetGlobalVariablesToZero(EarlyRule):
@@ -31,7 +40,7 @@ class SetGlobalVariablesToZero(EarlyRule):
         if candidate["ro_dword"].mop.t != mop_v:
             return False
         mem_read_address = candidate["ro_dword"].mop.g
-        if not(self.ro_dword_min_ea <= mem_read_address <= self.ro_dword_max_ea):
+        if not (self.ro_dword_min_ea <= mem_read_address <= self.ro_dword_max_ea):
             return False
 
         candidate.add_constant_leaf("val_res", 0, candidate["ro_dword"].mop.size)
@@ -85,4 +94,3 @@ class SetGlobalVariablesToZeroIfDetectedReadOnly(EarlyRule):
             return False
         candidate.add_constant_leaf("val_res", 0, candidate["ro_dword"].mop.size)
         return True
-

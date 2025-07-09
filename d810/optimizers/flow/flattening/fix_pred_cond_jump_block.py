@@ -1,14 +1,13 @@
 import logging
-from typing import List, Tuple
 from ida_hexrays import *
 
-from d810.tracker import MopTracker
-from d810.cfg_utils import duplicate_block, make_2way_block_goto, update_blk_successor
+from d810.hexrays.tracker import MopTracker
+from d810.hexrays.cfg_utils import duplicate_block, make_2way_block_goto, update_blk_successor
 
-from d810.hexrays_formatters import format_minsn_t, dump_microcode_for_debug
+from d810.hexrays.hexrays_formatters import format_minsn_t, dump_microcode_for_debug
 from d810.optimizers.flow.flattening.utils import get_all_possibles_values
 from d810.optimizers.flow.flattening.generic import GenericUnflatteningRule
-from d810.utils import unsigned_to_signed
+from d810.expr.utils import unsigned_to_signed
 
 
 unflat_logger = logging.getLogger('D810.unflat')

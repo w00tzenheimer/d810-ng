@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import abc
-import copy
 import logging
 import typing
 from typing import Dict, List, Tuple, Union
 
 from d810.errors import AstEvaluationException
-from d810.hexrays_formatters import format_minsn_t, format_mop_t
-from d810.hexrays_helpers import (
+from d810.hexrays.hexrays_formatters import format_minsn_t, format_mop_t
+from d810.hexrays.hexrays_helpers import (
     AND_TABLE,
     MBA_RELATED_OPCODES,
     MINSN_TO_AST_FORBIDDEN_OPCODES,
@@ -16,7 +15,7 @@ from d810.hexrays_helpers import (
     Z3_SPECIAL_OPERANDS,
     equal_mops_ignore_size,
 )
-from d810.utils import (
+from d810.expr.utils import (
     get_add_cf,
     get_add_of,
     get_parity_flag,
@@ -28,6 +27,26 @@ from d810.utils import (
 import ida_hexrays
 
 logger = logging.getLogger("D810")
+
+
+# A global cache for constant mop_t objects
+MOP_CONSTANT_CACHE = {}
+
+
+def get_constant_mop(value: int, size: int) -> ida_hexrays.mop_t:
+    """
+    Returns a cached or new mop_t for a constant value.
+    This avoids repeated calls to mop_t.__init__ and make_number.
+    """
+    key = (value, size)
+    if key in MOP_CONSTANT_CACHE:
+        return MOP_CONSTANT_CACHE[key]
+
+    # Not in cache, create it once and store it.
+    cst_mop = ida_hexrays.mop_t()
+    cst_mop.make_number(value, size)
+    MOP_CONSTANT_CACHE[key] = cst_mop
+    return cst_mop
 
 
 class AstInfo(object):
@@ -172,8 +191,8 @@ class AstNode(AstBase, dict):
         self.leafs_by_name[leaf_name] = leaf
 
     def add_constant_leaf(self, leaf_name: str, cst_value: int, cst_size: int):
-        cst_mop = ida_hexrays.mop_t()
-        cst_mop.make_number(cst_value & AND_TABLE[cst_size], cst_size)
+        masked_value = cst_value & AND_TABLE[cst_size]
+        cst_mop = get_constant_mop(masked_value, cst_size)
         self.add_leaf(leaf_name, cst_mop)
 
     def check_pattern_and_copy_mops(self, ast: Union[AstNode, AstLeaf]) -> bool:
@@ -554,42 +573,6 @@ class AstNode(AstBase, dict):
             logger.info("Error while calling __str__ on AstNode: {0}".format(e))
             return "Error_AstNode"
 
-    def __deepcopy__(self, memo):
-        """
-        Creates a deep copy of the AstNode and its children.
-        The 'memo' dictionary is used by deepcopy to handle cycles.
-        """
-        # Create a new instance without calling __init__
-        cls = self.__class__
-        result = cls.__new__(cls)
-        memo[id(self)] = result
-
-        # Deepcopy the children recursively
-        result.left = copy.deepcopy(self.left, memo)
-        result.right = copy.deepcopy(self.right, memo)
-        result.dst = copy.deepcopy(self.dst, memo)
-
-        # Copy simple attributes
-        result.opcode = self.opcode
-        result.mop = self.mop  # Copy reference, not the object itself
-        result.dst_mop = self.dst_mop  # Copy reference
-        result.dest_size = self.dest_size
-        result.ea = self.ea
-        result.ast_index = self.ast_index
-
-        # Initialize transient/computed attributes to their default state
-        # or deepcopy them if they represent persistent state.
-        result.is_candidate_ok = False
-        result.leafs = []
-        result.leafs_by_name = {}
-        result.opcodes = list(self.opcodes)  # Create a copy of the list
-        result.sub_ast_info_by_index = copy.deepcopy(self.sub_ast_info_by_index, memo)
-
-        # Initialize the dict superclass
-        super(AstNode, result).__init__()
-
-        return result
-
     @typing.override
     def clone(self):
         # Use __new__ to bypass __init__ for speed
@@ -804,31 +787,6 @@ class AstLeaf(AstBase):
             logger.info("Error while calling __str__ on AstLeaf: {0}".format(e))
             return "Error_AstLeaf"
 
-    def __deepcopy__(self, memo):
-        """
-        Creates a deep copy of the AstLeaf.
-        The 'memo' dictionary is used by deepcopy to handle cycles.
-        """
-        # Create a new instance without calling __init__ to avoid side effects
-        cls = self.__class__
-        result = cls.__new__(cls)
-        memo[id(self)] = result
-
-        # Copy attributes. The 'mop' is a reference to an external object,
-        # so we don't deepcopy it, we just copy the reference.
-        result.name = self.name
-        result.ast_index = self.ast_index
-        result.mop = self.mop
-        result.dest_size = self.dest_size
-        result.ea = self.ea
-
-        # Initialize transient or computed attributes to their default state
-        result.z3_var = None
-        result.z3_var_name = None
-        result.sub_ast_info_by_index = copy.deepcopy(self.sub_ast_info_by_index, memo)
-
-        return result
-
 
 class AstConstant(AstLeaf):
     def __init__(self, name, expected_value=None, expected_size=None):
@@ -958,12 +916,9 @@ class AstProxy(AstBase):
         setitem(key, value)
 
 
-MopCacheKey = tuple[int, str]
-
-
 # The cache should be managed in a scope that persists across calls.
 # A global variable is a common way to do this in IDA scripts.
-MOP_TO_AST_CACHE: Dict[MopCacheKey, AstBase] = {}
+MOP_TO_AST_CACHE: Dict[tuple, AstBase | None] = {}
 
 
 class AstBuilderContext:
@@ -991,6 +946,53 @@ def clear_mop_to_ast_cache():
     MOP_TO_AST_CACHE.clear()
 
 
+def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
+    """
+    Creates a unique, hashable, and cheap-to-compute key for a mop_t object.
+    """
+    if mop is None:
+        return (None,)
+
+    # The base of the key is always the type, size, and valnum.
+    t = mop.t
+    key_base = (t, mop.size, mop.valnum)
+
+    # Simple Leaf Types
+    if t == ida_hexrays.mop_r:  # Register
+        return key_base + (mop.r,)
+    if t == ida_hexrays.mop_n:  # Number (constant)
+        return key_base + (mop.nnn.value,)
+    if t == ida_hexrays.mop_v:  # Global variable address
+        return key_base + (mop.g,)
+    if t == ida_hexrays.mop_S:  # Stack variable
+        return key_base + (mop.s.off,)  # Corrected: use .off
+    if t == ida_hexrays.mop_l:  # Local variable (lvar)
+        return key_base + (mop.l.idx, mop.l.off)
+    if t == ida_hexrays.mop_b:  # Block reference
+        return key_base + (mop.b,)
+    if t == ida_hexrays.mop_h:  # Helper function name
+        return key_base + (mop.helper,)
+    if t == ida_hexrays.mop_str:  # String literal
+        return key_base + (mop.cstr,)
+
+    # Complex Types: Fallback to dstr() for safety and simplicity
+    # These types contain pointers to other complex objects, and creating a
+    # cheap, unique key without dstr() would require complex recursion.
+    if t in (
+        ida_hexrays.mop_d,  # Nested instruction
+        ida_hexrays.mop_f,  # Function call info
+        ida_hexrays.mop_a,  # Address of another operand
+        ida_hexrays.mop_p,  # Operand pair
+        ida_hexrays.mop_sc,  # Scattered operand
+        ida_hexrays.mop_c,  # Switch cases
+        ida_hexrays.mop_fn,  # Floating point constant
+    ):
+        return key_base + (mop.dstr(),)
+
+    # Default case for any other types (e.g., mop_z) Q_Q
+    return key_base
+
+
 def mop_to_ast_internal(
     mop: ida_hexrays.mop_t, context: AstBuilderContext
 ) -> AstBase | None:
@@ -998,7 +1000,7 @@ def mop_to_ast_internal(
         return None
 
     # 1. Create the unique, hashable key for the current mop.
-    key = (mop.valnum, mop.dstr())
+    key = get_mop_key(mop)
 
     # 2. OPTIMIZATION: Check if this mop has already been processed.
     # This is our O(1) average-time lookup.
@@ -1054,19 +1056,15 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
         return None
 
     # 1. Create a stable, hashable key from the mop_t object.
-    cache_key = (mop.valnum, mop.dstr())
+    cache_key = get_mop_key(mop)
 
     # 2. Check if the result is already in the cache.
-    if cache_key in MOP_TO_AST_CACHE:
-        cached_ast = MOP_TO_AST_CACHE[cache_key]
-        # Return a DEEP COPY of the cached object. This is critical.
-        return AstProxy(cached_ast)
-        # return copy.deepcopy(cached_ast)
+    if _cache_lookup := MOP_TO_AST_CACHE.get(cache_key):
+        return AstProxy(_cache_lookup) if _cache_lookup is not None else None
 
     builder_context = AstBuilderContext()
     # Start the optimized recursive build.
-    mop_ast = mop_to_ast_internal(mop, builder_context)
-    if mop_ast is None:
+    if not (mop_ast := mop_to_ast_internal(mop, builder_context)):
         # Cache the failure to avoid re-computing it.
         MOP_TO_AST_CACHE[cache_key] = None
         return None
@@ -1080,60 +1078,11 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
     # 4. Store the newly computed "template" object in the cache.
     MOP_TO_AST_CACHE[cache_key] = mop_ast
 
-    # 5. Return a deep copy to the caller for safety.
+    # 5. Return a proxy to the caller for safety.
     return AstProxy(mop_ast)
 
 
-# def check_and_add_to_list(
-#     new_ast: Union[AstNode, AstLeaf], known_ast_list: List[Union[AstNode, AstLeaf]]
-# ):
-#     is_new_ast_known = False
-#     for existing_elt in known_ast_list:
-#         if equal_mops_ignore_size(new_ast.mop, existing_elt.mop):
-#             new_ast.ast_index = existing_elt.ast_index
-#             is_new_ast_known = True
-#             break
-
-#     if not is_new_ast_known:
-#         ast_index = len(known_ast_list)
-#         new_ast.ast_index = ast_index
-#         known_ast_list.append(new_ast)
-
-
-# def mop_to_ast_internal(
-#     mop: ida_hexrays.mop_t, ast_list: list[AstNode | AstLeaf]
-# ) -> Union[None, AstNode, AstLeaf]:
-#     if mop is None:
-#         return None
-
-#     if mop.t != ida_hexrays.mop_d or (mop.d.opcode not in MBA_RELATED_OPCODES):
-#         tree = AstLeaf(format_mop_t(mop))
-#         tree.mop = mop
-#         dest_size = mop.size if mop.t != ida_hexrays.mop_d else mop.d.d.size
-#         tree.dest_size = dest_size
-#     else:
-#         left_ast = mop_to_ast_internal(mop.d.l, ast_list)
-#         right_ast = mop_to_ast_internal(mop.d.r, ast_list)
-#         dst_ast = mop_to_ast_internal(mop.d.d, ast_list)
-#         tree = AstNode(mop.d.opcode, left_ast, right_ast, dst_ast)
-#         tree.mop = mop
-#         tree.dest_size = mop.d.d.size
-#         tree.ea = mop.d.ea
-
-#     check_and_add_to_list(tree, ast_list)
-#     return tree
-
-
-# def mop_to_ast(mop: ida_hexrays.mop_t) -> AstNode | AstLeaf | None:
-#     mop_ast = mop_to_ast_internal(mop, [])
-#     if mop_ast is None:
-#         return None
-
-#     mop_ast.compute_sub_ast()
-#     return mop_ast
-
-
-def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstNode | AstLeaf | None:
+def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
     try:
         if instruction.opcode in MINSN_TO_AST_FORBIDDEN_OPCODES:
             # To avoid error 50278
@@ -1155,8 +1104,8 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstNode | AstLeaf | None:
         return tmp
     except RuntimeError as e:
         logger.error(
-            "Error while transforming instruction {0}: {1}".format(
-                format_minsn_t(instruction), e
-            )
+            "Error while transforming instruction %s: %s",
+            format_minsn_t(instruction),
+            e,
         )
         return None

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import ida_diskio
 
-DEFAULT_LOG_DIR = Path(ida_diskio.get_user_idadir(), "logs", "d810")
+DEFAULT_LOG_DIR = Path(ida_diskio.get_user_idadir(), "logs")
 
 
 class D810Configuration(object):

@@ -30,7 +30,7 @@ pip3 install z3-solver
 
 * Load the plugin by using the `Ctrl-Shift-D` shortcut, you should see this configuration GUI
 
-![](d810/docs/source/images/gui_plugin_configuration.png)
+![](./docs/source/images/gui_plugin_configuration.png)
 
 * Choose or create your project configuration
   * If you are not sure what to do here, leave *default_instruction_only.json*.

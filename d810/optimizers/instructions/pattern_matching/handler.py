@@ -1,10 +1,9 @@
 import itertools
 import logging
 import typing
-from typing import List, Union
 
-from d810.ast import AstBase, AstLeaf, AstNode, minsn_to_ast
-from d810.hexrays_formatters import format_minsn_t, format_mop_t
+from d810.expr.ast import AstBase, AstNode, minsn_to_ast
+from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.optimizers.instructions.handler import (
     GenericPatternRule,
     InstructionOptimizationRule,

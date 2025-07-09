@@ -4,9 +4,9 @@ from ida_hexrays import *
 
 
 from d810.optimizers.instructions.chain.handler import ChainSimplificationRule
-from d810.hexrays_helpers import equal_bnot_mop, equal_mops_ignore_size, \
+from d810.hexrays.hexrays_helpers import equal_bnot_mop, equal_mops_ignore_size, \
     SUB_TABLE, AND_TABLE
-from d810.hexrays_formatters import format_minsn_t
+from d810.hexrays.hexrays_formatters import format_minsn_t
 
 rules_chain_logger = logging.getLogger('D810.rules.chain')
 

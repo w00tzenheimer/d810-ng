@@ -1,13 +1,17 @@
+from d810.expr.ast import AstConstant, AstLeaf, AstNode
+from d810.hexrays.hexrays_formatters import format_mop_t
+from d810.optimizers.instructions.pattern_matching.handler import PatternMatchingRule
+
 from ida_hexrays import *
 
-from d810.optimizers.instructions.pattern_matching.handler import PatternMatchingRule
-from d810.ast import AstLeaf, AstConstant, AstNode
-from d810.hexrays_formatters import  format_mop_t
 
 class ReplaceMovHigh(PatternMatchingRule):
-    PATTERN = AstNode(m_mov,
-                      AstConstant('c_0'))
-    REPLACEMENT_PATTERN = AstNode(m_or, AstConstant("new_c_0"), AstNode(m_and, AstLeaf("new_reg"), AstConstant("mask")))
+    PATTERN = AstNode(m_mov, AstConstant("c_0"))
+    REPLACEMENT_PATTERN = AstNode(
+        m_or,
+        AstConstant("new_c_0"),
+        AstNode(m_and, AstLeaf("new_reg"), AstConstant("mask")),
+    )
 
     def check_candidate(self, candidate):
         # IDA does not do constant propagation for pattern such as:
@@ -26,7 +30,7 @@ class ReplaceMovHigh(PatternMatchingRule):
             if candidate["c_0"].mop.size != 2:
                 return False
             candidate.add_constant_leaf("new_c_0", candidate["c_0"].value << 16, 4)
-            candidate.add_constant_leaf("mask", 0xffff, 4)
+            candidate.add_constant_leaf("mask", 0xFFFF, 4)
             new_dst_reg = mop_t()
             new_dst_reg.make_reg(candidate.dst_mop.r - 2, 4)
             candidate.add_leaf("new_reg", new_dst_reg)

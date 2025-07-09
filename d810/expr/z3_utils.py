@@ -1,11 +1,10 @@
 import logging
 import typing
-from typing import List, Union
 
-from d810.ast import AstLeaf, AstNode, minsn_to_ast, mop_to_ast
 from d810.errors import D810Z3Exception
-from d810.hexrays_formatters import format_minsn_t, opcode_to_string
-from d810.hexrays_helpers import get_mop_index
+from d810.expr.ast import AstLeaf, AstNode, minsn_to_ast, mop_to_ast
+from d810.hexrays.hexrays_formatters import format_minsn_t, opcode_to_string
+from d810.hexrays.hexrays_helpers import get_mop_index
 
 from ida_hexrays import *
 
