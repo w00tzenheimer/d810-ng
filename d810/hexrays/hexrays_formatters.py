@@ -1,9 +1,10 @@
+import functools
 import logging
 import os
 import typing
 from typing import List
 
-from d810.hexrays_helpers import (
+from d810.hexrays.hexrays_helpers import (
     MATURITY_TO_STRING_DICT,
     MOP_TYPE_TO_STRING_DICT,
     OPCODES_INFO,
@@ -14,14 +15,35 @@ from ida_hexrays import mbl_array_t, minsn_t, mop_t, vd_printer_t
 
 logger = logging.getLogger("D810.helper")
 
+_trans_table = str.maketrans(
+    "", "", "".join(chr(i) for i in range(256) if not (0x20 <= i <= 0x7E))
+)
+
+
+@functools.lru_cache(maxsize=4096)
+def _cached_format_minsn_t(ea: int, raw_repr: str) -> str:
+    """Internal helper to cache the printable form of a *minsn_t*.
+
+    The cache key is a tuple of the instruction's *ea* and the raw string
+    returned by *minsn_t._print()*.  We include *raw_repr* in the key to avoid
+    stale cache entries should the underlying instruction at *ea* change
+    during microcode transformations.
+    """
+    # Filter out non-printable characters once and store the result.
+    return raw_repr.translate(_trans_table)
+
 
 def format_minsn_t(ins: minsn_t) -> str:
+    """Return a printable representation of *ins*.
+
+    The heavy-weight ``_print`` call is cached so subsequent requests for the
+    same instruction (identified by its ``ea``) are virtually free.
+    """
     if ins is None:
         return "minsn_t is None"
 
-    tmp = typing.cast(str, ins._print())
-    pp_ins = "".join([c if 0x20 <= ord(c) <= 0x7E else "" for c in tmp])
-    return pp_ins
+    raw = typing.cast(str, ins._print())
+    return _cached_format_minsn_t(ins.ea, raw)
 
 
 def format_mop_t(mop_in: mop_t) -> str:
@@ -44,7 +66,13 @@ def maturity_to_string(maturity_level: int) -> str:
 
 
 def string_to_maturity(maturity_string: str) -> int | None:
-    return STRING_TO_MATURITY_DICT.get(maturity_string)
+    """Convert a maturity name (with or without 'MMAT_' prefix) to its integer code."""
+    # Normalize to upper-case
+    key = maturity_string.upper()
+    # Add prefix if missing
+    if not key.startswith("MMAT_"):
+        key = f"MMAT_{key}"
+    return STRING_TO_MATURITY_DICT.get(key)
 
 
 def mop_type_to_string(mop_type: int) -> str:
@@ -69,9 +97,7 @@ class mba_printer(vd_printer_t):
         return self.mc
 
     def _print(self, indent, line):
-        self.mc.append(
-            "".join([c if 0x20 <= ord(c) <= 0x7E else "" for c in line]) + "\n"
-        )
+        self.mc.append(line.translate(_trans_table) + "\n")
         return 1
 
 
@@ -84,9 +110,7 @@ class block_printer(vd_printer_t):
         return "\n".join(self.block_ins)
 
     def _print(self, indent, line):
-        self.block_ins.append(
-            "".join([c if 0x20 <= ord(c) <= 0x7E else "" for c in line])
-        )
+        self.block_ins.append(line.translate(_trans_table))
         return 1
 
 

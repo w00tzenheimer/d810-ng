@@ -1,8 +1,11 @@
 import os
 
-from d810.ast import minsn_to_ast
-from d810.hexrays_formatters import format_minsn_t, format_mop_t, maturity_to_string
-
+from d810.expr.ast import minsn_to_ast
+from d810.hexrays.hexrays_formatters import (
+    format_minsn_t,
+    format_mop_t,
+    maturity_to_string,
+)
 from d810.optimizers.handler import DEFAULT_INSTRUCTION_MATURITIES
 from d810.optimizers.instructions.analysis.handler import InstructionAnalysisRule
 from d810.optimizers.instructions.analysis.utils import get_possible_patterns
@@ -27,10 +30,12 @@ class ExampleGuessingRule(InstructionAnalysisRule):
 
     def log_info(self, message):
         with open(self.pattern_filename_path, "a") as f:
-            f.write('{0}\n'.format(message))
+            f.write("{0}\n".format(message))
 
     def set_maturity(self, maturity):
-        self.log_info("Patterns guessed at maturity {0}".format(maturity_to_string(maturity)))
+        self.log_info(
+            "Patterns guessed at maturity {0}".format(maturity_to_string(maturity))
+        )
         self.cur_maturity = maturity
 
     def set_log_dir(self, log_dir):
@@ -51,9 +56,9 @@ class ExampleGuessingRule(InstructionAnalysisRule):
             self.max_nb_diff_opcodes = kwargs["max_nb_diff_opcodes"]
 
         if self.max_nb_var == -1:
-            self.max_nb_var = 0xff
+            self.max_nb_var = 0xFF
         if self.max_nb_diff_opcodes == -1:
-            self.max_nb_diff_opcodes = 0xff
+            self.max_nb_diff_opcodes = 0xFF
 
     def analyze_instruction(self, blk, ins):
         if self.cur_maturity not in self.maturities:
@@ -71,20 +76,30 @@ class ExampleGuessingRule(InstructionAnalysisRule):
         return is_good_candidate
 
     def check_if_possible_pattern(self, test_ast):
-        patterns = get_possible_patterns(test_ast, min_nb_use=2, ref_ast_info_by_index=None, max_nb_pattern=64)
+        patterns = get_possible_patterns(
+            test_ast, min_nb_use=2, ref_ast_info_by_index=None, max_nb_pattern=64
+        )
         for pattern in patterns:
             leaf_info_list, cst_leaf_values, opcodes = pattern.get_information()
             leaf_nb_use = [leaf_info.number_of_use for leaf_info in leaf_info_list]
-            if not(self.min_nb_var <= len(leaf_info_list) <= self.max_nb_var):
+            if not (self.min_nb_var <= len(leaf_info_list) <= self.max_nb_var):
                 continue
-            if not(self.min_nb_diff_opcodes <= len(set(opcodes)) <= self.max_nb_diff_opcodes):
+            if not (
+                self.min_nb_diff_opcodes
+                <= len(set(opcodes))
+                <= self.max_nb_diff_opcodes
+            ):
                 continue
-            if not(min(leaf_nb_use) >= 2):
+            if not (min(leaf_nb_use) >= 2):
                 continue
             ins = pattern.mop.d
             self.log_info("IR: 0x{0:x} - {1}".format(ins.ea, format_minsn_t(ins)))
             for leaf_info in leaf_info_list:
-                self.log_info("  {0} -> {1}".format(leaf_info.ast, format_mop_t(leaf_info.ast.mop)))
+                self.log_info(
+                    "  {0} -> {1}".format(
+                        leaf_info.ast, format_mop_t(leaf_info.ast.mop)
+                    )
+                )
             self.log_info("Pattern: {0}".format(pattern))
             self.log_info("AstNode: {0}\n".format(pattern.get_pattern()))
             return True

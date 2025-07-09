@@ -1,10 +1,10 @@
 import logging
 from ida_hexrays import *
-from typing import List, Union, Dict, Tuple
+from typing import List, Tuple
 
 from d810.errors import ControlFlowException
-from d810.hexrays_helpers import CONDITIONAL_JUMP_OPCODES
-from d810.hexrays_formatters import block_printer
+from d810.hexrays.hexrays_helpers import CONDITIONAL_JUMP_OPCODES
+from d810.hexrays.hexrays_formatters import block_printer
 
 
 helper_logger = logging.getLogger('D810.helper')

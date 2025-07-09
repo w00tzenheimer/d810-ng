@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from d810.ast import AstNode, minsn_to_ast
 from d810.errors import D810Exception
-from d810.hexrays_formatters import format_minsn_t, maturity_to_string
+from d810.expr.ast import AstNode, minsn_to_ast
+from d810.hexrays.hexrays_formatters import format_minsn_t, maturity_to_string
 from d810.optimizers.handler import OptimizationRule
+from d810.registry import Registrant
 
 import ida_hexrays
 
@@ -84,7 +85,7 @@ class GenericPatternRule(InstructionOptimizationRule):
         return "{0} => {1}".format(self.PATTERN, self.REPLACEMENT_PATTERN)
 
 
-class InstructionOptimizer(object):
+class InstructionOptimizer(Registrant):
     RULE_CLASSES = []
     NAME = None
 
@@ -119,9 +120,9 @@ class InstructionOptimizer(object):
         for rule_name, rule_nb_match in self.rules_usage_info.items():
             if rule_nb_match > 0:
                 d810_logger.info(
-                    "Instruction Rule '{0}' has been used {1} times".format(
-                        rule_name, rule_nb_match
-                    )
+                    "Instruction Rule '%s' has been used %d times",
+                    rule_name,
+                    rule_nb_match,
                 )
 
     def get_optimized_instruction(

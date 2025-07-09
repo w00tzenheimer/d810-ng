@@ -12,6 +12,18 @@ import idaapi
 
 logger = logging.getLogger("D810.ui")
 
+# ---------------------------------------------------------------------------
+# External dependencies
+# ---------------------------------------------------------------------------
+from d810.conf import ProjectConfiguration, RuleConfiguration
+
+# Test-runner integration
+try:
+    from d810.ui.testbed import IDATestRunner, TestRunnerForm
+except ModuleNotFoundError:  # pragma: no cover – tests package may not exist yet
+    IDATestRunner = None  # type: ignore
+    TestRunnerForm = None  # type: ignore
+
 
 class PluginConfigurationFileForm_t(QtWidgets.QDialog):
     def __init__(self, parent, state):
@@ -197,6 +209,20 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
         self.config_rules = []
         self.update_table_rule_selection()
 
+        # Enable right-click copy on description column
+        self.table_ins_rule_selection.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.table_ins_rule_selection.customContextMenuRequested.connect(
+            lambda pos, table=self.table_ins_rule_selection: self._show_copy_context_menu(
+                table, pos
+            )
+        )
+        self.table_blk_rule_selection.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.table_blk_rule_selection.customContextMenuRequested.connect(
+            lambda pos, table=self.table_blk_rule_selection: self._show_copy_context_menu(
+                table, pos
+            )
+        )
+
     def update_form(
         self,
         config_description=None,
@@ -287,6 +313,7 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
             self.table_blk_rule_selection.setItem(i, 1, item)
             item = QtWidgets.QTableWidgetItem()
             item.setText(rule.description)
+            print(rule.description)
             item.setFlags(QtCore.Qt.ItemIsEnabled)
             self.table_blk_rule_selection.setItem(i, 2, item)
             item = QtWidgets.QTableWidgetItem()
@@ -340,6 +367,34 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
                 activated_rule_names.append(rule_conf)
                 # activated_rule_names.append(self.table_blk_rule_selection.item(i, 1).text())
         return activated_rule_names
+
+    # Context menu handler to copy description in rule selection tables
+    def _show_copy_context_menu(self, table, pos):
+        """
+        Show a context menu to copy description cells from the instruction/block rule tables.
+        Copies all selected description cells (column 2) or the cell under the mouse if none are selected.
+        """
+        # Determine which rows to copy
+        selected = [
+            idx for idx in table.selectionModel().selectedIndexes() if idx.column() == 2
+        ]
+        if selected:
+            rows = sorted({idx.row() for idx in selected})
+        else:
+            index = table.indexAt(pos)
+            if not index.isValid() or index.column() != 2:
+                return
+            rows = [index.row()]
+
+        # Gather text for each row
+        texts = [table.item(r, 2).text() for r in rows]
+
+        # Build menu
+        menu = QtWidgets.QMenu(table)
+        copy_action = menu.addAction("Copy")
+        action = menu.exec_(table.viewport().mapToGlobal(pos))
+        if action == copy_action:
+            QtWidgets.QApplication.clipboard().setText("\n".join(texts))
 
 
 class D810ConfigForm_t(ida_kernwin.PluginForm):
@@ -424,9 +479,22 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
         self.cfg_ins_preview = QtWidgets.QTableWidget(self.parent)
         layout.addWidget(self.cfg_ins_preview, 2, 0)
+        # Enable right-click copy on description column of preview tables
+        self.cfg_ins_preview.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.cfg_ins_preview.customContextMenuRequested.connect(
+            lambda pos, table=self.cfg_ins_preview: self._show_copy_context_menu_preview(
+                table, pos
+            )
+        )
 
         self.cfg_blk_preview = QtWidgets.QTableWidget(self.parent)
         layout.addWidget(self.cfg_blk_preview, 3, 0)
+        self.cfg_blk_preview.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.cfg_blk_preview.customContextMenuRequested.connect(
+            lambda pos, table=self.cfg_blk_preview: self._show_copy_context_menu_preview(
+                table, pos
+            )
+        )
         self.update_cfg_preview()
 
         # ----------- Analysis buttons -----------------------
@@ -617,6 +685,34 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         )
         return
 
+    # Context menu handler to copy description in preview tables
+    def _show_copy_context_menu_preview(self, table, pos):
+        """
+        Show a context menu to copy description cells from the configuration preview tables.
+        Copies all selected description cells (column 1) or the cell under the mouse if none are selected.
+        """
+        # Determine which rows to copy
+        selected = [
+            idx for idx in table.selectionModel().selectedIndexes() if idx.column() == 1
+        ]
+        if selected:
+            rows = sorted({idx.row() for idx in selected})
+        else:
+            index = table.indexAt(pos)
+            if not index.isValid() or index.column() != 1:
+                return
+            rows = [index.row()]
+
+        # Gather text for each row
+        texts = [table.item(r, 1).text() for r in rows]
+
+        # Build menu
+        menu = QtWidgets.QMenu(table)
+        copy_action = menu.addAction("Copy")
+        action = menu.exec_(table.viewport().mapToGlobal(pos))
+        if action == copy_action:
+            QtWidgets.QApplication.clipboard().setText("\n".join(texts))
+
 
 class D810GUI(object):
     def __init__(self, state):
@@ -626,6 +722,14 @@ class D810GUI(object):
         logger.debug("Initializing D810GUI")
         self.state = state
         self.d810_config_form = D810ConfigForm_t(self.state)
+
+        # ---------------------------------------------------------------
+        # Unit-test runner (optional if tests package available)
+        # ---------------------------------------------------------------
+        if TestRunnerForm is not None and IDATestRunner is not None:
+            self.test_runner = TestRunnerForm(IDATestRunner())
+        else:
+            self.test_runner = None
         # XXX fix
         idaapi.set_dock_pos("D-810", "IDA View-A", idaapi.DP_TAB)
 
@@ -633,6 +737,22 @@ class D810GUI(object):
         logger.debug("Calling show_windows")
         self.d810_config_form.Show()
 
+        # Show the test-runner GUI if available
+        if self.test_runner is not None:
+            self.test_runner.Show(
+                "D810 Test Runner",
+                options=(
+                    ida_kernwin.PluginForm.WOPN_PERSIST
+                    | ida_kernwin.PluginForm.WCLS_SAVE
+                    | ida_kernwin.PluginForm.WOPN_RESTORE
+                    | ida_kernwin.PluginForm.WOPN_TAB
+                ),
+            )
+
     def term(self):
         logger.debug("Calling term")
         self.d810_config_form.Close(ida_kernwin.PluginForm.WCLS_SAVE)
+
+        # Close test-runner form
+        if self.test_runner is not None:
+            self.test_runner.Close(ida_kernwin.PluginForm.WCLS_SAVE)

@@ -7,8 +7,7 @@ import logging
 import typing
 import weakref
 
-from d810.hexrays_formatters import format_minsn_t  # optional, for logging
-from d810.hexrays_helpers import MicrocodeHelper, MicrocodeInstruction
+from d810.hexrays.hexrays_helpers import MicrocodeHelper, MicrocodeInstruction
 from d810.optimizers.flow.handler import FlowOptimizationRule
 
 import ida_hexrays

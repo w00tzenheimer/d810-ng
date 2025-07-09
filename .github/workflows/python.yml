@@ -1,0 +1,53 @@
+name: d810-ng tests
+
+on:
+    push:
+        branches:
+            - "main"
+    pull_request:
+        types:
+            - synchronize
+            - opened
+            - reopened
+            - ready_for_review
+        branches:
+            - "main"
+
+# cancel previous workflow jobs for PRs
+concurrency:
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+    cancel-in-progress: true
+
+jobs:
+    unit-tests:
+        runs-on: ubuntu-24.04
+        strategy:
+            matrix:
+                python-version: ["3.12", "3.13"]
+        env:
+            PYTHONPATH: ${{ github.workspace }}
+        steps:
+            - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
+              uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+
+            - name: Set up Python${{ matrix.python-version }}
+              uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ matrix.python-version }}
+                  cache: pip
+            - name: Install dependencies
+              run: |
+                  pip install --upgrade pip setuptools wheel uv
+                  uv pip install --system -e .
+            # - name: Python unit tests
+            #   run: |
+            #       python -m unittest discover -s d810.tests.unit -v
+            - name: Run all tests except system (those require ida)
+              run: |
+                  for dir in d810/tests/*; do
+                      if [ "$(basename "$dir")" != "system" ] && [ -d "$dir" ]; then
+                          python -m unittest discover -s "$dir" -v
+                      fi
+                  done

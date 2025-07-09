@@ -3,10 +3,23 @@ from __future__ import annotations
 import logging
 import typing
 
-from d810.ast import AstBase, AstLeaf, AstNode, minsn_to_ast
-from d810.hexrays_helpers import AND_TABLE, OPCODES_INFO  # already maps size→mask
+from d810.expr.ast import AstBase, AstLeaf, AstNode, minsn_to_ast
+from d810.expr.utils import (
+    get_parity_flag,
+    rol1,
+    rol2,
+    rol4,
+    rol8,
+    ror1,
+    ror2,
+    ror4,
+    ror8,
+)
+from d810.hexrays.hexrays_helpers import (  # already maps size→mask
+    AND_TABLE,
+    OPCODES_INFO,
+)
 from d810.optimizers.instructions.peephole.handler import PeepholeSimplificationRule
-from d810.utils import get_parity_flag, rol1, rol2, rol4, rol8, ror1, ror2, ror4, ror8
 
 import ida_hexrays
 

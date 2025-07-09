@@ -1,42 +1,29 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
-from typing import TYPE_CHECKING, List
+import pathlib
 
 import pyinstrument
-
-import idaapi
-
-if TYPE_CHECKING:
-    from d810.conf import D810Configuration, ProjectConfiguration
-
-
-# Note that imports are performed directly in the functions so that they are reloaded each time the plugin is restarted
-# This allow to load change code/drop new rules without having to reboot IDA
-d810_state = None
+from d810.conf import D810Configuration, ProjectConfiguration
+from d810.hexrays.hexrays_hooks import (
+    BlockOptimizerManager,
+    HexraysDecompilationHook,
+    InstructionOptimizerManager,
+)
+from d810.log.log import clear_logs, configure_loggers
+from d810.optimizers.flow.handler import FlowOptimizationRule
+from d810.optimizers.instructions.handler import InstructionOptimizationRule
+from d810.registry import Registrant
+from d810.ui.ida_ui import D810GUI
 
 D810_LOG_DIR_NAME = "d810_logs"
 
-MANAGER_INFO_FILENAME = "manager_info.json"
 logger = logging.getLogger("D810")
 
 
-def reload_all_modules():
-    manager_info_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), MANAGER_INFO_FILENAME
-    )
-
-    with open(manager_info_path, "r") as f:
-        manager_info = json.load(f)
-
-    for module_name in manager_info["module_list"]:
-        idaapi.require(module_name)
-
-
 class D810Manager(object):
-    def __init__(self, log_dir):
+    def __init__(self, log_dir: pathlib.Path):
         self.instruction_optimizer_rules = []
         self.instruction_optimizer_config = {}
         self.block_optimizer_rules = []
@@ -64,12 +51,7 @@ class D810Manager(object):
         self.stop()
         logger.debug("Reloading manager...")
 
-        from d810.hexrays_hooks import (
-            BlockOptimizerManager,
-            HexraysDecompilationHook,
-            InstructionOptimizerManager,
-        )
-
+        # Instantiate core manager classes from registry
         self.instruction_optimizer = InstructionOptimizerManager(self)
         self.instruction_optimizer.configure(**self.instruction_optimizer_config)
         self.block_optimizer = BlockOptimizerManager(self)
@@ -112,36 +94,60 @@ class D810Manager(object):
             self.hx_decompiler_hook = None
 
 
-class D810State(object):
-    def __init__(self, d810_config: D810Configuration):
+class D810State:
+    """
+    Singleton wrapper proxy controller for the underlying plugin logic.
+
+    Ensures only one D810State is created and shared throughout the plugin's lifetime.
+
+    Usage:
+        >>> t1 = D810State()
+        >>> t2 = D810State()
+        >>> t1 is t2
+        True
+        >>> t1.get() is t2.get()
+        True
+
+    The .get() method returns the singleton D810State instance.
+    """
+
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            # Not thread-safe, but sufficient for plugin/IDA context
+            cls._instance = super().__new__(cls)
+            cls._instance._initialize()
+        return cls._instance
+
+    @classmethod
+    def get(cls):
+        if cls._instance is None:
+            cls()
+        return cls._instance
+
+    def _initialize(self, d810_config: D810Configuration | None = None):
         # For debugging purposes, to interact with this object from the console
         # Type in IDA Python shell 'from d810.manager import d810_state' to access it
-        global d810_state
-        d810_state = self
-        reload_all_modules()
+        # global d810_state
+        # d810_state = self
+        # reload_all_modules()
 
-        self.d810_config = d810_config
-        self.log_dir = os.path.join(self.d810_config.get("log_dir"), D810_LOG_DIR_NAME)
-        self.manager = D810Manager(self.log_dir)
+        self.d810_config = d810_config or D810Configuration()
 
-        from d810.optimizers.flow import KNOWN_BLK_RULES
-        from d810.optimizers.instructions import KNOWN_INS_RULES
+        # TO-DO: if [...].get raises an exception because log_dir is not found, handle exception
+        real_log_dir = os.path.join(self.d810_config.get("log_dir"), D810_LOG_DIR_NAME)
 
-        self.known_ins_rules = [x for x in KNOWN_INS_RULES]
-        self.known_blk_rules = [x for x in KNOWN_BLK_RULES]
+        # TO-DO: if [...].get raises an exception because erase_logs_on_reload is not found, handle exception
+        if self.d810_config.get("erase_logs_on_reload"):
+            clear_logs(real_log_dir)
 
-        self.gui = None
-        self.current_project = None
-        self.projects: List[ProjectConfiguration] = []
-        self.current_project_index = self.d810_config.get("last_project_index")
-        self.current_ins_rules = []
-        self.current_blk_rules = []
+        configure_loggers(real_log_dir)
 
-        self.register_default_projects()
-        self.load_project(self.current_project_index)
+    def is_loaded(self):
+        return self._is_loaded
 
     def register_default_projects(self):
-        from d810.conf import ProjectConfiguration
 
         self.projects = []
         for project_configuration_path in self.d810_config.get("configurations"):
@@ -191,6 +197,7 @@ class D810State(object):
         logger.debug("Block rules configured")
         self.manager.configure(**self.current_project.additional_configuration)
         logger.debug("Project loaded.")
+        return True
 
     def start_d810(self):
         print("D-810 ready to deobfuscate...")
@@ -212,16 +219,48 @@ class D810State(object):
 
     def stop_d810(self):
         print("Stopping D-810...")
-        self.manager.stop()
+        if getattr(self, "manager", None):
+            self.manager.stop()
 
-    def start_plugin(self):
-        from d810.ida_ui import D810GUI
+    def load(self):
+        self.log_dir = pathlib.Path(self.d810_config.get("log_dir")) / D810_LOG_DIR_NAME
+        self.manager = D810Manager(self.log_dir)
 
+        self.gui = None
+        self.current_project = None
+        self.projects: list[ProjectConfiguration] = []
+        self.current_project_index = int(self.d810_config.get("last_project_index"))
+        self.current_ins_rules = []
+        self.current_blk_rules = []
+
+        self.known_ins_rules = [
+            rule()
+            for rule in InstructionOptimizationRule.registry.values()
+            if rule.__name__ != "jumpoptimizationrule"
+        ]
+        self.known_blk_rules = [
+            rule() for rule in FlowOptimizationRule.registry.values()
+        ]
+
+        self.register_default_projects()
+        self._is_loaded = self.load_project(self.current_project_index)
         self.gui = D810GUI(self)
         self.gui.show_windows()
 
-    def stop_plugin(self):
-        self.manager.stop()
-        if self.gui:
+    def unload(self):
+        if getattr(self, "manager", None):
+            self.manager.stop()
+
+        if getattr(self, "gui", None):
             self.gui.term()
             self.gui = None
+        self._is_loaded = False
+
+
+"""
+JUMP_OPTIMIZATION_RULES = [x() for x in get_all_subclasses(JumpOptimizationRule)]
+jump_fixer = JumpFixer()
+for jump_optimization_rule in JUMP_OPTIMIZATION_RULES:
+    jump_fixer.register_rule(jump_optimization_rule)
+JUMP_OPTIMIZATION_BLOCK_RULES = [jump_fixer]
+"""

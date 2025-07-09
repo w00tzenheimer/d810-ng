@@ -1,8 +1,7 @@
 import logging
-from typing import Tuple, List
 from ida_hexrays import *
 
-from d810.hexrays_helpers import extract_num_mop, append_mop_if_not_in_list
+from d810.hexrays.hexrays_helpers import extract_num_mop, append_mop_if_not_in_list
 from d810.optimizers.flow.flattening.generic import GenericDispatcherCollector, GenericDispatcherInfo, \
     GenericDispatcherBlockInfo, GenericDispatcherUnflatteningRule
 
