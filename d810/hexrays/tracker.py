@@ -65,11 +65,10 @@ class InstructionDefUseCollector(mop_visitor_t):
                 elif op.a.t == mop_S:
                     return 0
                 logger.warning(
-                    "Calling visit_mop with unsupported mop type {0} - {1}: '{2}'".format(
-                        mop_type_to_string(op.t),
-                        mop_type_to_string(op.a.t),
-                        format_mop_t(op),
-                    )
+                    "op.t == mop_a: Calling visit_mop with unsupported mop type %s - %s: '%s'",
+                    mop_type_to_string(op.t),
+                    mop_type_to_string(op.a.t),
+                    format_mop_t(op),
                 )
                 return 0
             elif op.t == mop_n:
@@ -80,11 +79,13 @@ class InstructionDefUseCollector(mop_visitor_t):
                 return 0
             elif op.t == mop_b:
                 return 0
+            elif op.t == mop_str:
+                return 0
             else:
                 logger.warning(
-                    "Calling visit_mop with unsupported mop type {0}: '{1}'".format(
-                        mop_type_to_string(op.t), format_mop_t(op)
-                    )
+                    "op.t == else: Calling visit_mop with unsupported mop type %s: '%s'",
+                    mop_type_to_string(op.t),
+                    format_mop_t(op),
                 )
         return 0
 
@@ -278,8 +279,14 @@ cur_mop_tracker_nb_path = 0
 
 
 class MopTracker(object):
-    def __init__(self, searched_mop_list: List[mop_t], max_nb_block=-1, max_path=-1):
-        self.mba = None
+    def __init__(
+        self,
+        searched_mop_list: List[mop_t],
+        max_nb_block=-1,
+        max_path=-1,
+        dispatcher_info=None,
+    ):
+        self.mba: mba_t
         self._unresolved_mops = []
         self._memory_unresolved_mops = []
         for searched_mop in searched_mop_list:
@@ -292,6 +299,7 @@ class MopTracker(object):
         self.avoid_list = []
         self.call_detected = False
         self.constant_mops = []
+        self.dispatcher_info = dispatcher_info
 
     @staticmethod
     def reset():
@@ -318,7 +326,7 @@ class MopTracker(object):
     def search_backward(
         self,
         blk: mblock_t,
-        ins: minsn_t,
+        ins: minsn_t | None,
         avoid_list=None,
         must_use_pred=None,
         stop_at_first_duplication=False,
@@ -387,6 +395,26 @@ class MopTracker(object):
         if stop_at_first_duplication:
             self.history.unresolved_mop_list = [x for x in self._unresolved_mops]
             return [self.history]
+
+        if (
+            self.dispatcher_info
+            and blk_with_multiple_pred.serial
+            == self.dispatcher_info.outmost_dispatch_num
+        ):
+            logger.debug(
+                f"MopTracker unresolved: reached to the dispatcher {blk_with_multiple_pred.serial}"
+            )
+            if self.dispatcher_info.last_num_in_first_blks > 0:
+                logger.debug(
+                    f"Tracking again from the last block {self.dispatcher_info.last_num_in_first_blks} in first blocks before the dispatcher"
+                )
+                new_tracker = self.get_copy()
+                return new_tracker.search_backward(
+                    self.mba.get_mblock(self.dispatcher_info.last_num_in_first_blks),
+                    None,
+                    self.avoid_list,
+                    must_use_pred,
+                )
         logger.debug(
             "MopTracker creating child because multiple pred: {0}".format(
                 self.history.block_serial_path
@@ -413,7 +441,7 @@ class MopTracker(object):
         return possible_histories
 
     def search_until_multiple_predecessor(
-        self, blk: mblock_t, ins: Union[None, minsn_t] = None
+        self, blk: mblock_t, ins: minsn_t | None = None
     ) -> Union[None, mblock_t]:
         # By default, we start searching from block tail
         cur_ins = ins if ins else blk.tail
