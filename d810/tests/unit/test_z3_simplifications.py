@@ -16,9 +16,9 @@ class RuleInfo:
 RULES: list[RuleInfo] = [
     RuleInfo(
         name="Add_HackersDelightRule_1",
-        expr="(x_0 - (~(x_1) - 0x1)) => (x_0 + x_1)",
-        known_incorrect=True,
-        comment="The rule is mathematically incorrect. LHS is x+y+2.",
+        expr="(x_0 - (~(x_1) + 0x1)) => (x_0 + x_1)",
+        known_incorrect=False,
+        comment=None,
     ),
     RuleInfo(
         name="Add_HackersDelightRule_2",

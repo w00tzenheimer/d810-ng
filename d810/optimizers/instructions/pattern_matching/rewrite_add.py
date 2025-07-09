@@ -9,7 +9,7 @@ class Add_HackersDelightRule_1(PatternMatchingRule):
     PATTERN = AstNode(
         m_sub,
         AstLeaf("x_0"),
-        AstNode(m_sub, AstNode(m_bnot, AstLeaf("x_1")), AstConstant("1", 1)),
+        AstNode(m_add, AstNode(m_bnot, AstLeaf("x_1")), AstConstant("1", 1)),
     )
     REPLACEMENT_PATTERN = AstNode(m_add, AstLeaf("x_0"), AstLeaf("x_1"))
 
