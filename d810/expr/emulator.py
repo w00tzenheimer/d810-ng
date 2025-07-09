@@ -3,13 +3,22 @@ from __future__ import annotations
 import logging
 from typing import Dict
 
-from d810.hexrays.cfg_utils import get_block_serials_by_address
 from d810.errors import (
     EmulationException,
     EmulationIndirectJumpException,
     UnresolvedMopException,
     WritableMemoryReadException,
 )
+from d810.expr.utils import (
+    get_add_cf,
+    get_add_of,
+    get_parity_flag,
+    get_sub_of,
+    ror,
+    signed_to_unsigned,
+    unsigned_to_signed,
+)
+from d810.hexrays.cfg_utils import get_block_serials_by_address
 from d810.hexrays.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,
@@ -22,15 +31,6 @@ from d810.hexrays.hexrays_helpers import (
     CONTROL_FLOW_OPCODES,
     equal_mops_ignore_size,
     get_mop_index,
-)
-from d810.expr.utils import (
-    get_add_cf,
-    get_add_of,
-    get_parity_flag,
-    get_sub_of,
-    ror,
-    signed_to_unsigned,
-    unsigned_to_signed,
 )
 
 from ida_hexrays import *
@@ -605,7 +605,7 @@ class MopMapping(object):
 
 
 class MicroCodeEnvironment(object):
-    def __init__(self, parent: Union[None, MicroCodeEnvironment] = None):
+    def __init__(self, parent: MicroCodeEnvironment | None = None):
         self.parent = parent
         self.mop_r_record = MopMapping()
         self.mop_S_record = MopMapping()
@@ -620,7 +620,7 @@ class MicroCodeEnvironment(object):
 
     def get_copy(self, copy_parent=True) -> MicroCodeEnvironment:
         parent_copy = self.parent
-        if parent_copy is not None and copy_parent:
+        if self.parent is not None and copy_parent:
             parent_copy = self.parent.get_copy(copy_parent=True)
         new_env = MicroCodeEnvironment(parent_copy)
         for mop, mop_value in self.mop_r_record.items():
@@ -655,7 +655,7 @@ class MicroCodeEnvironment(object):
         self.next_blk = next_blk
         self.next_ins = next_ins
 
-    def define(self, mop: mblock_t, value: int) -> int:
+    def define(self, mop: mop_t, value: int) -> int:
         if mop.t == mop_r:
             self.mop_r_record[mop] = value
             return value
@@ -671,11 +671,11 @@ class MicroCodeEnvironment(object):
     def _lookup_mop(
         self,
         searched_mop: mop_t,
-        mop_value_dict: Dict[mop_t, int],
-        new_mop_value: Union[None, int] = None,
+        mop_value_dict: MopMapping,
+        new_mop_value: int | None = None,
         auto_define=True,
         raise_exception=True,
-    ) -> int:
+    ) -> int | None:
         for known_mop, mop_value in mop_value_dict.items():
             if equal_mops_ignore_size(searched_mop, known_mop):
                 if new_mop_value is not None:
@@ -689,10 +689,8 @@ class MicroCodeEnvironment(object):
             raise EmulationException(
                 "Variable '{0}' is not defined".format(format_mop_t(searched_mop))
             )
-        else:
-            return None
 
-    def lookup(self, mop: mop_t, raise_exception=True) -> int:
+    def lookup(self, mop: mop_t, raise_exception=True) -> int | None:
         if mop.t == mop_r:
             return self._lookup_mop(
                 mop, self.mop_r_record, raise_exception=raise_exception
@@ -702,7 +700,7 @@ class MicroCodeEnvironment(object):
                 mop, self.mop_S_record, raise_exception=raise_exception
             )
 
-    def assign(self, mop: mop_t, value: int, auto_define=True) -> int:
+    def assign(self, mop: mop_t, value: int, auto_define=True) -> int | None:
         if mop.t == mop_r:
             return self._lookup_mop(mop, self.mop_r_record, value, auto_define)
         elif mop.t == mop_S:

@@ -19,7 +19,7 @@ from d810.conf import ProjectConfiguration, RuleConfiguration
 
 # Test-runner integration
 try:
-    from d810.ui.testbed import IDATestRunner, TestRunnerForm
+    from d810.ui.testbed import TestRunnerForm
 except ModuleNotFoundError:  # pragma: no cover – tests package may not exist yet
     IDATestRunner = None  # type: ignore
     TestRunnerForm = None  # type: ignore
@@ -368,33 +368,39 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
                 # activated_rule_names.append(self.table_blk_rule_selection.item(i, 1).text())
         return activated_rule_names
 
-    # Context menu handler to copy description in rule selection tables
     def _show_copy_context_menu(self, table, pos):
         """
-        Show a context menu to copy description cells from the instruction/block rule tables.
-        Copies all selected description cells (column 2) or the cell under the mouse if none are selected.
+        Show a context menu to copy selected cells or the cell under the mouse.
+        Copies all selected cells, grouping by row with tab separation, or the single cell under the mouse if none are selected.
         """
-        # Determine which rows to copy
-        selected = [
-            idx for idx in table.selectionModel().selectedIndexes() if idx.column() == 2
-        ]
+        # Gather all selected indexes
+        selected = table.selectionModel().selectedIndexes()
         if selected:
-            rows = sorted({idx.row() for idx in selected})
+            # Group selected cells by row
+            rows = {}
+            for idx in selected:
+                r, c = idx.row(), idx.column()
+                rows.setdefault(r, []).append(c)
+            # Build lines of text per row, with cells separated by tabs
+            lines = []
+            for r in sorted(rows):
+                cols = sorted(rows[r])
+                texts = [table.item(r, c).text() for c in cols]
+                lines.append("\t".join(texts))
+            text = "\n".join(lines)
         else:
+            # No selection: copy the cell under the mouse cursor
             index = table.indexAt(pos)
-            if not index.isValid() or index.column() != 2:
+            if not index.isValid():
                 return
-            rows = [index.row()]
+            text = table.item(index.row(), index.column()).text()
 
-        # Gather text for each row
-        texts = [table.item(r, 2).text() for r in rows]
-
-        # Build menu
+        # Create and display the context menu
         menu = QtWidgets.QMenu(table)
         copy_action = menu.addAction("Copy")
         action = menu.exec_(table.viewport().mapToGlobal(pos))
         if action == copy_action:
-            QtWidgets.QApplication.clipboard().setText("\n".join(texts))
+            QtWidgets.QApplication.clipboard().setText(text)
 
 
 class D810ConfigForm_t(ida_kernwin.PluginForm):
@@ -685,33 +691,38 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         )
         return
 
-    # Context menu handler to copy description in preview tables
     def _show_copy_context_menu_preview(self, table, pos):
         """
-        Show a context menu to copy description cells from the configuration preview tables.
-        Copies all selected description cells (column 1) or the cell under the mouse if none are selected.
+        Show a context menu to copy selected cells or the cell under the mouse.
+        Copies all selected cells, grouping by row with tab separation, or the single cell under the mouse if none are selected.
         """
-        # Determine which rows to copy
-        selected = [
-            idx for idx in table.selectionModel().selectedIndexes() if idx.column() == 1
-        ]
+        selected = table.selectionModel().selectedIndexes()
         if selected:
-            rows = sorted({idx.row() for idx in selected})
+            # Group selected cells by row
+            rows = {}
+            for idx in selected:
+                r, c = idx.row(), idx.column()
+                rows.setdefault(r, []).append(c)
+            # Build lines of text per row, with cells separated by tabs
+            lines = []
+            for r in sorted(rows):
+                cols = sorted(rows[r])
+                texts = [table.item(r, c).text() for c in cols]
+                lines.append("\t".join(texts))
+            text = "\n".join(lines)
         else:
+            # No selection: copy the cell under the mouse cursor
             index = table.indexAt(pos)
-            if not index.isValid() or index.column() != 1:
+            if not index.isValid():
                 return
-            rows = [index.row()]
+            text = table.item(index.row(), index.column()).text()
 
-        # Gather text for each row
-        texts = [table.item(r, 1).text() for r in rows]
-
-        # Build menu
+        # Create and display the context menu
         menu = QtWidgets.QMenu(table)
         copy_action = menu.addAction("Copy")
         action = menu.exec_(table.viewport().mapToGlobal(pos))
         if action == copy_action:
-            QtWidgets.QApplication.clipboard().setText("\n".join(texts))
+            QtWidgets.QApplication.clipboard().setText(text)
 
 
 class D810GUI(object):
@@ -726,8 +737,8 @@ class D810GUI(object):
         # ---------------------------------------------------------------
         # Unit-test runner (optional if tests package available)
         # ---------------------------------------------------------------
-        if TestRunnerForm is not None and IDATestRunner is not None:
-            self.test_runner = TestRunnerForm(IDATestRunner())
+        if TestRunnerForm is not None:
+            self.test_runner = TestRunnerForm()
         else:
             self.test_runner = None
         # XXX fix
@@ -756,3 +767,4 @@ class D810GUI(object):
         # Close test-runner form
         if self.test_runner is not None:
             self.test_runner.Close(ida_kernwin.PluginForm.WCLS_SAVE)
+ 
