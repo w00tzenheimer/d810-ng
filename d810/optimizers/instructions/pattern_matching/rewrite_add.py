@@ -1,5 +1,9 @@
 from d810.expr.ast import AstConstant, AstLeaf, AstNode
-from d810.hexrays.hexrays_helpers import AND_TABLE, equal_bnot_mop, equal_ignore_msb_cst
+from d810.hexrays.hexrays_helpers import (
+    AND_TABLE,
+    equal_bnot_mop,
+    equal_mops_ignore_size,
+)
 from d810.optimizers.instructions.pattern_matching.handler import PatternMatchingRule
 
 from ida_hexrays import *
@@ -75,9 +79,10 @@ class Add_SpecialConstantRule_1(PatternMatchingRule):
     REPLACEMENT_PATTERN = AstNode(m_add, AstLeaf("x_0"), AstConstant("c_1"))
 
     def check_candidate(self, candidate):
-        return equal_ignore_msb_cst(candidate["c_1"].mop, candidate["c_2"].mop)
+        return equal_mops_ignore_size(candidate["c_1"].mop, candidate["c_2"].mop)
 
 
+# This rule is not correct!
 class Add_SpecialConstantRule_2(PatternMatchingRule):
     PATTERN = AstNode(
         m_add,
@@ -92,10 +97,14 @@ class Add_SpecialConstantRule_2(PatternMatchingRule):
             AstNode(m_and, AstLeaf("x_0"), AstConstant("c_2")),
         ),
     )
-    REPLACEMENT_PATTERN = AstNode(m_add, AstLeaf("x_0"), AstConstant("c_1"))
+    REPLACEMENT_PATTERN = AstNode(
+        m_add,
+        AstNode(m_and, AstLeaf("x_0"), AstConstant("val_ff", 0xFF)),
+        AstConstant("c_1"),
+    )
 
     def check_candidate(self, candidate):
-        return (candidate["c_1"].value & 0xFF) == candidate["c_2"].value
+        return candidate["c_1"].value & 0xFF == candidate["c_2"].value
 
 
 class Add_SpecialConstantRule_3(PatternMatchingRule):

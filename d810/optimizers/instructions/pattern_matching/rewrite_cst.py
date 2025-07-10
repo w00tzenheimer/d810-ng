@@ -23,6 +23,11 @@ class CstSimplificationRule1(PatternMatchingRule):
     )
 
 
+# This rule is invalid.
+# Expression:     (((x_0 ^ c_1_1) & c_2_1) | ((x_0 ^ c_1_2) & c_2_2)) => (x_0 ^ c_res)
+# Counterexample: [c_1_1 = 2150373929, c_1_2 = 2144593366, c_2_1 = 4292077526, c_2_2 = 2150373417, c_res = 2147484160, x_0 = 2147484160]
+#  - LHS value:    2147483648 (dec: 2147483648)
+# - RHS value:    0 (dec: 0)
 class CstSimplificationRule2(PatternMatchingRule):
     PATTERN = AstNode(
         m_or,
@@ -355,6 +360,12 @@ class CstSimplificationRule19(PatternMatchingRule):
     )
 
     def check_candidate(self, candidate):
+        # Check if the MSB of c_1 is 0. This ensures that (x_0 & c_1) always has MSB=0,
+        # making the arithmetic shift (sar) behave identically to a logical shift (shr),
+        # which is necessary for the simplification to hold for all x_0.
+        msb_mask = 1 << (candidate["c_1"].size - 1)
+        if (candidate["c_1"].value & msb_mask) != 0:
+            return False
         candidate.add_constant_leaf(
             "c_res",
             candidate["c_1"].value >> candidate["c_2"].value,

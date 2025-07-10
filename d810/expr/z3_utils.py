@@ -1,3 +1,4 @@
+import functools
 import logging
 import typing
 
@@ -30,9 +31,18 @@ except ImportError:
     Z3_INSTALLED = False
 
 
+def requires_z3_installed(func: typing.Callable[..., typing.Any]):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if not Z3_INSTALLED:
+            raise D810Z3Exception("Z3 is not installed")
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+@requires_z3_installed
 def create_z3_vars(leaf_list: List[AstLeaf]):
-    if not Z3_INSTALLED:
-        raise D810Z3Exception("Z3 is not installed")
     known_leaf_list = []
     known_leaf_z3_var_list = []
     for leaf in leaf_list:
@@ -58,9 +68,8 @@ def create_z3_vars(leaf_list: List[AstLeaf]):
     return known_leaf_z3_var_list
 
 
+@requires_z3_installed
 def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
-    if not Z3_INSTALLED:
-        raise D810Z3Exception("Z3 is not installed")
     if ast is None:
         raise ValueError("ast is None")
     if ast.is_leaf():
@@ -238,9 +247,8 @@ def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
     )
 
 
+@requires_z3_installed
 def mop_list_to_z3_expression_list(mop_list: List[mop_t]):
-    if not Z3_INSTALLED:
-        raise D810Z3Exception("Z3 is not installed")
     ast_list = [mop_to_ast(mop) for mop in mop_list]
     ast_leaf_list = []
     for ast in ast_list:
@@ -249,9 +257,8 @@ def mop_list_to_z3_expression_list(mop_list: List[mop_t]):
     return [ast_to_z3_expression(ast) for ast in ast_list]
 
 
+@requires_z3_installed
 def z3_check_mop_equality(mop1: mop_t, mop2: mop_t) -> bool:
-    if not Z3_INSTALLED:
-        raise D810Z3Exception("Z3 is not installed")
     z3_mop1, z3_mop2 = mop_list_to_z3_expression_list([mop1, mop2])
     s = z3.Solver()
     s.add(z3.Not(z3_mop1 == z3_mop2))
@@ -260,9 +267,8 @@ def z3_check_mop_equality(mop1: mop_t, mop2: mop_t) -> bool:
     return False
 
 
+@requires_z3_installed
 def z3_check_mop_inequality(mop1: mop_t, mop2: mop_t) -> bool:
-    if not Z3_INSTALLED:
-        raise D810Z3Exception("Z3 is not installed")
     z3_mop1, z3_mop2 = mop_list_to_z3_expression_list([mop1, mop2])
     s = z3.Solver()
     s.add(z3_mop1 == z3_mop2)
@@ -271,9 +277,8 @@ def z3_check_mop_inequality(mop1: mop_t, mop2: mop_t) -> bool:
     return False
 
 
+@requires_z3_installed
 def rename_leafs(leaf_list: List[AstLeaf]) -> List[str]:
-    if not Z3_INSTALLED:
-        raise D810Z3Exception("Z3 is not installed")
     known_leaf_list = []
     for leaf in leaf_list:
         if not leaf.is_constant() and leaf.mop.t != mop_z:
@@ -289,9 +294,8 @@ def rename_leafs(leaf_list: List[AstLeaf]) -> List[str]:
     ]
 
 
+@requires_z3_installed
 def log_z3_instructions(original_ins: minsn_t, new_ins: minsn_t):
-    if not Z3_INSTALLED:
-        raise D810Z3Exception("Z3 is not installed")
     orig_mba_tree = minsn_to_ast(original_ins)
     new_mba_tree = minsn_to_ast(new_ins)
     if orig_mba_tree is None or new_mba_tree is None:
