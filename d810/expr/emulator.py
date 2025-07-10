@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict
 
 from d810.errors import (
     EmulationException,
@@ -47,7 +46,7 @@ class MicroCodeInterpreter(object):
 
     def _eval_instruction_and_update_environment(
         self, blk: mblock_t, ins: minsn_t, environment: MicroCodeEnvironment
-    ) -> Union[None, int]:
+    ) -> int | None:
         environment.set_cur_flow(blk, ins)
         res = self._eval_instruction(ins, environment)
         if res is not None:
@@ -57,7 +56,7 @@ class MicroCodeInterpreter(object):
 
     def _eval_instruction(
         self, ins: minsn_t, environment: MicroCodeEnvironment
-    ) -> Union[None, int]:
+    ) -> int | None:
         if ins is None:
             return None
         is_flow_instruction = self._eval_control_flow_instruction(ins, environment)
@@ -255,7 +254,7 @@ class MicroCodeInterpreter(object):
 
     def _eval_conditional_jump(
         self, ins: minsn_t, environment: MicroCodeEnvironment
-    ) -> Union[None, int]:
+    ) -> int | None:
         if ins.opcode not in CONDITIONAL_JUMP_OPCODES:
             return None
         if ins.opcode == m_jtbl:
@@ -422,23 +421,23 @@ class MicroCodeInterpreter(object):
 
     def _eval_store(
         self, ins: minsn_t, environment: MicroCodeEnvironment
-    ) -> Union[None, int]:
+    ) -> int | None:
         # TODO: implement
         emulator_log.warning(
-            "Evaluation of {0} not implemented: bypassing".format(format_minsn_t(ins))
+            "Evaluation of %s not implemented: bypassing", format_minsn_t(ins)
         )
         return None
 
     def _eval_call(
         self, ins: minsn_t, environment: MicroCodeEnvironment
-    ) -> Union[None, int]:
+    ) -> int | None:
         # TODO: implement
         emulator_log.warning(
-            "Evaluation of {0} not implemented: bypassing".format(format_minsn_t(ins))
+            "Evaluation of %s not implemented: bypassing", format_minsn_t(ins)
         )
         return None
 
-    def eval(self, mop: mop_t, environment: MicroCodeEnvironment) -> Union[None, int]:
+    def eval(self, mop: mop_t, environment: MicroCodeEnvironment) -> int | None:
         if mop.t == mop_n:
             return mop.nnn.value
         elif mop.t in [mop_r, mop_S]:

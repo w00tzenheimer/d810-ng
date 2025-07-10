@@ -2,7 +2,22 @@ import re
 import unittest
 from dataclasses import dataclass
 
-from z3 import And, BitVec, BitVecVal, If, LShR, Solver, is_bool, sat, simplify, unsat
+from z3 import (
+    ULT,
+    And,
+    BitVec,
+    BitVecVal,
+    Extract,
+    If,
+    LShR,
+    SignExt,
+    Solver,
+    ZeroExt,
+    is_bool,
+    sat,
+    simplify,
+    unsat,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -11,14 +26,15 @@ class RuleInfo:
     expr: str
     known_incorrect: bool = False
     comment: str | None = None
+    is_nonlinear: bool = False
 
 
 RULES: list[RuleInfo] = [
     RuleInfo(
         name="Add_HackersDelightRule_1",
-        expr="(x_0 - (~(x_1) - 0x1)) => (x_0 + x_1)",
-        known_incorrect=True,
-        comment="The rule is mathematically incorrect. LHS is x+y+2.",
+        expr="(x_0 - (~(x_1) + 0x1)) => (x_0 + x_1)",
+        known_incorrect=False,
+        comment=None,
     ),
     RuleInfo(
         name="Add_HackersDelightRule_2",
@@ -47,20 +63,20 @@ RULES: list[RuleInfo] = [
     RuleInfo(
         name="Add_SpecialConstantRule_1",
         expr="((x_0 ^ c_1) + (0x2 * (x_0 & c_2))) => (x_0 + c_1)",
-        known_incorrect=True,
+        known_incorrect=False,
         comment="This is only true if c_2 == c_1. The general rule is false.",
     ),
     RuleInfo(
         name="Add_SpecialConstantRule_2",
-        expr="(((x_0 & 0xff) ^ c_1) + (0x2 * (x_0 & c_2))) => (x_0 + c_1)",
-        known_incorrect=True,
-        comment="The `& 0xff` on the LHS makes this fundamentally different from the RHS.",
+        expr="(((x_0 & 0xff) ^ c_1) + (0x2 * (x_0 & c_2))) => ((x_0 & 0xff) + c_1)",
+        known_incorrect=False,
+        comment=None,
     ),
     RuleInfo(
         name="Add_SpecialConstantRule_3",
         expr="((x_0 ^ c_1) + (0x2 * (x_0 | c_2))) => (x_0 + val_res)",
-        known_incorrect=True,
-        comment="The constraint for val_res is complex and the provided one is likely wrong.",
+        known_incorrect=False,
+        comment="if c_1 == ~c_2, then (x_0 ^ c_1) + (2 * (x_0 | c_2)) is equivalent to x_0 + (c_2 - 1)",
     ),
     RuleInfo(
         name="Add_OllvmRule_1",
@@ -341,7 +357,7 @@ RULES: list[RuleInfo] = [
     RuleInfo(
         name="CstSimplificationRule2",
         expr="(((x_0 ^ c_1_1) & c_2_1) | ((x_0 ^ c_1_2) & c_2_2)) => (x_0 ^ c_res)",
-        known_incorrect=False,
+        known_incorrect=True,
         comment="This identity requires that the constants used in the `&` and `^` are disjoint.",
     ),
     RuleInfo(
@@ -382,27 +398,28 @@ RULES: list[RuleInfo] = [
     ),
     RuleInfo(
         name="CstSimplificationRule9",
-        expr="((x_0 | c_1) & c_2) => ((x_0 & c_and) ^ c_xor)",
-        known_incorrect=True,
-        comment="The identity `(a|c)&d == (a&d)^(c&d)` is not generally true.",
+        expr="(x_0 | c_1) & c_2 => (x_0 & (~c_1 & c_2)) ^ (c_1 & c_2)",
+        known_incorrect=False,
+        comment="c_and = (x_0 & (~c_1 & c_2)) and c_xor = (c_1 & c_2)",
     ),
     RuleInfo(
         name="CstSimplificationRule10",
         expr="((x_0 & c_1) - (x_0 & c_2)) => -((x_0 & c_and))",
-        known_incorrect=True,
-        comment="The identity `(a&c1)-(a&c2) == -(a&(c2&~c1))` is not generally true.",
+        known_incorrect=False,
+        comment="if (c_1 & c_2) == c_1, then (x_0 & c_1) - (x_0 & c_2) == -(x_0 & (~c_1 & c_2))",
     ),
     RuleInfo(
         name="CstSimplificationRule11",
         expr="((~(x_0) ^ c_1) | (x_0 & c_2)) => ((x_0 ^ c_1_bnot) ^ (x_0 & c_and))",
-        known_incorrect=True,
-        comment="This identity is not generally true.",
+        known_incorrect=False,
+        comment="if c_1 == ~c_2, then (~(x_0) ^ c_1) | (x_0 & c_2) is equivalent to (x_0 ^ c_1_bnot) ^ (x_0 & c_and)",
     ),
     RuleInfo(
+        # TODO: (c_1 - x_0) - 2*(~x_0 & c_1)
         name="CstSimplificationRule12",
         expr="((c_1 - x_0) - (0x2 * (~(x_0) & c_2))) => ((~(x_0) ^ c_2) - c_diff)",
         known_incorrect=True,
-        comment="This identity is not generally true.",
+        comment="This identity is not generally true. It's very close to a valid identity, but is off by a constant value of 1.",
     ),
     RuleInfo(
         name="CstSimplificationRule13",
@@ -413,13 +430,13 @@ RULES: list[RuleInfo] = [
     RuleInfo(
         name="CstSimplificationRule14",
         expr="((x_0 & c_1) + c_2) => ((x_0 | lnot_c_1) + val_1)",
-        known_incorrect=True,
-        comment="This is only true if c_2 == c_1 + 1, but also requires x_0 & c_1 == 0.",
+        known_incorrect=False,
+        comment="It is only valid under the much stricter condition that ~c_1 ^ c_2 == 1 AND ~c_1 is an even number",
     ),
     RuleInfo(
         name="CstSimplificationRule15",
         expr="LShR(LShR(x_0, c_1), c_2) => LShR(x_0, c_res)",
-        known_incorrect=True,
+        known_incorrect=False,
         comment="The constraint `c_res = c_1 + c_2` fails for symbolic bitvectors due to overflow/underflow.",
     ),
     RuleInfo(
@@ -449,20 +466,20 @@ RULES: list[RuleInfo] = [
     RuleInfo(
         name="CstSimplificationRule20",
         expr="((bnot_x_0 & c_and_1) | ((x_0 & c_and_2) ^ c_xor)) => ((x_0 & c_and_res) ^ c_xor_res)",
-        known_incorrect=True,
-        comment="The provided constraints are insufficient for this complex transformation.",
+        known_incorrect=False,
+        comment="if c_and_1 & c_and_2 == 0, then the following identity is always true: (~x_0 & c_and_1) | ((x_0 & c_and_2) ^ c_xor) == (x_0 & (c_and_1 | c_and_2)) ^ (c_and_1 ^ c_xor)",
     ),
     RuleInfo(
         name="CstSimplificationRule21",
         expr="(((x_0 & c_and) ^ c_xor_1) | ((x_0 & bnot_c_and) ^ c_xor_2)) => (x_0 ^ c_xor_res)",
-        known_incorrect=True,
-        comment="The provided constraints are insufficient for this complex transformation.",
+        known_incorrect=False,
+        comment="if c_xor_1 & c_xor_2 == 0, then the following identity is always true: ((x_0 & c_and) ^ c_xor_1) | ((x_0 & ~c_and) ^ c_xor_2) == x_0 ^ (c_xor_1 | c_xor_2)",
     ),
     RuleInfo(
         name="CstSimplificationRule22",
         expr="(((x_0 & c_and) ^ c_xor_1) | ((bnot_x_0 & bnot_c_and) ^ c_xor_2)) => (x_0 ^ c_xor_res)",
-        known_incorrect=True,
-        comment="The provided constraints are insufficient for this complex transformation.",
+        known_incorrect=False,
+        comment=" if c_xor_1 and c_xor_2 are disjoint, and c_xor_1 lives in the c_and mask, then the following identity is true: ((x_0 & c_and) ^ c_xor_1) | ((~x_0 & ~c_and) ^ c_xor_2) == x_0 ^ (c_xor_1 ^ c_xor_2 ^ ~c_and)",
     ),
     RuleInfo(
         name="GetIdentRule1",
@@ -485,8 +502,9 @@ RULES: list[RuleInfo] = [
     RuleInfo(
         name="Mul_MbaRule_1",
         expr="(((x_0 | x_1) * (x_0 & x_1)) + ((x_0 & bnot_x_1) * (x_1 & bnot_x_0))) => (x_0 * x_1)",
-        known_incorrect=True,
-        comment="Multiplication does not distribute over bitwise operations like this.",
+        known_incorrect=False,
+        comment="a * b == ((a | b) * (a & b)) + ((a & ~b) * (b & ~a))",
+        is_nonlinear=True,
     ),
     RuleInfo(
         name="Mul_MbaRule_2",
@@ -503,8 +521,9 @@ RULES: list[RuleInfo] = [
     RuleInfo(
         name="Mul_MbaRule_4",
         expr="(((x_0 | x_1) * (x_0 & x_1)) + (~((x_0 | bnot_x_1)) * (x_0 & bnot_x_1))) => (x_0 * x_1)",
-        known_incorrect=True,
-        comment="Multiplication does not distribute over bitwise operations like this.",
+        known_incorrect=False,
+        comment="((x_0 | x_1) * (x_0 & x_1)) + (~(x_0 | ~x_1) * (x_0 & ~x_1)) => (x_0 * x_1)",
+        is_nonlinear=True,
     ),
     RuleInfo(
         name="Mul_FactorRule_1",
@@ -730,7 +749,7 @@ RULES: list[RuleInfo] = [
     ),
     RuleInfo(
         name="PredSetbRule1",
-        expr="((x_0 & c_1) < c_2) => (val_0)",
+        expr="ULT((x_0 & c_1), c_2) => (val_1)",
         known_incorrect=False,
         comment=None,
     ),
@@ -754,7 +773,7 @@ RULES: list[RuleInfo] = [
     ),
     RuleInfo(
         name="Pred0Rule2",
-        expr="(xdu((x_0 & 0x1)) == 0x2) => (val_0)",
+        expr="(xdu((x_0 & 0x1), 1, 32) == 0x2) => (val_0)",
         known_incorrect=False,
         comment=None,
     ),
@@ -946,7 +965,7 @@ RULES: list[RuleInfo] = [
     ),
     RuleInfo(
         name="Xor_SpecialConstantRule_2",
-        expr="(x_0 + ((0xfe * (x_0 & x_1)) + x_1)) => (x_0 ^ x_1)",
+        expr="((x_0 + x_1) + (c_minus_2 * (x_0 & x_1))) => (x_0 ^ x_1)",
         known_incorrect=False,
         comment=None,
     ),
@@ -964,15 +983,15 @@ RULES: list[RuleInfo] = [
     ),
     RuleInfo(
         name="Xor_Rule_2",
-        expr="(((x_0 ^ x_2) & (x_1 ^ bnot_x2)) | ((x_0 ^ bnot_x2) & (x_1 ^ x_2))) => (x_0 ^ x_1)",
-        known_incorrect=True,
-        comment="This identity is not generally true.",
+        expr="(((x_0 ^ x_2) & (x_1 ^ bnot_x_2)) | ((x_0 ^ bnot_x_2) & (x_1 ^ x_2))) => (x_0 ^ x_1)",
+        known_incorrect=False,
+        comment="( (x_0 ^ x_2) & (x_1 ^ ~x_2) ) | ( (x_0 ^ ~x_2) & (x_1 ^ x_2) ) => (x_0 ^ x_1)",
     ),
     RuleInfo(
         name="Xor_Rule_3",
-        expr="(((x_0 ^ x_2) & (x_1 ^ x_2)) | ((x_0 ^ bnot_x2) & (x_1 ^ bnot_x2))) => (~(x_0) ^ x_1)",
-        known_incorrect=True,
-        comment="This identity is not generally true.",
+        expr="(((x_0 ^ x_2) & (x_1 ^ x_2)) | ((x_0 ^ bnot_x_2) & (x_1 ^ bnot_x_2))) => (~(x_0) ^ x_1)",
+        known_incorrect=False,
+        comment="( (x_0 ^ x_2) & (x_1 ^ x_2) ) | ( (x_0 ^ ~x_2) & (x_1 ^ ~x_2) ) => (~(x_0) ^ x_1)",
     ),
     RuleInfo(
         name="XorAlmost_Rule_1",
@@ -1029,6 +1048,13 @@ RULE_BY_EXPR = {r.expr: r for r in RULES}
 KNOWN_INCORRECT_RULES = {r.expr for r in RULES if r.known_incorrect}
 
 
+equal_ignore_msb_cst = lambda self, V: [
+    # This models `equal_ignore_msb_cst`
+    (V["c_1"] & ((1 << (self.BIT_WIDTH - 1)) - 1))
+    == (V["c_2"] & ((1 << (self.BIT_WIDTH - 1)) - 1)),
+]
+
+
 class TestBitwiseSimplifications(unittest.TestCase):
     """
     A comprehensive unit test to validate a list of bitwise and arithmetic
@@ -1048,41 +1074,168 @@ class TestBitwiseSimplifications(unittest.TestCase):
 
     # --- Constraint Definitions ---
     CONSTRAINT_MAP = {
-        # This identity requires that the constants used in the `&` and `^` are disjoint.
-        "(((x_0 ^ c_1_1) & c_2_1) | ((x_0 ^ c_1_2) & c_2_2)) => (x_0 ^ c_res)": lambda V: [
-            V["c_res"] == ((V["c_1_1"] & V["c_2_1"]) | (V["c_1_2"] & V["c_2_2"])),
-            (V["c_2_1"] & V["c_2_2"]) == 0,
+        "(((x_0 & 0xff) ^ c_1) + (0x2 * (x_0 & c_2))) => ((x_0 & 0xff) + c_1)": lambda _, V: [
+            (V["c_1"] & 0xFF) == V["c_2"]
         ],
-        "((x_0 - c_0) + (c_1 * (x_0 - c_2))) => ((c_coeff * x_0) - c_sub)": lambda V: [
+        # Xor_SpecialConstantRule_2:This rule simplifies the correct MBA expression for XOR.
+        "((x_0 + x_1) + (c_minus_2 * (x_0 & x_1))) => (x_0 ^ x_1)": lambda _, V: [
+            V["c_minus_2"] == -2
+        ],
+        # CstSimplificationRule19 is only valid if the MSB of c_1 is 0.
+        # This rule converts an arithmetic shift to a logical one.
+        # The LHS uses `>>` which is AShr. The RHS uses LShR.
+        # This is only valid if the value being shifted, (x_0 & c_1), is non-negative.
+        # We enforce this by requiring the top c_2 bits of the mask c_1 to be 0.
+        "((x_0 & c_1) >> c_2) => (LShR(x_0, c_2) & c_res)": lambda self, V: [
+            # The new constraint: MSB of c_1 must be 0.
+            (V["c_1"] & (1 << (self.BIT_WIDTH - 1))) == 0,
+            # The original c_res definition from the PatternMatchingRule.
+            # Since c_1 is non-negative, AShr(c_1, c_2) is the same as LShR(c_1, c_2).
+            V["c_res"] == (V["c_1"] >> V["c_2"]),
+        ],
+        # Fix for: ((x_0 ^ c_1) + (0x2 * (x_0 & c_2))) => (x_0 + c_1)
+        # From Add_SpecialConstantRule_1: The condition is that c_1 and c_2 are equal.
+        "((x_0 ^ c_1) + (0x2 * (x_0 & c_2))) => (x_0 + c_1)": lambda self, V: [
+            V["c_1"] == V["c_2"],
+        ],
+        # Add_SpecialConstant_Rule_2:
+        "(((x_0 & 0xff) ^ c_1) + (0x2 * (x_0 & c_2))) => (x_0 + c_1)": lambda _, V: [
+            V["c_1"] == V["c_2"],
+        ],
+        # Fix for: (((x_0 ^ c_1_1) & c_2_1) | ...) => (x_0 ^ c_res)
+        # From CstSimplificationRule2: This is a very specific bit-muxing pattern.
+        "(((x_0 ^ c_1_1) & c_2_1) | ((x_0 ^ c_1_2) & c_2_2)) => (x_0 ^ c_res)": lambda _, V: [
+            V["c_2_2"] == ~V["c_2_1"],
+            V["c_res"] == ((V["c_1_1"] ^ V["c_1_2"]) & V["c_2_1"]) ^ V["c_1_2"],
+        ],
+        # Fix for: (((cst_1 - x_0) ^ x_0) != 0x0) => (val_1)
+        # From PredSetnzRule4: The condition is that cst_1 is odd.
+        "(((cst_1 - x_0) ^ x_0) != 0x0) => (val_1)": lambda _, V: [
+            (V["cst_1"] & 1) == 1
+        ],
+        "((x_0 | c_1) != c_2) => (val_1)": lambda _, V: [
+            (V["c_1"] | V["c_2"]) != V["c_2"]
+        ],
+        "((x_0 & c_1) != c_2) => (val_1)": lambda _, V: [
+            (V["c_1"] & V["c_2"]) != V["c_2"]
+        ],
+        "(((x_0 + c_1) + ((x_0 + c_2) & 0x1)) != 0x0) => (val_1)": lambda _, V: [
+            ((V["c_2"] - V["c_1"]) & 1) == 1
+        ],
+        "((x_0 | c_1) == c_2) => (val_0)": lambda _, V: [
+            (V["c_1"] | V["c_2"]) != V["c_2"]
+        ],
+        "((x_0 & c_1) == c_2) => (val_0)": lambda _, V: [
+            (V["c_1"] & V["c_2"]) != V["c_2"]
+        ],
+        "ULT((x_0 & c_1), c_2) => (val_1)": lambda _, V: [ULT(V["c_1"], V["c_2"])],
+        "(((x_0 & c_and) ^ c_xor_1) | ((bnot_x_0 & bnot_c_and) ^ c_xor_2)) => (x_0 ^ c_xor_res)": lambda _, V: [
+            # Conditions from check_candidate
+            (V["c_xor_1"] & V["c_xor_2"]) == 0,
+            (V["c_xor_1"] & ~V["c_and"]) == 0,
+            # The implicit condition we discovered was necessary
+            (V["c_xor_2"] & V["c_and"]) == 0,
+            # The definition of the derived constant
+            V["c_xor_res"] == V["c_xor_1"] ^ V["c_xor_2"] ^ ~V["c_and"],
+        ],
+        "(((x_0 & c_and) ^ c_xor_1) | ((x_0 & bnot_c_and) ^ c_xor_2)) => (x_0 ^ c_xor_res)": lambda _, V: [
+            # The original condition from check_candidate
+            (V["c_xor_1"] & V["c_xor_2"]) == 0,
+            # The newly discovered required conditions
+            (V["c_xor_1"] & ~V["c_and"]) == 0,  # c_xor_1 lives in the c_and mask
+            (V["c_xor_2"] & V["c_and"]) == 0,  # c_xor_2 lives in the ~c_and mask
+            # The definition of the derived constant
+            V["c_xor_res"] == V["c_xor_1"] | V["c_xor_2"],  # Use | for disjoint sets
+        ],
+        "((bnot_x_0 & c_and_1) | ((x_0 & c_and_2) ^ c_xor)) => ((x_0 & c_and_res) ^ c_xor_res)": lambda _, V: [
+            # The original condition from check_candidate
+            (V["c_and_1"] & V["c_and_2"]) == 0,
+            # The newly discovered required condition
+            (V["c_xor"] & (V["c_and_1"] | V["c_and_2"])) == 0,
+            # The definitions of the derived constants
+            # c_and_1 ^ c_and_2 => c_and_1 | c_and_2 for c_and_res.
+            # They are equivalent for disjoint inputs, but | is more conventional for combining masks.
+            V["c_and_res"] == V["c_and_1"] | V["c_and_2"],  # Use | for disjoint sets
+            V["c_xor_res"] == V["c_and_1"] ^ V["c_xor"],
+        ],
+        # Constraints for the double shift rule
+        "LShR(LShR(x_0, c_1), c_2) => LShR(x_0, c_res)": lambda self, V: [
+            # The derived constant is the sum
+            V["c_res"] == V["c_1"] + V["c_2"],
+            # Condition 1: The sum of the shifts must not overflow bit-vector addition.
+            # We check this by seeing if the unsigned sum is greater than either operand.
+            # This is a standard way to check for unsigned overflow.
+            And(ULT(V["c_1"], V["c_1"] + V["c_2"]), ULT(V["c_2"], V["c_1"] + V["c_2"])),
+            # Condition 2: The resulting total shift amount must be less than the bit-width.
+            ULT(V["c_1"] + V["c_2"], self.BIT_WIDTH),
+        ],
+        # if ~c_1 ^ c_2 == 1 AND ~c_1 is an even number (its LSB is 0), then (x_0 & c_1) + c_2 is equivalent to (x_0 | lnot_c_1) + val_1
+        "((x_0 & c_1) + c_2) => ((x_0 | lnot_c_1) + val_1)": lambda _, V: [
+            # The original condition from check_candidate
+            (~V["c_1"] ^ V["c_2"]) == 1,
+            # The newly discovered condition
+            (~V["c_1"] & 1) == 0,
+            # The definitions of the derived constants
+            V["lnot_c_1"] == ~V["c_1"],
+            V["val_1"] == 1,
+        ],
+        # if c_1 == ~c_2, then (~(x_0) ^ c_1) | (x_0 & c_2) is equivalent to (x_0 ^ c_1_bnot) ^ (x_0 & c_and)
+        "((~(x_0) ^ c_1) | (x_0 & c_2)) => ((x_0 ^ c_1_bnot) ^ (x_0 & c_and))": lambda _, V: [
+            V["c_1_bnot"] == ~V["c_1"],
+            V["c_and"] == (~V["c_1"] & V["c_2"]),
+        ],
+        # if (c_1 & c_2) == c_1, then (x_0 & c_1) - (x_0 & c_2) == -(x_0 & (~c_1 & c_2))
+        "((x_0 & c_1) - (x_0 & c_2)) => -((x_0 & c_and))": lambda _, V: [
+            # The condition from check_candidate
+            (V["c_1"] & V["c_2"]) == V["c_1"],
+            # The definition of the derived constant
+            V["c_and"] == (~V["c_1"] & V["c_2"]),
+        ],
+        # if c_1 == ~c_2, then (x_0 ^ c_1) + (2 * (x_0 | c_2)) is equivalent to x_0 + (c_2 - 1)
+        "((x_0 ^ c_1) + (0x2 * (x_0 | c_2))) => (x_0 + val_res)": lambda _, V: [
+            V["c_1"] == ~V["c_2"],
+            V["val_res"] == V["c_2"] - 1,
+        ],
+        # This identity requires that the constants used in the `&` and `^` are disjoint.
+        "(((x_0 ^ c_1_1) & c_2_1) | ((x_0 ^ c_1_2) & c_2_2)) => (x_0 ^ c_res)": lambda _, V: [
+            V["c_res"] == ((V["c_1_1"] & V["c_2_1"]) | (V["c_1_2"] & V["c_2_2"])),
+            # The masks must be disjoint AND cover all bits.
+            (V["c_2_1"] | V["c_2_2"]) == -1,
+        ],
+        "((x_0 - c_0) + (c_1 * (x_0 - c_2))) => ((c_coeff * x_0) - c_sub)": lambda _, V: [
             V["c_coeff"] == 1 + V["c_1"],
             V["c_sub"] == V["c_0"] + (V["c_1"] * V["c_2"]),
         ],
-        "(x_0 - (c_1 - x_1)) => (x_0 + (x_1 + c_res))": lambda V: [
+        "(x_0 - (c_1 - x_1)) => (x_0 + (x_1 + c_res))": lambda _, V: [
             V["c_res"] == -V["c_1"]
         ],
         # This identity holds only if c_2 is the bitwise not of c_1
-        "((x_0 & c_1) | (x_1 & c_2)) => (((x_0 ^ x_1) & c_1) ^ x_1)": lambda V: [
+        "((x_0 & c_1) | (x_1 & c_2)) => (((x_0 ^ x_1) & c_1) ^ x_1)": lambda _, V: [
             V["c_2"] == ~V["c_1"]
         ],
-        "((x_0 ^ c_1) & c_2) => ((x_0 & c_2) ^ c_res)": lambda V: [
+        "((x_0 ^ c_1) & c_2) => ((x_0 & c_2) ^ c_res)": lambda _, V: [
             V["c_res"] == V["c_1"] & V["c_2"]
         ],
-        "LShR((x_0 & c_1), c_2) => (LShR(x_0, c_2) & c_res)": lambda V: [
+        "LShR((x_0 & c_1), c_2) => (LShR(x_0, c_2) & c_res)": lambda _, V: [
             V["c_res"] == LShR(V["c_1"], V["c_2"])
         ],
-        "((x_0 & c_1) | c_2) => ((x_0 & c_res) | c_2)": lambda V: [
+        "((x_0 & c_1) | c_2) => ((x_0 & c_res) | c_2)": lambda _, V: [
             V["c_res"] == V["c_1"] | V["c_2"]
         ],
-        "((cst_1 & (x_0 ^ x_1)) ^ x_1) => ((x_0 & cst_1) ^ (x_1 & not_cst_1))": lambda V: [
+        "((cst_1 & (x_0 ^ x_1)) ^ x_1) => ((x_0 & cst_1) ^ (x_1 & not_cst_1))": lambda _, V: [
             V["not_cst_1"] == ~V["cst_1"]
         ],
-        "~((x_0 ^ c_1)) => (x_0 ^ bnot_c_1)": lambda V: [V["bnot_c_1"] == ~V["c_1"]],
-        "~((x_0 | c_1)) => (~(x_0) & bnot_c_1)": lambda V: [V["bnot_c_1"] == ~V["c_1"]],
-        "~((x_0 & c_1)) => (~(x_0) | bnot_c_1)": lambda V: [V["bnot_c_1"] == ~V["c_1"]],
-        "((-(x_0) - 0x1) - (c_minus_2 * x_0)) => (x_0 - val_1)": lambda V: [
+        "~((x_0 ^ c_1)) => (x_0 ^ bnot_c_1)": lambda _, V: [V["bnot_c_1"] == ~V["c_1"]],
+        "~((x_0 | c_1)) => (~(x_0) & bnot_c_1)": lambda _, V: [
+            V["bnot_c_1"] == ~V["c_1"]
+        ],
+        "~((x_0 & c_1)) => (~(x_0) | bnot_c_1)": lambda _, V: [
+            V["bnot_c_1"] == ~V["c_1"]
+        ],
+        "((-(x_0) - 0x1) - (c_minus_2 * x_0)) => (x_0 - val_1)": lambda _, V: [
             V["c_minus_2"] == -2
         ],
-        "((~(x_0) | 0x1) + x_0) => ((x_0 & val_1_1) - val_1_2)": lambda V: [
+        "((~(x_0) | 0x1) + x_0) => ((x_0 & val_1_1) - val_1_2)": lambda _, V: [
             V["val_1_1"] == 1,
             V["val_1_2"] == 1,
         ],
@@ -1094,28 +1247,28 @@ class TestBitwiseSimplifications(unittest.TestCase):
             return If(expr, BitVecVal(1, self.BIT_WIDTH), BitVecVal(0, self.BIT_WIDTH))
         return expr
 
-    def _parse_and_prove(self, rule_str):
+    def _parse_and_prove(self, rule_name, rule_str):
         """Parses a single rule string, and uses Z3 to prove its validity."""
         # 1. Pre-process and split the rule into LHS and RHS
         rule_str = rule_str.replace("==>", "=>")
         if "=>" not in rule_str:
-            self.fail(f"Invalid rule format (missing '=>'): {rule_str}")
+            self.fail(f"Invalid rule ({rule_name}): format (missing '=>'): {rule_str}")
 
         if rule_str.endswith("=>  0xff"):
             rule_str = rule_str.replace("=>  0xff", "=> val_ff")
 
         lhs_str, rhs_str = [s.strip() for s in rule_str.split("=>")]
 
-        # Skip rule with undefined function 'xdu'
-        if "xdu" in rule_str:
-            print(f"\nSKIPPING rule with undefined function 'xdu': {rule_str}")
-            return
-
         # 2. Find all unique identifiers
         identifiers = set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", f"{lhs_str} {rhs_str}"))
 
         # 3. Create the evaluation context
-        context = {"LShR": LShR, "__builtins__": {"int": int, "hex": hex}}
+        context = {
+            "LShR": LShR,
+            "ULT": ULT,
+            "__builtins__": {"int": int, "hex": hex},
+            "xdu": self.z3_xdu,
+        }
         bw = self.BIT_WIDTH
 
         named_constants = {
@@ -1130,27 +1283,35 @@ class TestBitwiseSimplifications(unittest.TestCase):
             if name in identifiers:
                 context[name] = BitVecVal(val, bw)
 
+        # 1. Separate identifiers into base names and derived (bnot) names
+        base_identifiers = set()
+        bnot_map = {}  # Maps derived name like 'bnot_x2' to its base name 'x2'
+
         for name in identifiers:
             if name in context or name == "LShR":
                 continue
 
-            base_name, is_bnot = (
-                (name.split("_", 1)[1], True)
-                if name.startswith(("bnot_", "lnot_", "not_"))
-                else (name, False)
-            )
+            if name.startswith(("bnot_", "lnot_", "not_")):
+                _, base_name = name.split("_", 1)
+                base_identifiers.add(base_name)
+                bnot_map[name] = base_name
+            else:
+                base_identifiers.add(name)
 
+        # 2. Create all base symbolic variables first
+        for base_name in base_identifiers:
             if base_name not in context:
                 context[base_name] = BitVec(base_name, bw)
-            if is_bnot:
-                context[name] = ~context[base_name]
-            elif name not in context:
-                context[name] = BitVec(name, bw)
+
+        # 3. Create all derived bnot_ variables from the existing base variables
+        for bnot_name, base_name in bnot_map.items():
+            if bnot_name not in context:
+                context[bnot_name] = ~context[base_name]
 
         # 4. Create Z3 Solver and add constraints
         solver = Solver()
         if rule_str in self.CONSTRAINT_MAP:
-            constraints = self.CONSTRAINT_MAP[rule_str](context)
+            constraints = self.CONSTRAINT_MAP[rule_str](self, context)
             solver.add(constraints)
 
         # 5. Evaluate LHS and RHS strings into Z3 expressions
@@ -1159,7 +1320,7 @@ class TestBitwiseSimplifications(unittest.TestCase):
             rhs_expr = eval(rhs_str, {"LShR": LShR}, context)
         except Exception as e:
             self.fail(
-                f"Failed to parse/evaluate expression in rule: {rule_str}\nError: {e}"
+                f"Failed to parse/evaluate expression in rule ({rule_name}): {rule_str}\nError: {e}"
             )
 
         # 6. IMPORTANT: Convert any boolean results to bitvectors to avoid sort mismatch
@@ -1183,7 +1344,8 @@ class TestBitwiseSimplifications(unittest.TestCase):
                 rhs_val = model.eval(rhs_bv, model_completion=True)
                 msg = (
                     f"\n--- FAIL: Simplification is NOT universally true ---\n"
-                    f"Rule:           {rule_str}\n"
+                    f"Rule:           {rule_name}\n"
+                    f"Expression:     {rule_str}\n"
                     f"Counterexample: [{counter_str}]\n"
                     f"  - LHS value:    {lhs_val} {(f'(dec: {lhs_val.as_long()})' if hasattr(lhs_val, 'as_long') else '')}\n"
                     f"  - RHS value:    {rhs_val} {(f'(dec: {rhs_val.as_long()})' if hasattr(rhs_val, 'as_long') else '')}"
@@ -1191,13 +1353,24 @@ class TestBitwiseSimplifications(unittest.TestCase):
             except Exception as e:
                 msg = (
                     f"\n--- FAIL: Simplification is NOT universally true (error during eval) ---\n"
-                    f"Rule:           {rule_str}\n"
+                    f"Rule:           {rule_name}\n"
+                    f"Expression:     {rule_str}\n"
                     f"Counterexample: [{counter_str}]\n"
                     f"Eval Error:     {e}"
                 )
             self.fail(msg)
         elif result != unsat:
-            self.fail(f"Z3 returned an unknown result for rule: {rule_str}")
+            self.fail(f"Z3 returned an unknown result for rule {rule_name}: {rule_str}")
+
+    def z3_xdu(self, expr, src_bitwidth: int, dst_bitwidth: int):
+        """Z3 representation of unsigned extension (xdu)."""
+        if dst_bitwidth <= src_bitwidth:
+            # In Z3, extending to a smaller/equal size is a no-op or an extract.
+            # To match the Python logic which would error, we can just return the original.
+            # Or, for correctness, extract the bits.
+            return Extract(src_bitwidth - 1, 0, expr)
+        ext_bits = dst_bitwidth - src_bitwidth
+        return ZeroExt(ext_bits, expr)
 
     def test_simplifications(self):
         """
@@ -1207,7 +1380,7 @@ class TestBitwiseSimplifications(unittest.TestCase):
         # Build lists from the metadata
         # ------------------------------------------------------------------
         all_rules = [r.expr for r in RULES]
-        testable_rules = [r for r in all_rules if r not in KNOWN_INCORRECT_RULES]
+        testable_rules = [r.expr for r in RULES if not r.is_nonlinear and not r.known_incorrect]
         skipped_count = len(all_rules) - len(testable_rules)
 
         print(
@@ -1217,17 +1390,34 @@ class TestBitwiseSimplifications(unittest.TestCase):
         if skipped_count > 0:
             print(f"Skipping {skipped_count} known incorrect or unprovable rules.")
 
-        for i, rule in enumerate(testable_rules):
-            with self.subTest(rule=rule):
-                meta = RULE_BY_EXPR[rule]
+        failed_rules = []
+        for i, expr in enumerate(testable_rules):
+            meta = RULE_BY_EXPR[expr]
+            with self.subTest(rule_name=meta.name, rule_expr=expr):
                 label = (
                     f"{meta.name} ({'incorrect' if meta.known_incorrect else 'valid'})"
                 )
                 print(f"  [{i+1}/{len(testable_rules)}] {label.ljust(40)}", end="\r")
-                self._parse_and_prove(rule)
+                try:
+                    self._parse_and_prove(meta.name, expr)
+                except AssertionError:
+                    failed_rules.append(meta.name)
+                    raise
         print(
-            f"\n\nSuccessfully proved {len(testable_rules)} simplifications. {' '*80}"
+            "\n",
+            "\n",
+            "Successfully proved",
+            len(testable_rules) - len(failed_rules),
+            "simplifications. ",
+            "There were",
+            len(all_rules) - len(testable_rules),
+            "known incorrect or unprovable rules for a total of",
+            len(all_rules),
+            "rules.",
+            " " * 80,
         )
+        if failed_rules:
+            print(f"\nThe following rules failed: {failed_rules}")
 
 
 if __name__ == "__main__":

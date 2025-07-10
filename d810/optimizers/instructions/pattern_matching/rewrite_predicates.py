@@ -173,7 +173,7 @@ class PredSetzRule3(PatternMatchingRule):
         return True
 
 
-# PredSetbRule1: (x_0 & c_1) <u c_2 ==> 0 if c_1 <u c_2
+# PredSetbRule1: (x_0 & c_1) <u c_2 ==> 1 if c_1 <u c_2
 class PredSetbRule1(PatternMatchingRule):
     PATTERN = AstNode(
         m_setb, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
@@ -183,7 +183,7 @@ class PredSetbRule1(PatternMatchingRule):
     def check_candidate(self, candidate):
         if candidate["c_1"].value >= candidate["c_2"].value:
             return False
-        candidate.add_constant_leaf("val_0", 0, candidate.size)
+        candidate.add_constant_leaf("val_0", 1, candidate.size)
         return True
 
 
@@ -228,6 +228,7 @@ class Pred0Rule1(PatternMatchingRule):
 
 
 # Pred0Rule2: (xdu(x_0 & 1) == 2) ==> 0
+# -> (xdu((x_0 & 0x1), 1, 32) == 0x2) => (val_0)
 class Pred0Rule2(PatternMatchingRule):
     PATTERN = AstNode(
         m_setz,
