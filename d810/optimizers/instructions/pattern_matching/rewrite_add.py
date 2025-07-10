@@ -111,8 +111,10 @@ class Add_SpecialConstantRule_3(PatternMatchingRule):
     REPLACEMENT_PATTERN = AstNode(m_add, AstLeaf("x_0"), AstConstant("val_res"))
 
     def check_candidate(self, candidate):
+        # c_1 == ~c_2
         if not equal_bnot_mop(candidate["c_1"].mop, candidate["c_2"].mop):
             return False
+        # constant becomes: val_res == c_2 - 1
         candidate.add_constant_leaf(
             "val_res", candidate["c_2"].value - 1, candidate["x_0"].size
         )

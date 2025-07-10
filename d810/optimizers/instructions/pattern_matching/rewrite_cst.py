@@ -152,6 +152,7 @@ class CstSimplificationRule8(PatternMatchingRule):
         return True
 
 
+# (x_0 | c_1) & c_2 => (x_0 & (~c_1 & c_2)) ^ (c_1 & c_2)
 class CstSimplificationRule9(PatternMatchingRule):
     PATTERN = AstNode(
         m_and, AstNode(m_or, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
@@ -163,9 +164,11 @@ class CstSimplificationRule9(PatternMatchingRule):
     )
 
     def check_candidate(self, candidate):
+        # c_and = (x_0 & (~c_1 & c_2))
         c_and = (AND_TABLE[candidate["c_1"].size] ^ candidate["c_1"].value) & candidate[
             "c_2"
         ].value
+        # c_xor = (c_1 & c_2)
         c_xor = candidate["c_1"].value & candidate["c_2"].value
         candidate.add_constant_leaf("c_and", c_and, candidate["x_0"].size)
         candidate.add_constant_leaf("c_xor", c_xor, candidate["x_0"].size)
@@ -268,6 +271,9 @@ class CstSimplificationRule14(PatternMatchingRule):
         tmp = lnot_c_1_value ^ candidate["c_2"].value
         if tmp != 1:
             return False
+        # the rule is only correct if ~c_1 is even
+        if (lnot_c_1_value & 1) != 0:
+            return False
         candidate.add_constant_leaf("val_1", 1, candidate["c_2"].size)
         candidate.add_constant_leaf("lnot_c_1", lnot_c_1_value, candidate["c_1"].size)
 
@@ -279,11 +285,21 @@ class CstSimplificationRule15(PatternMatchingRule):
     REPLACEMENT_PATTERN = AstNode(m_shr, AstLeaf("x_0"), AstConstant("c_res"))
 
     def check_candidate(self, candidate):
-        candidate.add_constant_leaf(
-            "c_res",
-            candidate["c_1"].value + candidate["c_2"].value,
-            candidate["c_1"].size,
-        )
+        # Get the bit-width from one of the operands
+        bit_width = candidate["x_0"].size
+        c1_val = candidate["c_1"].value
+        c2_val = candidate["c_2"].value
+
+        # Condition 1: Individual shifts are sensible
+        if c1_val >= bit_width or c2_val >= bit_width:
+            return False
+
+        # Condition 2: The sum does not overflow and is also sensible
+        c_res_val = c1_val + c2_val
+        if c_res_val >= bit_width:
+            return False
+
+        candidate.add_constant_leaf("c_res", c_res_val, candidate["c_1"].size)
         return True
 
 
@@ -431,22 +447,34 @@ class CstSimplificationRule22(PatternMatchingRule):
     REPLACEMENT_PATTERN = AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_xor_res"))
 
     def check_candidate(self, candidate):
+        # Condition 1: Check for valid ~x_0
         if not equal_bnot_mop(candidate["x_0"].mop, candidate["bnot_x_0"].mop):
             return False
+        # Condition 2: Check for valid ~c_and
         if not equal_bnot_cst(candidate["c_and"].mop, candidate["bnot_c_and"].mop):
             return False
-        if candidate["c_xor_1"].mop.nnn.value & candidate["c_xor_2"].mop.nnn.value != 0:
+
+        c_and_val = candidate["c_and"].value
+        bnot_c_and_val = candidate["bnot_c_and"].value  # This is ~c_and_val
+        c_xor_1_val = candidate["c_xor_1"].value
+        c_xor_2_val = candidate["c_xor_2"].value
+
+        # Condition 3: c_xor_1 and c_xor_2 must be disjoint
+        if (c_xor_1_val & c_xor_2_val) != 0:
             return False
-        if (
-            candidate["c_xor_1"].mop.nnn.value & candidate["bnot_c_and"].mop.nnn.value
-            != 0
-        ):
+
+        # Condition 4: c_xor_1 must "live" entirely within the c_and mask
+        if (c_xor_1_val & bnot_c_and_val) != 0:  # Same as c_xor_1 & ~c_and
             return False
+
+        # Condition 5: c_xor_2 must "live" entirely within the ~c_and mask
+        if (c_xor_2_val & c_and_val) != 0:
+            return False
+
+        # If all conditions pass, define the resulting constant
         candidate.add_constant_leaf(
             "c_xor_res",
-            candidate["c_xor_1"].value
-            ^ candidate["c_xor_2"].value
-            ^ candidate["bnot_c_and"].value,
+            c_xor_1_val ^ c_xor_2_val ^ bnot_c_and_val,
             candidate["c_xor_1"].size,
         )
         return True

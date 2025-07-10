@@ -29,6 +29,7 @@ class Mul_MbaRule_1(PatternMatchingRule):
         return True
 
 
+# This is false.
 class Mul_MbaRule_2(PatternMatchingRule):
     PATTERN = AstNode(
         m_add,
@@ -55,6 +56,7 @@ class Mul_MbaRule_2(PatternMatchingRule):
         return True
 
 
+# This is false.
 class Mul_MbaRule_3(PatternMatchingRule):
     PATTERN = AstNode(
         m_add,
