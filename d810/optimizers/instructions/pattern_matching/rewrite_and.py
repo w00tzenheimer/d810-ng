@@ -177,7 +177,7 @@ class AndXor_FactorRule_1(PatternMatchingRule):
         AstNode(m_and, AstLeaf("x_1"), AstLeaf("x_2")),
     )
     REPLACEMENT_PATTERN = AstNode(
-        m_and, AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1")), AstLeaf("x_2")
+        m_and, AstNode(m_xor, AstLeaf("x_%%0"), AstLeaf("x_1")), AstLeaf("x_2")
     )
 
 
@@ -192,6 +192,9 @@ class And1_MbaRule_1(PatternMatchingRule):
         return True
 
 
+# This is false
+# The core flaw is assuming that multiplication by a power of two can be
+# distributed or commuted with a bitwise AND operation in this way. It cannot.
 class AndGetUpperBits_FactorRule_1(PatternMatchingRule):
     PATTERN = AstNode(
         m_mul,
@@ -206,6 +209,8 @@ class AndGetUpperBits_FactorRule_1(PatternMatchingRule):
     REPLACEMENT_PATTERN = AstNode(m_and, AstLeaf("x_0"), AstConstant("c_res"))
 
     def check_candidate(self, candidate):
+        # It's possible it only works for very specific values of c_3? (i.e., if c_3 is -1, an all-ones mask),
+        # TODO: Add a constraint to check_candidate that c_3 is a valid constant mask.
         if (2 ** candidate["c_2"].value) != candidate["c_1"].value:
             return False
         c_res = (SUB_TABLE[candidate["c_1"].size] - candidate["c_1"].value) & candidate[

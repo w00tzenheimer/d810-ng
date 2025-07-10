@@ -195,24 +195,46 @@ class Xor_SpecialConstantRule_1(PatternMatchingRule):
     REPLACEMENT_PATTERN = AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
 
 
+# This pattern matches the valid MBA identity: (x + y) + (-2 * (x & y))
 class Xor_SpecialConstantRule_2(PatternMatchingRule):
+    # PATTERN = AstNode(
+    #     m_add,
+    #     AstLeaf("x_0"),
+    #     AstNode(
+    #         m_add,
+    #         AstNode(
+    #             m_mul,
+    #             AstConstant("0xfe"),
+    #             AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
+    #         ),
+    #         AstLeaf("x_1"),
+    #     ),
+    # )
+    # REPLACEMENT_PATTERN = AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
+
+    # def check_candidate(self, candidate):
+    #     return candidate["0xfe"].value == SUB_TABLE[candidate["0xfe"].size] - 2
+
     PATTERN = AstNode(
         m_add,
-        AstLeaf("x_0"),
+        AstNode(m_add, AstLeaf("x_0"), AstLeaf("x_1")),  # (x_0 + x_1)
         AstNode(
-            m_add,
-            AstNode(
-                m_mul,
-                AstConstant("0xfe"),
-                AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
-            ),
-            AstLeaf("x_1"),
+            m_mul,
+            AstConstant("c_minus_2"),  # Use a symbolic constant
+            AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
         ),
     )
     REPLACEMENT_PATTERN = AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
 
     def check_candidate(self, candidate):
-        return candidate["0xfe"].value == SUB_TABLE[candidate["0xfe"].size] - 2
+        # Get the size (in bytes) of the constant operand
+        operand_size = candidate["c_minus_2"].size
+
+        # Check if the constant's value is exactly -2 for its bit-width
+        if candidate["c_minus_2"].value != SUB_TABLE[operand_size] - 2:
+            return False
+
+        return True
 
 
 class Xor1_MbaRule_1(PatternMatchingRule):

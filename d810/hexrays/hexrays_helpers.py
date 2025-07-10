@@ -247,6 +247,8 @@ SUB_TABLE = {
     8: 0x10000000000000000,
     16: 0x100000000000000000000000000000000,
 }
+# The AND_TABLE is an all-ones mask (equivalent to -1 in two's complement).
+# XORing with an all-ones mask is the same as a bitwise NOT (~).
 AND_TABLE = {
     1: 0xFF,
     2: 0xFFFF,
