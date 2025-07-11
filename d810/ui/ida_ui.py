@@ -12,11 +12,6 @@ import idaapi
 
 logger = logging.getLogger("D810.ui")
 
-# ---------------------------------------------------------------------------
-# External dependencies
-# ---------------------------------------------------------------------------
-from d810.conf import ProjectConfiguration, RuleConfiguration
-
 # Test-runner integration
 try:
     from d810.ui.testbed import TestRunnerForm
@@ -767,4 +762,3 @@ class D810GUI(object):
         # Close test-runner form
         if self.test_runner is not None:
             self.test_runner.Close(ida_kernwin.PluginForm.WCLS_SAVE)
- 
