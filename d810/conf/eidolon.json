@@ -108,7 +108,7 @@
         },
         {
             "name": "AndGetUpperBits_FactorRule_1",
-            "is_activated": true,
+            "is_activated": false,
             "config": {}
         },
         {
@@ -278,7 +278,7 @@
         },
         {
             "name": "CstSimplificationRule12",
-            "is_activated": true,
+            "is_activated": false,
             "config": {}
         },
         {
@@ -318,7 +318,7 @@
         },
         {
             "name": "CstSimplificationRule2",
-            "is_activated": true,
+            "is_activated": false,
             "config": {}
         },
         {
@@ -403,12 +403,12 @@
         },
         {
             "name": "Mul_MbaRule_2",
-            "is_activated": true,
+            "is_activated": false,
             "config": {}
         },
         {
             "name": "Mul_MbaRule_3",
-            "is_activated": true,
+            "is_activated": false,
             "config": {}
         },
         {
@@ -898,11 +898,36 @@
             "name": "FoldPureConstantRule",
             "is_activated": true,
             "config": {}
+        },
+        {
+            "name": "Xor_Hodur_1",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Bnot_Hodur_1",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Or_Hodur_1",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Or_Hodur_2",
+            "is_activated": true,
+            "config": {}
         }
     ],
     "blk_rules": [
         {
             "name": "UnflattenControlFlowRule",
+            "is_activated": false,
+            "config": {}
+        },
+        {
+            "name": "UnflattenerSwitchCase",
             "is_activated": true,
             "config": {}
         },

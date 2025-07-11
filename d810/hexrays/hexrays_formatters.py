@@ -81,7 +81,7 @@ def mop_type_to_string(mop_type: int) -> str:
     )
 
 
-def opcode_to_string(opcode) -> str:
+def opcode_to_string(opcode: int) -> str:
     try:
         return OPCODES_INFO[opcode]["name"]
     except KeyError:
