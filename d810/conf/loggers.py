@@ -134,3 +134,36 @@ def configure_loggers(log_dir: str | pathlib.Path) -> None:
     z3_file_logger.info(
         "from z3 import BitVec, BitVecVal, UDiv, URem, LShR, UGT, UGE, ULT, ULE, prove\n\n"
     )
+
+
+# Utility to dynamically query and set logger levels at runtime.
+class LoggerConfigurator:
+    """
+    Utility to dynamically query and set logger levels at runtime.
+    """
+
+    @staticmethod
+    def available_loggers(prefix: str | None = None) -> list[str]:
+        """
+        Return a sorted list of all logger names.
+        If `prefix` is provided, filter to names equal to or starting with prefix + '.'.
+        """
+        mgr = logging.Logger.manager
+        names = [
+            name
+            for name, logger in mgr.loggerDict.items()
+            if isinstance(logger, logging.Logger)
+        ]
+        if prefix:
+            names = [n for n in names if n == prefix or n.startswith(prefix + ".")]
+        return sorted(names)
+
+    @staticmethod
+    def set_level(logger_name: str, level_name: str) -> None:
+        """
+        Change the level for `logger_name` to one of DEBUG, INFO, WARNING, ERROR, CRITICAL.
+        """
+        lvl = getattr(logging, level_name.upper(), None)
+        if lvl is None:
+            raise ValueError(f"Unknown logging level: {level_name}")
+        logging.getLogger(logger_name).setLevel(lvl)
