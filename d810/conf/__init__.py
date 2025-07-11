@@ -1,4 +1,5 @@
 import json
+import typing
 from pathlib import Path
 
 import ida_diskio
@@ -13,15 +14,15 @@ class D810Configuration(object):
         with self.config_file.open("r") as fp:
             self._options = json.load(fp)
 
-    def get(self, name):
+    def get(self, name: str) -> str:
         if name == "log_dir" and not self._options.get(name):
             return str(DEFAULT_LOG_DIR)
         return self._options[name]
 
-    def set(self, name, value):
+    def set(self, name: str, value: str):
         self._options[name] = value
 
-    def save(self):
+    def save(self) -> None:
         with self.config_file.open("w+") as fp:
             json.dump(self._options, fp, indent=2)
 
@@ -32,7 +33,7 @@ class RuleConfiguration(object):
         self.is_activated = is_activated
         self.config = config if config is not None else {}
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, typing.Any]:
         return {
             "name": self.name,
             "is_activated": self.is_activated,

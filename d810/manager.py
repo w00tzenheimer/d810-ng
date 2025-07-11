@@ -6,15 +6,14 @@ import pathlib
 
 import pyinstrument
 from d810.conf import D810Configuration, ProjectConfiguration
+from d810.conf.loggers import clear_logs, configure_loggers
 from d810.hexrays.hexrays_hooks import (
     BlockOptimizerManager,
     HexraysDecompilationHook,
     InstructionOptimizerManager,
 )
-from d810.log.log import clear_logs, configure_loggers
 from d810.optimizers.flow.handler import FlowOptimizationRule
 from d810.optimizers.instructions.handler import InstructionOptimizationRule
-from d810.registry import Registrant
 from d810.ui.ida_ui import D810GUI
 
 D810_LOG_DIR_NAME = "d810_logs"
