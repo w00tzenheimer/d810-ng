@@ -42,38 +42,6 @@ def _is_const(mop):
     return mop is not None and mop.t == ida_hexrays.mop_n
 
 
-# def _fold_const_in_mop(mop: ida_hexrays.mop_t, bits: int) -> bool:
-#     """
-#     Recursively rewrites 'mop' in place; returns True if something changed.
-#     """
-#     changed = False
-
-#     if mop is None:
-#         return False
-
-#     if mop.t == ida_hexrays.mop_d and mop.d is not None:
-#         # sub-instruction:  build AST → fold → regenerate mop
-#         sub_ast = minsn_to_ast(mop.d)
-#         if sub_ast:
-#             new_ast, ch = _fold_bottom_up(sub_ast, bits)
-#             if ch and isinstance(new_ast, AstNode):
-#                 # regenerate sub-insn from AST and overwrite
-#                 new_sub = new_ast.create_minsn(mop.d.ea)  # this helper exists in d810
-#                 mop.d = new_sub
-#                 changed = True
-
-#     # argument list of a call lives in a mop_a
-#     if mop.t == ida_hexrays.mop_a:
-#         for a in mop.a:  # mop.a is the list< mop_t >
-#             changed |= _fold_const_in_mop(a, bits)
-
-#     # binary mops (l/r)
-#     if hasattr(mop, "l"):
-#         changed |= _fold_const_in_mop(mop.l, bits)
-#     if hasattr(mop, "r"):
-#         changed |= _fold_const_in_mop(mop.r, bits)
-
-
 #     return changed
 def _fold_const_in_mop(mop: ida_hexrays.mop_t, bits: int) -> bool:
     """
@@ -171,23 +139,6 @@ def _fold(op, a, b, bits):
         # Parity flag is set when low-byte of (a - b) has even parity (PF=1 → result 1)
         nb_bytes = bits // 8 if bits else 1
         return 1 if get_parity_flag(a, b, nb_bytes) else 0
-    # synthetic helpers
-    if op == ida_hexrays.m_call and a == "__ROL4__":
-        return rol4(b, bits)
-    if op == ida_hexrays.m_call and a == "__ROR4__":
-        return ror4(b, bits)
-    if op == ida_hexrays.m_call and a == "__ROL2__":
-        return rol2(b, bits)
-    if op == ida_hexrays.m_call and a == "__ROR2__":
-        return ror2(b, bits)
-    if op == ida_hexrays.m_call and a == "__ROL1__":
-        return rol1(b, bits)
-    if op == ida_hexrays.m_call and a == "__ROR1__":
-        return ror1(b, bits)
-    if op == ida_hexrays.m_call and a == "__ROL8__":
-        return rol8(b, bits)
-    if op == ida_hexrays.m_call and a == "__ROR8__":
-        return ror8(b, bits)
 
     _mcode_op: dict[str, typing.Any] = OPCODES_INFO[op]
     peephole_logger.error(
@@ -213,27 +164,118 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
         return None
 
     # unary
-    if ast.is_node():
+    assert ast.is_node()
+    ast = typing.cast(AstNode, ast)
+    if ast.right is None:
         ast = typing.cast(AstNode, ast)
-        if ast.right is None:
-            ast = typing.cast(AstNode, ast)
-            val = _eval_subtree(ast.left, bits)
-            if val is None:
-                return None
-            if ast.opcode == ida_hexrays.m_neg:
-                return (-val) & AND_TABLE[bits // 8]
-            if ast.opcode == ida_hexrays.m_bnot:
-                return (~val) & AND_TABLE[bits // 8]
+        val = _eval_subtree(ast.left, bits)
+        if val is None:
             return None
+        if ast.opcode == ida_hexrays.m_neg:
+            return (-val) & AND_TABLE[bits // 8]
+        if ast.opcode == ida_hexrays.m_bnot:
+            return (~val) & AND_TABLE[bits // 8]
+        return None
 
     # binary
     l = _eval_subtree(ast.left, bits)  # type: ignore
     r = _eval_subtree(ast.right, bits)  # type: ignore
     if l is None or r is None:
         return None
+
+    # special handling for rotate calls
+    if ast.opcode == ida_hexrays.m_call and ast.func_name:
+        mask = (1 << bits) - 1
+        shift = r % bits
+        if ast.func_name.startswith("__ROL"):
+            return ((l << shift) | (l >> (bits - shift))) & mask
+        elif ast.func_name.startswith("__ROR"):
+            return ((l >> shift) | (l << (bits - shift))) & mask
+        # if needed, handle specific widths or other variants
+        peephole_logger.error(
+            "Unknown width for rotate call: %s with args: %s %s and bits: %s",
+            ast.func_name,
+            l,
+            r,
+            bits,
+        )
+        return None
     return _fold(ast.opcode, l, r, bits)  # type: ignore
 
 
+class FoldPureConstantRule(PeepholeSimplificationRule):
+    DESCRIPTION = (
+        "Collapse any instruction whose whole expression "
+        "is a compile-time constant into a single m_ldc"
+    )
+
+    maturities = [
+        ida_hexrays.MMAT_GLBOPT1,
+        ida_hexrays.MMAT_GLBOPT2,
+    ]
+
+    @typing.override
+    def check_and_replace(
+        self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t
+    ) -> ida_hexrays.minsn_t | None:
+        bits = ins.d.size * 8 if ins.d.size else 32
+        # 1) do *local* folding everywhere inside the ins
+        changed = False
+        for mop in (ins.l, ins.r, ins.d):
+            changed |= _fold_const_in_mop(mop, bits)
+
+        # if we simplified any sub-expression, return the *mutated* instruction
+        if changed:
+            return ida_hexrays.minsn_t(ins)  # copy = treat as replacement
+
+        # 2) second chance: whole-tree collapses → emit m_ldc
+        ast = minsn_to_ast(ins)
+        if ast is None:
+            return None
+
+        value = _eval_subtree(ast, bits)
+        if value is None:
+            return None  # not foldable
+
+        new = ida_hexrays.minsn_t(ins)  # clone to keep ea/sizes
+        new.opcode = ida_hexrays.m_ldc
+        cst = ida_hexrays.mop_t()
+        cst.make_number(value, ins.d.size)
+        new.l = cst
+        new.r.erase()
+        return new
+
+
+# def _fold_const_in_mop(mop: ida_hexrays.mop_t, bits: int) -> bool:
+#     """
+#     Recursively rewrites 'mop' in place; returns True if something changed.
+#     """
+#     changed = False
+
+#     if mop is None:
+#         return False
+
+#     if mop.t == ida_hexrays.mop_d and mop.d is not None:
+#         # sub-instruction:  build AST → fold → regenerate mop
+#         sub_ast = minsn_to_ast(mop.d)
+#         if sub_ast:
+#             new_ast, ch = _fold_bottom_up(sub_ast, bits)
+#             if ch and isinstance(new_ast, AstNode):
+#                 # regenerate sub-insn from AST and overwrite
+#                 new_sub = new_ast.create_minsn(mop.d.ea)  # this helper exists in d810
+#                 mop.d = new_sub
+#                 changed = True
+
+#     # argument list of a call lives in a mop_a
+#     if mop.t == ida_hexrays.mop_a:
+#         for a in mop.a:  # mop.a is the list< mop_t >
+#             changed |= _fold_const_in_mop(a, bits)
+
+#     # binary mops (l/r)
+#     if hasattr(mop, "l"):
+#         changed |= _fold_const_in_mop(mop.l, bits)
+#     if hasattr(mop, "r"):
+#         changed |= _fold_const_in_mop(mop.r, bits)
 # ────────────────────────────────────────────────────────────────────
 # The rule
 # # ────────────────────────────────────────────────────────────────────
@@ -281,46 +323,3 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
 #         new_ins.r.erase()
 #         # keep the original destination (ins.d)
 #         return new_ins
-
-
-class FoldPureConstantRule(PeepholeSimplificationRule):
-    DESCRIPTION = (
-        "Collapse any instruction whose whole expression "
-        "is a compile-time constant into a single m_ldc"
-    )
-
-    maturities = [
-        ida_hexrays.MMAT_GLBOPT1,
-        ida_hexrays.MMAT_GLBOPT2,
-    ]
-
-    @typing.override
-    def check_and_replace(
-        self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t
-    ) -> ida_hexrays.minsn_t | None:
-        bits = ins.d.size * 8 if ins.d.size else 32
-        # 1) do *local* folding everywhere inside the ins
-        changed = False
-        for mop in (ins.l, ins.r, ins.d):
-            changed |= _fold_const_in_mop(mop, bits)
-
-        # if we simplified any sub-expression, return the *mutated* instruction
-        if changed:
-            return ida_hexrays.minsn_t(ins)  # copy = treat as replacement
-
-        # 2) second chance: whole-tree collapses → emit m_ldc
-        ast = minsn_to_ast(ins)
-        if ast is None:
-            return None
-
-        value = _eval_subtree(ast, bits)
-        if value is None:
-            return None  # not foldable
-
-        new = ida_hexrays.minsn_t(ins)  # clone to keep ea/sizes
-        new.opcode = ida_hexrays.m_ldc
-        cst = ida_hexrays.mop_t()
-        cst.make_number(value, ins.d.size)
-        new.l = cst
-        new.r.erase()
-        return new

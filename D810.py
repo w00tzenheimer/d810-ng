@@ -17,6 +17,7 @@ import ida_hexrays
 import ida_kernwin
 import idaapi
 
+
 D810_VERSION = "0.1"
 
 

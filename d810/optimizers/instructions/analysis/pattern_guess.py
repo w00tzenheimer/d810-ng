@@ -1,3 +1,4 @@
+import logging
 import os
 
 from d810.expr.ast import minsn_to_ast
@@ -5,10 +6,15 @@ from d810.hexrays.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,
     maturity_to_string,
+    opcode_to_string,
 )
 from d810.optimizers.handler import DEFAULT_INSTRUCTION_MATURITIES
 from d810.optimizers.instructions.analysis.handler import InstructionAnalysisRule
 from d810.optimizers.instructions.analysis.utils import get_possible_patterns
+
+import ida_hexrays
+
+optimizer_logger = logging.getLogger("D810.optimizer")
 
 
 class ExampleGuessingRule(InstructionAnalysisRule):
@@ -28,7 +34,9 @@ class ExampleGuessingRule(InstructionAnalysisRule):
         self.cur_ins_guessed = [""] * self.max_index
         self.pattern_filename_path = None
 
-    def log_info(self, message):
+    def log_info(self, message: str):
+        if self.pattern_filename_path is None:
+            return
         with open(self.pattern_filename_path, "a") as f:
             f.write("{0}\n".format(message))
 
@@ -40,9 +48,10 @@ class ExampleGuessingRule(InstructionAnalysisRule):
 
     def set_log_dir(self, log_dir):
         super().set_log_dir(log_dir)
+        if self.log_dir is None:
+            return
         self.pattern_filename_path = os.path.join(self.log_dir, "pattern_guess.log")
-        f = open(self.pattern_filename_path, "w")
-        f.close()
+        open(self.pattern_filename_path, "w").close()
 
     def configure(self, kwargs):
         super().configure(kwargs)
@@ -60,14 +69,22 @@ class ExampleGuessingRule(InstructionAnalysisRule):
         if self.max_nb_diff_opcodes == -1:
             self.max_nb_diff_opcodes = 0xFF
 
-    def analyze_instruction(self, blk, ins):
+    def analyze_instruction(self, blk, ins) -> bool:
         if self.cur_maturity not in self.maturities:
-            return None
+            return False
         formatted_ins = str(format_minsn_t(ins))
         if formatted_ins in self.cur_ins_guessed:
             return False
+        if ins.opcode == ida_hexrays.m_nop:
+            optimizer_logger.debug("Skipping pattern guess for nop instruction")
+            return False
+
         tmp = minsn_to_ast(ins)
         if tmp is None:
+            optimizer_logger.debug(
+                "Skipping pattern guess: no AST for opcode %s",
+                opcode_to_string(ins.opcode),
+            )
             return False
         is_good_candidate = self.check_if_possible_pattern(tmp)
         if is_good_candidate:
@@ -75,7 +92,7 @@ class ExampleGuessingRule(InstructionAnalysisRule):
             self.cur_index = (self.cur_index + 1) % self.max_index
         return is_good_candidate
 
-    def check_if_possible_pattern(self, test_ast):
+    def check_if_possible_pattern(self, test_ast) -> bool:
         patterns = get_possible_patterns(
             test_ast, min_nb_use=2, ref_ast_info_by_index=None, max_nb_pattern=64
         )

@@ -6,15 +6,6 @@ import typing
 from typing import Dict, List, Tuple, Union
 
 from d810.errors import AstEvaluationException
-from d810.hexrays.hexrays_formatters import format_minsn_t, format_mop_t
-from d810.hexrays.hexrays_helpers import (
-    AND_TABLE,
-    MBA_RELATED_OPCODES,
-    MINSN_TO_AST_FORBIDDEN_OPCODES,
-    OPCODES_INFO,
-    Z3_SPECIAL_OPERANDS,
-    equal_mops_ignore_size,
-)
 from d810.expr.utils import (
     get_add_cf,
     get_add_of,
@@ -22,6 +13,19 @@ from d810.expr.utils import (
     get_sub_of,
     signed_to_unsigned,
     unsigned_to_signed,
+)
+from d810.hexrays.hexrays_formatters import (
+    format_minsn_t,
+    format_mop_t,
+    opcode_to_string,
+)
+from d810.hexrays.hexrays_helpers import (
+    AND_TABLE,
+    MBA_RELATED_OPCODES,
+    MINSN_TO_AST_FORBIDDEN_OPCODES,
+    OPCODES_INFO,
+    Z3_SPECIAL_OPERANDS,
+    equal_mops_ignore_size,
 )
 
 import ida_hexrays
@@ -107,6 +111,7 @@ class AstNode(AstBase, dict):
 
         self.dest_size = None
         self.ea = None
+        self.func_name: str = ""
         self._is_frozen = False  # All newly created nodes are mutable by default
 
     @property
@@ -1019,6 +1024,18 @@ def mop_to_ast_internal(
         tree.mop = mop
         dest_size = mop.size if mop.t != ida_hexrays.mop_d else mop.d.d.size
         tree.dest_size = dest_size
+    elif mop.t == ida_hexrays.mop_d and mop.d.opcode == ida_hexrays.m_call:
+        func_mop = mop.d.l
+        if func_mop.t == ida_hexrays.mop_h and "__ROL" in func_mop.helper:
+            args = mop.d.r.f.args
+            if len(args) == 2:  # value, shift
+                value_ast = mop_to_ast_internal(args[0], context)
+                shift_ast = mop_to_ast_internal(args[1], context)
+                tree = AstNode(ida_hexrays.m_call, value_ast, shift_ast)
+                tree.func_name = func_mop.helper
+                tree.mop = mop
+                tree.dest_size = mop.size
+                tree.ea = mop.d.ea
     else:
         # This is an internal node (operation). Recurse for children.
         # Pass the SAME context object down.
@@ -1100,6 +1117,13 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
             return tmp
 
         tmp = mop_to_ast(ins_mop)
+        if tmp is None:
+            logger.debug(
+                "Skipping AST build for unsupported or nop instruction: %s %s",
+                opcode_to_string(instruction.opcode),
+                instruction.dstr(),
+            )
+            return None
         tmp.dst_mop = instruction.d
         return tmp
     except RuntimeError as e:

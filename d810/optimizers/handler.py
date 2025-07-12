@@ -22,14 +22,19 @@ class OptimizationRule(Registrant):
         self.maturities = []
         self.config = {}
         self.log_dir = None
+        self.dump_intermediate_microcode = False
 
     def set_log_dir(self, log_dir):
         self.log_dir = log_dir
 
     def configure(self, kwargs):
         self.config = kwargs if kwargs is not None else {}
-        if "maturities" in self.config.keys():
+        if "maturities" in self.config:
             self.maturities = [string_to_maturity(x) for x in self.config["maturities"]]
+        if "dump_intermediate_microcode" in self.config:
+            self.dump_intermediate_microcode = self.config[
+                "dump_intermediate_microcode"
+            ]
 
     @property
     def name(self):
