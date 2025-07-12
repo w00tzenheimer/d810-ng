@@ -51,6 +51,7 @@ class ProjectConfiguration:
     description: str = ""
     ins_rules: list[RuleConfiguration] = field(default_factory=list)
     blk_rules: list[RuleConfiguration] = field(default_factory=list)
+    additional_configuration: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_file(cls, path: Path | str) -> "ProjectConfiguration":
@@ -143,30 +144,50 @@ class D810Configuration:
             config_path: Path to the JSON config file. If None, defaults to
                          'options.json' in the script's directory.
         """
-        if config_path is None:
-            self.config_file = (
+        if config_path is not None:
+            # Caller explicitly provided a path – honour it verbatim.
+            self.config_file = Path(config_path)
+            template_path: Path | None = None
+        else:
+            # Default behaviour – locate user-specific options first.
+            user_cfg_dir = self.config_dir
+            user_cfg_dir.mkdir(parents=True, exist_ok=True)
+            user_cfg_file = user_cfg_dir / ConfigConstants.OPTIONS_FILENAME
+
+            template_path = (
                 Path(__file__).resolve().parent / ConfigConstants.OPTIONS_FILENAME
             )
-        else:
-            self.config_file = Path(config_path)
+
+            # Use user copy if it exists, else fall back to template for reading.
+            self.config_file = user_cfg_file
 
         self._options: dict[str, Any] = {}
-        self._load()
 
-    def _load(self) -> None:
+        # When a template exists and the user file is absent, read from the template
+        # but keep ``self.config_file`` pointing to the user path so that any save()
+        # writes a copy in the writable directory.
+        self._load(fallback_path=template_path)
+
+    def _load(self, fallback_path: Path | None = None) -> None:
         """Loads configuration from the JSON file, handling potential errors."""
-        try:
-            with self.config_file.open("r", encoding="utf-8") as fp:
-                self._options = json.load(fp)
-        except FileNotFoundError:
-            logging.warning(
-                "Config file not found: %s. Using empty config.", self.config_file
-            )
-            self._options = {}
-        except json.JSONDecodeError:
-            logging.error(
-                "Failed to parse config file: %s. Using empty config.", self.config_file
-            )
+        paths_to_try = [self.config_file]
+        if fallback_path is not None and fallback_path not in paths_to_try:
+            paths_to_try.append(fallback_path)
+
+        for path in paths_to_try:
+            try:
+                with path.open("r", encoding="utf-8") as fp:
+                    self._options = json.load(fp)
+                logging.info("Loaded configuration from %s", path)
+                break
+            except FileNotFoundError:
+                logging.debug("Configuration file %s not found", path)
+            except json.JSONDecodeError:
+                logging.error("Failed to parse config file: %s", path)
+
+        else:
+            # None of the candidate files succeeded.
+            logging.warning("No valid configuration found; using defaults in memory.")
             self._options = {}
 
     def save(self) -> None:
@@ -178,6 +199,20 @@ class D810Configuration:
             logging.info("Configuration saved to %s", self.config_file)
         except IOError as e:
             logging.error("Failed to save configuration to %s: %s", self.config_file, e)
+
+    @property
+    def config_dir(self) -> Path:
+        """Return the directory in the user profile that stores editable D-810 configuration files.
+
+        The directory layout is:
+
+        ida_diskio.get_user_idadir() / "cfg" / "d810"
+
+        This location is **writable** by the user. Any project configuration JSON
+        placed here will _override_ the read-only templates shipped with the
+        plugin (located in the plugin package under ``d810/conf``).
+        """
+        return Path(ida_diskio.get_user_idadir()) / "cfg" / "d810"
 
     @property
     def log_dir(self) -> Path:

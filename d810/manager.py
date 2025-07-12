@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import pathlib
+import threading
+import typing
 
 import pyinstrument
 from d810.conf import D810Configuration, ProjectConfiguration
@@ -93,69 +96,110 @@ class D810Manager(object):
             self.hx_decompiler_hook = None
 
 
+@dataclasses.dataclass
 class D810State:
     """
-    Singleton wrapper proxy controller for the underlying plugin logic.
+    Thread-safe singleton dataclass with optional lazy-loading of configuration.
 
-    Ensures only one D810State is created and shared throughout the plugin's lifetime.
-
-    Usage:
-        >>> t1 = D810State()
-        >>> t2 = D810State()
-        >>> t1 is t2
-        True
-        >>> t1.get() is t2.get()
-        True
-
-    The .get() method returns the singleton D810State instance.
+    If `lazy_load_config` is False (default), configuration and loggers
+    are initialized immediately. If True, config instantiation and
+    logger setup are deferred until first access of `d810_config`.
     """
 
-    _instance = None
+    # Toggle for lazy configuration loading
+    lazy_load_config: bool = False
 
-    def __new__(cls, *args, **kwargs):
+    # Singleton internals
+    _instance: typing.ClassVar[typing.Optional["D810State"]] = None
+    _lock: typing.ClassVar[threading.Lock] = threading.Lock()
+    _initialized: typing.ClassVar[bool] = False
+    _config: typing.ClassVar[typing.Optional[D810Configuration]] = None
+
+    def __new__(cls, *args, **kwargs) -> "D810State":
+        # Double-checked locking for thread-safe singleton creation
         if cls._instance is None:
-            # Not thread-safe, but sufficient for plugin/IDA context
-            cls._instance = super().__new__(cls)
-            cls._instance._initialize()
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
         return cls._instance
+
+    def __post_init__(self) -> None:
+        # Eager initialization if lazy_load_config is disabled
+        cls = type(self)
+        if not self.lazy_load_config and not cls._initialized:
+            with cls._lock:
+                if not cls._initialized:
+                    self.load(init_only=True)
 
     @classmethod
-    def get(cls):
-        if cls._instance is None:
-            cls()
-        return cls._instance
+    def get(cls, lazy_load_config: bool = False) -> "D810State":
+        """
+        Retrieve the singleton instance, optionally setting lazy behavior
+        on first creation.
+        """
+        return cls(lazy_load_config=lazy_load_config)
 
-    def _initialize(self, d810_config: D810Configuration | None = None):
-        # For debugging purposes, to interact with this object from the console
-        # Type in IDA Python shell 'from d810.manager import d810_state' to access it
-        # global d810_state
-        # d810_state = self
-        # reload_all_modules()
+    @property
+    def d810_config(self) -> D810Configuration:
+        """
+        Access the configuration, loading and initializing if needed.
+        """
+        cls = type(self)
+        with cls._lock:
+            if cls._config is None:
+                # Instantiate config when first accessed
+                self._load_config()
+            if self.lazy_load_config and not cls._initialized:
+                # Perform deferred initialization
+                self._initialize()
+        return cls._config  # type: ignore
 
-        self.d810_config = d810_config or D810Configuration()
-
-        # TO-DO: if [...].get raises an exception because log_dir is not found, handle exception
-        real_log_dir = os.path.join(self.d810_config.get("log_dir"), D810_LOG_DIR_NAME)
-
-        # TO-DO: if [...].get raises an exception because erase_logs_on_reload is not found, handle exception
-        if self.d810_config.get("erase_logs_on_reload"):
+    def _initialize(self) -> None:
+        # Perform logger setup based on current config
+        config = self.d810_config
+        real_log_dir = os.path.join(
+            config.get("log_dir"),
+            D810_LOG_DIR_NAME,
+        )
+        if config.get("erase_logs_on_reload"):
             clear_logs(real_log_dir)
-
         configure_loggers(real_log_dir)
+        type(self)._initialized = True
+
+    def _load_config(self) -> None:
+        # Helper to eager-load the configuration
+        type(self)._config = D810Configuration()
 
     def is_loaded(self):
         return self._is_loaded
 
-    def register_default_projects(self):
+    def _resolve_config_path(self, cfg_name: str) -> pathlib.Path:
+        """Return the full path to the configuration file.
 
+        Precedence order:
+        1. *Writable* user directory  <IDA_USER>/cfg/d810/<cfg_name>
+        2. Built-in read-only templates shipped with the plugin
+            (located next to this file in d810/conf/).
+        """
+        user_path = self.d810_config.config_dir / cfg_name
+        if user_path.exists():
+            return user_path
+
+        # Fallback to read-only template bundled with the plugin
+        return pathlib.Path(__file__).resolve().parent / "conf" / cfg_name
+
+    def register_default_projects(self):
         self.projects = []
-        for project_configuration_path in self.d810_config.get("configurations"):
-            project_configuration = ProjectConfiguration(
-                project_configuration_path, conf_dir=self.d810_config.config_dir
-            )
-            project_configuration.load()
+        for cfg_name in self.d810_config.get("configurations"):
+            cfg_path = self._resolve_config_path(cfg_name)
+            try:
+                project_configuration = ProjectConfiguration.from_file(cfg_path)
+            except Exception as e:
+                logger.error("Failed to load project config %s: %s", cfg_path, e)
+                continue
             self.projects.append(project_configuration)
-        logger.debug("Rule configurations loaded: {0}".format(self.projects))
+
+        logger.debug("Rule configurations loaded: %s", self.projects)
 
     def add_project(self, config: ProjectConfiguration):
         self.projects.append(config)
@@ -170,9 +214,21 @@ class D810State:
 
     def del_project(self, config: ProjectConfiguration):
         self.projects.remove(config)
-        self.d810_config.get("configurations").remove(config.path)
+        self.d810_config.get("configurations").remove(
+            config.path.name
+        )  # store only the name
         self.d810_config.save()
-        os.remove(config.path)
+
+        # Only allow deletion when the file lives in the user cfg directory
+        try:
+            user_cfg_root = self.d810_config.config_dir.resolve()
+            cfg_path = config.path.resolve()
+            if user_cfg_root in cfg_path.parents:
+                cfg_path.unlink(missing_ok=True)
+            else:
+                logger.warning("Refusing to delete read-only template: %s", cfg_path)
+        except Exception as e:
+            logger.error("Failed to delete project file %s: %s", config.path, e)
 
     def load_project(self, project_index: int):
         self.current_project_index = project_index
@@ -183,6 +239,9 @@ class D810State:
         for rule in self.known_ins_rules:
             for rule_conf in self.current_project.ins_rules:
                 if rule.name == rule_conf.name:
+                    rule_conf.config["dump_intermediate_microcode"] = (
+                        self.d810_config.get("dump_intermediate_microcode")
+                    )
                     rule.configure(rule_conf.config)
                     rule.set_log_dir(self.log_dir)
                     self.current_ins_rules.append(rule)
@@ -190,6 +249,9 @@ class D810State:
         for blk_rule in self.known_blk_rules:
             for rule_conf in self.current_project.blk_rules:
                 if blk_rule.name == rule_conf.name:
+                    rule_conf.config["dump_intermediate_microcode"] = (
+                        self.d810_config.get("dump_intermediate_microcode")
+                    )
                     blk_rule.configure(rule_conf.config)
                     blk_rule.set_log_dir(self.log_dir)
                     self.current_blk_rules.append(blk_rule)
@@ -221,7 +283,12 @@ class D810State:
         if getattr(self, "manager", None):
             self.manager.stop()
 
-    def load(self):
+    def load(self, init_only: bool = False):
+        self._load_config()
+        self._initialize()
+        if init_only:
+            return
+
         self.log_dir = pathlib.Path(self.d810_config.get("log_dir")) / D810_LOG_DIR_NAME
         self.manager = D810Manager(self.log_dir)
 

@@ -3,7 +3,7 @@ import logging
 import unittest
 from pathlib import Path
 
-from .tutils import MockIdaDiskio, load_conf_classes
+from .tutils import MockIdaDiskio, load_conf_classes, temp_ida_dir
 
 
 class TestConfiguration(unittest.TestCase):
@@ -35,9 +35,21 @@ class TestConfiguration(unittest.TestCase):
 
     def test_d810_configuration(self):
         """Test D810Configuration loading and logging."""
-        with load_conf_classes() as (D810Configuration, _, _):
-            app_config = D810Configuration(self.dummy_options_file)
-            self.assertEqual(app_config["api_key"], "secret")
+        with temp_ida_dir() as ida_dir, load_conf_classes() as (D810Configuration, _, _):
+            # Place template in read-only area (simulate packaged conf)
+            packaged_path = Path("d810/conf/options.json")
+            packaged_path.parent.mkdir(parents=True, exist_ok=True)
+            packaged_path.write_text('{"template_key": "tmpl"}')
+
+            # Instance with no explicit path should read template but save to user dir
+            app_config = D810Configuration()
+            # Value should initially be whatever is in config (template or pre-existing user copy)
+            self.assertIn(app_config.get("template_key"), ("tmpl", "user"))
+            # After save(), a user copy must exist
+            app_config.set("template_key", "user")
+            app_config.save()
+            self.assertTrue(app_config.config_file.exists())
+            # log_dir should use MockIdaDiskio path
             self.assertEqual(
                 str(app_config.log_dir),
                 str(Path(MockIdaDiskio.get_user_idadir(), "logs")),

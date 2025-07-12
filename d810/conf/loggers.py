@@ -159,6 +159,11 @@ class LoggerConfigurator:
         return sorted(names)
 
     @staticmethod
+    def get_level(name: str) -> int:
+        """Return the effective level for logger `name`."""
+        return logging.getLogger(name).getEffectiveLevel()
+
+    @staticmethod
     def set_level(logger_name: str, level_name: str) -> None:
         """
         Change the level for `logger_name` to one of DEBUG, INFO, WARNING, ERROR, CRITICAL.

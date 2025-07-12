@@ -507,6 +507,12 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.btn_config.clicked.connect(self._configure_plugin)
         btn_split.addWidget(self.btn_config)
 
+        # Logger configuration button
+        self.btn_logger_cfg = QtWidgets.QPushButton("Loggers…")
+        self.btn_logger_cfg.setToolTip("Adjust log-levels at runtime")
+        self.btn_logger_cfg.clicked.connect(self._configure_logging)
+        btn_split.addWidget(self.btn_logger_cfg)
+
         self.btn_start = QtWidgets.QPushButton("Start")
         self.btn_start.clicked.connect(self._start_d810)
         btn_split.addWidget(self.btn_start)
@@ -596,7 +602,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         logger.debug("Calling update_cfg_select")
         tmp = self.state.current_project_index
         self.cfg_select.clear()
-        self.cfg_select.addItems([str(proj.path) for proj in self.state.projects])
+        # Display basename for readability
+        self.cfg_select.addItems([proj.path.name for proj in self.state.projects])
         self.cfg_select.setCurrentIndex(tmp)
 
     def _create_config(self):
@@ -667,6 +674,21 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         if editdlg.exec_() == QtWidgets.QDialog.Accepted:
             return
         return
+
+    def _configure_logging(self):
+        """Open the dynamic logging configuration dialog."""
+        try:
+            from .logging_config_dialog import LoggingConfigDialog  # local import to avoid Qt issues during IDA headless start
+
+            dlg = LoggingConfigDialog("D810", self.parent)
+            dlg.exec_()
+        except Exception as exc:  # pragma: no cover – defensive
+            logger.error("Failed to open LoggingConfigDialog: %s", exc)
+            QtWidgets.QMessageBox.critical(
+                self.parent,
+                "Error",
+                f"Unable to open logging configuration dialog:\n{exc}",
+            )
 
     def _start_d810(self):
         logger.debug("Calling _start_d810")

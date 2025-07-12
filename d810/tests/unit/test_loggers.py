@@ -1,5 +1,6 @@
 import logging
 import unittest
+
 from .tutils import load_conf_classes
 
 # Ensure d810.conf and submodules import with dummy ida_diskio

@@ -1044,13 +1044,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self.non_significant_changes += self.ensure_all_dispatcher_fathers_are_direct()
 
         for dispatcher_info in self.dispatcher_list:
-            dump_microcode_for_debug(
-                self.mba,
-                self.log_dir,
-                "unflat_{0}_dispatcher_{1}_after_fix_abc_before_duplication".format(
-                    self.cur_maturity_pass, dispatcher_info.entry_block.serial
-                ),
-            )
+            if self.dump_intermediate_microcode:
+                dump_microcode_for_debug(
+                    self.mba,
+                    self.log_dir,
+                    "unflat_{0}_dispatcher_{1}_after_fix_abc_before_duplication".format(
+                        self.cur_maturity_pass, dispatcher_info.entry_block.serial
+                    ),
+                )
             unflat_logger.info(
                 "Searching dispatcher for entry block %s %s ->  with variables (%s)...",
                 dispatcher_info.entry_block.serial,
@@ -1075,13 +1076,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 except NotDuplicableFatherException as e:
                     unflat_logger.warning(e)
                     pass
-            dump_microcode_for_debug(
-                self.mba,
-                self.log_dir,
-                "unflat_{0}_dispatcher_{1}_after_duplication".format(
-                    self.cur_maturity_pass, dispatcher_info.entry_block.serial
-                ),
-            )
+            if self.dump_intermediate_microcode:
+                dump_microcode_for_debug(
+                    self.mba,
+                    self.log_dir,
+                    "unflat_{0}_dispatcher_{1}_after_duplication".format(
+                        self.cur_maturity_pass, dispatcher_info.entry_block.serial
+                    ),
+                )
             # During the previous step we changed dispatcher entry block fathers, so we need to reload them
             dispatcher_father_list = [
                 self.mba.get_mblock(x) for x in dispatcher_info.entry_block.blk.predset
@@ -1095,13 +1097,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 except NotResolvableFatherException as e:
                     unflat_logger.warning(e)
                     pass
-            dump_microcode_for_debug(
-                self.mba,
-                self.log_dir,
-                "unflat_{0}_dispatcher_{1}_after_unflattening".format(
-                    self.cur_maturity_pass, dispatcher_info.entry_block.serial
-                ),
-            )
+            if self.dump_intermediate_microcode:
+                dump_microcode_for_debug(
+                    self.mba,
+                    self.log_dir,
+                    "unflat_{0}_dispatcher_{1}_after_unflattening".format(
+                        self.cur_maturity_pass, dispatcher_info.entry_block.serial
+                    ),
+                )
 
         unflat_logger.info(
             "Unflattening removed {0} branch".format(nb_flattened_branches)
@@ -1115,24 +1118,23 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             return 0
         self.last_pass_nb_patch_done = 0
         unflat_logger.info(
-            "Unflattening at maturity {0} pass {1}".format(
-                self.cur_maturity, self.cur_maturity_pass
+            "Unflattening at maturity %s pass %s",
+            self.cur_maturity,
+            self.cur_maturity_pass,
+        )
+        if self.dump_intermediate_microcode:
+            dump_microcode_for_debug(
+                self.mba,
+                self.log_dir,
+                "unflat_{0}_start".format(self.cur_maturity_pass),
             )
-        )
-        dump_microcode_for_debug(
-            self.mba, self.log_dir, "unflat_{0}_start".format(self.cur_maturity_pass)
-        )
         self.retrieve_all_dispatchers()
         if len(self.dispatcher_list) == 0:
-            unflat_logger.info(
-                "No dispatcher found at maturity {0}".format(self.mba.maturity)
-            )
+            unflat_logger.info("No dispatcher found at maturity %s", self.mba.maturity)
             return 0
         else:
             unflat_logger.info(
-                "Unflattening: {0} dispatcher(s) found".format(
-                    len(self.dispatcher_list)
-                )
+                "Unflattening: %s dispatcher(s) found", len(self.dispatcher_list)
             )
             # self.dispatcher_fixer_abc(self.dispatcher_list)
             for dispatcher_info in self.dispatcher_list:
@@ -1142,13 +1144,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     for x in dispatcher_info.entry_block.blk.predset
                 ]
                 total_fixed_father_block = 0
-                dump_microcode_for_debug(
-                    self.mba,
-                    self.log_dir,
-                    "unflat_{0}_dispatcher_{1}_before_fix_abc".format(
-                        self.cur_maturity_pass, dispatcher_info.entry_block.serial
-                    ),
-                )
+                if self.dump_intermediate_microcode:
+                    dump_microcode_for_debug(
+                        self.mba,
+                        self.log_dir,
+                        "unflat_{0}_dispatcher_{1}_before_fix_abc".format(
+                            self.cur_maturity_pass, dispatcher_info.entry_block.serial
+                        ),
+                    )
                 for dispatcher_father in dispatcher_father_list:
                     try:
                         total_fixed_father_block += self.fix_fathers_from_mop_history(
@@ -1159,20 +1162,23 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     except Exception as e:
                         print(e)
                 unflat_logger.info(
-                    f"Fixed {total_fixed_father_block} instructions in father history"
+                    "Fixed %s instructions in father history",
+                    total_fixed_father_block,
                 )
             self.last_pass_nb_patch_done = self.remove_flattening()
         unflat_logger.info(
-            "Unflattening at maturity {0} pass {1}: {2} changes".format(
-                self.cur_maturity, self.cur_maturity_pass, self.last_pass_nb_patch_done
-            )
+            "Unflattening at maturity %s pass %s: %s changes",
+            self.cur_maturity,
+            self.cur_maturity_pass,
+            self.last_pass_nb_patch_done,
         )
         nb_clean = mba_deep_cleaning(self.mba, False)
-        dump_microcode_for_debug(
-            self.mba,
-            self.log_dir,
-            "unflat_{0}_after_cleaning".format(self.cur_maturity_pass),
-        )
+        if self.dump_intermediate_microcode:
+            dump_microcode_for_debug(
+                self.mba,
+                self.log_dir,
+                "unflat_{0}_after_cleaning".format(self.cur_maturity_pass),
+            )
         if self.last_pass_nb_patch_done + nb_clean + self.non_significant_changes > 0:
             self.mba.mark_chains_dirty()
             self.mba.optimize_local(0)

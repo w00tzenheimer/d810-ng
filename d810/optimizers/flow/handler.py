@@ -22,7 +22,7 @@ class FlowOptimizationRule(OptimizationRule):
         self.whitelisted_function_ea_list = []
         self.use_blacklist = False
         self.blacklisted_function_ea_list = []
-        if "whitelisted_functions" in self.config.keys():
+        if "whitelisted_functions" in self.config:
             self.use_whitelist = True
             for func_ea in self.config["whitelisted_functions"]:
                 self.whitelisted_function_ea_list.append(int(func_ea, 16))
@@ -36,7 +36,7 @@ class FlowOptimizationRule(OptimizationRule):
                     func_name_list,
                 )
             )
-        if "blacklisted_functions" in self.config.keys():
+        if "blacklisted_functions" in self.config:
             self.use_blacklist = True
             for func_ea in self.config["whitelisted_functions"]:
                 self.blacklisted_function_ea_list.append(int(func_ea, 16))
@@ -50,3 +50,7 @@ class FlowOptimizationRule(OptimizationRule):
                     func_name_list,
                 )
             )
+        if "dump_intermediate_microcode" in self.config:
+            self.dump_intermediate_microcode = self.config[
+                "dump_intermediate_microcode"
+            ]
