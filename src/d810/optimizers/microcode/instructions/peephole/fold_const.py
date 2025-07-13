@@ -40,11 +40,10 @@ COMMUTATIVE = {
 }
 
 
-def _is_const(mop):
+def _is_const(mop: ida_hexrays.mop_t) -> bool:
     return mop is not None and mop.t == ida_hexrays.mop_n
 
 
-#     return changed
 def _fold_const_in_mop(mop: ida_hexrays.mop_t, bits: int) -> bool:
     """
     Walk a mop tree, try to constant-fold, return True if anything changed.
@@ -161,7 +160,7 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     if ast.is_leaf():
         ast = typing.cast(AstLeaf, ast)
         mop = ast.mop
-        if _is_const(mop):
+        if mop and _is_const(mop):
             return mop.nnn.value & AND_TABLE[bits // 8]  # type: ignore
         return None
 
@@ -177,6 +176,16 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
             return (-val) & AND_TABLE[bits // 8]
         if ast.opcode == ida_hexrays.m_bnot:
             return (~val) & AND_TABLE[bits // 8]
+        if ast.opcode == ida_hexrays.m_xds:
+            left_bits = ast.left.dest_size * 8
+            val = _eval_subtree(ast.left, left_bits)
+            if val is None:
+                return None
+            mask = AND_TABLE[bits // 8]
+            sign_bit = 1 << (left_bits - 1)
+            if val & sign_bit:
+                val |= ~((1 << left_bits) - 1) & mask
+            return val & mask
         return None
 
     # binary

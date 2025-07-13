@@ -126,14 +126,14 @@ class D810State:
 
         # configuration behavior
         self.lazy_load_config = lazy_load_config
+        # placeholders for runtime state
+        self.log_dir: pathlib.Path
+        self.manager: D810Manager
+
         if not self.lazy_load_config:
             self.load(init_only=True)
 
-        # placeholders for runtime state
-        self.log_dir: pathlib.Path
-        self.manager: typing.Optional[D810Manager] = None
         self.gui: typing.Optional[D810GUI] = None
-
         self.current_project: typing.Optional[ProjectConfiguration] = None
         self.projects: typing.List[ProjectConfiguration] = []
         self.current_project_index: int = 0
@@ -326,14 +326,13 @@ class D810State:
     def load(self, init_only: bool = False):
         self._load_config()
         self._initialize()
-        if init_only:
-            return
-
         # Always rely on the D810Configuration.log_dir property which falls back
         # to a sensible default when the option is missing, instead of reading
         # the raw option that may be None and break pathlib.Path construction.
         self.log_dir = self.d810_config.log_dir / D810_LOG_DIR_NAME
         self.manager = D810Manager(self.log_dir)
+        if init_only:
+            return
 
         self.gui = None
         self.current_project = None
