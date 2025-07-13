@@ -295,7 +295,7 @@ class D810State:
 
         for rule in self.known_ins_rules:
             for rule_conf in self.current_project.ins_rules:
-                if rule.name == rule_conf.name:
+                if rule.name == rule_conf.name and rule_conf.is_activated:
                     rule_conf.config["dump_intermediate_microcode"] = (
                         self.d810_config.get("dump_intermediate_microcode")
                     )
@@ -305,7 +305,7 @@ class D810State:
         logger.debug("Instruction rules configured")
         for blk_rule in self.known_blk_rules:
             for rule_conf in self.current_project.blk_rules:
-                if blk_rule.name == rule_conf.name:
+                if blk_rule.name == rule_conf.name and rule_conf.is_activated:
                     rule_conf.config["dump_intermediate_microcode"] = (
                         self.d810_config.get("dump_intermediate_microcode")
                     )
