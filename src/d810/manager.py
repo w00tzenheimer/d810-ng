@@ -130,7 +130,7 @@ class D810State:
             self.load(init_only=True)
 
         # placeholders for runtime state
-        self.log_dir: pathlib.Path = pathlib.Path()
+        self.log_dir: pathlib.Path
         self.manager: typing.Optional[D810Manager] = None
         self.gui: typing.Optional[D810GUI] = None
 

@@ -1,6 +1,6 @@
 import logging
 
-from d810.optimizers.handler import DEFAULT_FLOW_MATURITIES, OptimizationRule
+from d810.optimizers.microcode.handler import DEFAULT_FLOW_MATURITIES, OptimizationRule
 
 import idc
 
