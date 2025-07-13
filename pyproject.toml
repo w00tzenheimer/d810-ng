@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "d810-ng"
+name = "d810"
 requires-python = ">= 3.12"
 version = "0.1.0"
 authors = [
@@ -16,5 +16,8 @@ dependencies = ["z3-solver"]
 [project.optional-dependencies]
 dev = ["pyinstrument"]
 
+[tool.setuptools]
+package-dir = { "" = "src" }
+
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]

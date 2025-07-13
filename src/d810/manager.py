@@ -96,7 +96,25 @@ class D810Manager(object):
             self.hx_decompiler_hook = None
 
 
-@dataclasses.dataclass
+# class D810State:
+#     """
+#     Thread-safe singleton dataclass with optional lazy-loading of configuration.
+
+#     If `lazy_load_config` is False (default), configuration and loggers
+#     are initialized immediately. If True, config instantiation and
+#     logger setup are deferred until first access of `d810_config`.
+#     """
+
+#     # Toggle for lazy configuration loading
+#     lazy_load_config: bool = False
+
+#     # Singleton internals
+#     _instance: typing.ClassVar[typing.Optional["D810State"]] = None
+#     _lock: typing.ClassVar[threading.Lock] = threading.Lock()
+#     _initialized: typing.ClassVar[bool] = False
+#     _config: typing.ClassVar[typing.Optional[D810Configuration]] = None
+
+
 class D810State:
     """
     Thread-safe singleton dataclass with optional lazy-loading of configuration.
@@ -110,10 +128,12 @@ class D810State:
     lazy_load_config: bool = False
 
     # Singleton internals
-    _instance: typing.ClassVar[typing.Optional["D810State"]] = None
-    _lock: typing.ClassVar[threading.Lock] = threading.Lock()
-    _initialized: typing.ClassVar[bool] = False
-    _config: typing.ClassVar[typing.Optional[D810Configuration]] = None
+    _instance: typing.Optional["D810State"] = None
+    _lock = threading.Lock()
+    _initialized: bool = False
+    _config: typing.Optional[D810Configuration] = None
+
+    _initialized: bool = False
 
     def __new__(cls, *args, **kwargs) -> "D810State":
         # Double-checked locking for thread-safe singleton creation
@@ -123,13 +143,28 @@ class D810State:
                     cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __post_init__(self) -> None:
-        # Eager initialization if lazy_load_config is disabled
-        cls = type(self)
-        if not self.lazy_load_config and not cls._initialized:
-            with cls._lock:
-                if not cls._initialized:
-                    self.load(init_only=True)
+    def __init__(self, lazy_load_config: bool = False):
+
+        # configuration behavior
+        self.lazy_load_config = lazy_load_config
+        if not self.lazy_load_config:
+            self.load(init_only=True)
+
+        # placeholders for runtime state
+        self.log_dir: pathlib.Path = pathlib.Path()
+        self.manager: typing.Optional[D810Manager] = None
+        self.gui: typing.Optional[D810GUI] = None
+
+        self.current_project: typing.Optional[ProjectConfiguration] = None
+        self.projects: typing.List[ProjectConfiguration] = []
+        self.current_project_index: int = 0
+
+        self.current_ins_rules: typing.List = []
+        self.current_blk_rules: typing.List = []
+        self.known_ins_rules: typing.List = []
+        self.known_blk_rules: typing.List = []
+
+        self._is_loaded: bool = False
 
     @classmethod
     def get(cls, lazy_load_config: bool = False) -> "D810State":
@@ -156,12 +191,8 @@ class D810State:
 
     def _initialize(self) -> None:
         # Perform logger setup based on current config
-        config = self.d810_config
-        real_log_dir = os.path.join(
-            config.get("log_dir"),
-            D810_LOG_DIR_NAME,
-        )
-        if config.get("erase_logs_on_reload"):
+        real_log_dir = self.d810_config.log_dir / D810_LOG_DIR_NAME
+        if self.d810_config.get("erase_logs_on_reload"):
             clear_logs(real_log_dir)
         configure_loggers(real_log_dir)
         type(self)._initialized = True
@@ -189,8 +220,24 @@ class D810State:
         return pathlib.Path(__file__).resolve().parent / "conf" / cfg_name
 
     def register_default_projects(self):
+        # Ensure the configuration list exists and is iterable. When the option
+        # is absent (None) or malformed, default to an empty list and persist
+        # the fix so future accesses (e.g. add_project) succeed without extra
+        # guards.
+        cfg_names = self.d810_config.get("configurations") or []
+        if not isinstance(cfg_names, list):
+            logger.warning(
+                "Unexpected type for 'configurations' option (%s); resetting to empty list.",
+                type(cfg_names).__name__,
+            )
+            cfg_names = []
+        # Persist the sanitized list back to configuration so later .get() calls
+        # always return a proper list and ensure durability across sessions.
+        self.d810_config.set("configurations", cfg_names)
+        self.d810_config.save()
+
         self.projects = []
-        for cfg_name in self.d810_config.get("configurations"):
+        for cfg_name in cfg_names:
             cfg_path = self._resolve_config_path(cfg_name)
             try:
                 project_configuration = ProjectConfiguration.from_file(cfg_path)
@@ -203,7 +250,11 @@ class D810State:
 
     def add_project(self, config: ProjectConfiguration):
         self.projects.append(config)
-        self.d810_config.get("configurations").append(config.path)
+        cfg_list = self.d810_config.get("configurations") or []
+        if not isinstance(cfg_list, list):
+            cfg_list = []
+        cfg_list.append(config.path.name)
+        self.d810_config.set("configurations", cfg_list)
         self.d810_config.save()
 
     def update_project(
@@ -214,10 +265,14 @@ class D810State:
 
     def del_project(self, config: ProjectConfiguration):
         self.projects.remove(config)
-        self.d810_config.get("configurations").remove(
-            config.path.name
-        )  # store only the name
-        self.d810_config.save()
+        cfg_list = self.d810_config.get("configurations") or []
+        if isinstance(cfg_list, list):
+            try:
+                cfg_list.remove(config.path.name)
+                self.d810_config.set("configurations", cfg_list)
+                self.d810_config.save()
+            except ValueError:
+                logger.warning("Project %s not found in configuration list", config.path.name)
 
         # Only allow deletion when the file lives in the user cfg directory
         try:
@@ -289,13 +344,28 @@ class D810State:
         if init_only:
             return
 
-        self.log_dir = pathlib.Path(self.d810_config.get("log_dir")) / D810_LOG_DIR_NAME
+        # Always rely on the D810Configuration.log_dir property which falls back
+        # to a sensible default when the option is missing, instead of reading
+        # the raw option that may be None and break pathlib.Path construction.
+        self.log_dir = self.d810_config.log_dir / D810_LOG_DIR_NAME
         self.manager = D810Manager(self.log_dir)
 
         self.gui = None
         self.current_project = None
         self.projects: list[ProjectConfiguration] = []
-        self.current_project_index = int(self.d810_config.get("last_project_index"))
+        # Determine which project to auto-load. Fall back to first entry (0)
+        # when the configuration value is missing or invalid, and clamp the
+        # index to the available range to avoid IndexError when projects were
+        # renamed or removed.
+        raw_index = self.d810_config.get("last_project_index", 0)
+        try:
+            self.current_project_index = int(raw_index)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid last_project_index %r in configuration; defaulting to 0",
+                raw_index,
+            )
+            self.current_project_index = 0
         self.current_ins_rules = []
         self.current_blk_rules = []
 
@@ -309,7 +379,13 @@ class D810State:
         ]
 
         self.register_default_projects()
-        self._is_loaded = self.load_project(self.current_project_index)
+        # Clamp to available projects, if any
+        if self.projects:
+            self.current_project_index = max(0, min(self.current_project_index, len(self.projects) - 1))
+            self._is_loaded = self.load_project(self.current_project_index)
+        else:
+            logger.warning("No project configurations available; plugin is idle.")
+            self._is_loaded = False
         self.gui = D810GUI(self)
         self.gui.show_windows()
 

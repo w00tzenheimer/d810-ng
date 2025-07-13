@@ -145,7 +145,7 @@ class D810Configuration:
                          'options.json' in the script's directory.
         """
         if config_path is not None:
-            # Caller explicitly provided a path – honour it verbatim.
+            # Caller explicitly provided a path – honor it verbatim.
             self.config_file = Path(config_path)
             template_path: Path | None = None
         else:

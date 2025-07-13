@@ -35,25 +35,25 @@ class TestConfiguration(unittest.TestCase):
 
     def test_d810_configuration(self):
         """Test D810Configuration loading and logging."""
-        with temp_ida_dir() as ida_dir, load_conf_classes() as (D810Configuration, _, _):
+        with temp_ida_dir() as ida_dir:
             # Place template in read-only area (simulate packaged conf)
-            packaged_path = Path("d810/conf/options.json")
+            packaged_path = ida_dir / "cfg/d810/options.json"
             packaged_path.parent.mkdir(parents=True, exist_ok=True)
             packaged_path.write_text('{"template_key": "tmpl"}')
-
-            # Instance with no explicit path should read template but save to user dir
-            app_config = D810Configuration()
-            # Value should initially be whatever is in config (template or pre-existing user copy)
-            self.assertIn(app_config.get("template_key"), ("tmpl", "user"))
-            # After save(), a user copy must exist
-            app_config.set("template_key", "user")
-            app_config.save()
-            self.assertTrue(app_config.config_file.exists())
-            # log_dir should use MockIdaDiskio path
-            self.assertEqual(
-                str(app_config.log_dir),
-                str(Path(MockIdaDiskio.get_user_idadir(), "logs")),
-            )
+            with load_conf_classes() as (D810Configuration, _, _):
+                # Instance with no explicit path should read template but save to user dir
+                app_config = D810Configuration()
+                # Value should initially be whatever is in config (template or pre-existing user copy)
+                self.assertIn(app_config.get("template_key"), ("tmpl", "user"))
+                # After save(), a user copy must exist
+                app_config.set("template_key", "user")
+                app_config.save()
+                self.assertTrue(app_config.config_file.exists())
+                # log_dir should use MockIdaDiskio path
+                self.assertEqual(
+                    str(app_config.log_dir),
+                    str(Path(MockIdaDiskio.get_user_idadir(), "logs")),
+                )
 
     def test_project_configuration(self):
         """Test ProjectConfiguration loading, modification, and saving."""

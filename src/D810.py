@@ -11,11 +11,12 @@ import types
 import typing
 
 import d810
-from d810.manager import D810State
 
 import ida_hexrays
 import ida_kernwin
 import idaapi
+
+# from d810.manager import D810State
 
 
 D810_VERSION = "0.1"
@@ -206,13 +207,18 @@ class ReloadablePlugin(LateInitPlugin, idaapi.action_handler_t):
         *,
         global_name: str,
         base_package_name: str,
-        plugin_class: type,
+        plugin_class: str,
     ):
         super().__init__()
         self.global_name = global_name
         self.base_package_name = base_package_name
         self.plugin_class = plugin_class
-        self.plugin = plugin_class()
+        self.plugin = self._import_plugin_cls()
+
+    def _import_plugin_cls(self):
+        self.plugin_module, self.plugin_class_name = self.plugin_class.rsplit(".", 1)
+        mod = importlib.import_module(self.plugin_module)
+        return getattr(mod, self.plugin_class_name)()
 
     @typing.override
     def update(self, ctx: ida_kernwin.action_ctx_base_t) -> int:
@@ -260,7 +266,7 @@ class ReloadablePlugin(LateInitPlugin, idaapi.action_handler_t):
         if self.plugin.is_loaded():
             self.unregister_reload_action()
             self.term()
-            self.plugin = self.plugin_class()
+            self.plugin = self._import_plugin_cls()
 
         yield
 
@@ -307,7 +313,7 @@ class D810Plugin(ReloadablePlugin):
         super().__init__(
             global_name="D810",
             base_package_name="d810",
-            plugin_class=D810State,
+            plugin_class="d810.manager.D810State",
         )
         self.suppress_reload_errors = False
 
@@ -350,13 +356,19 @@ class D810Plugin(ReloadablePlugin):
             callback=modules.append,
         )
 
-        # Filter out disallowed modules (e.g., registry)
-        disallowed = {f"{self.base_package_name}.registry"}
+        # Treat these entries as *prefixes* – any module whose fully-qualified
+        # name starts with one of these strings will be filtered out. This gives
+        # us simple glob-like behaviour without bringing in fnmatch.
+        disallowed_prefixes: tuple[str, ...] = (
+            f"{self.base_package_name}.registry",
+            f"{self.base_package_name}.tests",
+        )
+
         filtered = [
             m
             for m in modules
             if m.__name__.startswith(self.base_package_name)
-            and m.__name__ not in disallowed
+            and not any(m.__name__.startswith(prefix) for prefix in disallowed_prefixes)
         ]
         # Sort so that 'optimizers' packages come last, then alphabetically
         filtered.sort(

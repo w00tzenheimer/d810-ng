@@ -6,6 +6,9 @@ import re
 import sys
 import time
 import weakref
+
+# Added for easier path manipulations
+from pathlib import Path
 from typing import TextIO
 from unittest import loader, runner, suite
 
@@ -920,19 +923,30 @@ class TestRunnerForm(ida_kernwin.PluginForm):
         self.parent_widget.setWindowTitle("IDA System Tests Runner")
         self.parent_widget.resize(900, 700)
 
-        # Set default test root to the d810.tests package directory
+        # Automatically detect the repository-level "tests" directory.
+        # We walk up from this file until we find a sibling directory named
+        # "tests" and use that as the default root for unit discovery.
+        default_root: str | None = None
         try:
-            default_root = os.path.dirname(
-                importlib.import_module("d810.tests").__file__
-            )
-            self._test_manager = TestManager(
-                self, start_dir_or_module=default_root, top_dir=None
-            )
+            current_path = Path(__file__).resolve()
+            for parent in current_path.parents:
+                tests_dir = parent / "tests"
+                if tests_dir.is_dir():
+                    default_root = str(tests_dir)
+                    break
+
+            if default_root is None:
+                LOGGER.warning(
+                    "Could not locate a top-level 'tests' directory."
+                    " Please select it manually."
+                )
         except Exception:
-            LOGGER.exception("Failed to import d810.tests package for default root")
-            self._test_manager = TestManager(
-                self, start_dir_or_module=None, top_dir=None
-            )
+            # Unexpected failure – log but continue with no default.
+            LOGGER.exception("Error while searching for default tests directory")
+
+        self._test_manager = TestManager(
+            self, start_dir_or_module=default_root, top_dir=None
+        )
 
         main_lay = make_main_layout(self.parent_widget)
 
@@ -957,7 +971,9 @@ class TestRunnerForm(ida_kernwin.PluginForm):
         dir_layout.addWidget(self._root_dir_le, 1)
         # External browse button next to the line edit
         browse_btn = QtWidgets.QPushButton(self.parent_widget)
-        browse_btn.setIcon(self.parent_widget.style().standardIcon(QtWidgets.QStyle.SP_DirOpenIcon))
+        browse_btn.setIcon(
+            self.parent_widget.style().standardIcon(QtWidgets.QStyle.SP_DirOpenIcon)
+        )
         browse_btn.setToolTip("Browse")
         browse_btn.clicked.connect(self._root_dir_le._on_browse_tests_root_dir)
         dir_layout.addWidget(browse_btn)
