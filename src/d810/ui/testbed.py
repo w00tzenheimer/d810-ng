@@ -930,7 +930,7 @@ class TestRunnerForm(ida_kernwin.PluginForm):
         try:
             current_path = Path(__file__).resolve()
             for parent in current_path.parents:
-                tests_dir = parent / "tests"
+                tests_dir = parent / "tests/system"
                 if tests_dir.is_dir():
                     default_root = str(tests_dir)
                     break
