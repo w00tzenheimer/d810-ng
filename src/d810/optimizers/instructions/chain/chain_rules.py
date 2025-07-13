@@ -4,11 +4,15 @@ from ida_hexrays import *
 
 
 from d810.optimizers.instructions.chain.handler import ChainSimplificationRule
-from d810.hexrays.hexrays_helpers import equal_bnot_mop, equal_mops_ignore_size, \
-    SUB_TABLE, AND_TABLE
+from d810.hexrays.hexrays_helpers import (
+    equal_bnot_mop,
+    equal_mops_ignore_size,
+    SUB_TABLE,
+    AND_TABLE,
+)
 from d810.hexrays.hexrays_formatters import format_minsn_t
 
-rules_chain_logger = logging.getLogger('D810.rules.chain')
+rules_chain_logger = logging.getLogger("D810.rules.chain")
 
 
 class ChainSimplification(object):
@@ -43,7 +47,9 @@ class ChainSimplification(object):
             cst_size_list = [c.size for c in self.cst_mop_list]
             cst_value_list = [c.nnn.value for c in self.cst_mop_list]
             final_cst_size = max(cst_size_list)
-            rules_chain_logger.debug("Doing cst simplification: {0}".format(cst_value_list))
+            rules_chain_logger.debug(
+                "Doing cst simplification: {0}".format(cst_value_list)
+            )
             self._is_instruction_simplified = True
             if self.opcode == m_xor:
                 final_cst = reduce(lambda x, y: x ^ y, cst_value_list)
@@ -72,23 +78,36 @@ class ChainSimplification(object):
             for i in range(len(self.non_cst_mop_list)):
                 for j in range(i + 1, len(self.non_cst_mop_list)):
                     if (i not in index_removed) and (j not in index_removed):
-                        if equal_mops_ignore_size(self.non_cst_mop_list[i], self.non_cst_mop_list[j]):
+                        if equal_mops_ignore_size(
+                            self.non_cst_mop_list[i], self.non_cst_mop_list[j]
+                        ):
                             if self.opcode == m_xor:
                                 # x ^ x == 0
-                                rules_chain_logger.debug("Doing non cst simplification (xor): {0}, {1} in {2}"
-                                                         .format(i, j, self.formatted_ins))
+                                rules_chain_logger.debug(
+                                    "Doing non cst simplification (xor): {0}, {1} in {2}".format(
+                                        i, j, self.formatted_ins
+                                    )
+                                )
                                 index_removed += [i, j]
                             elif self.opcode == m_and:
                                 # x & x == x
-                                rules_chain_logger.debug("Doing non cst simplification (and): {0}, {1} in {2}"
-                                                         .format(i, j, self.formatted_ins))
+                                rules_chain_logger.debug(
+                                    "Doing non cst simplification (and): {0}, {1} in {2}".format(
+                                        i, j, self.formatted_ins
+                                    )
+                                )
                                 index_removed += [j]
                             elif self.opcode == m_or:
                                 # x | x == x
-                                rules_chain_logger.debug("Doing non cst simplification (or): {0}, {1} in {2}"
-                                                         .format(i, j, self.formatted_ins))
+                                rules_chain_logger.debug(
+                                    "Doing non cst simplification (or): {0}, {1} in {2}".format(
+                                        i, j, self.formatted_ins
+                                    )
+                                )
                                 index_removed += [j]
-                        elif equal_bnot_mop(self.non_cst_mop_list[i], self.non_cst_mop_list[j]):
+                        elif equal_bnot_mop(
+                            self.non_cst_mop_list[i], self.non_cst_mop_list[j]
+                        ):
                             if self.opcode == m_and:
                                 is_always_0 = True
 
@@ -129,7 +148,9 @@ class ChainSimplification(object):
             mop_list.append(self.create_cst_mop(0, original_ins.d.size))
         if len(mop_list) == 1:
             mop_list.append(self.create_cst_mop(0, original_ins.d.size))
-        new_ins.l = self._create_mop_chain(original_ins, mop_list[:-1], original_ins.d.size)
+        new_ins.l = self._create_mop_chain(
+            original_ins, mop_list[:-1], original_ins.d.size
+        )
         new_ins.r = mop_list[-1]
         if new_ins.r.t == mop_n:
             new_ins.r.size = original_ins.d.size
@@ -191,7 +212,9 @@ class ArithmeticChainSimplification(object):
 
     def do_simplification(self):
         final_add_cst_list, final_sub_cst_list = self.get_simplified_constant()
-        final_add_list, final_sub_list, final_add_cst_mop = self.get_simplified_non_constant()
+        final_add_list, final_sub_list, final_add_cst_mop = (
+            self.get_simplified_non_constant()
+        )
         if final_add_cst_mop.nnn.value != 0:
             final_add_cst_list.append(final_add_cst_mop)
         return final_add_list, final_sub_list, final_add_cst_list, final_sub_cst_list
@@ -206,12 +229,17 @@ class ArithmeticChainSimplification(object):
         add_cst_size_list = [c.size for c in self.add_cst_mop_list]
         add_cst_value_list = [c.nnn.value for c in self.add_cst_mop_list]
         sub_cst_size_list = [c.size for c in self.sub_cst_mop_list]
-        sub_cst_value_list = [SUB_TABLE[c.size] - c.nnn.value for c in self.sub_cst_mop_list]
+        sub_cst_value_list = [
+            SUB_TABLE[c.size] - c.nnn.value for c in self.sub_cst_mop_list
+        ]
         self._is_instruction_simplified = True
 
         final_cst_size = max(add_cst_size_list + sub_cst_size_list)
-        rules_chain_logger.debug("Doing arithmetic cst simplification: {0} {1}"
-                                 .format(add_cst_value_list, sub_cst_value_list))
+        rules_chain_logger.debug(
+            "Doing arithmetic cst simplification: {0} {1}".format(
+                add_cst_value_list, sub_cst_value_list
+            )
+        )
         final_cst = reduce(lambda x, y: x + y, add_cst_value_list + sub_cst_value_list)
         final_cst = final_cst & AND_TABLE[final_cst_size]
         rules_chain_logger.debug("Final cst: {0}".format(final_cst))
@@ -226,8 +254,8 @@ class ArithmeticChainSimplification(object):
         final_sub_list = self.sub_non_cst_mop_list
         index_add_removed = []
         index_sub_removed = []
-        for (i, add_mop) in enumerate(self.add_non_cst_mop_list):
-            for (j, sub_mop) in enumerate(self.sub_non_cst_mop_list):
+        for i, add_mop in enumerate(self.add_non_cst_mop_list):
+            for j, sub_mop in enumerate(self.sub_non_cst_mop_list):
                 if (i not in index_add_removed) and (j not in index_sub_removed):
                     if equal_mops_ignore_size(add_mop, sub_mop):
                         index_add_removed.append(i)
@@ -244,7 +272,9 @@ class ArithmeticChainSimplification(object):
                 if i not in index_sub_removed:
                     final_sub_list.append(self.sub_non_cst_mop_list[i])
 
-        final_add_list, final_sub_list, final_add_cst_mop = self.check_bnot_mop(final_add_list, final_sub_list)
+        final_add_list, final_sub_list, final_add_cst_mop = self.check_bnot_mop(
+            final_add_list, final_sub_list
+        )
         return final_add_list, final_sub_list, final_add_cst_mop
 
     def check_bnot_mop(self, add_non_cst_mop_list, sub_non_cst_mop_list):
@@ -272,7 +302,9 @@ class ArithmeticChainSimplification(object):
                         sub_index_removed += [i, j]
 
         final_add_cst_mop = mop_t()
-        final_add_cst_mop.make_number(cst_value & AND_TABLE[final_cst_size], final_cst_size)
+        final_add_cst_mop.make_number(
+            cst_value & AND_TABLE[final_cst_size], final_cst_size
+        )
 
         if len(add_index_removed) > 0:
             final_add_non_cst_mop_list = []
@@ -303,17 +335,32 @@ class ArithmeticChainSimplification(object):
             self.add_mop(1, ins.r)
 
         self._is_instruction_simplified = False
-        final_add_list, final_sub_list, final_add_cst_list, final_sub_cst_list = self.do_simplification()
+        final_add_list, final_sub_list, final_add_cst_list, final_sub_cst_list = (
+            self.do_simplification()
+        )
         if not self._is_instruction_simplified:
             return None
 
-        simplified_ins = self.create_new_chain(ins, final_add_list, final_sub_list, final_add_cst_list, final_sub_cst_list)
+        simplified_ins = self.create_new_chain(
+            ins, final_add_list, final_sub_list, final_add_cst_list, final_sub_cst_list
+        )
 
         return simplified_ins
 
-    def create_new_chain(self, original_ins, final_add_list, final_sub_list, final_add_cst_list, final_sub_cst_list):
-        mod_add = self._create_mop_add_chain(original_ins.ea, final_add_list + final_add_cst_list, original_ins.d.size)
-        mod_sub = self._create_mop_add_chain(original_ins.ea, final_sub_list + final_sub_cst_list, original_ins.d.size)
+    def create_new_chain(
+        self,
+        original_ins,
+        final_add_list,
+        final_sub_list,
+        final_add_cst_list,
+        final_sub_cst_list,
+    ):
+        mod_add = self._create_mop_add_chain(
+            original_ins.ea, final_add_list + final_add_cst_list, original_ins.d.size
+        )
+        mod_sub = self._create_mop_add_chain(
+            original_ins.ea, final_sub_list + final_sub_cst_list, original_ins.d.size
+        )
         new_ins = minsn_t(original_ins.ea)
         new_ins.opcode = m_sub
         new_ins.l = mod_add
@@ -340,7 +387,9 @@ class ArithmeticChainSimplification(object):
 
 
 class XorChain(ChainSimplificationRule):
-    DESCRIPTION = "Remove XOR chains with common terms. E.g. x ^ 4 ^ y ^ 6 ^ 5 ^ x ==> y ^ 7"
+    DESCRIPTION = (
+        "Remove XOR chains with common terms. E.g. x ^ 4 ^ y ^ 6 ^ 5 ^ x ==> y ^ 7"
+    )
 
     def check_and_replace(self, blk, ins):
         xor_simplifier = ChainSimplification(m_xor)
@@ -349,7 +398,9 @@ class XorChain(ChainSimplificationRule):
 
 
 class AndChain(ChainSimplificationRule):
-    DESCRIPTION = "Remove AND chains with common terms. E.g. x & 4 & y & 6 & 5 & x ==> x & y & 4"
+    DESCRIPTION = (
+        "Remove AND chains with common terms. E.g. x & 4 & y & 6 & 5 & x ==> x & y & 4"
+    )
 
     def check_and_replace(self, blk, ins):
         and_simplifier = ChainSimplification(m_and)
@@ -358,7 +409,9 @@ class AndChain(ChainSimplificationRule):
 
 
 class OrChain(ChainSimplificationRule):
-    DESCRIPTION = "Remove OR chains with common terms. E.g. x | 4 | y | 6 | 5 | x ==> x | y | 7"
+    DESCRIPTION = (
+        "Remove OR chains with common terms. E.g. x | 4 | y | 6 | 5 | x ==> x | y | 7"
+    )
 
     def check_and_replace(self, blk, ins):
         or_simplifier = ChainSimplification(m_or)

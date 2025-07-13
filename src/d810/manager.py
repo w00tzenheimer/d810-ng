@@ -272,7 +272,9 @@ class D810State:
                 self.d810_config.set("configurations", cfg_list)
                 self.d810_config.save()
             except ValueError:
-                logger.warning("Project %s not found in configuration list", config.path.name)
+                logger.warning(
+                    "Project %s not found in configuration list", config.path.name
+                )
 
         # Only allow deletion when the file lives in the user cfg directory
         try:
@@ -381,7 +383,9 @@ class D810State:
         self.register_default_projects()
         # Clamp to available projects, if any
         if self.projects:
-            self.current_project_index = max(0, min(self.current_project_index, len(self.projects) - 1))
+            self.current_project_index = max(
+                0, min(self.current_project_index, len(self.projects) - 1)
+            )
             self._is_loaded = self.load_project(self.current_project_index)
         else:
             logger.warning("No project configurations available; plugin is idle.")

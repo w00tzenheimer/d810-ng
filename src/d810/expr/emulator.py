@@ -428,9 +428,7 @@ class MicroCodeInterpreter(object):
         )
         return None
 
-    def _eval_call(
-        self, ins: minsn_t, environment: MicroCodeEnvironment
-    ) -> int | None:
+    def _eval_call(self, ins: minsn_t, environment: MicroCodeEnvironment) -> int | None:
         # TODO: implement
         emulator_log.warning(
             "Evaluation of %s not implemented: bypassing", format_minsn_t(ins)

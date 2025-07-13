@@ -1,10 +1,13 @@
 import logging
 from ida_hexrays import *
 from d810.hexrays.hexrays_formatters import format_minsn_t
-from d810.optimizers.instructions.handler import InstructionOptimizer, InstructionOptimizationRule
+from d810.optimizers.instructions.handler import (
+    InstructionOptimizer,
+    InstructionOptimizationRule,
+)
 
 
-optimizer_logger = logging.getLogger('D810.optimizer')
+optimizer_logger = logging.getLogger("D810.optimizer")
 
 
 class InstructionAnalysisRule(InstructionOptimizationRule):
@@ -31,9 +34,12 @@ class InstructionAnalyzer(InstructionOptimizer):
             try:
                 rule.analyze_instruction(blk, ins)
             except RuntimeError:
-                optimizer_logger.error("error during rule {0} for instruction {1}".format(rule, format_minsn_t(ins)))
+                optimizer_logger.error(
+                    "error during rule {0} for instruction {1}".format(
+                        rule, format_minsn_t(ins)
+                    )
+                )
         return None
-
 
     @property
     def name(self):

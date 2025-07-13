@@ -1,4 +1,7 @@
-from d810.optimizers.instructions.handler import InstructionOptimizationRule, InstructionOptimizer
+from d810.optimizers.instructions.handler import (
+    InstructionOptimizationRule,
+    InstructionOptimizer,
+)
 
 
 class ChainSimplificationRule(InstructionOptimizationRule):

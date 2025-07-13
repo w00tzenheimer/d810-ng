@@ -678,7 +678,9 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
     def _configure_logging(self):
         """Open the dynamic logging configuration dialog."""
         try:
-            from .logging_config_dialog import LoggingConfigDialog  # local import to avoid Qt issues during IDA headless start
+            from .logging_config_dialog import (
+                LoggingConfigDialog,
+            )  # local import to avoid Qt issues during IDA headless start
 
             dlg = LoggingConfigDialog("D810", self.parent)
             dlg.exec_()

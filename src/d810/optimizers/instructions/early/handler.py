@@ -1,4 +1,7 @@
-from d810.optimizers.instructions.handler import GenericPatternRule, InstructionOptimizer
+from d810.optimizers.instructions.handler import (
+    GenericPatternRule,
+    InstructionOptimizer,
+)
 
 
 class EarlyRule(GenericPatternRule):

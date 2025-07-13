@@ -1,8 +1,8 @@
 import logging
 
 
-tracker_logger = logging.getLogger('D810.tracker')
-emulator_logger = logging.getLogger('D810.emulator')
+tracker_logger = logging.getLogger("D810.tracker")
+emulator_logger = logging.getLogger("D810.emulator")
 
 
 class UnflatteningException(Exception):
@@ -19,8 +19,6 @@ class NotDuplicableFatherException(UnflatteningException):
 
 class NotResolvableFatherException(UnflatteningException):
     pass
-
-
 
 
 def configure_mop_tracker_log_verbosity(verbose=False):
@@ -41,8 +39,12 @@ def get_all_possibles_values(mop_histories, searched_mop_list, verbose=False):
     log_levels = configure_mop_tracker_log_verbosity(verbose)
     mop_cst_values_list = []
     for mop_history in mop_histories:
-        mop_cst_values_list.append([mop_history.get_mop_constant_value(searched_mop)
-                                    for searched_mop in searched_mop_list])
+        mop_cst_values_list.append(
+            [
+                mop_history.get_mop_constant_value(searched_mop)
+                for searched_mop in searched_mop_list
+            ]
+        )
     restore_mop_tracker_log_verbosity(*log_levels)
     return mop_cst_values_list
 
