@@ -11,14 +11,14 @@ from d810.hexrays.hexrays_formatters import (
     maturity_to_string,
 )
 from d810.hexrays.hexrays_helpers import check_ins_mop_size_are_ok
-from d810.optimizers.instructions.handler import InstructionOptimizer
+from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
 
 from ida_hexrays import *
 
 if TYPE_CHECKING:
     from d810.manager import D810Manager
-    from d810.optimizers.flow.handler import FlowOptimizationRule
-    from d810.optimizers.instructions.handler import (
+    from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
+    from d810.optimizers.microcode.instructions.handler import (
         InstructionOptimizationRule,
         InstructionOptimizer,
     )
@@ -54,7 +54,7 @@ DEFAULT_ANALYZER_MATURITIES = [
 ]
 
 
-# from d810.optimizers.instructions import (
+# from d810.optimizers.microcode.instructions import (
 #     ChainOptimizer,
 #     EarlyOptimizer,
 #     InstructionAnalyzer,
