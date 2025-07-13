@@ -235,26 +235,31 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         for mop in (ins.l, ins.r, ins.d):
             changed |= _fold_const_in_mop(mop, bits)
 
-        # if we simplified any sub-expression, return the *mutated* instruction
+        # 2) After local folding, try to collapse the *whole* instruction tree.
+        #    This ensures that cases like `(__ROL4__(C, k) + C1) ^ C2` are fully
+        #    reduced to a single constant in one pass, without relying on a
+        #    subsequent optimizer iteration.
+        ast = minsn_to_ast(ins)
+        if ast is not None:
+            value = _eval_subtree(ast, bits)
+            if value is not None:
+                new = ida_hexrays.minsn_t(ins)  # clone to keep ea/sizes
+                new.opcode = ida_hexrays.m_ldc
+                cst = ida_hexrays.mop_t()
+                cst.make_number(value, ins.d.size)
+                new.l = cst
+                new.r.erase()
+                return new
+
+        # 3) If we simplified any sub-expression but the whole tree is not a
+        #    constant yet, signal the change by returning a clone of the mutated
+        #    instruction. This allows later passes to pick up the partially
+        #    simplified form.
         if changed:
             return ida_hexrays.minsn_t(ins)  # copy = treat as replacement
 
-        # 2) second chance: whole-tree collapses → emit m_ldc
-        ast = minsn_to_ast(ins)
-        if ast is None:
-            return None
-
-        value = _eval_subtree(ast, bits)
-        if value is None:
-            return None  # not foldable
-
-        new = ida_hexrays.minsn_t(ins)  # clone to keep ea/sizes
-        new.opcode = ida_hexrays.m_ldc
-        cst = ida_hexrays.mop_t()
-        cst.make_number(value, ins.d.size)
-        new.l = cst
-        new.r.erase()
-        return new
+        # Nothing to do
+        return None
 
 
 # def _fold_const_in_mop(mop: ida_hexrays.mop_t, bits: int) -> bool:
