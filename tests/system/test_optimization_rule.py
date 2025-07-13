@@ -1,6 +1,6 @@
 import unittest
 
-from d810.optimizers.handler import OptimizationRule
+from d810.optimizers.microcode.handler import OptimizationRule
 
 import ida_hexrays
 

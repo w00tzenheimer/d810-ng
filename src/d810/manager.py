@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import dataclasses
 import logging
-import os
 import pathlib
 import threading
 import typing
@@ -15,8 +13,8 @@ from d810.hexrays.hexrays_hooks import (
     HexraysDecompilationHook,
     InstructionOptimizerManager,
 )
-from d810.optimizers.flow.handler import FlowOptimizationRule
-from d810.optimizers.instructions.handler import InstructionOptimizationRule
+from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
+from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
 from d810.ui.ida_ui import D810GUI
 
 D810_LOG_DIR_NAME = "d810_logs"
@@ -94,25 +92,6 @@ class D810Manager(object):
             logger.debug("Removing HexraysDecompilationHook...")
             self.hx_decompiler_hook.unhook()
             self.hx_decompiler_hook = None
-
-
-# class D810State:
-#     """
-#     Thread-safe singleton dataclass with optional lazy-loading of configuration.
-
-#     If `lazy_load_config` is False (default), configuration and loggers
-#     are initialized immediately. If True, config instantiation and
-#     logger setup are deferred until first access of `d810_config`.
-#     """
-
-#     # Toggle for lazy configuration loading
-#     lazy_load_config: bool = False
-
-#     # Singleton internals
-#     _instance: typing.ClassVar[typing.Optional["D810State"]] = None
-#     _lock: typing.ClassVar[threading.Lock] = threading.Lock()
-#     _initialized: typing.ClassVar[bool] = False
-#     _config: typing.ClassVar[typing.Optional[D810Configuration]] = None
 
 
 class D810State:
@@ -295,7 +274,9 @@ class D810State:
 
         for rule in self.known_ins_rules:
             for rule_conf in self.current_project.ins_rules:
-                if rule.name == rule_conf.name and rule_conf.is_activated:
+                if not rule_conf.is_activated:
+                    continue
+                if rule.name == rule_conf.name:
                     rule_conf.config["dump_intermediate_microcode"] = (
                         self.d810_config.get("dump_intermediate_microcode")
                     )
@@ -305,7 +286,9 @@ class D810State:
         logger.debug("Instruction rules configured")
         for blk_rule in self.known_blk_rules:
             for rule_conf in self.current_project.blk_rules:
-                if blk_rule.name == rule_conf.name and rule_conf.is_activated:
+                if not rule_conf.is_activated:
+                    continue
+                if blk_rule.name == rule_conf.name:
                     rule_conf.config["dump_intermediate_microcode"] = (
                         self.d810_config.get("dump_intermediate_microcode")
                     )

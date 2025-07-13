@@ -298,7 +298,7 @@ class Registrant(metaclass=Registry):
 
         Example ::
 
-            from d810.optimizers.instructions.handler import InstructionOptimizationRule
+            from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
             all_instruction_rules = InstructionOptimizationRule.all()
         """
         return list(cls.registry.values())
