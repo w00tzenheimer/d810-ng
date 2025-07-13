@@ -1016,6 +1016,28 @@ def mop_to_ast_internal(
         existing_index = context.mop_key_to_index[key]
         return context.unique_asts[existing_index]
 
+    # Special handling for rotate calls
+    if mop.t == ida_hexrays.mop_d and mop.d.opcode == ida_hexrays.m_call:
+        func_mop = mop.d.l
+        if func_mop.t == ida_hexrays.mop_h and (
+            "__ROL" in func_mop.helper or "__ROR" in func_mop.helper
+        ):
+            if mop.d.r.t == ida_hexrays.mop_f:
+                args = mop.d.r.f.args
+                if len(args) == 2:
+                    value_ast = mop_to_ast_internal(args[0], context)
+                    shift_ast = mop_to_ast_internal(args[1], context)
+                    tree = AstNode(ida_hexrays.m_call, value_ast, shift_ast)
+                    tree.func_name = func_mop.helper
+                    tree.mop = mop
+                    tree.dest_size = mop.size
+                    tree.ea = mop.d.ea
+                    new_index = len(context.unique_asts)
+                    tree.ast_index = new_index
+                    context.unique_asts.append(tree)
+                    context.mop_key_to_index[key] = new_index
+                    return tree
+
     # 3. If it's a miss, we need to build the AST node.
     # This logic is the same as before.
     if mop.t != ida_hexrays.mop_d or (mop.d.opcode not in MBA_RELATED_OPCODES):
