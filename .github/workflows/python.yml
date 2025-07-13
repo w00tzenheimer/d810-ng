@@ -41,13 +41,13 @@ jobs:
               run: |
                   pip install --upgrade pip setuptools wheel uv
                   uv pip install --system -e .
-            # - name: Python unit tests
-            #   run: |
-            #       python -m unittest discover -s d810.tests.unit -v
-            - name: Run all tests except system (those require ida)
+            - name: Python unit tests
               run: |
-                  for dir in d810/tests/*; do
-                      if [ "$(basename "$dir")" != "system" ] && [ -d "$dir" ]; then
-                          python -m unittest discover -s "$dir" -v
-                      fi
-                  done
+                  python -m unittest discover -s tests.unit -t . -v
+            # - name: Run all tests except system (those require ida)
+            #   run: |
+            #       for dir in d810/tests/*; do
+            #           if [ "$(basename "$dir")" != "system" ] && [ -d "$dir" ]; then
+            #               python -m unittest discover -s "$dir" -v
+            #           fi
+            #       done
