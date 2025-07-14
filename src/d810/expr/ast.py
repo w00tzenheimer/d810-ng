@@ -64,6 +64,9 @@ class AstInfo(object):
 
 class AstBase(abc.ABC):
 
+    sub_ast_info_by_index: Dict[int, AstInfo] = {}
+    mop: ida_hexrays.mop_t | None = None
+
     @property
     @abc.abstractmethod
     def is_frozen(self) -> bool: ...
@@ -82,6 +85,30 @@ class AstBase(abc.ABC):
 
     @abc.abstractmethod
     def is_constant(self) -> bool: ...
+
+    @abc.abstractmethod
+    def compute_sub_ast(self) -> None: ...
+
+    @abc.abstractmethod
+    def get_leaf_list(self) -> List[AstLeaf]: ...
+
+    @abc.abstractmethod
+    def reset_mops(self) -> None: ...
+
+    @abc.abstractmethod
+    def _copy_mops_from_ast(self, other: AstBase) -> bool: ...
+
+    @abc.abstractmethod
+    def create_mop(self, ea: int) -> ida_hexrays.mop_t: ...
+
+    @abc.abstractmethod
+    def get_pattern(self) -> str: ...
+
+    @abc.abstractmethod
+    def evaluate(self, dict_index_to_value: Dict[int, int]) -> int: ...
+
+    @abc.abstractmethod
+    def get_depth_signature(self, depth: int) -> List[str]: ...
 
 
 class AstNode(AstBase, dict):
@@ -174,7 +201,8 @@ class AstNode(AstBase, dict):
                     else:
                         leaf_info_list.append(ast_info)
                 else:
-                    opcode_list += [ast_info.ast.opcode] * ast_info.number_of_use
+                    ast_node = typing.cast(AstNode, ast_info.ast)
+                    opcode_list += [ast_node.opcode] * ast_info.number_of_use
 
         return leaf_info_list, cst_list, opcode_list
 
@@ -310,7 +338,7 @@ class AstNode(AstBase, dict):
         res = self.evaluate(dict_index_to_value)
         return res
 
-    def evaluate(self, dict_index_to_value):
+    def evaluate(self, dict_index_to_value: Dict[int, int]) -> int:
         if self.ast_index in dict_index_to_value:
             return dict_index_to_value[self.ast_index]
         if self.dest_size is None:
@@ -704,6 +732,7 @@ class AstLeaf(AstBase):
 
     def compute_sub_ast(self):
         self.sub_ast_info_by_index = {}
+        assert self.ast_index is not None
         self.sub_ast_info_by_index[self.ast_index] = AstInfo(self, 1)
 
     def get_information(self):
@@ -767,6 +796,7 @@ class AstLeaf(AstBase):
     def evaluate(self, dict_index_to_value):
         if self.is_constant() and self.mop is not None:
             return self.mop.nnn.value
+        assert self.ast_index is not None
         return dict_index_to_value.get(self.ast_index)
 
     def get_depth_signature(self, depth):
@@ -801,6 +831,7 @@ class AstConstant(AstLeaf):
 
     @property
     def value(self):
+        assert self.mop is not None and self.mop.t == ida_hexrays.mop_n
         return self.mop.nnn.value
 
     @typing.override
@@ -998,12 +1029,47 @@ def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
     return key_base
 
 
+def _log_mop_tree(mop, depth=0, max_depth=8):
+    indent = "  " * depth
+    if mop is None:
+        logger.debug("%s<mop=None>", indent)
+        return
+    try:
+        mop_type = mop.t if hasattr(mop, "t") else None
+        mop_str = str(mop.dstr()) if hasattr(mop, "dstr") else str(mop)
+        logger.debug(
+            "%s<mop_t type=%s size=%s valnum=%s dstr=%s>",
+            indent,
+            mop_type,
+            getattr(mop, "size", None),
+            getattr(mop, "valnum", None),
+            mop_str,
+        )
+        if depth >= max_depth:
+            logger.debug("%s<max depth reached>", indent)
+            return
+        # Recurse for sub-operands
+        if mop_type == ida_hexrays.mop_d and hasattr(mop, "d") and mop.d is not None:
+            _log_mop_tree(mop.d.l, depth + 1, max_depth)
+            _log_mop_tree(mop.d.r, depth + 1, max_depth)
+            _log_mop_tree(mop.d.d, depth + 1, max_depth)
+        elif mop_type == ida_hexrays.mop_a and hasattr(mop, "a") and mop.a is not None:
+            _log_mop_tree(mop.a, depth + 1, max_depth)
+        elif mop_type == ida_hexrays.mop_f and hasattr(mop, "f") and mop.f is not None:
+            for arg in getattr(mop.f, "args", []):
+                _log_mop_tree(arg, depth + 1, max_depth)
+    except Exception as e:
+        logger.debug("%s<error logging mop: %s>", indent, e)
+
+
 def mop_to_ast_internal(
     mop: ida_hexrays.mop_t, context: AstBuilderContext
 ) -> AstBase | None:
-    if mop is None:
-        return None
 
+    logger.debug(
+        "[mop_to_ast_internal] Processing mop: %s",
+        str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
+    )
     # 1. Create the unique, hashable key for the current mop.
     key = get_mop_key(mop)
 
@@ -1038,50 +1104,37 @@ def mop_to_ast_internal(
                     context.mop_key_to_index[key] = new_index
                     return tree
 
-    # 3. If it's a miss, we need to build the AST node.
-    # This logic is the same as before.
-    if mop.t != ida_hexrays.mop_d or (mop.d.opcode not in MBA_RELATED_OPCODES):
-        # This is a leaf node (register, constant, variable, etc.)
-        tree = AstLeaf(format_mop_t(mop))
-        tree.mop = mop
-        dest_size = mop.size if mop.t != ida_hexrays.mop_d else mop.d.d.size
-        tree.dest_size = dest_size
-    elif mop.t == ida_hexrays.mop_d and mop.d.opcode == ida_hexrays.m_call:
-        func_mop = mop.d.l
-        if func_mop.t == ida_hexrays.mop_h and "__ROL" in func_mop.helper:
-            args = mop.d.r.f.args
-            if len(args) == 2:  # value, shift
-                value_ast = mop_to_ast_internal(args[0], context)
-                shift_ast = mop_to_ast_internal(args[1], context)
-                tree = AstNode(ida_hexrays.m_call, value_ast, shift_ast)
-                tree.func_name = func_mop.helper
-                tree.mop = mop
-                tree.dest_size = mop.size
-                tree.ea = mop.d.ea
-    else:
-        # This is an internal node (operation). Recurse for children.
-        # Pass the SAME context object down.
+    # NEW: Try to handle arithmetic ops whose operands are calls or constants
+    if mop.t == ida_hexrays.mop_d and mop.d.opcode in MBA_RELATED_OPCODES:
         left_ast = mop_to_ast_internal(mop.d.l, context)
         right_ast = mop_to_ast_internal(mop.d.r, context)
-        dst_ast = mop_to_ast_internal(
-            mop.d.d, context
-        )  # This seems unusual, but following original logic
-
+        dst_ast = mop_to_ast_internal(mop.d.d, context)
         tree = AstNode(mop.d.opcode, left_ast, right_ast, dst_ast)
         tree.mop = mop
         tree.dest_size = mop.d.d.size
         tree.ea = mop.d.ea
+        new_index = len(context.unique_asts)
+        tree.ast_index = new_index
+        context.unique_asts.append(tree)
+        context.mop_key_to_index[key] = new_index
+        return tree
 
-    # 4. The node is built. Now add it to our context as a new unique element.
-    # This replaces the old `check_and_add_to_list` call.
-    new_index = len(context.unique_asts)
-    tree.ast_index = new_index
-    context.unique_asts.append(tree)
+    # Fallback: treat as leaf
+    if mop.t != ida_hexrays.mop_d or (mop.d.opcode not in MBA_RELATED_OPCODES):
+        tree = AstLeaf(format_mop_t(mop))
+        tree.mop = mop
+        dest_size = mop.size if mop.t != ida_hexrays.mop_d else mop.d.d.size
+        tree.dest_size = dest_size
+        new_index = len(context.unique_asts)
+        tree.ast_index = new_index
+        context.unique_asts.append(tree)
+        context.mop_key_to_index[key] = new_index
+        return tree
 
-    # CRUCIAL: Update the map so we can find this node quickly next time.
-    context.mop_key_to_index[key] = new_index
-
-    return tree
+    # If we reach here, we failed to build an AST. Log the full mop tree.
+    logger.error("[mop_to_ast_internal] Could not build AST for mop. Dumping mop tree:")
+    _log_mop_tree(mop)
+    return None
 
 
 def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
@@ -1091,8 +1144,6 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
     Returns a deep copy of the cached AST to prevent side-effects from
     mutations by the caller.
     """
-    if mop is None:
-        return None
 
     # 1. Create a stable, hashable key from the mop_t object.
     cache_key = get_mop_key(mop)

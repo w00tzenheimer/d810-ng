@@ -237,7 +237,6 @@ MINSN_TO_AST_FORBIDDEN_OPCODES = CONTROL_FLOW_OPCODES + [
     m_pop,
     m_und,
     m_ext,
-    m_call,
 ]
 
 SUB_TABLE = {
