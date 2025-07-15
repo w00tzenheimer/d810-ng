@@ -66,6 +66,7 @@ class AstBase(abc.ABC):
 
     sub_ast_info_by_index: Dict[int, AstInfo] = {}
     mop: ida_hexrays.mop_t | None = None
+    dest_size: int | None = None
 
     @property
     @abc.abstractmethod
@@ -346,215 +347,254 @@ class AstNode(AstBase, dict):
 
         res_mask = AND_TABLE[self.dest_size]
 
-        if self.opcode == ida_hexrays.m_mov:
-            return (self.left.evaluate(dict_index_to_value)) & res_mask
-        elif self.opcode == ida_hexrays.m_neg:
-            return (-self.left.evaluate(dict_index_to_value)) & res_mask
-        elif self.opcode == ida_hexrays.m_lnot:
-            return self.left.evaluate(dict_index_to_value) != 0
-        elif self.opcode == ida_hexrays.m_bnot:
-            return (self.left.evaluate(dict_index_to_value) ^ res_mask) & res_mask
-        elif self.opcode == ida_hexrays.m_xds:
-            left_value_signed = unsigned_to_signed(
-                self.left.evaluate(dict_index_to_value), self.left.dest_size
-            )
-            return signed_to_unsigned(left_value_signed, self.dest_size) & res_mask
-        elif self.opcode == ida_hexrays.m_xdu:
-            return (self.left.evaluate(dict_index_to_value)) & res_mask
-        elif self.opcode == ida_hexrays.m_low:
-            return (self.left.evaluate(dict_index_to_value)) & res_mask
-        elif self.opcode == ida_hexrays.m_add:
-            return (
-                self.left.evaluate(dict_index_to_value)
-                + self.right.evaluate(dict_index_to_value)
-            ) & res_mask
-        elif self.opcode == ida_hexrays.m_sub:
-            return (
-                self.left.evaluate(dict_index_to_value)
-                - self.right.evaluate(dict_index_to_value)
-            ) & res_mask
-        elif self.opcode == ida_hexrays.m_mul:
-            return (
-                self.left.evaluate(dict_index_to_value)
-                * self.right.evaluate(dict_index_to_value)
-            ) & res_mask
-        elif self.opcode == ida_hexrays.m_udiv:
-            return (
-                self.left.evaluate(dict_index_to_value)
-                // self.right.evaluate(dict_index_to_value)
-            ) & res_mask
-        elif self.opcode == ida_hexrays.m_sdiv:
-            return (
-                self.left.evaluate(dict_index_to_value)
-                // self.right.evaluate(dict_index_to_value)
-            ) & res_mask
-        elif self.opcode == ida_hexrays.m_umod:
-            return (
-                self.left.evaluate(dict_index_to_value)
-                % self.right.evaluate(dict_index_to_value)
-            ) & res_mask
-        elif self.opcode == ida_hexrays.m_smod:
-            return (
-                self.left.evaluate(dict_index_to_value)
-                % self.right.evaluate(dict_index_to_value)
-            ) & res_mask
-        elif self.opcode == ida_hexrays.m_or:
-            return (
-                self.left.evaluate(dict_index_to_value)
-                | self.right.evaluate(dict_index_to_value)
-            ) & res_mask
-        elif self.opcode == ida_hexrays.m_and:
-            return (
-                self.left.evaluate(dict_index_to_value)
-                & self.right.evaluate(dict_index_to_value)
-            ) & res_mask
-        elif self.opcode == ida_hexrays.m_xor:
-            return (
-                self.left.evaluate(dict_index_to_value)
-                ^ self.right.evaluate(dict_index_to_value)
-            ) & res_mask
-        elif self.opcode == ida_hexrays.m_shl:
-            return (
-                self.left.evaluate(dict_index_to_value)
-                << self.right.evaluate(dict_index_to_value)
-            ) & res_mask
-        elif self.opcode == ida_hexrays.m_shr:
-            return (
-                self.left.evaluate(dict_index_to_value)
-                >> self.right.evaluate(dict_index_to_value)
-            ) & res_mask
-        elif self.opcode == ida_hexrays.m_sar:
-            left_value_signed = unsigned_to_signed(
-                self.left.evaluate(dict_index_to_value), self.left.dest_size
-            )
-            res_signed = left_value_signed >> self.right.evaluate(dict_index_to_value)
-            return signed_to_unsigned(res_signed, self.dest_size) & res_mask
-        elif self.opcode == ida_hexrays.m_cfadd:
-            tmp = get_add_cf(
-                self.left.evaluate(dict_index_to_value),
-                self.right.evaluate(dict_index_to_value),
-                self.left.dest_size,
-            )
-            return tmp & res_mask
-        elif self.opcode == ida_hexrays.m_ofadd:
-            tmp = get_add_of(
-                self.left.evaluate(dict_index_to_value),
-                self.right.evaluate(dict_index_to_value),
-                self.left.dest_size,
-            )
-            return tmp & res_mask
-        elif self.opcode == ida_hexrays.m_sets:
-            left_value_signed = unsigned_to_signed(
-                self.left.evaluate(dict_index_to_value), self.left.dest_size
-            )
-            res = 1 if left_value_signed < 0 else 0
-            return res & res_mask
-        elif self.opcode == ida_hexrays.m_seto:
-            left_value_signed = unsigned_to_signed(
-                self.left.evaluate(dict_index_to_value), self.left.dest_size
-            )
-            right_value_signed = unsigned_to_signed(
-                self.right.evaluate(dict_index_to_value), self.right.dest_size
-            )
-            sub_overflow = get_sub_of(
-                left_value_signed, right_value_signed, self.left.dest_size
-            )
-            return sub_overflow & res_mask
-        elif self.opcode == ida_hexrays.m_setnz:
-            res = (
-                1
-                if self.left.evaluate(dict_index_to_value)
-                != self.right.evaluate(dict_index_to_value)
-                else 0
-            )
-            return res & res_mask
-        elif self.opcode == ida_hexrays.m_setz:
-            res = (
-                1
-                if self.left.evaluate(dict_index_to_value)
-                == self.right.evaluate(dict_index_to_value)
-                else 0
-            )
-            return res & res_mask
-        elif self.opcode == ida_hexrays.m_setae:
-            res = (
-                1
-                if self.left.evaluate(dict_index_to_value)
-                >= self.right.evaluate(dict_index_to_value)
-                else 0
-            )
-            return res & res_mask
-        elif self.opcode == ida_hexrays.m_setb:
-            res = (
-                1
-                if self.left.evaluate(dict_index_to_value)
-                < self.right.evaluate(dict_index_to_value)
-                else 0
-            )
-            return res & res_mask
-        elif self.opcode == ida_hexrays.m_seta:
-            res = (
-                1
-                if self.left.evaluate(dict_index_to_value)
-                > self.right.evaluate(dict_index_to_value)
-                else 0
-            )
-            return res & res_mask
-        elif self.opcode == ida_hexrays.m_setbe:
-            res = (
-                1
-                if self.left.evaluate(dict_index_to_value)
-                <= self.right.evaluate(dict_index_to_value)
-                else 0
-            )
-            return res & res_mask
-        elif self.opcode == ida_hexrays.m_setg:
-            left_value_signed = unsigned_to_signed(
-                self.left.evaluate(dict_index_to_value), self.left.dest_size
-            )
-            right_value_signed = unsigned_to_signed(
-                self.right.evaluate(dict_index_to_value), self.right.dest_size
-            )
-            res = 1 if left_value_signed > right_value_signed else 0
-            return res & res_mask
-        elif self.opcode == ida_hexrays.m_setge:
-            left_value_signed = unsigned_to_signed(
-                self.left.evaluate(dict_index_to_value), self.left.dest_size
-            )
-            right_value_signed = unsigned_to_signed(
-                self.right.evaluate(dict_index_to_value), self.right.dest_size
-            )
-            res = 1 if left_value_signed >= right_value_signed else 0
-            return res & res_mask
-        elif self.opcode == ida_hexrays.m_setl:
-            left_value_signed = unsigned_to_signed(
-                self.left.evaluate(dict_index_to_value), self.left.dest_size
-            )
-            right_value_signed = unsigned_to_signed(
-                self.right.evaluate(dict_index_to_value), self.right.dest_size
-            )
-            res = 1 if left_value_signed < right_value_signed else 0
-            return res & res_mask
-        elif self.opcode == ida_hexrays.m_setle:
-            left_value_signed = unsigned_to_signed(
-                self.left.evaluate(dict_index_to_value), self.left.dest_size
-            )
-            right_value_signed = unsigned_to_signed(
-                self.right.evaluate(dict_index_to_value), self.right.dest_size
-            )
-            res = 1 if left_value_signed <= right_value_signed else 0
-            return res & res_mask
-        elif self.opcode == ida_hexrays.m_setp:
-            res = get_parity_flag(
-                self.left.evaluate(dict_index_to_value),
-                self.right.evaluate(dict_index_to_value),
-                self.left.dest_size,
-            )
-            return res & res_mask
-        else:
-            raise AstEvaluationException(
-                "Can't evaluate opcode: {0}".format(self.opcode)
-            )
+        if self.left is None:
+            raise ValueError(f"left is None for opcode: {self.opcode}")
+
+        binary_opcodes = {
+            ida_hexrays.m_add,
+            ida_hexrays.m_sub,
+            ida_hexrays.m_mul,
+            ida_hexrays.m_udiv,
+            ida_hexrays.m_sdiv,
+            ida_hexrays.m_umod,
+            ida_hexrays.m_smod,
+            ida_hexrays.m_or,
+            ida_hexrays.m_and,
+            ida_hexrays.m_xor,
+            ida_hexrays.m_shl,
+            ida_hexrays.m_shr,
+            ida_hexrays.m_sar,
+            ida_hexrays.m_cfadd,
+            ida_hexrays.m_ofadd,
+            ida_hexrays.m_seto,
+            ida_hexrays.m_setnz,
+            ida_hexrays.m_setz,
+            ida_hexrays.m_setae,
+            ida_hexrays.m_setb,
+            ida_hexrays.m_seta,
+            ida_hexrays.m_setbe,
+            ida_hexrays.m_setg,
+            ida_hexrays.m_setge,
+            ida_hexrays.m_setl,
+            ida_hexrays.m_setle,
+            ida_hexrays.m_setp,
+        }
+
+        if self.opcode in binary_opcodes and self.right is None:
+            raise ValueError("right is None for binary opcode: {0}".format(self.opcode))
+
+        match self.opcode:
+            case ida_hexrays.m_mov:
+                return (self.left.evaluate(dict_index_to_value)) & res_mask
+            case ida_hexrays.m_neg:
+                return (-self.left.evaluate(dict_index_to_value)) & res_mask
+            case ida_hexrays.m_lnot:
+                return self.left.evaluate(dict_index_to_value) != 0
+            case ida_hexrays.m_bnot:
+                return (self.left.evaluate(dict_index_to_value) ^ res_mask) & res_mask
+            case ida_hexrays.m_xds:
+                left_value_signed = unsigned_to_signed(
+                    self.left.evaluate(dict_index_to_value), self.left.dest_size
+                )
+                return signed_to_unsigned(left_value_signed, self.dest_size) & res_mask
+            case ida_hexrays.m_xdu:
+                return (self.left.evaluate(dict_index_to_value)) & res_mask
+            case ida_hexrays.m_low:
+                return (self.left.evaluate(dict_index_to_value)) & res_mask
+            case ida_hexrays.m_add if self.right is not None:
+                return (
+                    self.left.evaluate(dict_index_to_value)
+                    + self.right.evaluate(dict_index_to_value)
+                ) & res_mask
+            case ida_hexrays.m_sub if self.right is not None:
+                return (
+                    self.left.evaluate(dict_index_to_value)
+                    - self.right.evaluate(dict_index_to_value)
+                ) & res_mask
+            case ida_hexrays.m_mul if self.right is not None:
+                return (
+                    self.left.evaluate(dict_index_to_value)
+                    * self.right.evaluate(dict_index_to_value)
+                ) & res_mask
+            case ida_hexrays.m_udiv if self.right is not None:
+                return (
+                    self.left.evaluate(dict_index_to_value)
+                    // self.right.evaluate(dict_index_to_value)
+                ) & res_mask
+            case ida_hexrays.m_sdiv if self.right is not None:
+                return (
+                    self.left.evaluate(dict_index_to_value)
+                    // self.right.evaluate(dict_index_to_value)
+                ) & res_mask
+            case ida_hexrays.m_umod if self.right is not None:
+                return (
+                    self.left.evaluate(dict_index_to_value)
+                    % self.right.evaluate(dict_index_to_value)
+                ) & res_mask
+            case ida_hexrays.m_smod if self.right is not None:
+                return (
+                    self.left.evaluate(dict_index_to_value)
+                    % self.right.evaluate(dict_index_to_value)
+                ) & res_mask
+            case ida_hexrays.m_or if self.right is not None:
+                return (
+                    self.left.evaluate(dict_index_to_value)
+                    | self.right.evaluate(dict_index_to_value)
+                ) & res_mask
+            case ida_hexrays.m_and if self.right is not None:
+                return (
+                    self.left.evaluate(dict_index_to_value)
+                    & self.right.evaluate(dict_index_to_value)
+                ) & res_mask
+            case ida_hexrays.m_xor if self.right is not None:
+                return (
+                    self.left.evaluate(dict_index_to_value)
+                    ^ self.right.evaluate(dict_index_to_value)
+                ) & res_mask
+            case ida_hexrays.m_shl if self.right is not None:
+                return (
+                    self.left.evaluate(dict_index_to_value)
+                    << self.right.evaluate(dict_index_to_value)
+                ) & res_mask
+            case ida_hexrays.m_shr if self.right is not None:
+                return (
+                    self.left.evaluate(dict_index_to_value)
+                    >> self.right.evaluate(dict_index_to_value)
+                ) & res_mask
+            case ida_hexrays.m_sar if self.right is not None:
+                left_value_signed = unsigned_to_signed(
+                    self.left.evaluate(dict_index_to_value), self.left.dest_size
+                )
+                res_signed = left_value_signed >> self.right.evaluate(
+                    dict_index_to_value
+                )
+                return signed_to_unsigned(res_signed, self.dest_size) & res_mask
+            case ida_hexrays.m_cfadd if self.right is not None:
+                tmp = get_add_cf(
+                    self.left.evaluate(dict_index_to_value),
+                    self.right.evaluate(dict_index_to_value),
+                    self.left.dest_size,
+                )
+                return tmp & res_mask
+            case ida_hexrays.m_ofadd if self.right is not None:
+                tmp = get_add_of(
+                    self.left.evaluate(dict_index_to_value),
+                    self.right.evaluate(dict_index_to_value),
+                    self.left.dest_size,
+                )
+                return tmp & res_mask
+            case ida_hexrays.m_sets:
+                left_value_signed = unsigned_to_signed(
+                    self.left.evaluate(dict_index_to_value), self.left.dest_size
+                )
+                res = 1 if left_value_signed < 0 else 0
+                return res & res_mask
+            case ida_hexrays.m_seto if self.right is not None:
+                left_value_signed = unsigned_to_signed(
+                    self.left.evaluate(dict_index_to_value), self.left.dest_size
+                )
+                right_value_signed = unsigned_to_signed(
+                    self.right.evaluate(dict_index_to_value), self.right.dest_size
+                )
+                sub_overflow = get_sub_of(
+                    left_value_signed, right_value_signed, self.left.dest_size
+                )
+                return sub_overflow & res_mask
+            case ida_hexrays.m_setnz if self.right is not None:
+                res = (
+                    1
+                    if self.left.evaluate(dict_index_to_value)
+                    != self.right.evaluate(dict_index_to_value)
+                    else 0
+                )
+                return res & res_mask
+            case ida_hexrays.m_setz if self.right is not None:
+                res = (
+                    1
+                    if self.left.evaluate(dict_index_to_value)
+                    == self.right.evaluate(dict_index_to_value)
+                    else 0
+                )
+                return res & res_mask
+            case ida_hexrays.m_setae if self.right is not None:
+                res = (
+                    1
+                    if self.left.evaluate(dict_index_to_value)
+                    >= self.right.evaluate(dict_index_to_value)
+                    else 0
+                )
+                return res & res_mask
+            case ida_hexrays.m_setb if self.right is not None:
+                res = (
+                    1
+                    if self.left.evaluate(dict_index_to_value)
+                    < self.right.evaluate(dict_index_to_value)
+                    else 0
+                )
+                return res & res_mask
+            case ida_hexrays.m_seta if self.right is not None:
+                res = (
+                    1
+                    if self.left.evaluate(dict_index_to_value)
+                    > self.right.evaluate(dict_index_to_value)
+                    else 0
+                )
+                return res & res_mask
+            case ida_hexrays.m_setbe if self.right is not None:
+                res = (
+                    1
+                    if self.left.evaluate(dict_index_to_value)
+                    <= self.right.evaluate(dict_index_to_value)
+                    else 0
+                )
+                return res & res_mask
+            case ida_hexrays.m_setg if self.right is not None:
+                left_value_signed = unsigned_to_signed(
+                    self.left.evaluate(dict_index_to_value), self.left.dest_size
+                )
+                right_value_signed = unsigned_to_signed(
+                    self.right.evaluate(dict_index_to_value), self.right.dest_size
+                )
+                res = 1 if left_value_signed > right_value_signed else 0
+                return res & res_mask
+            case ida_hexrays.m_setge if self.right is not None:
+                left_value_signed = unsigned_to_signed(
+                    self.left.evaluate(dict_index_to_value), self.left.dest_size
+                )
+                right_value_signed = unsigned_to_signed(
+                    self.right.evaluate(dict_index_to_value), self.right.dest_size
+                )
+                res = 1 if left_value_signed >= right_value_signed else 0
+                return res & res_mask
+            case ida_hexrays.m_setl if self.right is not None:
+                left_value_signed = unsigned_to_signed(
+                    self.left.evaluate(dict_index_to_value), self.left.dest_size
+                )
+                right_value_signed = unsigned_to_signed(
+                    self.right.evaluate(dict_index_to_value), self.right.dest_size
+                )
+                res = 1 if left_value_signed < right_value_signed else 0
+                return res & res_mask
+            case ida_hexrays.m_setle if self.right is not None:
+                left_value_signed = unsigned_to_signed(
+                    self.left.evaluate(dict_index_to_value), self.left.dest_size
+                )
+                right_value_signed = unsigned_to_signed(
+                    self.right.evaluate(dict_index_to_value), self.right.dest_size
+                )
+                res = 1 if left_value_signed <= right_value_signed else 0
+                return res & res_mask
+            case ida_hexrays.m_setp if self.right is not None:
+                res = get_parity_flag(
+                    self.left.evaluate(dict_index_to_value),
+                    self.right.evaluate(dict_index_to_value),
+                    self.left.dest_size,
+                )
+                return res & res_mask
+            case _:
+                raise AstEvaluationException(
+                    "Can't evaluate opcode: {0}".format(self.opcode)
+                )
 
     def get_depth_signature(self, depth):
         if depth == 1:
@@ -650,7 +690,7 @@ class AstNode(AstBase, dict):
 class AstLeaf(AstBase):
     def __init__(self, name):
         self.name = name
-        self.ast_index = None
+        self.ast_index: int | None = None
 
         self.mop = None
         self.z3_var = None
@@ -901,6 +941,46 @@ class AstProxy(AstBase):
     def is_constant(self) -> bool:
         return self._target.is_constant()
 
+    @typing.override
+    def compute_sub_ast(self) -> None:
+        self._target.compute_sub_ast()
+
+    @typing.override
+    def get_leaf_list(self) -> List[AstLeaf]:
+        return self._target.get_leaf_list()
+
+    @typing.override
+    def reset_mops(self) -> None:
+        self._target.reset_mops()
+
+    @typing.override
+    def _copy_mops_from_ast(self, other: AstBase) -> bool:
+        return self._target._copy_mops_from_ast(other)
+
+    @typing.override
+    def create_mop(self, ea: int) -> ida_hexrays.mop_t:
+        return self._target.create_mop(ea)
+
+    @typing.override
+    def get_pattern(self) -> str:
+        return self._target.get_pattern()
+
+    @typing.override
+    def evaluate(self, dict_index_to_value: Dict[int, int]) -> int:
+        return self._target.evaluate(dict_index_to_value)
+
+    @typing.override
+    def get_depth_signature(self, depth: int) -> List[str]:
+        return self._target.get_depth_signature(depth)
+
+    @typing.override
+    def __str__(self):
+        return str(self._target)
+
+    @typing.override
+    def __repr__(self):
+        return f"AstProxy({repr(self._target)})"
+
     def _ensure_mutable(self):
         """
         The magic method. If the target is frozen, clone it and
@@ -986,9 +1066,6 @@ def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
     """
     Creates a unique, hashable, and cheap-to-compute key for a mop_t object.
     """
-    if mop is None:
-        return (None,)
-
     # The base of the key is always the type, size, and valnum.
     t = mop.t
     key_base = (t, mop.size, mop.valnum)
@@ -1090,7 +1167,7 @@ def mop_to_ast_internal(
         ):
             if mop.d.r.t == ida_hexrays.mop_f:
                 args = mop.d.r.f.args
-                if len(args) == 2:
+                if len(args) == 2 and args[0] is not None and args[1] is not None:
                     value_ast = mop_to_ast_internal(args[0], context)
                     shift_ast = mop_to_ast_internal(args[1], context)
                     tree = AstNode(ida_hexrays.m_call, value_ast, shift_ast)
@@ -1105,7 +1182,13 @@ def mop_to_ast_internal(
                     return tree
 
     # NEW: Try to handle arithmetic ops whose operands are calls or constants
-    if mop.t == ida_hexrays.mop_d and mop.d.opcode in MBA_RELATED_OPCODES:
+    if (
+        mop.t == ida_hexrays.mop_d
+        and mop.d.opcode in MBA_RELATED_OPCODES
+        and mop.d.l is not None
+        and mop.d.r is not None
+        and mop.d.d is not None
+    ):
         left_ast = mop_to_ast_internal(mop.d.l, context)
         right_ast = mop_to_ast_internal(mop.d.r, context)
         dst_ast = mop_to_ast_internal(mop.d.d, context)
@@ -1120,7 +1203,13 @@ def mop_to_ast_internal(
         return tree
 
     # Fallback: treat as leaf
-    if mop.t != ida_hexrays.mop_d or (mop.d.opcode not in MBA_RELATED_OPCODES):
+    if (
+        mop.t != ida_hexrays.mop_d
+        or (mop.d.opcode not in MBA_RELATED_OPCODES)
+        or mop.d.l is None
+        or mop.d.r is None
+        or mop.d.d is None
+    ):
         tree = AstLeaf(format_mop_t(mop))
         tree.mop = mop
         dest_size = mop.size if mop.t != ida_hexrays.mop_d else mop.d.d.size
@@ -1175,27 +1264,34 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
 def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
     try:
         if instruction.opcode in MINSN_TO_AST_FORBIDDEN_OPCODES:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Skipping AST build for forbidden opcode: %s %s",
+                    opcode_to_string(instruction.opcode),
+                    instruction.dstr(),
+                )
             # To avoid error 50278
             return None
 
         ins_mop = ida_hexrays.mop_t()
         ins_mop.create_from_insn(instruction)
 
-        if instruction.opcode == ida_hexrays.m_mov:
-            tmp = AstNode(ida_hexrays.m_mov, mop_to_ast(ins_mop))
-            tmp.mop = ins_mop
-            tmp.dest_size = instruction.d.size
-            tmp.ea = instruction.ea
-            tmp.dst_mop = instruction.d
-            return tmp
+        # if instruction.opcode == ida_hexrays.m_mov:
+        #     tmp = AstNode(ida_hexrays.m_mov, mop_to_ast(ins_mop))
+        #     tmp.mop = ins_mop
+        #     tmp.dest_size = instruction.d.size
+        #     tmp.ea = instruction.ea
+        #     tmp.dst_mop = instruction.d
+        #     return tmp
 
         tmp = mop_to_ast(ins_mop)
         if tmp is None:
-            logger.debug(
-                "Skipping AST build for unsupported or nop instruction: %s %s",
-                opcode_to_string(instruction.opcode),
-                instruction.dstr(),
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Skipping AST build for unsupported or nop instruction: %s %s",
+                    opcode_to_string(instruction.opcode),
+                    instruction.dstr(),
+                )
             return None
         tmp.dst_mop = instruction.d
         return tmp
