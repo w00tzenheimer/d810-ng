@@ -5,6 +5,8 @@ import logging
 import typing
 from typing import Dict, List, Tuple, Union
 
+import ida_hexrays
+
 from d810.errors import AstEvaluationException
 from d810.expr.utils import (
     MOP_CONSTANT_CACHE,
@@ -29,8 +31,6 @@ from d810.hexrays.hexrays_helpers import (
     Z3_SPECIAL_OPERANDS,
     equal_mops_ignore_size,
 )
-
-import ida_hexrays
 
 logger = logging.getLogger("D810")
 
@@ -1169,24 +1169,24 @@ def mop_to_ast_internal(
     # Special handling for rotate calls
     if mop.t == ida_hexrays.mop_d and mop.d.opcode == ida_hexrays.m_call:
         func_mop = mop.d.l
-        if func_mop.t == ida_hexrays.mop_h and (
-            "__ROL" in func_mop.helper or "__ROR" in func_mop.helper
-        ):
-            if mop.d.r.t == ida_hexrays.mop_f:
-                args = mop.d.r.f.args
-                if len(args) == 2 and args[0] is not None and args[1] is not None:
-                    value_ast = mop_to_ast_internal(args[0], context)
-                    shift_ast = mop_to_ast_internal(args[1], context)
-                    tree = AstNode(ida_hexrays.m_call, value_ast, shift_ast)
-                    tree.func_name = func_mop.helper
-                    tree.mop = mop
-                    tree.dest_size = mop.size
-                    tree.ea = mop.d.ea
-                    new_index = len(context.unique_asts)
-                    tree.ast_index = new_index
-                    context.unique_asts.append(tree)
-                    context.mop_key_to_index[key] = new_index
-                    return tree
+        if func_mop.t == ida_hexrays.mop_h:
+            helper_name_norm = (func_mop.helper or "").lstrip("!")
+            if helper_name_norm.startswith("__ROL") or helper_name_norm.startswith("__ROR"):
+                if mop.d.r.t == ida_hexrays.mop_f:
+                    args = mop.d.r.f.args
+                    if len(args) == 2 and args[0] is not None and args[1] is not None:
+                        value_ast = mop_to_ast_internal(args[0], context)
+                        shift_ast = mop_to_ast_internal(args[1], context)
+                        tree = AstNode(ida_hexrays.m_call, value_ast, shift_ast)
+                        tree.func_name = helper_name_norm
+                        tree.mop = mop
+                        tree.dest_size = mop.size
+                        tree.ea = mop.d.ea
+                        new_index = len(context.unique_asts)
+                        tree.ast_index = new_index
+                        context.unique_asts.append(tree)
+                        context.mop_key_to_index[key] = new_index
+                        return tree
 
     # NEW: Try to handle arithmetic ops whose operands are calls or constants
     if (
@@ -1340,6 +1340,23 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                 )
             return None
 
+        # NEW: Shortcut – treat helper call whose result is already a literal as a constant leaf
+        if (
+            instruction.opcode == ida_hexrays.m_call
+            and instruction.d is not None
+            and instruction.d.t == ida_hexrays.mop_n
+        ):
+            # Build a constant AstLeaf directly from the destination mop
+            const_value = instruction.d.nnn.value
+            const_size = instruction.d.size
+            leaf = AstLeaf(hex(const_value))
+            leaf.mop = instruction.d  # preserve original constant mop
+            leaf.dest_size = const_size
+            leaf.ea = instruction.ea
+            # Freeze since it will be reused via proxy
+            leaf.freeze()
+            return AstProxy(leaf)
+
         ins_mop = ida_hexrays.mop_t()
         ins_mop.create_from_insn(instruction)
 
@@ -1416,6 +1433,11 @@ def _is_rotate_helper_call(ins: "ida_hexrays.minsn_t") -> bool:  # noqa: ANN001
         return False
 
     helper_name: str = func_mop.helper or ""
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("Helper name: %s", helper_name)
+    helper_name = helper_name.lstrip("!")  # Hex-Rays may prefix helpers with '!'
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("Helper name after stripping: %s", helper_name)
     return helper_name.startswith("__ROL") or helper_name.startswith("__ROR")
 
 
@@ -1424,5 +1446,9 @@ def _is_rotate_helper_call_minsn(ins: ida_hexrays.minsn_t) -> bool:
         return False
     if ins.l is None or ins.l.t != ida_hexrays.mop_h:
         return False
-    name = ins.l.helper or ""
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("Helper name: %s", ins.l.helper)
+    name = (ins.l.helper or "").lstrip("!")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("Helper name after stripping: %s", name)
     return name.startswith("__ROL") or name.startswith("__ROR")
