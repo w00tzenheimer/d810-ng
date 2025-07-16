@@ -1355,15 +1355,22 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
 
         # 2. Also update `_is_rotate_helper_call()` in `expr/ast.py` to accept the
         # `ins.r.f` variant (arguments in the minsn, not in mop.d.r).
+        # Handle helper-call rotate when the minsn itself is the call
         if _is_rotate_helper_call_minsn(instruction):
-            lhs = mop_to_ast(instruction.r.f.args[0])   # value
-            rhs = mop_to_ast(instruction.r.f.args[1])   # shift
-            if lhs and rhs:
-                node = AstNode(ida_hexrays.m_call, lhs, rhs)
-                node.func_name = instruction.l.helper
-                node.dest_size = instruction.d.size
-                node.ea = instruction.ea
-                return AstProxy(node)
+            if (
+                instruction.r is not None
+                and instruction.r.t == ida_hexrays.mop_f
+                and instruction.r.f is not None
+                and len(instruction.r.f.args) >= 2
+            ):
+                lhs_ast = mop_to_ast(instruction.r.f.args[0])
+                rhs_ast = mop_to_ast(instruction.r.f.args[1])
+                if lhs_ast is not None and rhs_ast is not None:
+                    node = AstNode(ida_hexrays.m_call, lhs_ast, rhs_ast)
+                    node.func_name = instruction.l.helper
+                    node.dest_size = instruction.d.size
+                    node.ea = instruction.ea
+                    return AstProxy(node)
 
         tmp = mop_to_ast(ins_mop)
         if tmp is None:
