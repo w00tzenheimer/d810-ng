@@ -1140,13 +1140,27 @@ def _log_mop_tree(mop, depth=0, max_depth=8):
 
 
 def mop_to_ast_internal(
-    mop: ida_hexrays.mop_t, context: AstBuilderContext
+    mop: ida_hexrays.mop_t, context: AstBuilderContext, root: bool = False
 ) -> AstBase | None:
+    # Only log at root
+    if root and logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "[mop_to_ast_internal] Processing root mop: %s",
+            str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
+        )
 
-    logger.debug(
-        "[mop_to_ast_internal] Processing mop: %s",
-        str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
-    )
+    # Early filter at root: only process if supported
+    if root:
+        # For instructions, check opcode
+        if hasattr(mop, 'd') and hasattr(mop.d, 'opcode'):
+            if mop.d.opcode not in MBA_RELATED_OPCODES:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Skipping AST build for unsupported root opcode: %s",
+                        opcode_to_string(mop.d.opcode),
+                    )
+                return None
+
     # 1. Create the unique, hashable key for the current mop.
     key = get_mop_key(mop)
 
@@ -1187,14 +1201,25 @@ def mop_to_ast_internal(
         and mop.d.opcode in MBA_RELATED_OPCODES
         and mop.d.l is not None
         and mop.d.r is not None
-        and mop.d.d is not None
     ):
         left_ast = mop_to_ast_internal(mop.d.l, context)
         right_ast = mop_to_ast_internal(mop.d.r, context)
-        dst_ast = mop_to_ast_internal(mop.d.d, context)
-        tree = AstNode(mop.d.opcode, left_ast, right_ast, dst_ast)
+        # Only use dst_ast if d is present (ternary ops)
+        if mop.d.d is not None:
+            dst_ast = mop_to_ast_internal(mop.d.d, context)
+            tree = AstNode(mop.d.opcode, left_ast, right_ast, dst_ast)
+        else:
+            tree = AstNode(mop.d.opcode, left_ast, right_ast)
+        # Set dest_size robustly
+        if hasattr(mop, "size") and mop.size:
+            tree.dest_size = mop.size
+        elif hasattr(mop.d, "size") and mop.d.size:
+            tree.dest_size = mop.d.size
+        elif mop.d.l is not None and hasattr(mop.d.l, "size"):
+            tree.dest_size = mop.d.l.size
+        else:
+            tree.dest_size = None
         tree.mop = mop
-        tree.dest_size = mop.d.d.size
         tree.ea = mop.d.ea
         new_index = len(context.unique_asts)
         tree.ast_index = new_index
@@ -1243,7 +1268,7 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
 
     builder_context = AstBuilderContext()
     # Start the optimized recursive build.
-    if not (mop_ast := mop_to_ast_internal(mop, builder_context)):
+    if not (mop_ast := mop_to_ast_internal(mop, builder_context, root=True)):
         # Cache the failure to avoid re-computing it.
         MOP_TO_AST_CACHE[cache_key] = None
         return None
@@ -1263,14 +1288,26 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
 
 def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
     try:
+        # Early filter: forbidden opcodes
         if instruction.opcode in MINSN_TO_AST_FORBIDDEN_OPCODES:
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
-                    "Skipping AST build for forbidden opcode: %s %s",
+                    "Skipping AST build for forbidden opcode: %s @ 0x%x %s",
                     opcode_to_string(instruction.opcode),
-                    instruction.dstr(),
+                    instruction.ea,
+                    ("({0})".format(instruction.dstr()) if instruction.opcode != ida_hexrays.m_jtbl else ""),
                 )
-            # To avoid error 50278
+            return None
+
+        # Early filter: unsupported opcodes (not in MBA_RELATED_OPCODES)
+        if instruction.opcode not in MBA_RELATED_OPCODES:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Skipping AST build for unsupported opcode: %s @ 0x%x %s",
+                    opcode_to_string(instruction.opcode),
+                    instruction.ea,
+                    ("({0})".format(instruction.dstr()) if instruction.opcode != ida_hexrays.m_jtbl else ""),
+                )
             return None
 
         ins_mop = ida_hexrays.mop_t()
@@ -1288,9 +1325,10 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
         if tmp is None:
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
-                    "Skipping AST build for unsupported or nop instruction: %s %s",
+                    "Skipping AST build for unsupported or nop instruction: %s @ 0x%x %s",
                     opcode_to_string(instruction.opcode),
-                    instruction.dstr(),
+                    instruction.ea,
+                    ("({0})".format(instruction.dstr()) if instruction.opcode != ida_hexrays.m_jtbl else ""),
                 )
             return None
         tmp.dst_mop = instruction.d

@@ -242,7 +242,6 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
     )
 
     maturities = [
-        ida_hexrays.MMAT_GLBOPT1,
         ida_hexrays.MMAT_GLBOPT2,
     ]
 
