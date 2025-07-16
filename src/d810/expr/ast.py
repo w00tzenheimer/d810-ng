@@ -1188,37 +1188,42 @@ def mop_to_ast_internal(
                         context.mop_key_to_index[key] = new_index
                         return tree
 
-    # NEW: Try to handle arithmetic ops whose operands are calls or constants
-    if (
-        mop.t == ida_hexrays.mop_d
-        and mop.d.opcode in MBA_RELATED_OPCODES
-        and mop.d.l is not None
-        and mop.d.r is not None
-    ):
-        left_ast = mop_to_ast_internal(mop.d.l, context)
-        right_ast = mop_to_ast_internal(mop.d.r, context)
-        # Only use dst_ast if d is present (ternary ops)
-        if mop.d.d is not None:
-            dst_ast = mop_to_ast_internal(mop.d.d, context)
+    # NEW: Build AST nodes for MBA-related opcodes (binary or unary)
+    if mop.t == ida_hexrays.mop_d and mop.d.opcode in MBA_RELATED_OPCODES:
+        nb_ops = OPCODES_INFO[mop.d.opcode]["nb_operands"]
+
+        # Gather children ASTs based on operand count
+        left_ast = mop_to_ast_internal(mop.d.l, context) if mop.d.l is not None else None
+        right_ast = (
+            mop_to_ast_internal(mop.d.r, context) if (nb_ops >= 2 and mop.d.r is not None) else None
+        )
+
+        # Require at least the mandatory operands; if missing, fall back to leaf
+        if left_ast is None:
+            # Can't build meaningful node
+            pass
+        else:
+            # Only use dst_ast if destination present (ternary ops like m_stx etc.)
+            dst_ast = mop_to_ast_internal(mop.d.d, context) if mop.d.d is not None else None
             tree = AstNode(mop.d.opcode, left_ast, right_ast, dst_ast)
-        else:
-            tree = AstNode(mop.d.opcode, left_ast, right_ast)
-        # Set dest_size robustly
-        if hasattr(mop, "size") and mop.size:
-            tree.dest_size = mop.size
-        elif hasattr(mop.d, "size") and mop.d.size:
-            tree.dest_size = mop.d.size
-        elif mop.d.l is not None and hasattr(mop.d.l, "size"):
-            tree.dest_size = mop.d.l.size
-        else:
-            tree.dest_size = None
-        tree.mop = mop
-        tree.ea = mop.d.ea
-        new_index = len(context.unique_asts)
-        tree.ast_index = new_index
-        context.unique_asts.append(tree)
-        context.mop_key_to_index[key] = new_index
-        return tree
+
+            # Set dest_size robustly
+            if hasattr(mop, "size") and mop.size:
+                tree.dest_size = mop.size
+            elif hasattr(mop.d, "size") and mop.d.size:
+                tree.dest_size = mop.d.size
+            elif mop.d.l is not None and hasattr(mop.d.l, "size"):
+                tree.dest_size = mop.d.l.size
+            else:
+                tree.dest_size = None
+
+            tree.mop = mop
+            tree.ea = mop.d.ea
+            new_index = len(context.unique_asts)
+            tree.ast_index = new_index
+            context.unique_asts.append(tree)
+            context.mop_key_to_index[key] = new_index
+            return tree
 
     # Special handling for mop_d that wraps an m_ldc as a constant leaf
     if (

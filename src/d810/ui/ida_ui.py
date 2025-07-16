@@ -405,10 +405,13 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.shown = False
         self.created = False
         self.parent = None
+        self.test_runner = None
 
     def OnClose(self, form):
         logger.debug("Calling OnClose")
         self.shown = False
+        if self.test_runner is not None:
+            self.test_runner.Close(ida_kernwin.PluginForm.WCLS_SAVE)
         # self.parent.close()
 
     def Show(self):
@@ -529,6 +532,11 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.btn_stop_profiling = QtWidgets.QPushButton("Stop Profiling")
         self.btn_stop_profiling.clicked.connect(self._stop_profiling)
         btn_split.addWidget(self.btn_stop_profiling)
+
+        if TestRunnerForm is not None:
+            self.btn_test_runner = QtWidgets.QPushButton("Test Runner")
+            self.btn_test_runner.clicked.connect(self._show_test_runner)
+            btn_split.addWidget(self.btn_test_runner)
 
         self.plugin_status = QtWidgets.QLabel()
         self.plugin_status.setText(
@@ -735,6 +743,19 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         else:
             logger.warning("D810 manager not initialized; cannot stop profiling.")
 
+    def _show_test_runner(self):
+        if self.test_runner is None:
+            self.test_runner = TestRunnerForm()
+        self.test_runner.Show(
+            "D810 Test Runner",
+            options=(
+                ida_kernwin.PluginForm.WOPN_PERSIST
+                | ida_kernwin.PluginForm.WCLS_SAVE
+                | ida_kernwin.PluginForm.WOPN_RESTORE
+                | ida_kernwin.PluginForm.WOPN_TAB
+            ),
+        )
+
     def _show_copy_context_menu_preview(self, table, pos):
         """
         Show a context menu to copy selected cells or the cell under the mouse.
@@ -778,13 +799,6 @@ class D810GUI(object):
         self.state = state
         self.d810_config_form = D810ConfigForm_t(self.state)
 
-        # ---------------------------------------------------------------
-        # Unit-test runner (optional if tests package available)
-        # ---------------------------------------------------------------
-        if TestRunnerForm is not None:
-            self.test_runner = TestRunnerForm()
-        else:
-            self.test_runner = None
         # XXX fix
         idaapi.set_dock_pos("D-810", "IDA View-A", idaapi.DP_TAB)
 
@@ -792,22 +806,6 @@ class D810GUI(object):
         logger.debug("Calling show_windows")
         self.d810_config_form.Show()
 
-        # Show the test-runner GUI if available
-        if self.test_runner is not None:
-            self.test_runner.Show(
-                "D810 Test Runner",
-                options=(
-                    ida_kernwin.PluginForm.WOPN_PERSIST
-                    | ida_kernwin.PluginForm.WCLS_SAVE
-                    | ida_kernwin.PluginForm.WOPN_RESTORE
-                    | ida_kernwin.PluginForm.WOPN_TAB
-                ),
-            )
-
     def term(self):
         logger.debug("Calling term")
         self.d810_config_form.Close(ida_kernwin.PluginForm.WCLS_SAVE)
-
-        # Close test-runner form
-        if self.test_runner is not None:
-            self.test_runner.Close(ida_kernwin.PluginForm.WCLS_SAVE)
