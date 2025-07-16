@@ -1,4 +1,5 @@
 import ctypes
+import sys
 
 from d810.hexrays.hexrays_helpers import MSB_TABLE, CacheImpl
 
@@ -128,9 +129,19 @@ def ror8(value: int, count: int) -> int:
     return __ror__(value, count, 64)
 
 
+# ------------------------------------------------------------------
+# Singleton caches that survive importlib.reload()
+# ------------------------------------------------------------------
+_module = sys.modules[__name__]
+
+if not hasattr(_module, "_SHARED_MOP_CONSTANT_CACHE"):
+    setattr(_module, "_SHARED_MOP_CONSTANT_CACHE", CacheImpl(max_size=1024))
+if not hasattr(_module, "_SHARED_MOP_TO_AST_CACHE"):
+    setattr(_module, "_SHARED_MOP_TO_AST_CACHE", CacheImpl(max_size=1024))
+
 # A global cache for constant mop_t objects
-MOP_CONSTANT_CACHE = CacheImpl(max_size=1024)
+MOP_CONSTANT_CACHE: CacheImpl = _module._SHARED_MOP_CONSTANT_CACHE
 
 # The cache should be managed in a scope that persists across calls.
 # A global variable is a common way to do this in IDA scripts.
-MOP_TO_AST_CACHE = CacheImpl(max_size=1024)
+MOP_TO_AST_CACHE: CacheImpl = _module._SHARED_MOP_TO_AST_CACHE
