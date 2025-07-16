@@ -365,13 +365,12 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         bits = ins.d.size * 8 if ins.d.size else 32
         if peephole_logger.isEnabledFor(logging.DEBUG):
             peephole_logger.debug(
-                "[fold_const] Checking ins @0x%X: %s  l=%s  r=%s  d=%s  [dstr=%s]",
+                "[fold_const] Checking ins @0x%X: %s  l=%s  r=%s  d=%s",
                 getattr(ins, "ea", 0),
                 opcode_to_string(ins.opcode),
                 _mop_to_str(getattr(ins, "l", None)),
                 _mop_to_str(getattr(ins, "r", None)),
-                _mop_to_str(getattr(ins, "d", None)),
-                ins.dstr(),
+                _mop_to_str(getattr(ins, "d", None))
             )
 
         # Ensure bits is valid and positive
