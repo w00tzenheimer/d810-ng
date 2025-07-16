@@ -15,6 +15,7 @@ from d810.expr.utils import (
     ror4,
     ror8,
 )
+from d810.hexrays.hexrays_formatters import opcode_to_string
 from d810.hexrays.hexrays_helpers import (  # already maps size→mask
     AND_TABLE,
     OPCODES_INFO,
@@ -328,7 +329,7 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         bits = ins.d.size * 8 if ins.d.size else 32
         peephole_logger.debug(
             "[fold_const] Checking ins: opcode=%s (%s), l=%s, r=%s, d=%s",
-            getattr(ins, "opcode", None),
+            opcode_to_string(ins.opcode),
             (
                 "m_ldc"
                 if ins.opcode == ida_hexrays.m_ldc
