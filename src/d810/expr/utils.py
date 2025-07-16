@@ -135,9 +135,9 @@ def ror8(value: int, count: int) -> int:
 _module = sys.modules[__name__]
 
 if not hasattr(_module, "_SHARED_MOP_CONSTANT_CACHE"):
-    setattr(_module, "_SHARED_MOP_CONSTANT_CACHE", CacheImpl(max_size=1024))
+    setattr(_module, "_SHARED_MOP_CONSTANT_CACHE", CacheImpl(max_size=20480))
 if not hasattr(_module, "_SHARED_MOP_TO_AST_CACHE"):
-    setattr(_module, "_SHARED_MOP_TO_AST_CACHE", CacheImpl(max_size=1024))
+    setattr(_module, "_SHARED_MOP_TO_AST_CACHE", CacheImpl(max_size=20480))
 
 # A global cache for constant mop_t objects
 MOP_CONSTANT_CACHE: CacheImpl = _module._SHARED_MOP_CONSTANT_CACHE
