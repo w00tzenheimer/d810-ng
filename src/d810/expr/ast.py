@@ -1327,7 +1327,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
         # is normally filtered out – they can be constant-folded later.
         if (
             instruction.opcode not in MBA_RELATED_OPCODES
-            and not _is_rotate_helper_call(instruction)
+            and not _is_rotate_helper_call_minsn(instruction)
         ):
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -1352,6 +1352,18 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
         #     tmp.ea = instruction.ea
         #     tmp.dst_mop = instruction.d
         #     return tmp
+
+        # 2. Also update `_is_rotate_helper_call()` in `expr/ast.py` to accept the
+        # `ins.r.f` variant (arguments in the minsn, not in mop.d.r).
+        if _is_rotate_helper_call_minsn(instruction):
+            lhs = mop_to_ast(instruction.r.f.args[0])   # value
+            rhs = mop_to_ast(instruction.r.f.args[1])   # shift
+            if lhs and rhs:
+                node = AstNode(ida_hexrays.m_call, lhs, rhs)
+                node.func_name = instruction.l.helper
+                node.dest_size = instruction.d.size
+                node.ea = instruction.ea
+                return AstProxy(node)
 
         tmp = mop_to_ast(ins_mop)
         if tmp is None:
@@ -1400,3 +1412,12 @@ def _is_rotate_helper_call(ins: "ida_hexrays.minsn_t") -> bool:  # noqa: ANN001
 
     helper_name: str = func_mop.helper or ""
     return helper_name.startswith("__ROL") or helper_name.startswith("__ROR")
+
+
+def _is_rotate_helper_call_minsn(ins: ida_hexrays.minsn_t) -> bool:
+    if ins.opcode != ida_hexrays.m_call:
+        return False
+    if ins.l is None or ins.l.t != ida_hexrays.mop_h:
+        return False
+    name = ins.l.helper or ""
+    return name.startswith("__ROL") or name.startswith("__ROR")
