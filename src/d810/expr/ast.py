@@ -1140,17 +1140,36 @@ def mop_to_ast_internal(
             str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
         )
 
-    # Early filter at root: only process if supported
+    # Early filter at root: only process if supported, with one exception:
+    # If the root is an m_call that has no argument list (r is mop_z) we treat it
+    # as transparent and attempt to build an AST from its destination operand.
     if root:
-        # For instructions, check opcode
         if hasattr(mop, "d") and hasattr(mop.d, "opcode"):
-            if mop.d.opcode not in MBA_RELATED_OPCODES and not _is_rotate_helper_call(
+            root_opcode = mop.d.opcode
+
+            # Special case: transparent call wrapper
+            if (
+                root_opcode == ida_hexrays.m_call
+                and (mop.d.r is None or mop.d.r.t == ida_hexrays.mop_z)
+                and mop.d.d is not None
+            ):
+                dest_ast = mop_to_ast_internal(mop.d.d, context, root=True)
+                if dest_ast is not None:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "[mop_to_ast_internal] Unwrapped transparent call at 0x%X into dest AST: %s",
+                            mop.d.ea if hasattr(mop.d, "ea") else -1,
+                            dest_ast,
+                        )
+                    return dest_ast
+
+            if root_opcode not in MBA_RELATED_OPCODES and not _is_rotate_helper_call(
                 mop.d
             ):
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "Skipping AST build for unsupported root opcode: %s",
-                        opcode_to_string(mop.d.opcode),
+                        opcode_to_string(root_opcode),
                     )
                 return None
 
@@ -1200,8 +1219,12 @@ def mop_to_ast_internal(
 
         # Require at least the mandatory operands; if missing, fall back to leaf
         if left_ast is None:
-            # Can't build meaningful node
-            pass
+            # Can't build meaningful node – fallback later to leaf
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "[mop_to_ast_internal] Missing mandatory operand(s) for opcode %s, will treat as leaf",
+                    opcode_to_string(mop.d.opcode),
+                )
         else:
             # Only use dst_ast if destination present (ternary ops like m_stx etc.)
             dst_ast = mop_to_ast_internal(mop.d.d, context) if mop.d.d is not None else None
@@ -1219,6 +1242,14 @@ def mop_to_ast_internal(
 
             tree.mop = mop
             tree.ea = mop.d.ea
+
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "[mop_to_ast_internal] Created AstNode for opcode %s (ea=0x%X): %s",
+                    opcode_to_string(mop.d.opcode),
+                    mop.d.ea if hasattr(mop.d, "ea") else -1,
+                    tree,
+                )
             new_index = len(context.unique_asts)
             tree.ast_index = new_index
             context.unique_asts.append(tree)
@@ -1254,6 +1285,12 @@ def mop_to_ast_internal(
         # Destination (mop.d.d) may legitimately be absent; we only need l & r
     ):
         tree = AstLeaf(format_mop_t(mop))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[mop_to_ast_internal] Fallback to AstLeaf for mop type %s dstr=%s",
+                mop.t,
+                str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
+            )
         tree.mop = mop
         dest_size = (
             mop.size
