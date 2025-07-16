@@ -848,7 +848,7 @@ class AstLeaf(AstBase):
     def __str__(self):
         try:
             if self.is_constant() and self.mop is not None:
-                return "{0}".format(self.mop.nnn.value)
+                return "{0}".format(self.mop.nnn)
             if self.z3_var_name is not None:
                 return self.z3_var_name
             if self.ast_index is not None:
