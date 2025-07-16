@@ -2,6 +2,8 @@ import dataclasses
 import typing
 from typing import List, Tuple
 
+from d810.expr.utils import CacheImpl
+
 import ida_hexrays
 from ida_hexrays import *
 from ida_hexrays import (
@@ -708,3 +710,11 @@ OPCODES_LOOKUP: dict[int, MicrocodeOpcode] = {
     ida_hexrays.m_fmul: MicrocodeOpcode("fmul", 2, True),
     ida_hexrays.m_fdiv: MicrocodeOpcode("fdiv", 2, False),
 }
+
+
+# A global cache for constant mop_t objects
+MOP_CONSTANT_CACHE = CacheImpl(max_size=1024)
+
+# The cache should be managed in a scope that persists across calls.
+# A global variable is a common way to do this in IDA scripts.
+MOP_TO_AST_CACHE = CacheImpl(max_size=1024)
