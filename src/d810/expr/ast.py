@@ -51,6 +51,14 @@ def get_constant_mop(value: int, size: int) -> ida_hexrays.mop_t:
     return cst_mop
 
 
+def clear_mop_to_ast_cache():
+    """
+    Call this when the analysis context changes (e.g., new function)
+    to prevent using stale data.
+    """
+    MOP_TO_AST_CACHE.clear()
+
+
 class AstInfo(object):
     def __init__(self, ast: AstNode | AstLeaf, number_of_use: int):
         self.ast = ast
@@ -639,10 +647,9 @@ class AstNode(AstBase, dict):
                     return "{0}({1}, {2})".format(
                         OPCODES_INFO[self.opcode]["name"], self.left, self.right
                     )
-            return "Error_AstNode"
         except RuntimeError as e:
             logger.info("Error while calling __str__ on AstNode: {0}".format(e))
-            return "Error_AstNode"
+        return "Error_AstNode"
 
     @typing.override
     def clone(self):
@@ -973,7 +980,7 @@ class AstProxy(AstBase):
 
     @typing.override
     def __str__(self):
-        return str(self._target)
+        return f"AstProxy({str(self._target)})"
 
     @typing.override
     def __repr__(self):
@@ -1044,15 +1051,6 @@ class AstBuilderContext:
         # The fast lookup dictionary.
         # Maps a mop's unique key to its index in the unique_asts list.
         self.mop_key_to_index: Dict[Tuple[int, str], int] = {}
-
-
-def clear_mop_to_ast_cache():
-    """
-    Call this when the analysis context changes (e.g., new function)
-    to prevent using stale data.
-    """
-    global MOP_TO_AST_CACHE
-    MOP_TO_AST_CACHE.clear()
 
 
 def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
@@ -1233,14 +1231,14 @@ def mop_to_ast_internal(
         if ldc_src is not None and ldc_src.t == ida_hexrays.mop_n:
             const_val = ldc_src.nnn.value
             const_size = ldc_src.size
-            tree = AstLeaf(hex(const_val))
+            tree = AstConstant(hex(const_val), const_val, const_size)
             tree.mop = ldc_src  # keep original constant mop
             tree.dest_size = const_size
-            new_index = len(context.unique_asts)
-            tree.ast_index = new_index
-            context.unique_asts.append(tree)
-            context.mop_key_to_index[key] = new_index
-            return tree
+        new_index = len(context.unique_asts)
+        tree.ast_index = new_index
+        context.unique_asts.append(tree)
+        context.mop_key_to_index[key] = new_index
+        return tree
 
     # Fallback: treat as leaf
     if (

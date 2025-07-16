@@ -207,10 +207,25 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
 
         # Hex-Rays sometimes represents a literal as a one-instruction
         # subtree:   mop_d → m_ldc  ( ldc  #value , dst )
-        if mop.t == ida_hexrays.mop_d and mop.d is not None and mop.d.opcode == ida_hexrays.m_ldc:
+        if (
+            mop.t == ida_hexrays.mop_d
+            and mop.d is not None
+            and mop.d.opcode == ida_hexrays.m_ldc
+        ):
             ldc_src = mop.d.l
             if ldc_src is not None and ldc_src.t == ida_hexrays.mop_n:
                 return ldc_src.nnn.value & _get_mask(bits)
+
+        # Helper call already folded by Hex-Rays:  m_call with constant destination
+        # Example pattern in log:  l=!__ROL4__  r=<empty>  d=<mop_n  #const>
+        if (
+            mop.t == ida_hexrays.mop_d
+            and mop.d is not None
+            and mop.d.opcode == ida_hexrays.m_call
+        ):
+            dst_mop = getattr(mop.d, "d", None)
+            if dst_mop is not None and dst_mop.t == ida_hexrays.mop_n:
+                return dst_mop.nnn.value & _get_mask(bits)
         return None
 
     # unary
@@ -288,16 +303,18 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
     ) -> ida_hexrays.minsn_t | None:
         # Skip instructions that are already in optimal form or would cause infinite loops
         if ins.opcode == ida_hexrays.m_ldc:
-            peephole_logger.debug(
-                "[fold_const] Skipping m_ldc instruction (already optimal)"
-            )
+            if peephole_logger.isEnabledFor(logging.DEBUG):
+                peephole_logger.debug(
+                    "[fold_const] Skipping m_ldc instruction (already optimal)"
+                )
             return None
 
         # Skip mov instructions where source is already a constant (prevents infinite loop)
         if ins.opcode == ida_hexrays.m_mov and ins.l and ins.l.t == ida_hexrays.mop_n:
-            peephole_logger.debug(
-                "[fold_const] Skipping mov with constant source (would create infinite loop)"
-            )
+            if peephole_logger.isEnabledFor(logging.DEBUG):
+                peephole_logger.debug(
+                    "[fold_const] Skipping mov with constant source (would create infinite loop)"
+                )
             return None
 
         # Skip binary operations where both operands are already constants
@@ -324,9 +341,10 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 ida_hexrays.m_sar,
             ]
         ):
-            peephole_logger.debug(
-                "[fold_const] Skipping binary op with two constants (would create infinite loop)"
-            )
+            if peephole_logger.isEnabledFor(logging.DEBUG):
+                peephole_logger.debug(
+                    "[fold_const] Skipping binary op with two constants (would create infinite loop)"
+                )
             return None
 
         # Skip identity operations that don't need folding
@@ -366,18 +384,19 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         if peephole_logger.isEnabledFor(logging.DEBUG):
             peephole_logger.debug(
                 "[fold_const] Checking ins @0x%X: %s  l=%s  r=%s  d=%s",
-                getattr(ins, "ea", 0),
+                ins.ea,
                 opcode_to_string(ins.opcode),
-                _mop_to_str(getattr(ins, "l", None)),
-                _mop_to_str(getattr(ins, "r", None)),
-                _mop_to_str(getattr(ins, "d", None))
+                _mop_to_str(ins.l),
+                _mop_to_str(ins.r),
+                _mop_to_str(ins.d),
             )
 
         # Ensure bits is valid and positive
         if bits <= 0:
-            peephole_logger.debug(
-                "[fold_const] Invalid bits value %d, defaulting to 32", bits
-            )
+            if peephole_logger.isEnabledFor(logging.DEBUG):
+                peephole_logger.debug(
+                    "[fold_const] Invalid bits value %d, defaulting to 32", bits
+                )
             bits = 32
 
         # Clamp bits to supported sizes to prevent KeyError in AND_TABLE
@@ -391,9 +410,10 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 bits = 32
             else:
                 bits = 64
-            peephole_logger.debug(
-                "[fold_const] Adjusted bits to supported size: %d", bits
-            )
+            if peephole_logger.isEnabledFor(logging.DEBUG):
+                peephole_logger.debug(
+                    "[fold_const] Adjusted bits to supported size: %d", bits
+                )
 
         # 1) do *local* folding everywhere inside the ins
         changed = False
@@ -424,15 +444,17 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 ast.ea = ins.ea
 
         if ast is not None:
-            peephole_logger.debug("[fold_const] AST for ins: %s", ast)
+            if peephole_logger.isEnabledFor(logging.DEBUG):
+                peephole_logger.debug("[fold_const] AST for ins: %s", ast)
             value = _eval_subtree(ast, bits)
-            peephole_logger.debug("[fold_const] _eval_subtree result: %r", value)
+            if peephole_logger.isEnabledFor(logging.DEBUG):
+                peephole_logger.debug("[fold_const] _eval_subtree result: %r", value)
             if value is not None:
                 peephole_logger.info(
                     "[fold_const] Collapsed ins at 0x%X to constant 0x%X (opcode=%s)",
-                    getattr(ins, "ea", 0),
+                    ins.ea,
                     value,
-                    getattr(ins, "opcode", None),
+                    opcode_to_string(ins.opcode),
                 )
                 new = ida_hexrays.minsn_t(ins)  # clone to keep ea/sizes
                 new.opcode = ida_hexrays.m_ldc
@@ -442,11 +464,12 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 new.r.erase()
                 return new
         else:
-            peephole_logger.debug(
-                "[fold_const] Could not build AST for computation: opcode=%s, dstr=%s",
-                getattr(ins, "opcode", None),
-                getattr(ins, "dstr", lambda: None)(),
-            )
+            if peephole_logger.isEnabledFor(logging.DEBUG):
+                peephole_logger.debug(
+                    "[fold_const] Could not build AST for computation: opcode=%s, dstr=%s",
+                    opcode_to_string(ins.opcode),
+                    ins.dstr(),
+                )
 
         # 3) If we simplified any sub-expression but the whole tree is not a
         #    constant yet, signal the change by returning a clone of the mutated
@@ -455,94 +478,16 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         if changed:
             peephole_logger.info(
                 "[fold_const] Locally folded ins at 0x%X (opcode=%s), but not a pure constant.",
-                getattr(ins, "ea", 0),
-                getattr(ins, "opcode", None),
+                ins.ea,
+                opcode_to_string(ins.opcode),
             )
             return ida_hexrays.minsn_t(ins)  # copy = treat as replacement
 
-        peephole_logger.debug(
-            "[fold_const] No folding possible for ins at 0x%X (opcode=%s)",
-            getattr(ins, "ea", 0),
-            getattr(ins, "opcode", None),
-        )
+        if peephole_logger.isEnabledFor(logging.DEBUG):
+            peephole_logger.debug(
+                "[fold_const] No folding possible for ins at 0x%X (opcode=%s)",
+                ins.ea,
+                opcode_to_string(ins.opcode),
+            )
         # Nothing to do
         return None
-
-
-# def _fold_const_in_mop(mop: ida_hexrays.mop_t, bits: int) -> bool:
-#     """
-#     Recursively rewrites 'mop' in place; returns True if something changed.
-#     """
-#     changed = False
-
-#     if mop is None:
-#         return False
-
-#     if mop.t == ida_hexrays.mop_d and mop.d is not None:
-#         # sub-instruction:  build AST → fold → regenerate mop
-#         sub_ast = minsn_to_ast(mop.d)
-#         if sub_ast:
-#             new_ast, ch = _fold_bottom_up(sub_ast, bits)
-#             if ch and isinstance(new_ast, AstNode):
-#                 # regenerate sub-insn from AST and overwrite
-#                 new_sub = new_ast.create_minsn(mop.d.ea)  # this helper exists in d810
-#                 mop.d = new_sub
-#                 changed = True
-
-#     # argument list of a call lives in a mop_a
-#     if mop.t == ida_hexrays.mop_a:
-#         for a in mop.a:  # mop.a is the list< mop_t >
-#             changed |= _fold_const_in_mop(a, bits)
-
-#     # binary mops (l/r)
-#     if hasattr(mop, "l"):
-#         changed |= _fold_const_in_mop(mop.l, bits)
-#     if hasattr(mop, "r"):
-#         changed |= _fold_const_in_mop(mop.r, bits)
-# ────────────────────────────────────────────────────────────────────
-# The rule
-# # ────────────────────────────────────────────────────────────────────
-# class FoldPureConstantRule(PatternMatchingRule):
-#     """
-#     Collapse any instruction whose *entire* expression tree is a numeric
-#     constant into a single m_ldc.
-#     Works at MMAT_LOCOPT & later (when SSA is stable).
-#     """
-
-#     # Dummy pattern just to satisfy the loader (must be an AstNode!)
-#     PATTERN = AstNode(ida_hexrays.m_mov, AstLeaf("lhs"), AstLeaf("rhs"))
-#     REPLACEMENT_PATTERN = PATTERN  # never used, but must exist
-#     DESCRIPTION = "Generic constant-propagation / folding pass"
-
-#     # allow every maturity after LVARS
-#     def __init__(self):
-#         super().__init__()
-#         self.maturities = [
-#             ida_hexrays.MMAT_LOCOPT,
-#             ida_hexrays.MMAT_CALLS,
-#             ida_hexrays.MMAT_GLBOPT1,
-#             ida_hexrays.MMAT_GLBOPT2,
-#             ida_hexrays.MMAT_GLBOPT3,
-#             ida_hexrays.MMAT_LVARS,
-#         ]
-
-#     # We override the generic matcher completely
-#     def check_and_replace(self, blk, ins):
-#         ast = minsn_to_ast(ins)
-#         if ast is None:
-#             return None
-
-#         bits = ins.d.size * 8 if ins.d.size else 32
-#         value = _eval_subtree(ast, bits)
-#         if value is None:
-#             return None  # not a pure-constant expression
-
-#         # build:  ldc  #value, dst
-#         new_ins = ida_hexrays.minsn_t(ins)  # clone to keep ea, sizes…
-#         new_ins.opcode = ida_hexrays.m_ldc
-#         cst = ida_hexrays.mop_t()
-#         cst.make_number(value, ins.d.size)
-#         new_ins.l = cst  # source constant
-#         new_ins.r.erase()
-#         # keep the original destination (ins.d)
-#         return new_ins
