@@ -41,7 +41,7 @@ class RuleConfiguration:
         return cls(**data)
 
 
-@dataclass
+@dataclass(repr=False)
 class ProjectConfiguration:
     """
     Holds project-specific settings, including analysis rules.
@@ -52,6 +52,9 @@ class ProjectConfiguration:
     ins_rules: list[RuleConfiguration] = field(default_factory=list)
     blk_rules: list[RuleConfiguration] = field(default_factory=list)
     additional_configuration: dict[str, Any] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return f"ProjectConfiguration(path={self.path}, description={self.description}, ins_rules={len(self.ins_rules)}, blk_rules={len(self.blk_rules)}, additional_configuration={len(self.additional_configuration)})"
 
     @classmethod
     def from_file(cls, path: Path | str) -> "ProjectConfiguration":
