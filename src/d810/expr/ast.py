@@ -1233,11 +1233,11 @@ def mop_to_ast_internal(
         or (mop.d.opcode not in MBA_RELATED_OPCODES)
         or mop.d.l is None
         or mop.d.r is None
-        or mop.d.d is None
+        # Destination (mop.d.d) may legitimately be absent; we only need l & r
     ):
         tree = AstLeaf(format_mop_t(mop))
         tree.mop = mop
-        dest_size = mop.size if mop.t != ida_hexrays.mop_d else mop.d.d.size
+        dest_size = mop.size if mop.t != ida_hexrays.mop_d else mop.d.d.size if mop.d.d is not None else mop.size
         tree.dest_size = dest_size
         new_index = len(context.unique_asts)
         tree.ast_index = new_index
