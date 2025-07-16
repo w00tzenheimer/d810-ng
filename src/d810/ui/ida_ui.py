@@ -521,6 +521,15 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.btn_stop.clicked.connect(self._stop_d810)
         btn_split.addWidget(self.btn_stop)
 
+        # --- Profiling buttons ---
+        self.btn_start_profiling = QtWidgets.QPushButton("Start Profiling")
+        self.btn_start_profiling.clicked.connect(self._start_profiling)
+        btn_split.addWidget(self.btn_start_profiling)
+
+        self.btn_stop_profiling = QtWidgets.QPushButton("Stop Profiling")
+        self.btn_stop_profiling.clicked.connect(self._stop_profiling)
+        btn_split.addWidget(self.btn_stop_profiling)
+
         self.plugin_status = QtWidgets.QLabel()
         self.plugin_status.setText(
             '<span style=" font-size:8pt; font-weight:600; color:#ff0000;" >Not Loaded</span>'
@@ -678,9 +687,9 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
     def _configure_logging(self):
         """Open the dynamic logging configuration dialog."""
         try:
-            from .logging_config_dialog import (
+            from .logging_config_dialog import (  # local import to avoid Qt issues during IDA headless start
                 LoggingConfigDialog,
-            )  # local import to avoid Qt issues during IDA headless start
+            )
 
             dlg = LoggingConfigDialog("D810", self.parent)
             dlg.exec_()
@@ -709,6 +718,22 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             '<span style=" font-size:8pt; font-weight:600; color:#FF0000;" >Not Loaded</span>'
         )
         return
+
+    def _start_profiling(self):
+        logger.debug("Calling _start_profiling")
+        if hasattr(self.state, "manager") and self.state.manager:
+            self.state.manager.start_profiling()
+            logger.info("Profiling started.")
+        else:
+            logger.warning("D810 manager not initialized; cannot start profiling.")
+
+    def _stop_profiling(self):
+        logger.debug("Calling _stop_profiling")
+        if hasattr(self.state, "manager") and self.state.manager:
+            self.state.manager.stop_profiling()
+            logger.info("Profiling stopped.")
+        else:
+            logger.warning("D810 manager not initialized; cannot stop profiling.")
 
     def _show_copy_context_menu_preview(self, table, pos):
         """

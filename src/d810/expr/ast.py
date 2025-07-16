@@ -1153,7 +1153,7 @@ def mop_to_ast_internal(
     if root:
         # For instructions, check opcode
         if hasattr(mop, 'd') and hasattr(mop.d, 'opcode'):
-            if mop.d.opcode not in MBA_RELATED_OPCODES:
+            if mop.d.opcode not in MBA_RELATED_OPCODES and not _is_rotate_helper_call(mop.d):
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "Skipping AST build for unsupported root opcode: %s",
@@ -1300,7 +1300,12 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
             return None
 
         # Early filter: unsupported opcodes (not in MBA_RELATED_OPCODES)
-        if instruction.opcode not in MBA_RELATED_OPCODES:
+        # Allow rotate helper calls ("__ROL*" / "__ROR*") even though m_call
+        # is normally filtered out – they can be constant-folded later.
+        if (
+            instruction.opcode not in MBA_RELATED_OPCODES
+            and not _is_rotate_helper_call(instruction)
+        ):
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
                     "Skipping AST build for unsupported opcode: %s @ 0x%x %s",
@@ -1340,3 +1345,26 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
             e,
         )
         return None
+
+# ────────────────────────────────────────────────────────────────────
+# Internal helpers
+# ────────────────────────────────────────────────────────────────────
+
+
+def _is_rotate_helper_call(ins: "ida_hexrays.minsn_t") -> bool:  # noqa: ANN001
+    """Return True if *ins* is a call to one of Hex-Rays' synthetic
+    rotate helpers (__ROL* / __ROR*).
+
+    The folding pass treats those helpers as pure arithmetic, so we
+    want to keep them instead of discarding them as “unsupported”.
+    """
+
+    if ins is None or ins.opcode != ida_hexrays.m_call:
+        return False
+
+    func_mop = getattr(ins, "l", None)
+    if func_mop is None or func_mop.t != ida_hexrays.mop_h:
+        return False
+
+    helper_name: str = func_mop.helper or ""
+    return helper_name.startswith("__ROL") or helper_name.startswith("__ROR")
