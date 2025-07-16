@@ -36,14 +36,14 @@ conf: dict[str, typing.Any] = {
         },
         "z3FileHandler": {
             "class": "logging.FileHandler",
-            "level": "DEBUG",
+            "level": "INFO",
             "formatter": "rawFormatter",
             "filename": None,  # Placeholder, will be set dynamically
         },
     },
     "loggers": {
         "D810": {
-            "level": "DEBUG",
+            "level": "INFO",
             "handlers": ["consoleHandler", "defaultFileHandler"],
             "propagate": False,
         },
@@ -53,7 +53,7 @@ conf: dict[str, typing.Any] = {
             "propagate": False,
         },
         "D810.optimizer": {
-            "level": "INFO",
+            "level": "DEBUG",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },

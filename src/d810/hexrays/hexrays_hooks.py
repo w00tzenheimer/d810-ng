@@ -4,17 +4,14 @@ import logging
 from typing import TYPE_CHECKING
 
 from d810.errors import D810Exception
+from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.expr.z3_utils import log_z3_instructions
 from d810.hexrays.hexrays_formatters import (
     dump_microcode_for_debug,
     format_minsn_t,
     maturity_to_string,
 )
-from d810.hexrays.hexrays_helpers import (
-    MOP_CONSTANT_CACHE,
-    MOP_TO_AST_CACHE,
-    check_ins_mop_size_are_ok,
-)
+from d810.hexrays.hexrays_helpers import check_ins_mop_size_are_ok
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
 
 from ida_hexrays import *

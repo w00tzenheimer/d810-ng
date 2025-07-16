@@ -7,6 +7,8 @@ from typing import Dict, List, Tuple, Union
 
 from d810.errors import AstEvaluationException
 from d810.expr.utils import (
+    MOP_CONSTANT_CACHE,
+    MOP_TO_AST_CACHE,
     get_add_cf,
     get_add_of,
     get_parity_flag,
@@ -23,8 +25,6 @@ from d810.hexrays.hexrays_helpers import (
     AND_TABLE,
     MBA_RELATED_OPCODES,
     MINSN_TO_AST_FORBIDDEN_OPCODES,
-    MOP_CONSTANT_CACHE,
-    MOP_TO_AST_CACHE,
     OPCODES_INFO,
     Z3_SPECIAL_OPERANDS,
     equal_mops_ignore_size,
