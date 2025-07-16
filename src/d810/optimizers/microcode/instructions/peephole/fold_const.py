@@ -15,7 +15,7 @@ from d810.expr.utils import (
     ror4,
     ror8,
 )
-from d810.hexrays.hexrays_formatters import opcode_to_string
+from d810.hexrays.hexrays_formatters import format_mop_t, opcode_to_string
 from d810.hexrays.hexrays_helpers import (  # already maps size→mask
     AND_TABLE,
     OPCODES_INFO,
@@ -27,6 +27,22 @@ from d810.optimizers.microcode.instructions.peephole.handler import (
 import ida_hexrays
 
 peephole_logger = logging.getLogger("D810.optimizer")
+
+# ────────────────────────────────────────────────────────────────────
+# Debug helpers
+# ────────────────────────────────────────────────────────────────────
+
+
+def _mop_to_str(mop: "ida_hexrays.mop_t | None") -> str:  # noqa: ANN001
+    """Return a compact readable string for *mop* suitable for debug logs."""
+
+    if mop is None:
+        return "<None>"
+    try:
+        return format_mop_t(mop)
+    except Exception:  # pragma: no cover – logging helper, be robust
+        # Fall back to dstr() if available, else repr
+        return str(mop.dstr() if hasattr(mop, "dstr") else mop)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -336,18 +352,16 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 return None
 
         bits = ins.d.size * 8 if ins.d.size else 32
-        peephole_logger.debug(
-            "[fold_const] Checking ins: opcode=%s (%s), l=%s, r=%s, d=%s",
-            opcode_to_string(ins.opcode),
-            (
-                "m_ldc"
-                if ins.opcode == ida_hexrays.m_ldc
-                else ("m_mov" if ins.opcode == ida_hexrays.m_mov else "other")
-            ),
-            getattr(ins, "l", None),
-            getattr(ins, "r", None),
-            getattr(ins, "d", None),
-        )
+        if peephole_logger.isEnabledFor(logging.DEBUG):
+            peephole_logger.debug(
+                "[fold_const] Checking ins @0x%X: %s  l=%s  r=%s  d=%s  [dstr=%s]",
+                getattr(ins, "ea", 0),
+                opcode_to_string(ins.opcode),
+                _mop_to_str(getattr(ins, "l", None)),
+                _mop_to_str(getattr(ins, "r", None)),
+                _mop_to_str(getattr(ins, "d", None)),
+                ins.dstr(),
+            )
 
         # Ensure bits is valid and positive
         if bits <= 0:
