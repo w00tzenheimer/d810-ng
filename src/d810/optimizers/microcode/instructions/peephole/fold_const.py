@@ -208,6 +208,15 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
             if val & sign_bit:
                 val |= ~((1 << left_bits) - 1) & mask
             return val & mask
+        if ast.opcode == ida_hexrays.m_xdu:
+            # Zero-extend: just mask the underlying value to the destination size
+            left_bits = (
+                ast.left.dest_size * 8 if getattr(ast.left, "dest_size", None) else bits
+            )
+            val = _eval_subtree(ast.left, left_bits)
+            if val is None:
+                return None
+            return val & _get_mask(bits)
         return None
 
     # binary
