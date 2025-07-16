@@ -1222,6 +1222,26 @@ def mop_to_ast_internal(
         context.mop_key_to_index[key] = new_index
         return tree
 
+    # Special handling for mop_d that wraps an m_ldc as a constant leaf
+    if (
+        mop.t == ida_hexrays.mop_d
+        and mop.d is not None
+        and mop.d.opcode == ida_hexrays.m_ldc
+    ):
+        # Treat an embedded ldc instruction as a constant leaf.
+        ldc_src = mop.d.l
+        if ldc_src is not None and ldc_src.t == ida_hexrays.mop_n:
+            const_val = ldc_src.nnn.value
+            const_size = ldc_src.size
+            tree = AstLeaf(hex(const_val))
+            tree.mop = ldc_src  # keep original constant mop
+            tree.dest_size = const_size
+            new_index = len(context.unique_asts)
+            tree.ast_index = new_index
+            context.unique_asts.append(tree)
+            context.mop_key_to_index[key] = new_index
+            return tree
+
     # Fallback: treat as leaf
     if (
         mop.t != ida_hexrays.mop_d

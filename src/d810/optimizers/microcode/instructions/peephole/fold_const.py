@@ -198,8 +198,19 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     if ast.is_leaf():
         ast = typing.cast(AstLeaf, ast)
         mop = ast.mop
-        if mop and _is_const(mop):
+        if mop is None:
+            return None
+
+        # Plain numeric constant
+        if _is_const(mop):
             return mop.nnn.value & _get_mask(bits)
+
+        # Hex-Rays sometimes represents a literal as a one-instruction
+        # subtree:   mop_d → m_ldc  ( ldc  #value , dst )
+        if mop.t == ida_hexrays.mop_d and mop.d is not None and mop.d.opcode == ida_hexrays.m_ldc:
+            ldc_src = mop.d.l
+            if ldc_src is not None and ldc_src.t == ida_hexrays.mop_n:
+                return ldc_src.nnn.value & _get_mask(bits)
         return None
 
     # unary
