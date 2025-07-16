@@ -23,6 +23,8 @@ from d810.hexrays.hexrays_helpers import (
     AND_TABLE,
     MBA_RELATED_OPCODES,
     MINSN_TO_AST_FORBIDDEN_OPCODES,
+    MOP_CONSTANT_CACHE,
+    MOP_TO_AST_CACHE,
     OPCODES_INFO,
     Z3_SPECIAL_OPERANDS,
     equal_mops_ignore_size,
@@ -31,10 +33,6 @@ from d810.hexrays.hexrays_helpers import (
 import ida_hexrays
 
 logger = logging.getLogger("D810")
-
-
-# A global cache for constant mop_t objects
-MOP_CONSTANT_CACHE = {}
 
 
 def get_constant_mop(value: int, size: int) -> ida_hexrays.mop_t:
@@ -1032,11 +1030,6 @@ class AstProxy(AstBase):
         setitem(key, value)
 
 
-# The cache should be managed in a scope that persists across calls.
-# A global variable is a common way to do this in IDA scripts.
-MOP_TO_AST_CACHE: Dict[tuple, AstBase | None] = {}
-
-
 class AstBuilderContext:
     """
     Manages the state during the recursive construction of an AST.
@@ -1152,8 +1145,10 @@ def mop_to_ast_internal(
     # Early filter at root: only process if supported
     if root:
         # For instructions, check opcode
-        if hasattr(mop, 'd') and hasattr(mop.d, 'opcode'):
-            if mop.d.opcode not in MBA_RELATED_OPCODES and not _is_rotate_helper_call(mop.d):
+        if hasattr(mop, "d") and hasattr(mop.d, "opcode"):
+            if mop.d.opcode not in MBA_RELATED_OPCODES and not _is_rotate_helper_call(
+                mop.d
+            ):
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "Skipping AST build for unsupported root opcode: %s",
@@ -1237,7 +1232,11 @@ def mop_to_ast_internal(
     ):
         tree = AstLeaf(format_mop_t(mop))
         tree.mop = mop
-        dest_size = mop.size if mop.t != ida_hexrays.mop_d else mop.d.d.size if mop.d.d is not None else mop.size
+        dest_size = (
+            mop.size
+            if mop.t != ida_hexrays.mop_d
+            else mop.d.d.size if mop.d.d is not None else mop.size
+        )
         tree.dest_size = dest_size
         new_index = len(context.unique_asts)
         tree.ast_index = new_index
@@ -1295,7 +1294,11 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                     "Skipping AST build for forbidden opcode: %s @ 0x%x %s",
                     opcode_to_string(instruction.opcode),
                     instruction.ea,
-                    ("({0})".format(instruction.dstr()) if instruction.opcode != ida_hexrays.m_jtbl else ""),
+                    (
+                        "({0})".format(instruction.dstr())
+                        if instruction.opcode != ida_hexrays.m_jtbl
+                        else ""
+                    ),
                 )
             return None
 
@@ -1311,7 +1314,11 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                     "Skipping AST build for unsupported opcode: %s @ 0x%x %s",
                     opcode_to_string(instruction.opcode),
                     instruction.ea,
-                    ("({0})".format(instruction.dstr()) if instruction.opcode != ida_hexrays.m_jtbl else ""),
+                    (
+                        "({0})".format(instruction.dstr())
+                        if instruction.opcode != ida_hexrays.m_jtbl
+                        else ""
+                    ),
                 )
             return None
 
@@ -1333,7 +1340,11 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                     "Skipping AST build for unsupported or nop instruction: %s @ 0x%x %s",
                     opcode_to_string(instruction.opcode),
                     instruction.ea,
-                    ("({0})".format(instruction.dstr()) if instruction.opcode != ida_hexrays.m_jtbl else ""),
+                    (
+                        "({0})".format(instruction.dstr())
+                        if instruction.opcode != ida_hexrays.m_jtbl
+                        else ""
+                    ),
                 )
             return None
         tmp.dst_mop = instruction.d
@@ -1345,6 +1356,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
             e,
         )
         return None
+
 
 # ────────────────────────────────────────────────────────────────────
 # Internal helpers

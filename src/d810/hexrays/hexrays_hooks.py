@@ -10,7 +10,11 @@ from d810.hexrays.hexrays_formatters import (
     format_minsn_t,
     maturity_to_string,
 )
-from d810.hexrays.hexrays_helpers import check_ins_mop_size_are_ok
+from d810.hexrays.hexrays_helpers import (
+    MOP_CONSTANT_CACHE,
+    MOP_TO_AST_CACHE,
+    check_ins_mop_size_are_ok,
+)
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
 
 from ida_hexrays import *
@@ -356,4 +360,6 @@ class HexraysDecompilationHook(Hexrays_Hooks):
         main_logger.info("glbopt finished for function at %s", hex(mba.entry_ea))
         self.manager.instruction_optimizer.show_rule_usage_statistic()
         self.manager.block_optimizer.show_rule_usage_statistic()
+        main_logger.info("MOP_CONSTANT_CACHE stats: %s", MOP_CONSTANT_CACHE.stats)
+        main_logger.info("MOP_TO_AST_CACHE stats: %s", MOP_TO_AST_CACHE.stats)
         return 0
