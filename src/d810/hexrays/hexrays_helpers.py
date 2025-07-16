@@ -841,7 +841,7 @@ class CacheImpl(Cache[K, V]):
         weak_keys: bool = False,
         weak_values: bool = False,
         weigher: typing.Callable[[V], float] = lambda _: 1.0,
-        lock: threading.RLock | None = None,
+        lock: "threading.RLock | None" = None,
         raise_overweight: bool = False,
         eviction: Eviction = LRU,
         track_frequency: bool | None = None,
@@ -923,8 +923,10 @@ class CacheImpl(Cache[K, V]):
         if self._removal_listener is not None:
             try:
                 self._removal_listener(link.key, link.value)
-            except Exception:
-                logger.exception("Removal listener raised exception")
+            except Exception as e:
+                logger.exception(
+                    "Removal listener raised exception: %s", e, exc_info=True
+                )
 
         self._size -= 1
         self._weight -= link.weight
