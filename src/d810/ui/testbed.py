@@ -189,10 +189,40 @@ class TestManager:
     def set_stop_on_error(self, stop):
         self._stop_on_error = stop
 
+    def reload_test_modules(self):
+        """
+        Reload all previously imported test modules under the current start_dir.
+        """
+        start_dir = self._start_dir_or_module
+        top_dir = self._top_dir
+        if not start_dir or not top_dir:
+            return
+        # Ensure tests are importable
+        if top_dir not in sys.path:
+            sys.path.insert(0, top_dir)
+        # Compute package name from start_dir relative to top_dir
+        relpath = os.path.relpath(start_dir, top_dir)
+        package_name = relpath.replace(os.sep, ".")
+        # Reload modules matching the test package
+        for module_name, module in list(sys.modules.items()):
+            if module_name == package_name or module_name.startswith(
+                package_name + "."
+            ):
+                try:
+                    importlib.reload(module)
+                    LOGGER.info("Reloaded test module %s", module_name)
+                except Exception:
+                    LOGGER.exception("Failed to reload test module %s", module_name)
+
     def stop_on_error(self):
+        """
+        Return whether to stop on the first error.
+        """
         return self._stop_on_error
 
     def run_tests(self, *tests):
+        # Reload test modules so changes are picked up
+        self.reload_test_modules()
         self._runner.run_tests(*tests)
 
     def iter_all_test_ids(self):
@@ -1008,12 +1038,16 @@ class TestRunnerForm(ida_kernwin.PluginForm):
         main_lay.addWidget(self._status_lbl)
 
         btn_layout = make_minor_horizontal_layout()
+        # Add buttons: Reload Tests, Run Selected, Run All
+        btn_layout.addStretch(1)
+        self._reload_btn = QtWidgets.QPushButton("Reload Tests")
+        self._reload_btn.clicked.connect(self.reload_tests)
+        btn_layout.addWidget(self._reload_btn)
         self._run_selected_btn = QtWidgets.QPushButton("Run Selected")
         self._run_selected_btn.clicked.connect(self._run_view_selected_tests)
+        btn_layout.addWidget(self._run_selected_btn)
         self._run_all_btn = QtWidgets.QPushButton("Run All")
         self._run_all_btn.clicked.connect(self._run_all_tests)
-        btn_layout.addStretch(1)
-        btn_layout.addWidget(self._run_selected_btn)
         btn_layout.addWidget(self._run_all_btn)
         main_lay.addLayout(btn_layout)
 
@@ -1044,6 +1078,8 @@ class TestRunnerForm(ida_kernwin.PluginForm):
     def reload_tests(self):
         self._status_lbl.start_collecting_tests()
         self.repaint_ui()
+        # reload Python test modules themselves before rebuilding the tree
+        self._test_manager.reload_test_modules()
         test_count = self._view.reload()
         self._status_lbl.report_test_count(test_count)
 
