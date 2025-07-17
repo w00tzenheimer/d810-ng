@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import typing
 
+import ida_hexrays
+
 from d810.expr.ast import AstBase, AstLeaf, AstNode, minsn_to_ast, mop_to_ast
 from d810.expr.utils import (
     get_parity_flag,
@@ -23,8 +25,6 @@ from d810.hexrays.hexrays_helpers import (  # already maps size→mask
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
-
-import ida_hexrays
 
 peephole_logger = logging.getLogger("D810.optimizer")
 

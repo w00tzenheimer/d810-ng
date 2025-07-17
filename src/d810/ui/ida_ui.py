@@ -4,20 +4,15 @@ import logging
 import os
 import pathlib
 
-from d810.conf import ProjectConfiguration, RuleConfiguration
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 import ida_kernwin
 import idaapi
 
-logger = logging.getLogger("D810.ui")
+from d810.conf import ProjectConfiguration, RuleConfiguration
+from d810.ui.testbed import TestRunnerForm
 
-# Test-runner integration
-try:
-    from d810.ui.testbed import TestRunnerForm
-except ModuleNotFoundError:  # pragma: no cover – tests package may not exist yet
-    IDATestRunner = None  # type: ignore
-    TestRunnerForm = None  # type: ignore
+logger = logging.getLogger("D810.ui")
 
 
 class PluginConfigurationFileForm_t(QtWidgets.QDialog):
@@ -405,7 +400,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.shown = False
         self.created = False
         self.parent = None
-        self.test_runner = None
+        self.test_runner: TestRunnerForm | None = None
 
     def OnClose(self, form):
         logger.debug("Calling OnClose")
