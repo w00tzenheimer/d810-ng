@@ -21,6 +21,7 @@ from d810.expr.utils import (
 from d810.hexrays.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,
+    mop_type_to_string,
     opcode_to_string,
 )
 from d810.hexrays.hexrays_helpers import (
@@ -852,10 +853,11 @@ class AstLeaf(AstBase):
         else:
             return ["N"] * (2 ** (depth - 1))
 
+    @typing.override
     def __str__(self):
         try:
             if self.is_constant() and self.mop is not None:
-                return "{0}".format(self.mop.nnn)
+                return "{0}".format(hex(self.mop.nnn.value))
             if self.z3_var_name is not None:
                 return self.z3_var_name
             if self.ast_index is not None:
@@ -904,6 +906,7 @@ class AstConstant(AstLeaf):
         else:
             return ["N"] * (2 ** (depth - 1))
 
+    @typing.override
     def __str__(self):
         try:
             if self.mop is not None and self.mop.t == ida_hexrays.mop_n:
@@ -1187,6 +1190,7 @@ def mop_to_ast_internal(
 
     # Special handling for rotate calls
     if mop.t == ida_hexrays.mop_d and _is_rotate_helper_call(mop.d):
+        # Layout A: classic helper – arguments are in an mop_f list
         if mop.d.r.t == ida_hexrays.mop_f:
             args = mop.d.r.f.args
             if len(args) == 2 and args[0] is not None and args[1] is not None:
@@ -1201,6 +1205,26 @@ def mop_to_ast_internal(
                 tree.ast_index = new_index
                 context.unique_asts.append(tree)
                 context.mop_key_to_index[key] = new_index
+                return tree
+        # Layout B: compact helper – r is value, d is shift amount
+        elif mop.d.r is not None and mop.d.d is not None:
+            value_ast = mop_to_ast_internal(mop.d.r, context)
+            shift_ast = mop_to_ast_internal(mop.d.d, context)
+            if value_ast is not None and shift_ast is not None:
+                tree = AstNode(ida_hexrays.m_call, value_ast, shift_ast)
+                tree.func_name = mop.d.l.helper
+                tree.mop = mop
+                tree.dest_size = mop.size
+                tree.ea = mop.d.ea
+                new_index = len(context.unique_asts)
+                tree.ast_index = new_index
+                context.unique_asts.append(tree)
+                context.mop_key_to_index[key] = new_index
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "[mop_to_ast_internal] Built compact rotate helper node for ea=0x%X",
+                        mop.d.ea if hasattr(mop.d, "ea") else -1,
+                    )
                 return tree
 
     # NEW: collapse helper calls that directly yield a constant (dest is constant)
@@ -1324,7 +1348,7 @@ def mop_to_ast_internal(
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "[mop_to_ast_internal] Fallback to AstLeaf for mop type %s dstr=%s",
-                mop.t,
+                mop_type_to_string(mop.t),
                 str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
             )
         tree.mop = mop
@@ -1452,6 +1476,21 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                 leaf.freeze()
                 return AstProxy(leaf)
 
+        # Transparent-call shortcut: no args, computation stored in destination mop_d
+        if (
+            instruction.opcode == ida_hexrays.m_call
+            and (instruction.r is None or instruction.r.t == ida_hexrays.mop_z)
+            and instruction.d is not None
+            and instruction.d.t == ida_hexrays.mop_d
+        ):
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "[minsn_to_ast] Unwrapping call with empty args; using destination expression for AST",
+                )
+            dest_ast = mop_to_ast(instruction.d)
+            if dest_ast is not None:
+                return dest_ast
+
         ins_mop = ida_hexrays.mop_t()
         ins_mop.create_from_insn(instruction)
 
@@ -1475,6 +1514,20 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
             ):
                 lhs_ast = mop_to_ast(instruction.r.f.args[0])
                 rhs_ast = mop_to_ast(instruction.r.f.args[1])
+                if lhs_ast is not None and rhs_ast is not None:
+                    node = AstNode(ida_hexrays.m_call, lhs_ast, rhs_ast)
+                    node.func_name = instruction.l.helper
+                    node.dest_size = instruction.d.size
+                    node.ea = instruction.ea
+                    return AstProxy(node)
+            # Layout B: compact (r=value, d=shift)
+            elif (
+                instruction.r is not None
+                and instruction.d is not None
+                and instruction.r.t != ida_hexrays.mop_z
+            ):
+                lhs_ast = mop_to_ast(instruction.r)
+                rhs_ast = mop_to_ast(instruction.d)
                 if lhs_ast is not None and rhs_ast is not None:
                     node = AstNode(ida_hexrays.m_call, lhs_ast, rhs_ast)
                     node.func_name = instruction.l.helper
@@ -1505,11 +1558,6 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
             e,
         )
         return None
-
-
-# ────────────────────────────────────────────────────────────────────
-# Internal helpers
-# ────────────────────────────────────────────────────────────────────
 
 
 def _is_rotate_helper_call(ins: ida_hexrays.minsn_t) -> bool:
