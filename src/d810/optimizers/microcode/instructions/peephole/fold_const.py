@@ -244,25 +244,28 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
             return (-val) & _get_mask(bits)
         if ast.opcode == ida_hexrays.m_bnot:
             return (~val) & _get_mask(bits)
-        if ast.opcode == ida_hexrays.m_xds:
-            left_bits = ast.left.dest_size * 8
-            val = _eval_subtree(ast.left, left_bits)
-            if val is None:
-                return None
-            mask = _get_mask(bits)
-            sign_bit = 1 << (left_bits - 1)
-            if val & sign_bit:
-                val |= ~((1 << left_bits) - 1) & mask
-            return val & mask
-        if ast.opcode == ida_hexrays.m_xdu:
-            # Zero-extend: just mask the underlying value to the destination size
-            left_bits = (
-                ast.left.dest_size * 8 if getattr(ast.left, "dest_size", None) else bits
-            )
-            val = _eval_subtree(ast.left, left_bits)
-            if val is None:
-                return None
-            return val & _get_mask(bits)
+        if ast.left and ast.left.dest_size:
+            if ast.opcode == ida_hexrays.m_xds:
+                left_bits = ast.left.dest_size * 8
+                val = _eval_subtree(ast.left, left_bits)
+                if val is None:
+                    return None
+                mask = _get_mask(bits)
+                sign_bit = 1 << (left_bits - 1)
+                if val & sign_bit:
+                    val |= ~((1 << left_bits) - 1) & mask
+                return val & mask
+            if ast.opcode == ida_hexrays.m_xdu:
+                # Zero-extend: just mask the underlying value to the destination size
+                left_bits = (
+                    ast.left.dest_size * 8
+                    if getattr(ast.left, "dest_size", None)
+                    else bits
+                )
+                val = _eval_subtree(ast.left, left_bits)
+                if val is None:
+                    return None
+                return val & _get_mask(bits)
         return None
 
     # binary
@@ -279,16 +282,22 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
 
     # special handling for rotate calls
     if ast.opcode == ida_hexrays.m_call and ast.func_name:
+        if peephole_logger.isEnabledFor(logging.DEBUG):
+            peephole_logger.debug(
+                "[_eval_subtree] opcode == mcall, func_name: %s",
+                ast.func_name,
+            )
+        helper_name = ast.func_name.lstrip("!")
         mask = (1 << bits) - 1
         shift = r % bits
-        if ast.func_name.startswith("__ROL"):
+        if helper_name.startswith("__ROL"):
             return ((l << shift) | (l >> (bits - shift))) & mask
-        elif ast.func_name.startswith("__ROR"):
+        elif helper_name.startswith("__ROR"):
             return ((l >> shift) | (l << (bits - shift))) & mask
         # if needed, handle specific widths or other variants
         peephole_logger.error(
             "Unknown width for rotate call: %s with args: %s %s and bits: %s",
-            ast.func_name,
+            helper_name,
             l,
             r,
             bits,

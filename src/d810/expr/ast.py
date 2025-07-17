@@ -1520,17 +1520,24 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                     node.dest_size = instruction.d.size
                     node.ea = instruction.ea
                     return AstProxy(node)
-            # Layout B: compact (r=value, d=shift)
-            elif (
-                instruction.r is not None
-                and instruction.d is not None
-                and instruction.r.t != ida_hexrays.mop_z
-            ):
-                lhs_ast = mop_to_ast(instruction.r)
-                rhs_ast = mop_to_ast(instruction.d)
+            # Layout B: compact forms
+            else:
+                lhs_ast = rhs_ast = None
+                if (
+                    instruction.r is not None
+                    and instruction.r.t == ida_hexrays.mop_f
+                    and instruction.r.f is not None
+                    and len(instruction.r.f.args) >= 2
+                ):
+                    lhs_ast = mop_to_ast(instruction.r.f.args[0])
+                    rhs_ast = mop_to_ast(instruction.r.f.args[1])
+                elif instruction.r is not None and instruction.d is not None:
+                    lhs_ast = mop_to_ast(instruction.r)
+                    rhs_ast = mop_to_ast(instruction.d)
+
                 if lhs_ast is not None and rhs_ast is not None:
                     node = AstNode(ida_hexrays.m_call, lhs_ast, rhs_ast)
-                    node.func_name = instruction.l.helper
+                    node.func_name = (instruction.l.helper or "").lstrip("!")
                     node.dest_size = instruction.d.size
                     node.ea = instruction.ea
                     return AstProxy(node)
