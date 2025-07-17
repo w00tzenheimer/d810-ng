@@ -1186,35 +1186,69 @@ def mop_to_ast_internal(
         return context.unique_asts[existing_index]
 
     # Special handling for rotate calls
+    if mop.t == ida_hexrays.mop_d and _is_rotate_helper_call(mop.d):
+        if mop.d.r.t == ida_hexrays.mop_f:
+            args = mop.d.r.f.args
+            if len(args) == 2 and args[0] is not None and args[1] is not None:
+                value_ast = mop_to_ast_internal(args[0], context)
+                shift_ast = mop_to_ast_internal(args[1], context)
+                tree = AstNode(ida_hexrays.m_call, value_ast, shift_ast)
+                tree.func_name = mop.d.l.helper
+                tree.mop = mop
+                tree.dest_size = mop.size
+                tree.ea = mop.d.ea
+                new_index = len(context.unique_asts)
+                tree.ast_index = new_index
+                context.unique_asts.append(tree)
+                context.mop_key_to_index[key] = new_index
+                return tree
+
+    # NEW: collapse helper calls that directly yield a constant (dest is constant)
     if mop.t == ida_hexrays.mop_d and mop.d.opcode == ida_hexrays.m_call:
-        func_mop = mop.d.l
-        if func_mop.t == ida_hexrays.mop_h:
-            helper_name_norm = (func_mop.helper or "").lstrip("!")
-            if helper_name_norm.startswith("__ROL") or helper_name_norm.startswith("__ROR"):
-                if mop.d.r.t == ida_hexrays.mop_f:
-                    args = mop.d.r.f.args
-                    if len(args) == 2 and args[0] is not None and args[1] is not None:
-                        value_ast = mop_to_ast_internal(args[0], context)
-                        shift_ast = mop_to_ast_internal(args[1], context)
-                        tree = AstNode(ida_hexrays.m_call, value_ast, shift_ast)
-                        tree.func_name = helper_name_norm
-                        tree.mop = mop
-                        tree.dest_size = mop.size
-                        tree.ea = mop.d.ea
-                        new_index = len(context.unique_asts)
-                        tree.ast_index = new_index
-                        context.unique_asts.append(tree)
-                        context.mop_key_to_index[key] = new_index
-                        return tree
+        dest_mop = mop.d.d
+        const_mop = None
+        if dest_mop is not None:
+            if dest_mop.t == ida_hexrays.mop_n:
+                const_mop = dest_mop
+            elif (
+                dest_mop.t == ida_hexrays.mop_d
+                and dest_mop.d is not None
+                and dest_mop.d.opcode == ida_hexrays.m_ldc
+                and dest_mop.d.l is not None
+                and dest_mop.d.l.t == ida_hexrays.mop_n
+            ):
+                const_mop = dest_mop.d.l
+
+        if const_mop is not None:
+            const_val = const_mop.nnn.value
+            const_size = const_mop.size
+            tree = AstConstant(hex(const_val), const_val, const_size)
+            tree.mop = const_mop
+            tree.dest_size = const_size
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "[mop_to_ast_internal] Collapsed call-with-constant to leaf 0x%X (size=%d)",
+                    const_val,
+                    const_size,
+                )
+            new_index = len(context.unique_asts)
+            tree.ast_index = new_index
+            context.unique_asts.append(tree)
+            context.mop_key_to_index[key] = new_index
+            return tree
 
     # NEW: Build AST nodes for MBA-related opcodes (binary or unary)
     if mop.t == ida_hexrays.mop_d and mop.d.opcode in MBA_RELATED_OPCODES:
         nb_ops = OPCODES_INFO[mop.d.opcode]["nb_operands"]
 
         # Gather children ASTs based on operand count
-        left_ast = mop_to_ast_internal(mop.d.l, context) if mop.d.l is not None else None
+        left_ast = (
+            mop_to_ast_internal(mop.d.l, context) if mop.d.l is not None else None
+        )
         right_ast = (
-            mop_to_ast_internal(mop.d.r, context) if (nb_ops >= 2 and mop.d.r is not None) else None
+            mop_to_ast_internal(mop.d.r, context)
+            if (nb_ops >= 2 and mop.d.r is not None)
+            else None
         )
 
         # Require at least the mandatory operands; if missing, fall back to leaf
@@ -1227,7 +1261,9 @@ def mop_to_ast_internal(
                 )
         else:
             # Only use dst_ast if destination present (ternary ops like m_stx etc.)
-            dst_ast = mop_to_ast_internal(mop.d.d, context) if mop.d.d is not None else None
+            dst_ast = (
+                mop_to_ast_internal(mop.d.d, context) if mop.d.d is not None else None
+            )
             tree = AstNode(mop.d.opcode, left_ast, right_ast, dst_ast)
 
             # Set dest_size robustly
@@ -1367,7 +1403,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
         # is normally filtered out – they can be constant-folded later.
         if (
             instruction.opcode not in MBA_RELATED_OPCODES
-            and not _is_rotate_helper_call_minsn(instruction)
+            and not _is_rotate_helper_call(instruction)
         ):
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -1383,21 +1419,38 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
             return None
 
         # NEW: Shortcut – treat helper call whose result is already a literal as a constant leaf
-        if (
-            instruction.opcode == ida_hexrays.m_call
-            and instruction.d is not None
-            and instruction.d.t == ida_hexrays.mop_n
-        ):
-            # Build a constant AstLeaf directly from the destination mop
-            const_value = instruction.d.nnn.value
-            const_size = instruction.d.size
-            leaf = AstLeaf(hex(const_value))
-            leaf.mop = instruction.d  # preserve original constant mop
-            leaf.dest_size = const_size
-            leaf.ea = instruction.ea
-            # Freeze since it will be reused via proxy
-            leaf.freeze()
-            return AstProxy(leaf)
+        if instruction.opcode == ida_hexrays.m_call and instruction.d is not None:
+            dest_mop = instruction.d
+            const_mop = None
+
+            # Direct constant result
+            if dest_mop.t == ida_hexrays.mop_n:
+                const_mop = dest_mop
+            # Or destination is an ldc wrapping a constant
+            elif (
+                dest_mop.t == ida_hexrays.mop_d
+                and dest_mop.d is not None
+                and dest_mop.d.opcode == ida_hexrays.m_ldc
+                and dest_mop.d.l is not None
+                and dest_mop.d.l.t == ida_hexrays.mop_n
+            ):
+                const_mop = dest_mop.d.l
+
+            if const_mop is not None:
+                const_value = const_mop.nnn.value
+                const_size = const_mop.size
+                leaf = AstLeaf(hex(const_value))
+                leaf.mop = const_mop  # preserve original constant mop
+                leaf.dest_size = const_size
+                leaf.ea = instruction.ea
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "[minsn_to_ast] Collapsed call with constant destination to leaf 0x%X (size=%d)",
+                        const_value,
+                        const_size,
+                    )
+                leaf.freeze()
+                return AstProxy(leaf)
 
         ins_mop = ida_hexrays.mop_t()
         ins_mop.create_from_insn(instruction)
@@ -1413,7 +1466,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
         # 2. Also update `_is_rotate_helper_call()` in `expr/ast.py` to accept the
         # `ins.r.f` variant (arguments in the minsn, not in mop.d.r).
         # Handle helper-call rotate when the minsn itself is the call
-        if _is_rotate_helper_call_minsn(instruction):
+        if _is_rotate_helper_call(instruction):
             if (
                 instruction.r is not None
                 and instruction.r.t == ida_hexrays.mop_f
@@ -1459,7 +1512,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
 # ────────────────────────────────────────────────────────────────────
 
 
-def _is_rotate_helper_call(ins: "ida_hexrays.minsn_t") -> bool:  # noqa: ANN001
+def _is_rotate_helper_call(ins: ida_hexrays.minsn_t) -> bool:
     """Return True if *ins* is a call to one of Hex-Rays' synthetic
     rotate helpers (__ROL* / __ROR*).
 
@@ -1470,27 +1523,9 @@ def _is_rotate_helper_call(ins: "ida_hexrays.minsn_t") -> bool:  # noqa: ANN001
     if ins is None or ins.opcode != ida_hexrays.m_call:
         return False
 
-    func_mop = getattr(ins, "l", None)
+    func_mop = ins.l
     if func_mop is None or func_mop.t != ida_hexrays.mop_h:
         return False
 
     helper_name: str = func_mop.helper or ""
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug("Helper name: %s", helper_name)
-    helper_name = helper_name.lstrip("!")  # Hex-Rays may prefix helpers with '!'
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug("Helper name after stripping: %s", helper_name)
     return helper_name.startswith("__ROL") or helper_name.startswith("__ROR")
-
-
-def _is_rotate_helper_call_minsn(ins: ida_hexrays.minsn_t) -> bool:
-    if ins.opcode != ida_hexrays.m_call:
-        return False
-    if ins.l is None or ins.l.t != ida_hexrays.mop_h:
-        return False
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug("Helper name: %s", ins.l.helper)
-    name = (ins.l.helper or "").lstrip("!")
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug("Helper name after stripping: %s", name)
-    return name.startswith("__ROL") or name.startswith("__ROR")
