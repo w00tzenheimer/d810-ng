@@ -193,12 +193,16 @@ def _fold(op, a, b, bits):
 def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     """returns an int if subtree is constant, else None"""
     if ast is None:
+        if peephole_logger.isEnabledFor(logging.DEBUG):
+            peephole_logger.debug("[_eval_subtree] ast is None – cannot evaluate")
         return None
 
     if ast.is_leaf():
         ast = typing.cast(AstLeaf, ast)
         mop = ast.mop
         if mop is None:
+            if peephole_logger.isEnabledFor(logging.DEBUG):
+                peephole_logger.debug("[_eval_subtree] Leaf with no mop: %s", ast)
             return None
 
         # Plain numeric constant
@@ -265,6 +269,12 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     l = _eval_subtree(ast.left, bits)  # type: ignore
     r = _eval_subtree(ast.right, bits)  # type: ignore
     if l is None or r is None:
+        if peephole_logger.isEnabledFor(logging.DEBUG):
+            peephole_logger.debug(
+                "[_eval_subtree] Cannot evaluate binary node (%s) because %s is None",
+                opcode_to_string(ast.opcode),
+                "left" if l is None else "right",
+            )
         return None
 
     # special handling for rotate calls
