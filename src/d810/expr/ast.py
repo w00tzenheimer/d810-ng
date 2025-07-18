@@ -1244,7 +1244,7 @@ def mop_to_ast_internal(
                 const_mop = dest_mop.d.l
 
         if const_mop and const_mop.nnn:
-            const_val = const_mop.nnn.value
+            const_val = int(const_mop.nnn.value)
             assert const_val is not None
             const_size = const_mop.size
             tree = AstConstant(hex(const_val), const_val, const_size)
@@ -1326,7 +1326,7 @@ def mop_to_ast_internal(
         # Treat an embedded ldc instruction as a constant leaf.
         ldc_src = mop.d.l
         if ldc_src is not None and ldc_src.t == ida_hexrays.mop_n:
-            const_val = ldc_src.nnn.value
+            const_val = int(ldc_src.nnn.value)
             const_size = ldc_src.size
             tree = AstConstant(hex(const_val), const_val, const_size)
             tree.mop = ldc_src  # keep original constant mop
@@ -1348,7 +1348,7 @@ def mop_to_ast_internal(
     ):
         tree: AstLeaf | AstConstant
         if mop.t == ida_hexrays.mop_n:
-            const_val = mop.nnn.value
+            const_val = int(mop.nnn.value)
             const_size = mop.size
             tree = AstConstant(hex(const_val), const_val, const_size)
             tree.dest_size = const_size
@@ -1375,7 +1375,7 @@ def mop_to_ast_internal(
                     and args[0] is not None
                     and args[0].t == ida_hexrays.mop_n
                 ):
-                    const_val = args[0].nnn.value
+                    const_val = int(args[0].nnn.value)
                     const_size = mop.size or args[0].size
 
             if const_val is not None and const_size is not None:
@@ -1405,7 +1405,12 @@ def mop_to_ast_internal(
                 )
             tree.dest_size = mop.size
 
-        tree.mop = mop
+        # Preserve previously assigned mop (e.g., inner numeric mop) unless
+        # it is still unset.  This prevents clobbering the constant `mop_n`
+        # we stored above with the wrapper operand, which would break
+        # constant detection later in the pipeline.
+        if getattr(tree, "mop", None) is None:
+            tree.mop = mop
         dest_size = (
             mop.size
             if mop.t != ida_hexrays.mop_d
@@ -1515,7 +1520,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                 const_mop = dest_mop.d.l
 
             if const_mop is not None:
-                const_value = const_mop.nnn.value
+                const_value = int(const_mop.nnn.value)
                 const_size = const_mop.size
                 leaf = AstLeaf(hex(const_value))
                 leaf.mop = const_mop  # preserve original constant mop
