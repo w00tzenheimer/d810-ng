@@ -128,7 +128,7 @@ def _fold_const_in_mop(mop: ida_hexrays.mop_t, bits: int) -> bool:
         if val is not None:
             cst = ida_hexrays.mop_t()
             cst.make_number(val, ins.d.size)
-            mop.copy(cst) 
+            mop.copy(cst)  # type: ignore[attr-defined]
             changed = True
 
     return changed

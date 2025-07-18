@@ -1345,12 +1345,34 @@ def mop_to_ast_internal(
         or mop.d.l is None
         or mop.d.r is None
     ):
-        tree: AstLeaf
+        tree: AstLeaf | AstConstant
         if mop.t == ida_hexrays.mop_n:
             const_val = mop.nnn.value
             const_size = mop.size
             tree = AstConstant(hex(const_val), const_val, const_size)
             tree.dest_size = const_size
+        elif mop.t == ida_hexrays.mop_f and getattr(mop, "f", None):
+            # Pattern: typed immediate wrapper like <fast:_DWORD #0xDEADBEEF.4,char #4.1>.4
+            args = mop.f.args
+            if (
+                args
+                and len(args) >= 1
+                and args[0] is not None
+                and args[0].t == ida_hexrays.mop_n
+            ):
+                const_val = args[0].nnn.value
+                const_size = mop.size or args[0].size
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "[mop_to_ast_internal] Extracted constant 0x%X (size=%d) from mop_f wrapper",
+                        const_val,
+                        const_size,
+                    )
+                tree = AstConstant(hex(const_val), const_val, const_size)
+                tree.dest_size = const_size
+            else:
+                tree = AstLeaf(format_mop_t(mop))
+                tree.dest_size = mop.size
         else:
             tree = AstLeaf(format_mop_t(mop))
             if logger.isEnabledFor(logging.DEBUG):
@@ -1511,46 +1533,6 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
         #     tmp.ea = instruction.ea
         #     tmp.dst_mop = instruction.d
         #     return tmp
-
-        # 2. Also update `_is_rotate_helper_call()` in `expr/ast.py` to accept the
-        # `ins.r.f` variant (arguments in the minsn, not in mop.d.r).
-        # Handle helper-call rotate when the minsn itself is the call
-        if _is_rotate_helper_call(instruction):
-            if (
-                instruction.r is not None
-                and instruction.r.t == ida_hexrays.mop_f
-                and instruction.r.f is not None
-                and len(instruction.r.f.args) >= 2
-            ):
-                lhs_ast = mop_to_ast(instruction.r.f.args[0])
-                rhs_ast = mop_to_ast(instruction.r.f.args[1])
-                if lhs_ast is not None and rhs_ast is not None:
-                    node = AstNode(ida_hexrays.m_call, lhs_ast, rhs_ast)
-                    node.func_name = instruction.l.helper
-                    node.dest_size = instruction.d.size
-                    node.ea = instruction.ea
-                    return AstProxy(node)
-            # Layout B: compact forms
-            else:
-                lhs_ast = rhs_ast = None
-                if (
-                    instruction.r is not None
-                    and instruction.r.t == ida_hexrays.mop_f
-                    and instruction.r.f is not None
-                    and len(instruction.r.f.args) >= 2
-                ):
-                    lhs_ast = mop_to_ast(instruction.r.f.args[0])
-                    rhs_ast = mop_to_ast(instruction.r.f.args[1])
-                elif instruction.r is not None and instruction.d is not None:
-                    lhs_ast = mop_to_ast(instruction.r)
-                    rhs_ast = mop_to_ast(instruction.d)
-
-                if lhs_ast is not None and rhs_ast is not None:
-                    node = AstNode(ida_hexrays.m_call, lhs_ast, rhs_ast)
-                    node.func_name = (instruction.l.helper or "").lstrip("!")
-                    node.dest_size = instruction.d.size
-                    node.ea = instruction.ea
-                    return AstProxy(node)
 
         tmp = mop_to_ast(ins_mop)
         if tmp is None:
