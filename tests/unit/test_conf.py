@@ -87,6 +87,52 @@ class TestConfiguration(unittest.TestCase):
             app_config.set("new_key", "new_value")
             self.assertEqual(app_config.get("new_key"), "new_value")
 
+    def test_discover_projects(self):
+        """Test project discovery, including user overrides and ignoring options.json."""
+        with temp_ida_dir() as ida_dir:
+            with load_conf_classes() as (D810Configuration, ProjectConfiguration, _):
+                # 1. Setup a user directory with a new project and an overriding project
+                user_conf_dir = Path(ida_dir) / "cfg" / "d810"
+                user_conf_dir.mkdir(parents=True, exist_ok=True)
+
+                # This project is unique to the user directory
+                (user_conf_dir / "my_user_project.json").write_text(
+                    '{"description": "My User Project"}'
+                )
+
+                # This project overrides a built-in template
+                (user_conf_dir / "hodur_deobfuscation.json").write_text(
+                    '{"description": "User Override for Hodur"}'
+                )
+
+                # 2. Run discovery
+                config = D810Configuration()
+                projects = config.discover_projects()
+
+                # 3. Verify results
+                project_map = {p.path.name: p for p in projects}
+
+                # Check that options.json is NOT treated as a project
+                self.assertNotIn("options.json", project_map)
+
+                # Check that the user's new project is found
+                self.assertIn("my_user_project.json", project_map)
+                self.assertEqual(project_map["my_user_project.json"].description, "My User Project")
+
+                # Check that the user's overriding project is used
+                self.assertIn("hodur_deobfuscation.json", project_map)
+                self.assertEqual(project_map["hodur_deobfuscation.json"].description, "User Override for Hodur")
+
+                # Check that a built-in project that was NOT overridden is still loaded
+                self.assertIn("default_instruction_only.json", project_map)
+
+                # Check that the list of configurations was saved back to options.json
+                config.save()
+                reloaded_config = D810Configuration(config.config_file)
+                saved_configs = reloaded_config.get("configurations")
+                self.assertIn("my_user_project.json", saved_configs)
+                self.assertIn("hodur_deobfuscation.json", saved_configs)
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

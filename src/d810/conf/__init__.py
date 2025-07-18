@@ -203,6 +203,39 @@ class D810Configuration:
         except IOError as e:
             logging.error("Failed to save configuration to %s: %s", self.config_file, e)
 
+    def discover_projects(self) -> list[ProjectConfiguration]:
+        """
+        Discover and load all project configurations from user and plugin directories.
+        """
+        user_dir = self.config_dir
+        # The plugin's conf directory is relative to this file's location.
+        plugin_dir = Path(__file__).resolve().parent
+
+        user_configs = {p for p in user_dir.glob("*.json") if p.name != ConfigConstants.OPTIONS_FILENAME} if user_dir.exists() else set()
+        plugin_configs = {p for p in plugin_dir.glob("*.json") if p.name != ConfigConstants.OPTIONS_FILENAME}
+
+        # User configs override plugin configs with the same name.
+        # Create a dictionary of name -> path to handle overrides.
+        config_paths = {p.name: p for p in plugin_configs}
+        config_paths.update({p.name: p for p in user_configs})
+
+        projects = []
+        # The list of configuration names should be persisted for the UI.
+        cfg_names = sorted(config_paths.keys())
+        self.set("configurations", cfg_names)
+        self.save()
+
+        for name in cfg_names:
+            path = config_paths[name]
+            try:
+                project = ProjectConfiguration.from_file(path)
+                projects.append(project)
+            except Exception as e:
+                logging.error("Failed to load project config %s: %s", path, e)
+                continue
+        
+        return projects
+
     @property
     def config_dir(self) -> Path:
         """Return the directory in the user profile that stores editable D-810 configuration files.

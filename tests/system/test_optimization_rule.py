@@ -1,8 +1,8 @@
 import unittest
 
-from d810.optimizers.microcode.handler import OptimizationRule
-
 import ida_hexrays
+
+from d810.optimizers.microcode.handler import OptimizationRule
 
 
 class TestOptimizationRule(unittest.TestCase):

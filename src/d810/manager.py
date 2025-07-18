@@ -6,7 +6,7 @@ import threading
 import typing
 
 import pyinstrument
-from d810.conf import D810Configuration, ProjectConfiguration
+from d810.conf import ConfigConstants, D810Configuration, ProjectConfiguration
 from d810.conf.loggers import clear_logs, configure_loggers
 from d810.hexrays.hexrays_hooks import (
     BlockOptimizerManager,
@@ -199,32 +199,13 @@ class D810State:
         return pathlib.Path(__file__).resolve().parent / "conf" / cfg_name
 
     def register_default_projects(self):
-        # Ensure the configuration list exists and is iterable. When the option
-        # is absent (None) or malformed, default to an empty list and persist
-        # the fix so future accesses (e.g. add_project) succeed without extra
-        # guards.
-        cfg_names = self.d810_config.get("configurations") or []
-        if not isinstance(cfg_names, list):
-            logger.warning(
-                "Unexpected type for 'configurations' option (%s); resetting to empty list.",
-                type(cfg_names).__name__,
-            )
-            cfg_names = []
-        # Persist the sanitized list back to configuration so later .get() calls
-        # always return a proper list and ensure durability across sessions.
-        self.d810_config.set("configurations", cfg_names)
-        self.d810_config.save()
-
-        self.projects = []
-        for cfg_name in cfg_names:
-            cfg_path = self._resolve_config_path(cfg_name)
-            try:
-                project_configuration = ProjectConfiguration.from_file(cfg_path)
-            except Exception as e:
-                logger.error("Failed to load project config %s: %s", cfg_path, e)
-                continue
-            self.projects.append(project_configuration)
-
+        """
+        Discover and register project configurations by scanning for JSON files
+        in both the user's configuration directory and the plugin's built-in
+        template directory. This ensures that newly added files are
+        automatically detected.
+        """
+        self.projects = self.d810_config.discover_projects()
         logger.debug("Rule configurations loaded: %s", self.projects)
 
     def add_project(self, config: ProjectConfiguration):
