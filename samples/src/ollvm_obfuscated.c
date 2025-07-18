@@ -1,10 +1,18 @@
-#include <stdio.h>
-#include <sys/time.h>
-#include <string.h>
 int x, y;
 
+struct timeval {
+   long tv_sec ;
+   int tv_usec ;
+};
 
+typedef unsigned long size_t;
 
+extern int gettimeofday(struct timeval *tv , void *tz ) ;
+extern int printf(char const   *format  , ...) ;
+extern int scanf(char const   *format  , ...) ;
+extern int strncmp(char const   *s1 , char const   *s2 , unsigned int maxlen ) ;
+extern int memcpy(void *dest, const void *src, size_t n);
+extern void *memset(void *dest, int c, size_t n);
 
 
 void test_function_ollvm_fla_bcf_sub(unsigned int *input, unsigned int *output)
