@@ -384,7 +384,7 @@ __int64 __fastcall sub_180001000(
                  - 0x63F55234)
                 ^ 0x39FBAC8C,
                   0x13);
-        sub_18000D1E0(0x30, 0x63, 0x4D, (v44 - 0x6976D47F) ^ 0x10262F9D, v31 + 0x58);
+        _InterlockedExchange(0x30, 0x63, 0x4D, (v44 - 0x6976D47F) ^ 0x10262F9D, v31 + 0x58);
         v8 = (__ROL8__(
                   (__ROL8__(
                        (((v1014 ^ v1805) + 0x61BBE9D7149134B0LL) ^ 0xDFEE542C76A7AAF0uLL)
@@ -395,7 +395,7 @@ __int64 __fastcall sub_180001000(
                   0xE)
             + 0x7D019B7AE2EB4B6FLL)
            ^ 0x2EFFBB12A651F46CLL;
-        sub_18000D1E0(
+        _InterlockedExchange(
             0x37,
             0xF,
             1,
@@ -2724,15 +2724,27 @@ unsigned __int32 dword_1802D2E48 = 0x88A8C6E5;
 unsigned __int32 dword_1802D2DBC = 0xF4C84FC4;
 
 
-extern int *sub_18000D580(int, int, int, unsigned int *);
-extern int *sub_1801014B0(unsigned int *);
-extern int sub_18000D1E0(int, int, int, int, int);
+extern void _InterlockedExchangeW(int, int, int, int, int);
 
 
-__int64 sub_180001000(
-        int n0x1C,
-        int n0xC,
-        int n0x19,
+// outlined function 1
+__int64 sub_18000D580(__int64 a1, __int64 a2, __int64 a3, unsigned int *a4)
+{
+    return *a4;
+}
+
+// outlined function 2
+__int64 sub_1801014B0(_DWORD *a1)
+{
+    __int64 result = (unsigned int)(__ROL4__(__ROL4__(*a1, 0x1E) + 0x709572C9, 9) + 0x6B177BA5);
+    *a1 = result;
+    return result;
+}
+
+__int64 AntiDebug_ExceptionFilter(
+        int unused1,
+        int unused2,
+        int unused3,
         struct _EXCEPTION_POINTERS *exception)
 {
     __int64 n2_1; // rax
@@ -4841,7 +4853,7 @@ __int64 sub_180001000(
                 break;
 
             case 0x12Au:
-                sub_18000D1E0(0x30, 0x63, 0x4D, v89, v365 + 0x58);
+                _InterlockedExchange(0x30, 0x63, 0x4D, v89, v365 + 0x58);
                 n2 = 0x12B;
                 break;
 
@@ -5024,7 +5036,7 @@ __int64 sub_180001000(
                 break;
 
             case 0x14Au:
-                sub_18000D1E0(0x37, 0xF, 1, v92, v399 + 0x8C);
+                _InterlockedExchange(0x37, 0xF, 1, v92, v399 + 0x8C);
                 n2 = 1;
                 break;
 
