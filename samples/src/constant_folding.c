@@ -384,7 +384,7 @@ __int64 __fastcall sub_180001000(
                  - 0x63F55234)
                 ^ 0x39FBAC8C,
                   0x13);
-        _InterlockedExchange(0x30, 0x63, 0x4D, (v44 - 0x6976D47F) ^ 0x10262F9D, v31 + 0x58);
+        _InterlockedExchangeW(0x30, 0x63, 0x4D, (v44 - 0x6976D47F) ^ 0x10262F9D, v31 + 0x58);
         v8 = (__ROL8__(
                   (__ROL8__(
                        (((v1014 ^ v1805) + 0x61BBE9D7149134B0LL) ^ 0xDFEE542C76A7AAF0uLL)
@@ -395,7 +395,7 @@ __int64 __fastcall sub_180001000(
                   0xE)
             + 0x7D019B7AE2EB4B6FLL)
            ^ 0x2EFFBB12A651F46CLL;
-        _InterlockedExchange(
+        _InterlockedExchangeW(
             0x37,
             0xF,
             1,
@@ -4853,7 +4853,7 @@ __int64 AntiDebug_ExceptionFilter(
                 break;
 
             case 0x12Au:
-                _InterlockedExchange(0x30, 0x63, 0x4D, v89, v365 + 0x58);
+                _InterlockedExchangeW(0x30, 0x63, 0x4D, v89, v365 + 0x58);
                 n2 = 0x12B;
                 break;
 
@@ -5036,7 +5036,7 @@ __int64 AntiDebug_ExceptionFilter(
                 break;
 
             case 0x14Au:
-                _InterlockedExchange(0x37, 0xF, 1, v92, v399 + 0x8C);
+                _InterlockedExchangeW(0x37, 0xF, 1, v92, v399 + 0x8C);
                 n2 = 1;
                 break;
 
