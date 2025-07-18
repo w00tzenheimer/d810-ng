@@ -3,7 +3,7 @@ ifeq ($(OS),Windows_NT)
 	RM = del /Q  # Windows delete command
 	TARGET_LIB = ../bins/libobfuscated.dll  # Windows shared library
 	TARGET_LIB_IDA = ../bins/libobfuscated.dll.i64
-	LDFLAGS = -shared
+	LDFLAGS = -shared -Wl,/FORCE:UNRESOLVED
 else
 	CC = gcc  # C compiler for Unix-like systems
 	RM = rm -f   # rm command
