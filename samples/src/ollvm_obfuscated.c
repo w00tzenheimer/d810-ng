@@ -5,7 +5,10 @@ struct timeval {
    int tv_usec ;
 };
 
-typedef unsigned long size_t;
+#ifndef _SIZE_T_DEFINED
+#define _SIZE_T_DEFINED
+typedef unsigned long long size_t;
+#endif
 
 extern int gettimeofday(struct timeval *tv , void *tz ) ;
 extern int printf(char const   *format  , ...) ;
