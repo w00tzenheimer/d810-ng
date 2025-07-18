@@ -1,0 +1,44 @@
+{
+    "description": "eidolon deobfuscation",
+    "ins_rules": [
+        {
+            "name": "FoldPureConstantRule",
+            "is_activated": true,
+            "config": {}
+        }
+    ],
+    "blk_rules": [
+        {
+            "name": "UnflattenControlFlowRule",
+            "is_activated": false,
+            "config": {}
+        },
+        {
+            "name": "UnflattenerSwitchCase",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "JumpFixer",
+            "is_activated": false,
+            "config": {
+                "enabled_rules": [
+                    "CompareConstantRule1",
+                    "CompareConstantRule2",
+                    "CompareConstantRule3",
+                    "JaeRule1",
+                    "JbRule1",
+                    "JnzRule1",
+                    "JnzRule2",
+                    "JnzRule3",
+                    "JnzRule4",
+                    "JnzRule5",
+                    "JnzRule6",
+                    "JnzRule7",
+                    "JnzRule8",
+                    "JmpRuleZ3Const"
+                ]
+            }
+        }
+    ]
+}
