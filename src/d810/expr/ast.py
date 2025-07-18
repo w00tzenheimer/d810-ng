@@ -74,6 +74,8 @@ class AstBase(abc.ABC):
     sub_ast_info_by_index: Dict[int, AstInfo] = {}
     mop: ida_hexrays.mop_t | None = None
     dest_size: int | None = None
+    ea: int | None = None
+    ast_index: int | None = None
 
     @property
     @abc.abstractmethod
@@ -173,6 +175,7 @@ class AstNode(AstBase, dict):
 
     def compute_sub_ast(self):
         self.sub_ast_info_by_index = {}
+        assert self.ast_index is not None
         self.sub_ast_info_by_index[self.ast_index] = AstInfo(self, 1)
 
         if self.left is not None:
