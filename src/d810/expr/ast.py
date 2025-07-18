@@ -677,6 +677,9 @@ class AstNode(AstBase, dict):
         new_node.opcodes = []
         new_node.sub_ast_info_by_index = {}  # Start fresh
 
+        # Cloned objects start mutable
+        new_node._is_frozen = False
+
         return new_node
 
     @typing.override
@@ -749,6 +752,9 @@ class AstLeaf(AstBase):
         new_leaf.z3_var = None
         new_leaf.z3_var_name = None
         new_leaf.sub_ast_info_by_index = {}  # Start fresh
+
+        # Cloned objects start mutable by definition
+        new_leaf._is_frozen = False
 
         return new_leaf
 
@@ -989,6 +995,21 @@ class AstProxy(AstBase):
     def __repr__(self):
         return f"AstProxy({repr(self._target)})"
 
+    # Explicitly forward critical leaf data that callers expect to access
+    # directly.  Without these properties Python finds the *class*-level
+    # attribute defined in AstBase (value = None) and never triggers
+    # __getattr__, so evaluators see a leaf with no mop.
+
+    # ‑-- Mop -------------------------------------------------------------
+    @property
+    def mop(self):  # type: ignore[override]
+        return self._target.mop
+
+    @mop.setter
+    def mop(self, value):  # noqa: ANN001
+        self._ensure_mutable()
+        self._target.mop = value
+
     def _ensure_mutable(self):
         """
         The magic method. If the target is frozen, clone it and
@@ -1038,6 +1059,65 @@ class AstProxy(AstBase):
             )
         self._ensure_mutable()
         setitem(key, value)
+
+    # ------------------------------------------------------------------
+    # Transparent attribute forwarding with sane fallback.
+    # ------------------------------------------------------------------
+
+    def __getattribute__(self, name):  # noqa: D401, ANN001
+        """Forward *all* attribute access to the wrapped target when:
+        1) the attribute is not private to the proxy itself, and
+        2) the value obtained from the proxy’s own namespace is *None*.
+
+        This retains the cheap class-level default attributes coming from
+        AstBase (all set to None) while still exposing the real runtime
+        values stored in the wrapped AST object.
+        """
+
+        # Fast-path: internal/private attributes stay local.
+        if name.startswith("_"):
+            return super().__getattribute__(name)
+
+        try:
+            val = super().__getattribute__(name)
+        except AttributeError:
+            # Attribute not present on proxy → delegate unconditionally.
+            return getattr(super().__getattribute__("_target"), name)
+
+        # If the proxy’s value is a meaningless placeholder (None) but the
+        # underlying object has a better value, return the latter instead.
+        if val is None:
+            target = super().__getattribute__("_target")
+            return getattr(target, name)
+        return val
+
+    # Convenience setters for a few commonly mutated fields
+    @property
+    def dest_size(self):  # type: ignore[override]
+        return self._target.dest_size
+
+    @dest_size.setter
+    def dest_size(self, value):  # noqa: ANN001
+        self._ensure_mutable()
+        self._target.dest_size = value
+
+    @property
+    def ea(self):  # type: ignore[override]
+        return self._target.ea
+
+    @ea.setter
+    def ea(self, value):  # noqa: ANN001
+        self._ensure_mutable()
+        self._target.ea = value
+
+    @property
+    def ast_index(self):  # type: ignore[override]
+        return self._target.ast_index
+
+    @ast_index.setter
+    def ast_index(self, value):  # noqa: ANN001
+        self._ensure_mutable()
+        self._target.ast_index = value
 
 
 class AstBuilderContext:
@@ -1346,7 +1426,7 @@ def mop_to_ast_internal(
         or mop.d.l is None
         or mop.d.r is None
     ):
-        tree: AstLeaf | AstConstant
+        tree: AstBase
         if mop.t == ida_hexrays.mop_n:
             const_val = int(mop.nnn.value)
             const_size = mop.size

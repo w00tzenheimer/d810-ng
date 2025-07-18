@@ -2,16 +2,16 @@ import logging
 import typing
 import unittest
 
-from d810.optimizers.microcode.instructions.peephole.fold_const import (
-    FoldPureConstantRule,
-)
-
 # Added necessary imports
 import ida_funcs
 import ida_hexrays
 import ida_idaapi
 import ida_range
 import ida_typeinf
+
+from d810.optimizers.microcode.instructions.peephole.fold_const import (
+    FoldPureConstantRule,
+)
 
 logging.basicConfig(level=logging.DEBUG)
 LOG = logging.getLogger(__name__)
