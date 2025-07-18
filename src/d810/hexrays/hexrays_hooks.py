@@ -342,16 +342,16 @@ class HexraysDecompilationHook(Hexrays_Hooks):
         self.manager.block_optimizer.reset_rule_usage_statistic()
         return 0
 
-    def maturity(self, cfunc: "cfunc_t", new_maturity: int) -> int:
-        """Ctree maturity level is being changed."""
-        # main_logger.info(
-        #     "Maturity changed for %s @ %s to %s (ctree maturity: %d)",
-        #     cfunc.print_dcl(),
-        #     hex(cfunc.entry_ea),
-        #     maturity_to_string(cfunc.mba.maturity),
-        #     new_maturity,
-        # )
-        return 0
+    # def maturity(self, cfunc: "cfunc_t", new_maturity: int) -> int:
+    #     """Ctree maturity level is being changed."""
+    #     # main_logger.info(
+    #     #     "Maturity changed for %s @ %s to %s (ctree maturity: %d)",
+    #     #     cfunc.print_dcl(),
+    #     #     hex(cfunc.entry_ea),
+    #     #     maturity_to_string(cfunc.mba.maturity),
+    #     #     new_maturity,
+    #     # )
+    #     return 0
 
     def glbopt(self, mba: mbl_array_t) -> "int":
         self.manager.stop_profiling()
