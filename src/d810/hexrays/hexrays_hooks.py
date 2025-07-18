@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ida_hexrays import *
+
 from d810.errors import D810Exception
 from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.expr.z3_utils import log_z3_instructions
@@ -13,8 +15,6 @@ from d810.hexrays.hexrays_formatters import (
 )
 from d810.hexrays.hexrays_helpers import check_ins_mop_size_are_ok
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
-
-from ida_hexrays import *
 
 if TYPE_CHECKING:
     from d810.manager import D810Manager
@@ -205,6 +205,7 @@ class InstructionOptimizerManager(optinsn_t):
 
     def optimize(self, blk: mblock_t, ins: minsn_t) -> bool:
         # optimizer_log.info("Trying to optimize {0}".format(format_minsn_t(ins)))
+        MOP_TO_AST_CACHE.clear()
         for ins_optimizer in self.instruction_optimizers:
             self._last_optimizer_tried = ins_optimizer
             new_ins = ins_optimizer.get_optimized_instruction(blk, ins)

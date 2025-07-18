@@ -1351,17 +1351,34 @@ def mop_to_ast_internal(
             const_size = mop.size
             tree = AstConstant(hex(const_val), const_val, const_size)
             tree.dest_size = const_size
-        elif mop.t == ida_hexrays.mop_f and getattr(mop, "f", None):
-            # Pattern: typed immediate wrapper like <fast:_DWORD #0xDEADBEEF.4,char #4.1>.4
-            args = mop.f.args
-            if (
-                args
-                and len(args) >= 1
-                and args[0] is not None
-                and args[0].t == ida_hexrays.mop_n
-            ):
-                const_val = args[0].nnn.value
-                const_size = mop.size or args[0].size
+        elif mop.t == ida_hexrays.mop_f:
+            """Handle typed-immediate wrappers produced by Hex-Rays.
+
+            Typical example:  <fast:_DWORD #0xDEADBEEF.4,char #4.1>.4
+            In most cases the numeric value is stored in *f.args[0]*, but it is
+            not guaranteed that *mop.f* or the *args* list exists on all Ida
+            versions/builds.  We therefore probe carefully and, when we do find
+            the value, create a real *AstConstant* **and** keep the inner
+            mop_n so that the evaluator recognises it as a constant later on.
+            """
+
+            const_val: int | None = None
+            const_size: int | None = None
+
+            f_info = getattr(mop, "f", None)
+            if f_info and getattr(f_info, "args", None):
+                args = f_info.args
+                if (
+                    args
+                    and len(args) >= 1
+                    and args[0] is not None
+                    and args[0].t == ida_hexrays.mop_n
+                ):
+                    const_val = args[0].nnn.value
+                    const_size = mop.size or args[0].size
+
+            if const_val is not None and const_size is not None:
+                # Success: build a constant leaf backed by the *inner* mop_n
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "[mop_to_ast_internal] Extracted constant 0x%X (size=%d) from mop_f wrapper",
@@ -1369,9 +1386,13 @@ def mop_to_ast_internal(
                         const_size,
                     )
                 tree = AstConstant(hex(const_val), const_val, const_size)
+                tree.mop = args[0]  # Preserve the numeric mop for evaluators
                 tree.dest_size = const_size
             else:
+                # Could not extract – fall back to generic leaf so caller can
+                # still see something meaningful in debug output.
                 tree = AstLeaf(format_mop_t(mop))
+                tree.mop = mop
                 tree.dest_size = mop.size
         else:
             tree = AstLeaf(format_mop_t(mop))
