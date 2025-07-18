@@ -2724,6 +2724,11 @@ unsigned __int32 dword_1802D2E48 = 0x88A8C6E5;
 unsigned __int32 dword_1802D2DBC = 0xF4C84FC4;
 
 
+extern int *sub_18000D580(int, int, int, unsigned int *);
+extern int *sub_1801014B0(unsigned int *);
+extern int sub_18000D1E0(int, int, int, int, int);
+
+
 __int64 sub_180001000(
         int n0x1C,
         int n0xC,
