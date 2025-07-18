@@ -5,3 +5,6 @@
 **~
 **.pyc
 **.log
+
+samples/src/*.d
+samples/src/*.o

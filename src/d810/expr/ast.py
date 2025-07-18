@@ -1336,21 +1336,31 @@ def mop_to_ast_internal(
         context.mop_key_to_index[key] = new_index
         return tree
 
-    # Fallback: treat as leaf
+    # Fallback for any unhandled mop: treat as a leaf.
+    # This is for simple operands (registers, stack vars) or complex
+    # instructions that are not part of our MBA analysis.
     if (
         mop.t != ida_hexrays.mop_d
         or (mop.d.opcode not in MBA_RELATED_OPCODES)
         or mop.d.l is None
         or mop.d.r is None
-        # Destination (mop.d.d) may legitimately be absent; we only need l & r
     ):
-        tree = AstLeaf(format_mop_t(mop))
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "[mop_to_ast_internal] Fallback to AstLeaf for mop type %s dstr=%s",
-                mop_type_to_string(mop.t),
-                str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
-            )
+        tree: AstLeaf
+        if mop.t == ida_hexrays.mop_n:
+            const_val = mop.nnn.value
+            const_size = mop.size
+            tree = AstConstant(hex(const_val), const_val, const_size)
+            tree.dest_size = const_size
+        else:
+            tree = AstLeaf(format_mop_t(mop))
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "[mop_to_ast_internal] Fallback to AstLeaf for mop type %s dstr=%s",
+                    mop_type_to_string(mop.t),
+                    str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
+                )
+            tree.dest_size = mop.size
+
         tree.mop = mop
         dest_size = (
             mop.size
@@ -1582,5 +1592,5 @@ def _is_rotate_helper_call(ins: ida_hexrays.minsn_t) -> bool:
     if func_mop is None or func_mop.t != ida_hexrays.mop_h:
         return False
 
-    helper_name: str = func_mop.helper or ""
+    helper_name: str = (func_mop.helper or "").lstrip("!")
     return helper_name.startswith("__ROL") or helper_name.startswith("__ROR")
