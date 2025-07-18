@@ -8,3 +8,5 @@
 
 samples/src/*.d
 samples/src/*.o
+samples/bins/*.pdb
+samples/bins/*.i64
