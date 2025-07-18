@@ -911,7 +911,7 @@ class AstConstant(AstLeaf):
         try:
             if self.mop is not None and self.mop.t == ida_hexrays.mop_n:
                 return "0x{0:x}".format(self.mop.nnn.value)
-            if self.expected_value is not None:
+            if getattr(self, "expected_value", None) is not None:
                 return "0x{0:x}".format(self.expected_value)
             return self.name
         except RuntimeError as e:
@@ -1243,8 +1243,9 @@ def mop_to_ast_internal(
             ):
                 const_mop = dest_mop.d.l
 
-        if const_mop is not None:
+        if const_mop and const_mop.nnn:
             const_val = const_mop.nnn.value
+            assert const_val is not None
             const_size = const_mop.size
             tree = AstConstant(hex(const_val), const_val, const_size)
             tree.mop = const_mop
