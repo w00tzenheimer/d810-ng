@@ -57,6 +57,31 @@ COMMUTATIVE = {
 }
 
 
+# New helper ──────────────────────────────────────────────────────────
+def _extract_constant_mop_value(mop: ida_hexrays.mop_t | None, bits: int) -> int | None:
+    """Return integer value if *mop* ultimately represents a numeric constant.
+
+    Handles regular `mop_n` as well as the `mop_f` wrappers produced by
+    Hex-Rays for typed immediates such as
+        <fast:_DWORD #0xDEADBEEF.4,char #4.1>.4
+    which encodes the same constant in `f.args[0]`.
+    """
+    if mop is None:
+        return None
+
+    # Plain numeric constant (fast path)
+    if mop.t == ida_hexrays.mop_n:
+        return mop.nnn.value & _get_mask(bits)
+
+    # Typed immediate packed in an `mop_f` (func-like wrapper)
+    if mop.t == ida_hexrays.mop_f and getattr(mop, "f", None):
+        args = mop.f.args
+        if args and len(args) >= 1 and args[0] is not None and args[0].t == ida_hexrays.mop_n:
+            return args[0].nnn.value & _get_mask(bits)
+
+    return None
+
+
 def _get_mask(bits):
     """Safely get mask from AND_TABLE with bounds checking"""
     byte_size = bits // 8
@@ -103,7 +128,7 @@ def _fold_const_in_mop(mop: ida_hexrays.mop_t, bits: int) -> bool:
         if val is not None:
             cst = ida_hexrays.mop_t()
             cst.make_number(val, ins.d.size)
-            mop.copy(cst)  # replace subtree with constant
+            mop.copy(cst) 
             changed = True
 
     return changed
@@ -205,9 +230,10 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
                 peephole_logger.debug("[_eval_subtree] Leaf with no mop: %s", ast)
             return None
 
-        # Plain numeric constant
-        if _is_const(mop):
-            return mop.nnn.value & _get_mask(bits)
+        # Unified constant extraction (handles mop_n and wrapped constants)
+        const_val = _extract_constant_mop_value(mop, bits)
+        if const_val is not None:
+            return const_val
 
         # Hex-Rays sometimes represents a literal as a one-instruction
         # subtree:   mop_d → m_ldc  ( ldc  #value , dst )
