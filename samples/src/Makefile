@@ -18,7 +18,7 @@ else
 	CFLAGS = -fPIC -Wall -Wextra -Og -g  # C flags for Unix-like systems
 endif
 
-SRCS = manually_obfuscated.c ollvm_obfuscated.c tigress_obfuscated.c # source files
+SRCS = manually_obfuscated.c ollvm_obfuscated.c tigress_obfuscated.c constant_folding.c # source files
 OBJS = $(SRCS:.c=.o)
 
 .PHONY: all
