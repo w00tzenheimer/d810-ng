@@ -76,7 +76,12 @@ def _extract_constant_mop_value(mop: ida_hexrays.mop_t | None, bits: int) -> int
     # Typed immediate packed in an `mop_f` (func-like wrapper)
     if mop.t == ida_hexrays.mop_f and getattr(mop, "f", None):
         args = mop.f.args
-        if args and len(args) >= 1 and args[0] is not None and args[0].t == ida_hexrays.mop_n:
+        if (
+            args
+            and len(args) >= 1
+            and args[0] is not None
+            and args[0].t == ida_hexrays.mop_n
+        ):
             return args[0].nnn.value & _get_mask(bits)
 
     return None
@@ -107,7 +112,7 @@ def _is_const(mop: ida_hexrays.mop_t) -> bool:
     return mop is not None and mop.t == ida_hexrays.mop_n
 
 
-def _fold_const_in_mop(mop: ida_hexrays.mop_t, bits: int) -> bool:
+def _fold_const_in_mop(mop: ida_hexrays.mop_t | None, bits: int) -> bool:
     """
     Walk a mop tree, try to constant-fold, return True if anything changed.
     """
@@ -126,9 +131,7 @@ def _fold_const_in_mop(mop: ida_hexrays.mop_t, bits: int) -> bool:
         ast = minsn_to_ast(ins)
         val = _eval_subtree(ast, bits)
         if val is not None:
-            cst = ida_hexrays.mop_t()
-            cst.make_number(val, ins.d.size)
-            mop.copy(cst)  # type: ignore[attr-defined]
+            mop.make_number(val, ins.d.size)
             changed = True
 
     return changed
