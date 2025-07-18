@@ -971,7 +971,7 @@ class TestRunnerForm(ida_kernwin.PluginForm):
                     " Please select it manually."
                 )
         except Exception:
-            # Unexpected failure – log but continue with no default.
+            # Unexpected failure - log but continue with no default.
             LOGGER.exception("Error while searching for default tests directory")
 
         self._test_manager = TestManager(
