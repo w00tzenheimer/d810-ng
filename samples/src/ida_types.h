@@ -384,8 +384,38 @@ inline int64  abs64(int64   x) { return x >= 0 ? x : -x; }
 
 #else // C++
 // For C, we just provide macros, they are not quite correct.
-#define __ROL__(x, y) __rotl__(x, y)      // Rotate left
-#define __ROR__(x, y) __rotr__(x, y)      // Rotate right
+static unsigned __int8 __ROL1__(unsigned __int8 x, unsigned int count) {
+	count %= 8;
+	return (x << count) | (x >> (8 - count));
+}
+static unsigned __int16 __ROL2__(unsigned __int16 x, unsigned int count) {
+	count %= 16;
+	return (x << count) | (x >> (16 - count));
+}
+static unsigned __int32 __ROL4__(unsigned __int32 x, unsigned int count) {
+	count %= 32;
+	return (x << count) | (x >> (32 - count));
+}
+static unsigned __int64 __ROL8__(unsigned __int64 x, unsigned int count) {
+	count %= 64;
+	return (x << count) | (x >> (64 - count));
+}
+static unsigned __int8 __ROR1__(unsigned __int8 x, unsigned int count) {
+	count %= 8;
+	return (x << (8 - count)) | (x >> count);
+}
+static unsigned __int16 __ROR2__(unsigned __int16 x, unsigned int count) {
+	count %= 16;
+	return (x << (16 - count)) | (x >> count);
+}
+static unsigned __int32 __ROR4__(unsigned __int32 x, unsigned int count) {
+	count %= 32;
+	return (x << (32 - count)) | (x >> count);
+}
+static unsigned __int64 __ROR8__(unsigned __int64 x, unsigned int count) {
+	count %= 64;
+	return (x << (64 - count)) | (x >> count);
+}
 #define __CFSHL__(x, y) invalid_operation // Generate carry flag for (x<<y)
 #define __CFSHR__(x, y) invalid_operation // Generate carry flag for (x>>y)
 #define __CFADD__(x, y) invalid_operation // Generate carry flag for (x+y)
