@@ -1190,7 +1190,7 @@ def mop_to_ast_internal(
 
     # Special handling for rotate calls
     if mop.t == ida_hexrays.mop_d and _is_rotate_helper_call(mop.d):
-        # Layout A: classic helper – arguments are in an mop_f list
+        # Layout A: classic helper - arguments are in an mop_f list
         if mop.d.r.t == ida_hexrays.mop_f:
             args = mop.d.r.f.args
             if len(args) == 2 and args[0] is not None and args[1] is not None:
@@ -1206,7 +1206,7 @@ def mop_to_ast_internal(
                 context.unique_asts.append(tree)
                 context.mop_key_to_index[key] = new_index
                 return tree
-        # Layout B: compact helper – r is value, d is shift amount
+        # Layout B: compact helper - r is value, d is shift amount
         elif mop.d.r is not None and mop.d.d is not None:
             value_ast = mop_to_ast_internal(mop.d.r, context)
             shift_ast = mop_to_ast_internal(mop.d.d, context)
@@ -1277,7 +1277,7 @@ def mop_to_ast_internal(
 
         # Require at least the mandatory operands; if missing, fall back to leaf
         if left_ast is None:
-            # Can't build meaningful node – fallback later to leaf
+            # Can't build meaningful node - fallback later to leaf
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
                     "[mop_to_ast_internal] Missing mandatory operand(s) for opcode %s, will treat as leaf",
@@ -1434,7 +1434,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
 
         # Early filter: unsupported opcodes (not in MBA_RELATED_OPCODES)
         # Allow rotate helper calls ("__ROL*" / "__ROR*") even though m_call
-        # is normally filtered out – they can be constant-folded later.
+        # is normally filtered out - they can be constant-folded later.
         if (
             instruction.opcode not in MBA_RELATED_OPCODES
             and not _is_rotate_helper_call(instruction)
@@ -1452,7 +1452,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                 )
             return None
 
-        # NEW: Shortcut – treat helper call whose result is already a literal as a constant leaf
+        # NEW: Shortcut - treat helper call whose result is already a literal as a constant leaf
         if instruction.opcode == ida_hexrays.m_call and instruction.d is not None:
             dest_mop = instruction.d
             const_mop = None

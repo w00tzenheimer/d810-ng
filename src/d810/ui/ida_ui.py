@@ -696,7 +696,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
             dlg = LoggingConfigDialog("D810", self.parent)
             dlg.exec_()
-        except Exception as exc:  # pragma: no cover – defensive
+        except Exception as exc:  # pragma: no cover - defensive
             logger.error("Failed to open LoggingConfigDialog: %s", exc)
             QtWidgets.QMessageBox.critical(
                 self.parent,

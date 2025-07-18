@@ -253,7 +253,7 @@ class Registrant(metaclass=Registry):
         """Return the key of the resource."""
         key_attr = getattr(cls, "registrant_name", cls.__name__)
         # # If someone defined `name` as a @property on the class we end up with a
-        # # `property` object – not the actual value.  Fallback to class-name in
+        # # `property` object - not the actual value.  Fallback to class-name in
         # # that case.
         # if isinstance(key_attr, property):
         #     return cls.__name__

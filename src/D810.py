@@ -10,11 +10,11 @@ import sys
 import types
 import typing
 
-import d810
-
 import ida_hexrays
 import ida_kernwin
 import idaapi
+
+import d810
 
 # from d810.manager import D810State
 
@@ -356,7 +356,7 @@ class D810Plugin(ReloadablePlugin):
             callback=modules.append,
         )
 
-        # Treat these entries as *prefixes* – any module whose fully-qualified
+        # Treat these entries as *prefixes* - any module whose fully-qualified
         # name starts with one of these strings will be filtered out. This gives
         # us simple glob-like behaviour without bringing in fnmatch.
         disallowed_prefixes: tuple[str, ...] = (

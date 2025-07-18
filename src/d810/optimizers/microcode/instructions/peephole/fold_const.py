@@ -40,7 +40,7 @@ def _mop_to_str(mop: "ida_hexrays.mop_t | None") -> str:  # noqa: ANN001
         return "<None>"
     try:
         return format_mop_t(mop)
-    except Exception:  # pragma: no cover – logging helper, be robust
+    except Exception:  # pragma: no cover - logging helper, be robust
         # Fall back to dstr() if available, else repr
         return str(mop.dstr() if hasattr(mop, "dstr") else mop)
 
@@ -194,7 +194,7 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     """returns an int if subtree is constant, else None"""
     if ast is None:
         if peephole_logger.isEnabledFor(logging.DEBUG):
-            peephole_logger.debug("[_eval_subtree] ast is None – cannot evaluate")
+            peephole_logger.debug("[_eval_subtree] ast is None - cannot evaluate")
         return None
 
     if ast.is_leaf():

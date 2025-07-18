@@ -148,11 +148,11 @@ class D810Configuration:
                          'options.json' in the script's directory.
         """
         if config_path is not None:
-            # Caller explicitly provided a path – honor it verbatim.
+            # Caller explicitly provided a path - honor it verbatim.
             self.config_file = Path(config_path)
             template_path: Path | None = None
         else:
-            # Default behaviour – locate user-specific options first.
+            # Default behaviour - locate user-specific options first.
             user_cfg_dir = self.config_dir
             user_cfg_dir.mkdir(parents=True, exist_ok=True)
             user_cfg_file = user_cfg_dir / ConfigConstants.OPTIONS_FILENAME
