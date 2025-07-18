@@ -6,6 +6,7 @@ import typing
 from typing import Dict, List, Tuple, Union
 
 import ida_hexrays
+import idaapi
 
 from d810.errors import AstEvaluationException
 from d810.expr.utils import (
@@ -34,6 +35,12 @@ from d810.hexrays.hexrays_helpers import (
 )
 
 logger = logging.getLogger("D810")
+
+
+def _sanitize_ea(ea: int | None) -> int | None:
+    if ea is None:
+        return None
+    return ea & idaapi.BADADDR  # BADADDR = 0xFFFF_FFFF_FFFF_FFFF on x64
 
 
 def get_constant_mop(value: int, size: int) -> ida_hexrays.mop_t:
@@ -1283,7 +1290,7 @@ def mop_to_ast_internal(
                 tree.func_name = mop.d.l.helper
                 tree.mop = mop
                 tree.dest_size = mop.size
-                tree.ea = mop.d.ea
+                tree.ea = _sanitize_ea(mop.d.ea)
                 new_index = len(context.unique_asts)
                 tree.ast_index = new_index
                 context.unique_asts.append(tree)
@@ -1298,7 +1305,7 @@ def mop_to_ast_internal(
                 tree.func_name = mop.d.l.helper
                 tree.mop = mop
                 tree.dest_size = mop.size
-                tree.ea = mop.d.ea
+                tree.ea = _sanitize_ea(mop.d.ea)
                 new_index = len(context.unique_asts)
                 tree.ast_index = new_index
                 context.unique_asts.append(tree)
@@ -1385,7 +1392,7 @@ def mop_to_ast_internal(
                 tree.dest_size = None
 
             tree.mop = mop
-            tree.ea = mop.d.ea
+            tree.ea = _sanitize_ea(mop.d.ea)
 
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -1608,7 +1615,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                 leaf = AstLeaf(hex(const_value))
                 leaf.mop = const_mop  # preserve original constant mop
                 leaf.dest_size = const_size
-                leaf.ea = instruction.ea
+                leaf.ea = _sanitize_ea(instruction.ea)
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "[minsn_to_ast] Collapsed call with constant destination to leaf 0x%X (size=%d)",
