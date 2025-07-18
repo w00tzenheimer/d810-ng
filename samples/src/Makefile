@@ -12,7 +12,11 @@ else
 	LDFLAGS = -shared   # linking flags
 endif
 
-CFLAGS = -fPIC -Wall -Wextra -Og -g  # C flags
+ifeq ($(OS),Windows_NT)
+	CFLAGS = -Wall -Wextra -Og -g  # C flags for Windows (no -fPIC)
+else
+	CFLAGS = -fPIC -Wall -Wextra -Og -g  # C flags for Unix-like systems
+endif
 
 SRCS = manually_obfuscated.c ollvm_obfuscated.c tigress_obfuscated.c # source files
 OBJS = $(SRCS:.c=.o)
