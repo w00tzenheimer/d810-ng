@@ -999,11 +999,11 @@ class AstProxy(AstBase):
 
     @typing.override
     def __str__(self):
-        return f"AstProxy({str(self._target)})"
+        return f"AstProxy({self._target.__class__.__name__}({str(self._target)}))"
 
     @typing.override
     def __repr__(self):
-        return f"AstProxy({self._target.__class__.__name__}{repr(self._target)})"
+        return f"AstProxy({self._target.__class__.__name__}({repr(self._target)}))"
 
     # Explicitly forward critical leaf data that callers expect to access
     # directly.  Without these properties Python finds the *class*-level
@@ -1424,25 +1424,31 @@ def mop_to_ast_internal(
             context.mop_key_to_index[key] = new_index
             return tree
 
-    # Special handling for mop_d that wraps an m_ldc as a constant leaf
+    # ------------------------------------------------------------------
+    # Special handling: mop_d that wraps an m_ldc
+    # ------------------------------------------------------------------
     if (
         mop.t == ida_hexrays.mop_d
         and mop.d is not None
         and mop.d.opcode == ida_hexrays.m_ldc
     ):
-        # Treat an embedded ldc instruction as a constant leaf.
+        # Only treat it as constant if the *source* of the ldc is itself a
+        # numeric constant.  Otherwise we ignore the ldc wrapper and fall
+        # back to the generic leaf logic below.
         ldc_src = mop.d.l
         if ldc_src is not None and ldc_src.t == ida_hexrays.mop_n:
             const_val = int(ldc_src.nnn.value)
             const_size = ldc_src.size
-            tree = AstConstant(hex(const_val), const_val, const_size)
-            tree.mop = ldc_src  # keep original constant mop
-            tree.dest_size = const_size
-        new_index = len(context.unique_asts)
-        tree.ast_index = new_index
-        context.unique_asts.append(tree)
-        context.mop_key_to_index[key] = new_index
-        return tree
+
+            const_leaf = AstConstant(hex(const_val), const_val, const_size)
+            const_leaf.mop = ldc_src  # keep original constant mop
+            const_leaf.dest_size = const_size
+
+            new_index = len(context.unique_asts)
+            const_leaf.ast_index = new_index
+            context.unique_asts.append(const_leaf)
+            context.mop_key_to_index[key] = new_index
+            return const_leaf
 
     # Fallback for any unhandled mop: treat as a leaf.
     # This is for simple operands (registers, stack vars) or complex
