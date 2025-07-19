@@ -1469,7 +1469,7 @@ def mop_to_ast_internal(
             tree = AstConstant(hex(const_val), const_val, const_size)
             clone_mop = ida_hexrays.mop_t()
             clone_mop.make_number(const_val, const_size)
-            tree.mop = clone_mop
+            tree.mop = clone_mop  # detached copy
             tree.dest_size = const_size
         elif mop.t == ida_hexrays.mop_f:
             """Handle typed-immediate wrappers produced by Hex-Rays.
@@ -1677,7 +1677,9 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                 const_size = const_mop.size
 
                 leaf = AstLeaf(hex(const_value))
-                leaf.mop = const_mop  # preserve original constant mop
+                dup_mop = ida_hexrays.mop_t()
+                dup_mop.make_number(const_value, const_size)
+                leaf.mop = dup_mop
                 leaf.dest_size = const_size
                 leaf.ea = _sanitize_ea(instruction.ea)
 
