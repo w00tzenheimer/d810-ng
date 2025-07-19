@@ -20,6 +20,7 @@ from d810.expr.utils import (
 from d810.hexrays.hexrays_formatters import format_mop_t, opcode_to_string
 from d810.hexrays.hexrays_helpers import (  # already maps size→mask
     AND_TABLE,
+    CONTROL_FLOW_OPCODES,
     OPCODES_INFO,
 )
 from d810.optimizers.microcode.instructions.peephole.handler import (
@@ -131,7 +132,18 @@ def _fold_const_in_mop(mop: ida_hexrays.mop_t | None, bits: int) -> bool:
         ast = minsn_to_ast(ins)
         val = _eval_subtree(ast, bits)
         if val is not None:
-            mop.make_number(val, ins.d.size)
+            cst = ida_hexrays.mop_t()
+            cst.make_number(val, ins.d.size)
+
+            # Replace the constant at the parent instruction safely, without
+            # mutating an operand that still belongs to Hex-Rays internal
+            # data structures.
+            if ins.l is mop:
+                ins.l = cst
+            elif ins.r is mop:
+                ins.r = cst
+            elif ins.d is mop:
+                ins.d = cst
             changed = True
 
     return changed
@@ -349,6 +361,9 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
     def check_and_replace(
         self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:
+        # Skip flow-control instructions that can never be folded to a constant.
+        if ins.opcode in CONTROL_FLOW_OPCODES:
+            return None
         # Skip instructions that are already in optimal form or would cause infinite loops
         if ins.opcode == ida_hexrays.m_ldc:
             if peephole_logger.isEnabledFor(logging.DEBUG):
@@ -463,12 +478,8 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                     "[fold_const] Adjusted bits to supported size: %d", bits
                 )
 
-        # 1) do *local* folding everywhere inside the ins
-        changed = False
-        for mop in (ins.l, ins.r, ins.d):
-            changed |= _fold_const_in_mop(mop, bits)
 
-        # 2) After local folding, try to collapse the *whole* instruction tree.
+        # Try to collapse the *whole* instruction tree.
         # Build AST from just the computation (left and right operands), not the destination
         if ins.opcode == ida_hexrays.m_mov:
             # For mov, evaluate the source operand
@@ -518,18 +529,6 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                     opcode_to_string(ins.opcode),
                     ins.dstr(),
                 )
-
-        # 3) If we simplified any sub-expression but the whole tree is not a
-        #    constant yet, signal the change by returning a clone of the mutated
-        #    instruction. This allows later passes to pick up the partially
-        #    simplified form.
-        if changed:
-            peephole_logger.info(
-                "[fold_const] Locally folded ins at 0x%X (opcode=%s), but not a pure constant.",
-                ins.ea,
-                opcode_to_string(ins.opcode),
-            )
-            return ida_hexrays.minsn_t(ins)  # copy = treat as replacement
 
         if peephole_logger.isEnabledFor(logging.DEBUG):
             peephole_logger.debug(
