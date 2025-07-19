@@ -446,7 +446,7 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         bits = ins.d.size * 8 if ins.d.size else 32
         if peephole_logger.isEnabledFor(logging.DEBUG):
             peephole_logger.debug(
-                "[fold_const] Checking ins @0x%X: %s  l=%s  r=%s  d=%s",
+                "[fold_const] Checking ins @ 0x%X - %s  l=%s  r=%s  d=%s",
                 ins.ea,
                 opcode_to_string(ins.opcode),
                 _mop_to_str(ins.l),
@@ -477,7 +477,6 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 peephole_logger.debug(
                     "[fold_const] Adjusted bits to supported size: %d", bits
                 )
-
 
         # Try to collapse the *whole* instruction tree.
         # Build AST from just the computation (left and right operands), not the destination

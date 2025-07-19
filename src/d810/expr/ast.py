@@ -1003,7 +1003,7 @@ class AstProxy(AstBase):
 
     @typing.override
     def __repr__(self):
-        return f"AstProxy({repr(self._target)})"
+        return f"AstProxy({self._target.__class__.__name__}{repr(self._target)})"
 
     # Explicitly forward critical leaf data that callers expect to access
     # directly.  Without these properties Python finds the *class*-level
@@ -1506,15 +1506,16 @@ def mop_to_ast_internal(
                 tree = AstLeaf(format_mop_t(mop))
                 tree.mop = mop
                 tree.dest_size = mop.size
+
+        # For non-constant leaves we deliberately *do not* keep a reference
+        # to the original mop_t object, because Hex-Rays may free or reuse
+        # it after micro-optimisations, leading to use-after-free crashes.
+        # Only constant leaves benefit from holding the numeric mop to
+        # speed up further evaluations.
+        if tree.is_constant():
+            tree.mop = getattr(tree, "mop", None) or mop
         else:
-            tree = AstLeaf(format_mop_t(mop))
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "[mop_to_ast_internal] Fallback to AstLeaf for mop type %s dstr=%s",
-                    mop_type_to_string(mop.t),
-                    str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
-                )
-            tree.dest_size = mop.size
+            tree.mop = None
 
         # Preserve previously assigned mop (e.g., inner numeric mop) unless
         # it is still unset.  This prevents clobbering the constant `mop_n`
