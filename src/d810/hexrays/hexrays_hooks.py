@@ -14,6 +14,7 @@ from d810.hexrays.hexrays_formatters import (
     maturity_to_string,
 )
 from d810.hexrays.hexrays_helpers import check_ins_mop_size_are_ok
+from d810.hexrays.tracker import MopTracker
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
 
 if TYPE_CHECKING:
@@ -185,7 +186,9 @@ class InstructionOptimizerManager(optinsn_t):
                 )
 
         if blk.serial != self.current_blk_serial:
+            # New basic block → purge AST cache once per block
             self.current_blk_serial = blk.serial
+            MOP_TO_AST_CACHE.clear()
 
     def add_optimizer(self, optimizer: InstructionOptimizer):
         self.instruction_optimizers.append(optimizer)
@@ -200,12 +203,16 @@ class InstructionOptimizerManager(optinsn_t):
     def configure(
         self, generate_z3_code=False, dump_intermediate_microcode=False, **kwargs
     ):
-        self.generate_z3_code = generate_z3_code
+        # Only enable heavy Z3 logging when explicitly requested *and* the root
+        # D810 logger is in DEBUG/NOTSET mode. This prevents accidental
+        # overhead during normal decompilations.
+        root_level = main_logger.getEffectiveLevel()
+        self.generate_z3_code = bool(generate_z3_code and root_level <= logging.DEBUG)
         self.dump_intermediate_microcode = dump_intermediate_microcode
 
     def optimize(self, blk: mblock_t, ins: minsn_t) -> bool:
         # optimizer_log.info("Trying to optimize {0}".format(format_minsn_t(ins)))
-        MOP_TO_AST_CACHE.clear()
+        # Cache is now cleared at block granularity (see log_info_on_input)
         for ins_optimizer in self.instruction_optimizers:
             self._last_optimizer_tried = ins_optimizer
             new_ins = ins_optimizer.get_optimized_instruction(blk, ins)
@@ -340,6 +347,7 @@ class HexraysDecompilationHook(Hexrays_Hooks):
         self.manager.start_profiling()
         self.manager.instruction_optimizer.reset_rule_usage_statistic()
         self.manager.block_optimizer.reset_rule_usage_statistic()
+        MopTracker.reset()
         return 0
 
     # def maturity(self, cfunc: "cfunc_t", new_maturity: int) -> int:
