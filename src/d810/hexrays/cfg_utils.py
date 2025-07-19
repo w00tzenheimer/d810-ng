@@ -1,12 +1,12 @@
 import logging
 from typing import List, Tuple
 
-import idaapi
-from ida_hexrays import *
-
 from d810.errors import ControlFlowException
 from d810.hexrays.hexrays_formatters import block_printer
 from d810.hexrays.hexrays_helpers import CONDITIONAL_JUMP_OPCODES
+
+import idaapi
+from ida_hexrays import *
 
 helper_logger = logging.getLogger("D810.helper")
 
@@ -301,8 +301,6 @@ def create_block(
     blk: mblock_t, blk_ins: List[minsn_t], is_0_way: bool = False
 ) -> mblock_t:
     mba = blk.mba
-    # Use lightweight block creation when we only need a fresh container. No
-    # need to copy the entire source block.
     new_blk = insert_nop_blk(blk)
     for ins in blk_ins:
         tmp_ins = minsn_t(ins)
@@ -360,84 +358,11 @@ def update_block_successors(blk: mblock_t, blk_succ_serial_list: List[int]):
     blk.mark_lists_dirty()
 
 
-def _create_empty_block_after(mba: mbl_array_t, reference_blk: mblock_t) -> mblock_t:
-    """Create a brand-new basic block right after *reference_blk* containing a
-    single NOP and with a single fall-through successor to the block that
-    *reference_blk* previously fell through to.  This is much cheaper than
-    copy_block() because it does not duplicate every instruction of the
-    reference block.
-
-    The function preserves the original control-flow semantics that
-    `insert_nop_blk` relied on, so existing callers continue to work but the
-    heavy `mba.copy_block` cost (~2–3 s per large block) is removed.
-    """
-    # Allocate an empty block slot right after the reference block serial.
-    new_blk_serial = reference_blk.serial + 1
-    new_blk = mba.insert_block(new_blk_serial)
-
-    # 1. Populate with a single NOP so the block is not empty (Hex-Rays forbids
-    #    empty blocks).
-    nop_ins = minsn_t(reference_blk.start)
-    nop_ins.opcode = m_nop
-    new_blk.insert_into_block(nop_ins, new_blk.head)
-
-    # 2. Control-flow wiring: make the new block 1-way that falls through to
-    #    the original fall-through successor of `reference_blk` (serial+1).
-    successor_serial = reference_blk.serial + 1
-    new_blk.succset.push_back(successor_serial)
-    new_blk.type = BLT_1WAY
-
-    # Successor must list the new block as a predecessor.
-    succ_blk = mba.get_mblock(successor_serial)
-    succ_blk.predset.push_back(new_blk.serial)
-
-    # Pred sets of successor may need fixing ordering for verify.
-    succ_blk.mark_lists_dirty()
-    new_blk.mark_lists_dirty()
-
-    return new_blk
-
-
 def insert_nop_blk(blk: mblock_t) -> mblock_t:
-    """Replacement for the historical *copy-block‐then-NOP* implementation.
-
-    • Fast path: use the lightweight helper when the original block is
-      1-way and has no special flags beyond fall-through.  This covers the
-      large majority of `insert_nop_blk` use-cases (especially during
-      unflattening) and avoids an expensive `mba.copy_block`.
-
-    • Fallback: for exotic blocks (multi-way, call tail etc.) keep the old
-      semantics by delegating to the previous implementation.
-    """
     mba = blk.mba
-
-    # Safe, cheap case: single successor == fall-through to serial+1 and no
-    # complex control-flow flags.
-    if (
-        blk.nsucc() == 1
-        and blk.succset[0] == blk.serial + 1
-        and blk.type
-        in {
-            BLT_0WAY,
-            BLT_1WAY,
-        }
-    ):
-        try:
-            new_blk = _create_empty_block_after(mba, blk)
-            mba.mark_chains_dirty()
-            mba.verify(True)
-            return new_blk
-        except Exception as e:
-            helper_logger.warning(
-                "Fast insert_nop_blk failed for blk %s: %s – falling back to copy_block",
-                blk.serial,
-                e,
-            )
-
-    # ---------- Fallback to legacy behaviour ----------
     nop_block = mba.copy_block(blk, blk.serial + 1)
     cur_ins = nop_block.head
-    if cur_ins is None:
+    if cur_ins == None:
         cur_inst = minsn_t(blk.start)
         cur_inst.opcode = m_nop
         nop_block.insert_into_block(cur_inst, nop_block.head)
@@ -448,22 +373,33 @@ def insert_nop_blk(blk: mblock_t) -> mblock_t:
 
     nop_block.type = BLT_1WAY
 
-    # Remove any existing successors and link to fall-through
-    prev_succs = list(nop_block.succset)
-    for prev in prev_succs:
-        nop_block.succset._del(prev)
-        mba.get_mblock(prev).predset._del(nop_block.serial)
+    # We might have clone a block with multiple or no successor, thus we need to clean all
+    prev_successor_serials = [x for x in nop_block.succset]
 
-    successor_serial = nop_block.serial + 1
-    nop_block.succset.push_back(successor_serial)
-    mba.get_mblock(successor_serial).predset.push_back(nop_block.serial)
+    # Bookkeeping
+    for prev_successor_serial in prev_successor_serials:
+        nop_block.succset._del(prev_successor_serial)
+        prev_succ = mba.get_mblock(prev_successor_serial)
+        prev_succ.predset._del(nop_block.serial)
+        if prev_succ.serial != mba.qty - 1:
+            prev_succ.mark_lists_dirty()
 
+    nop_block.succset.push_back(nop_block.serial + 1)
     nop_block.mark_lists_dirty()
-    mba.get_mblock(successor_serial).mark_lists_dirty()
+
+    new_blk_successor = mba.get_mblock(nop_block.serial + 1)
+    new_blk_successor.predset.push_back(nop_block.serial)
+    if new_blk_successor.serial != mba.qty - 1:
+        new_blk_successor.mark_lists_dirty()
 
     mba.mark_chains_dirty()
-    mba.verify(True)
-    return nop_block
+    try:
+        mba.verify(True)
+        return nop_block
+    except RuntimeError as e:
+        helper_logger.error("Error in insert_nop_blk: {0}".format(e))
+        log_block_info(nop_block, helper_logger.error)
+        raise e
 
 
 def ensure_last_block_is_goto(mba: mbl_array_t) -> int:
