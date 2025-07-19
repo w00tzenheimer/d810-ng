@@ -1459,7 +1459,7 @@ def mop_to_ast_internal(
         or mop.d.l is None
         or mop.d.r is None
     ):
-        tree: AstBase
+        tree: AstBase | None
         if mop.t == ida_hexrays.mop_n:
             const_val = int(mop.nnn.value)
             const_size = mop.size
@@ -1507,11 +1507,25 @@ def mop_to_ast_internal(
                 tree.mop = const_mop  # Preserve the numeric mop for evaluators
                 tree.dest_size = const_size
             else:
-                # Could not extract – fall back to generic leaf so caller can
-                # still see something meaningful in debug output.
-                tree = AstLeaf(format_mop_t(mop))
-                tree.mop = mop
-                tree.dest_size = mop.size
+                # Could not extract – fall through to generic leaf
+                tree = None
+        else:
+            tree = None
+
+        # ------------------------------------------------------------------
+        # If we still haven’t built a node, create a generic AstLeaf now.  This
+        # guarantees that *tree* is always defined even if new mop_t kinds are
+        # introduced in future IDA versions.
+        # ------------------------------------------------------------------
+        if tree is None:
+            tree = AstLeaf(format_mop_t(mop))
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "[mop_to_ast_internal] Fallback to AstLeaf for mop type %s dstr=%s",
+                    mop_type_to_string(mop.t),
+                    str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
+                )
+            tree.dest_size = mop.size
 
         # For non-constant leaves we deliberately *do not* keep a reference
         # to the original mop_t object, because Hex-Rays may free or reuse
