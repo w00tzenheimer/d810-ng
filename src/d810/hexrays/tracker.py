@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict
+import functools
+from typing import Dict, List, Tuple, Union
 
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
 from d810.hexrays.cfg_utils import (
@@ -19,6 +20,7 @@ from d810.hexrays.hexrays_helpers import (
     equal_mops_ignore_size,
     get_blk_index,
     get_mop_index,
+    CacheImpl,
 )
 
 from ida_hexrays import *
@@ -277,6 +279,11 @@ def get_standard_and_memory_mop_lists(mop_in: mop_t) -> Tuple[List[mop_t], List[
 # The cur_mop_tracker_nb_path global variable is used to limit the number of MopTracker created
 cur_mop_tracker_nb_path = 0
 
+# Cache key -> List[MopHistory]. The key is a tuple of
+#   (blk_serial, ins_ea_or_None, tuple(sorted(mop_strings)), dispatcher_id)
+# This captures the heavy parameters influencing the result while remaining hashable.
+_SEARCH_BACKWARD_CACHE: CacheImpl = CacheImpl(max_size=1024)
+
 
 class MopTracker(object):
     def __init__(
@@ -305,6 +312,8 @@ class MopTracker(object):
     def reset():
         global cur_mop_tracker_nb_path
         cur_mop_tracker_nb_path = 0
+        # Clear the memoisation cache as we start analysing a new function.
+        _SEARCH_BACKWARD_CACHE.clear()
 
     def add_mop_definition(self, mop: mop_t, cst_value: int):
         self.constant_mops.append([mop, cst_value])
@@ -331,6 +340,20 @@ class MopTracker(object):
         must_use_pred=None,
         stop_at_first_duplication=False,
     ) -> List[MopHistory]:
+
+        ins_ea = ins.ea if ins is not None else None
+        key = (
+            blk.serial,
+            ins_ea,
+            tuple(sorted(format_mop_t(m) for m in self._unresolved_mops)),
+            id(self.dispatcher_info) if self.dispatcher_info else None,
+        )
+
+        cached = _SEARCH_BACKWARD_CACHE.get(key, None) if key in _SEARCH_BACKWARD_CACHE else None
+        if cached is not None:
+            # Return a deep copy to avoid mutating cached histories downstream.
+            return [hist.get_copy() for hist in cached]
+
         logger.debug(
             "Searching backward (reg): {0}".format(
                 [format_mop_t(x) for x in self._unresolved_mops]
@@ -438,6 +461,8 @@ class MopTracker(object):
                     self.avoid_list,
                     must_use_pred,
                 )
+        # Store in cache before returning
+        _SEARCH_BACKWARD_CACHE[key] = [hist.get_copy() for hist in possible_histories]
         return possible_histories
 
     def search_until_multiple_predecessor(
