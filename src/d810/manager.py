@@ -45,7 +45,18 @@ class D810Manager(object):
     def stop_profiling(self):
         if self.profiler.is_running:
             self.profiler.stop()
+            # Print to console first, as originally requested.
             self.profiler.print()
+            # The original implementation just printed to stdout, which is hard to find in IDA.
+            # Now, we save the report as an HTML file in the log directory for easy access.
+            output_path = self.log_dir / "d810_profile.html"
+            try:
+                with open(output_path, "w", encoding="utf-8") as f:
+                    f.write(self.profiler.output_html())
+                return str(output_path)
+            except Exception as e:
+                logger.error("Failed to save profiling report: %s", e)
+        return None
 
     def reload(self):
         self.stop()

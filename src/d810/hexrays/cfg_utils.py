@@ -1,12 +1,12 @@
 import logging
 from typing import List, Tuple
 
+import idaapi
+from ida_hexrays import *
+
 from d810.errors import ControlFlowException
 from d810.hexrays.hexrays_formatters import block_printer
 from d810.hexrays.hexrays_helpers import CONDITIONAL_JUMP_OPCODES
-
-import idaapi
-from ida_hexrays import *
 
 helper_logger = logging.getLogger("D810.helper")
 
@@ -384,10 +384,15 @@ def insert_nop_blk(blk: mblock_t) -> mblock_t:
         if prev_succ.serial != mba.qty - 1:
             prev_succ.mark_lists_dirty()
 
-    nop_block.succset.push_back(nop_block.serial + 1)
+    # After we insert a new block at position `reference_blk.serial + 1`, every
+    # subsequent block gets its serial incremented by one.  Therefore the
+    # original fall-through successor (previously `reference_blk.serial + 1`)
+    # is now located at `new_blk.serial + 1`.
+    successor_serial = nop_block.serial + 1
+    nop_block.succset.push_back(successor_serial)
     nop_block.mark_lists_dirty()
 
-    new_blk_successor = mba.get_mblock(nop_block.serial + 1)
+    new_blk_successor = mba.get_mblock(successor_serial)
     new_blk_successor.predset.push_back(nop_block.serial)
     if new_blk_successor.serial != mba.qty - 1:
         new_blk_successor.mark_lists_dirty()

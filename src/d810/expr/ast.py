@@ -1494,7 +1494,11 @@ def mop_to_ast_internal(
                         const_size,
                     )
                 tree = AstConstant(hex(const_val), const_val, const_size)
-                tree.mop = args[0]  # Preserve the numeric mop for evaluators
+                # Clone the numeric constant into a standalone mop_t to
+                # avoid lifetime issues with Hex-Rays internal objects.
+                const_mop = ida_hexrays.mop_t()
+                const_mop.make_number(args[0].nnn.value, args[0].size)
+                tree.mop = const_mop  # Preserve the numeric mop for evaluators
                 tree.dest_size = const_size
             else:
                 # Could not extract – fall back to generic leaf so caller can
