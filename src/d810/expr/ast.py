@@ -1321,9 +1321,13 @@ def mop_to_ast_internal(
     if mop.t == ida_hexrays.mop_d and mop.d.opcode == ida_hexrays.m_call:
         dest_mop = mop.d.d
         const_mop = None
+
         if dest_mop is not None:
+            # Case A: plain numeric constant
             if dest_mop.t == ida_hexrays.mop_n:
                 const_mop = dest_mop
+
+            # Case B: ldc wrapper around a constant
             elif (
                 dest_mop.t == ida_hexrays.mop_d
                 and dest_mop.d is not None
@@ -1333,19 +1337,32 @@ def mop_to_ast_internal(
             ):
                 const_mop = dest_mop.d.l
 
-        if const_mop and const_mop.nnn:
+            # Case C: typed-immediate held in a mop_f wrapper (e.g., <fast:_QWORD #0x42.8,char #4.1>.8)
+            elif dest_mop.t == ida_hexrays.mop_f and getattr(dest_mop, "f", None):
+                args = dest_mop.f.args
+                if (
+                    args
+                    and len(args) >= 1
+                    and args[0] is not None
+                    and args[0].t == ida_hexrays.mop_n
+                ):
+                    const_mop = args[0]
+
+        if const_mop is not None and getattr(const_mop, "nnn", None):
             const_val = int(const_mop.nnn.value)
-            assert const_val is not None
             const_size = const_mop.size
+
             tree = AstConstant(hex(const_val), const_val, const_size)
             tree.mop = const_mop
             tree.dest_size = const_size
+
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
                     "[mop_to_ast_internal] Collapsed call-with-constant to leaf 0x%X (size=%d)",
                     const_val,
                     const_size,
                 )
+
             new_index = len(context.unique_asts)
             tree.ast_index = new_index
             context.unique_asts.append(tree)
@@ -1596,10 +1613,11 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
             dest_mop = instruction.d
             const_mop = None
 
-            # Direct constant result
+            # Case A: direct constant result
             if dest_mop.t == ida_hexrays.mop_n:
                 const_mop = dest_mop
-            # Or destination is an ldc wrapping a constant
+
+            # Case B: ldc wrapping a constant
             elif (
                 dest_mop.t == ida_hexrays.mop_d
                 and dest_mop.d is not None
@@ -1609,19 +1627,33 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
             ):
                 const_mop = dest_mop.d.l
 
+            # Case C: typed-immediate constant packed in mop_f
+            elif dest_mop.t == ida_hexrays.mop_f and getattr(dest_mop, "f", None):
+                args = dest_mop.f.args
+                if (
+                    args
+                    and len(args) >= 1
+                    and args[0] is not None
+                    and args[0].t == ida_hexrays.mop_n
+                ):
+                    const_mop = args[0]
+
             if const_mop is not None:
                 const_value = int(const_mop.nnn.value)
                 const_size = const_mop.size
+
                 leaf = AstLeaf(hex(const_value))
                 leaf.mop = const_mop  # preserve original constant mop
                 leaf.dest_size = const_size
                 leaf.ea = _sanitize_ea(instruction.ea)
+
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "[minsn_to_ast] Collapsed call with constant destination to leaf 0x%X (size=%d)",
                         const_value,
                         const_size,
                     )
+
                 leaf.freeze()
                 return AstProxy(leaf)
 
