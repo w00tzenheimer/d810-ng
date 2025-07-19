@@ -1441,7 +1441,10 @@ def mop_to_ast_internal(
             const_size = ldc_src.size
 
             const_leaf = AstConstant(hex(const_val), const_val, const_size)
-            const_leaf.mop = ldc_src  # keep original constant mop
+            # Clone numeric mop to detach from Hex-Rays internal storage
+            cloned_mop = ida_hexrays.mop_t()
+            cloned_mop.make_number(const_val, const_size)
+            const_leaf.mop = cloned_mop
             const_leaf.dest_size = const_size
 
             new_index = len(context.unique_asts)
@@ -1464,6 +1467,9 @@ def mop_to_ast_internal(
             const_val = int(mop.nnn.value)
             const_size = mop.size
             tree = AstConstant(hex(const_val), const_val, const_size)
+            clone_mop = ida_hexrays.mop_t()
+            clone_mop.make_number(const_val, const_size)
+            tree.mop = clone_mop
             tree.dest_size = const_size
         elif mop.t == ida_hexrays.mop_f:
             """Handle typed-immediate wrappers produced by Hex-Rays.
@@ -1502,9 +1508,9 @@ def mop_to_ast_internal(
                 tree = AstConstant(hex(const_val), const_val, const_size)
                 # Clone the numeric constant into a standalone mop_t to
                 # avoid lifetime issues with Hex-Rays internal objects.
-                const_mop = ida_hexrays.mop_t()
-                const_mop.make_number(args[0].nnn.value, args[0].size)
-                tree.mop = const_mop  # Preserve the numeric mop for evaluators
+                clone = ida_hexrays.mop_t()
+                clone.make_number(const_val, const_size)
+                tree.mop = clone  # detached copy
                 tree.dest_size = const_size
             else:
                 # Could not extract – fall through to generic leaf
@@ -1640,7 +1646,10 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
 
             # Case A: direct constant result
             if dest_mop.t == ida_hexrays.mop_n:
-                const_mop = dest_mop
+                # Duplicate to avoid holding internal pointer
+                dup = ida_hexrays.mop_t()
+                dup.make_number(dest_mop.nnn.value, dest_mop.size)
+                const_mop = dup
 
             # Case B: ldc wrapping a constant
             elif (

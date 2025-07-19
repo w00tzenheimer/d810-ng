@@ -188,7 +188,7 @@ class InstructionOptimizerManager(optinsn_t):
         if blk.serial != self.current_blk_serial:
             # New basic block → purge AST cache once per block
             self.current_blk_serial = blk.serial
-            MOP_TO_AST_CACHE.clear()
+            # MOP_TO_AST_CACHE.clear()
 
     def add_optimizer(self, optimizer: InstructionOptimizer):
         self.instruction_optimizers.append(optimizer)
@@ -211,8 +211,10 @@ class InstructionOptimizerManager(optinsn_t):
         self.dump_intermediate_microcode = dump_intermediate_microcode
 
     def optimize(self, blk: mblock_t, ins: minsn_t) -> bool:
+        # Always start with a fresh AST cache to avoid dangling mop_t issues
+        MOP_TO_AST_CACHE.clear()
+
         # optimizer_log.info("Trying to optimize {0}".format(format_minsn_t(ins)))
-        # Cache is now cleared at block granularity (see log_info_on_input)
         for ins_optimizer in self.instruction_optimizers:
             self._last_optimizer_tried = ins_optimizer
             new_ins = ins_optimizer.get_optimized_instruction(blk, ins)
