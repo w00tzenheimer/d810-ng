@@ -22,6 +22,7 @@ from d810.hexrays.hexrays_formatters import (
     format_mop_t,
     mop_type_to_string,
     opcode_to_string,
+    sanitize_ea,
 )
 from d810.hexrays.hexrays_helpers import (  # already maps size→mask
     AND_TABLE,
@@ -475,8 +476,8 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         bits = ins.d.size * 8 if ins.d.size else 32
         if peephole_logger.isEnabledFor(logging.DEBUG):
             peephole_logger.debug(
-                "[fold_const] Checking ins @0x%X: %s  l=%s  r=%s  d=%s",
-                ins.ea,
+                "[fold_const] Checking ins @ 0x%X (opcode=%s) l=%s r=%s d=%s",
+                sanitize_ea(ins.ea),
                 opcode_to_string(ins.opcode),
                 _mop_to_str(ins.l),
                 _mop_to_str(ins.r),
@@ -635,7 +636,7 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         if peephole_logger.isEnabledFor(logging.DEBUG):
             peephole_logger.debug(
                 "[fold_const] No folding possible for ins at 0x%X (opcode=%s)",
-                ins.ea,
+                sanitize_ea(ins.ea),
                 opcode_to_string(ins.opcode),
             )
         # Nothing to do

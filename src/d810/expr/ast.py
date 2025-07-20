@@ -24,6 +24,7 @@ from d810.hexrays.hexrays_formatters import (
     format_mop_t,
     mop_type_to_string,
     opcode_to_string,
+    sanitize_ea,
 )
 from d810.hexrays.hexrays_helpers import (
     AND_TABLE,
@@ -35,12 +36,6 @@ from d810.hexrays.hexrays_helpers import (
 )
 
 logger = logging.getLogger("D810")
-
-
-def _sanitize_ea(ea: int | None) -> int | None:
-    if ea is None:
-        return None
-    return ea & idaapi.BADADDR  # BADADDR = 0xFFFF_FFFF_FFFF_FFFF on x64
 
 
 def get_constant_mop(value: int, size: int) -> ida_hexrays.mop_t:
@@ -1290,7 +1285,7 @@ def mop_to_ast_internal(
                 tree.func_name = mop.d.l.helper
                 tree.mop = mop
                 tree.dest_size = mop.size
-                tree.ea = _sanitize_ea(mop.d.ea)
+                tree.ea = sanitize_ea(mop.d.ea)
                 new_index = len(context.unique_asts)
                 tree.ast_index = new_index
                 context.unique_asts.append(tree)
@@ -1305,7 +1300,7 @@ def mop_to_ast_internal(
                 tree.func_name = mop.d.l.helper
                 tree.mop = mop
                 tree.dest_size = mop.size
-                tree.ea = _sanitize_ea(mop.d.ea)
+                tree.ea = sanitize_ea(mop.d.ea)
                 new_index = len(context.unique_asts)
                 tree.ast_index = new_index
                 context.unique_asts.append(tree)
@@ -1409,7 +1404,7 @@ def mop_to_ast_internal(
                 tree.dest_size = None
 
             tree.mop = mop
-            tree.ea = _sanitize_ea(mop.d.ea)
+            tree.ea = sanitize_ea(mop.d.ea)
 
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -1644,7 +1639,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                 leaf = AstConstant(hex(const_value), const_value, const_size)
                 leaf.mop = const_mop  # preserve original constant mop
                 leaf.dest_size = const_size
-                leaf.ea = _sanitize_ea(instruction.ea)
+                leaf.ea = sanitize_ea(instruction.ea)
 
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
