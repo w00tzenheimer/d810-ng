@@ -4,20 +4,9 @@ import logging
 import typing
 
 import ida_hexrays
-import idaapi
 
-from d810.expr.ast import AstBase, AstLeaf, AstNode, minsn_to_ast, mop_to_ast
-from d810.expr.utils import (
-    get_parity_flag,
-    rol1,
-    rol2,
-    rol4,
-    rol8,
-    ror1,
-    ror2,
-    ror4,
-    ror8,
-)
+from d810.expr.ast import AstBase, AstLeaf, AstNode, mop_to_ast
+from d810.expr.utils import get_parity_flag
 from d810.hexrays.hexrays_formatters import (
     format_mop_t,
     mop_type_to_string,
@@ -356,10 +345,22 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         ida_hexrays.MMAT_GLBOPT2,
     ]
 
+    # Class-level sentinel so multiple instances of the rule share it.
+    _last_mba_id: set[int] = set()
+
     @typing.override
     def check_and_replace(
         self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:
+
+        # Flush caches whenever we get a new mba.
+        if blk.mba.id not in self._last_mba_id:
+            peephole_logger.debug("[fold_const] New MBA detected! %s", blk.mba.id)
+            self._last_mba_id.add(blk.mba.id)
+            _MOP_STR_CACHE.clear()
+        else:
+            peephole_logger.debug("[fold_const] Previous MBA detected! %s", blk.mba.id)
+
         # Skip flow-control instructions that can never be folded to a constant.
         if ins.opcode in CONTROL_FLOW_OPCODES:
             return None
@@ -603,7 +604,11 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                                         e2,
                                         exc_info=True,
                                     )
-                        raise
+                        # Do NOT propagate the exception – it would abort the
+                        # entire optimisation pass when DEBUG is enabled.  By
+                        # returning None we instruct the peephole engine to
+                        # keep the original instruction unchanged.
+                        return None
                 return new
         else:
             if peephole_logger.isEnabledFor(logging.DEBUG):

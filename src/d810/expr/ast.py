@@ -1542,9 +1542,9 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
     # 1. Create a stable, hashable key from the mop_t object.
     cache_key = get_mop_key(mop)
 
-    # 2. Check if the result is already in the cache.
-    if _cache_lookup := MOP_TO_AST_CACHE.get(cache_key):
-        return AstProxy(_cache_lookup) if _cache_lookup is not None else None
+    # # 2. Check if the result is already in the cache.
+    # if _cache_lookup := MOP_TO_AST_CACHE.get(cache_key):
+    #     return AstProxy(_cache_lookup) if _cache_lookup is not None else None
 
     builder_context = AstBuilderContext()
     # Start the optimized recursive build.
