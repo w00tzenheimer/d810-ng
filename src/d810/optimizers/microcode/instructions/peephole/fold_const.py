@@ -28,12 +28,19 @@ from d810.hexrays.hexrays_helpers import (  # already maps size→mask
     AND_TABLE,
     CONTROL_FLOW_OPCODES,
     OPCODES_INFO,
+    CacheImpl,
 )
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
 
 peephole_logger = logging.getLogger("D810.optimizer")
+
+# ────────────────────────────────────────────────────────────────────
+# Lightweight cache for expensive mop→str conversions (debug only).
+# Uses the generic, thread-safe CacheImpl already available in hexrays_helpers
+# (bounded LRU by default, max 256 entries).
+_MOP_STR_CACHE: CacheImpl[tuple[int, int], str] = CacheImpl(max_size=256)
 
 # ────────────────────────────────────────────────────────────────────
 # Debug helpers
@@ -45,11 +52,29 @@ def _mop_to_str(mop: "ida_hexrays.mop_t | None") -> str:  # noqa: ANN001
 
     if mop is None:
         return "<None>"
+    # Fast cache: avoid calling into C++ pretty-printer for the same mop_t
+    key = (id(mop), getattr(mop, "valnum", 0))
     try:
-        return format_mop_t(mop)
+        return _MOP_STR_CACHE[key]
+    except KeyError:
+        pass
+
+    try:
+        res = format_mop_t(mop)
+        _MOP_STR_CACHE[key] = res
+        return res
     except Exception:  # pragma: no cover - logging helper, be robust
-        # Fall back to dstr() if available, else repr
-        return str(mop.dstr() if hasattr(mop, "dstr") else mop)
+        try:
+            res = str(mop.dstr())
+            _MOP_STR_CACHE[key] = res
+            return res
+        except Exception:
+            peephole_logger.error(
+                "[fold_const] [_mop_to_str] Error formatting mop, fall: %s", mop
+            )
+            res = f"<mop_t t={getattr(mop,'t',None)} size={getattr(mop,'size',None)}>"
+            _MOP_STR_CACHE[key] = res
+            return res
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -113,46 +138,6 @@ def _get_mask(bits):
         else:
             byte_size = 16
     return AND_TABLE[byte_size]
-
-
-def _fold_const_in_mop(mop: ida_hexrays.mop_t | None, bits: int) -> bool:
-    """
-    Walk a mop tree, try to constant-fold, return True if anything changed.
-    """
-    if mop is None or not isinstance(mop, ida_hexrays.mop_t):
-        return False
-
-    changed = False
-    if peephole_logger.isEnabledFor(logging.DEBUG):
-        peephole_logger.debug(
-            "[fold_const] [_fold_const_in_mop] mop: %s", _mop_to_str(mop)
-        )
-
-    # Recurse only if this is an embedded instruction (mop_d)
-    if mop.t == ida_hexrays.mop_d and mop.d is not None:
-        ins = mop.d
-        changed |= _fold_const_in_mop(ins.l, bits)
-        changed |= _fold_const_in_mop(ins.r, bits)
-
-        # After children are folded, see if *this* minsn collapses
-        ast = minsn_to_ast(ins)
-        val = _eval_subtree(ast, bits)
-        if val is not None:
-            cst = ida_hexrays.mop_t()
-            cst.make_number(val, ins.d.size)
-
-            # Replace the constant at the parent instruction safely, without
-            # mutating an operand that still belongs to Hex-Rays internal
-            # data structures.
-            if ins.l is mop:
-                ins.l = cst
-            elif ins.r is mop:
-                ins.r = cst
-            elif ins.d is mop:
-                ins.d = cst
-            changed = True
-
-    return changed
 
 
 def _fold_bottom_up(ast: AstBase, bits) -> tuple[AstBase, bool]:
@@ -541,7 +526,7 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
             if value is not None:
                 peephole_logger.info(
                     "[fold_const] Collapsed ins at 0x%X to constant 0x%X (opcode=%s)",
-                    ins.ea,
+                    sanitize_ea(ins.ea),
                     value,
                     opcode_to_string(ins.opcode),
                 )
@@ -550,11 +535,7 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 # opcode-specific union fields, which has been observed to crash IDA
                 # during later optimisation passes.
 
-                # Ensure EA is canonical (masked with BADADDR) to avoid crashes in
-                # passes that expect 0-based addresses.
-
-                canonical_ea = ins.ea & idaapi.BADADDR if ins.ea else 0
-                new = ida_hexrays.minsn_t(canonical_ea)
+                new = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
                 new.opcode = ida_hexrays.m_ldc
 
                 # ------------------------------------------------------------------
@@ -565,19 +546,16 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 # integers if we detect an invalid/zero size.
                 # ------------------------------------------------------------------
                 size_bytes = 4  # sensible default (32-bit)
-                if getattr(ins, "d", None) is not None and getattr(ins.d, "size", 0):
-                    # Keep the original size when it is a positive, supported value.
-                    if ins.d.size in [1, 2, 4, 8, 16]:
-                        size_bytes = ins.d.size
+                if ins.d and ins.d.size in (1, 2, 4, 8, 16):
+                    size_bytes = ins.d.size
 
                 cst = ida_hexrays.mop_t()
                 cst.make_number(value, size_bytes)
-
                 new.l = cst
 
                 # Destination operand: keep the *original* one (register, stack var…)
                 # but clone it to detach from the existing microcode tree.
-                if ins.d is not None:
+                if ins.d:
                     new.d = ida_hexrays.mop_t()
                     new.d.assign(ins.d)
                     new.d.size = size_bytes
@@ -592,7 +570,6 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 # immediately erase() it so Hex-Rays marks it as mop_z.
                 new.r = ida_hexrays.mop_t()
                 new.r.erase()  # produces a genuine mop_z
-
                 # ------------------------------------------------------------------
                 # Debug-only sanity checks
                 # ------------------------------------------------------------------
@@ -602,9 +579,8 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                         assert new.opcode == ida_hexrays.m_ldc
                     except AssertionError as _e:
                         peephole_logger.error(
-                            "[fold_const] Built invalid m_ldc: %s", _e
+                            "[fold_const] Built invalid m_ldc: %s", _e, exc_info=True
                         )
-                if peephole_logger.isEnabledFor(logging.DEBUG):
                     mba = blk.mba
                     # Force a deep verification; will throw ida_hexrays.InternalError50629
                     try:

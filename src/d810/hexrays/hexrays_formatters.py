@@ -34,7 +34,7 @@ def _cached_format_minsn_t(ea: int, raw_repr: str) -> str:
     return raw_repr.translate(_trans_table)
 
 
-def format_minsn_t(ins: minsn_t) -> str:
+def format_minsn_t(ins: minsn_t | None) -> str:
     """Return a printable representation of *ins*.
 
     The heavy-weight ``_print`` call is cached so subsequent requests for the
@@ -47,7 +47,7 @@ def format_minsn_t(ins: minsn_t) -> str:
     return _cached_format_minsn_t(ins.ea, raw)
 
 
-def format_mop_t(mop_in: mop_t) -> str:
+def format_mop_t(mop_in: mop_t | None) -> str:
     if mop_in is None:
         return "mop_t is None"
     if mop_in.t > 15:
