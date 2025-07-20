@@ -733,8 +733,14 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
     def _stop_profiling(self):
         logger.debug("Calling _stop_profiling")
         if hasattr(self.state, "manager") and self.state.manager:
-            self.state.manager.stop_profiling()
-            logger.info("Profiling stopped.")
+            output_path = self.state.manager.stop_profiling()
+            if output_path:
+                logger.info("Profiling stopped. Report saved to: %s", output_path)
+                QtWidgets.QMessageBox.information(
+                    self.parent,
+                    "Profiling Stopped",
+                    f"Profiling report saved to:\n{str(output_path)}",
+                )
         else:
             logger.warning("D810 manager not initialized; cannot stop profiling.")
 
