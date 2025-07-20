@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import typing
 
+import idaapi
 import ida_hexrays
 
 from d810.expr.ast import AstBase, AstLeaf, AstNode, minsn_to_ast, mop_to_ast
@@ -213,7 +214,11 @@ def _fold(op, a, b, bits):
     if op == ida_hexrays.m_shr:
         return (a >> b) & mask
     if op == ida_hexrays.m_sar:
-        return ((a ^ (1 << bits - 1)) >> b) ^ (1 << bits - 1)
+        mask = _get_mask(bits)
+        a &= mask
+        if a & (1 << (bits - 1)):
+            a -= 1 << bits
+        return (a >> b) & mask
     if op == ida_hexrays.m_setp:
         # Parity flag is set when low-byte of (a - b) has even parity (PF=1 → result 1)
         nb_bytes = bits // 8 if bits else 1
@@ -478,7 +483,6 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                     "[fold_const] Adjusted bits to supported size: %d", bits
                 )
 
-
         # Try to collapse the *whole* instruction tree.
         # Build AST from just the computation (left and right operands), not the destination
         if ins.opcode == ida_hexrays.m_mov:
@@ -515,12 +519,60 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                     value,
                     opcode_to_string(ins.opcode),
                 )
-                new = ida_hexrays.minsn_t(ins)  # clone to keep ea/sizes
+                # Build a *fresh* m_ldc instruction rather than mutating a clone of
+                # the old one.  Re-using the old `minsn_t` can leave garbage in
+                # opcode-specific union fields, which has been observed to crash IDA
+                # during later optimisation passes.
+
+                # Ensure EA is canonical (masked with BADADDR) to avoid crashes in
+                # passes that expect 0-based addresses.
+
+                canonical_ea = ins.ea & idaapi.BADADDR if ins.ea else 0
+                new = ida_hexrays.minsn_t(canonical_ea)
                 new.opcode = ida_hexrays.m_ldc
+
+                # ------------------------------------------------------------------
+                # SAFETY: `make_number` expects a *valid* byte size (1,2,4,8,16…).
+                # Some micro-instructions have their `d.size` field set to 0 which
+                # causes Hex-Rays to crash deep in the C++ layer when we pass it
+                # through blindly.  Guard against that by falling back to 4-byte
+                # integers if we detect an invalid/zero size.
+                # ------------------------------------------------------------------
+                size_bytes = 4  # sensible default (32-bit)
+                if getattr(ins, "d", None) is not None and getattr(ins.d, "size", 0):
+                    # Keep the original size when it is a positive, supported value.
+                    if ins.d.size in [1, 2, 4, 8, 16]:
+                        size_bytes = ins.d.size
+
                 cst = ida_hexrays.mop_t()
-                cst.make_number(value, ins.d.size)
+                cst.make_number(value, size_bytes)
+
                 new.l = cst
-                new.r.erase()
+
+                # Destination operand: keep the *original* one (register, stack var…)
+                # but clone it to detach from the existing microcode tree.
+                if ins.d is not None:
+                    new.d = ida_hexrays.mop_t()
+                    new.d.assign(ins.d)
+                    new.d.size = size_bytes
+                else:
+                    # Fallback: create an empty destination to keep microcode valid.
+                    new.d = ida_hexrays.mop_t()
+                    new.d.make_number(0, size_bytes)  # unused dummy
+
+                # `m_ldc` is unary: ensure right operand is set to mop_z.
+                new.r = ida_hexrays.mop_t()
+                new.r.make_number(0, 0)  # mop_z equivalent
+
+                # ------------------------------------------------------------------
+                # Debug-only sanity checks
+                # ------------------------------------------------------------------
+                if peephole_logger.isEnabledFor(logging.DEBUG):
+                    try:
+                        assert new.l.size == new.d.size
+                        assert new.opcode == ida_hexrays.m_ldc
+                    except AssertionError as _e:
+                        peephole_logger.error("[fold_const] Built invalid m_ldc: %s", _e)
                 return new
         else:
             if peephole_logger.isEnabledFor(logging.DEBUG):
