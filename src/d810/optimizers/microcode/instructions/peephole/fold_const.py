@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 import typing
 
-import idaapi
 import ida_hexrays
+import idaapi
 
 from d810.expr.ast import AstBase, AstLeaf, AstNode, minsn_to_ast, mop_to_ast
 from d810.expr.utils import (
@@ -18,7 +18,11 @@ from d810.expr.utils import (
     ror4,
     ror8,
 )
-from d810.hexrays.hexrays_formatters import format_mop_t, opcode_to_string
+from d810.hexrays.hexrays_formatters import (
+    format_mop_t,
+    mop_type_to_string,
+    opcode_to_string,
+)
 from d810.hexrays.hexrays_helpers import (  # already maps size→mask
     AND_TABLE,
     CONTROL_FLOW_OPCODES,
@@ -110,10 +114,6 @@ def _get_mask(bits):
     return AND_TABLE[byte_size]
 
 
-def _is_const(mop: ida_hexrays.mop_t) -> bool:
-    return mop is not None and mop.t == ida_hexrays.mop_n
-
-
 def _fold_const_in_mop(mop: ida_hexrays.mop_t | None, bits: int) -> bool:
     """
     Walk a mop tree, try to constant-fold, return True if anything changed.
@@ -122,6 +122,10 @@ def _fold_const_in_mop(mop: ida_hexrays.mop_t | None, bits: int) -> bool:
         return False
 
     changed = False
+    if peephole_logger.isEnabledFor(logging.DEBUG):
+        peephole_logger.debug(
+            "[fold_const] [_fold_const_in_mop] mop: %s", _mop_to_str(mop)
+        )
 
     # Recurse only if this is an embedded instruction (mop_d)
     if mop.t == ida_hexrays.mop_d and mop.d is not None:
@@ -226,7 +230,7 @@ def _fold(op, a, b, bits):
 
     _mcode_op: dict[str, typing.Any] = OPCODES_INFO[op]
     peephole_logger.error(
-        "Unknown opcode: %s with args: %s %s and bits: %s",
+        "[fold_const] [_fold] Unknown opcode: %s with args: %s %s and bits: %s",
         _mcode_op["name"],
         a,
         b,
@@ -239,7 +243,9 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     """returns an int if subtree is constant, else None"""
     if ast is None:
         if peephole_logger.isEnabledFor(logging.DEBUG):
-            peephole_logger.debug("[_eval_subtree] ast is None - cannot evaluate")
+            peephole_logger.debug(
+                "[fold_const] [_eval_subtree] ast is None - cannot evaluate"
+            )
         return None
 
     if ast.is_leaf():
@@ -247,7 +253,9 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
         mop = ast.mop
         if mop is None:
             if peephole_logger.isEnabledFor(logging.DEBUG):
-                peephole_logger.debug("[_eval_subtree] Leaf with no mop: %s", ast)
+                peephole_logger.debug(
+                    "[fold_const] [_eval_subtree] Leaf with no mop: %s", ast
+                )
             return None
 
         # Unified constant extraction (handles mop_n and wrapped constants)
@@ -320,7 +328,7 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     if l is None or r is None:
         if peephole_logger.isEnabledFor(logging.DEBUG):
             peephole_logger.debug(
-                "[_eval_subtree] Cannot evaluate binary node (%s) because %s is None",
+                "[fold_const] [_eval_subtree] Cannot evaluate binary node (%s) because %s is None",
                 opcode_to_string(ast.opcode),
                 "left" if l is None else "right",
             )
@@ -330,7 +338,7 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     if ast.opcode == ida_hexrays.m_call and ast.func_name:
         if peephole_logger.isEnabledFor(logging.DEBUG):
             peephole_logger.debug(
-                "[_eval_subtree] opcode == mcall, func_name: %s",
+                "[fold_const] [_eval_subtree] opcode == mcall, func_name: %s",
                 ast.func_name,
             )
         helper_name = ast.func_name.lstrip("!")
@@ -342,7 +350,7 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
             return ((l >> shift) | (l << (bits - shift))) & mask
         # if needed, handle specific widths or other variants
         peephole_logger.error(
-            "Unknown width for rotate call: %s with args: %s %s and bits: %s",
+            "[fold_const] [_eval_subtree] Unknown width for rotate call: %s with args: %s %s and bits: %s",
             helper_name,
             l,
             r,
@@ -443,10 +451,26 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                     )
                 )
             ):
-                peephole_logger.debug(
-                    "[fold_const] Skipping identity operation (should be handled by other rules)"
-                )
+                if peephole_logger.isEnabledFor(logging.DEBUG):
+                    peephole_logger.debug(
+                        "[fold_const] Skipping identity operation (should be handled by other rules)"
+                    )
                 return None
+
+        if ins.d is None or ins.d.t not in {
+            ida_hexrays.mop_r,
+            ida_hexrays.mop_l,
+            ida_hexrays.mop_S,
+            ida_hexrays.mop_v,
+        }:
+            if peephole_logger.isEnabledFor(logging.DEBUG):
+                peephole_logger.debug(
+                    "[fold_const] Skipping instruction with invalid destination: %s (opcode=%s) (ins.d.t=%s)",
+                    ins.dstr(),
+                    opcode_to_string(ins.opcode),
+                    mop_type_to_string(ins.d.t),
+                )
+            return None
 
         bits = ins.d.size * 8 if ins.d.size else 32
         if peephole_logger.isEnabledFor(logging.DEBUG):
@@ -572,7 +596,33 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                         assert new.l.size == new.d.size
                         assert new.opcode == ida_hexrays.m_ldc
                     except AssertionError as _e:
-                        peephole_logger.error("[fold_const] Built invalid m_ldc: %s", _e)
+                        peephole_logger.error(
+                            "[fold_const] Built invalid m_ldc: %s", _e
+                        )
+                if peephole_logger.isEnabledFor(logging.DEBUG):
+                    mba = blk.mba
+                    # Force a deep verification; will throw ida_hexrays.InternalError50629
+                    try:
+                        mba.verify(True)
+                    except RuntimeError as e:
+                        peephole_logger.error(
+                            "[fold_const] MBA verify failed after folding: %s",
+                            e,
+                            exc_info=True,
+                        )
+                        for bb in mba.basic_blocks:
+                            for ins2 in bb:
+                                try:
+                                    ins2.verify(True)  # verifies one instruction
+                                except RuntimeError as e2:
+                                    peephole_logger.error(
+                                        "[fold_const]  ↳ bad ins 0x%X %s : %s",
+                                        ins2.ea,
+                                        opcode_to_string(ins2.opcode),
+                                        e2,
+                                        exc_info=True,
+                                    )
+                        raise
                 return new
         else:
             if peephole_logger.isEnabledFor(logging.DEBUG):
