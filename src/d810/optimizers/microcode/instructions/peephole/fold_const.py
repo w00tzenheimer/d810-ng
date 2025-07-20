@@ -466,10 +466,11 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         }:
             if peephole_logger.isEnabledFor(logging.DEBUG):
                 peephole_logger.debug(
-                    "[fold_const] Skipping instruction with invalid destination: %s (opcode=%s) (ins.d.t=%s)",
-                    ins.dstr(),
+                    "[fold_const] Skipping instruction @ 0x%X with invalid destination: (opcode=%s) (ins.d.t=%s) -- dstr=%s",
+                    sanitize_ea(ins.ea),
                     opcode_to_string(ins.opcode),
                     mop_type_to_string(ins.d.t),
+                    ins.dstr(),
                 )
             return None
 
