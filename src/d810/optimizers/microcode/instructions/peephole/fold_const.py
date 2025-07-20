@@ -586,9 +586,12 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                     new.d = ida_hexrays.mop_t()
                     new.d.make_number(0, size_bytes)  # unused dummy
 
-                # `m_ldc` is unary: ensure right operand is set to mop_z.
+                # Right operand must be the special mop_z ("empty" operand).
+                # Using make_number(0, 0) results in a mop_n with size==0, which
+                # triggers verifier INTERR 50629.  Instead, create the mop_t and
+                # immediately erase() it so Hex-Rays marks it as mop_z.
                 new.r = ida_hexrays.mop_t()
-                new.r.make_number(0, 0)  # mop_z equivalent
+                new.r.erase()  # produces a genuine mop_z
 
                 # ------------------------------------------------------------------
                 # Debug-only sanity checks
