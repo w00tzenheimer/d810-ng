@@ -6,6 +6,7 @@ import threading
 import typing
 
 import pyinstrument
+
 from d810.conf import ConfigConstants, D810Configuration, ProjectConfiguration
 from d810.conf.loggers import clear_logs, configure_loggers
 from d810.hexrays.hexrays_hooks import (
@@ -42,10 +43,15 @@ class D810Manager(object):
         if not self.profiler.is_running:
             self.profiler.start()
 
-    def stop_profiling(self):
+    def stop_profiling(self) -> pathlib.Path | None:
         if self.profiler.is_running:
             self.profiler.stop()
             self.profiler.print()
+            # save the report as an HTML file in the log directory for easy access.
+            output_path = self.log_dir / "d810_profile.html"
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(self.profiler.output_html())
+            return output_path
 
     def reload(self):
         self.stop()

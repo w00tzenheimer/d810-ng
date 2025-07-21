@@ -4,14 +4,15 @@ import os
 import typing
 from typing import List
 
+import idaapi
+from ida_hexrays import mbl_array_t, minsn_t, mop_t, vd_printer_t
+
 from d810.hexrays.hexrays_helpers import (
     MATURITY_TO_STRING_DICT,
     MOP_TYPE_TO_STRING_DICT,
     OPCODES_INFO,
     STRING_TO_MATURITY_DICT,
 )
-
-from ida_hexrays import mbl_array_t, minsn_t, mop_t, vd_printer_t
 
 logger = logging.getLogger("D810.helper")
 
@@ -33,7 +34,7 @@ def _cached_format_minsn_t(ea: int, raw_repr: str) -> str:
     return raw_repr.translate(_trans_table)
 
 
-def format_minsn_t(ins: minsn_t) -> str:
+def format_minsn_t(ins: minsn_t | None) -> str:
     """Return a printable representation of *ins*.
 
     The heavy-weight ``_print`` call is cached so subsequent requests for the
@@ -46,7 +47,7 @@ def format_minsn_t(ins: minsn_t) -> str:
     return _cached_format_minsn_t(ins.ea, raw)
 
 
-def format_mop_t(mop_in: mop_t) -> str:
+def format_mop_t(mop_in: mop_t | None) -> str:
     if mop_in is None:
         return "mop_t is None"
     if mop_in.t > 15:
@@ -134,3 +135,9 @@ def dump_microcode_for_debug(mba: mbl_array_t, log_dir_path: str, name: str = ""
     )
     logger.info("Dumping microcode in file {0}...".format(mc_filename))
     write_mc_to_file(mba, mc_filename)
+
+
+def sanitize_ea(ea: int | None) -> int | None:
+    if ea is None:
+        return None
+    return ea & idaapi.BADADDR  # BADADDR = 0xFFFF_FFFF_FFFF_FFFF on x64
