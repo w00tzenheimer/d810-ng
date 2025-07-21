@@ -213,6 +213,9 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
             )
         )
 
+        # Enable live filtering of rules when the user types in the Rule Name box
+        self.in_cfg_name.textChanged.connect(self._on_rule_filter_changed)
+
     def update_form(
         self,
         config_description=None,
@@ -249,10 +252,19 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
         except ValueError:
             return None
 
+    def _on_rule_filter_changed(self, _txt):
+        """Refresh rule tables when the filter text changes."""
+        self.update_table_rule_selection()
+
+    def _get_filter_text(self) -> str:
+        """Return the current lowercase filter text."""
+        return self.in_cfg_name.text().lower().strip()
+
     def update_table_ins_rule_selection(self, activated_ins_rule_config_list=None):
         logger.debug("Calling update_table_ins_rule_selection")
         if activated_ins_rule_config_list is None:
             activated_ins_rule_config_list = []
+        filter_text = self._get_filter_text()
         self.table_ins_rule_selection.setRowCount(len(self.state.known_ins_rules))
         for i, rule in enumerate(self.state.known_ins_rules):
             rule_config = self._get_rule_config(
@@ -279,12 +291,16 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
             else:
                 item.setText("{}")
             self.table_ins_rule_selection.setItem(i, 3, item)
+            # Hide rows that don't match the filter
+            should_show = (not filter_text) or (filter_text in rule.name.lower())
+            self.table_ins_rule_selection.setRowHidden(i, not should_show)
         self.table_ins_rule_selection.resizeColumnsToContents()
 
     def update_table_blk_rule_selection(self, activated_blk_rule_config_list=None):
         logger.debug("Calling update_table_blk_rule_selection")
         if activated_blk_rule_config_list is None:
             activated_blk_rule_config_list = []
+        filter_text = self._get_filter_text()
         self.table_blk_rule_selection.setRowCount(len(self.state.known_blk_rules))
         for i, rule in enumerate(self.state.known_blk_rules):
             rule_config = self._get_rule_config(
@@ -303,7 +319,6 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
             self.table_blk_rule_selection.setItem(i, 1, item)
             item = QtWidgets.QTableWidgetItem()
             item.setText(rule.description)
-            print(rule.description)
             item.setFlags(QtCore.Qt.ItemIsEnabled)
             self.table_blk_rule_selection.setItem(i, 2, item)
             item = QtWidgets.QTableWidgetItem()
@@ -312,6 +327,9 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
             else:
                 item.setText("{}")
             self.table_blk_rule_selection.setItem(i, 3, item)
+            # Hide rows that don't match the filter
+            should_show = (not filter_text) or (filter_text in rule.name.lower())
+            self.table_blk_rule_selection.setRowHidden(i, not should_show)
         self.table_blk_rule_selection.resizeColumnsToContents()
 
     def save_rule_configuration(self):
