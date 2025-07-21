@@ -5,29 +5,31 @@ import typing
 
 import ida_hexrays
 
-from d810.expr.ast import AstBase, AstLeaf, AstNode, minsn_to_ast, mop_to_ast
-from d810.expr.utils import (
-    get_parity_flag,
-    rol1,
-    rol2,
-    rol4,
-    rol8,
-    ror1,
-    ror2,
-    ror4,
-    ror8,
+from d810.expr.ast import AstBase, AstLeaf, AstNode, mop_to_ast
+from d810.expr.utils import get_parity_flag
+from d810.hexrays.hexrays_formatters import (
+    format_mop_t,
+    mop_type_to_string,
+    opcode_to_string,
+    sanitize_ea,
 )
-from d810.hexrays.hexrays_formatters import format_mop_t, opcode_to_string
 from d810.hexrays.hexrays_helpers import (  # already maps size→mask
     AND_TABLE,
     CONTROL_FLOW_OPCODES,
     OPCODES_INFO,
+    CacheImpl,
 )
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
 
 peephole_logger = logging.getLogger("D810.optimizer")
+
+# ────────────────────────────────────────────────────────────────────
+# Lightweight cache for expensive mop→str conversions (debug only).
+# Uses the generic, thread-safe CacheImpl already available in hexrays_helpers
+# (bounded LRU by default, max 256 entries).
+_MOP_STR_CACHE: CacheImpl[tuple[int, int], str] = CacheImpl(max_size=256)
 
 # ────────────────────────────────────────────────────────────────────
 # Debug helpers
@@ -39,11 +41,29 @@ def _mop_to_str(mop: "ida_hexrays.mop_t | None") -> str:  # noqa: ANN001
 
     if mop is None:
         return "<None>"
+    # Fast cache: avoid calling into C++ pretty-printer for the same mop_t
+    key = (id(mop), getattr(mop, "valnum", 0))
     try:
-        return format_mop_t(mop)
+        return _MOP_STR_CACHE[key]
+    except KeyError:
+        pass
+
+    try:
+        res = format_mop_t(mop)
+        _MOP_STR_CACHE[key] = res
+        return res
     except Exception:  # pragma: no cover - logging helper, be robust
-        # Fall back to dstr() if available, else repr
-        return str(mop.dstr() if hasattr(mop, "dstr") else mop)
+        try:
+            res = str(mop.dstr())
+            _MOP_STR_CACHE[key] = res
+            return res
+        except Exception:
+            peephole_logger.error(
+                "[fold_const] [_mop_to_str] Error formatting mop, fall: %s", mop
+            )
+            res = f"<mop_t t={getattr(mop,'t',None)} size={getattr(mop,'size',None)}>"
+            _MOP_STR_CACHE[key] = res
+            return res
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -107,46 +127,6 @@ def _get_mask(bits):
         else:
             byte_size = 16
     return AND_TABLE[byte_size]
-
-
-def _is_const(mop: ida_hexrays.mop_t) -> bool:
-    return mop is not None and mop.t == ida_hexrays.mop_n
-
-
-def _fold_const_in_mop(mop: ida_hexrays.mop_t | None, bits: int) -> bool:
-    """
-    Walk a mop tree, try to constant-fold, return True if anything changed.
-    """
-    if mop is None or not isinstance(mop, ida_hexrays.mop_t):
-        return False
-
-    changed = False
-
-    # Recurse only if this is an embedded instruction (mop_d)
-    if mop.t == ida_hexrays.mop_d and mop.d is not None:
-        ins = mop.d
-        changed |= _fold_const_in_mop(ins.l, bits)
-        changed |= _fold_const_in_mop(ins.r, bits)
-
-        # After children are folded, see if *this* minsn collapses
-        ast = minsn_to_ast(ins)
-        val = _eval_subtree(ast, bits)
-        if val is not None:
-            cst = ida_hexrays.mop_t()
-            cst.make_number(val, ins.d.size)
-
-            # Replace the constant at the parent instruction safely, without
-            # mutating an operand that still belongs to Hex-Rays internal
-            # data structures.
-            if ins.l is mop:
-                ins.l = cst
-            elif ins.r is mop:
-                ins.r = cst
-            elif ins.d is mop:
-                ins.d = cst
-            changed = True
-
-    return changed
 
 
 def _fold_bottom_up(ast: AstBase, bits) -> tuple[AstBase, bool]:
@@ -213,7 +193,11 @@ def _fold(op, a, b, bits):
     if op == ida_hexrays.m_shr:
         return (a >> b) & mask
     if op == ida_hexrays.m_sar:
-        return ((a ^ (1 << bits - 1)) >> b) ^ (1 << bits - 1)
+        mask = _get_mask(bits)
+        a &= mask
+        if a & (1 << (bits - 1)):
+            a -= 1 << bits
+        return (a >> b) & mask
     if op == ida_hexrays.m_setp:
         # Parity flag is set when low-byte of (a - b) has even parity (PF=1 → result 1)
         nb_bytes = bits // 8 if bits else 1
@@ -221,7 +205,7 @@ def _fold(op, a, b, bits):
 
     _mcode_op: dict[str, typing.Any] = OPCODES_INFO[op]
     peephole_logger.error(
-        "Unknown opcode: %s with args: %s %s and bits: %s",
+        "[fold_const] [_fold] Unknown opcode: %s with args: %s %s and bits: %s",
         _mcode_op["name"],
         a,
         b,
@@ -234,7 +218,9 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     """returns an int if subtree is constant, else None"""
     if ast is None:
         if peephole_logger.isEnabledFor(logging.DEBUG):
-            peephole_logger.debug("[_eval_subtree] ast is None - cannot evaluate")
+            peephole_logger.debug(
+                "[fold_const] [_eval_subtree] ast is None - cannot evaluate"
+            )
         return None
 
     if ast.is_leaf():
@@ -242,7 +228,9 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
         mop = ast.mop
         if mop is None:
             if peephole_logger.isEnabledFor(logging.DEBUG):
-                peephole_logger.debug("[_eval_subtree] Leaf with no mop: %s", ast)
+                peephole_logger.debug(
+                    "[fold_const] [_eval_subtree] Leaf with no mop: %s", ast
+                )
             return None
 
         # Unified constant extraction (handles mop_n and wrapped constants)
@@ -315,7 +303,7 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     if l is None or r is None:
         if peephole_logger.isEnabledFor(logging.DEBUG):
             peephole_logger.debug(
-                "[_eval_subtree] Cannot evaluate binary node (%s) because %s is None",
+                "[fold_const] [_eval_subtree] Cannot evaluate binary node (%s) because %s is None",
                 opcode_to_string(ast.opcode),
                 "left" if l is None else "right",
             )
@@ -325,7 +313,7 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     if ast.opcode == ida_hexrays.m_call and ast.func_name:
         if peephole_logger.isEnabledFor(logging.DEBUG):
             peephole_logger.debug(
-                "[_eval_subtree] opcode == mcall, func_name: %s",
+                "[fold_const] [_eval_subtree] opcode == mcall, func_name: %s",
                 ast.func_name,
             )
         helper_name = ast.func_name.lstrip("!")
@@ -337,7 +325,7 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
             return ((l >> shift) | (l << (bits - shift))) & mask
         # if needed, handle specific widths or other variants
         peephole_logger.error(
-            "Unknown width for rotate call: %s with args: %s %s and bits: %s",
+            "[fold_const] [_eval_subtree] Unknown width for rotate call: %s with args: %s %s and bits: %s",
             helper_name,
             l,
             r,
@@ -357,13 +345,37 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         ida_hexrays.MMAT_GLBOPT2,
     ]
 
+    # Class-level sentinel so multiple instances of the rule share it.
+    _last_mba_id: set[int] = set()
+
     @typing.override
     def check_and_replace(
-        self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t
+        self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:
+
+        if blk is None:
+            peephole_logger.debug(
+                "[fold_const] blk is None, ins @ 0x%X with opcode: %s",
+                sanitize_ea(ins.ea),
+                opcode_to_string(ins.opcode),
+            )
+
         # Skip flow-control instructions that can never be folded to a constant.
         if ins.opcode in CONTROL_FLOW_OPCODES:
+            peephole_logger.debug("[fold_const] Skipping control flow instruction")
             return None
+
+        # Flush caches whenever we get a new mba.
+        if blk is not None:
+            if id(blk.mba) not in self._last_mba_id:
+                peephole_logger.debug("[fold_const] New MBA detected! %s", id(blk.mba))
+                self._last_mba_id.add(id(blk.mba))
+                _MOP_STR_CACHE.clear()
+            else:
+                peephole_logger.debug(
+                    "[fold_const] Previous MBA detected! %s", id(blk.mba)
+                )
+
         # Skip instructions that are already in optimal form or would cause infinite loops
         if ins.opcode == ida_hexrays.m_ldc:
             if peephole_logger.isEnabledFor(logging.DEBUG):
@@ -438,16 +450,38 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                     )
                 )
             ):
-                peephole_logger.debug(
-                    "[fold_const] Skipping identity operation (should be handled by other rules)"
-                )
+                if peephole_logger.isEnabledFor(logging.DEBUG):
+                    peephole_logger.debug(
+                        "[fold_const] Skipping identity operation (should be handled by other rules)"
+                    )
                 return None
+
+        # Accept additional destination kinds (mop_z = no explicit l-value, mop_f =
+        # typed-immediate wrapper).  We can still safely fold those as long as we
+        # rebuild a *valid* destination operand below.
+        if ins.d is None or ins.d.t not in {
+            ida_hexrays.mop_r,
+            ida_hexrays.mop_l,
+            ida_hexrays.mop_S,
+            ida_hexrays.mop_v,
+            ida_hexrays.mop_z,  # value-only expression (nested tree)
+            ida_hexrays.mop_f,  # typed immediate
+        }:
+            if peephole_logger.isEnabledFor(logging.DEBUG):
+                peephole_logger.debug(
+                    "[fold_const] Skipping instruction @ 0x%X with invalid destination: (opcode=%s) (ins.d.t=%s) -- dstr=%s",
+                    sanitize_ea(ins.ea),
+                    opcode_to_string(ins.opcode),
+                    mop_type_to_string(ins.d.t),
+                    ins.dstr(),
+                )
+            return None
 
         bits = ins.d.size * 8 if ins.d.size else 32
         if peephole_logger.isEnabledFor(logging.DEBUG):
             peephole_logger.debug(
-                "[fold_const] Checking ins @0x%X: %s  l=%s  r=%s  d=%s",
-                ins.ea,
+                "[fold_const] Checking ins @ 0x%X (opcode=%s) l=%s r=%s d=%s",
+                sanitize_ea(ins.ea),
                 opcode_to_string(ins.opcode),
                 _mop_to_str(ins.l),
                 _mop_to_str(ins.r),
@@ -477,7 +511,6 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 peephole_logger.debug(
                     "[fold_const] Adjusted bits to supported size: %d", bits
                 )
-
 
         # Try to collapse the *whole* instruction tree.
         # Build AST from just the computation (left and right operands), not the destination
@@ -511,16 +544,116 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
             if value is not None:
                 peephole_logger.info(
                     "[fold_const] Collapsed ins at 0x%X to constant 0x%X (opcode=%s)",
-                    ins.ea,
+                    sanitize_ea(ins.ea),
                     value,
                     opcode_to_string(ins.opcode),
                 )
-                new = ida_hexrays.minsn_t(ins)  # clone to keep ea/sizes
+                # Build a *fresh* m_ldc instruction rather than mutating a clone of
+                # the old one.  Re-using the old `minsn_t` can leave garbage in
+                # opcode-specific union fields, which has been observed to crash IDA
+                # during later optimisation passes.
+
+                new = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
                 new.opcode = ida_hexrays.m_ldc
+
+                # ------------------------------------------------------------------
+                # SAFETY: `make_number` expects a *valid* byte size (1,2,4,8,16…).
+                # Some micro-instructions have their `d.size` field set to 0 which
+                # causes Hex-Rays to crash deep in the C++ layer when we pass it
+                # through blindly.  Guard against that by falling back to 4-byte
+                # integers if we detect an invalid/zero size.
+                # ------------------------------------------------------------------
+                size_bytes = 4  # sensible default (32-bit)
+                if ins.d and ins.d.size in (1, 2, 4, 8, 16):
+                    size_bytes = ins.d.size
+
                 cst = ida_hexrays.mop_t()
-                cst.make_number(value, ins.d.size)
+                cst.make_number(value, size_bytes)
                 new.l = cst
-                new.r.erase()
+
+                # Destination operand: keep the *original* one (register, stack var…)
+                # but clone it to detach from the existing microcode tree.
+                if ins.d:
+                    new.d = ida_hexrays.mop_t()
+
+                    # Only copy the original destination when it is a *true* l-value
+                    # (register, stack var, global var, heap var).  Expression
+                    # destinations such as `mop_f` (typed immediates) or `mop_d`
+                    # (nested instruction) are *not* valid for an `m_ldc` and will
+                    # fail microcode verification.  In those cases we instead keep
+                    # a pure value-only destination by erasing the operand, which
+                    # turns it into a genuine `mop_z`.
+                    if ins.d.t in {
+                        ida_hexrays.mop_r,  # register
+                        ida_hexrays.mop_l,  # local stack var
+                        ida_hexrays.mop_S,  # global/static var
+                        ida_hexrays.mop_v,  # heap (global) var
+                    }:
+                        # Copy and normalise size
+                        new.d.assign(ins.d)
+                        new.d.size = size_bytes
+                    else:
+                        # Any other destination kind: produce a value-only mop_z but
+                        # keep size in sync so validation helpers do not complain.
+                        new.d.erase()
+                        new.d.size = size_bytes
+                else:
+                    # No destination provided → value-only operand (mop_z).
+                    new.d = ida_hexrays.mop_t()
+                    new.d.erase()
+                    new.d.size = size_bytes
+                # Right operand must be the special mop_z ("empty" operand).
+                # Using make_number(0, 0) results in a mop_n with size==0, which
+                # triggers verifier INTERR 50629.  Instead, create the mop_t and
+                # immediately erase() it so Hex-Rays marks it as mop_z.
+                new.r = ida_hexrays.mop_t()
+                new.r.erase()  # produces a genuine mop_z
+                # ------------------------------------------------------------------
+                # Debug-only sanity checks
+                # ------------------------------------------------------------------
+                if peephole_logger.isEnabledFor(logging.DEBUG):
+                    # Sanity-check: size agreement when destination *has* a size.
+                    if new.d.t != ida_hexrays.mop_z and new.d.size not in (0, None):
+                        try:
+                            assert new.l.size == new.d.size
+                        except AssertionError as _e:
+                            peephole_logger.error(
+                                "[fold_const] Built m_ldc with mismatching sizes (l=%d, d=%d): %s",
+                                new.l.size,
+                                new.d.size,
+                                _e,
+                                exc_info=True,
+                            )
+                    assert new.opcode == ida_hexrays.m_ldc
+                    # For top-level instructions we can run an expensive verify().
+                    if blk is not None:
+                        mba = blk.mba
+                        # Force a deep verification; will throw ida_hexrays.InternalError50629
+                        try:
+                            mba.verify(True)
+                        except RuntimeError as e:
+                            peephole_logger.error(
+                                "[fold_const] MBA verify failed after folding: %s",
+                                e,
+                                exc_info=True,
+                            )
+                            for bb in mba.basic_blocks:
+                                for ins2 in bb:
+                                    try:
+                                        ins2.verify(True)  # verifies one instruction
+                                    except RuntimeError as e2:
+                                        peephole_logger.error(
+                                            "[fold_const]  ↳ bad ins 0x%X %s : %s",
+                                            ins2.ea,
+                                            opcode_to_string(ins2.opcode),
+                                            e2,
+                                            exc_info=True,
+                                        )
+                            # Do NOT propagate the exception – it would abort the
+                            # entire optimisation pass when DEBUG is enabled.  By
+                            # returning None we instruct the peephole engine to
+                            # keep the original instruction unchanged.
+                            return None
                 return new
         else:
             if peephole_logger.isEnabledFor(logging.DEBUG):
@@ -533,7 +666,7 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         if peephole_logger.isEnabledFor(logging.DEBUG):
             peephole_logger.debug(
                 "[fold_const] No folding possible for ins at 0x%X (opcode=%s)",
-                ins.ea,
+                sanitize_ea(ins.ea),
                 opcode_to_string(ins.opcode),
             )
         # Nothing to do
