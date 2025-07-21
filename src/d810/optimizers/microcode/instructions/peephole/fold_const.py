@@ -354,12 +354,12 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
     ) -> ida_hexrays.minsn_t | None:
 
         # Flush caches whenever we get a new mba.
-        if blk.mba.id not in self._last_mba_id:
-            peephole_logger.debug("[fold_const] New MBA detected! %s", blk.mba.id)
-            self._last_mba_id.add(blk.mba.id)
+        if id(blk.mba) not in self._last_mba_id:
+            peephole_logger.debug("[fold_const] New MBA detected! %s", id(blk.mba))
+            self._last_mba_id.add(id(blk.mba))
             _MOP_STR_CACHE.clear()
         else:
-            peephole_logger.debug("[fold_const] Previous MBA detected! %s", blk.mba.id)
+            peephole_logger.debug("[fold_const] Previous MBA detected! %s", id(blk.mba))
 
         # Skip flow-control instructions that can never be folded to a constant.
         if ins.opcode in CONTROL_FLOW_OPCODES:
