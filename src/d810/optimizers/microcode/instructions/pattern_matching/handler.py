@@ -222,6 +222,11 @@ class PatternOptimizer(InstructionOptimizer):
             self.cur_maturity = blk.mba.maturity
         if self.cur_maturity not in self.maturities:
             return None
+        # Skip this optimizer entirely when no pattern-matching rules are configured.
+        # This avoids the (potentially expensive) AST conversion and pattern lookup
+        # overhead when the user has not enabled any pattern rules.
+        if len(self.rules) == 0:
+            return None
         tmp = minsn_to_ast(ins)
         if tmp is None:
             return None
