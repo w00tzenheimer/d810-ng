@@ -466,6 +466,7 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
             ida_hexrays.mop_v,
             ida_hexrays.mop_z,  # value-only expression (nested tree)
             ida_hexrays.mop_f,  # typed immediate
+            ida_hexrays.mop_d,  # destination is an expression (will be erased)
         }:
             if peephole_logger.isEnabledFor(logging.DEBUG):
                 peephole_logger.debug(
