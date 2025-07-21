@@ -350,8 +350,21 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
 
     @typing.override
     def check_and_replace(
-        self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t
+        self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:
+
+        if blk is None:
+            peephole_logger.debug(
+                "[fold_const] blk is None, ins @ 0x%X with opcode: %s",
+                sanitize_ea(ins.ea),
+                opcode_to_string(ins.opcode),
+            )
+            return None
+
+        # Skip flow-control instructions that can never be folded to a constant.
+        if ins.opcode in CONTROL_FLOW_OPCODES:
+            peephole_logger.debug("[fold_const] Skipping control flow instruction")
+            return None
 
         # Flush caches whenever we get a new mba.
         if id(blk.mba) not in self._last_mba_id:
@@ -361,9 +374,6 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         else:
             peephole_logger.debug("[fold_const] Previous MBA detected! %s", id(blk.mba))
 
-        # Skip flow-control instructions that can never be folded to a constant.
-        if ins.opcode in CONTROL_FLOW_OPCODES:
-            return None
         # Skip instructions that are already in optimal form or would cause infinite loops
         if ins.opcode == ida_hexrays.m_ldc:
             if peephole_logger.isEnabledFor(logging.DEBUG):
