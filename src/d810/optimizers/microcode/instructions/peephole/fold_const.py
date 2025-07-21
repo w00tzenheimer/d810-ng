@@ -456,11 +456,16 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                     )
                 return None
 
+        # Accept additional destination kinds (mop_z = no explicit l-value, mop_f =
+        # typed-immediate wrapper).  We can still safely fold those as long as we
+        # rebuild a *valid* destination operand below.
         if ins.d is None or ins.d.t not in {
             ida_hexrays.mop_r,
             ida_hexrays.mop_l,
             ida_hexrays.mop_S,
             ida_hexrays.mop_v,
+            ida_hexrays.mop_z,  # value-only expression (nested tree)
+            ida_hexrays.mop_f,  # typed immediate
         }:
             if peephole_logger.isEnabledFor(logging.DEBUG):
                 peephole_logger.debug(
@@ -570,8 +575,14 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 # but clone it to detach from the existing microcode tree.
                 if ins.d:
                     new.d = ida_hexrays.mop_t()
-                    new.d.assign(ins.d)
-                    new.d.size = size_bytes
+                    if ins.d.t == ida_hexrays.mop_z:
+                        # Keep destination as genuine mop_z (size is meaningless)
+                        new.d.erase()
+                    else:
+                        new.d.assign(ins.d)
+                        # Only set size for real l-values; mop_f keeps its own size.
+                        if new.d.t in {ida_hexrays.mop_r, ida_hexrays.mop_l, ida_hexrays.mop_S, ida_hexrays.mop_v}:
+                            new.d.size = size_bytes
                 else:
                     # Fallback: create an empty destination to keep microcode valid.
                     new.d = ida_hexrays.mop_t()
@@ -594,33 +605,35 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                         peephole_logger.error(
                             "[fold_const] Built invalid m_ldc: %s", _e, exc_info=True
                         )
-                    mba = blk.mba
-                    # Force a deep verification; will throw ida_hexrays.InternalError50629
-                    try:
-                        mba.verify(True)
-                    except RuntimeError as e:
-                        peephole_logger.error(
-                            "[fold_const] MBA verify failed after folding: %s",
-                            e,
-                            exc_info=True,
-                        )
-                        for bb in mba.basic_blocks:
-                            for ins2 in bb:
-                                try:
-                                    ins2.verify(True)  # verifies one instruction
-                                except RuntimeError as e2:
-                                    peephole_logger.error(
-                                        "[fold_const]  ↳ bad ins 0x%X %s : %s",
-                                        ins2.ea,
-                                        opcode_to_string(ins2.opcode),
-                                        e2,
-                                        exc_info=True,
-                                    )
-                        # Do NOT propagate the exception – it would abort the
-                        # entire optimisation pass when DEBUG is enabled.  By
-                        # returning None we instruct the peephole engine to
-                        # keep the original instruction unchanged.
-                        return None
+                    # For top-level instructions we can run an expensive verify().
+                    if blk is not None:
+                        mba = blk.mba
+                        # Force a deep verification; will throw ida_hexrays.InternalError50629
+                        try:
+                            mba.verify(True)
+                        except RuntimeError as e:
+                            peephole_logger.error(
+                                "[fold_const] MBA verify failed after folding: %s",
+                                e,
+                                exc_info=True,
+                            )
+                            for bb in mba.basic_blocks:
+                                for ins2 in bb:
+                                    try:
+                                        ins2.verify(True)  # verifies one instruction
+                                    except RuntimeError as e2:
+                                        peephole_logger.error(
+                                            "[fold_const]  ↳ bad ins 0x%X %s : %s",
+                                            ins2.ea,
+                                            opcode_to_string(ins2.opcode),
+                                            e2,
+                                            exc_info=True,
+                                        )
+                            # Do NOT propagate the exception – it would abort the
+                            # entire optimisation pass when DEBUG is enabled.  By
+                            # returning None we instruct the peephole engine to
+                            # keep the original instruction unchanged.
+                            return None
                 return new
         else:
             if peephole_logger.isEnabledFor(logging.DEBUG):
