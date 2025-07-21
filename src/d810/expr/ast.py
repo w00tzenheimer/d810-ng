@@ -1425,19 +1425,26 @@ def mop_to_ast_internal(
         and mop.d is not None
         and mop.d.opcode == ida_hexrays.m_ldc
     ):
-        # Treat an embedded ldc instruction as a constant leaf.
+        # Only treat it as constant if the *source* of the ldc is itself a
+        # numeric constant.  Otherwise we ignore the ldc wrapper and fall
+        # back to the generic leaf logic below.
         ldc_src = mop.d.l
         if ldc_src is not None and ldc_src.t == ida_hexrays.mop_n:
             const_val = int(ldc_src.nnn.value)
             const_size = ldc_src.size
-            tree = AstConstant(hex(const_val), const_val, const_size)
-            tree.mop = ldc_src  # keep original constant mop
-            tree.dest_size = const_size
-        new_index = len(context.unique_asts)
-        tree.ast_index = new_index
-        context.unique_asts.append(tree)
-        context.mop_key_to_index[key] = new_index
-        return tree
+
+            const_leaf = AstConstant(hex(const_val), const_val, const_size)
+            # Clone numeric mop to detach from Hex-Rays internal storage
+            cloned_mop = ida_hexrays.mop_t()
+            cloned_mop.make_number(const_val, const_size)
+            const_leaf.mop = cloned_mop
+            const_leaf.dest_size = const_size
+
+            new_index = len(context.unique_asts)
+            const_leaf.ast_index = new_index
+            context.unique_asts.append(const_leaf)
+            context.mop_key_to_index[key] = new_index
+            return const_leaf
 
     # Fallback for any unhandled mop: treat as a leaf.
     # This is for simple operands (registers, stack vars) or complex
@@ -1448,11 +1455,14 @@ def mop_to_ast_internal(
         or mop.d.l is None
         or mop.d.r is None
     ):
-        tree: AstBase
+        tree: AstBase | None
         if mop.t == ida_hexrays.mop_n:
             const_val = int(mop.nnn.value)
             const_size = mop.size
             tree = AstConstant(hex(const_val), const_val, const_size)
+            clone_mop = ida_hexrays.mop_t()
+            clone_mop.make_number(const_val, const_size)
+            tree.mop = clone_mop  # detached copy
             tree.dest_size = const_size  # detached copy
         elif mop.t == ida_hexrays.mop_f:
             """Handle typed-immediate wrappers produced by Hex-Rays.
@@ -1490,18 +1500,40 @@ def mop_to_ast_internal(
                     )
                 tree = AstConstant(hex(const_val), const_val, const_size)
                 tree.mop = args[0]  # Preserve the numeric mop for evaluators
-                # # Clone the numeric constant into a standalone mop_t to
-                # # avoid lifetime issues with Hex-Rays internal objects.
-                # const_mop = ida_hexrays.mop_t()
-                # const_mop.make_number(args[0].nnn.value, args[0].size)
-                # tree.mop = const_mop  # Preserve the numeric mop for evaluators
+                # Clone the numeric constant into a standalone mop_t to
+                # avoid lifetime issues with Hex-Rays internal objects.
+                clone = ida_hexrays.mop_t()
+                clone.make_number(const_val, const_size)
+                tree.mop = clone  # detached copy
                 tree.dest_size = const_size
             else:
-                # Could not extract – fall back to generic leaf so caller can
-                # still see something meaningful in debug output.
-                tree = AstLeaf(format_mop_t(mop))
-                tree.mop = mop
+                # Could not extract – fall through to generic leaf
+                tree = None
+        else:
+            tree = None
+
+        # ------------------------------------------------------------------
+        # If we still haven’t built a node, create a generic AstLeaf now.  This
+        # guarantees that *tree* is always defined even if new mop_t kinds are
+        # introduced in future IDA versions.
+        # ------------------------------------------------------------------
+        if tree is None:
+            tree = AstLeaf(format_mop_t(mop))
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "[mop_to_ast_internal] Fallback to AstLeaf for mop type %s dstr=%s",
+                    mop_type_to_string(mop.t),
+                    str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
+                )
                 tree.dest_size = mop.size
+
+        # For non-constant leaves we deliberately *do not* keep a reference
+        # to the original mop_t object, because Hex-Rays may free or reuse
+        # it after micro-optimisations, leading to use-after-free crashes.
+        # Only constant leaves benefit from holding the numeric mop to
+        # speed up further evaluations.
+        if tree.is_constant():
+            tree.mop = getattr(tree, "mop", None) or mop
         else:
             tree = AstLeaf(format_mop_t(mop))
             if logger.isEnabledFor(logging.DEBUG):
@@ -1615,7 +1647,10 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
 
             # Case A: direct constant result
             if dest_mop.t == ida_hexrays.mop_n:
-                const_mop = dest_mop
+                # Duplicate to avoid holding internal pointer
+                dup = ida_hexrays.mop_t()
+                dup.make_number(dest_mop.nnn.value, dest_mop.size)
+                const_mop = dup
 
             # Case B: ldc wrapping a constant
             elif (
