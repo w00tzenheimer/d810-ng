@@ -359,7 +359,6 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 sanitize_ea(ins.ea),
                 opcode_to_string(ins.opcode),
             )
-            return None
 
         # Skip flow-control instructions that can never be folded to a constant.
         if ins.opcode in CONTROL_FLOW_OPCODES:
@@ -367,12 +366,15 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
             return None
 
         # Flush caches whenever we get a new mba.
-        if id(blk.mba) not in self._last_mba_id:
-            peephole_logger.debug("[fold_const] New MBA detected! %s", id(blk.mba))
-            self._last_mba_id.add(id(blk.mba))
-            _MOP_STR_CACHE.clear()
-        else:
-            peephole_logger.debug("[fold_const] Previous MBA detected! %s", id(blk.mba))
+        if blk is not None:
+            if id(blk.mba) not in self._last_mba_id:
+                peephole_logger.debug("[fold_const] New MBA detected! %s", id(blk.mba))
+                self._last_mba_id.add(id(blk.mba))
+                _MOP_STR_CACHE.clear()
+            else:
+                peephole_logger.debug(
+                    "[fold_const] Previous MBA detected! %s", id(blk.mba)
+                )
 
         # Skip instructions that are already in optimal form or would cause infinite loops
         if ins.opcode == ida_hexrays.m_ldc:
