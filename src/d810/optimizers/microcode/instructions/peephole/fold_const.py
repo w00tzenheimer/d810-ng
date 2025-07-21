@@ -575,19 +575,33 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 # but clone it to detach from the existing microcode tree.
                 if ins.d:
                     new.d = ida_hexrays.mop_t()
-                    if ins.d.t == ida_hexrays.mop_z:
-                        # Keep destination as genuine mop_z (size is meaningless)
-                        new.d.erase()
-                    else:
-                        new.d.assign(ins.d)
-                        # Only set size for real l-values; mop_f keeps its own size.
-                        if new.d.t in {ida_hexrays.mop_r, ida_hexrays.mop_l, ida_hexrays.mop_S, ida_hexrays.mop_v}:
-                            new.d.size = size_bytes
-                else:
-                    # Fallback: create an empty destination to keep microcode valid.
-                    new.d = ida_hexrays.mop_t()
-                    new.d.make_number(0, size_bytes)  # unused dummy
 
+                    # Only copy the original destination when it is a *true* l-value
+                    # (register, stack var, global var, heap var).  Expression
+                    # destinations such as `mop_f` (typed immediates) or `mop_d`
+                    # (nested instruction) are *not* valid for an `m_ldc` and will
+                    # fail microcode verification.  In those cases we instead keep
+                    # a pure value-only destination by erasing the operand, which
+                    # turns it into a genuine `mop_z`.
+                    if ins.d.t in {
+                        ida_hexrays.mop_r,  # register
+                        ida_hexrays.mop_l,  # local stack var
+                        ida_hexrays.mop_S,  # global/static var
+                        ida_hexrays.mop_v,  # heap (global) var
+                    }:
+                        # Copy and normalise size
+                        new.d.assign(ins.d)
+                        new.d.size = size_bytes
+                    else:
+                        # Any other destination kind: produce a value-only mop_z but
+                        # keep size in sync so validation helpers do not complain.
+                        new.d.erase()
+                        new.d.size = size_bytes
+                else:
+                    # No destination provided → value-only operand (mop_z).
+                    new.d = ida_hexrays.mop_t()
+                    new.d.erase()
+                    new.d.size = size_bytes
                 # Right operand must be the special mop_z ("empty" operand).
                 # Using make_number(0, 0) results in a mop_n with size==0, which
                 # triggers verifier INTERR 50629.  Instead, create the mop_t and
@@ -598,13 +612,19 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 # Debug-only sanity checks
                 # ------------------------------------------------------------------
                 if peephole_logger.isEnabledFor(logging.DEBUG):
-                    try:
-                        assert new.l.size == new.d.size
-                        assert new.opcode == ida_hexrays.m_ldc
-                    except AssertionError as _e:
-                        peephole_logger.error(
-                            "[fold_const] Built invalid m_ldc: %s", _e, exc_info=True
-                        )
+                    # Sanity-check: size agreement when destination *has* a size.
+                    if new.d.t != ida_hexrays.mop_z and new.d.size not in (0, None):
+                        try:
+                            assert new.l.size == new.d.size
+                        except AssertionError as _e:
+                            peephole_logger.error(
+                                "[fold_const] Built m_ldc with mismatching sizes (l=%d, d=%d): %s",
+                                new.l.size,
+                                new.d.size,
+                                _e,
+                                exc_info=True,
+                            )
+                    assert new.opcode == ida_hexrays.m_ldc
                     # For top-level instructions we can run an expensive verify().
                     if blk is not None:
                         mba = blk.mba
