@@ -994,11 +994,11 @@ class AstProxy(AstBase):
 
     @typing.override
     def __str__(self):
-        return f"AstProxy({str(self._target)})"
+        return f"AstProxy({self._target.__class__.__name__}({str(self._target)}))"
 
     @typing.override
     def __repr__(self):
-        return f"AstProxy({repr(self._target)})"
+        return f"AstProxy({self._target.__class__.__name__}({repr(self._target)}))"
 
     # Explicitly forward critical leaf data that callers expect to access
     # directly.  Without these properties Python finds the *class*-level
