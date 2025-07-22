@@ -1,20 +1,26 @@
+import abc
 import logging
 
-from d810.optimizers.microcode.handler import DEFAULT_FLOW_MATURITIES, OptimizationRule
-
 import idc
+
+from d810.optimizers.microcode.handler import DEFAULT_FLOW_MATURITIES, OptimizationRule
 
 logger = logging.getLogger("D810.optimizer")
 
 
-class FlowOptimizationRule(OptimizationRule):
+class FlowOptimizationRule(OptimizationRule, abc.ABC):
     def __init__(self):
         super().__init__()
         self.maturities = DEFAULT_FLOW_MATURITIES
         self.use_whitelist = False
-        self.whitelisted_function_ea_list = []
+        self.whitelisted_function_ea_list: list[int] = []
         self.use_blacklist = False
-        self.blacklisted_function_ea_list = []
+        self.blacklisted_function_ea_list: list[int] = []
+
+    @abc.abstractmethod
+    def optimize(self, blk):
+        """Perform the optimization on *blk* and return the number of changes."""
+        raise NotImplementedError
 
     def configure(self, kwargs):
         super().configure(kwargs)

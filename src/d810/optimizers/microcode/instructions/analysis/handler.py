@@ -1,4 +1,7 @@
+import abc
 import logging
+
+from ida_hexrays import *
 
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.handler import (
@@ -6,13 +9,13 @@ from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
 )
 
-from ida_hexrays import *
-
 optimizer_logger = logging.getLogger("D810.optimizer")
 
 
-class InstructionAnalysisRule(InstructionOptimizationRule):
-    def analyze_instruction(self, blk, ins):
+class InstructionAnalysisRule(InstructionOptimizationRule, abc.ABC):
+    @abc.abstractmethod
+    def analyze_instruction(self, blk: mblock_t, ins: minsn_t):
+        """Analyze the instruction and return a replacement instruction if the rule matches, otherwise None."""
         raise NotImplementedError
 
 

@@ -1,10 +1,12 @@
+import abc
+
 from d810.optimizers.microcode.instructions.handler import (
     GenericPatternRule,
     InstructionOptimizer,
 )
 
 
-class Z3Rule(GenericPatternRule):
+class Z3Rule(GenericPatternRule, abc.ABC):
     pass
 
 

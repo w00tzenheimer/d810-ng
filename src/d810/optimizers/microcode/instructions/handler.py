@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import abc
 import logging
+import typing
 from typing import List
+
+import ida_hexrays
 
 from d810.errors import D810Exception
 from d810.expr.ast import AstNode, minsn_to_ast
@@ -9,25 +13,29 @@ from d810.hexrays.hexrays_formatters import format_minsn_t, maturity_to_string
 from d810.optimizers.microcode.handler import OptimizationRule
 from d810.registry import Registrant
 
-import ida_hexrays
-
 d810_logger = logging.getLogger("D810")
 optimizer_logger = logging.getLogger("D810.optimizer")
 
 
-class InstructionOptimizationRule(OptimizationRule):
+class InstructionOptimizationRule(OptimizationRule, abc.ABC):
+    """Base class for *instruction*-level optimizations.
+
+    This class is now marked as *abstract* so that it is skipped when
+    collecting concrete rules for presentation in the GUI.
+    """
+
     def __init__(self):
         super().__init__()
         self.maturities = []
 
+    @abc.abstractmethod
     def check_and_replace(self, blk, ins):
-        return None
+        """Return a replacement instruction if the rule matches, otherwise None."""
+        raise NotImplementedError
 
 
-class GenericPatternRule(InstructionOptimizationRule):
-    PATTERN = None
-    PATTERNS = None
-    REPLACEMENT_PATTERN = None
+class GenericPatternRule(InstructionOptimizationRule, abc.ABC):
+    PATTERNS: list[AstNode] | None = None
 
     def __init__(self):
         super().__init__()
@@ -35,9 +43,22 @@ class GenericPatternRule(InstructionOptimizationRule):
         if self.PATTERNS is not None:
             self.pattern_candidates += self.PATTERNS
 
-    def check_candidate(self, candidate: AstNode):
-        # Perform rule specific checks
-        return False
+    @abc.abstractmethod
+    def check_candidate(self, candidate: AstNode) -> bool:
+        """Return True if the candidate matches the rule, otherwise False."""
+        raise NotImplementedError
+
+    @property
+    @abc.abstractmethod
+    def PATTERN(self) -> AstNode:
+        """Return the pattern to match."""
+        raise NotImplementedError
+
+    @property
+    @abc.abstractmethod
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        """Return the replacement pattern."""
+        raise NotImplementedError
 
     def get_valid_candidates(self, instruction: ida_hexrays.minsn_t, stop_early=True):
         valid_candidates = []
@@ -62,6 +83,7 @@ class GenericPatternRule(InstructionOptimizationRule):
         is_ok = self.REPLACEMENT_PATTERN.update_leafs_mop(candidate)
         if not is_ok:
             return None
+        assert candidate.ea is not None
         new_ins = self.REPLACEMENT_PATTERN.create_minsn(candidate.ea, candidate.dst_mop)
         return new_ins
 
@@ -86,12 +108,12 @@ class GenericPatternRule(InstructionOptimizationRule):
 
 
 class InstructionOptimizer(Registrant):
-    RULE_CLASSES = []
+    RULE_CLASSES: typing.ClassVar[list[type[InstructionOptimizationRule]]] = []
     NAME = None
 
     def __init__(self, maturities: List[int], log_dir=None):
-        self.rules = set()
-        self.rules_usage_info = {}
+        self.rules: set[InstructionOptimizationRule] = set()
+        self.rules_usage_info: dict[str, int] = {}
         self.maturities = maturities
         self.log_dir = log_dir
         self.cur_maturity = ida_hexrays.MMAT_PREOPTIMIZED

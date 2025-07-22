@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import abc
 import logging
+import typing
+
+from ida_hexrays import *
 
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
 from d810.hexrays.cfg_utils import (
@@ -37,8 +41,6 @@ from d810.optimizers.microcode.flow.flattening.utils import (
     get_all_possibles_values,
 )
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
-
-from ida_hexrays import *
 
 unflat_logger = logging.getLogger("D810.unflat")
 
@@ -389,7 +391,8 @@ class GenericDispatcherCollector(minsn_visitor_t):
         return self.dispatcher_list
 
 
-class GenericUnflatteningRule(FlowOptimizationRule):
+class GenericUnflatteningRule(FlowOptimizationRule, abc.ABC):
+
     DEFAULT_UNFLATTENING_MATURITIES = [
         MMAT_CALLS,
         MMAT_GLBOPT1,
@@ -415,9 +418,14 @@ class GenericUnflatteningRule(FlowOptimizationRule):
             return False
         return True
 
+    @abc.abstractmethod
+    def optimize(self, blk):
+        """Perform the optimization on *blk* and return the number of changes."""
+        raise NotImplementedError
 
-class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
-    DISPATCHER_COLLECTOR_CLASS = GenericDispatcherCollector
+
+class GenericDispatcherUnflatteningRule(GenericUnflatteningRule, abc.ABC):
+
     MOP_TRACKER_MAX_NB_BLOCK = 100
     MOP_TRACKER_MAX_NB_PATH = 100
     DEFAULT_MAX_DUPLICATION_PASSES = 20
@@ -430,6 +438,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self.max_duplication_passes = self.DEFAULT_MAX_DUPLICATION_PASSES
         self.max_passes = self.DEFAULT_MAX_PASSES
         self.non_significant_changes = 0
+
+    @property
+    @abc.abstractmethod
+    def DISPATCHER_COLLECTOR_CLASS(self) -> type[GenericDispatcherCollector]:
+        """Return the class of the dispatcher collector."""
+        raise NotImplementedError
 
     def check_if_rule_should_be_used(self, blk: mblock_t) -> bool:
         if not super().check_if_rule_should_be_used(blk):
