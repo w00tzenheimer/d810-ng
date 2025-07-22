@@ -241,7 +241,7 @@ class AstNode(AstBase, dict):
         cst_mop = get_constant_mop(masked_value, cst_size)
         self.add_leaf(leaf_name, cst_mop)
 
-    def check_pattern_and_copy_mops(self, ast: Union[AstNode, AstLeaf]) -> bool:
+    def check_pattern_and_copy_mops(self, ast: AstNode | AstLeaf) -> bool:
         self.reset_mops()
         is_matching_shape = self._copy_mops_from_ast(ast)
         if not is_matching_shape:
