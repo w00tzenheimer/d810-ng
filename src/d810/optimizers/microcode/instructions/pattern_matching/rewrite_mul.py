@@ -15,6 +15,7 @@ class Mul_MbaRule_1(PatternMatchingRule):
         if not equal_bnot_mop(candidate["x_1"].mop, candidate["bnot_x_1"].mop):
             return False
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -30,6 +31,7 @@ class Mul_MbaRule_1(PatternMatchingRule):
                 AstNode(m_and, AstLeaf("x_1"), AstLeaf("bnot_x_0")),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mul, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -48,6 +50,7 @@ class Mul_MbaRule_2(PatternMatchingRule):
         if not equal_bnot_mop(candidate["x_0"].mop, candidate["bnot_x_0"].mop):
             return False
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -61,6 +64,7 @@ class Mul_MbaRule_2(PatternMatchingRule):
                 AstNode(m_and, AstConstant("c_1"), AstLeaf("bnot_x_0")),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mul, AstLeaf("x_0"), AstConstant("c_1"))
@@ -77,6 +81,7 @@ class Mul_MbaRule_3(PatternMatchingRule):
         if not equal_bnot_mop(candidate["x_0"].mop, candidate["bnot_x_0"].mop):
             return False
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -92,6 +97,7 @@ class Mul_MbaRule_3(PatternMatchingRule):
                 AstNode(m_and, AstConstant("c_1"), AstLeaf("bnot_x_0")),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mul, AstLeaf("x_0"), AstConstant("c_1"))
@@ -103,6 +109,7 @@ class Mul_MbaRule_4(PatternMatchingRule):
         if not equal_bnot_mop(candidate["x_1"].mop, candidate["bnot_x_1"].mop):
             return False
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -118,6 +125,7 @@ class Mul_MbaRule_4(PatternMatchingRule):
                 AstNode(m_and, AstLeaf("x_0"), AstLeaf("bnot_x_1")),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mul, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -129,6 +137,7 @@ class Mul_FactorRule_1(PatternMatchingRule):
         if not equal_bnot_mop(candidate["x_1"].mop, candidate["bnot_x_1"].mop):
             return False
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -144,6 +153,7 @@ class Mul_FactorRule_1(PatternMatchingRule):
                 ),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(
@@ -158,6 +168,7 @@ class Mul_FactorRule_2(PatternMatchingRule):
             "val_fe", SUB_TABLE[candidate.size] - 2, candidate.size
         )
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -165,6 +176,7 @@ class Mul_FactorRule_2(PatternMatchingRule):
             AstNode(m_neg, AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1"))),
             AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(

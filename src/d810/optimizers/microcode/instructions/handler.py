@@ -3,7 +3,6 @@ from __future__ import annotations
 import abc
 import logging
 import typing
-from typing import List
 
 import ida_hexrays
 
@@ -31,10 +30,9 @@ class InstructionOptimizationRule(OptimizationRule, abc.ABC):
     @abc.abstractmethod
     def check_and_replace(self, blk, ins):
         """Return a replacement instruction if the rule matches, otherwise None."""
-        raise NotImplementedError
 
 
-class GenericPatternRule(InstructionOptimizationRule, abc.ABC):
+class GenericPatternRule(InstructionOptimizationRule):
     PATTERNS: list[AstNode] | None = None
 
     def __init__(self):
@@ -46,19 +44,16 @@ class GenericPatternRule(InstructionOptimizationRule, abc.ABC):
     @abc.abstractmethod
     def check_candidate(self, candidate: AstNode) -> bool:
         """Return True if the candidate matches the rule, otherwise False."""
-        raise NotImplementedError
 
     @property
     @abc.abstractmethod
     def PATTERN(self) -> AstNode:
         """Return the pattern to match."""
-        raise NotImplementedError
 
     @property
     @abc.abstractmethod
     def REPLACEMENT_PATTERN(self) -> AstNode:
         """Return the replacement pattern."""
-        raise NotImplementedError
 
     def get_valid_candidates(self, instruction: ida_hexrays.minsn_t, stop_early=True):
         valid_candidates = []
@@ -107,18 +102,21 @@ class GenericPatternRule(InstructionOptimizationRule, abc.ABC):
         return "{0} => {1}".format(self.PATTERN, self.REPLACEMENT_PATTERN)
 
 
-class InstructionOptimizer(Registrant):
-    RULE_CLASSES: typing.ClassVar[list[type[InstructionOptimizationRule]]] = []
+T_Rule = typing.TypeVar("T_Rule", bound=InstructionOptimizationRule)
+
+
+class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
+    RULE_CLASSES: list[typing.Type[T_Rule]] = []
     NAME = None
 
-    def __init__(self, maturities: List[int], log_dir=None):
-        self.rules: set[InstructionOptimizationRule] = set()
+    def __init__(self, maturities: list[int], log_dir=None):
+        self.rules: set[T_Rule] = set()
         self.rules_usage_info: dict[str, int] = {}
         self.maturities = maturities
         self.log_dir = log_dir
         self.cur_maturity = ida_hexrays.MMAT_PREOPTIMIZED
 
-    def add_rule(self, rule: InstructionOptimizationRule) -> bool:
+    def add_rule(self, rule: T_Rule) -> bool:
         is_valid_rule_class = False
         for rule_class in self.RULE_CLASSES:
             if isinstance(rule, rule_class):

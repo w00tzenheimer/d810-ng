@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import logging
-import typing
 
 import ida_hexrays
 import ida_segment
 import idaapi
 
+import d810._compat as _compat
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
@@ -24,7 +24,7 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         ida_hexrays.MMAT_GLBOPT2,
     ]
 
-    @typing.override
+    @_compat.override
     def check_and_replace(
         self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:

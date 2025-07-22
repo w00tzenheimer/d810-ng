@@ -14,6 +14,7 @@ class GetIdentRule1(PatternMatchingRule):
         if not equal_bnot_mop(candidate["x_1"].mop, candidate["bnot_x_1"].mop):
             return False
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -21,6 +22,7 @@ class GetIdentRule1(PatternMatchingRule):
             AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
             AstNode(m_and, AstLeaf("x_0"), AstLeaf("bnot_x_1")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstLeaf("x_0"))
@@ -33,6 +35,7 @@ class GetIdentRule2(PatternMatchingRule):
         if not equal_bnot_mop(candidate["x_1"].mop, candidate["bnot_x_1"].mop):
             return False
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -40,6 +43,7 @@ class GetIdentRule2(PatternMatchingRule):
             AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
             AstNode(m_and, AstLeaf("x_0"), AstLeaf("bnot_x_1")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstLeaf("x_0"))
@@ -51,6 +55,7 @@ class GetIdentRule3(PatternMatchingRule):
         return AstNode(
             m_and, AstLeaf("x_0"), AstNode(m_or, AstLeaf("x_0"), AstLeaf("x_1"))
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstLeaf("x_0"))

@@ -34,9 +34,11 @@ class ReplaceMovHigh(PatternMatchingRule):
             return True
         else:
             return False
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("c_0"))
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(

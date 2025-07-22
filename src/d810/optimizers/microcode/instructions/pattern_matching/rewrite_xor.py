@@ -15,6 +15,7 @@ class Xor_HackersDelightRule_1(PatternMatchingRule):
             AstNode(m_or, AstLeaf("x_0"), AstLeaf("x_1")),
             AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -26,10 +27,13 @@ class Xor_HackersDelightRule_2(PatternMatchingRule):
         return AstNode(
             m_sub,
             AstNode(
-                m_mul, AstConstant("2", 2), AstNode(m_or, AstLeaf("x_0"), AstLeaf("x_1"))
+                m_mul,
+                AstConstant("2", 2),
+                AstNode(m_or, AstLeaf("x_0"), AstLeaf("x_1")),
             ),
             AstNode(m_add, AstLeaf("x_0"), AstLeaf("x_1")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -42,9 +46,12 @@ class Xor_HackersDelightRule_3(PatternMatchingRule):
             m_sub,
             AstNode(m_add, AstLeaf("x_0"), AstLeaf("x_1")),
             AstNode(
-                m_mul, AstConstant("2", 2), AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1"))
+                m_mul,
+                AstConstant("2", 2),
+                AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -66,6 +73,7 @@ class Xor_HackersDelightRule_4(PatternMatchingRule):
             ),
             AstConstant("2", 2),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -88,6 +96,7 @@ class Xor_HackersDelightRule_5(PatternMatchingRule):
             ),
         )
     ]
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -103,6 +112,7 @@ class Xor_HackersDelightRule_5(PatternMatchingRule):
                 AstLeaf("x_1"),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -128,6 +138,7 @@ class Xor_MbaRule_1(PatternMatchingRule):
                 AstLeaf("x_1"),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -149,6 +160,7 @@ class Xor_MbaRule_2(PatternMatchingRule):
                 AstLeaf("x_1"),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -161,9 +173,12 @@ class Xor_MbaRule_3(PatternMatchingRule):
             m_sub,
             AstLeaf("x_0"),
             AstNode(
-                m_mul, AstConstant("2", 2), AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1"))
+                m_mul,
+                AstConstant("2", 2),
+                AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(
@@ -179,6 +194,7 @@ class Xor_FactorRule_1(PatternMatchingRule):
         if not equal_bnot_mop(candidate["x_1"].mop, candidate["bnot_x_1"].mop):
             return False
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -186,6 +202,7 @@ class Xor_FactorRule_1(PatternMatchingRule):
             AstNode(m_and, AstLeaf("x_0"), AstLeaf("bnot_x_1")),
             AstNode(m_and, AstLeaf("bnot_x_0"), AstLeaf("x_1")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -199,6 +216,7 @@ class Xor_FactorRule_2(PatternMatchingRule):
         if not equal_bnot_mop(candidate["x_1"].mop, candidate["bnot_x_1"].mop):
             return False
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -206,6 +224,7 @@ class Xor_FactorRule_2(PatternMatchingRule):
             AstNode(m_and, AstLeaf("bnot_x_0"), AstLeaf("x_1")),
             AstNode(m_and, AstLeaf("x_0"), AstLeaf("bnot_x_1")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -219,6 +238,7 @@ class Xor_FactorRule_3(PatternMatchingRule):
             AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
             AstNode(m_or, AstLeaf("x_0"), AstLeaf("x_1")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -236,6 +256,7 @@ class Xor_SpecialConstantRule_1(PatternMatchingRule):
                 AstNode(m_and, AstNode(m_bnot, AstLeaf("x_0")), AstLeaf("x_1")),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -253,6 +274,7 @@ class Xor_SpecialConstantRule_2(PatternMatchingRule):
             return False
 
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -264,6 +286,7 @@ class Xor_SpecialConstantRule_2(PatternMatchingRule):
                 AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -274,6 +297,7 @@ class Xor1_MbaRule_1(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_1", 1, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -285,6 +309,7 @@ class Xor1_MbaRule_1(PatternMatchingRule):
                 AstConstant("2", 2),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstConstant("val_1"))
@@ -298,11 +323,10 @@ class Xor_Rule_1(PatternMatchingRule):
             AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
             AstNode(m_bnot, AstNode(m_or, AstLeaf("x_0"), AstLeaf("x_1"))),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
-        return AstNode(
-            m_xor, AstLeaf("x_0"), AstNode(m_bnot, AstLeaf("x_1"))
-        )
+        return AstNode(m_xor, AstLeaf("x_0"), AstNode(m_bnot, AstLeaf("x_1")))
 
 
 # Found sometimes with OLLVM
@@ -322,6 +346,7 @@ class Xor_Rule_2(PatternMatchingRule):
                 AstNode(m_xor, AstLeaf("x_1"), AstLeaf("x_2")),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -344,11 +369,10 @@ class Xor_Rule_3(PatternMatchingRule):
                 AstNode(m_xor, AstLeaf("x_1"), AstLeaf("bnot_x2")),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
-        return AstNode(
-            m_xor, AstNode(m_bnot, AstLeaf("x_0")), AstLeaf("x_1")
-        )
+        return AstNode(m_xor, AstNode(m_bnot, AstLeaf("x_0")), AstLeaf("x_1"))
 
 
 class Xor_Rule_4(PatternMatchingRule):
@@ -359,6 +383,7 @@ class Xor_Rule_4(PatternMatchingRule):
         if not equal_bnot_mop(candidate["x_1"].mop, candidate["bnot_x_1"].mop):
             return False
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -366,6 +391,7 @@ class Xor_Rule_4(PatternMatchingRule):
             AstNode(m_and, AstLeaf("x_0"), AstLeaf("bnot_x_1")),
             AstNode(m_and, AstLeaf("bnot_x_0"), AstLeaf("x_1")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
@@ -383,6 +409,7 @@ class Xor_Rule_4_WithXdu(PatternMatchingRule):
             candidate["bnot_c_1"].mop,
             mop_size=candidate["x_0"].mop.d.l.size,
         )
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -390,6 +417,7 @@ class Xor_Rule_4_WithXdu(PatternMatchingRule):
             AstNode(m_and, AstLeaf("x_0"), AstConstant("bnot_c_1")),
             AstNode(m_and, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("c_1")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("c_1"))
@@ -400,6 +428,7 @@ class XorAlmost_Rule_1(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_2", 2, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -415,6 +444,7 @@ class XorAlmost_Rule_1(PatternMatchingRule):
                 ),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(
@@ -426,6 +456,7 @@ class XorAlmost_Rule_1(PatternMatchingRule):
 
 class Xor_NestedStuff(PatternMatchingRule):
     FUZZ_PATTERN = False
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -451,6 +482,7 @@ class Xor_NestedStuff(PatternMatchingRule):
                 ),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(
