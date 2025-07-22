@@ -391,7 +391,7 @@ class GenericDispatcherCollector(minsn_visitor_t):
         return self.dispatcher_list
 
 
-class GenericUnflatteningRule(FlowOptimizationRule, abc.ABC):
+class GenericUnflatteningRule(FlowOptimizationRule):
 
     DEFAULT_UNFLATTENING_MATURITIES = [
         MMAT_CALLS,
@@ -424,7 +424,7 @@ class GenericUnflatteningRule(FlowOptimizationRule, abc.ABC):
         raise NotImplementedError
 
 
-class GenericDispatcherUnflatteningRule(GenericUnflatteningRule, abc.ABC):
+class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
     MOP_TRACKER_MAX_NB_BLOCK = 100
     MOP_TRACKER_MAX_NB_PATH = 100

@@ -1,3 +1,4 @@
+import importlib
 from abc import ABCMeta
 from functools import cache, wraps
 from types import GenericAlias, MappingProxyType
@@ -11,12 +12,13 @@ from typing import (
     Coroutine,
     ForwardRef,
     Generator,
+    Generic,
+    Iterable,
     Literal,
-    LiteralString,
     Optional,
-    Self,
     Sequence,
-    TypeAliasType,
+    TypeAlias,
+    TypeVar,
     cast,
     get_args,
     get_origin,
@@ -24,6 +26,11 @@ from typing import (
     overload,
 )
 from weakref import WeakKeyDictionary
+
+from d810._compat import LiteralString, Self, TypeAliasType
+
+T = TypeVar("T")
+AnnotatedAny: TypeAlias = Annotated[Any, ...]  # safely parameterized
 
 
 class NotGiven:
@@ -47,19 +54,18 @@ class NotGiven:
 # Using __new__ to implement singleton pattern
 NOT_GIVEN = object.__new__(NotGiven)
 """Placeholder for value which isn't given."""
-# Pyright is too stupid to follow TypeVarType when passing type[T] to a function,
-#  so this probably won't work.
-type timestamp = int
 
-type Thunk[T] = Callable[[], T]
-type OnePlus[T] = T | Sequence[T]
-type Defer[T] = T | Thunk[T]
-type TypeRef = str | ForwardRef | GenericAlias | TypeAliasType | Annotated
-type DeferTypeRef = Defer[type] | TypeRef
+# Pyright does not follow TypeVarType when passing type[T] to a function...
+timestamp: TypeAlias = int
+Thunk: TypeAlias = Callable[[], T]
+OnePlus: TypeAlias = T | Sequence[T]
+Defer: TypeAlias = T | Thunk[T]
+TypeRef: TypeAlias = str | ForwardRef | GenericAlias | TypeAliasType | AnnotatedAny
+DeferTypeRef: TypeAlias = Defer[type] | TypeRef
 """A typelike reference which can be wrapped to be resolved later."""
 
 
-def async_await[T](
+def async_await(
     fn: Callable[..., Coroutine[Any, Any, T]],
 ) -> Callable[..., Generator[Any, None, T]]:
     """
@@ -75,7 +81,7 @@ def async_await[T](
     return wrapper
 
 
-def coroutine[T](
+def coroutine(
     fn: Callable[..., AsyncGenerator[None, T]],
 ) -> Callable[..., Coroutine[Any, Any, AsyncGenerator[None, T]]]:
     """Auto-starting coroutine decorator."""
@@ -137,7 +143,7 @@ def typecheck(value: Any, t: TypeRef) -> bool:
     return False
 
 
-# Alternatively, could use ForwardRef._evaluate but that's private. This is at least public and legal.3
+# Alternatively, could use ForwardRef._evaluate but that's private. This is at least public and legal.
 def resolve_forward_ref(
     obj: TypeRef,
     globalns: dict[str, Any] | None = None,
@@ -148,11 +154,13 @@ def resolve_forward_ref(
     def dummy(x: TypeRef):
         pass
 
-    localns_cast = cast(localns, MappingProxyType[str, Any])
-    return get_type_hints(dummy, globalns, localns_cast)["x"]
+    _localns: dict[str, Any] = (
+        cast(dict[str, Any], localns) if localns is not None else {}
+    )
+    return get_type_hints(dummy, globalns, _localns)["x"]
 
 
-class deferred_property[T]:
+class deferred_property(Generic[T]):
     """A property which can be resolved later with minimal friction."""
 
     deferral: WeakKeyDictionary[type, Thunk[T]]
@@ -208,26 +216,61 @@ def lazy_type(t: DeferTypeRef, cls: Optional[type] = None) -> Defer[type]:
 
     @cache
     def factory():
-        global_ns = load_module(cls.__module__).__dict__
+        global_ns = importlib.import_module(cls.__module__).__dict__
         return resolve_forward_ref(t, global_ns, cls.__dict__)
 
     return factory
 
 
+class FilterableGenerator(Generic[T]):
+    """
+    Wraps an Iterable of classes and a list of predicates.
+    You can .filter(...) repeatedly to build up predicates,
+    and only when you iterate do we apply them.
+    """
+
+    def __init__(
+        self,
+        source: Iterable[T],
+        predicates: list[Callable[[T], bool]] | None = None,
+    ):
+        self._source = source
+        self._preds = list(predicates or [])
+
+    def filter(self, predicate: Callable[[T], bool]) -> "FilterableGenerator[T]":
+        return FilterableGenerator(self._source, self._preds + [predicate])
+
+    def __iter__(self):
+        for cls in self._source:
+            if all(pred(cls) for pred in self._preds):
+                yield cls
+
+    def __repr__(self):
+        # avoid consuming the generator!
+        return f"<FilterableGenerator preds={len(self._preds)} source={self._source!r}>"
+
+
 class Registry(ABCMeta):
     """Metaclass for registering subclasses."""
 
-    def __init__(cls, name: str, bases: tuple[type, ...], attrs: dict[str, Any]):
+    def __init__(
+        self,
+        name: str,
+        bases: tuple[type, ...],
+        attrs: dict[str, Any],
+    ):
         super().__init__(name, bases, attrs)
-        # Don't register resource base classes
-        # print(f"Registry.__init__ {name}")
-        if name != "Registrant":
-            # Register only Registrant subclass subclasses
-            if Registrant in cls.__bases__:
-                cls.registry = {}
-                cls.lazy_registry = {}
-            else:
-                cls.register(cls)  # type: ignore
+        # Don't touch the Registrant base itself
+        if name == "Registrant":
+            return
+
+        # If this is a direct subclass of Registrant, give it its own registries
+        if Registrant in bases:
+            self.registry: dict[str, type] = {}
+            self.lazy_registry: dict[str, Thunk] = {}
+        else:
+            # Otherwise auto‐register it into its parent’s registry
+            self.register(self)  # type: ignore[arg-type]
 
 
 class Registrant(metaclass=Registry):
@@ -243,8 +286,7 @@ class Registrant(metaclass=Registry):
     """Registry of lazy registrations."""
 
     def __init_subclass__(cls):
-        # Only register subclasses of Resource subclasses
-        # print(f"Registrant.__init_subclass__ {cls.__name__}")
+        # For any subclass beyond the first level, register it
         if Registrant not in cls.__bases__:
             cls.register(cls)
 
@@ -266,8 +308,10 @@ class Registrant(metaclass=Registry):
 
     @classmethod
     def register(cls, alt: type[Self]):
-        """Directly register a subclass."""
-
+        """Directly register a subclass (unless it tries to register itself)."""
+        # a class should not add itself to _its own_ registry
+        if alt is cls and "registry" in cls.__dict__:
+            return
         name = cls.normalize_key(cls.keyof())
         # Pop any lazy registration
         cls.lazy_registry.pop(name, None)
@@ -275,32 +319,26 @@ class Registrant(metaclass=Registry):
 
     @classmethod
     def lazy_register(cls, load: Thunk[type[Self]]):
-        """Register a hook for lazy initialization."""
+        """Register a thunk (hook) under its function name for lazy initialization."""
         if load.__name__ not in cls.registry:
             cls.lazy_registry[load.__name__] = load
 
     @classmethod
     def get(cls, name: str) -> type[Self]:
-        """Retrieve a registered subclass."""
+        """Look up a registered subclass by name, loading lazily if needed."""
+        key = cls.normalize_key(name)
+        if factory := cls.lazy_registry.get(key):
+            sub = factory()
+            # move from lazy to real registry
+            del cls.lazy_registry[key]
+            cls.registry[key] = sub
+            return sub
 
-        name = cls.normalize_key(name)
-        if factory := cls.lazy_registry.get(name):
-            type = factory()
-            del cls.lazy_registry[name]
-            cls.registry[name] = type
-            return type
-
-        return cls.registry[name]
+        return cls.registry[key]
 
     @classmethod
     def all(cls) -> list[type[Self]]:  # type: ignore[type-var]
-        """Return every concrete subclass currently registered for *cls*.
-
-        Example ::
-
-            from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
-            all_instruction_rules = InstructionOptimizationRule.all()
-        """
+        """Return every concrete subclass currently registered for *cls*."""
         return list(cls.registry.values())
 
     @classmethod
@@ -347,3 +385,20 @@ class Registrant(metaclass=Registry):
                 unique.append(subcls)
                 seen.add(subcls)
         return unique
+
+    @classmethod
+    def filter(cls, predicate: Callable[[type], bool]) -> FilterableGenerator[type]:
+        """
+        Start a chain of filters over a generator of cls.registry.values().
+        You can then .filter(...) again and again, and finally iterate it:
+            for C in Registry.filter(p1).filter(p2): ...
+        """
+        # Exclude any classes earmarked for lazy loading so we don't trigger them
+        # exclude: set[type] = set()
+        # for load in cls.lazy_registry.values():
+        #     try:
+        #         exclude.add(load())
+        #     except Exception:
+        #         pass
+        # gen = (c for c in cls.registry.values() if c not in exclude)
+        return FilterableGenerator(cls.registry.values(), [predicate])

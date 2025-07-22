@@ -12,11 +12,14 @@ from d810.optimizers.microcode.instructions.handler import (
 optimizer_logger = logging.getLogger("D810.optimizer")
 
 
-class InstructionAnalysisRule(InstructionOptimizationRule, abc.ABC):
+class InstructionAnalysisRule(InstructionOptimizationRule):
     @abc.abstractmethod
     def analyze_instruction(self, blk: mblock_t, ins: minsn_t):
         """Analyze the instruction and return a replacement instruction if the rule matches, otherwise None."""
-        raise NotImplementedError
+        ...
+
+    @abc.abstractmethod
+    def set_maturity(self, maturity: int): ...
 
 
 class InstructionAnalyzer(InstructionOptimizer):
@@ -43,7 +46,6 @@ class InstructionAnalyzer(InstructionOptimizer):
                         rule, format_minsn_t(ins)
                     )
                 )
-        return None
 
     @property
     def name(self):

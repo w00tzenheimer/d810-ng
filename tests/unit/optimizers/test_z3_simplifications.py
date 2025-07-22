@@ -1380,7 +1380,9 @@ class TestBitwiseSimplifications(unittest.TestCase):
         # Build lists from the metadata
         # ------------------------------------------------------------------
         all_rules = [r.expr for r in RULES]
-        testable_rules = [r.expr for r in RULES if not r.is_nonlinear and not r.known_incorrect]
+        testable_rules = [
+            r.expr for r in RULES if not r.is_nonlinear and not r.known_incorrect
+        ]
         skipped_count = len(all_rules) - len(testable_rules)
 
         print(

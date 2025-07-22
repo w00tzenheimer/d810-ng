@@ -17,7 +17,7 @@ optimizer_logger = logging.getLogger("D810.optimizer")
 pattern_search_logger = logging.getLogger("D810.pattern_search")
 
 
-class PatternMatchingRule(GenericPatternRule, abc.ABC):
+class PatternMatchingRule(GenericPatternRule):
     FUZZ_PATTERN: bool = True
 
     def __init__(self):
@@ -35,6 +35,16 @@ class PatternMatchingRule(GenericPatternRule, abc.ABC):
             )
         )
 
+    @property
+    @abc.abstractmethod
+    def PATTERN(self) -> AstNode:
+        """Return the pattern to match."""
+
+    @property
+    @abc.abstractmethod
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        """Return the replacement pattern."""
+
     def _generate_pattern_candidates(self):
         self.fuzz_pattern = self.FUZZ_PATTERN
         if self.PATTERN is not None:
@@ -46,9 +56,6 @@ class PatternMatchingRule(GenericPatternRule, abc.ABC):
         if self.PATTERNS is not None:
             self.pattern_candidates += [x for x in self.PATTERNS]
 
-    def check_candidate(self, candidate: AstNode):
-        return True
-
     def check_pattern_and_replace(self, candidate_pattern: AstNode, test_ast: AstNode):
         if not candidate_pattern.check_pattern_and_copy_mops(test_ast):
             return None
@@ -56,6 +63,9 @@ class PatternMatchingRule(GenericPatternRule, abc.ABC):
             return None
         new_instruction = self.get_replacement(candidate_pattern)
         return new_instruction
+
+    def check_candidate(self, candidate: AstNode):
+        return True
 
 
 class RulePatternInfo(object):

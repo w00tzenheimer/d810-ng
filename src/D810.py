@@ -15,6 +15,7 @@ import ida_kernwin
 import idaapi
 
 import d810
+import d810._compat as _compat
 
 # from d810.manager import D810State
 
@@ -170,11 +171,11 @@ class Plugin(abc.ABC, idaapi.plugin_t):
     @abc.abstractmethod
     def init(self): ...
 
-    @typing.override
+    @_compat.override
     @abc.abstractmethod
     def run(self, args): ...
 
-    @typing.override
+    @_compat.override
     @abc.abstractmethod
     def term(self): ...
 
@@ -185,7 +186,7 @@ class LateInitPlugin(Plugin):
         super().__init__()
         self._ui_hooks: _UIHooks = _UIHooks()
 
-    @typing.override
+    @_compat.override
     def init(self):
         self._ui_hooks.ready_to_run = self.ready_to_run
         if not self._ui_hooks.hook():
@@ -220,22 +221,22 @@ class ReloadablePlugin(LateInitPlugin, idaapi.action_handler_t):
         mod = importlib.import_module(self.plugin_module)
         return getattr(mod, self.plugin_class_name)()
 
-    @typing.override
+    @_compat.override
     def update(self, ctx: ida_kernwin.action_ctx_base_t) -> int:
         return idaapi.AST_ENABLE_ALWAYS
 
-    @typing.override
+    @_compat.override
     def activate(self, ctx: ida_kernwin.action_ctx_base_t):
         with self.plugin_setup_reload():
             self.reload()
         return 1
 
-    @typing.override
+    @_compat.override
     def late_init(self):
         self.add_plugin_to_console()
         self.register_reload_action()
 
-    @typing.override
+    @_compat.override
     def term(self):
         self.unregister_reload_action()
         if self.plugin is not None and hasattr(self.plugin, "unload"):
@@ -317,7 +318,7 @@ class D810Plugin(ReloadablePlugin):
         )
         self.suppress_reload_errors = False
 
-    @typing.override
+    @_compat.override
     def init(self):
         if not init_hexrays():
             print(f"{self.wanted_name} need Hex-Rays decompiler. Skipping")
@@ -329,7 +330,7 @@ class D810Plugin(ReloadablePlugin):
             return idaapi.PLUGIN_SKIP
         return super().init()
 
-    @typing.override
+    @_compat.override
     def late_init(self):
         super().late_init()
         if not ida_hexrays.init_hexrays_plugin():
@@ -337,17 +338,17 @@ class D810Plugin(ReloadablePlugin):
             self.term()
         print(f"{self.wanted_name} initialized (version {D810_VERSION})")
 
-    @typing.override
+    @_compat.override
     def run(self, args):
         with self.plugin_setup_reload():
             self.reload()
 
-    @typing.override
+    @_compat.override
     def term(self):
         super().term()
         print(f"Terminating {self.wanted_name}...")
 
-    @typing.override
+    @_compat.override
     def reload(self):
         modules: list[types.ModuleType] = []
         _Scanner.scan(

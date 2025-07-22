@@ -6,8 +6,11 @@ from d810.optimizers.microcode.instructions.handler import (
 )
 
 
-class ChainSimplificationRule(InstructionOptimizationRule, abc.ABC):
-    pass
+class ChainSimplificationRule(InstructionOptimizationRule):
+
+    @abc.abstractmethod
+    def check_and_replace(self, blk, ins):
+        """Return a replacement instruction if the rule matches, otherwise None."""
 
 
 class ChainOptimizer(InstructionOptimizer):

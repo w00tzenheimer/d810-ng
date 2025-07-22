@@ -15,11 +15,15 @@ class PredSetnzRule1(PatternMatchingRule):
             return False
         candidate.add_constant_leaf("val_1", 1, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
-            m_setnz, AstNode(m_or, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
+            m_setnz,
+            AstNode(m_or, AstLeaf("x_0"), AstConstant("c_1")),
+            AstConstant("c_2"),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_1"))
@@ -33,11 +37,15 @@ class PredSetnzRule2(PatternMatchingRule):
             return False
         candidate.add_constant_leaf("val_1", 1, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
-            m_setnz, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
+            m_setnz,
+            AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")),
+            AstConstant("c_2"),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_1"))
@@ -49,6 +57,7 @@ class PredSetnzRule3(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_1", 1, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -60,6 +69,7 @@ class PredSetnzRule3(PatternMatchingRule):
             ),
             AstConstant("0", 0),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_1"))
@@ -73,15 +83,19 @@ class PredSetnzRule4(PatternMatchingRule):
             return False
         candidate.add_constant_leaf("val_1", 1, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
             m_setnz,
             AstNode(
-                m_xor, AstNode(m_sub, AstConstant("cst_1"), AstLeaf("x_0")), AstLeaf("x_0")
+                m_xor,
+                AstNode(m_sub, AstConstant("cst_1"), AstLeaf("x_0")),
+                AstLeaf("x_0"),
             ),
             AstConstant("0", 0),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_1"))
@@ -93,15 +107,18 @@ class PredSetnzRule5(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_1", 1, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
             m_setnz,
             AstNode(
-                m_neg, AstNode(m_and, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("1", 1))
+                m_neg,
+                AstNode(m_and, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("1", 1)),
             ),
             AstLeaf("x_0"),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_1"))
@@ -115,6 +132,7 @@ class PredSetnzRule6(PatternMatchingRule):
             return False
         candidate.add_constant_leaf("val_1", 1, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -130,6 +148,7 @@ class PredSetnzRule6(PatternMatchingRule):
             ),
             AstConstant("0", 0),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_1"))
@@ -141,6 +160,7 @@ class PredSetnzRule8(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_1", 1, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -152,6 +172,7 @@ class PredSetnzRule8(PatternMatchingRule):
             ),
             AstConstant("0", 0),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_1"))
@@ -165,11 +186,15 @@ class PredSetzRule1(PatternMatchingRule):
             return False
         candidate.add_constant_leaf("val_0", 0, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
-            m_setz, AstNode(m_or, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
+            m_setz,
+            AstNode(m_or, AstLeaf("x_0"), AstConstant("c_1")),
+            AstConstant("c_2"),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_0"))
@@ -183,11 +208,15 @@ class PredSetzRule2(PatternMatchingRule):
             return False
         candidate.add_constant_leaf("val_0", 0, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
-            m_setz, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
+            m_setz,
+            AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")),
+            AstConstant("c_2"),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_0"))
@@ -199,6 +228,7 @@ class PredSetzRule3(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_0", 0, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -210,6 +240,7 @@ class PredSetzRule3(PatternMatchingRule):
             ),
             AstConstant("0", 0),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_0"))
@@ -223,11 +254,15 @@ class PredSetbRule1(PatternMatchingRule):
             return False
         candidate.add_constant_leaf("val_0", 1, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
-            m_setb, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
+            m_setb,
+            AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")),
+            AstConstant("c_2"),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_0"))
@@ -238,15 +273,19 @@ class PredOdd1(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_0", 0, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
             m_and,
             AstNode(
-                m_mul, AstLeaf("x_0"), AstNode(m_sub, AstLeaf("x_0"), AstConstant("1", 1))
+                m_mul,
+                AstLeaf("x_0"),
+                AstNode(m_sub, AstLeaf("x_0"), AstConstant("1", 1)),
             ),
             AstConstant("1", 1),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_0"))
@@ -257,15 +296,19 @@ class PredOdd2(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_0", 0, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
             m_and,
             AstNode(
-                m_mul, AstLeaf("x_0"), AstNode(m_add, AstLeaf("x_0"), AstConstant("1", 1))
+                m_mul,
+                AstLeaf("x_0"),
+                AstNode(m_add, AstLeaf("x_0"), AstConstant("1", 1)),
             ),
             AstConstant("1", 1),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_0"))
@@ -277,9 +320,11 @@ class Pred0Rule1(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_0", 0, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(m_and, AstLeaf("x_0"), AstNode(m_bnot, AstLeaf("x_0")))
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_0"))
@@ -292,6 +337,7 @@ class Pred0Rule2(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_0", 0, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -299,6 +345,7 @@ class Pred0Rule2(PatternMatchingRule):
             AstNode(m_xdu, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1", 1))),
             AstConstant("c_2", 2),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_0"))
@@ -309,6 +356,7 @@ class Pred0Rule3(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_0", 0, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -316,6 +364,7 @@ class Pred0Rule3(PatternMatchingRule):
             AstLeaf("x_0"),
             AstNode(m_bnot, AstNode(m_or, AstLeaf("x_0"), AstLeaf("x_1"))),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstLeaf("val_0"))
@@ -326,6 +375,7 @@ class Pred0Rule4(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_0", 0, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -333,6 +383,7 @@ class Pred0Rule4(PatternMatchingRule):
             AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
             AstNode(m_bnot, AstNode(m_or, AstLeaf("x_0"), AstLeaf("x_1"))),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstLeaf("val_0"))
@@ -343,6 +394,7 @@ class Pred0Rule5(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_0", 0, candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -350,6 +402,7 @@ class Pred0Rule5(PatternMatchingRule):
             AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1")),
             AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstLeaf("val_0"))
@@ -360,9 +413,11 @@ class PredFFRule1(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_ff", AND_TABLE[candidate.size], candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(m_or, AstLeaf("x_0"), AstNode(m_bnot, AstLeaf("x_0")))
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_ff"))
@@ -376,6 +431,7 @@ class PredFFRule2(PatternMatchingRule):
             return False
         candidate.add_constant_leaf("val_ff", AND_TABLE[candidate.size], candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -383,6 +439,7 @@ class PredFFRule2(PatternMatchingRule):
             AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1")),
             AstNode(m_or, AstLeaf("bnot_x_0"), AstLeaf("x_1")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_ff"))
@@ -393,6 +450,7 @@ class PredFFRule3(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_ff", AND_TABLE[candidate.size], candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -400,6 +458,7 @@ class PredFFRule3(PatternMatchingRule):
             AstLeaf("x_0"),
             AstNode(m_bnot, AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1"))),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstLeaf("val_ff"))
@@ -411,6 +470,7 @@ class PredFFRule4(PatternMatchingRule):
     def check_candidate(self, candidate):
         candidate.add_constant_leaf("val_ff", AND_TABLE[candidate.size], candidate.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -418,6 +478,7 @@ class PredFFRule4(PatternMatchingRule):
             AstNode(m_or, AstLeaf("x_0"), AstLeaf("x_1")),
             AstNode(m_bnot, AstNode(m_and, AstLeaf("x_0"), AstLeaf("x_1"))),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(m_mov, AstConstant("val_ff"))
@@ -429,6 +490,7 @@ class PredOr2_Rule_1(PatternMatchingRule):
         candidate.add_constant_leaf("val_1", 1, candidate["x_0"].mop.size)
         candidate.add_constant_leaf("val_2", 2, candidate["x_0"].mop.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -436,6 +498,7 @@ class PredOr2_Rule_1(PatternMatchingRule):
             AstNode(m_bnot, AstNode(m_mul, AstLeaf("x_0"), AstLeaf("x_0"))),
             AstConstant("3", 3),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(
@@ -451,6 +514,7 @@ class PredOr1_Rule_1(PatternMatchingRule):
         candidate.add_constant_leaf("val_1", 1, candidate["x_0"].mop.size)
         candidate.add_constant_leaf("val_2", 2, candidate["x_0"].mop.size)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -462,6 +526,7 @@ class PredOr1_Rule_1(PatternMatchingRule):
                 AstConstant("1", 1),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(

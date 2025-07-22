@@ -13,8 +13,11 @@ class Xor_Hodur_1(PatternMatchingRule):
     def PATTERN(self) -> AstNode:
         return AstNode(
             m_bnot,
-            AstNode(m_xor, AstLeaf("x_0"), AstNode(m_xor, AstLeaf("x_1"), AstLeaf("x_2"))),
+            AstNode(
+                m_xor, AstLeaf("x_0"), AstNode(m_xor, AstLeaf("x_1"), AstLeaf("x_2"))
+            ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(
@@ -46,20 +49,28 @@ class Bnot_Hodur_1(PatternMatchingRule):
         if candidate["x_0"].mop.nnn.value + 1 != candidate["x_3"].mop.nnn.value:
             return False
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
             m_xor,
             AstNode(
-                m_and, AstNode(m_sub, AstLeaf("x_0"), AstLeaf("x_1")), AstLeaf("bnot_x_2")
+                m_and,
+                AstNode(m_sub, AstLeaf("x_0"), AstLeaf("x_1")),
+                AstLeaf("bnot_x_2"),
             ),
-            AstNode(m_and, AstNode(m_sub, AstLeaf("x_1"), AstLeaf("x_3")), AstLeaf("x_2")),
+            AstNode(
+                m_and, AstNode(m_sub, AstLeaf("x_1"), AstLeaf("x_3")), AstLeaf("x_2")
+            ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(
             m_bnot,
-            AstNode(m_xor, AstNode(m_sub, AstLeaf("x_1"), AstLeaf("x_3")), AstLeaf("x_2")),
+            AstNode(
+                m_xor, AstNode(m_sub, AstLeaf("x_1"), AstLeaf("x_3")), AstLeaf("x_2")
+            ),
         )
 
 
@@ -80,6 +91,7 @@ class Or_Hodur_1(PatternMatchingRule):
             ),
             AstNode(m_and, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("c_2")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(
@@ -102,12 +114,15 @@ class Or_Hodur_2(PatternMatchingRule):
         if not equal_bnot_mop(candidate["c_0"].mop, candidate["bnot_c_0"].mop):
             return False
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
             m_or,
             AstNode(
-                m_and, AstLeaf("x_0"), AstNode(m_xor, AstLeaf("x_1"), AstConstant("c_0"))
+                m_and,
+                AstLeaf("x_0"),
+                AstNode(m_xor, AstLeaf("x_1"), AstConstant("c_0")),
             ),
             AstNode(
                 m_and,
@@ -115,10 +130,13 @@ class Or_Hodur_2(PatternMatchingRule):
                 AstNode(m_bnot, AstLeaf("x_0")),
             ),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(
-            m_xor, AstLeaf("x_0"), AstNode(m_xor, AstLeaf("x_1"), AstConstant("bnot_c_0"))
+            m_xor,
+            AstLeaf("x_0"),
+            AstNode(m_xor, AstLeaf("x_1"), AstConstant("bnot_c_0")),
         )
 
 
@@ -163,6 +181,7 @@ class Xor_Hodur_2(PatternMatchingRule):
         # c_1_dup_mop.make_number(candidate["c_1"].value, candidate.size)
         # candidate.add_leaf("c_1_dup", c_1_dup_mop)
         return True
+
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(
@@ -170,6 +189,7 @@ class Xor_Hodur_2(PatternMatchingRule):
             AstNode(m_sub, AstLeaf("x_0"), AstConstant("c_0")),
             AstNode(m_xor, AstLeaf("x_1"), AstConstant("c_1")),
         )
+
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
         return AstNode(

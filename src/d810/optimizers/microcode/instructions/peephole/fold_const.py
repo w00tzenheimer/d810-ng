@@ -5,6 +5,7 @@ import typing
 
 import ida_hexrays
 
+from d810 import _compat
 from d810.expr.ast import AstBase, AstLeaf, AstNode, mop_to_ast
 from d810.expr.utils import get_parity_flag
 from d810.hexrays.hexrays_formatters import (
@@ -348,7 +349,7 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
     # Class-level sentinel so multiple instances of the rule share it.
     _last_mba_id: set[int] = set()
 
-    @typing.override
+    @_compat.override
     def check_and_replace(
         self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:

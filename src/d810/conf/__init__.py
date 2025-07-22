@@ -211,8 +211,20 @@ class D810Configuration:
         # The plugin's conf directory is relative to this file's location.
         plugin_dir = Path(__file__).resolve().parent
 
-        user_configs = {p for p in user_dir.glob("*.json") if p.name != ConfigConstants.OPTIONS_FILENAME} if user_dir.exists() else set()
-        plugin_configs = {p for p in plugin_dir.glob("*.json") if p.name != ConfigConstants.OPTIONS_FILENAME}
+        user_configs = (
+            {
+                p
+                for p in user_dir.glob("*.json")
+                if p.name != ConfigConstants.OPTIONS_FILENAME
+            }
+            if user_dir.exists()
+            else set()
+        )
+        plugin_configs = {
+            p
+            for p in plugin_dir.glob("*.json")
+            if p.name != ConfigConstants.OPTIONS_FILENAME
+        }
 
         # User configs override plugin configs with the same name.
         # Create a dictionary of name -> path to handle overrides.
@@ -233,7 +245,7 @@ class D810Configuration:
             except Exception as e:
                 logging.error("Failed to load project config %s: %s", path, e)
                 continue
-        
+
         return projects
 
     @property

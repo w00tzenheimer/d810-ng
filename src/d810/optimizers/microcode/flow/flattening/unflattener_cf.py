@@ -7,14 +7,14 @@ import logging
 import typing
 import weakref
 
-from d810.hexrays.hexrays_helpers import MicrocodeHelper, MicrocodeInstruction
-from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
-
 import ida_hexrays
 import ida_idaapi
 import ida_lines
 import ida_pro
 import ida_xref
+
+from d810.hexrays.hexrays_helpers import MicrocodeHelper, MicrocodeInstruction
+from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
 logger = logging.getLogger("D810.unflattener_cf")
 
@@ -2057,7 +2057,7 @@ class UnflattenControlFlowRule(FlowOptimizationRule):
             self.reset = False
 
     # D-810 will invoke this once per function (& maturity)
-    # @typing.override  # todo: add upstream method
+    # todo: add upstream method
     def optimize(self, blk: ida_hexrays.mblock_t) -> int:
         mba = blk.mba
         if mba is None:

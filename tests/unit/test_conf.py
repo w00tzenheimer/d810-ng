@@ -117,11 +117,16 @@ class TestConfiguration(unittest.TestCase):
 
                 # Check that the user's new project is found
                 self.assertIn("my_user_project.json", project_map)
-                self.assertEqual(project_map["my_user_project.json"].description, "My User Project")
+                self.assertEqual(
+                    project_map["my_user_project.json"].description, "My User Project"
+                )
 
                 # Check that the user's overriding project is used
                 self.assertIn("hodur_deobfuscation.json", project_map)
-                self.assertEqual(project_map["hodur_deobfuscation.json"].description, "User Override for Hodur")
+                self.assertEqual(
+                    project_map["hodur_deobfuscation.json"].description,
+                    "User Override for Hodur",
+                )
 
                 # Check that a built-in project that was NOT overridden is still loaded
                 self.assertIn("default_instruction_only.json", project_map)
