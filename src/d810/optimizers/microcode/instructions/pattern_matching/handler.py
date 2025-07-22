@@ -1,6 +1,9 @@
+import abc
 import itertools
 import logging
 import typing
+
+from ida_hexrays import *
 
 from d810.expr.ast import AstBase, AstNode, minsn_to_ast
 from d810.hexrays.hexrays_formatters import format_minsn_t
@@ -10,17 +13,12 @@ from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
 )
 
-from ida_hexrays import *
-
 optimizer_logger = logging.getLogger("D810.optimizer")
 pattern_search_logger = logging.getLogger("D810.pattern_search")
 
 
-class PatternMatchingRule(GenericPatternRule):
-    PATTERN = None
-    PATTERNS = None
-    FUZZ_PATTERN = True
-    REPLACEMENT_PATTERN = None
+class PatternMatchingRule(GenericPatternRule, abc.ABC):
+    FUZZ_PATTERN: bool = True
 
     def __init__(self):
         super().__init__()
@@ -41,15 +39,12 @@ class PatternMatchingRule(GenericPatternRule):
         self.fuzz_pattern = self.FUZZ_PATTERN
         if self.PATTERN is not None:
             self.PATTERN.reset_mops()
-        if not self.fuzz_pattern:
-            if self.PATTERN is not None:
-                self.pattern_candidates = [self.PATTERN]
-                if self.PATTERNS is not None:
-                    self.pattern_candidates += [x for x in self.PATTERNS]
-            else:
-                self.pattern_candidates = [x for x in self.PATTERNS]
+        if not self.fuzz_pattern and self.PATTERN is not None:
+            self.pattern_candidates = [self.PATTERN]
         else:
             self.pattern_candidates = ast_generator(self.PATTERN)
+        if self.PATTERNS is not None:
+            self.pattern_candidates += [x for x in self.PATTERNS]
 
     def check_candidate(self, candidate: AstNode):
         return True
@@ -125,11 +120,11 @@ class PatternStorage(object):
                 return False
         return True
 
-    def get_matching_rule_pattern_info(self, pattern: AstNode):
+    def get_matching_rule_pattern_info(self, pattern: AstBase):
         pattern_search_logger.info("Searching : {0}".format(pattern))
         return self.explore_one_level(pattern, 1)
 
-    def explore_one_level(self, searched_pattern: AstNode, cur_level: int):
+    def explore_one_level(self, searched_pattern: AstBase, cur_level: int):
         # We need to check if searched_pattern is in self.next_layer_patterns
         # Easy solution: try/except self.next_layer_patterns[searched_pattern]
         # Problem is that known patterns may not exactly match the microcode instruction, e.g.
@@ -207,7 +202,7 @@ class PatternOptimizer(InstructionOptimizer):
         super().__init__(maturities, log_dir=log_dir)
         self.pattern_storage = PatternStorage(depth=1)
 
-    def add_rule(self, rule: InstructionOptimizationRule):
+    def add_rule(self, rule: PatternMatchingRule):
         is_ok = super().add_rule(rule)
         if not is_ok:
             return False
@@ -316,7 +311,7 @@ def get_addition_operands(ast_node):
         return [ast_node]
 
 
-def get_opcode_operands(ref_opcode, ast_node):
+def get_opcode_operands(ref_opcode: int, ast_node: AstBase) -> list[AstBase]:
     if not isinstance(ast_node, AstBase) or not ast_node.is_node():
         return [ast_node]
     ast_node = typing.cast(AstNode, ast_node)
@@ -328,7 +323,7 @@ def get_opcode_operands(ref_opcode, ast_node):
         return [ast_node]
 
 
-def get_similar_opcode_operands(ast_node):
+def get_similar_opcode_operands(ast_node: AstNode) -> list[AstNode]:
     if ast_node.opcode in [m_add, m_sub]:
         add_elts = get_addition_operands(ast_node)
         all_add_ordering = get_all_binary_tree_representation(add_elts)
@@ -348,7 +343,9 @@ def get_similar_opcode_operands(ast_node):
         return [ast_node]
 
 
-def get_ast_variations_with_add_sub(opcode, left, right):
+def get_ast_variations_with_add_sub(
+    opcode: int, left: AstNode, right: AstNode
+) -> list[AstNode]:
     possible_ast = [AstNode(opcode, left, right)]
     if opcode == m_add:
         if left.is_node() and right.is_node():
@@ -364,8 +361,10 @@ def get_ast_variations_with_add_sub(opcode, left, right):
     return possible_ast
 
 
-def ast_generator(ast_node, excluded_opcodes=None):
-    if not isinstance(ast_node, AstBase) or not ast_node.is_node():
+def ast_generator(ast_node: AstBase | None, excluded_opcodes=None) -> list[AstBase]:
+    if ast_node is None:
+        return []
+    if not ast_node.is_node():
         return [ast_node]
     ast_node = typing.cast(AstNode, ast_node)
     res_ast = []
@@ -382,6 +381,8 @@ def ast_generator(ast_node, excluded_opcodes=None):
                 )
                 for sub_ast_left in sub_ast_left_list:
                     for sub_ast_right in sub_ast_right_list:
+                        sub_ast_left = typing.cast(AstNode, sub_ast_left)
+                        sub_ast_right = typing.cast(AstNode, sub_ast_right)
                         res_ast += get_ast_variations_with_add_sub(
                             m_add, sub_ast_left, sub_ast_right
                         )
@@ -397,6 +398,8 @@ def ast_generator(ast_node, excluded_opcodes=None):
                 )
                 for sub_ast_left in sub_ast_left_list:
                     for sub_ast_right in sub_ast_right_list:
+                        sub_ast_left = typing.cast(AstNode, sub_ast_left)
+                        sub_ast_right = typing.cast(AstNode, sub_ast_right)
                         res_ast += get_ast_variations_with_add_sub(
                             ast_node.opcode, sub_ast_left, sub_ast_right
                         )
@@ -422,6 +425,8 @@ def ast_generator(ast_node, excluded_opcodes=None):
         )
         for sub_ast_left in sub_ast_left_list:
             for sub_ast_right in sub_ast_right_list:
+                sub_ast_left = typing.cast(AstNode, sub_ast_left)
+                sub_ast_right = typing.cast(AstNode, sub_ast_right)
                 res_ast += get_ast_variations_with_add_sub(
                     ast_node.opcode, sub_ast_left, sub_ast_right
                 )

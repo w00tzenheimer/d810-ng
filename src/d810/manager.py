@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import pathlib
 import threading
@@ -7,7 +8,7 @@ import typing
 
 import pyinstrument
 
-from d810.conf import ConfigConstants, D810Configuration, ProjectConfiguration
+from d810.conf import D810Configuration, ProjectConfiguration
 from d810.conf.loggers import clear_logs, configure_loggers
 from d810.hexrays.hexrays_hooks import (
     BlockOptimizerManager,
@@ -340,13 +341,17 @@ class D810State:
         self.current_ins_rules = []
         self.current_blk_rules = []
 
+        # Build lists of available rules, skipping abstract / hidden ones
         self.known_ins_rules = [
-            rule()
-            for rule in InstructionOptimizationRule.registry.values()
-            if rule.__name__ != "jumpoptimizationrule"
+            rule_cls()
+            for rule_cls in InstructionOptimizationRule.registry.values()
+            if not inspect.isabstract(rule_cls)
         ]
+
         self.known_blk_rules = [
-            rule() for rule in FlowOptimizationRule.registry.values()
+            rule_cls()
+            for rule_cls in FlowOptimizationRule.registry.values()
+            if not inspect.isabstract(rule_cls)
         ]
 
         self.register_default_projects()

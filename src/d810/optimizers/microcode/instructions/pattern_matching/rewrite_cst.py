@@ -13,16 +13,20 @@ from ida_hexrays import *
 
 
 class CstSimplificationRule1(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_and,
-        AstNode(m_bnot, AstLeaf("x_0")),
-        AstNode(m_xor, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("c_1")),
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_xor,
-        AstNode(m_and, AstLeaf("x_0"), AstNode(m_bnot, AstConstant("c_1"))),
-        AstNode(m_bnot, AstConstant("c_1")),
-    )
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_and,
+            AstNode(m_bnot, AstLeaf("x_0")),
+            AstNode(m_xor, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("c_1")),
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_xor,
+            AstNode(m_and, AstLeaf("x_0"), AstNode(m_bnot, AstConstant("c_1"))),
+            AstNode(m_bnot, AstConstant("c_1")),
+        )
 
 
 # This rule is invalid.
@@ -31,20 +35,6 @@ class CstSimplificationRule1(PatternMatchingRule):
 #  - LHS value:    2147483648 (dec: 2147483648)
 # - RHS value:    0 (dec: 0)
 class CstSimplificationRule2(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_or,
-        AstNode(
-            m_and,
-            AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_1_1")),
-            AstConstant("c_2_1"),
-        ),
-        AstNode(
-            m_and,
-            AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_1_2")),
-            AstConstant("c_2_2"),
-        ),
-    )
-    REPLACEMENT_PATTERN = AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_res"))
 
     def check_candidate(self, candidate):
         if not equal_bnot_cst(candidate["c_2_1"].mop, candidate["c_2_2"].mop):
@@ -55,23 +45,27 @@ class CstSimplificationRule2(PatternMatchingRule):
         c_res ^= candidate["c_1_2"].value
         candidate.add_constant_leaf("c_res", c_res, candidate["c_1_1"].size)
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_or,
+            AstNode(
+                m_and,
+                AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_1_1")),
+                AstConstant("c_2_1"),
+            ),
+            AstNode(
+                m_and,
+                AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_1_2")),
+                AstConstant("c_2_2"),
+            ),
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_res"))
 
 
 class CstSimplificationRule3(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_add,
-        AstNode(m_sub, AstLeaf("x_0"), AstConstant("c_0")),
-        AstNode(
-            m_mul,
-            AstConstant("c_1"),
-            AstNode(m_sub, AstLeaf("x_0"), AstConstant("c_2")),
-        ),
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_sub,
-        AstNode(m_mul, AstConstant("c_coeff"), AstLeaf("x_0")),
-        AstConstant("c_sub"),
-    )
 
     def check_candidate(self, candidate):
         c_coeff = candidate["c_1"].value + 1
@@ -81,75 +75,103 @@ class CstSimplificationRule3(PatternMatchingRule):
         candidate.add_constant_leaf("c_coeff", c_coeff, candidate["c_1"].size)
         candidate.add_constant_leaf("c_sub", c_sub, candidate["c_2"].size)
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_add,
+            AstNode(m_sub, AstLeaf("x_0"), AstConstant("c_0")),
+            AstNode(
+                m_mul,
+                AstConstant("c_1"),
+                AstNode(m_sub, AstLeaf("x_0"), AstConstant("c_2")),
+            ),
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_sub,
+            AstNode(m_mul, AstConstant("c_coeff"), AstLeaf("x_0")),
+            AstConstant("c_sub"),
+        )
 
 
 class CstSimplificationRule4(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_sub, AstLeaf("x_0"), AstNode(m_sub, AstConstant("c_1"), AstLeaf("x_1"))
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_add, AstLeaf("x_0"), AstNode(m_add, AstLeaf("x_1"), AstConstant("c_res"))
-    )
 
     def check_candidate(self, candidate):
         c_res = SUB_TABLE[candidate["c_1"].size] - candidate["c_1"].value
         candidate.add_constant_leaf("c_res", c_res, candidate["c_1"].size)
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_sub, AstLeaf("x_0"), AstNode(m_sub, AstConstant("c_1"), AstLeaf("x_1"))
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_add, AstLeaf("x_0"), AstNode(m_add, AstLeaf("x_1"), AstConstant("c_res"))
+        )
 
 
 class CstSimplificationRule5(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_or,
-        AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")),
-        AstNode(m_and, AstLeaf("x_1"), AstConstant("c_2")),
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_xor,
-        AstNode(
-            m_and, AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1")), AstConstant("c_1")
-        ),
-        AstLeaf("x_1"),
-    )
 
     def check_candidate(self, candidate):
         return equal_bnot_cst(candidate["c_1"].mop, candidate["c_2"].mop)
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_or,
+            AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")),
+            AstNode(m_and, AstLeaf("x_1"), AstConstant("c_2")),
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_xor,
+            AstNode(
+                m_and, AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1")), AstConstant("c_1")
+            ),
+            AstLeaf("x_1"),
+        )
 
 
 class CstSimplificationRule6(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_and, AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_xor, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_2")), AstConstant("c_res")
-    )
 
     def check_candidate(self, candidate):
         c_res = candidate["c_1"].value & candidate["c_2"].value
         candidate.add_constant_leaf("c_res", c_res, candidate["c_2"].size)
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_and, AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_xor, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_2")), AstConstant("c_res")
+        )
 
 
 class CstSimplificationRule7(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_shr, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_and, AstNode(m_shr, AstLeaf("x_0"), AstConstant("c_2")), AstConstant("c_res")
-    )
 
     def check_candidate(self, candidate):
         c_res = candidate["c_1"].value >> candidate["c_2"].value
         candidate.add_constant_leaf("c_res", c_res, candidate["c_1"].size)
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_shr, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_and, AstNode(m_shr, AstLeaf("x_0"), AstConstant("c_2")), AstConstant("c_res")
+        )
 
 
 class CstSimplificationRule8(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_or, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_or, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_res")), AstConstant("c_2")
-    )
 
     def check_candidate(self, candidate):
         c_res = candidate["c_1"].value & ~candidate["c_2"].value
@@ -157,18 +179,20 @@ class CstSimplificationRule8(PatternMatchingRule):
             return False
         candidate.add_constant_leaf("c_res", c_res, candidate["c_1"].size)
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_or, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_or, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_res")), AstConstant("c_2")
+        )
 
 
 # (x_0 | c_1) & c_2 => (x_0 & (~c_1 & c_2)) ^ (c_1 & c_2)
 class CstSimplificationRule9(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_and, AstNode(m_or, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_xor,
-        AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and")),
-        AstConstant("c_xor"),
-    )
 
     def check_candidate(self, candidate):
         # c_and = (x_0 & (~c_1 & c_2))
@@ -180,17 +204,21 @@ class CstSimplificationRule9(PatternMatchingRule):
         candidate.add_constant_leaf("c_and", c_and, candidate["x_0"].size)
         candidate.add_constant_leaf("c_xor", c_xor, candidate["x_0"].size)
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_and, AstNode(m_or, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_xor,
+            AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and")),
+            AstConstant("c_xor"),
+        )
 
 
 class CstSimplificationRule10(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_sub,
-        AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")),
-        AstNode(m_and, AstLeaf("x_0"), AstConstant("c_2")),
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_neg, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and"))
-    )
 
     def check_candidate(self, candidate):
         if (candidate["c_1"].value & candidate["c_2"].value) != candidate["c_1"].value:
@@ -200,19 +228,21 @@ class CstSimplificationRule10(PatternMatchingRule):
         ].value
         candidate.add_constant_leaf("c_and", c_and, candidate["x_0"].size)
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_sub,
+            AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")),
+            AstNode(m_and, AstLeaf("x_0"), AstConstant("c_2")),
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_neg, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and"))
+        )
 
 
 class CstSimplificationRule11(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_or,
-        AstNode(m_xor, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("c_1")),
-        AstNode(m_and, AstLeaf("x_0"), AstConstant("c_2")),
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_xor,
-        AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_1_bnot")),
-        AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and")),
-    )
 
     def check_candidate(self, candidate):
         c_1_bnot = AND_TABLE[candidate["c_1"].size] ^ candidate["c_1"].value
@@ -220,58 +250,74 @@ class CstSimplificationRule11(PatternMatchingRule):
         candidate.add_constant_leaf("c_1_bnot", c_1_bnot, candidate["c_1"].size)
         candidate.add_constant_leaf("c_and", c_and, candidate["c_1"].size)
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_or,
+            AstNode(m_xor, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("c_1")),
+            AstNode(m_and, AstLeaf("x_0"), AstConstant("c_2")),
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_xor,
+            AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_1_bnot")),
+            AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and")),
+        )
 
 
 class CstSimplificationRule12(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_sub,
-        AstNode(m_sub, AstConstant("c_1"), AstLeaf("x_0")),
-        AstNode(
-            m_mul,
-            AstConstant("2", 2),
-            AstNode(m_and, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("c_2")),
-        ),
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_sub,
-        AstNode(m_xor, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("c_2")),
-        AstConstant("c_diff"),
-    )
 
     def check_candidate(self, candidate):
         c_diff = candidate["c_2"].value - candidate["c_1"].value
         candidate.add_constant_leaf("c_diff", c_diff, candidate["c_1"].size)
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_sub,
+            AstNode(m_sub, AstConstant("c_1"), AstLeaf("x_0")),
+            AstNode(
+                m_mul,
+                AstConstant("2", 2),
+                AstNode(m_and, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("c_2")),
+            ),
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_sub,
+            AstNode(m_xor, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("c_2")),
+            AstConstant("c_diff"),
+        )
 
 
 class CstSimplificationRule13(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_xor,
-        AstNode(
-            m_and, AstConstant("cst_1"), AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
-        ),
-        AstLeaf("x_1"),
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_xor,
-        AstNode(m_and, AstLeaf("x_0"), AstConstant("cst_1")),
-        AstNode(m_and, AstLeaf("x_1"), AstConstant("not_cst_1")),
-    )
 
     def check_candidate(self, candidate):
         candidate.add_constant_leaf(
             "not_cst_1", ~candidate["cst_1"].value, candidate["cst_1"].size
         )
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_xor,
+            AstNode(
+                m_and, AstConstant("cst_1"), AstNode(m_xor, AstLeaf("x_0"), AstLeaf("x_1"))
+            ),
+            AstLeaf("x_1"),
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_xor,
+            AstNode(m_and, AstLeaf("x_0"), AstConstant("cst_1")),
+            AstNode(m_and, AstLeaf("x_1"), AstConstant("not_cst_1")),
+        )
 
 
 class CstSimplificationRule14(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_add, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_add, AstNode(m_or, AstLeaf("x_0"), AstLeaf("lnot_c_1")), AstConstant("val_1")
-    )
 
     def check_candidate(self, candidate):
         lnot_c_1_value = candidate["c_1"].value ^ AND_TABLE[candidate["c_1"].size]
@@ -283,13 +329,19 @@ class CstSimplificationRule14(PatternMatchingRule):
             return False
         candidate.add_constant_leaf("val_1", 1, candidate["c_2"].size)
         candidate.add_constant_leaf("lnot_c_1", lnot_c_1_value, candidate["c_1"].size)
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_add, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_add, AstNode(m_or, AstLeaf("x_0"), AstLeaf("lnot_c_1")), AstConstant("val_1")
+        )
 
 
 class CstSimplificationRule15(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_shr, AstNode(m_shr, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
-    )
-    REPLACEMENT_PATTERN = AstNode(m_shr, AstLeaf("x_0"), AstConstant("c_res"))
 
     def check_candidate(self, candidate):
         # Get the bit-width from one of the operands
@@ -308,11 +360,17 @@ class CstSimplificationRule15(PatternMatchingRule):
 
         candidate.add_constant_leaf("c_res", c_res_val, candidate["c_1"].size)
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_shr, AstNode(m_shr, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(m_shr, AstLeaf("x_0"), AstConstant("c_res"))
 
 
 class CstSimplificationRule16(PatternMatchingRule):
-    PATTERN = AstNode(m_bnot, AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_1")))
-    REPLACEMENT_PATTERN = AstNode(m_xor, AstLeaf("x_0"), AstLeaf("bnot_c_1"))
 
     def check_candidate(self, candidate):
         candidate.add_constant_leaf(
@@ -321,13 +379,15 @@ class CstSimplificationRule16(PatternMatchingRule):
             candidate["c_1"].size,
         )
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(m_bnot, AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_1")))
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(m_xor, AstLeaf("x_0"), AstLeaf("bnot_c_1"))
 
 
 class CstSimplificationRule17(PatternMatchingRule):
-    PATTERN = AstNode(m_bnot, AstNode(m_or, AstLeaf("x_0"), AstConstant("c_1")))
-    REPLACEMENT_PATTERN = AstNode(
-        m_and, AstNode(m_bnot, AstLeaf("x_0")), AstLeaf("bnot_c_1")
-    )
 
     def check_candidate(self, candidate):
         candidate.add_constant_leaf(
@@ -336,13 +396,17 @@ class CstSimplificationRule17(PatternMatchingRule):
             candidate["c_1"].size,
         )
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(m_bnot, AstNode(m_or, AstLeaf("x_0"), AstConstant("c_1")))
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_and, AstNode(m_bnot, AstLeaf("x_0")), AstLeaf("bnot_c_1")
+        )
 
 
 class CstSimplificationRule18(PatternMatchingRule):
-    PATTERN = AstNode(m_bnot, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")))
-    REPLACEMENT_PATTERN = AstNode(
-        m_or, AstNode(m_bnot, AstLeaf("x_0")), AstLeaf("bnot_c_1")
-    )
 
     def check_candidate(self, candidate):
         candidate.add_constant_leaf(
@@ -351,15 +415,17 @@ class CstSimplificationRule18(PatternMatchingRule):
             candidate["c_1"].size,
         )
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(m_bnot, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")))
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_or, AstNode(m_bnot, AstLeaf("x_0")), AstLeaf("bnot_c_1")
+        )
 
 
 class CstSimplificationRule19(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_sar, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
-    )
-    REPLACEMENT_PATTERN = AstNode(
-        m_and, AstNode(m_shr, AstLeaf("x_0"), AstConstant("c_2")), AstConstant("c_res")
-    )
 
     def check_candidate(self, candidate):
         # Check if the MSB of c_1 is 0. This ensures that (x_0 & c_1) always has MSB=0,
@@ -374,25 +440,20 @@ class CstSimplificationRule19(PatternMatchingRule):
             candidate["c_1"].size,
         )
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_sar, AstNode(m_and, AstLeaf("x_0"), AstConstant("c_1")), AstConstant("c_2")
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_and, AstNode(m_shr, AstLeaf("x_0"), AstConstant("c_2")), AstConstant("c_res")
+        )
 
 
 # Found sometimes with OLLVM
 class CstSimplificationRule20(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_or,
-        AstNode(m_and, AstLeaf("bnot_x_0"), AstConstant("c_and_1")),
-        AstNode(
-            m_xor,
-            AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and_2")),
-            AstConstant("c_xor"),
-        ),
-    )
-
-    REPLACEMENT_PATTERN = AstNode(
-        m_xor,
-        AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and_res")),
-        AstConstant("c_xor_res"),
-    )
 
     def check_candidate(self, candidate):
         if not equal_bnot_mop(candidate["x_0"].mop, candidate["bnot_x_0"].mop):
@@ -410,24 +471,28 @@ class CstSimplificationRule20(PatternMatchingRule):
             candidate["c_and_1"].size,
         )
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_or,
+            AstNode(m_and, AstLeaf("bnot_x_0"), AstConstant("c_and_1")),
+            AstNode(
+                m_xor,
+                AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and_2")),
+                AstConstant("c_xor"),
+            ),
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_xor,
+            AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and_res")),
+            AstConstant("c_xor_res"),
+        )
 
 
 # Found sometimes with OLLVM
 class CstSimplificationRule21(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_or,
-        AstNode(
-            m_xor,
-            AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and")),
-            AstConstant("c_xor_1"),
-        ),
-        AstNode(
-            m_xor,
-            AstNode(m_and, AstLeaf("x_0"), AstConstant("bnot_c_and")),
-            AstConstant("c_xor_2"),
-        ),
-    )
-    REPLACEMENT_PATTERN = AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_xor_res"))
 
     def check_candidate(self, candidate):
         if not equal_bnot_cst(candidate["c_and"].mop, candidate["bnot_c_and"].mop):
@@ -440,24 +505,28 @@ class CstSimplificationRule21(PatternMatchingRule):
             candidate["c_xor_1"].size,
         )
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_or,
+            AstNode(
+                m_xor,
+                AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and")),
+                AstConstant("c_xor_1"),
+            ),
+            AstNode(
+                m_xor,
+                AstNode(m_and, AstLeaf("x_0"), AstConstant("bnot_c_and")),
+                AstConstant("c_xor_2"),
+            ),
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_xor_res"))
 
 
 # Found sometimes with OLLVM
 class CstSimplificationRule22(PatternMatchingRule):
-    PATTERN = AstNode(
-        m_or,
-        AstNode(
-            m_xor,
-            AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and")),
-            AstConstant("c_xor_1"),
-        ),
-        AstNode(
-            m_xor,
-            AstNode(m_and, AstLeaf("bnot_x_0"), AstConstant("bnot_c_and")),
-            AstConstant("c_xor_2"),
-        ),
-    )
-    REPLACEMENT_PATTERN = AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_xor_res"))
 
     def check_candidate(self, candidate):
         # Condition 1: Check for valid ~x_0
@@ -491,3 +560,21 @@ class CstSimplificationRule22(PatternMatchingRule):
             candidate["c_xor_1"].size,
         )
         return True
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(
+            m_or,
+            AstNode(
+                m_xor,
+                AstNode(m_and, AstLeaf("x_0"), AstConstant("c_and")),
+                AstConstant("c_xor_1"),
+            ),
+            AstNode(
+                m_xor,
+                AstNode(m_and, AstLeaf("bnot_x_0"), AstConstant("bnot_c_and")),
+                AstConstant("c_xor_2"),
+            ),
+        )
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_xor_res"))

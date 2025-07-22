@@ -8,12 +8,6 @@ from ida_hexrays import *
 
 
 class ReplaceMovHigh(PatternMatchingRule):
-    PATTERN = AstNode(m_mov, AstConstant("c_0"))
-    REPLACEMENT_PATTERN = AstNode(
-        m_or,
-        AstConstant("new_c_0"),
-        AstNode(m_and, AstLeaf("new_reg"), AstConstant("mask")),
-    )
 
     def check_candidate(self, candidate):
         # IDA does not do constant propagation for pattern such as:
@@ -40,3 +34,13 @@ class ReplaceMovHigh(PatternMatchingRule):
             return True
         else:
             return False
+    @property
+    def PATTERN(self) -> AstNode:
+        return AstNode(m_mov, AstConstant("c_0"))
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(
+            m_or,
+            AstConstant("new_c_0"),
+            AstNode(m_and, AstLeaf("new_reg"), AstConstant("mask")),
+        )

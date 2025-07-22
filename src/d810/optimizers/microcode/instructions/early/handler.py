@@ -1,10 +1,12 @@
+import abc
+
 from d810.optimizers.microcode.instructions.handler import (
     GenericPatternRule,
     InstructionOptimizer,
 )
 
 
-class EarlyRule(GenericPatternRule):
+class EarlyRule(GenericPatternRule, abc.ABC):
     pass
 
 
