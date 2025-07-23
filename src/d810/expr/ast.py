@@ -246,6 +246,11 @@ class AstNode(AstBase, dict):
 
     def check_pattern_and_copy_mops(self, ast: AstNode | AstLeaf) -> bool:
         self.reset_mops()
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "AstNode.check_pattern_and_copy_mops from %r",
+                ast,
+            )
         is_matching_shape = self._copy_mops_from_ast(ast)
         if not is_matching_shape:
             return False
@@ -259,19 +264,32 @@ class AstNode(AstBase, dict):
             self.right.reset_mops()
 
     def _copy_mops_from_ast(self, other: AstNode | AstLeaf) -> bool:
-        self.mop = other.mop
-        self.dst_mop = other.dst_mop
-        self.dest_size = other.dest_size
-        self.ea = other.ea
-
         if not other.is_node():
             return False
         other = typing.cast(AstNode, other)
         if self.opcode != other.opcode:
             return False
+
+        self.mop = other.mop
+        self.dst_mop = other.dst_mop
+        self.dest_size = other.dest_size
+        self.ea = other.ea
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "AstNode._copy_mops_from_ast: self.left: %r, other.left: %r",
+                self.left,
+                other.left,
+            )
         if self.left is not None and other.left is not None:
             if not self.left._copy_mops_from_ast(other.left):
                 return False
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "AstNode._copy_mops_from_ast: self.right: %r, other.right: %r",
+                self.right,
+                other.right,
+            )
         if self.right is not None and other.right is not None:
             if not self.right._copy_mops_from_ast(other.right):
                 return False
@@ -806,8 +824,34 @@ class AstLeaf(AstBase):
         return [self]
 
     def create_mop(self, ea):
-        # Currently, we are not creating a new mop but returning the one defined
-        return self.mop
+        # 1. Constant operands can keep using the shared cache
+        if self.is_constant() and self.value is not None:
+            assert (
+                self.dest_size is not None
+            ), f"{repr(self)}'s dest_size is None in create_mop for {hex(ea)}"
+            val = get_constant_mop(self.value, self.dest_size)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "AstLeaf.create_mop: Constant operand reused: %s",
+                    val,
+                    extra={"ea": hex(ea)},
+                )
+            return val
+
+        if self.mop is None:
+            logger.error(
+                "%r mop is None in create_mop for 0x%x",
+                self,
+                ea,
+            )
+            raise AstEvaluationException(
+                f"{repr(self)}'s mop is None in create_mop for {hex(ea)}"
+            )
+
+        # 2. Otherwise, we need to create a new mop
+        new_mop = ida_hexrays.mop_t()
+        new_mop.assign(self.mop)
+        return new_mop  # duplicates the C++ object
 
     def update_leafs_mop(self, other: AstNode, other2: AstNode | None = None):
         if other is not None and self.name in other.leafs_by_name:
@@ -832,6 +876,19 @@ class AstLeaf(AstBase):
         self.mop = None
 
     def _copy_mops_from_ast(self, other):
+        if other.mop is None:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "AstLeaf._copy_mops_from_ast: other %r's mop is None",
+                    other,
+                )
+            return False
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "AstLeaf._copy_mops_from_ast: other %r's mop %s is not None",
+                other,
+                format_mop_t(other.mop),
+            )
         self.mop = other.mop
         return True
 
@@ -907,11 +964,23 @@ class AstConstant(AstLeaf):
 
     def _copy_mops_from_ast(self, other):
         if other.mop is not None and other.mop.t != ida_hexrays.mop_n:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "AstConstant._copy_mops_from_ast: other.mop is not a constant: %r",
+                    other.mop,
+                )
             return False
 
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "AstConstant._copy_mops_from_ast: other %r's mop %s is a constant",
+                other,
+                format_mop_t(other.mop),
+            )
         self.mop = other.mop
         if self.expected_value is None:
-            return True
+            self.expected_value = other.mop.nnn.value
+            self.expected_size = other.mop.size
         return self.expected_value == other.mop.nnn.value
 
     def evaluate(self, dict_index_to_value=None):
@@ -939,7 +1008,7 @@ class AstConstant(AstLeaf):
 
     @_compat.override
     def __repr__(self):
-        return f"AstConstant('{self.name}', value={self.expected_value}, size={self.expected_size})"
+        return f"AstConstant({str(self)})"
 
 
 class AstProxy(AstBase):
@@ -1010,7 +1079,7 @@ class AstProxy(AstBase):
 
     @_compat.override
     def __repr__(self):
-        return f"AstProxy({self._target.__class__.__name__}({repr(self._target)}))"
+        return f"AstProxy({repr(self._target)})"
 
     # Explicitly forward critical leaf data that callers expect to access
     # directly.  Without these properties Python finds the *class*-level

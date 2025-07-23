@@ -58,11 +58,32 @@ class PatternMatchingRule(GenericPatternRule):
             self.pattern_candidates += [x for x in self.PATTERNS]
 
     def check_pattern_and_replace(self, candidate_pattern: AstNode, test_ast: AstNode):
+        if optimizer_logger.isEnabledFor(logging.DEBUG):
+            optimizer_logger.debug(
+                " 1. Checking pattern: %s against %s",
+                candidate_pattern.get_pattern(),
+                test_ast.get_pattern(),
+            )
         if not candidate_pattern.check_pattern_and_copy_mops(test_ast):
             return None
+        if optimizer_logger.isEnabledFor(logging.DEBUG):
+            optimizer_logger.debug(
+                " 2. Pattern matched: %s",
+                candidate_pattern.get_pattern(),
+            )
         if not self.check_candidate(candidate_pattern):
             return None
+        if optimizer_logger.isEnabledFor(logging.DEBUG):
+            optimizer_logger.debug(
+                " 3. Candidate check passed: %s",
+                candidate_pattern.get_pattern(),
+            )
         new_instruction = self.get_replacement(candidate_pattern)
+        if optimizer_logger.isEnabledFor(logging.DEBUG):
+            optimizer_logger.debug(
+                " 4. Replacement: %s",
+                None if new_instruction is None else new_instruction,
+            )
         return new_instruction
 
     def check_candidate(self, candidate: AstNode):
@@ -252,10 +273,13 @@ class PatternOptimizer(InstructionOptimizer):
             return None
 
         all_matches = self.pattern_storage.get_matching_rule_pattern_info(tmp)
-        for rule_pattern_info in all_matches:
+        match_len = len(all_matches)
+        for i, rule_pattern_info in enumerate(all_matches):
             if optimizer_logger.isEnabledFor(logging.DEBUG):
                 optimizer_logger.debug(
-                    "[PatternOptimizer.get_optimized_instruction] rule_pattern_info: %s",
+                    "[PatternOptimizer.get_optimized_instruction] %s/%s rule_pattern_info: %s",
+                    i + 1,
+                    match_len,
                     rule_pattern_info,
                 )
             try:
