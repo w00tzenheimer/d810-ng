@@ -1,4 +1,5 @@
 import abc
+import dataclasses
 import itertools
 import logging
 import typing
@@ -67,11 +68,14 @@ class PatternMatchingRule(GenericPatternRule):
     def check_candidate(self, candidate: AstNode):
         return True
 
+    def __repr__(self):
+        return f"{self.__class__.__name__}({repr(self.PATTERN)} -> {repr(self.REPLACEMENT_PATTERN)})"
 
-class RulePatternInfo(object):
-    def __init__(self, rule, pattern):
-        self.rule = rule
-        self.pattern = pattern
+
+@dataclasses.dataclass
+class RulePatternInfo:
+    rule: InstructionOptimizationRule
+    pattern: AstNode
 
 
 def signature_generator(ref_sig):
@@ -217,12 +221,14 @@ class PatternOptimizer(InstructionOptimizer):
         if not is_ok:
             return False
         for pattern in rule.pattern_candidates:
+            optimizer_logger.debug(
+                "[PatternOptimizer.add_rule] Adding pattern: %s",
+                str(pattern),
+            )
             self.pattern_storage.add_pattern_for_rule(pattern, rule)
         return True
 
-    def get_optimized_instruction(
-        self, blk: mblock_t, ins: minsn_t
-    ) -> Union[None, minsn_t]:
+    def get_optimized_instruction(self, blk: mblock_t, ins: minsn_t) -> minsn_t | None:
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
         if self.cur_maturity not in self.maturities:
@@ -231,13 +237,27 @@ class PatternOptimizer(InstructionOptimizer):
         # This avoids the (potentially expensive) AST conversion and pattern lookup
         # overhead when the user has not enabled any pattern rules.
         if len(self.rules) == 0:
-            return None
-        tmp = minsn_to_ast(ins)
-        if tmp is None:
+            if optimizer_logger.isEnabledFor(logging.DEBUG):
+                optimizer_logger.debug(
+                    "[PatternOptimizer.get_optimized_instruction] No rules configured, skipping"
+                )
             return None
 
-        all_matchs = self.pattern_storage.get_matching_rule_pattern_info(tmp)
-        for rule_pattern_info in all_matchs:
+        tmp = minsn_to_ast(ins)
+        if tmp is None:
+            if optimizer_logger.isEnabledFor(logging.DEBUG):
+                optimizer_logger.debug(
+                    "[PatternOptimizer.get_optimized_instruction] minsn_to_ast failed, skipping"
+                )
+            return None
+
+        all_matches = self.pattern_storage.get_matching_rule_pattern_info(tmp)
+        for rule_pattern_info in all_matches:
+            if optimizer_logger.isEnabledFor(logging.DEBUG):
+                optimizer_logger.debug(
+                    "[PatternOptimizer.get_optimized_instruction] rule_pattern_info: %s",
+                    rule_pattern_info,
+                )
             try:
                 new_ins = rule_pattern_info.rule.check_pattern_and_replace(
                     rule_pattern_info.pattern, tmp
