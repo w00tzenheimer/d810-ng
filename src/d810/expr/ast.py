@@ -122,6 +122,9 @@ class AstBase(abc.ABC):
     @abc.abstractmethod
     def get_depth_signature(self, depth: int) -> List[str]: ...
 
+    def __bool__(self) -> bool:
+        return True
+
 
 class AstNode(AstBase, dict):
     def __init__(
@@ -657,6 +660,9 @@ class AstNode(AstBase, dict):
             logger.info("Error while calling __str__ on AstNode: {0}".format(e))
         return "Error_AstNode"
 
+    def __repr__(self):
+        return f"AstNode({opcode_to_string(self.opcode)}, left={self.left}, right={self.right})"
+
     @_compat.override
     def clone(self):
         # Use __new__ to bypass __init__ for speed
@@ -864,7 +870,6 @@ class AstLeaf(AstBase):
         else:
             return ["N"] * (2 ** (depth - 1))
 
-    @_compat.override
     def __str__(self):
         try:
             if self.is_constant() and self.mop is not None:
@@ -879,6 +884,9 @@ class AstLeaf(AstBase):
         except RuntimeError as e:
             logger.info("Error while calling __str__ on AstLeaf: {0}".format(e))
             return "Error_AstLeaf"
+
+    def __repr__(self):
+        return f"AstLeaf('{str(self)}')"
 
 
 class AstConstant(AstLeaf):
@@ -928,6 +936,10 @@ class AstConstant(AstLeaf):
         except RuntimeError as e:
             logger.info("Error while calling __str__ on AstConstant: {0}".format(e))
             return "Error_AstConstant"
+
+    @_compat.override
+    def __repr__(self):
+        return f"AstConstant('{self.name}', value={self.expected_value}, size={self.expected_size})"
 
 
 class AstProxy(AstBase):
@@ -1585,6 +1597,7 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
 
     builder_context = AstBuilderContext()
     # Start the optimized recursive build.
+
     if not (mop_ast := mop_to_ast_internal(mop, builder_context, root=True)):
         # Cache the failure to avoid re-computing it.
         MOP_TO_AST_CACHE[cache_key] = None
