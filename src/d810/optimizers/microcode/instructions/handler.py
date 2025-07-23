@@ -6,6 +6,7 @@ import typing
 
 import ida_hexrays
 
+from d810 import _compat
 from d810.errors import D810Exception
 from d810.expr.ast import AstNode, minsn_to_ast
 from d810.hexrays.hexrays_formatters import format_minsn_t, maturity_to_string
@@ -73,15 +74,45 @@ class GenericPatternRule(InstructionOptimizationRule):
         return []
 
     def get_replacement(self, candidate: AstNode) -> ida_hexrays.minsn_t | None:
-        if not self.REPLACEMENT_PATTERN:
+        # REPLACEMENT_PATTERN is implemented as a @property (or a method
+        # masquerading as an attribute) that builds a brand-new AstNode tree
+        # every time it is accessed.
+        #
+        # the issue is `self.REPLACEMENT_PATTERN` creates new nodes *EVERY* time because it
+        # is a property. When invoked, it then re-instantiates the objects, so it loses
+        # anything that modified it before.
+        repl_pat = self.REPLACEMENT_PATTERN
+        if not repl_pat:
+            if optimizer_logger.isEnabledFor(logging.DEBUG):
+                optimizer_logger.debug(
+                    "No replacement pattern for rule %s",
+                    self.NAME,
+                )
             return None
-        is_ok = self.REPLACEMENT_PATTERN.update_leafs_mop(candidate)
+        is_ok = repl_pat.update_leafs_mop(candidate)
+        if optimizer_logger.isEnabledFor(logging.DEBUG):
+            optimizer_logger.debug(
+                "Replacement pattern updated leaf mops OK?: %s",
+                is_ok,
+            )
         if not is_ok:
             return None
-        assert candidate.ea is not None
-        new_ins = self.REPLACEMENT_PATTERN.create_minsn(candidate.ea, candidate.dst_mop)
+        if not candidate.ea:
+            if optimizer_logger.isEnabledFor(logging.DEBUG):
+                optimizer_logger.debug(
+                    "No EA for candidate %s",
+                    candidate,
+                )
+            return None
+        new_ins = repl_pat.create_minsn(candidate.ea, candidate.dst_mop)
+        if optimizer_logger.isEnabledFor(logging.DEBUG):
+            optimizer_logger.debug(
+                "Replacement instruction created: %s",
+                new_ins,
+            )
         return new_ins
 
+    @_compat.override
     def check_and_replace(
         self, blk: ida_hexrays.mblock_t, instruction: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:

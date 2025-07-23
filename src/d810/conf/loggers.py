@@ -43,7 +43,7 @@ conf: dict[str, typing.Any] = {
     },
     "loggers": {
         "D810": {
-            "level": "INFO",
+            "level": "DEBUG",
             "handlers": ["consoleHandler", "defaultFileHandler"],
             "propagate": False,
         },
@@ -58,7 +58,7 @@ conf: dict[str, typing.Any] = {
             "propagate": False,
         },
         "D810.chain": {
-            "level": "INFO",
+            "level": "DEBUG",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
@@ -73,7 +73,7 @@ conf: dict[str, typing.Any] = {
             "propagate": False,
         },
         "D810.tracker": {
-            "level": "INFO",
+            "level": "DEBUG",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
@@ -83,12 +83,12 @@ conf: dict[str, typing.Any] = {
             "propagate": False,
         },
         "D810.helper": {
-            "level": "INFO",
+            "level": "DEBUG",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
         "D810.pattern_search": {
-            "level": "ERROR",
+            "level": "DEBUG",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
