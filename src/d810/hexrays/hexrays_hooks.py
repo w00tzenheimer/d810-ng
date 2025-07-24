@@ -14,15 +14,14 @@ from d810.hexrays.hexrays_formatters import (
     maturity_to_string,
 )
 from d810.hexrays.hexrays_helpers import check_ins_mop_size_are_ok
-from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
+from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
+from d810.optimizers.microcode.instructions.handler import (
+    InstructionOptimizationRule,
+    InstructionOptimizer,
+)
 
 if TYPE_CHECKING:
     from d810.manager import D810Manager
-    from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
-    from d810.optimizers.microcode.instructions.handler import (
-        InstructionOptimizationRule,
-        InstructionOptimizer,
-    )
 
 main_logger = logging.getLogger("D810")
 optimizer_logger = logging.getLogger("D810.optimizer")
