@@ -360,10 +360,7 @@ class D810Plugin(ReloadablePlugin):
         # Treat these entries as *prefixes* - any module whose fully-qualified
         # name starts with one of these strings will be filtered out. This gives
         # us simple glob-like behaviour without bringing in fnmatch.
-        disallowed_prefixes: tuple[str, ...] = (
-            f"{self.base_package_name}.registry",
-            f"{self.base_package_name}.tests",
-        )
+        disallowed_prefixes: tuple[str, ...] = (f"{self.base_package_name}.registry",)
 
         filtered = [
             m
