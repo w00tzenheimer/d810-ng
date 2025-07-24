@@ -1,12 +1,11 @@
 import logging
-from typing import List, Tuple
+
+import idaapi
+from ida_hexrays import *
 
 from d810.errors import ControlFlowException
 from d810.hexrays.hexrays_formatters import block_printer
 from d810.hexrays.hexrays_helpers import CONDITIONAL_JUMP_OPCODES
-
-import idaapi
-from ida_hexrays import *
 
 helper_logger = logging.getLogger("D810.helper")
 
@@ -298,7 +297,7 @@ def make_2way_block_goto(blk: mblock_t, blk_successor_serial: int) -> bool:
 
 
 def create_block(
-    blk: mblock_t, blk_ins: List[minsn_t], is_0_way: bool = False
+    blk: mblock_t, blk_ins: list[minsn_t], is_0_way: bool = False
 ) -> mblock_t:
     mba = blk.mba
     new_blk = insert_nop_blk(blk)
@@ -328,7 +327,7 @@ def create_block(
         raise e
 
 
-def update_block_successors(blk: mblock_t, blk_succ_serial_list: List[int]):
+def update_block_successors(blk: mblock_t, blk_succ_serial_list: list[int]):
     mba = blk.mba
     if len(blk_succ_serial_list) == 0:
         blk.type = BLT_0WAY
@@ -415,7 +414,7 @@ def ensure_last_block_is_goto(mba: mbl_array_t) -> int:
         )
 
 
-def duplicate_block(block_to_duplicate: mblock_t) -> Tuple[mblock_t, mblock_t | None]:
+def duplicate_block(block_to_duplicate: mblock_t) -> tuple[mblock_t, mblock_t | None]:
     mba = block_to_duplicate.mba
     duplicated_blk = mba.copy_block(block_to_duplicate, mba.qty - 1)
     helper_logger.debug(
@@ -479,7 +478,7 @@ def is_indirect_jump(blk: mblock_t) -> bool:
     return False
 
 
-def get_block_serials_by_address(mba: mbl_array_t, address: int) -> List[int]:
+def get_block_serials_by_address(mba: mbl_array_t, address: int) -> list[int]:
     blk_serial_list = []
     for i in range(mba.qty):
         blk = mba.get_mblock(i)
@@ -488,7 +487,7 @@ def get_block_serials_by_address(mba: mbl_array_t, address: int) -> List[int]:
     return blk_serial_list
 
 
-def get_block_serials_by_address_range(mba: mbl_array_t, address: int) -> List[int]:
+def get_block_serials_by_address_range(mba: mbl_array_t, address: int) -> list[int]:
     blk_serial_list = []
     for i in range(mba.qty):
         blk = mba.get_mblock(i)

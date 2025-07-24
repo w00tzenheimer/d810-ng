@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Dict
 
+from ida_hexrays import *
+
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
 from d810.hexrays.cfg_utils import (
     change_1way_block_successor,
@@ -20,8 +22,6 @@ from d810.hexrays.hexrays_helpers import (
     get_blk_index,
     get_mop_index,
 )
-
-from ida_hexrays import *
 
 # This module can be use to find the instruction that define the value of a mop. Basically, you:
 # 1 - Create a MopTracker object with the list of mops to search
@@ -104,7 +104,7 @@ class BlockInfo(object):
 
 
 class MopHistory(object):
-    def __init__(self, searched_mop_list: List[mop_t]):
+    def __init__(self, searched_mop_list: list[mop_t]):
         self.searched_mop_list = [mop_t(x) for x in searched_mop_list]
         self.history = []
         self.unresolved_mop_list = []
@@ -140,11 +140,11 @@ class MopHistory(object):
         return True
 
     @property
-    def block_path(self) -> List[mblock_t]:
+    def block_path(self) -> list[mblock_t]:
         return [blk_info.blk for blk_info in self.history]
 
     @property
-    def block_serial_path(self) -> List[int]:
+    def block_serial_path(self) -> list[int]:
         return [blk.serial for blk in self.block_path]
 
     def replace_block_in_path(self, old_blk: mblock_t, new_blk: mblock_t) -> bool:
@@ -252,7 +252,7 @@ class MopHistory(object):
                     )
 
 
-def get_standard_and_memory_mop_lists(mop_in: mop_t) -> Tuple[List[mop_t], List[mop_t]]:
+def get_standard_and_memory_mop_lists(mop_in: mop_t) -> tuple[list[mop_t], list[mop_t]]:
     if mop_in.t in [mop_r, mop_S]:
         return [mop_in], []
     elif mop_in.t == mop_v:
@@ -281,7 +281,7 @@ cur_mop_tracker_nb_path = 0
 class MopTracker(object):
     def __init__(
         self,
-        searched_mop_list: List[mop_t],
+        searched_mop_list: list[mop_t],
         max_nb_block=-1,
         max_path=-1,
         dispatcher_info=None,
@@ -330,7 +330,7 @@ class MopTracker(object):
         avoid_list=None,
         must_use_pred=None,
         stop_at_first_duplication=False,
-    ) -> List[MopHistory]:
+    ) -> list[MopHistory]:
         logger.debug(
             "Searching backward (reg): {0}".format(
                 [format_mop_t(x) for x in self._unresolved_mops]
@@ -581,8 +581,8 @@ class MopTracker(object):
 
 
 def get_block_with_multiple_predecessors(
-    var_histories: List[MopHistory],
-) -> Tuple[Union[None, mblock_t], Union[None, Dict[int, List[MopHistory]]]]:
+    var_histories: list[MopHistory],
+) -> tuple[None | mblock_t, None | dict[int, list[MopHistory]]]:
     for i, var_history in enumerate(var_histories):
         pred_blk = var_history.block_path[0]
         for block in var_history.block_path[1:]:
@@ -600,7 +600,7 @@ def get_block_with_multiple_predecessors(
     return None, None
 
 
-def try_to_duplicate_one_block(var_histories: List[MopHistory]) -> Tuple[int, int]:
+def try_to_duplicate_one_block(var_histories: list[MopHistory]) -> tuple[int, int]:
     nb_duplication = 0
     nb_change = 0
     if (len(var_histories) == 0) or (len(var_histories[0].block_path) == 0):
@@ -697,8 +697,8 @@ def try_to_duplicate_one_block(var_histories: List[MopHistory]) -> Tuple[int, in
 
 
 def duplicate_histories(
-    var_histories: List[MopHistory], max_nb_pass: int = 10
-) -> Tuple[int, int]:
+    var_histories: list[MopHistory], max_nb_pass: int = 10
+) -> tuple[int, int]:
     cur_pass = 0
     total_nb_duplication = 0
     total_nb_change = 0
@@ -718,7 +718,7 @@ def duplicate_histories(
     return total_nb_duplication, total_nb_change
 
 
-def get_segment_register_indexes(mop_list: List[mop_t]) -> List[int]:
+def get_segment_register_indexes(mop_list: list[mop_t]) -> list[int]:
     # This is a very dirty and probably buggy
     segment_register_indexes = []
     for i, mop in enumerate(mop_list):
@@ -729,7 +729,7 @@ def get_segment_register_indexes(mop_list: List[mop_t]) -> List[int]:
     return segment_register_indexes
 
 
-def remove_segment_registers(mop_list: List[mop_t]) -> List[mop_t]:
+def remove_segment_registers(mop_list: list[mop_t]) -> list[mop_t]:
     # TODO: instead of doing that, we should add the segment registers to the (global?) emulation environment
     segment_register_indexes = get_segment_register_indexes(mop_list)
     if len(segment_register_indexes) == 0:
