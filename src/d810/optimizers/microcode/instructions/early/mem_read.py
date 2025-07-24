@@ -1,6 +1,3 @@
-from d810.expr.ast import AstConstant, AstLeaf, AstNode
-from d810.optimizers.microcode.instructions.early.handler import EarlyRule
-
 from ida_hexrays import *
 from idaapi import (
     SEGPERM_READ,
@@ -13,12 +10,21 @@ from idaapi import (
     xrefblk_t,
 )
 
+from d810.expr.ast import AstConstant, AstLeaf, AstNode
+from d810.optimizers.microcode.instructions.early.handler import EarlyRule
+
 
 class SetGlobalVariablesToZero(EarlyRule):
     DESCRIPTION = "This rule can be used to patch memory read"
 
-    PATTERN = AstNode(m_mov, AstLeaf("ro_dword"))
-    REPLACEMENT_PATTERN = AstNode(m_mov, AstConstant("val_res"))
+    @property
+    def PATTERN(self) -> AstNode:
+        """Return the pattern to match."""
+        return AstNode(m_mov, AstLeaf("ro_dword"))
+
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(m_mov, AstConstant("val_res"))
 
     def __init__(self):
         super().__init__()
@@ -52,8 +58,14 @@ class SetGlobalVariablesToZero(EarlyRule):
 class SetGlobalVariablesToZeroIfDetectedReadOnly(EarlyRule):
     DESCRIPTION = "WARNING: Use it only if you know what you are doing as it may patch data not related to obfuscation"
 
-    PATTERN = AstNode(m_mov, AstLeaf("ro_dword"))
-    REPLACEMENT_PATTERN = AstNode(m_mov, AstConstant("val_res"))
+    @property
+    def PATTERN(self) -> AstNode:
+        """Return the pattern to match."""
+        return AstNode(m_mov, AstLeaf("ro_dword"))
+
+    @property
+    def REPLACEMENT_PATTERN(self) -> AstNode:
+        return AstNode(m_mov, AstConstant("val_res"))
 
     def __init__(self):
         super().__init__()
