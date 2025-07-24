@@ -2,12 +2,12 @@ import functools
 import logging
 import typing
 
+from ida_hexrays import *
+
 from d810.errors import D810Z3Exception
 from d810.expr.ast import AstLeaf, AstNode, minsn_to_ast, mop_to_ast
 from d810.hexrays.hexrays_formatters import format_minsn_t, opcode_to_string
 from d810.hexrays.hexrays_helpers import get_mop_index
-
-from ida_hexrays import *
 
 logger = logging.getLogger("D810.plugin")
 z3_file_logger = logging.getLogger("D810.z3_test")
@@ -42,7 +42,7 @@ def requires_z3_installed(func: typing.Callable[..., typing.Any]):
 
 
 @requires_z3_installed
-def create_z3_vars(leaf_list: List[AstLeaf]):
+def create_z3_vars(leaf_list: list[AstLeaf]):
     known_leaf_list = []
     known_leaf_z3_var_list = []
     for leaf in leaf_list:
@@ -248,7 +248,7 @@ def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
 
 
 @requires_z3_installed
-def mop_list_to_z3_expression_list(mop_list: List[mop_t]):
+def mop_list_to_z3_expression_list(mop_list: list[mop_t]):
     ast_list = [mop_to_ast(mop) for mop in mop_list]
     ast_leaf_list = []
     for ast in ast_list:
@@ -278,7 +278,7 @@ def z3_check_mop_inequality(mop1: mop_t, mop2: mop_t) -> bool:
 
 
 @requires_z3_installed
-def rename_leafs(leaf_list: List[AstLeaf]) -> List[str]:
+def rename_leafs(leaf_list: list[AstLeaf]) -> list[str]:
     known_leaf_list = []
     for leaf in leaf_list:
         if not leaf.is_constant() and leaf.mop.t != mop_z:

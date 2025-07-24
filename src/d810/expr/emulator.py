@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import logging
 
+from ida_hexrays import *
+from idaapi import SEGPERM_WRITE, get_qword, getseg
+
 from d810.errors import (
     EmulationException,
     EmulationIndirectJumpException,
@@ -31,9 +34,6 @@ from d810.hexrays.hexrays_helpers import (
     equal_mops_ignore_size,
     get_mop_index,
 )
-
-from ida_hexrays import *
-from idaapi import SEGPERM_WRITE, get_qword, getseg
 
 emulator_log = logging.getLogger("D810.emulator")
 
@@ -588,10 +588,10 @@ class MopMapping(object):
         mop_index = get_mop_index(mop, self.mops)
         return mop_index != -1
 
-    def keys(self) -> List[mop_t]:
+    def keys(self) -> list[mop_t]:
         return self.mops
 
-    def values(self) -> List[int]:
+    def values(self) -> list[int]:
         return self.mops_values
 
     def items(self):
