@@ -134,7 +134,7 @@ class PatternStorage(object):
             )
 
     @staticmethod
-    def layer_signature_to_key(sig: List[str]) -> str:
+    def layer_signature_to_key(sig: list[str]) -> str:
         return ",".join(sig)
 
     @staticmethod

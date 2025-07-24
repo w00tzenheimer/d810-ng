@@ -8,7 +8,7 @@ import ida_hexrays
 
 from d810 import _compat
 from d810.errors import D810Exception
-from d810.expr.ast import AstNode, minsn_to_ast
+from d810.expr.ast import AstBase, AstNode, minsn_to_ast
 from d810.hexrays.hexrays_formatters import format_minsn_t, maturity_to_string
 from d810.optimizers.microcode.handler import OptimizationRule
 from d810.registry import Registrant
