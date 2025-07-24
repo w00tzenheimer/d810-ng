@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import enum
 import logging
+import pathlib
+import typing
 from typing import TYPE_CHECKING
 
 from ida_hexrays import *
@@ -19,9 +22,6 @@ from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizationRule,
     InstructionOptimizer,
 )
-
-if TYPE_CHECKING:
-    from d810.manager import D810Manager
 
 main_logger = logging.getLogger("D810")
 optimizer_logger = logging.getLogger("D810.optimizer")
@@ -65,10 +65,10 @@ DEFAULT_ANALYZER_MATURITIES = [
 
 
 class InstructionOptimizerManager(optinsn_t):
-    def __init__(self, manager: D810Manager):
+    def __init__(self, log_dir: pathlib.Path):
         optimizer_logger.debug("Initializing {0}...".format(self.__class__.__name__))
         super().__init__()
-        self.manager = manager
+        self.log_dir = log_dir
         self.instruction_visitor = InstructionVisitorManager(self)
         self._last_optimizer_tried = None
         self.current_maturity = None
@@ -86,31 +86,25 @@ class InstructionOptimizerManager(optinsn_t):
         Z3Optimizer = InstructionOptimizer.get("Z3Optimizer")
         self.add_optimizer(
             PatternOptimizer(
-                DEFAULT_OPTIMIZATION_PATTERN_MATURITIES, log_dir=self.manager.log_dir
+                DEFAULT_OPTIMIZATION_PATTERN_MATURITIES, log_dir=self.log_dir
             )
         )
         self.add_optimizer(
-            ChainOptimizer(
-                DEFAULT_OPTIMIZATION_CHAIN_MATURITIES, log_dir=self.manager.log_dir
-            )
+            ChainOptimizer(DEFAULT_OPTIMIZATION_CHAIN_MATURITIES, log_dir=self.log_dir)
         )
         self.add_optimizer(
-            Z3Optimizer(
-                DEFAULT_OPTIMIZATION_Z3_MATURITIES, log_dir=self.manager.log_dir
-            )
+            Z3Optimizer(DEFAULT_OPTIMIZATION_Z3_MATURITIES, log_dir=self.log_dir)
         )
         self.add_optimizer(
-            EarlyOptimizer(
-                DEFAULT_OPTIMIZATION_EARLY_MATURITIES, log_dir=self.manager.log_dir
-            )
+            EarlyOptimizer(DEFAULT_OPTIMIZATION_EARLY_MATURITIES, log_dir=self.log_dir)
         )
         self.add_optimizer(
             PeepholeOptimizer(
-                DEFAULT_OPTIMIZATION_PEEPHOLE_MATURITIES, log_dir=self.manager.log_dir
+                DEFAULT_OPTIMIZATION_PEEPHOLE_MATURITIES, log_dir=self.log_dir
             )
         )
         self.analyzer = InstructionAnalyzer(
-            DEFAULT_ANALYZER_MATURITIES, log_dir=self.manager.log_dir
+            DEFAULT_ANALYZER_MATURITIES, log_dir=self.log_dir
         )
 
     def func(self, blk: mblock_t, ins: minsn_t) -> bool:
@@ -180,7 +174,7 @@ class InstructionOptimizerManager(optinsn_t):
 
             if self.dump_intermediate_microcode:
                 dump_microcode_for_debug(
-                    mba, self.manager.log_dir, "input_instruction_optimizer"
+                    mba, self.log_dir, "input_instruction_optimizer"
                 )
 
         if blk.serial != self.current_blk_serial:
@@ -248,10 +242,10 @@ class InstructionVisitorManager(minsn_visitor_t):
 
 
 class BlockOptimizerManager(optblock_t):
-    def __init__(self, manager: D810Manager):
+    def __init__(self, log_dir: pathlib.Path):
         optimizer_logger.debug("Initializing {0}...".format(self.__class__.__name__))
         super().__init__()
-        self.manager = manager
+        self.log_dir = log_dir
         self.cfg_rules = set()
 
         self.current_maturity = None
@@ -329,16 +323,22 @@ class BlockOptimizerManager(optblock_t):
         return True
 
 
+class DecompilationEvent(enum.Enum):
+    STARTED = "decompilation_started"
+    FINISHED = "decompilation_finished"
+
+
 class HexraysDecompilationHook(Hexrays_Hooks):
-    def __init__(self, manager):
+    def __init__(self, callback: typing.Callable):
         super().__init__()
-        self.manager = manager
+        self.callback = callback
 
     def prolog(self, mba: mbl_array_t, fc, reachable_blocks, decomp_flags) -> "int":
         main_logger.info("Starting decompilation of function at %s", hex(mba.entry_ea))
-        self.manager.start_profiling()
-        self.manager.instruction_optimizer.reset_rule_usage_statistic()
-        self.manager.block_optimizer.reset_rule_usage_statistic()
+        self.callback(DecompilationEvent.STARTED)
+        # self.manager.start_profiling()
+        # self.manager.instruction_optimizer.reset_rule_usage_statistic()
+        # self.manager.block_optimizer.reset_rule_usage_statistic()
         return 0
 
     # def maturity(self, cfunc: "cfunc_t", new_maturity: int) -> int:
@@ -353,10 +353,8 @@ class HexraysDecompilationHook(Hexrays_Hooks):
     #     return 0
 
     def glbopt(self, mba: mbl_array_t) -> "int":
-        self.manager.stop_profiling()
+        self.callback(DecompilationEvent.FINISHED)
         main_logger.info("glbopt finished for function at %s", hex(mba.entry_ea))
-        self.manager.instruction_optimizer.show_rule_usage_statistic()
-        self.manager.block_optimizer.show_rule_usage_statistic()
         main_logger.info("MOP_CONSTANT_CACHE stats: %s", MOP_CONSTANT_CACHE.stats)
         main_logger.info("MOP_TO_AST_CACHE stats: %s", MOP_TO_AST_CACHE.stats)
         return 0

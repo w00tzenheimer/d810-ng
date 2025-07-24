@@ -1,3 +1,6 @@
+import collections
+import dataclasses
+import functools
 import importlib
 from abc import ABCMeta
 from functools import cache, wraps
@@ -13,6 +16,7 @@ from typing import (
     ForwardRef,
     Generator,
     Generic,
+    Hashable,
     Iterable,
     Literal,
     Optional,
@@ -402,3 +406,73 @@ class Registrant(metaclass=Registry):
         #         pass
         # gen = (c for c in cls.registry.values() if c not in exclude)
         return FilterableGenerator(cls.registry.values(), [predicate])
+
+
+class reify(Generic[T]):
+    """
+    Acts similar to a property, except the result will be
+    set as an attribute on the instance instead of recomputed
+    each access.
+    """
+
+    def __init__(self, fn: Callable[..., T]) -> None:
+        self.fn = fn
+        # Copy function attributes to preserve metadata
+        self.__name__ = getattr(fn, "__name__", "<unknown>")
+        self.__doc__ = getattr(fn, "__doc__", None)
+        self.__module__ = getattr(fn, "__module__", "") or ""
+        self.__qualname__ = getattr(fn, "__qualname__", "") or ""
+        self.__annotations__ = getattr(fn, "__annotations__", {})
+
+    @overload
+    def __get__(self, instance: None, owner: type) -> "reify[T]": ...
+
+    @overload
+    def __get__(self, instance: Any, owner: type) -> T: ...
+
+    def __get__(self, instance: Any, owner: type) -> "T | reify[T]":
+        if instance is None:
+            return self
+
+        fn = self.fn
+        val = fn(instance)
+        setattr(instance, fn.__name__, val)
+        return val
+
+
+E = TypeVar("E", bound=Hashable)
+
+
+@dataclasses.dataclass
+class EventEmitter(Generic[E]):
+    _listeners: collections.defaultdict[E, set[Callable]] = dataclasses.field(
+        default_factory=lambda: collections.defaultdict(set), init=False
+    )
+
+    def on(self, event: E, handler: Callable | None = None):
+        """Register an event handler for the given event."""
+        if handler:
+            self._listeners[event].add(handler)
+            return handler
+
+        @functools.wraps(self.on)
+        def decorator(func):
+            self.on(event, func)
+            return func
+
+        return decorator
+
+    def once(self, event: E, handler: Callable):
+        @functools.wraps(handler)
+        def once_handler(*args, **kwargs):
+            self.remove(event, once_handler)
+            return handler(*args, **kwargs)
+
+        self.on(event, once_handler)
+
+    def remove(self, event: E, handler: Callable):
+        self._listeners[event].discard(handler)
+
+    def emit(self, event: E, *args, **kwargs):
+        for handler in self._listeners[event]:
+            handler(*args, **kwargs)
