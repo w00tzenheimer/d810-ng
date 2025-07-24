@@ -496,7 +496,7 @@ def append_mop_if_not_in_list(mop: mop_t, mop_list) -> bool:
     return False
 
 
-def get_blk_index(searched_blk: mblock_t, blk_list: List[mblock_t]) -> int:
+def get_blk_index(searched_blk: mblock_t, blk_list: list[mblock_t]) -> int:
     blk_serial_list = [blk.serial for blk in blk_list]
     try:
         return blk_serial_list.index(searched_blk.serial)
@@ -521,17 +521,17 @@ class MicrocodeHelper:
     """Helper class for working with IDA Hex-Rays microcode operations and maturity levels."""
 
     # Static class variables
-    MMAT: List[Tuple[int, str]] = sorted(
+    MMAT: list[tuple[int, str]] = sorted(
         [
             (getattr(ida_hexrays, x), x)
             for x in filter(lambda y: y.startswith("MMAT_"), dir(ida_hexrays))
         ]
     )[1:]
-    MOPT: List[Tuple[int, str]] = [
+    MOPT: list[tuple[int, str]] = [
         (getattr(ida_hexrays, x), x)
         for x in filter(lambda y: y.startswith("mop_"), dir(ida_hexrays))
     ]
-    MCODE: List[Tuple[int, str]] = sorted(
+    MCODE: list[tuple[int, str]] = sorted(
         [
             (getattr(ida_hexrays, x), x)
             for x in filter(lambda y: y.startswith("m_"), dir(ida_hexrays))
@@ -578,7 +578,7 @@ class MicrocodeHelper:
         return None
 
     @classmethod
-    def get_mmat_levels(cls) -> List[int]:
+    def get_mmat_levels(cls) -> list[int]:
         """Return a list of the microcode maturity levels."""
         return [x[0] for x in cls.MMAT]
 

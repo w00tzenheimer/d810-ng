@@ -2,7 +2,6 @@ import functools
 import logging
 import os
 import typing
-from typing import List
 
 import idaapi
 from ida_hexrays import mbl_array_t, minsn_t, mop_t, vd_printer_t
@@ -56,7 +55,7 @@ def format_mop_t(mop_in: mop_t | None) -> str:
     return mop_in.dstr()
 
 
-def format_mop_list(mop_list: List[mop_t]) -> str:
+def format_mop_list(mop_list: list[mop_t]) -> str:
     return ", ".join([format_mop_t(x) for x in mop_list])
 
 
