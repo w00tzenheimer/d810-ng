@@ -1,51 +1,61 @@
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import logging
 import pathlib
 import threading
 import typing
 
-import pyinstrument
-
 from d810.conf import D810Configuration, ProjectConfiguration
 from d810.conf.loggers import clear_logs, configure_loggers
 from d810.hexrays.hexrays_hooks import (
     BlockOptimizerManager,
+    DecompilationEvent,
     HexraysDecompilationHook,
     InstructionOptimizerManager,
 )
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
+from d810.registry import EventEmitter
 from d810.ui.ida_ui import D810GUI
+
+try:
+    import pyinstrument  # type: ignore
+except ImportError:
+    pyinstrument = None
 
 D810_LOG_DIR_NAME = "d810_logs"
 
 logger = logging.getLogger("D810")
 
 
-class D810Manager(object):
-    def __init__(self, log_dir: pathlib.Path):
-        self.instruction_optimizer_rules = []
-        self.instruction_optimizer_config = {}
-        self.block_optimizer_rules = []
-        self.block_optimizer_config = {}
-        self.instruction_optimizer = None
-        self.block_optimizer = None
-        self.hx_decompiler_hook = None
-        self.log_dir = log_dir
-        self.config = {}
-        self.profiler = pyinstrument.Profiler()
+@dataclasses.dataclass
+class D810Manager:
+    log_dir: pathlib.Path
+    instruction_optimizer_rules: list = dataclasses.field(default_factory=list)
+    instruction_optimizer_config: dict = dataclasses.field(default_factory=dict)
+    block_optimizer_rules: list = dataclasses.field(default_factory=list)
+    block_optimizer_config: dict = dataclasses.field(default_factory=dict)
+    config: dict = dataclasses.field(default_factory=dict)
+    event_emitter: EventEmitter = dataclasses.field(default_factory=EventEmitter)
+    profiler: typing.Any = dataclasses.field(
+        default_factory=lambda: pyinstrument.Profiler() if pyinstrument else None
+    )
+    instruction_optimizer: InstructionOptimizerManager = dataclasses.field(init=False)
+    block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
+    hx_decompiler_hook: HexraysDecompilationHook = dataclasses.field(init=False)
+    _started: bool = dataclasses.field(default=False, init=False)
 
     def configure(self, **kwargs):
         self.config = kwargs
 
     def start_profiling(self):
-        if not self.profiler.is_running:
+        if self.profiler and not self.profiler.is_running:
             self.profiler.start()
 
     def stop_profiling(self) -> pathlib.Path | None:
-        if self.profiler.is_running:
+        if self.profiler and self.profiler.is_running:
             self.profiler.stop()
             self.profiler.print()
             # save the report as an HTML file in the log directory for easy access.
@@ -54,14 +64,15 @@ class D810Manager(object):
                 f.write(self.profiler.output_html())
             return output_path
 
-    def reload(self):
-        self.stop()
-        logger.debug("Reloading manager...")
+    def start(self):
+        if self._started:
+            self.stop()
+        logger.debug("Starting manager...")
 
         # Instantiate core manager classes from registry
-        self.instruction_optimizer = InstructionOptimizerManager(self)
+        self.instruction_optimizer = InstructionOptimizerManager(self.log_dir)
         self.instruction_optimizer.configure(**self.instruction_optimizer_config)
-        self.block_optimizer = BlockOptimizerManager(self)
+        self.block_optimizer = BlockOptimizerManager(self.log_dir)
         self.block_optimizer.configure(**self.block_optimizer_config)
 
         for rule in self.instruction_optimizer_rules:
@@ -72,10 +83,28 @@ class D810Manager(object):
             cfg_rule.log_dir = self.log_dir
             self.block_optimizer.add_rule(cfg_rule)
 
+        self.hx_decompiler_hook = HexraysDecompilationHook(self.event_emitter.emit)
+        self._install_hooks()
+        self._started = True
+
+    def _install_hooks(self):
+        # must become before listeners are installed
+        for _subscriber in (
+            self.start_profiling,
+            self.instruction_optimizer.reset_rule_usage_statistic,
+            self.block_optimizer.reset_rule_usage_statistic,
+        ):
+            self.event_emitter.on(DecompilationEvent.STARTED, _subscriber)
+
+        for _subscriber in (
+            self.stop_profiling,
+            self.instruction_optimizer.show_rule_usage_statistic,
+            self.block_optimizer.show_rule_usage_statistic,
+        ):
+            self.event_emitter.on(DecompilationEvent.FINISHED, _subscriber)
+
         self.instruction_optimizer.install()
         self.block_optimizer.install()
-
-        self.hx_decompiler_hook = HexraysDecompilationHook(self)
         self.hx_decompiler_hook.hook()
 
     def configure_instruction_optimizer(self, rules, **kwargs):
@@ -87,18 +116,22 @@ class D810Manager(object):
         self.block_optimizer_config = kwargs
 
     def stop(self):
-        if self.instruction_optimizer is not None:
-            logger.debug("Removing InstructionOptimizer...")
-            self.instruction_optimizer.remove()
-            self.instruction_optimizer = None
-        if self.block_optimizer is not None:
-            logger.debug("Removing ControlFlowFixer...")
-            self.block_optimizer.remove()
-            self.block_optimizer = None
-        if self.hx_decompiler_hook is not None:
-            logger.debug("Removing HexraysDecompilationHook...")
-            self.hx_decompiler_hook.unhook()
-            self.hx_decompiler_hook = None
+        if not self._started:
+            return
+        self._started = False
+
+        logger.debug("Removing InstructionOptimizer...")
+        self.instruction_optimizer.remove()
+
+        logger.debug("Removing ControlFlowFixer...")
+        self.block_optimizer.remove()
+
+        logger.debug("Removing HexraysDecompilationHook...")
+        self.hx_decompiler_hook.unhook()
+
+        del self.instruction_optimizer
+        del self.block_optimizer
+        del self.hx_decompiler_hook
 
 
 class D810State:
@@ -302,7 +335,7 @@ class D810State:
             [rule for rule in self.current_blk_rules],
             **self.current_project.additional_configuration,
         )
-        self.manager.reload()
+        self.manager.start()
         self.d810_config.set("last_project_index", self.current_project_index)
         self.d810_config.save()
 

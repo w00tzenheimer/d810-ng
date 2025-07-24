@@ -2,6 +2,39 @@
     "description": "eidolon deobfuscation",
     "ins_rules": [
         {
+            "name": "CstSimplificationRule17",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Z3ConstantOptimization",
+            "is_activated": true,
+            "config": {
+                "min_nb_opcode": 4,
+                "min_nb_constant": 3
+            }
+        },
+        {
+            "name": "Z3SmodRuleGeneric",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Z3lnotRuleGeneric",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Z3setnzRuleGeneric",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Z3setzRuleGeneric",
+            "is_activated": true,
+            "config": {}
+        },
+        {
             "name": "FoldPureConstantRule",
             "is_activated": true,
             "config": {}

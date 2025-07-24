@@ -1,6 +1,6 @@
 import functools
 import logging
-import os
+import pathlib
 import typing
 
 import idaapi
@@ -114,7 +114,9 @@ class block_printer(vd_printer_t):
         return 1
 
 
-def write_mc_to_file(mba: mbl_array_t, filename: str, mba_flags: int = 0) -> bool:
+def write_mc_to_file(
+    mba: mbl_array_t, filename: pathlib.Path, mba_flags: int = 0
+) -> bool:
     if not mba:
         return False
 
@@ -122,16 +124,17 @@ def write_mc_to_file(mba: mbl_array_t, filename: str, mba_flags: int = 0) -> boo
     mba.set_mba_flags(mba_flags)
     mba._print(vp)
 
-    with open(filename, "w") as f:
+    with filename.open("w", encoding="utf-8") as f:
         f.writelines(vp.get_mc())
     return True
 
 
-def dump_microcode_for_debug(mba: mbl_array_t, log_dir_path: str, name: str = ""):
-    mc_filename = os.path.join(
-        log_dir_path,
-        "{0:x}_maturity_{1}_{2}.log".format(mba.entry_ea, mba.maturity, name),
-    )
+def dump_microcode_for_debug(
+    mba: mbl_array_t, log_dir_path: pathlib.Path, name: str = ""
+):
+    if isinstance(log_dir_path, str):
+        log_dir_path = pathlib.Path(log_dir_path)
+    mc_filename = log_dir_path / f"{mba.entry_ea:x}_maturity_{mba.maturity}_{name}.log"
     logger.info("Dumping microcode in file {0}...".format(mc_filename))
     write_mc_to_file(mba, mc_filename)
 
