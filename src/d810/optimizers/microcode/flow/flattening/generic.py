@@ -70,7 +70,7 @@ class GenericDispatcherBlockInfo(object):
         self.assume_def_list = [x for x in father.assume_def_list]
 
     def update_use_def_lists(
-        self, ins_mops_used: List[mop_t], ins_mops_def: List[mop_t]
+        self, ins_mops_used: list[mop_t], ins_mops_def: list[mop_t]
     ):
         for mop_used in ins_mops_used:
             append_mop_if_not_in_list(mop_used, self.use_list)
@@ -105,14 +105,14 @@ class GenericDispatcherBlockInfo(object):
         for mop_def in self.def_list:
             append_mop_if_not_in_list(mop_def, self.assume_def_list)
 
-    def does_only_need(self, prerequisite_mop_list: List[mop_t]) -> bool:
+    def does_only_need(self, prerequisite_mop_list: list[mop_t]) -> bool:
         for used_before_def_mop in self.use_before_def_list:
             mop_index = get_mop_index(used_before_def_mop, prerequisite_mop_list)
             if mop_index == -1:
                 return False
         return True
 
-    def recursive_get_father(self) -> List[GenericDispatcherBlockInfo]:
+    def recursive_get_father(self) -> list[GenericDispatcherBlockInfo]:
         if self.father is None:
             return [self]
         else:
@@ -172,7 +172,7 @@ class GenericDispatcherInfo(object):
 
     def get_shared_internal_blocks(
         self, other_dispatcher: GenericDispatcherInfo
-    ) -> List[mblock_t]:
+    ) -> list[mblock_t]:
         my_dispatcher_block_serial = [
             blk_info.blk.serial for blk_info in self.dispatcher_internal_blocks
         ]
@@ -204,7 +204,7 @@ class GenericDispatcherInfo(object):
 
     def emulate_dispatcher_with_father_history(
         self, father_history: MopHistory
-    ) -> Tuple[mblock_t, List[minsn_t]]:
+    ) -> tuple[mblock_t, list[minsn_t]]:
         microcode_interpreter = MicroCodeInterpreter()
         microcode_environment = MicroCodeEnvironment()
         dispatcher_input_info = []
@@ -386,7 +386,7 @@ class GenericDispatcherCollector(minsn_visitor_t):
         self.dispatcher_list = []
         self.explored_blk_serials = []
 
-    def get_dispatcher_list(self) -> List[GenericDispatcherInfo]:
+    def get_dispatcher_list(self) -> list[GenericDispatcherInfo]:
         self.remove_sub_dispatchers()
         return self.dispatcher_list
 
@@ -506,7 +506,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         dispatcher_father: mblock_t,
         dispatcher_entry_block: GenericDispatcherBlockInfo,
         dispatcher_info: GenericDispatcherInfo,
-    ) -> List[MopHistory]:
+    ) -> list[MopHistory]:
         father_tracker = MopTracker(
             dispatcher_entry_block.use_before_def_list,
             max_nb_block=self.MOP_TRACKER_MAX_NB_BLOCK,
@@ -524,7 +524,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         )
         return father_histories
 
-    def check_if_histories_are_resolved(self, mop_histories: List[MopHistory]) -> bool:
+    def check_if_histories_are_resolved(self, mop_histories: list[MopHistory]) -> bool:
         return all([mop_history.is_resolved() for mop_history in mop_histories])
 
     def ensure_dispatcher_father_is_resolvable(
