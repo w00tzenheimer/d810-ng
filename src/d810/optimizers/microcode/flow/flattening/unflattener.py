@@ -1,5 +1,7 @@
 import logging
 
+from ida_hexrays import *
+
 from d810.hexrays.hexrays_helpers import append_mop_if_not_in_list, extract_num_mop
 from d810.optimizers.microcode.flow.flattening.generic import (
     GenericDispatcherBlockInfo,
@@ -7,8 +9,6 @@ from d810.optimizers.microcode.flow.flattening.generic import (
     GenericDispatcherInfo,
     GenericDispatcherUnflatteningRule,
 )
-
-from ida_hexrays import *
 
 unflat_logger = logging.getLogger("D810.unflat")
 FLATTENING_JUMP_OPCODES = [
@@ -181,7 +181,7 @@ class OllvmDispatcherInfo(GenericDispatcherInfo):
         )
         return True
 
-    def _get_comparison_info(self, blk: mblock_t) -> Tuple[mop_t | None, mop_t | None]:
+    def _get_comparison_info(self, blk: mblock_t) -> tuple[mop_t | None, mop_t | None]:
         # We check if blk is a good candidate for dispatcher entry block: blk.tail must be a conditional branch
         if (blk.tail is None) or (blk.tail.opcode not in FLATTENING_JUMP_OPCODES):
             return None, None
@@ -226,7 +226,7 @@ class OllvmDispatcherInfo(GenericDispatcherInfo):
 
     def _get_external_fathers(
         self, block_info: OllvmDispatcherBlockInfo
-    ) -> List[mblock_t]:
+    ) -> list[mblock_t]:
         internal_serials = [
             blk_info.blk.serial for blk_info in self.dispatcher_internal_blocks
         ]
@@ -237,7 +237,7 @@ class OllvmDispatcherInfo(GenericDispatcherInfo):
         ]
         return external_fathers
 
-    def _get_dispatcher_blocks_with_external_father(self) -> List[mblock_t]:
+    def _get_dispatcher_blocks_with_external_father(self) -> list[mblock_t]:
         dispatcher_blocks_with_external_father = []
         for blk_info in self.dispatcher_internal_blocks:
             if blk_info.blk.serial != self.entry_block.blk.serial:

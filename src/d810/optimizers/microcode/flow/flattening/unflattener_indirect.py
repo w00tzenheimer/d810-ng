@@ -1,5 +1,8 @@
 import logging
 
+import idaapi
+from ida_hexrays import *
+
 from d810.hexrays.hexrays_helpers import AND_TABLE, append_mop_if_not_in_list
 from d810.hexrays.tracker import MopHistory, MopTracker
 from d810.optimizers.microcode.flow.flattening.generic import (
@@ -8,9 +11,6 @@ from d810.optimizers.microcode.flow.flattening.generic import (
     GenericDispatcherInfo,
     GenericDispatcherUnflatteningRule,
 )
-
-import idaapi
-from ida_hexrays import *
 
 unflat_logger = logging.getLogger("D810.unflat")
 FLATTENING_JUMP_OPCODES = [m_jtbl]
@@ -115,5 +115,5 @@ class UnflattenerTigressIndirect(GenericDispatcherUnflatteningRule):
     def register_initialization_variables(self, mop_tracker: MopTracker):
         self.label_info.update_mop_tracker(self.mba, mop_tracker)
 
-    def check_if_histories_are_resolved(self, mop_histories: List[MopHistory]):
+    def check_if_histories_are_resolved(self, mop_histories: list[MopHistory]):
         return True

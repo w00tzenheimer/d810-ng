@@ -1,12 +1,12 @@
 import logging
 
+from ida_hexrays import *
+
 from d810.hexrays.cfg_utils import change_1way_block_successor
 from d810.hexrays.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
 from d810.hexrays.tracker import MopTracker
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
 from d810.optimizers.microcode.flow.flattening.utils import get_all_possibles_values
-
-from ida_hexrays import *
 
 unflat_logger = logging.getLogger("D810.unflat")
 
@@ -70,7 +70,7 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
         self,
         fake_loop_block: mblock_t,
         pred: mblock_t,
-        pred_comparison_values: List[int],
+        pred_comparison_values: list[int],
     ) -> bool:
         if len(pred_comparison_values) == 0:
             return False

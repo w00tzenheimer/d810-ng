@@ -1,5 +1,7 @@
 import logging
 
+from ida_hexrays import *
+
 from d810.expr.utils import unsigned_to_signed
 from d810.hexrays.cfg_utils import (
     duplicate_block,
@@ -10,8 +12,6 @@ from d810.hexrays.hexrays_formatters import dump_microcode_for_debug, format_min
 from d810.hexrays.tracker import MopTracker
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
 from d810.optimizers.microcode.flow.flattening.utils import get_all_possibles_values
-
-from ida_hexrays import *
 
 unflat_logger = logging.getLogger("D810.unflat")
 
@@ -24,8 +24,8 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
     DEFAULT_MAX_PASSES = 100
 
     def is_jump_taken(
-        self, jmp_blk: mblock_t, pred_comparison_values: List[int]
-    ) -> Tuple[bool, bool]:
+        self, jmp_blk: mblock_t, pred_comparison_values: list[int]
+    ) -> tuple[bool, bool]:
         if len(pred_comparison_values) == 0:
             return False, False
         jmp_ins = jmp_blk.tail
