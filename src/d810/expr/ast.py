@@ -3,7 +3,6 @@ from __future__ import annotations
 import abc
 import logging
 import typing
-from typing import Dict, List, Tuple
 
 import ida_hexrays
 
@@ -73,7 +72,7 @@ class AstInfo(object):
 
 class AstBase(abc.ABC):
 
-    sub_ast_info_by_index: Dict[int, AstInfo] = {}
+    sub_ast_info_by_index: dict[int, AstInfo] = {}
     mop: ida_hexrays.mop_t | None = None
     dest_size: int | None = None
     ea: int | None = None
@@ -102,7 +101,7 @@ class AstBase(abc.ABC):
     def compute_sub_ast(self) -> None: ...
 
     @abc.abstractmethod
-    def get_leaf_list(self) -> List[AstLeaf]: ...
+    def get_leaf_list(self) -> list[AstLeaf]: ...
 
     @abc.abstractmethod
     def reset_mops(self) -> None: ...
@@ -117,10 +116,10 @@ class AstBase(abc.ABC):
     def get_pattern(self) -> str: ...
 
     @abc.abstractmethod
-    def evaluate(self, dict_index_to_value: Dict[int, int]) -> int: ...
+    def evaluate(self, dict_index_to_value: dict[int, int]) -> int: ...
 
     @abc.abstractmethod
-    def get_depth_signature(self, depth: int) -> List[str]: ...
+    def get_depth_signature(self, depth: int) -> list[str]: ...
 
     def __bool__(self) -> bool:
         return True
@@ -225,7 +224,7 @@ class AstNode(AstBase, dict):
     def __getitem__(self, k: str) -> AstLeaf:
         return self.leafs_by_name[k]
 
-    def get_leaf_list(self) -> List[AstLeaf]:
+    def get_leaf_list(self) -> list[AstLeaf]:
         leafs = []
         if self.left is not None:
             leafs += self.left.get_leaf_list()
@@ -364,15 +363,17 @@ class AstNode(AstBase, dict):
         else:
             raise ValueError(f"Invalid number of operands: {nb_operands}")
 
-    def evaluate_with_leaf_info(self, leafs_info, leafs_value):
-        dict_index_to_value = {
-            leaf_info.ast.ast_index: leaf_value
-            for leaf_info, leaf_value in zip(leafs_info, leafs_value)
-        }
+    def evaluate_with_leaf_info(
+        self, leafs_info: list[AstInfo], leafs_value: list[int]
+    ) -> int:
+        dict_index_to_value: dict[int, int] = {}
+        for leaf_info, leaf_value in zip(leafs_info, leafs_value):
+            if leaf_info.ast.ast_index is not None:
+                dict_index_to_value[leaf_info.ast.ast_index] = leaf_value
         res = self.evaluate(dict_index_to_value)
         return res
 
-    def evaluate(self, dict_index_to_value: Dict[int, int]) -> int:
+    def evaluate(self, dict_index_to_value: dict[int, int]) -> int:
         if self.ast_index in dict_index_to_value:
             return dict_index_to_value[self.ast_index]
         if self.dest_size is None:
@@ -826,10 +827,18 @@ class AstLeaf(AstBase):
     def create_mop(self, ea):
         # 1. Constant operands can keep using the shared cache
         if self.is_constant() and self.value is not None:
-            assert (
-                self.dest_size is not None
-            ), f"{repr(self)}'s dest_size is None in create_mop for {hex(ea)}"
-            val = get_constant_mop(self.value, self.dest_size)
+            # TODO: is this right?
+            size = self.dest_size if self.dest_size is not None else self.size
+            if logger.isEnabledFor(logging.DEBUG) and self.dest_size is not None:
+                logger.debug(
+                    "AstLeaf.create_mop: Constant operand @ 0x%x: %s, size: %s, dest_size: %s, equal? %s",
+                    ea,
+                    self.value,
+                    size,
+                    self.dest_size,
+                    size == self.dest_size,
+                )
+            val = get_constant_mop(self.value, size)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
                     "AstLeaf.create_mop: Constant operand reused: %s",
@@ -1046,7 +1055,7 @@ class AstProxy(AstBase):
         self._target.compute_sub_ast()
 
     @_compat.override
-    def get_leaf_list(self) -> List[AstLeaf]:
+    def get_leaf_list(self) -> list[AstLeaf]:
         return self._target.get_leaf_list()
 
     @_compat.override
@@ -1066,11 +1075,11 @@ class AstProxy(AstBase):
         return self._target.get_pattern()
 
     @_compat.override
-    def evaluate(self, dict_index_to_value: Dict[int, int]) -> int:
+    def evaluate(self, dict_index_to_value: dict[int, int]) -> int:
         return self._target.evaluate(dict_index_to_value)
 
     @_compat.override
-    def get_depth_signature(self, depth: int) -> List[str]:
+    def get_depth_signature(self, depth: int) -> list[str]:
         return self._target.get_depth_signature(depth)
 
     @_compat.override
@@ -1215,11 +1224,11 @@ class AstBuilderContext:
 
     def __init__(self):
         # The list of unique AST nodes. The index in this list is the ast_index.
-        self.unique_asts: List[AstBase] = []
+        self.unique_asts: list[AstBase] = []
 
         # The fast lookup dictionary.
         # Maps a mop's unique key to its index in the unique_asts list.
-        self.mop_key_to_index: Dict[Tuple[int, str], int] = {}
+        self.mop_key_to_index: dict[tuple[int, str], int] = {}
 
 
 def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
