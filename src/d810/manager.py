@@ -408,12 +408,3 @@ class D810State:
             self.gui.term()
             self.gui = None
         self._is_loaded = False
-
-
-"""
-JUMP_OPTIMIZATION_RULES = [x() for x in get_all_subclasses(JumpOptimizationRule)]
-jump_fixer = JumpFixer()
-for jump_optimization_rule in JUMP_OPTIMIZATION_RULES:
-    jump_fixer.register_rule(jump_optimization_rule)
-JUMP_OPTIMIZATION_BLOCK_RULES = [jump_fixer]
-"""
