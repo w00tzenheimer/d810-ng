@@ -435,6 +435,17 @@ class AstNode(AstBase, dict):
                 return (self.left.evaluate(dict_index_to_value)) & res_mask
             case ida_hexrays.m_low:
                 return (self.left.evaluate(dict_index_to_value)) & res_mask
+            case ida_hexrays.m_high:
+                # Extract the upper half of the operand. We shift right by the
+                # size (in bits) of the current destination. For example, when
+                # evaluating a 32-bit "high" of a 64-bit operand we shift by
+                # 32 bits, then mask the result to the destination size.
+                if self.left.dest_size is None:
+                    raise ValueError("left.dest_size is None for m_high")
+                shift_bits = self.dest_size * 8 if self.dest_size is not None else 0
+                return (
+                    self.left.evaluate(dict_index_to_value) >> shift_bits
+                ) & res_mask
             case ida_hexrays.m_add if self.right is not None:
                 return (
                     self.left.evaluate(dict_index_to_value)
