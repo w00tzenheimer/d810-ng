@@ -13,7 +13,7 @@ else
 endif
 
 ifeq ($(OS),Windows_NT)
-	CFLAGS = -Wall -Wextra -Og -g  # C flags for Windows (no -fPIC)
+	CFLAGS = -Wall -Wextra -O0 -g  # C flags for Windows (no -fPIC)
 else
 	CFLAGS = -fPIC -Wall -Wextra -Og -g  # C flags for Unix-like systems
 endif
