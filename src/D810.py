@@ -10,9 +10,7 @@ import pathlib
 import pkgutil
 import sys
 import time
-import types
 import typing
-from dataclasses import dataclass, field
 
 import ida_hexrays
 import ida_kernwin
@@ -20,7 +18,6 @@ import idaapi
 
 import d810
 import d810._compat as _compat
-from d810.manager import D810State
 
 D810_VERSION = "0.1"
 
