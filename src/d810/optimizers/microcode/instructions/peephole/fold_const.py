@@ -270,6 +270,11 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
             return (-val) & _get_mask(bits)
         if ast.opcode == ida_hexrays.m_bnot:
             return (~val) & _get_mask(bits)
+        # Extract low/high half-words
+        if ast.opcode == ida_hexrays.m_low:
+            return val & _get_mask(bits)
+        if ast.opcode == ida_hexrays.m_high:
+            return (val >> bits) & _get_mask(bits)
         if ast.left and ast.left.dest_size:
             if ast.opcode == ida_hexrays.m_xds:
                 left_bits = ast.left.dest_size * 8

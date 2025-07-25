@@ -238,8 +238,23 @@ def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
             0, 32
         )  # ordinary “<” is signed-less-than in Z3Py
         return z3.If(is_negative, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
-    elif ast.opcode in [m_xdu, m_xds, m_low, m_high]:
+    elif ast.opcode in [m_xdu, m_xds]:
+        # Extend or keep the same width; in our simplified model we just forward.
         return ast_to_z3_expression(ast.left, use_bitvecval)
+    elif ast.opcode == m_low:
+        # Extract the lower half (dest_size) bits of the operand.
+        dest_bits = (ast.dest_size or 4) * 8  # default 32-bit
+        expr_left = ast_to_z3_expression(ast.left, use_bitvecval)
+        # Ensure we do not attempt to extract beyond the source width
+        high_bit = min(dest_bits - 1, expr_left.size() - 1)
+        return typing.cast(z3.BitVecRef, z3.Extract(high_bit, 0, expr_left))
+    elif ast.opcode == m_high:
+        # Extract the upper half of the operand by shifting right by dest_bits
+        dest_bits = (ast.dest_size or 4) * 8  # default 32-bit
+        expr_left = ast_to_z3_expression(ast.left, use_bitvecval)
+        shifted = z3.LShR(expr_left, dest_bits)
+        high_bit = min(dest_bits - 1, shifted.size() - 1)
+        return typing.cast(z3.BitVecRef, z3.Extract(high_bit, 0, shifted))
     raise D810Z3Exception(
         "Z3 evaluation: Unknown opcode {0} for {1}".format(
             opcode_to_string(ast.opcode), ast
