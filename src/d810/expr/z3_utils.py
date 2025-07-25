@@ -247,14 +247,27 @@ def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
         expr_left = ast_to_z3_expression(ast.left, use_bitvecval)
         # Ensure we do not attempt to extract beyond the source width
         high_bit = min(dest_bits - 1, expr_left.size() - 1)
-        return typing.cast(z3.BitVecRef, z3.Extract(high_bit, 0, expr_left))
+        extracted = typing.cast(z3.BitVecRef, z3.Extract(high_bit, 0, expr_left))
+        # Zero-extend to 32-bit so subsequent operations (which assume 32-bit) do not
+        # trigger sort-mismatch errors when combined with other 32-bit expressions.
+        if extracted.size() < 32:
+            extracted = typing.cast(
+                z3.BitVecRef, z3.ZeroExt(32 - extracted.size(), extracted)
+            )
+        return extracted
     elif ast.opcode == m_high:
         # Extract the upper half of the operand by shifting right by dest_bits
         dest_bits = (ast.dest_size or 4) * 8  # default 32-bit
         expr_left = ast_to_z3_expression(ast.left, use_bitvecval)
         shifted = z3.LShR(expr_left, dest_bits)
         high_bit = min(dest_bits - 1, shifted.size() - 1)
-        return typing.cast(z3.BitVecRef, z3.Extract(high_bit, 0, shifted))
+        extracted = typing.cast(z3.BitVecRef, z3.Extract(high_bit, 0, shifted))
+        # Zero-extend to 32-bit for consistency with the rest of the engine.
+        if extracted.size() < 32:
+            extracted = typing.cast(
+                z3.BitVecRef, z3.ZeroExt(32 - extracted.size(), extracted)
+            )
+        return extracted
     raise D810Z3Exception(
         "Z3 evaluation: Unknown opcode {0} for {1}".format(
             opcode_to_string(ast.opcode), ast

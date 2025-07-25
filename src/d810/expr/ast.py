@@ -1173,7 +1173,7 @@ class AstProxy(AstBase):
     def __getattribute__(self, name):  # noqa: D401, ANN001
         """Forward *all* attribute access to the wrapped target when:
         1) the attribute is not private to the proxy itself, and
-        2) the value obtained from the proxy’s own namespace is *None*.
+        2) the value obtained from the proxy's own namespace is *None*.
 
         This retains the cheap class-level default attributes coming from
         AstBase (all set to None) while still exposing the real runtime
@@ -1190,7 +1190,7 @@ class AstProxy(AstBase):
             # Attribute not present on proxy → delegate unconditionally.
             return getattr(super().__getattribute__("_target"), name)
 
-        # If the proxy’s value is a meaningless placeholder (None) but the
+        # If the proxy's value is a meaningless placeholder (None) but the
         # underlying object has a better value, return the latter instead.
         if val is None:
             target = super().__getattribute__("_target")
@@ -1365,12 +1365,10 @@ def mop_to_ast_internal(
     # 1. Create the unique, hashable key for the current mop.
     key = get_mop_key(mop)
 
-    # 2. OPTIMIZATION: Check if this mop has already been processed.
-    # This is our O(1) average-time lookup.
+    # 2. Thread-local deduplication: if we've already built an AST for *this*
+    #    mop during the current recursive walk, return the existing instance to
+    #    avoid exponential explosion.
     if key in context.mop_key_to_index:
-        # It's a hit! We've seen this sub-expression before.
-        # Retrieve its index and return the already-created AST object.
-        # This prunes the entire recursive branch, saving huge amounts of work.
         existing_index = context.mop_key_to_index[key]
         return context.unique_asts[existing_index]
 
@@ -1561,9 +1559,9 @@ def mop_to_ast_internal(
             const_val = int(mop.nnn.value)
             const_size = mop.size
             tree = AstConstant(hex(const_val), const_val, const_size)
-            clone_mop = ida_hexrays.mop_t()
-            clone_mop.make_number(const_val, const_size)
-            tree.mop = clone_mop  # detached copy
+            # Re-use a shared constant mop_t from the global cache to avoid the
+            # overhead of allocating a fresh object for every identical literal.
+            tree.mop = get_constant_mop(const_val, const_size)
             tree.dest_size = const_size  # detached copy
         elif mop.t == ida_hexrays.mop_f:
             """Handle typed-immediate wrappers produced by Hex-Rays.
@@ -1601,11 +1599,8 @@ def mop_to_ast_internal(
                     )
                 tree = AstConstant(hex(const_val), const_val, const_size)
                 tree.mop = args[0]  # Preserve the numeric mop for evaluators
-                # Clone the numeric constant into a standalone mop_t to
-                # avoid lifetime issues with Hex-Rays internal objects.
-                clone = ida_hexrays.mop_t()
-                clone.make_number(const_val, const_size)
-                tree.mop = clone  # detached copy
+                # Use the shared constant mop cache.
+                tree.mop = get_constant_mop(const_val, const_size)
                 tree.dest_size = const_size
             else:
                 # Could not extract – fall through to generic leaf
@@ -1614,7 +1609,7 @@ def mop_to_ast_internal(
             tree = None
 
         # ------------------------------------------------------------------
-        # If we still haven’t built a node, create a generic AstLeaf now.  This
+        # If we still haven't built a node, create a generic AstLeaf now.  This
         # guarantees that *tree* is always defined even if new mop_t kinds are
         # introduced in future IDA versions.
         # ------------------------------------------------------------------
@@ -1680,9 +1675,12 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
     # 1. Create a stable, hashable key from the mop_t object.
     cache_key = get_mop_key(mop)
 
-    # # 2. Check if the result is already in the cache.
-    # if _cache_lookup := MOP_TO_AST_CACHE.get(cache_key):
-    #     return AstProxy(_cache_lookup) if _cache_lookup is not None else None
+    # 2. Global template cache: return a proxy if we already know the template
+    if cache_key in MOP_TO_AST_CACHE:
+        cached_template = MOP_TO_AST_CACHE[cache_key]
+        if cached_template is None:
+            return None  # Previously determined unconvertible.
+        return AstProxy(cached_template)
 
     builder_context = AstBuilderContext()
     # Start the optimized recursive build.
@@ -1780,9 +1778,8 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                 const_size = const_mop.size
 
                 leaf = AstConstant(hex(const_value), const_value, const_size)
-                dup_mop = ida_hexrays.mop_t()
-                dup_mop.make_number(const_value, const_size)
-                leaf.mop = dup_mop
+                # Avoid allocating a new mop_t for every constant result.
+                leaf.mop = get_constant_mop(const_value, const_size)
                 leaf.dest_size = const_size
                 leaf.ea = sanitize_ea(instruction.ea)
 
@@ -1852,7 +1849,7 @@ def _is_rotate_helper_call(ins: ida_hexrays.minsn_t) -> bool:
     rotate helpers (__ROL* / __ROR*).
 
     The folding pass treats those helpers as pure arithmetic, so we
-    want to keep them instead of discarding them as “unsupported”.
+    want to keep them instead of discarding them as "unsupported".
     """
 
     if ins is None or ins.opcode != ida_hexrays.m_call:
