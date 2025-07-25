@@ -384,38 +384,15 @@ inline int64  abs64(int64   x) { return x >= 0 ? x : -x; }
 
 #else // C++
 // For C, we just provide macros, they are not quite correct.
-static unsigned __int8 __ROL1__(unsigned __int8 x, unsigned int count) {
-	count %= 8;
-	return (x << count) | (x >> (8 - count));
-}
-static unsigned __int16 __ROL2__(unsigned __int16 x, unsigned int count) {
-	count %= 16;
-	return (x << count) | (x >> (16 - count));
-}
-static unsigned __int32 __ROL4__(unsigned __int32 x, unsigned int count) {
-	count %= 32;
-	return (x << count) | (x >> (32 - count));
-}
-static unsigned __int64 __ROL8__(unsigned __int64 x, unsigned int count) {
-	count %= 64;
-	return (x << count) | (x >> (64 - count));
-}
-static unsigned __int8 __ROR1__(unsigned __int8 x, unsigned int count) {
-	count %= 8;
-	return (x << (8 - count)) | (x >> count);
-}
-static unsigned __int16 __ROR2__(unsigned __int16 x, unsigned int count) {
-	count %= 16;
-	return (x << (16 - count)) | (x >> count);
-}
-static unsigned __int32 __ROR4__(unsigned __int32 x, unsigned int count) {
-	count %= 32;
-	return (x << (32 - count)) | (x >> count);
-}
-static unsigned __int64 __ROR8__(unsigned __int64 x, unsigned int count) {
-	count %= 64;
-	return (x << (64 - count)) | (x >> count);
-}
+#define __ROL1__(x, count)  (((x) << ((count) % 8)) | ((x) >> (8 - ((count) % 8))))
+#define __ROL2__(x, count)  (((x) << ((count) % 16)) | ((x) >> (16 - ((count) % 16))))
+#define __ROL4__(x, count)  (((x) << ((count) % 32)) | ((x) >> (32 - ((count) % 32))))
+#define __ROL8__(x, count)  (((x) << ((count) % 64)) | ((x) >> (64 - ((count) % 64))))
+
+#define __ROR1__(x, count)  (((x) << (8 - ((count) % 8))) | ((x) >> ((count) % 8)))
+#define __ROR2__(x, count)  (((x) << (16 - ((count) % 16))) | ((x) >> ((count) % 16)))
+#define __ROR4__(x, count)  (((x) << (32 - ((count) % 32))) | ((x) >> ((count) % 32)))
+#define __ROR8__(x, count)  (((x) << (64 - ((count) % 64))) | ((x) >> ((count) % 64)))
 #define __CFSHL__(x, y) invalid_operation // Generate carry flag for (x<<y)
 #define __CFSHR__(x, y) invalid_operation // Generate carry flag for (x>>y)
 #define __CFADD__(x, y) invalid_operation // Generate carry flag for (x+y)
