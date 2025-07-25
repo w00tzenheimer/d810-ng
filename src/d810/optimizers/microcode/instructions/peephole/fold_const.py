@@ -67,9 +67,6 @@ def _mop_to_str(mop: "ida_hexrays.mop_t | None") -> str:  # noqa: ANN001
             return res
 
 
-# ────────────────────────────────────────────────────────────────────
-# Utility helpers
-# ────────────────────────────────────────────────────────────────────
 COMMUTATIVE = {
     ida_hexrays.m_add,
     ida_hexrays.m_mul,
@@ -79,7 +76,6 @@ COMMUTATIVE = {
 }
 
 
-# New helper ──────────────────────────────────────────────────────────
 def _extract_constant_mop_value(mop: ida_hexrays.mop_t | None, bits: int) -> int | None:
     """Return integer value if *mop* ultimately represents a numeric constant.
 
@@ -522,7 +518,20 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
         else:
             # For binary operations, build AST from the operation itself
             left_ast = mop_to_ast(ins.l) if ins.l is not None else None
-            right_ast = mop_to_ast(ins.r) if ins.r is not None else None
+            # Treat mop_z ("empty" operand) as an absent right operand for
+            # genuine unary instructions such as xds, xdu, low, high, neg,
+            # lnot and bnot.  Hex-Rays represents these as binary-like
+            # instructions where the unused operand is a mop_z placeholder.
+            # If we keep that placeholder as a real AST leaf the folding
+            # engine will mis-classify the instruction as binary and fail to
+            # evaluate it.  Detect the pattern early and consider the right
+            # operand logically absent.
+
+            right_ast: AstBase | None
+            if ins.r is not None and ins.r.t == ida_hexrays.mop_z:
+                right_ast = None
+            else:
+                right_ast = mop_to_ast(ins.r) if ins.r is not None else None
 
             if left_ast is None and right_ast is None:
                 ast = None
