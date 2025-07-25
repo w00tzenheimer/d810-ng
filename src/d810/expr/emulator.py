@@ -91,6 +91,11 @@ class MicroCodeInterpreter(object):
             return (self.eval(ins.l, environment)) & res_mask
         elif ins.opcode == m_low:
             return (self.eval(ins.l, environment)) & res_mask
+        elif ins.opcode == m_high:
+            # Extract the upper half of the operand. We shift by the size
+            # of the destination (in bytes) converted to bits, then mask.
+            shift_bits = ins.d.size * 8 if ins.d and ins.d.size else 0
+            return (self.eval(ins.l, environment) >> shift_bits) & res_mask
         elif ins.opcode == m_add:
             return (
                 self.eval(ins.l, environment) + self.eval(ins.r, environment)
