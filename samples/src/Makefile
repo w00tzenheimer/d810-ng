@@ -9,7 +9,7 @@ else
 	RM = rm -f   # rm command
 	TARGET_LIB = ../bins/libobfuscated.so  # target lib
 	TARGET_LIB_IDA = ../bins/libobfuscated.so.i64  # target lib
-	LDFLAGS = -shared   # linking flags
+	LDFLAGS = -shared -s # linking flags
 endif
 
 ifeq ($(OS),Windows_NT)
@@ -25,7 +25,7 @@ OBJS = $(SRCS:.c=.o)
 all: ${TARGET_LIB}
 
 $(TARGET_LIB): $(OBJS)
-	$(CC) ${LDFLAGS} -s -o $@ $^
+	$(CC) ${LDFLAGS} -o $@ $^
 
 $(SRCS:.c=.d):%.d:%.c
 	$(CC) $(CFLAGS) -MM $< >$@
