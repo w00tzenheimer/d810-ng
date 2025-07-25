@@ -50,12 +50,28 @@ Test reloading exists without needing to restart `IDA Pro` and you can execute d
 
 !["Test Runner Context Menu"](./docs/source/images/test_runner_example-ctx-menu.png "Test Runner Context Menu")
 
+## Examples
+
+In `samples/src`, there are various `C` programs compiled using the `samples/src/Makefile` into a shared library, without optimizations (`-O0`). On Windows, that shared library is a `.dll`, on Darwin(Mac)/Linux, it is a `.so`. Included is an example compiled dll, `libobfuscated.dll`, that can serve as a testing ground for seeing the plugin in action. Please make a pull request with more obfuscation `C` examples to build a repository of obfuscated sample code for further research.
+
+### Test Constant Simplifications
+
+**Before**: !["Before"](./docs/source/images/test_cst_simplification_before.png "Before Plugin")
+
+**After**: !["After"](./docs/source/images/test_cst_simplification_after.png "After Plugin")
+
+### Test XOR Simplifications
+
+**Before**: !["Before"](./docs/source/images/test_xor_before.png "Before Plugin")
+
+**After**: !["After"](./docs/source/images/test_xor_after.png "After Plugin")
+
 ## Warnings
 
 This plugin is still in early stage of development, so issues ~~may~~ will happen.
 
 * Modifying incorrectly IDA microcode may lead IDA to crash. We try to detect that as much as possible to avoid crash, but since it may still happen **save you IDA database often**
-* We only tested this plugin on Linux, but it should work on Windows too.
+* Plugin is tested on Windows, Mac and Linux.
 
 ## Documentation
 
