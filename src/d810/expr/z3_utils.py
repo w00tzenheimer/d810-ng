@@ -42,29 +42,32 @@ def requires_z3_installed(func: typing.Callable[..., typing.Any]):
 
 
 @requires_z3_installed
+@functools.cache
+def get_solver() -> z3.Solver:
+    return z3.Solver()
+
+
+@requires_z3_installed
 def create_z3_vars(leaf_list: list[AstLeaf]):
     known_leaf_list = []
     known_leaf_z3_var_list = []
     for leaf in leaf_list:
-        if not leaf.is_constant():
-            leaf_index = get_mop_index(leaf.mop, known_leaf_list)
-            if leaf_index == -1:
-                known_leaf_list.append(leaf.mop)
-                leaf_index = len(known_leaf_list) - 1
-                if leaf.mop.size in [1, 2, 4, 8]:
-                    # Normally, we should create variable based on their size
-                    # but for now it can cause issue when instructions like XDU are used, hence this ugly fix
-                    # known_leaf_z3_var_list.append(z3.BitVec("x_{0}".format(leaf_index), 8 * leaf.mop.size))
-                    known_leaf_z3_var_list.append(
-                        z3.BitVec("x_{0}".format(leaf_index), 32)
-                    )
-                    pass
-                else:
-                    known_leaf_z3_var_list.append(
-                        z3.BitVec("x_{0}".format(leaf_index), 32)
-                    )
-            leaf.z3_var = known_leaf_z3_var_list[leaf_index]
-            leaf.z3_var_name = "x_{0}".format(leaf_index)
+        if leaf.is_constant() or leaf.mop is None:
+            continue
+        leaf_index = get_mop_index(leaf.mop, known_leaf_list)
+        if leaf_index == -1:
+            known_leaf_list.append(leaf.mop)
+            leaf_index = len(known_leaf_list) - 1
+            if leaf.mop.size in [1, 2, 4, 8]:
+                # Normally, we should create variable based on their size
+                # but for now it can cause issue when instructions like XDU are used, hence this ugly fix
+                # known_leaf_z3_var_list.append(z3.BitVec("x_{0}".format(leaf_index), 8 * leaf.mop.size))
+                known_leaf_z3_var_list.append(z3.BitVec("x_{0}".format(leaf_index), 32))
+                pass
+            else:
+                known_leaf_z3_var_list.append(z3.BitVec("x_{0}".format(leaf_index), 32))
+        leaf.z3_var = known_leaf_z3_var_list[leaf_index]
+        leaf.z3_var_name = "x_{0}".format(leaf_index)
     return known_leaf_z3_var_list
 
 
@@ -277,7 +280,7 @@ def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
 
 @requires_z3_installed
 def mop_list_to_z3_expression_list(mop_list: list[mop_t]):
-    ast_list = [mop_to_ast(mop) for mop in mop_list]
+    ast_list = filter(None, [mop_to_ast(mop) for mop in mop_list])
     ast_leaf_list = []
     for ast in ast_list:
         ast_leaf_list += ast.get_leaf_list()
@@ -286,35 +289,83 @@ def mop_list_to_z3_expression_list(mop_list: list[mop_t]):
 
 
 @requires_z3_installed
-def z3_check_mop_equality(mop1: mop_t, mop2: mop_t) -> bool:
+def z3_check_mop_equality(
+    mop1: mop_t | None, mop2: mop_t | None, solver: z3.Solver | None = None
+) -> bool:
+    if mop1 is None or mop2 is None:
+        return False
+    # Trivial pre-filters for speed.
+    if mop1.t != mop2.t or mop1.size != mop2.size:
+        return False
+    if mop1.t == mop_n:
+        return mop1.nnn.value == mop2.nnn.value
+    if mop1.t == mop_r:
+        return mop1.r == mop2.r
+    if mop1.t == mop_S:
+        return mop1.s.val == mop2.s.val and mop1.s.off == mop2.s.off
+    if mop1.t == mop_v:
+        return mop1.g == mop2.g
+    if mop1.t == mop_d:
+        # For sub-instructions, dstr() is a reasonable fallback for equality.
+        return mop1.dstr() == mop2.dstr()
+
+    # If pre-filters don't apply, fall back to Z3.
     z3_mop1, z3_mop2 = mop_list_to_z3_expression_list([mop1, mop2])
-    s = z3.Solver()
-    s.add(z3.Not(z3_mop1 == z3_mop2))
-    if s.check().r == -1:
-        return True
-    return False
+    _solver = solver if solver is not None else get_solver()
+    _solver.push()
+    _solver.add(z3.Not(z3_mop1 == z3_mop2))
+    # If the negation is unsatisfiable, the expressions are equal.
+    is_equal = _solver.check().r == z3.unsat
+    _solver.pop()
+    return is_equal
 
 
 @requires_z3_installed
-def z3_check_mop_inequality(mop1: mop_t, mop2: mop_t) -> bool:
-    z3_mop1, z3_mop2 = mop_list_to_z3_expression_list([mop1, mop2])
-    s = z3.Solver()
-    s.add(z3_mop1 == z3_mop2)
-    if s.check().r == -1:
+def z3_check_mop_inequality(
+    mop1: mop_t | None, mop2: mop_t | None, solver: z3.Solver | None = None
+) -> bool:
+    if mop1 is None or mop2 is None:
         return True
-    return False
+    # Trivial pre-filters for speed.
+    if mop1.t != mop2.t or mop1.size != mop2.size:
+        return True
+    if mop1.t == mop_n:
+        return mop1.nnn.value != mop2.nnn.value
+    if mop1.t == mop_r:
+        return mop1.r != mop2.r
+    if mop1.t == mop_S:
+        return mop1.s.val != mop2.s.val or mop1.s.off != mop2.s.off
+    if mop1.t == mop_v:
+        return mop1.g != mop2.g
+    if mop1.t == mop_d:
+        return mop1.dstr() != mop2.dstr()
+
+    # If pre-filters don't apply, fall back to Z3.
+    z3_mop1, z3_mop2 = mop_list_to_z3_expression_list([mop1, mop2])
+    _solver = solver if solver is not None else get_solver()
+    _solver.push()
+    _solver.add(z3_mop1 == z3_mop2)
+    # If the equality is unsatisfiable, the expressions are not equal.
+    is_unequal = _solver.check().r == z3.unsat
+    _solver.pop()
+    return is_unequal
 
 
 @requires_z3_installed
 def rename_leafs(leaf_list: list[AstLeaf]) -> list[str]:
     known_leaf_list = []
     for leaf in leaf_list:
-        if not leaf.is_constant() and leaf.mop.t != mop_z:
-            leaf_index = get_mop_index(leaf.mop, known_leaf_list)
-            if leaf_index == -1:
-                known_leaf_list.append(leaf.mop)
-                leaf_index = len(known_leaf_list) - 1
-            leaf.z3_var_name = "x_{0}".format(leaf_index)
+        if leaf.is_constant() or leaf.mop is None:
+            continue
+
+        if leaf.mop.t == mop_z:
+            continue
+
+        leaf_index = get_mop_index(leaf.mop, known_leaf_list)
+        if leaf_index == -1:
+            known_leaf_list.append(leaf.mop)
+            leaf_index = len(known_leaf_list) - 1
+        leaf.z3_var_name = "x_{0}".format(leaf_index)
 
     return [
         "x_{0} = BitVec('x_{0}', {1})".format(i, 8 * leaf.size)
