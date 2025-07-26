@@ -18,11 +18,12 @@ class Z3setzRuleGeneric(Z3Rule):
         return AstNode(m_mov, AstConstant("val_res"))
 
     def check_candidate(self, candidate):
+        res_size = candidate["x_0"].size or 1  # fall back to 1 byte if unknown
         if z3_check_mop_equality(candidate["x_0"].mop, candidate["x_1"].mop):
-            candidate.add_constant_leaf("val_res", 1, candidate.size)
+            candidate.add_constant_leaf("val_res", 1, res_size)
             return True
         if z3_check_mop_inequality(candidate["x_0"].mop, candidate["x_1"].mop):
-            candidate.add_constant_leaf("val_res", 0, candidate.size)
+            candidate.add_constant_leaf("val_res", 0, res_size)
             return True
         return False
 
@@ -40,11 +41,12 @@ class Z3setnzRuleGeneric(Z3Rule):
         return AstNode(m_mov, AstConstant("val_res"))
 
     def check_candidate(self, candidate):
+        res_size = candidate["x_0"].size or 1
         if z3_check_mop_equality(candidate["x_0"].mop, candidate["x_1"].mop):
-            candidate.add_constant_leaf("val_res", 0, candidate.size)
+            candidate.add_constant_leaf("val_res", 0, res_size)
             return True
         if z3_check_mop_inequality(candidate["x_0"].mop, candidate["x_1"].mop):
-            candidate.add_constant_leaf("val_res", 1, candidate.size)
+            candidate.add_constant_leaf("val_res", 1, res_size)
             return True
         return False
 
@@ -64,11 +66,12 @@ class Z3lnotRuleGeneric(Z3Rule):
     def check_candidate(self, candidate):
         val_0_mop = mop_t()
         val_0_mop.make_number(0, candidate["x_0"].size)
+        res_size = candidate["x_0"].size or 1
         if z3_check_mop_equality(candidate["x_0"].mop, val_0_mop):
-            candidate.add_constant_leaf("val_res", 1, candidate.size)
+            candidate.add_constant_leaf("val_res", 1, res_size)
             return True
         if z3_check_mop_inequality(candidate["x_0"].mop, val_0_mop):
-            candidate.add_constant_leaf("val_res", 0, candidate.size)
+            candidate.add_constant_leaf("val_res", 0, res_size)
             return True
         return False
 
@@ -86,13 +89,14 @@ class Z3SmodRuleGeneric(Z3Rule):
         return AstNode(m_mov, AstConstant("val_res"))
 
     def check_candidate(self, candidate):
+        res_size = candidate["x_0"].size or 1
         cst_0_mop = mop_t()
-        cst_0_mop.make_number(0, candidate.size)
+        cst_0_mop.make_number(0, res_size)
         if z3_check_mop_equality(candidate.mop, cst_0_mop):
             candidate.add_leaf("val_res", cst_0_mop)
             return True
         cst_1_mop = mop_t()
-        cst_1_mop.make_number(1, candidate.size)
+        cst_1_mop.make_number(1, res_size)
         if z3_check_mop_equality(candidate.mop, cst_1_mop):
             candidate.add_leaf("val_res", cst_1_mop)
             return True
