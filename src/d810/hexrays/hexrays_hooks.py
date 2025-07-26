@@ -54,16 +54,6 @@ DEFAULT_ANALYZER_MATURITIES = [
 ]
 
 
-# from d810.optimizers.microcode.instructions import (
-#     ChainOptimizer,
-#     EarlyOptimizer,
-#     InstructionAnalyzer,
-#     PatternOptimizer,
-#     PeepholeOptimizer,
-#     Z3Optimizer,
-# )
-
-
 class InstructionOptimizerManager(optinsn_t):
     def __init__(self, log_dir: pathlib.Path):
         optimizer_logger.debug("Initializing {0}...".format(self.__class__.__name__))
