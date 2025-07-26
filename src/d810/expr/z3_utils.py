@@ -6,11 +6,16 @@ from ida_hexrays import *
 
 from d810.errors import D810Z3Exception
 from d810.expr.ast import AstLeaf, AstNode, minsn_to_ast, mop_to_ast
-from d810.hexrays.hexrays_formatters import format_minsn_t, opcode_to_string
+from d810.hexrays.hexrays_formatters import (
+    format_minsn_t,
+    format_mop_t,
+    opcode_to_string,
+)
 from d810.hexrays.hexrays_helpers import get_mop_index
 
 logger = logging.getLogger("D810.plugin")
 z3_file_logger = logging.getLogger("D810.z3_test")
+optimizer_logger = logging.getLogger("D810.optimizer")
 
 try:
     import z3
@@ -31,6 +36,7 @@ except ImportError:
     Z3_INSTALLED = False
 
 
+@functools.lru_cache(maxsize=1)
 def requires_z3_installed(func: typing.Callable[..., typing.Any]):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -42,7 +48,7 @@ def requires_z3_installed(func: typing.Callable[..., typing.Any]):
 
 
 @requires_z3_installed
-@functools.cache
+@functools.lru_cache(maxsize=1)
 def get_solver() -> z3.Solver:
     return z3.Solver()
 
@@ -280,10 +286,22 @@ def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
 
 @requires_z3_installed
 def mop_list_to_z3_expression_list(mop_list: list[mop_t]):
-    ast_list = filter(None, [mop_to_ast(mop) for mop in mop_list])
-    ast_leaf_list = []
+    # Build a concrete list because we need to iterate twice (once to collect leaves,
+    # then again to build the final z3 expressions). Using a filter iterator directly
+    # would be consumed after the first pass and cause an empty list on the second.
+    ast_list = [
+        ast
+        for ast in (mop_to_ast(m) for m in mop_list if m is not None)
+        if ast is not None
+    ]
+
+    if not ast_list:
+        return []
+
+    ast_leaf_list: list[AstLeaf] = []
     for ast in ast_list:
-        ast_leaf_list += ast.get_leaf_list()
+        ast_leaf_list.extend(ast.get_leaf_list())
+
     _ = create_z3_vars(ast_leaf_list)
     return [ast_to_z3_expression(ast) for ast in ast_list]
 
@@ -294,30 +312,50 @@ def z3_check_mop_equality(
 ) -> bool:
     if mop1 is None or mop2 is None:
         return False
-    # Trivial pre-filters for speed.
-    if mop1.t != mop2.t or mop1.size != mop2.size:
+    # # Quick positives when both operands share type/size.
+    # if mop1.t == mop2.t and mop1.size == mop2.size:
+    #     if mop1.t == mop_n:
+    #         return mop1.nnn.value == mop2.nnn.value
+    #     if mop1.t == mop_r:
+    #         return mop1.r == mop2.r
+    #     if mop1.t == mop_S:
+    #         # Direct comparison of stack var refs suffices.
+    #         return mop1.s == mop2.s
+    #     if mop1.t == mop_v:
+    #         return mop1.g == mop2.g
+    #     if mop1.t == mop_d:
+    #         return mop1.dstr() == mop2.dstr()
+    # If quick checks didn't decide, fall back to Z3 even when types differ.
+    optimizer_logger.info(
+        "z3_check_mop_equality: mop1.t: %s, mop2.t: %s",
+        format_mop_t(mop1),
+        format_mop_t(mop2),
+    )
+    optimizer_logger.info(
+        "z3_check_mop_equality: mop1.dstr(): %s, mop2.dstr(): %s",
+        mop1.dstr(),
+        mop2.dstr(),
+    )
+    try:
+        # If pre-filters don't apply, fall back to Z3.
+        exprs = mop_list_to_z3_expression_list([mop1, mop2])
+        if len(exprs) != 2:
+            return False
+        z3_mop1, z3_mop2 = exprs
+        _solver = solver if solver is not None else get_solver()
+        _solver.push()
+        _solver.add(z3.Not(z3_mop1 == z3_mop2))
+        is_equal = _solver.check() is z3.unsat
+        optimizer_logger.info(
+            "z3_mop1: %s, z3_mop2: %s, z3_check_mop_equality: is_equal: %s",
+            z3_mop1,
+            z3_mop2,
+            is_equal,
+        )
+        _solver.pop()
+        return is_equal
+    except Exception:
         return False
-    if mop1.t == mop_n:
-        return mop1.nnn.value == mop2.nnn.value
-    if mop1.t == mop_r:
-        return mop1.r == mop2.r
-    if mop1.t == mop_S:
-        return mop1.s.val == mop2.s.val and mop1.s.off == mop2.s.off
-    if mop1.t == mop_v:
-        return mop1.g == mop2.g
-    if mop1.t == mop_d:
-        # For sub-instructions, dstr() is a reasonable fallback for equality.
-        return mop1.dstr() == mop2.dstr()
-
-    # If pre-filters don't apply, fall back to Z3.
-    z3_mop1, z3_mop2 = mop_list_to_z3_expression_list([mop1, mop2])
-    _solver = solver if solver is not None else get_solver()
-    _solver.push()
-    _solver.add(z3.Not(z3_mop1 == z3_mop2))
-    # If the negation is unsatisfiable, the expressions are equal.
-    is_equal = _solver.check().r == z3.unsat
-    _solver.pop()
-    return is_equal
 
 
 @requires_z3_installed
@@ -326,29 +364,49 @@ def z3_check_mop_inequality(
 ) -> bool:
     if mop1 is None or mop2 is None:
         return True
-    # Trivial pre-filters for speed.
-    if mop1.t != mop2.t or mop1.size != mop2.size:
+    # if mop1.t == mop2.t and mop1.size == mop2.size:
+    #     # Quick negatives when structure same.
+    #     if mop1.t == mop_n:
+    #         return mop1.nnn.value != mop2.nnn.value
+    #     if mop1.t == mop_r:
+    #         return mop1.r != mop2.r
+    #     if mop1.t == mop_S:
+    #         return mop1.s != mop2.s
+    #     if mop1.t == mop_v:
+    #         return mop1.g != mop2.g
+    #     if mop1.t == mop_d:
+    #         return mop1.dstr() != mop2.dstr()
+    # Otherwise fall back to Z3 (also handles differing types).
+    optimizer_logger.info(
+        "z3_check_mop_inequality: mop1.t: %s, mop2.t: %s",
+        format_mop_t(mop1),
+        format_mop_t(mop2),
+    )
+    optimizer_logger.info(
+        "z3_check_mop_inequality: mop1.dstr(): %s, mop2.dstr(): %s",
+        mop1.dstr(),
+        mop2.dstr(),
+    )
+    try:
+        # If pre-filters don't apply, fall back to Z3.
+        exprs = mop_list_to_z3_expression_list([mop1, mop2])
+        if len(exprs) != 2:
+            return True
+        z3_mop1, z3_mop2 = exprs
+        _solver = solver if solver is not None else get_solver()
+        _solver.push()
+        _solver.add(z3_mop1 == z3_mop2)
+        is_unequal = _solver.check() is z3.unsat
+        optimizer_logger.info(
+            "z3_mop1: %s, z3_mop2: %s, z3_check_mop_inequality: is_unequal: %s",
+            z3_mop1,
+            z3_mop2,
+            is_unequal,
+        )
+        _solver.pop()
+        return is_unequal
+    except Exception:
         return True
-    if mop1.t == mop_n:
-        return mop1.nnn.value != mop2.nnn.value
-    if mop1.t == mop_r:
-        return mop1.r != mop2.r
-    if mop1.t == mop_S:
-        return mop1.s.val != mop2.s.val or mop1.s.off != mop2.s.off
-    if mop1.t == mop_v:
-        return mop1.g != mop2.g
-    if mop1.t == mop_d:
-        return mop1.dstr() != mop2.dstr()
-
-    # If pre-filters don't apply, fall back to Z3.
-    z3_mop1, z3_mop2 = mop_list_to_z3_expression_list([mop1, mop2])
-    _solver = solver if solver is not None else get_solver()
-    _solver.push()
-    _solver.add(z3_mop1 == z3_mop2)
-    # If the equality is unsatisfiable, the expressions are not equal.
-    is_unequal = _solver.check().r == z3.unsat
-    _solver.pop()
-    return is_unequal
 
 
 @requires_z3_installed

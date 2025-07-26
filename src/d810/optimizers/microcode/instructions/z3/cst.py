@@ -1,3 +1,4 @@
+import logging
 import typing
 
 from ida_hexrays import *
@@ -6,7 +7,11 @@ from d810 import _compat
 from d810.errors import AstEvaluationException
 from d810.expr.ast import AstConstant, AstNode, minsn_to_ast
 from d810.expr.z3_utils import z3_check_mop_equality
+from d810.hexrays.hexrays_formatters import format_minsn_t
+from d810.hexrays.hexrays_helpers import equal_mops_bypass_xdu, get_mop_index
 from d810.optimizers.microcode.instructions.z3.handler import Z3Rule
+
+optimizer_logger = logging.getLogger("D810.optimizer")
 
 
 class Z3ConstantOptimization(Z3Rule):
@@ -45,21 +50,32 @@ class Z3ConstantOptimization(Z3Rule):
             and len(opcodes) >= self.min_nb_opcode
             and (len(cst_leaf_values) >= self.min_nb_constant)
         ):
+            optimizer_logger.info("Found candidate: %s", format_minsn_t(instruction))
             try:
-                val_0 = tmp.evaluate_with_leaf_info(leaf_info_list, [0])
-                val_1 = tmp.evaluate_with_leaf_info(leaf_info_list, [0xFFFFFFFF])
-
+                nb_leafs = len(leaf_info_list)
+                val_0 = tmp.evaluate_with_leaf_info(leaf_info_list, [0] * nb_leafs)
+                val_1 = tmp.evaluate_with_leaf_info(
+                    leaf_info_list, [0xFFFFFFFF] * nb_leafs
+                )
+                optimizer_logger.info("  val_0: %s, val_1: %s", val_0, val_1)
                 if val_0 == val_1 and tmp.mop is not None:
+                    optimizer_logger.info("  val_0 == val_1")
                     c_res_mop = mop_t()
                     c_res_mop.make_number(val_0, tmp.mop.size)
                     is_ok = z3_check_mop_equality(tmp.mop, c_res_mop)
+                    optimizer_logger.info("  z3_check_mop_equality is equal? %s", is_ok)
                     if is_ok:
                         tmp.add_constant_leaf("c_res", val_0, tmp.mop.size)
+                        # Recompute caches so that leafs_by_name contains the new constant leaf
+                        tmp.compute_sub_ast()
+
                         new_instruction = self.get_replacement(
                             typing.cast(AstNode, tmp)
                         )
                         return new_instruction
                     return None
+                else:
+                    optimizer_logger.info("  val_0 != val_1")
             except ZeroDivisionError:
                 pass
             except AstEvaluationException as e:
