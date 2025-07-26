@@ -2455,7 +2455,7 @@ struct _EXCEPTION_POINTERS
   struct _CONTEXT_X64 *ContextRecord;
 };
 
-unsigned __int8 g_encDataRandomTable[700] = {
+const unsigned __int8 g_encDataRandomTable[700] = {
     0x0C, 0x05, 0x09, 0x03, 0x0B, 0x08, 0x0D, 0x00, 0x0E, 0x0A, 0x06, 0x02, 0x0F, 0x04, 0x07, 0x01, 
     0x01, 0x06, 0x09, 0x07, 0x05, 0x00, 0x0D, 0x0E, 0x02, 0x04, 0x03, 0x0B, 0x08, 0x0F, 0x0C, 0x0A, 
     0x08, 0x04, 0x02, 0x0C, 0x01, 0x00, 0x0F, 0x09, 0x0D, 0x07, 0x05, 0x06, 0x0B, 0x0A, 0x0E, 0x03, 
@@ -2501,12 +2501,12 @@ unsigned __int8 g_encDataRandomTable[700] = {
 };
 
 
-unsigned __int64 v1702 =  0x9BD8FE58859C5374;
-unsigned __int64 qword_1802D2B19 = 0x281C3663DA3197FA;
-unsigned __int64 qword_1802D2C51 = 0xB76BFFAE3B3B94B8;
-unsigned __int64 qword_1802D2C99 = 0xDE03F46FCD0D7CAA;
-unsigned __int32 dword_1802D2E48 = 0x88A8C6E5;
-unsigned __int32 dword_1802D2DBC = 0xF4C84FC4;
+const unsigned __int64 v1702 =  0x9BD8FE58859C5374;
+const unsigned __int64 qword_1802D2B19 = 0x281C3663DA3197FA;
+const unsigned __int64 qword_1802D2C51 = 0xB76BFFAE3B3B94B8;
+const unsigned __int64 qword_1802D2C99 = 0xDE03F46FCD0D7CAA;
+const unsigned __int32 dword_1802D2E48 = 0x88A8C6E5;
+const unsigned __int32 dword_1802D2DBC = 0xF4C84FC4;
 
 
 extern void _InterlockedExchangeW(int, int, int, int, int);
