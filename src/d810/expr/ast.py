@@ -5,6 +5,7 @@ import logging
 import typing
 
 import ida_hexrays
+import idaapi
 
 import d810._compat as _compat
 from d810.errors import AstEvaluationException
@@ -33,8 +34,10 @@ from d810.hexrays.hexrays_helpers import (
     Z3_SPECIAL_OPERANDS,
     equal_mops_ignore_size,
 )
+from d810.registry import NOT_GIVEN, NotGiven
 
 logger = logging.getLogger("D810")
+debug_on = logger.isEnabledFor(logging.DEBUG)
 
 
 def get_constant_mop(value: int, size: int) -> ida_hexrays.mop_t:
@@ -107,7 +110,7 @@ class AstBase(abc.ABC):
     def reset_mops(self) -> None: ...
 
     @abc.abstractmethod
-    def _copy_mops_from_ast(self, other: AstBase) -> bool: ...
+    def _copy_mops_from_ast(self, other: AstBase, read_only: bool = False) -> bool: ...
 
     @abc.abstractmethod
     def create_mop(self, ea: int) -> ida_hexrays.mop_t: ...
@@ -243,14 +246,17 @@ class AstNode(AstBase, dict):
         cst_mop = get_constant_mop(masked_value, cst_size)
         self.add_leaf(leaf_name, cst_mop)
 
-    def check_pattern_and_copy_mops(self, ast: AstNode | AstLeaf) -> bool:
-        self.reset_mops()
+    def check_pattern_and_copy_mops(
+        self, ast: AstNode | AstLeaf, read_only: bool = False
+    ) -> bool:
+        if not read_only:
+            self.reset_mops()
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "AstNode.check_pattern_and_copy_mops from %r",
                 ast,
             )
-        is_matching_shape = self._copy_mops_from_ast(ast)
+        is_matching_shape = self._copy_mops_from_ast(ast, read_only)
         if not is_matching_shape:
             return False
         return self._check_implicit_equalities()
@@ -262,17 +268,20 @@ class AstNode(AstBase, dict):
         if self.right is not None:
             self.right.reset_mops()
 
-    def _copy_mops_from_ast(self, other: AstNode | AstLeaf) -> bool:
+    def _copy_mops_from_ast(
+        self, other: AstNode | AstLeaf, read_only: bool = False
+    ) -> bool:
         if not other.is_node():
             return False
         other = typing.cast(AstNode, other)
         if self.opcode != other.opcode:
             return False
 
-        self.mop = other.mop
-        self.dst_mop = other.dst_mop
-        self.dest_size = other.dest_size
-        self.ea = other.ea
+        if not read_only:
+            self.mop = other.mop
+            self.dst_mop = other.dst_mop
+            self.dest_size = other.dest_size
+            self.ea = other.ea
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -281,7 +290,7 @@ class AstNode(AstBase, dict):
                 other.left,
             )
         if self.left is not None and other.left is not None:
-            if not self.left._copy_mops_from_ast(other.left):
+            if not self.left._copy_mops_from_ast(other.left, read_only):
                 return False
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -290,7 +299,7 @@ class AstNode(AstBase, dict):
                 other.right,
             )
         if self.right is not None and other.right is not None:
-            if not self.right._copy_mops_from_ast(other.right):
+            if not self.right._copy_mops_from_ast(other.right, read_only):
                 return False
         return True
 
@@ -744,7 +753,7 @@ class AstLeaf(AstBase):
 
         self.mop = None
         self.z3_var = None
-        self.z3_var_name = None
+        self.z3_var_name: str | NotGiven = NOT_GIVEN
 
         self.dest_size = None
         self.ea = None
@@ -791,7 +800,7 @@ class AstLeaf(AstBase):
 
         # Initialize transient state
         new_leaf.z3_var = None
-        new_leaf.z3_var_name = None
+        new_leaf.z3_var_name = NOT_GIVEN
         new_leaf.sub_ast_info_by_index = {}  # Start fresh
 
         # Cloned objects start mutable by definition
@@ -882,9 +891,10 @@ class AstLeaf(AstBase):
             return True
         return False
 
-    def check_pattern_and_copy_mops(self, ast):
-        self.reset_mops()
-        is_matching_shape = self._copy_mops_from_ast(ast)
+    def check_pattern_and_copy_mops(self, ast, read_only: bool = False):
+        if not read_only:
+            self.reset_mops()
+        is_matching_shape = self._copy_mops_from_ast(ast, read_only)
 
         if not is_matching_shape:
             return False
@@ -892,10 +902,10 @@ class AstLeaf(AstBase):
 
     def reset_mops(self):
         self.z3_var = None
-        self.z3_var_name = None
+        self.z3_var_name = NOT_GIVEN
         self.mop = None
 
-    def _copy_mops_from_ast(self, other):
+    def _copy_mops_from_ast(self, other, read_only: bool = False):
         if other.mop is None:
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -909,7 +919,8 @@ class AstLeaf(AstBase):
                 other,
                 format_mop_t(other.mop),
             )
-        self.mop = other.mop
+        if not read_only:
+            self.mop = other.mop
         return True
 
     @staticmethod
@@ -951,7 +962,7 @@ class AstLeaf(AstBase):
         try:
             if self.is_constant() and self.mop is not None:
                 return "{0}".format(hex(self.mop.nnn.value))
-            if self.z3_var_name is not None:
+            if self.z3_var_name is not NOT_GIVEN:
                 return self.z3_var_name
             if self.ast_index is not None:
                 return "x_{0}".format(self.ast_index)
@@ -982,7 +993,7 @@ class AstConstant(AstLeaf):
         # An AstConstant is always constant, so return True
         return True
 
-    def _copy_mops_from_ast(self, other):
+    def _copy_mops_from_ast(self, other, read_only: bool = False):
         if other.mop is not None and other.mop.t != ida_hexrays.mop_n:
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -997,10 +1008,14 @@ class AstConstant(AstLeaf):
                 other,
                 format_mop_t(other.mop),
             )
-        self.mop = other.mop
+        if not read_only:
+            self.mop = other.mop
         if self.expected_value is None:
-            self.expected_value = other.mop.nnn.value
-            self.expected_size = other.mop.size
+            if not read_only:
+                self.expected_value = other.mop.nnn.value
+                self.expected_size = other.mop.size
+            else:
+                return True
         return self.expected_value == other.mop.nnn.value
 
     def evaluate(self, dict_index_to_value=None):
@@ -1244,46 +1259,64 @@ class AstBuilderContext:
 
 def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
     """
-    Creates a unique, hashable, and cheap-to-compute key for a mop_t object.
+    Generates a fast, hashable key from a mop_t's essential attributes.
+    This is significantly faster than using mop.dstr().
     """
-    # The base of the key is always the type, size, and valnum.
     t = mop.t
-    key_base = (t, mop.size, mop.valnum)
 
-    # Simple Leaf Types
-    if t == ida_hexrays.mop_r:  # Register
-        return key_base + (mop.r,)
-    if t == ida_hexrays.mop_n:  # Number (constant)
-        return key_base + (mop.nnn.value,)
-    if t == ida_hexrays.mop_v:  # Global variable address
-        return key_base + (mop.g,)
-    if t == ida_hexrays.mop_S:  # Stack variable
-        return key_base + (mop.s.off,)  # Corrected: use .off
-    if t == ida_hexrays.mop_l:  # Local variable (lvar)
-        return key_base + (mop.l.idx, mop.l.off)
-    if t == ida_hexrays.mop_b:  # Block reference
-        return key_base + (mop.b,)
-    if t == ida_hexrays.mop_h:  # Helper function name
-        return key_base + (mop.helper,)
-    if t == ida_hexrays.mop_str:  # String literal
-        return key_base + (mop.cstr,)
+    # Hex-Rays assigns a new SSA value number (valnum) every time an operand is
+    # produced, even when it represents the *same* memory/register location.
+    # Including valnum in the cache key therefore forces the AST builder to
+    # create a distinct AstLeaf for each SSA instance (x_0, x_6, …), which
+    # breaks pattern rules that expect a single variable.
 
-    # Complex Types: Fallback to dstr() for safety and simplicity
-    # These types contain pointers to other complex objects, and creating a
-    # cheap, unique key without dstr() would require complex recursion.
-    if t in (
-        ida_hexrays.mop_d,  # Nested instruction
-        ida_hexrays.mop_f,  # Function call info
-        ida_hexrays.mop_a,  # Address of another operand
-        ida_hexrays.mop_p,  # Operand pair
-        ida_hexrays.mop_sc,  # Scattered operand
-        ida_hexrays.mop_c,  # Switch cases
-        ida_hexrays.mop_fn,  # Floating point constant
-    ):
-        return key_base + (mop.dstr(),)
+    # We drop valnum from the key for all operand kinds except plain numeric
+    # constants, where valnum is useful to avoid collisions when two literals
+    # share the same size.
 
-    # Default case for any other types (e.g., mop_z) Q_Q
-    return key_base
+    key = (t, mop.size) if t != ida_hexrays.mop_n else (t, mop.size, mop.valnum)
+    match t:
+        case ida_hexrays.mop_n:
+            return key + (mop.nnn.value,)
+        case ida_hexrays.mop_r:
+            return key + (mop.r,)
+        case ida_hexrays.mop_d:
+            # Using the micro-instruction EA differentiates identical loads that
+            # happen at different addresses, producing multiple leaves for the
+            # same logical value.  Instead we rely on the operand text (dstr),
+            # which is identical for identical expressions regardless of SSA
+            # copy location.
+            try:
+                return key + (mop.dstr(),)
+            except Exception:
+                # As a last resort fall back to EA.
+                return key + (mop.d.ea if mop.d else idaapi.BADADDR,)
+        case ida_hexrays.mop_S:
+            return key + (mop.s.off,)
+        case ida_hexrays.mop_v:
+            return key + (mop.g,)
+        case ida_hexrays.mop_l:
+            return key + (mop.l.idx, mop.l.off)
+        case ida_hexrays.mop_b:
+            return key + (mop.b,)
+        case ida_hexrays.mop_h:
+            return key + (mop.helper,)
+        case ida_hexrays.mop_str:
+            return key + (mop.cstr,)
+        case _:
+            # For other types, including complex ones like mop_f, mop_a, etc.,
+            # and mop_z, we fall back to the slower but safer dstr().
+            # This is a deliberate trade-off for robustness.
+            try:
+                return key + (mop.dstr(),)
+            except Exception:
+                # As a last resort, if dstr() fails, use a placeholder.
+                # This can happen for uninitialized or unusual mop_t instances.
+                logger.warning(
+                    "get_mop_key: Unsupported mop_t type: %s, returning placeholder",
+                    mop_type_to_string(t),
+                )
+                return key + (f"unsupported_mop_t_{t}",)
 
 
 def _log_mop_tree(mop, depth=0, max_depth=8):
@@ -1615,13 +1648,13 @@ def mop_to_ast_internal(
         # ------------------------------------------------------------------
         if tree is None:
             tree = AstLeaf(format_mop_t(mop))
-            if logger.isEnabledFor(logging.DEBUG):
+            if debug_on:
                 logger.debug(
-                    "[mop_to_ast_internal] Fallback to AstLeaf for mop type %s dstr=%s",
+                    "[mop_to_ast_internal] Tree is NONE! Defaulting to AstLeaf for mop type %s dstr=%s",
                     mop_type_to_string(mop.t),
                     str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
                 )
-                tree.dest_size = mop.size
+            tree.dest_size = mop.size
 
         # For non-constant leaves we deliberately *do not* keep a reference
         # to the original mop_t object, because Hex-Rays may free or reuse
@@ -1632,7 +1665,7 @@ def mop_to_ast_internal(
             tree.mop = getattr(tree, "mop", None) or mop
         else:
             tree = AstLeaf(format_mop_t(mop))
-            if logger.isEnabledFor(logging.DEBUG):
+            if debug_on:
                 logger.debug(
                     "[mop_to_ast_internal] Fallback to AstLeaf for mop type %s dstr=%s",
                     mop_type_to_string(mop.t),
