@@ -38,7 +38,7 @@ class GenericPatternRule(InstructionOptimizationRule):
 
     def __init__(self):
         super().__init__()
-        self.pattern_candidates = [self.PATTERN]
+        self.pattern_candidates = [self.PATTERN] if self.PATTERN is not None else []
         if self.PATTERNS is not None:
             self.pattern_candidates += self.PATTERNS
 
@@ -64,11 +64,16 @@ class GenericPatternRule(InstructionOptimizationRule):
         for candidate_pattern in self.pattern_candidates:
             if not candidate_pattern:
                 continue
-            if not candidate_pattern.check_pattern_and_copy_mops(tmp):
+            # Use a read-only check first
+            if not candidate_pattern.check_pattern_and_copy_mops(tmp, read_only=True):
                 continue
             if not self.check_candidate(candidate_pattern):
                 continue
-            valid_candidates.append(candidate_pattern)
+            # If the read-only check passes, then we can create a mutable copy
+            mutable_candidate = candidate_pattern.clone()
+            if not mutable_candidate.check_pattern_and_copy_mops(tmp):
+                continue
+            valid_candidates.append(mutable_candidate)
             if stop_early:
                 return valid_candidates
         return []
