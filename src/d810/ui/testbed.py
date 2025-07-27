@@ -1077,10 +1077,9 @@ class TestRunnerForm(ida_kernwin.PluginForm):
 
     def reload_tests(self):
         self._status_lbl.start_collecting_tests()
-        self.repaint_ui()
-        # reload Python test modules themselves before rebuilding the tree
         self._test_manager.reload_test_modules()
         test_count = self._view.reload()
+        self.repaint_ui()
         self._status_lbl.report_test_count(test_count)
 
     def _run_all_tests(self):

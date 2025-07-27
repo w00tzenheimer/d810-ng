@@ -136,10 +136,6 @@ class D810Manager:
         logger.debug("Removing HexraysDecompilationHook...")
         self.hx_decompiler_hook.unhook()
 
-        del self.instruction_optimizer
-        del self.block_optimizer
-        del self.hx_decompiler_hook
-
 
 class D810State:
     """
