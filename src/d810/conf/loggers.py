@@ -9,7 +9,6 @@ import typing
 LOG_FILENAME = "d810.log"
 Z3_TEST_FILENAME = "z3_check_instructions_substitution.py"
 
-# This dictionary is a direct translation of the previous `log.ini` file.
 # File paths for handlers are set to `None` initially and will be populated
 # by the `configure_loggers` function.
 conf: dict[str, typing.Any] = {
@@ -55,12 +54,12 @@ conf: dict[str, typing.Any] = {
             "propagate": False,
         },
         "D810.optimizer": {
-            "level": "DEBUG",
+            "level": "INFO",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
         "D810.chain": {
-            "level": "DEBUG",
+            "level": "INFO",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
