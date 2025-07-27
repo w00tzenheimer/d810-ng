@@ -314,6 +314,7 @@ def z3_check_mop_equality(
 ) -> bool:
     if mop1 is None or mop2 is None:
         return False
+    # TODO(w00tzenheimer): should we use this?
     # # Quick positives when both operands share type/size.
     # if mop1.t == mop2.t and mop1.size == mop2.size:
     #     if mop1.t == mop_n:
@@ -365,6 +366,7 @@ def z3_check_mop_inequality(
 ) -> bool:
     if mop1 is None or mop2 is None:
         return True
+    # TODO(w00tzenheimer): should we use this?
     # if mop1.t == mop2.t and mop1.size == mop2.size:
     #     # Quick negatives when structure same.
     #     if mop1.t == mop_n:
