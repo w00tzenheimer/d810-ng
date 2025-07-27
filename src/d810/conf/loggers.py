@@ -1,3 +1,5 @@
+import collections
+import dataclasses
 import logging
 import logging.config
 import pathlib
@@ -136,7 +138,57 @@ def configure_loggers(log_dir: str | pathlib.Path) -> None:
     )
 
 
-# Utility to dynamically query and set logger levels at runtime.
+_config = collections.Counter(version=0)
+
+
+@dataclasses.dataclass(slots=True)
+class LevelFlag:
+    """
+    LevelFlag provides a fast, zero-allocation cached boolean check for whether a logger is
+    enabled for a given level.
+
+    It avoids repeated calls to logger.isEnabledFor(level) in performance-critical code, and automatically
+    refreshes its cache when logging configuration changes.
+
+    See: https://docs.python.org/3/howto/logging.html#optimization
+
+    Example:
+        logger = logging.getLogger("...")  # any logger
+        debug_on = LevelFlag(logger.name, logging.DEBUG)
+
+        # In a hot loop:
+        if debug_on:
+            do_expensive_debug_stuff()
+    """
+
+    _logger_name: str
+    _level: int
+    _last_version: int = dataclasses.field(default=-1, init=False)
+    _cached: bool = dataclasses.field(default=False, init=False)
+
+    def __bool__(self) -> bool:
+        current = self.get_config_version()
+        if self._last_version != current:
+            # config changed (or first call) → re-compute once
+            self._cached = logging.getLogger(self._logger_name).isEnabledFor(
+                self._level
+            )
+            self._last_version = current
+        return self._cached
+
+    def __repr__(self):
+        lvlname = logging.getLevelName(self._level)
+        return f"<LevelFlag {self._logger_name}≥{lvlname}>"
+
+    @staticmethod
+    def bump_config_version() -> None:
+        _config["version"] += 1
+
+    @staticmethod
+    def get_config_version() -> int:
+        return _config["version"]
+
+
 class LoggerConfigurator:
     """
     Utility to dynamically query and set logger levels at runtime.
@@ -172,3 +224,5 @@ class LoggerConfigurator:
         if lvl is None:
             raise ValueError(f"Unknown logging level: {level_name}")
         logging.getLogger(logger_name).setLevel(lvl)
+        # invalidate all LevelFlags
+        LevelFlag.bump_config_version()
