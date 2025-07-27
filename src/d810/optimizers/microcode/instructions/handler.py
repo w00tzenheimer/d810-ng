@@ -113,7 +113,7 @@ class GenericPatternRule(InstructionOptimizationRule):
         if optimizer_logger.isEnabledFor(logging.DEBUG):
             optimizer_logger.debug(
                 "Replacement instruction created: %s",
-                new_ins,
+                format_minsn_t(new_ins),
             )
         return new_ins
 
