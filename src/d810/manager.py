@@ -9,6 +9,7 @@ import typing
 
 from d810.conf import D810Configuration, ProjectConfiguration
 from d810.conf.loggers import clear_logs, configure_loggers
+from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.hexrays.hexrays_hooks import (
     BlockOptimizerManager,
     DecompilationEvent,
@@ -93,6 +94,8 @@ class D810Manager:
             self.start_profiling,
             self.instruction_optimizer.reset_rule_usage_statistic,
             self.block_optimizer.reset_rule_usage_statistic,
+            MOP_CONSTANT_CACHE.clear,
+            MOP_TO_AST_CACHE.clear,
         ):
             self.event_emitter.on(DecompilationEvent.STARTED, _subscriber)
 
@@ -100,6 +103,10 @@ class D810Manager:
             self.stop_profiling,
             self.instruction_optimizer.show_rule_usage_statistic,
             self.block_optimizer.show_rule_usage_statistic,
+            lambda: logger.info(
+                "MOP_CONSTANT_CACHE stats: %s", MOP_CONSTANT_CACHE.stats
+            ),
+            lambda: logger.info("MOP_TO_AST_CACHE stats: %s", MOP_TO_AST_CACHE.stats),
         ):
             self.event_emitter.on(DecompilationEvent.FINISHED, _subscriber)
 

@@ -4,12 +4,10 @@ import enum
 import logging
 import pathlib
 import typing
-from typing import TYPE_CHECKING
 
 from ida_hexrays import *
 
 from d810.errors import D810Exception
-from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.expr.z3_utils import log_z3_instructions
 from d810.hexrays.hexrays_formatters import (
     dump_microcode_for_debug,
@@ -188,7 +186,6 @@ class InstructionOptimizerManager(optinsn_t):
 
     def optimize(self, blk: mblock_t, ins: minsn_t) -> bool:
         # optimizer_log.info("Trying to optimize {0}".format(format_minsn_t(ins)))
-        MOP_TO_AST_CACHE.clear()
         for ins_optimizer in self.instruction_optimizers:
             self._last_optimizer_tried = ins_optimizer
             new_ins = ins_optimizer.get_optimized_instruction(blk, ins)
@@ -345,6 +342,4 @@ class HexraysDecompilationHook(Hexrays_Hooks):
     def glbopt(self, mba: mbl_array_t) -> "int":
         self.callback(DecompilationEvent.FINISHED)
         main_logger.info("glbopt finished for function at %s", hex(mba.entry_ea))
-        main_logger.info("MOP_CONSTANT_CACHE stats: %s", MOP_CONSTANT_CACHE.stats)
-        main_logger.info("MOP_TO_AST_CACHE stats: %s", MOP_TO_AST_CACHE.stats)
         return 0
