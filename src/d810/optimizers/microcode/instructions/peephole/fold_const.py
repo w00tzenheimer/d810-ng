@@ -6,6 +6,7 @@ import typing
 import ida_hexrays
 
 from d810 import _compat
+from d810.cache import CacheImpl
 from d810.expr.ast import AstBase, AstLeaf, AstNode, mop_to_ast
 from d810.expr.utils import get_parity_flag
 from d810.hexrays.hexrays_formatters import (
@@ -18,7 +19,6 @@ from d810.hexrays.hexrays_helpers import (  # already maps size→mask
     AND_TABLE,
     CONTROL_FLOW_OPCODES,
     OPCODES_INFO,
-    CacheImpl,
 )
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,

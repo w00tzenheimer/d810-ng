@@ -1,7 +1,8 @@
 import ctypes
 import sys
 
-from d810.hexrays.hexrays_helpers import MSB_TABLE, CacheImpl
+from d810.cache import CacheImpl
+from d810.hexrays.hexrays_helpers import MSB_TABLE
 
 CTYPE_SIGNED_TABLE = {
     1: ctypes.c_int8,
