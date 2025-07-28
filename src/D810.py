@@ -45,6 +45,51 @@ def init_hexrays() -> bool:
 class DependencyGraph:
     """Smart dependency tracking for modules with memory optimization."""
 
+    class _TypeCheckingVisitor(ast.NodeVisitor):
+        """Visitor to ignore imports inside TYPE_CHECKING guards."""
+
+        def __init__(
+            self,
+            graph: "DependencyGraph",
+            file_path: pathlib.Path,
+        ):
+            self.graph = graph
+            self.file_path = file_path
+            self.dependencies: set[str] = set()
+
+        def is_type_checking_if(self, node: ast.If) -> bool:
+            # Detect `if TYPE_CHECKING:` or `if typing.TYPE_CHECKING:`
+            # if TYPE_CHECKING:
+            assert isinstance(node, ast.If)
+            test = node.test
+            # Case 1: TYPE_CHECKING
+            if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
+                return True
+            # Case 2: typing.TYPE_CHECKING
+            elif (
+                isinstance(test, ast.Attribute)
+                and isinstance(test.value, ast.Name)
+                and test.value.id == "typing"
+                and test.attr == "TYPE_CHECKING"
+            ):
+                return True
+            return False
+
+        def visit_If(self, node: ast.If) -> None:
+            if self.is_type_checking_if(node):
+                # Skip the entire block under this guard
+                return
+            # Otherwise recurse normally
+            self.generic_visit(node)
+
+        def visit_Import(self, node: ast.Import) -> None:
+            self.graph._process_import_node(node, self.dependencies)
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            self.graph._process_import_from_node(
+                node, self.dependencies, self.file_path
+            )
+
     def __init__(self, pkg_prefix: str) -> None:
         self._pkg_prefix = pkg_prefix
         self._module_dependencies: dict[str, set[str]] = {}
@@ -67,19 +112,13 @@ class DependencyGraph:
                 content = f.read()
 
             tree = ast.parse(content, filename=str(file_path))
-            dependencies: set[str] = set()
-
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    self._process_import_node(node, dependencies)
-                elif isinstance(node, ast.ImportFrom):
-                    self._process_import_from_node(node, dependencies, file_path)
-
+            visitor = self._TypeCheckingVisitor(self, file_path)
+            visitor.visit(tree)
         except Exception as e:
             print(f"Error scanning dependencies in {file_path}: {e}")
             return set()
         else:
-            return dependencies
+            return visitor.dependencies
 
     def _process_import_node(self, node: ast.Import, dependencies: set[str]) -> None:
         """Process a regular import node."""
