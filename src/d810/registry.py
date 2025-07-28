@@ -473,6 +473,9 @@ class EventEmitter(Generic[E]):
     def remove(self, event: E, handler: Callable):
         self._listeners[event].discard(handler)
 
+    def clear(self):
+        self._listeners.clear()
+
     def emit(self, event: E, *args, **kwargs):
         for handler in self._listeners[event]:
             handler(*args, **kwargs)
