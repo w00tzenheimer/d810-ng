@@ -194,20 +194,50 @@ class LoggerConfigurator:
     """
 
     @staticmethod
-    def available_loggers(prefix: str | None = None) -> list[str]:
+    def available_loggers(
+        prefix: str | typing.Iterable[str] | None = None,
+        case_insensitive: bool = False,
+    ) -> list[str]:
         """
-        Return a sorted list of all logger names.
-        If `prefix` is provided, filter to names equal to or starting with prefix + '.'.
+        Return a deduped, sorted list of all logger names, with optional prefix filtering.
+
+        - Any module that's been imported and that did getLogger(__name__) will show up under dyn.
+        - Any logger statically declared in conf["loggers"] shows up under stat.
+        - If `prefix` is provided, filter to names equal to or starting with prefix + '.'.
+        - If `prefix` is a list or other iterable, match any of the prefixes.
+        - If `case_insensitive` is True, perform case-insensitive matching.
         """
         mgr = logging.Logger.manager
-        names = [
+        # 1) dynamic ones
+        dyn = {
             name
             for name, logger in mgr.loggerDict.items()
             if isinstance(logger, logging.Logger)
-        ]
-        if prefix:
-            names = [n for n in names if n == prefix or n.startswith(prefix + ".")]
-        return sorted(names)
+        }
+        # 2) static ones from your dictConfig
+        stat = set(conf["loggers"].keys())
+
+        all_names = dyn | stat
+
+        if prefix is None:
+            return sorted(all_names)
+
+        if isinstance(prefix, str):
+            prefixes = [prefix]
+        else:
+            prefixes = list(prefix)
+
+        if case_insensitive:
+            prefixes = [p.lower() for p in prefixes]
+            def match(name: str) -> bool:
+                lname = name.lower()
+                return any(lname == p or lname.startswith(p + ".") for p in prefixes)
+        else:
+            def match(name: str) -> bool:
+                return any(name == p or name.startswith(p + ".") for p in prefixes)
+
+        filtered = filter(match, all_names)
+        return sorted(filtered)
 
     @staticmethod
     def get_level(name: str) -> int:
@@ -225,3 +255,44 @@ class LoggerConfigurator:
         logging.getLogger(logger_name).setLevel(lvl)
         # invalidate all LevelFlags
         LevelFlag.bump_config_version()
+
+
+class D810Logger(logging.Logger):
+    @property
+    def debug_on(self) -> LevelFlag:
+        return LevelFlag(self.name, logging.DEBUG)
+
+    @property
+    def info_on(self) -> LevelFlag:
+        return LevelFlag(self.name, logging.INFO)
+
+    @property
+    def warning_on(self) -> LevelFlag:
+        return LevelFlag(self.name, logging.WARNING)
+
+    @property
+    def error_on(self) -> LevelFlag:
+        return LevelFlag(self.name, logging.ERROR)
+
+    @property
+    def critical_on(self):
+        return LevelFlag(self.name, logging.CRITICAL)
+
+
+def getLogger(name: str) -> D810Logger:
+    name = name or __name__
+    # grab (or create) the underlying Logger
+    base = logging.getLogger(name)
+    # if it’s already the right type, just return it
+    if isinstance(base, D810Logger):
+        return base
+    # otherwise wrap it in the subclass
+    new = D810Logger(base.name, level=base.level)
+    # copy over handlers/filters/propagate flag
+    new.handlers = list(base.handlers)
+    new.filters = list(base.filters)
+    new.propagate = base.propagate
+    new.disabled = base.disabled
+    # replace it in the manager so future getLogger(...) calls return the subclass
+    logging.Logger.manager.loggerDict[name] = new
+    return new
