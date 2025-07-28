@@ -248,6 +248,21 @@ class D810Configuration:
 
         return projects
 
+    def _resolve_config_path(self, cfg_name: str) -> Path:
+        """Return the full path to the configuration file.
+
+        Precedence order:
+        1. *Writable* user directory  <IDA_USER>/cfg/d810/<cfg_name>
+        2. Built-in read-only templates shipped with the plugin
+            (located next to this file in d810/conf/).
+        """
+        user_path = self.config_dir / cfg_name
+        if user_path.exists():
+            return user_path
+
+        # Fallback to read-only template bundled with the plugin
+        return Path(__file__).resolve().parent / "conf" / cfg_name
+
     @property
     def config_dir(self) -> Path:
         """Return the directory in the user profile that stores editable D-810 configuration files.
@@ -266,10 +281,10 @@ class D810Configuration:
     def log_dir(self) -> Path:
         """Returns the configured log directory, or dynamically computes default if not set."""
         path_str = self._options.get("log_dir")
-        if path_str:
-            return Path(path_str)
-        # Dynamically get the default log directory from ida_diskio
-        return Path(ida_diskio.get_user_idadir(), "logs")
+        if not path_str:
+            path_str = str(Path(ida_diskio.get_user_idadir(), "logs"))
+            self._options["log_dir"] = path_str
+        return Path(path_str)
 
     def __getitem__(self, name: str) -> Any:
         """Provides dictionary-style read access."""
