@@ -44,6 +44,9 @@ class ProjectManager:
             for k, v in self._projects.items():
                 logger.debug("Project %s loaded from %s", k, v.path)
 
+    def index(self, name: str) -> int:
+        return self.project_names().index(name)
+
     def project_names(self) -> list[str]:
         with self._lock:
             return list(self._projects.keys())
