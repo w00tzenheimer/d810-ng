@@ -4,6 +4,7 @@ import contextlib
 import dataclasses
 import functools
 import logging
+import sys
 import threading
 import time
 import typing
@@ -14,6 +15,32 @@ logger = logging.getLogger(__name__)
 K = typing.TypeVar("K")
 V = typing.TypeVar("V")
 Eviction = typing.Callable[["Cache"], None]
+
+
+class SurvivesReload(abc.ABCMeta):
+    """
+    SurvivesReload intercepts calls to the constructor (`__call__`) and, when `survive_reload=True`, stores or returns a shared instance on the module object keyed by `reload_key` (or `_SHARED_<ClassName>`).
+
+    `survive_reload`/`reload_key` are handled only in the metaclass.
+    """
+
+    def __call__(
+        cls,
+        *args,
+        survive_reload: bool = False,
+        reload_key: str = "",
+        **kwargs,
+    ):
+        if survive_reload:
+            module = sys.modules[cls.__module__]
+            key = reload_key or f"_SHARED_{cls.__name__}"
+            existing = getattr(module, key, None)
+            if existing is not None:
+                return existing
+            inst = super().__call__(*args, **kwargs)
+            setattr(module, key, inst)
+            return inst
+        return super().__call__(*args, **kwargs)
 
 
 class OverweightError(Exception):
@@ -111,7 +138,7 @@ def LFU(cache: "Cache") -> None:
     cache._kill(cache._root.lfu_prev)  # type: ignore
 
 
-class CacheImpl(Cache[K, V]):
+class CacheImpl(Cache[K, V], metaclass=SurvivesReload):
     SKIP = object()
 
     @dataclasses.dataclass(slots=True)
@@ -152,9 +179,13 @@ class CacheImpl(Cache[K, V]):
         raise_overweight: bool = False,
         eviction: Eviction = LRU,
         track_frequency: bool | None = None,
+        # for SurvivesReload only (no-op in __init__)
+        survive_reload: bool = False,
+        reload_key: str = "",
     ) -> None:
         super().__init__()
-
+        # prevent pylint unused-argument
+        _ = (survive_reload, reload_key)  # pylint: disable=unused-variable
         if clock is None:
             if expire_after_access is not None or expire_after_write is not None:
                 clock = time.time

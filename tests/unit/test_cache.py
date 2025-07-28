@@ -1,7 +1,10 @@
 import gc
+import importlib
+import sys
 import unittest
+import weakref
 
-from d810.cache import CacheImpl, OverweightError, cache, lru_cache
+from d810.cache import LFU, CacheImpl, OverweightError, cache, lru_cache
 
 
 class FixedClock:
@@ -126,6 +129,95 @@ class TestCacheImpl(unittest.TestCase):
         c.reap()
         self.assertNotIn("key", c)
 
+    def test_cache_basic_operations(self):
+        c = CacheImpl(max_size=2, clock=FixedClock())
+        c[0] = "foo0"
+        self.assertEqual(c[0], "foo0")
+        c[1] = "foo1"
+        self.assertEqual(c[1], "foo1")
+        c[2] = "foo2"
+        self.assertEqual(c[2], "foo2")
+        with self.assertRaises(KeyError):
+            c.__getitem__(0)
+        self.assertEqual(c[2], "foo2")
+
+        c = CacheImpl(max_size=2, clock=FixedClock())
+        c[0] = "foo0"
+        self.assertEqual(c[0], "foo0")
+        c[1] = "foo1"
+        self.assertEqual(c[1], "foo1")
+        self.assertEqual(c[0], "foo0")
+        c[2] = "foo2"
+        self.assertEqual(c[2], "foo2")
+        with self.assertRaises(KeyError):
+            c.__getitem__(1)
+        self.assertEqual(c[0], "foo0")
+
+        c[0] = "foo4"
+        self.assertEqual(c[0], "foo4")
+
+        del c[0]
+        with self.assertRaises(KeyError):
+            c.__getitem__(0)
+
+    def test_weak_keys_extended(self):
+        class K:
+            pass
+
+        k = K()
+        c = CacheImpl(weak_keys=True, clock=FixedClock())
+        c[k] = 1
+        self.assertEqual(c[k], 1)
+        self.assertEqual(len(c), 1)
+        self.assertEqual(list(c), [k])
+        kref = weakref.ref(K)  # noqa
+        del k
+        gc.collect()
+        self.assertEqual(len(c), 0)
+        self.assertEqual(list(c), [])
+
+    def test_weak_values_extended(self):
+        class V:
+            pass
+
+        c = CacheImpl(weak_values=True, clock=FixedClock())
+        v = V()
+        c[0] = v
+        self.assertIs(c[0], v)
+        self.assertEqual(len(c), 1)
+        vref = weakref.ref(v)  # noqa
+        del v
+        gc.collect()
+        self.assertEqual(len(c), 0)
+
+    def test_expiry(self):
+        clock = FixedClock()
+        c = CacheImpl(expire_after_write=2, clock=clock)
+        c[0] = "a"
+        c[1] = "b"
+        clock.time = 1
+        self.assertEqual(c[0], "a")
+        clock.time = 3
+        with self.assertRaises(KeyError):
+            c.__getitem__(0)
+
+    def test_lfu(self):
+        c = CacheImpl(clock=FixedClock())
+        for i in range(10):
+            c[i] = i
+            for _ in range(i):
+                c[i]
+
+        c = CacheImpl(max_size=5, eviction=LFU, clock=FixedClock())
+        for i in range(5):
+            c[i] = i
+        for _ in range(2):
+            for i in range(5):
+                if i != 2:
+                    c[i]
+        c[2]
+        c[6] = 6
+
 
 class TestCacheDecorator(unittest.TestCase):
     def test_cache_decorator_basic(self):
@@ -223,6 +315,58 @@ class TestCPythonCacheBehavior(unittest.TestCase):
 
         # wrapper should expose __wrapped__ attribute
         self.assertTrue(hasattr(f, "__wrapped__"))
+
+
+class TestSurviveReload(unittest.TestCase):
+    def test_same_key_returns_singleton(self):
+        from d810.cache import CacheImpl
+
+        c1 = CacheImpl(max_size=5, survive_reload=True, reload_key="FOO")
+        c2 = CacheImpl(max_size=10, survive_reload=True, reload_key="FOO")
+        self.assertIs(c1, c2)
+        # initial config sticks:
+        self.assertEqual(c1._max_size, 5)
+
+    def test_different_keys_are_distinct(self):
+        from d810.cache import CacheImpl
+
+        c1 = CacheImpl(max_size=5, survive_reload=True, reload_key="A")
+        c2 = CacheImpl(max_size=5, survive_reload=True, reload_key="B")
+        self.assertIsNot(c1, c2)
+
+    def test_default_shared_key(self):
+        from d810.cache import CacheImpl
+
+        c1 = CacheImpl(max_size=3, survive_reload=True)
+        c2 = CacheImpl(max_size=4, survive_reload=True)
+        self.assertIs(c1, c2)
+        # And a non-surviving instance is new:
+        c3 = CacheImpl(max_size=3, survive_reload=False)
+        self.assertIsNot(c1, c3)
+
+    def test_no_survive_reload_creates_new_each_time(self):
+        from d810.cache import CacheImpl
+
+        c1 = CacheImpl(max_size=2)
+        c2 = CacheImpl(max_size=2)
+        self.assertIsNot(c1, c2)
+
+    def test_survive_reload_meta(self):
+        # load twice to simulate a reload()
+        mod = importlib.reload(sys.modules["d810.cache"])
+        c1 = mod.CacheImpl(max_size=3, survive_reload=True, reload_key="X")
+        # simulate reload by reimporting
+        importlib.reload(sys.modules["d810.cache"])
+        c2 = mod.CacheImpl(max_size=99, survive_reload=True, reload_key="X")
+        self.assertIs(c1, c2)
+        self.assertEqual(c1._max_size, 3)  # original config sticks
+
+    def test_no_survive_different(self):
+        from d810.cache import CacheImpl
+
+        c1 = CacheImpl(max_size=5)
+        c2 = CacheImpl(max_size=5)
+        self.assertIsNot(c1, c2)
 
 
 if __name__ == "__main__":
