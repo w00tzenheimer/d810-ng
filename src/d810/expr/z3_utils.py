@@ -2,6 +2,7 @@ import functools
 import logging
 import typing
 
+import ida_hexrays
 from ida_hexrays import *
 
 from d810.conf.loggers import LevelFlag
@@ -83,207 +84,129 @@ def create_z3_vars(leaf_list: list[AstLeaf]):
 def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
     if ast is None:
         raise ValueError("ast is None")
+
     if ast.is_leaf():
         ast = typing.cast(AstLeaf, ast)
         if ast.is_constant():
             return z3.BitVecVal(ast.value, 32)
         return ast.z3_var
+
     ast = typing.cast(AstNode, ast)
-    if ast.opcode == m_neg:
-        return -(ast_to_z3_expression(ast.left, use_bitvecval))
-    elif ast.opcode == m_lnot:
-        return not (ast_to_z3_expression(ast.left, use_bitvecval))
-    elif ast.opcode == m_bnot:
-        return ~(ast_to_z3_expression(ast.left, use_bitvecval))
-    elif ast.opcode == m_add:
-        return (ast_to_z3_expression(ast.left, use_bitvecval)) + (
-            ast_to_z3_expression(ast.right, use_bitvecval)
-        )
-    elif ast.opcode == m_sub:
-        return (ast_to_z3_expression(ast.left, use_bitvecval)) - (
-            ast_to_z3_expression(ast.right, use_bitvecval)
-        )
-    elif ast.opcode == m_mul:
-        return (ast_to_z3_expression(ast.left, use_bitvecval)) * (
-            ast_to_z3_expression(ast.right, use_bitvecval)
-        )
-    elif ast.opcode == m_udiv:
-        return z3.UDiv(
-            ast_to_z3_expression(ast.left, use_bitvecval=True),
-            ast_to_z3_expression(ast.right, use_bitvecval=True),
-        )
-    elif ast.opcode == m_sdiv:
-        return (ast_to_z3_expression(ast.left, use_bitvecval)) / (
-            ast_to_z3_expression(ast.right, use_bitvecval)
-        )
-    elif ast.opcode == m_umod:
-        return z3.URem(
-            ast_to_z3_expression(ast.left, use_bitvecval),
-            ast_to_z3_expression(ast.right, use_bitvecval),
-        )
-    elif ast.opcode == m_smod:
-        return (ast_to_z3_expression(ast.left, use_bitvecval)) % (
-            ast_to_z3_expression(ast.right, use_bitvecval)
-        )
-    elif ast.opcode == m_or:
-        return (ast_to_z3_expression(ast.left, use_bitvecval)) | (
-            ast_to_z3_expression(ast.right, use_bitvecval)
-        )
-    elif ast.opcode == m_and:
-        return (ast_to_z3_expression(ast.left, use_bitvecval)) & (
-            ast_to_z3_expression(ast.right, use_bitvecval)
-        )
-    elif ast.opcode == m_xor:
-        return (ast_to_z3_expression(ast.left, use_bitvecval)) ^ (
-            ast_to_z3_expression(ast.right, use_bitvecval)
-        )
-    elif ast.opcode == m_shl:
-        return (ast_to_z3_expression(ast.left, use_bitvecval)) << (
-            ast_to_z3_expression(ast.right, use_bitvecval)
-        )
-    elif ast.opcode == m_shr:
-        return z3.LShR(
-            ast_to_z3_expression(ast.left, use_bitvecval),
-            ast_to_z3_expression(ast.right, use_bitvecval),
-        )
-    elif ast.opcode == m_sar:
-        return (ast_to_z3_expression(ast.left, use_bitvecval)) >> (
-            ast_to_z3_expression(ast.right, use_bitvecval)
-        )
-    elif ast.opcode == m_setnz:
-        return z3.If(
-            (ast_to_z3_expression(ast.left, use_bitvecval)) != z3.BitVecVal(0, 32),
-            z3.BitVecVal(1, 32),
-            z3.BitVecVal(0, 32),
-        )
-    elif ast.opcode == m_setz:
-        return z3.If(
-            (ast_to_z3_expression(ast.left, use_bitvecval)) == z3.BitVecVal(0, 32),
-            z3.BitVecVal(1, 32),
-            z3.BitVecVal(0, 32),
-        )
-    elif ast.opcode == m_setae:
-        return z3.If(
-            z3.UGE(
-                ast_to_z3_expression(ast.left, use_bitvecval),
-                ast_to_z3_expression(ast.right, use_bitvecval),
-            ),
-            z3.BitVecVal(1, 32),
-            z3.BitVecVal(0, 32),
-        )
-    elif ast.opcode == m_setb:
-        return z3.If(
-            z3.ULT(
-                ast_to_z3_expression(ast.left, use_bitvecval),
-                ast_to_z3_expression(ast.right, use_bitvecval),
-            ),
-            z3.BitVecVal(1, 32),
-            z3.BitVecVal(0, 32),
-        )
-    elif ast.opcode == m_seta:
-        return z3.If(
-            z3.UGT(
-                ast_to_z3_expression(ast.left, use_bitvecval),
-                ast_to_z3_expression(ast.right, use_bitvecval),
-            ),
-            z3.BitVecVal(1, 32),
-            z3.BitVecVal(0, 32),
-        )
-    elif ast.opcode == m_setbe:
-        return z3.If(
-            z3.ULE(
-                ast_to_z3_expression(ast.left, use_bitvecval),
-                ast_to_z3_expression(ast.right, use_bitvecval),
-            ),
-            z3.BitVecVal(1, 32),
-            z3.BitVecVal(0, 32),
-        )
-    elif ast.opcode == m_setg:
-        return z3.If(
-            (ast_to_z3_expression(ast.left, use_bitvecval))
-            > (ast_to_z3_expression(ast.right, use_bitvecval)),
-            z3.BitVecVal(1, 32),
-            z3.BitVecVal(0, 32),
-        )
-    elif ast.opcode == m_setge:
-        return z3.If(
-            (ast_to_z3_expression(ast.left, use_bitvecval))
-            >= (ast_to_z3_expression(ast.right, use_bitvecval)),
-            z3.BitVecVal(1, 32),
-            z3.BitVecVal(0, 32),
-        )
-    elif ast.opcode == m_setl:
-        return z3.If(
-            (ast_to_z3_expression(ast.left, use_bitvecval))
-            < (ast_to_z3_expression(ast.right, use_bitvecval)),
-            z3.BitVecVal(1, 32),
-            z3.BitVecVal(0, 32),
-        )
-    elif ast.opcode == m_setle:
-        return z3.If(
-            (ast_to_z3_expression(ast.left, use_bitvecval))
-            <= (ast_to_z3_expression(ast.right, use_bitvecval)),
-            z3.BitVecVal(1, 32),
-            z3.BitVecVal(0, 32),
-        )
-    elif ast.opcode == m_setp:
-        # 1) isolate the low byte
-        lo_byte = typing.cast(
-            z3.BitVecRef,
-            z3.Extract(7, 0, ast_to_z3_expression(ast.left, use_bitvecval)),
-        )
-        # 2) XOR-reduce the eight single-bit slices to get 1 → odd, 0 → even
-        bit0 = typing.cast(z3.BitVecRef, z3.Extract(0, 0, lo_byte))
-        parity_bv = bit0  # 1-bit BitVec
-        for i in range(1, 8):
-            parity_bv = parity_bv ^ z3.Extract(i, i, lo_byte)
+    left = ast_to_z3_expression(ast.left, use_bitvecval)
+    right = ast_to_z3_expression(ast.right, use_bitvecval) if ast.right else None
 
-        # 3) PF is set (==1) when the parity is EVEN, i.e. parity_bv == 0
-        pf_is_set = parity_bv == z3.BitVecVal(0, 1)  # Bool
-
-        # 4) widen to 32-bit {1,0}
-        return z3.If(pf_is_set, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
-    elif ast.opcode == m_sets:
-        val = ast_to_z3_expression(ast.left, use_bitvecval)  # BitVec(32)
-        is_negative = val < z3.BitVecVal(
-            0, 32
-        )  # ordinary “<” is signed-less-than in Z3Py
-        return z3.If(is_negative, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
-    elif ast.opcode in [m_xdu, m_xds]:
-        # Extend or keep the same width; in our simplified model we just forward.
-        return ast_to_z3_expression(ast.left, use_bitvecval)
-    elif ast.opcode == m_low:
-        # Extract the lower half (dest_size) bits of the operand.
-        dest_bits = (ast.dest_size or 4) * 8  # default 32-bit
-        expr_left = ast_to_z3_expression(ast.left, use_bitvecval)
-        # Ensure we do not attempt to extract beyond the source width
-        high_bit = min(dest_bits - 1, expr_left.size() - 1)
-        extracted = typing.cast(z3.BitVecRef, z3.Extract(high_bit, 0, expr_left))
-        # Zero-extend to 32-bit so subsequent operations (which assume 32-bit) do not
-        # trigger sort-mismatch errors when combined with other 32-bit expressions.
-        if extracted.size() < 32:
-            extracted = typing.cast(
-                z3.BitVecRef, z3.ZeroExt(32 - extracted.size(), extracted)
+    match ast.opcode:
+        case ida_hexrays.m_neg:
+            return -left
+        case ida_hexrays.m_lnot:
+            return not left
+        case ida_hexrays.m_bnot:
+            return ~left
+        case ida_hexrays.m_add:
+            return left + right
+        case ida_hexrays.m_sub:
+            return left - right
+        case ida_hexrays.m_mul:
+            return left * right
+        case ida_hexrays.m_udiv:
+            return z3.UDiv(
+                ast_to_z3_expression(ast.left, use_bitvecval=True),
+                ast_to_z3_expression(ast.right, use_bitvecval=True),
             )
-        return extracted
-    elif ast.opcode == m_high:
-        # Extract the upper half of the operand by shifting right by dest_bits
-        dest_bits = (ast.dest_size or 4) * 8  # default 32-bit
-        expr_left = ast_to_z3_expression(ast.left, use_bitvecval)
-        shifted = z3.LShR(expr_left, dest_bits)
-        high_bit = min(dest_bits - 1, shifted.size() - 1)
-        extracted = typing.cast(z3.BitVecRef, z3.Extract(high_bit, 0, shifted))
-        # Zero-extend to 32-bit for consistency with the rest of the engine.
-        if extracted.size() < 32:
-            extracted = typing.cast(
-                z3.BitVecRef, z3.ZeroExt(32 - extracted.size(), extracted)
+        case ida_hexrays.m_sdiv:
+            return left / right
+        case ida_hexrays.m_umod:
+            return z3.URem(left, right)
+        case ida_hexrays.m_smod:
+            return left % right
+        case ida_hexrays.m_or:
+            return left | right
+        case ida_hexrays.m_and:
+            return left & right
+        case ida_hexrays.m_xor:
+            return left ^ right
+        case ida_hexrays.m_shl:
+            return left << right
+        case ida_hexrays.m_shr:
+            return z3.LShR(left, right)
+        case ida_hexrays.m_sar:
+            return left >> right
+        case ida_hexrays.m_setnz:
+            return z3.If(
+                left != z3.BitVecVal(0, 32), z3.BitVecVal(1, 32), z3.BitVecVal(0, 32)
             )
-        return extracted
-    raise D810Z3Exception(
-        "Z3 evaluation: Unknown opcode {0} for {1}".format(
-            opcode_to_string(ast.opcode), ast
-        )
-    )
+        case ida_hexrays.m_setz:
+            return z3.If(
+                left == z3.BitVecVal(0, 32), z3.BitVecVal(1, 32), z3.BitVecVal(0, 32)
+            )
+        case ida_hexrays.m_setae:
+            return z3.If(z3.UGE(left, right), z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+        case ida_hexrays.m_setb:
+            return z3.If(z3.ULT(left, right), z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+        case ida_hexrays.m_seta:
+            return z3.If(z3.UGT(left, right), z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+        case ida_hexrays.m_setbe:
+            return z3.If(z3.ULE(left, right), z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+        case ida_hexrays.m_setg:
+            return z3.If(left > right, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+        case ida_hexrays.m_setge:
+            return z3.If(left >= right, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+        case ida_hexrays.m_setl:
+            return z3.If(left < right, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+        case ida_hexrays.m_setle:
+            return z3.If(left <= right, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+        case ida_hexrays.m_setp:
+            # 1) isolate the low byte
+            lo_byte = typing.cast(z3.BitVecRef, z3.Extract(7, 0, left))
+            # 2) XOR-reduce the eight single-bit slices to get 1 → odd, 0 → even
+            bit0 = typing.cast(z3.BitVecRef, z3.Extract(0, 0, lo_byte))
+            parity_bv = bit0  # 1-bit BitVec
+            for i in range(1, 8):
+                parity_bv = parity_bv ^ z3.Extract(i, i, lo_byte)
+            # 3) PF is set (==1) when the parity is EVEN, i.e. parity_bv == 0
+            pf_is_set = parity_bv == z3.BitVecVal(0, 1)  # Bool
+            # 4) widen to 32-bit {1,0}
+            return z3.If(pf_is_set, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+        case ida_hexrays.m_sets:
+            val = left  # BitVec(32)
+            is_negative = val < z3.BitVecVal(
+                0, 32
+            )  # ordinary “<” is signed-less-than in Z3Py
+            return z3.If(is_negative, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+        case ida_hexrays.m_xdu | ida_hexrays.m_xds:
+            # Extend or keep the same width; in our simplified model we just forward.
+            return left
+        case ida_hexrays.m_low:
+            # Extract the lower half (dest_size) bits of the operand.
+            dest_bits = (ast.dest_size or 4) * 8  # default 32-bit
+            # Ensure we do not attempt to extract beyond the source width
+            high_bit = min(dest_bits - 1, left.size() - 1)
+            extracted = typing.cast(z3.BitVecRef, z3.Extract(high_bit, 0, left))
+            # Zero-extend to 32-bit so subsequent operations (which assume 32-bit) do not
+            # trigger sort-mismatch errors when combined with other 32-bit expressions.
+            if extracted.size() < 32:
+                extracted = typing.cast(
+                    z3.BitVecRef, z3.ZeroExt(32 - extracted.size(), extracted)
+                )
+            return extracted
+        case ida_hexrays.m_high:
+            # Extract the upper half of the operand by shifting right by dest_bits
+            dest_bits = (ast.dest_size or 4) * 8  # default 32-bit
+            shifted = z3.LShR(left, dest_bits)
+            high_bit = min(dest_bits - 1, shifted.size() - 1)
+            extracted = typing.cast(z3.BitVecRef, z3.Extract(high_bit, 0, shifted))
+            # Zero-extend to 32-bit for consistency with the rest of the engine.
+            if extracted.size() < 32:
+                extracted = typing.cast(
+                    z3.BitVecRef, z3.ZeroExt(32 - extracted.size(), extracted)
+                )
+            return extracted
+        case _:
+            raise D810Z3Exception(
+                "Z3 evaluation: Unknown opcode {0} for {1}".format(
+                    opcode_to_string(ast.opcode), ast
+                )
+            )
 
 
 @requires_z3_installed
