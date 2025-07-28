@@ -16,7 +16,6 @@ def pseudocode_to_string(pseudo_code: idaapi.strvec_t) -> str:
     return os.linesep.join(converted_obj)
 
 
-@unittest.skip("failing")
 class TestLibDeobfuscated(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -62,10 +61,14 @@ class TestLibDeobfuscated(unittest.TestCase):
         #     idaapi.save_user_iflags(func_ea, iflags)
         # idaapi.user_iflags_free(iflags)
         # Decompile the function
-        existing_proj_index = D810State.get().current_project_index
-        if existing_proj_index != 5:
+
+        state = D810State()  # TODO: use singleton
+        state.load(gui=False)
+        project_index = state.project_manager.index("example_libobfuscated.json")
+        existing_proj_index = state.current_project_index
+        if project_index != existing_proj_index:
             print("\n", "not using libdeobfuscated project, will set it to 5")
-        D810State.get().stop_d810()
+        state.stop_d810()
         decompiled_func = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
         self.assertIsNotNone(
             decompiled_func, "Decompilation returned None for 'test_xor'"
@@ -84,12 +87,8 @@ class TestLibDeobfuscated(unittest.TestCase):
         }"""
         )
         self.assertEqual(pseudocode_to_string(pseudocode), expected_pseudocode)
-        D810State.get().register_default_projects()
-        print("\n", "projects:")
-        for project in D810State.get().projects:
-            print(project.description)
-        D810State.get().load_project(5)
-        D810State.get().start_d810()
+        state.load_project(project_index)
+        state.start_d810()
         decompiled_func = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
         self.assertIsNotNone(
             decompiled_func, "Decompilation returned None for 'test_xor'"
@@ -108,10 +107,7 @@ class TestLibDeobfuscated(unittest.TestCase):
             return (unsigned int)(a4[1] + *a4);
         }"""
         )
-        D810State.get().load_project(existing_proj_index)
-
-    # Verify that the XOR operator appears in the decompiled pseudocode
-    # self.assertIn("^", pseudocode, "Expected XOR operator '^' in decompiled output")
+        state.load_project(existing_proj_index)
 
 
 if __name__ == "__main__":
