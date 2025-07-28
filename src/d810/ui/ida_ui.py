@@ -1,18 +1,116 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 import json
 import logging
 import os
 import pathlib
+import typing
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 import ida_kernwin
 import idaapi
 
+if typing.TYPE_CHECKING:
+    from d810.manager import D810State
+
 from d810.conf import ProjectConfiguration, RuleConfiguration
+from d810.conf.loggers import LoggerConfigurator, getLogger
 from d810.ui.testbed import TestRunnerForm
 
-logger = logging.getLogger("D810.ui")
+logger = getLogger("D810.ui")
+
+
+class LoggingConfigDialog(QtWidgets.QDialog):
+    """Logging configuration dialog for D-810.
+
+    This small utility window allows the user to inspect all registered
+    `logging.Logger` instances whose name starts with a given *module prefix*
+    (e.g. ``D810``) and interactively change their log-level via a drop-down
+    list that lets the user tweak logger levels on the fly.
+    The changes take effect immediately and persist for the lifetime of
+    this IDA session (the regular persistence mechanism already serialises the
+    chosen level on reload).
+
+    The dialog relies on :pymod:`PyQt5` for the UI layer and the existing
+    :class:`~d810.conf.loggers.LoggerConfigurator` helper for the heavy
+    lifting.
+    """
+
+    LOG_LEVELS: typing.Final[list[str]] = [
+        "DEBUG",
+        "INFO",
+        "WARNING",
+        "ERROR",
+        "CRITICAL",
+    ]
+
+    def __init__(self, module_prefix: str, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Logging for {module_prefix}…")
+        self.resize(500, 400)
+
+        self.module_prefix = module_prefix
+        self._logger_mgr = LoggerConfigurator
+
+        # UI setup ---------------------------------------------------------
+        vbox = QtWidgets.QVBoxLayout(self)
+
+        self.tree = QtWidgets.QTreeWidget()
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderLabels(["Logger", "Level"])
+        self.tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        self.tree.header().setSectionResizeMode(
+            1, QtWidgets.QHeaderView.ResizeToContents
+        )
+        vbox.addWidget(self.tree)
+
+        btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        btn_box.rejected.connect(self.reject)
+        vbox.addWidget(btn_box, alignment=QtCore.Qt.AlignRight)
+
+        self._populate()
+
+    # ---------------------------------------------------------------------
+    # Internal helpers
+    # ---------------------------------------------------------------------
+    def _populate(self) -> None:
+        """Fill the tree with one row per logger under *module_prefix*."""
+        self.tree.clear()
+        for name in self._logger_mgr.available_loggers(
+            self.module_prefix, case_insensitive=True
+        ):
+            lvl_num = getLogger(name).getEffectiveLevel()
+            lvl_name = logging.getLevelName(lvl_num)
+
+            item = QtWidgets.QTreeWidgetItem([name, ""])
+            self.tree.addTopLevelItem(item)
+
+            combo = QtWidgets.QComboBox(self.tree)
+            combo.addItems(self.LOG_LEVELS)
+            combo.setCurrentText(lvl_name)
+            combo.currentTextChanged.connect(
+                lambda new_level, n=name: self._on_level_changed(n, new_level)
+            )
+            self.tree.setItemWidget(item, 1, combo)
+
+    # ------------------------------------------------------------------
+    # Slots
+    # ------------------------------------------------------------------
+    def _on_level_changed(self, logger_name: str, new_level: str) -> None:
+        """Slot triggered when the user selects a new level from the drop-down."""
+        try:
+            self._logger_mgr.set_level(logger_name, new_level)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.critical(self, "Error", str(exc))
+            return
+
+        QtWidgets.QMessageBox.information(
+            self,
+            "Logging Level Updated",
+            f"{logger_name} → {new_level}",
+        )
 
 
 class PluginConfigurationFileForm_t(QtWidgets.QDialog):
@@ -218,13 +316,13 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
 
     def update_form(
         self,
-        config_description=None,
-        activated_ins_rule_config_list=None,
-        activated_blk_rule_config_list=None,
-        config_path=None,
+        config_description: str,
+        activated_ins_rule_config_list: list[RuleConfiguration],
+        activated_blk_rule_config_list: list[RuleConfiguration],
+        config_path: pathlib.Path,
     ):
         logger.debug("Calling update_form")
-        if config_description is not None:
+        if config_description:
             self.in_cfg_name.setText(config_description)
         if (
             activated_ins_rule_config_list is not None
@@ -412,7 +510,7 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
 
 
 class D810ConfigForm_t(ida_kernwin.PluginForm):
-    def __init__(self, state):
+    def __init__(self, state: "D810State"):
         super().__init__()
         self.state = state
         self.shown = False
@@ -633,20 +731,18 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         tmp = self.state.current_project_index
         self.cfg_select.clear()
         # Display basename for readability
-        self.cfg_select.addItems([proj.path.name for proj in self.state.projects])
+        self.cfg_select.addItems(self.state.project_manager.project_names())
         self.cfg_select.setCurrentIndex(tmp)
 
     def _create_config(self):
         logger.debug("Calling _create_config")
-        self._internal_config_creation(
-            None, None, None, self.state.d810_config.config_dir
-        )
+        self._internal_config_creation("", [], [], self.state.d810_config.config_dir)
 
     def _duplicate_config(self):
         logger.debug("Calling _duplicate_config")
         cur_cfg = self.state.current_project
         self._internal_config_creation(
-            None,
+            "Duplicate of " + cur_cfg.description,
             cur_cfg.ins_rules,
             cur_cfg.blk_rules,
             self.state.d810_config.config_dir,
@@ -664,17 +760,22 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         )
 
     def _internal_config_creation(
-        self, description, start_ins_rules, start_blk_rules, path, old_conf=None
+        self,
+        description: str,
+        start_ins_rules: list[RuleConfiguration],
+        start_blk_rules: list[RuleConfiguration],
+        path: pathlib.Path,
+        old_conf=None,
     ):
         logger.debug("Calling _internal_config_creation")
         editdlg = EditConfigurationFileForm_t(self.parent, self.state)
         editdlg.update_form(description, start_ins_rules, start_blk_rules, path)
         if editdlg.exec_() == QtWidgets.QDialog.Accepted:
             new_config = ProjectConfiguration(
-                editdlg.config_path,
-                editdlg.config_description,
-                editdlg.config_ins_rules,
-                editdlg.config_blk_rules,
+                path=editdlg.config_path or path,
+                description=editdlg.config_description or description,
+                ins_rules=editdlg.config_ins_rules,
+                blk_rules=editdlg.config_blk_rules,
             )
             new_config.save()
             if old_conf is None:
@@ -688,14 +789,22 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
     # callback when the "Delete" button is clicked
     def _delete_config(self):
         logger.debug("Calling _delete_config")
-        self.state.del_project(self.state.current_project)
+        self.state.project_manager.delete(self.state.current_project)
         self.update_cfg_select()
 
     # Called when the edit combo is changed
-    def _load_config(self, index):
-        logger.debug("Calling _load_config")
-        self.state.load_project(index)
-        self.cfg_description.setText(self.state.current_project.description)
+    def _load_config(self, index: int):
+        if logger.debug_on:
+            projects = self.state.project_manager.projects()
+            logger.debug(
+                "Calling _load_config with index %s (%s), current project index %s (%s)",
+                index,
+                projects[index].path.name,
+                self.state.current_project_index,
+                projects[self.state.current_project_index].path.name,
+            )
+        project = self.state.load_project(index)
+        self.cfg_description.setText(project.description)
         self.update_cfg_preview()
         return
 
@@ -708,10 +817,6 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
     def _configure_logging(self):
         """Open the dynamic logging configuration dialog."""
         try:
-            from .logging_config_dialog import (  # local import to avoid Qt issues during IDA headless start
-                LoggingConfigDialog,
-            )
-
             dlg = LoggingConfigDialog("D810", self.parent)
             dlg.exec_()
         except Exception as exc:  # pragma: no cover - defensive
@@ -810,21 +915,25 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
 
 class D810GUI(object):
-    def __init__(self, state):
+    def __init__(self, state: "D810State"):
         """
-        Instanciate D-810 views
+        Instantiate D-810 views
         """
         logger.debug("Initializing D810GUI")
         self.state = state
-        self.d810_config_form = D810ConfigForm_t(self.state)
+        self.d810_config_form: D810ConfigForm_t | None = D810ConfigForm_t(self.state)
 
-        # XXX fix
+        # TODO(w00tzenheimer): fix (what?)
         idaapi.set_dock_pos("D-810", "IDA View-A", idaapi.DP_TAB)
 
     def show_windows(self):
         logger.debug("Calling show_windows")
+        if self.d810_config_form is None:
+            raise RuntimeError("D810ConfigForm_t is None")
         self.d810_config_form.Show()
 
     def term(self):
         logger.debug("Calling term")
-        self.d810_config_form.Close(ida_kernwin.PluginForm.WCLS_SAVE)
+        if self.d810_config_form is not None:
+            self.d810_config_form.Close(ida_kernwin.PluginForm.WCLS_SAVE)
+        self.d810_config_form = None
