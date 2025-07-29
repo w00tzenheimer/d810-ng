@@ -31,7 +31,7 @@ conf: dict[str, typing.Any] = {
         },
         "defaultFileHandler": {
             "class": "logging.FileHandler",
-            "level": "INFO",
+            "level": "DEBUG",
             "formatter": "defaultFormatter",
             "filename": None,  # Placeholder, will be set dynamically
         },
@@ -277,11 +277,11 @@ class D810Logger(logging.Logger):
         return LevelFlag(self.name, logging.ERROR)
 
     @property
-    def critical_on(self):
+    def critical_on(self) -> LevelFlag:
         return LevelFlag(self.name, logging.CRITICAL)
 
 
-def getLogger(name: str) -> D810Logger:
+def getLogger(name: str, default_level: int = logging.INFO) -> D810Logger:
     name = name or __name__
     # grab (or create) the underlying Logger
     base = logging.getLogger(name)
@@ -289,7 +289,10 @@ def getLogger(name: str) -> D810Logger:
     if isinstance(base, D810Logger):
         return base
     # otherwise wrap it in the subclass
-    new = D810Logger(base.name, level=base.level)
+    loglvl = base.level
+    if loglvl == logging.NOTSET or loglvl < default_level:
+        loglvl = default_level
+    new = D810Logger(base.name, level=loglvl)
     # copy over handlers/filters/propagate flag
     new.handlers = list(base.handlers)
     new.filters = list(base.filters)
