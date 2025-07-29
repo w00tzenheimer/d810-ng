@@ -1,14 +1,11 @@
+#include "ida_types.h"
+
 int x, y;
 
 struct timeval {
    long tv_sec ;
    int tv_usec ;
 };
-
-#ifndef _SIZE_T_DEFINED
-#define _SIZE_T_DEFINED
-typedef unsigned long long size_t;
-#endif
 
 extern int gettimeofday(struct timeval *tv , void *tz ) ;
 extern int printf(char const   *format  , ...) ;
