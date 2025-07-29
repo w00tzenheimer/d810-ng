@@ -1,6 +1,6 @@
 import dataclasses
+import functools
 import threading
-from functools import singledispatchmethod
 
 from d810.conf import D810Configuration, ProjectConfiguration
 from d810.conf.loggers import getLogger
@@ -55,7 +55,7 @@ class ProjectManager:
         with self._lock:
             return list(self._projects.values())
 
-    @singledispatchmethod
+    @functools.singledispatchmethod
     def get(self, identifier: str) -> ProjectConfiguration:
         with self._lock:
             return self._projects[identifier]
@@ -79,7 +79,7 @@ class ProjectManager:
             self.config["configurations"] = cfg_list
             self.config.save()
 
-    @singledispatchmethod
+    @functools.singledispatchmethod
     def update(self, old_name: str, new_project: ProjectConfiguration) -> None:
         with self._lock:
             if old_name not in self._projects:
@@ -98,7 +98,7 @@ class ProjectManager:
             raise IndexError(f"Unknown project index: {identifier}")
         self.update(old_name, new_project)
 
-    @singledispatchmethod
+    @functools.singledispatchmethod
     def delete(self, name: str) -> None:
         with self._lock:
             project = self._projects.pop(name, None)
