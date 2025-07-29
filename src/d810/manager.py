@@ -179,57 +179,16 @@ class D810State:
         self.manager = D810Manager(self.log_dir)
         self._initialized = True
 
-    # def register_default_projects(self):
-    #     """
-    #     Discover and register project configurations by scanning for JSON files
-    #     in both the user's configuration directory and the plugin's built-in
-    #     template directory. This ensures that newly added files are
-    #     automatically detected.
-    #     """
-    #     self.projects = self.d810_config.discover_projects()
-    #     logger.debug("Rule configurations loaded: %s", self.projects)
-
     def add_project(self, config: ProjectConfiguration):
         self.project_manager.add(config)
-        # self.projects.append(config)
-        # cfg_list = self.d810_config.get("configurations") or []
-        # if not isinstance(cfg_list, list):
-        #     cfg_list = []
-        # cfg_list.append(config.path.name)
-        # self.d810_config.set("configurations", cfg_list)
-        # self.d810_config.save()
 
     def update_project(
         self, old_config: ProjectConfiguration, new_config: ProjectConfiguration
     ):
         self.project_manager.update(old_config.path.name, new_config)
-        # old_config_index = self.projects.index(old_config)
-        # self.projects[old_config_index] = new_config
 
     def del_project(self, config: ProjectConfiguration):
         self.project_manager.delete(config)
-        # self.projects.remove(config)
-        # cfg_list = self.d810_config.get("configurations") or []
-        # if isinstance(cfg_list, list):
-        #     try:
-        #         cfg_list.remove(config.path.name)
-        #         self.d810_config.set("configurations", cfg_list)
-        #         self.d810_config.save()
-        #     except ValueError:
-        #         logger.warning(
-        #             "Project %s not found in configuration list", config.path.name
-        #         )
-
-        # # Only allow deletion when the file lives in the user cfg directory
-        # try:
-        #     user_cfg_root = self.d810_config.config_dir.resolve()
-        #     cfg_path = config.path.resolve()
-        #     if user_cfg_root in cfg_path.parents:
-        #         cfg_path.unlink(missing_ok=True)
-        #     else:
-        #         logger.warning("Refusing to delete read-only template: %s", cfg_path)
-        # except Exception as e:
-        #     logger.error("Failed to delete project file %s: %s", config.path, e)
 
     def load_project(self, project_index: int) -> ProjectConfiguration:
         self.current_project_index = project_index
