@@ -9,7 +9,12 @@ else
 	RM = rm -f   # rm command
 	TARGET_LIB = ../bins/libobfuscated.so  # target lib
 	TARGET_LIB_IDA = ../bins/libobfuscated.so.i64  # target lib
-	LDFLAGS = -shared -s # linking flags
+	UNAME_S := $(shell uname -s)
+	ifeq ($(UNAME_S),Darwin)
+		LDFLAGS = -shared -undefined dynamic_lookup # linking flags
+	else
+		LDFLAGS = -shared -Wl,--unresolved-symbols=ignore-in-shared-libs # linking flags
+	endif
 endif
 
 ifeq ($(OS),Windows_NT)
@@ -18,7 +23,7 @@ else
 	CFLAGS = -fPIC -Wall -Wextra -Og -g  # C flags for Unix-like systems
 endif
 
-SRCS = manually_obfuscated.c ollvm_obfuscated.c tigress_obfuscated.c constant_folding.c # source files
+SRCS = manually_obfuscated.c ollvm_obfuscated.c tigress_obfuscated.c constant_folding.c
 OBJS = $(SRCS:.c=.o)
 
 .PHONY: all

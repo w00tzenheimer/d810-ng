@@ -383,16 +383,48 @@ inline int64  abs64(int64   x) { return x >= 0 ? x : -x; }
 //inline int128 abs128(int128 x) { return x >= 0 ? x : -x; }
 
 #else // C++
-// For C, we just provide macros, they are not quite correct.
-#define __ROL1__(x, count)  (((x) << ((count) % 8)) | ((x) >> (8 - ((count) % 8))))
-#define __ROL2__(x, count)  (((x) << ((count) % 16)) | ((x) >> (16 - ((count) % 16))))
-#define __ROL4__(x, count)  (((x) << ((count) % 32)) | ((x) >> (32 - ((count) % 32))))
-#define __ROL8__(x, count)  (((x) << ((count) % 64)) | ((x) >> (64 - ((count) % 64))))
 
-#define __ROR1__(x, count)  (((x) << (8 - ((count) % 8))) | ((x) >> ((count) % 8)))
-#define __ROR2__(x, count)  (((x) << (16 - ((count) % 16))) | ((x) >> ((count) % 16)))
-#define __ROR4__(x, count)  (((x) << (32 - ((count) % 32))) | ((x) >> ((count) % 32)))
-#define __ROR8__(x, count)  (((x) << (64 - ((count) % 64))) | ((x) >> ((count) % 64)))
+
+// #if defined(_MSC_VER)
+// 	#include <intrin.h>
+// #elif defined(__x86_64__)
+// 	#include <x86intrin.h>
+// #endif
+
+// #if defined(__ARM_NEON)
+// 	#include <arm_neon.h>
+// #endif
+
+#if defined(__clang__) || (defined(__GNUC__) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 5)))
+    #define __ROL1__(x, count)  __builtin_rotateleft8((x), (count))
+    #define __ROR1__(x, count)  __builtin_rotateright8((x), (count))
+    #define __ROL2__(x, count)  __builtin_rotateleft16((x), (count))
+    #define __ROR2__(x, count)  __builtin_rotateright16((x), (count))
+    #define __ROL4__(x, count)  __builtin_rotateleft32((x), (count))
+    #define __ROR4__(x, count)  __builtin_rotateright32((x), (count))
+    #define __ROL8__(x, count)  __builtin_rotateleft64((x), (count))
+    #define __ROR8__(x, count)  __builtin_rotateright64((x), (count))
+#elif defined(_MSC_VER)
+    #include <intrin.h>
+    #define __ROL1__(x, count)  _rotl8((x), (count))
+    #define __ROR1__(x, count)  _rotr8((x), (count))
+    #define __ROL2__(x, count)  _rotl16((x), (count))
+    #define __ROR2__(x, count)  _rotr16((x), (count))
+    #define __ROL4__(x, count)  _rotl((x), (count))
+    #define __ROR4__(x, count)  _rotr((x), (count))
+    #define __ROL8__(x, count)  _rotl64((x), (count))
+    #define __ROR8__(x, count)  _rotr64((x), (count))
+#else
+    #define __ROL1__(x, count)  (((x) << ((count) % 8)) | ((x) >> (8 - ((count) % 8))))
+    #define __ROR1__(x, count)  (((x) >> ((count) % 8)) | ((x) << (8 - ((count) % 8))))
+    #define __ROL2__(x, count)  (((x) << ((count) % 16)) | ((x) >> (16 - ((count) % 16))))
+    #define __ROR2__(x, count)  (((x) >> ((count) % 16)) | ((x) << (16 - ((count) % 16))))
+    #define __ROL4__(x, count)  (((x) << ((count) % 32)) | ((x) >> (32 - ((count) % 32))))
+    #define __ROR4__(x, count)  (((x) >> ((count) % 32)) | ((x) << (32 - ((count) % 32))))
+    #define __ROL8__(x, count)  (((x) << ((count) % 64)) | ((x) >> (64 - ((count) % 64))))
+    #define __ROR8__(x, count)  (((x) >> ((count) % 64)) | ((x) << (64 - ((count) % 64))))
+#endif
+
 #define __CFSHL__(x, y) invalid_operation // Generate carry flag for (x<<y)
 #define __CFSHR__(x, y) invalid_operation // Generate carry flag for (x>>y)
 #define __CFADD__(x, y) invalid_operation // Generate carry flag for (x+y)
