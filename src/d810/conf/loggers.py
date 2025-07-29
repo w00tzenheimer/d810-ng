@@ -31,7 +31,7 @@ conf: dict[str, typing.Any] = {
         },
         "defaultFileHandler": {
             "class": "logging.FileHandler",
-            "level": "DEBUG",
+            "level": "INFO",
             "formatter": "defaultFormatter",
             "filename": None,  # Placeholder, will be set dynamically
         },
@@ -100,7 +100,7 @@ conf: dict[str, typing.Any] = {
         },
     },
     "root": {
-        "level": "DEBUG",
+        "level": "INFO",
         "handlers": ["consoleHandler"],
     },
 }
@@ -130,7 +130,6 @@ def configure_loggers(log_dir: str | pathlib.Path) -> None:
     # Apply the configuration
     logging.config.dictConfig(conf)
 
-    # The rest of your original function's logic remains the same
     z3_file_logger = logging.getLogger("D810.z3_test")
     z3_file_logger.info(
         "from z3 import BitVec, BitVecVal, UDiv, URem, LShR, UGT, UGE, ULT, ULE, prove\n\n"
@@ -229,10 +228,13 @@ class LoggerConfigurator:
 
         if case_insensitive:
             prefixes = [p.lower() for p in prefixes]
+
             def match(name: str) -> bool:
                 lname = name.lower()
                 return any(lname == p or lname.startswith(p + ".") for p in prefixes)
+
         else:
+
             def match(name: str) -> bool:
                 return any(name == p or name.startswith(p + ".") for p in prefixes)
 
