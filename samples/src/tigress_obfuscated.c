@@ -32,7 +32,8 @@
  *   }
  */
 
-extern int printf(char const   *format  , ...) ;
+extern int printf2(char const   * __restrict  __format  , ...);
+
 
 int _global_argc;
 char **_global_argv;
@@ -196,7 +197,7 @@ int tigress_minmaxarray(int argc , char **argv , char **_formal_envp )
     }
     break;
     case 22: 
-    printf((char const   */* __restrict  */)"Smallest element: %d\n", small);
+    printf2((char const   */* __restrict  */)"Smallest element: %d\n", small);
     {
     _1_main_next = 19UL;
     }
@@ -209,7 +210,7 @@ int tigress_minmaxarray(int argc , char **argv , char **_formal_envp )
     }
     break;
     case 7: 
-    printf((char const   */* __restrict  */)"Largest element: %d\n", big);
+    printf2((char const   */* __restrict  */)"Largest element: %d\n", big);
     small = a[0];
     i = 1;
     {

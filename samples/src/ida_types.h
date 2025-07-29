@@ -384,6 +384,7 @@ inline int64  abs64(int64   x) { return x >= 0 ? x : -x; }
 
 #else // C++
 
+#include <stddef.h> // for size_t
 
 // #if defined(_MSC_VER)
 // 	#include <intrin.h>
@@ -394,6 +395,7 @@ inline int64  abs64(int64   x) { return x >= 0 ? x : -x; }
 // #if defined(__ARM_NEON)
 // 	#include <arm_neon.h>
 // #endif
+
 
 #if defined(__clang__) || (defined(__GNUC__) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 5)))
     #define __ROL1__(x, count)  __builtin_rotateleft8((x), (count))
