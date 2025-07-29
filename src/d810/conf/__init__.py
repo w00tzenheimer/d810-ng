@@ -1,20 +1,21 @@
+import dataclasses
 import json
 import logging
-from dataclasses import asdict, dataclass, field
-from pathlib import Path
-from typing import Any
+import pathlib
+import typing
 
 import ida_diskio
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
 class ConfigConstants:
-    """A namespace for application-wide configuration constants."""
+    DEFAULT_LOG_DIR: typing.ClassVar[pathlib.Path] = pathlib.Path(
+        ida_diskio.get_user_idadir(), "logs"
+    )
+    OPTIONS_FILENAME: typing.ClassVar[str] = "options.json"
 
-    DEFAULT_LOG_DIR: Path = Path(ida_diskio.get_user_idadir(), "logs")
-    OPTIONS_FILENAME: str = "options.json"
 
-
-@dataclass
+@dataclasses.dataclass(slots=True)
 class RuleConfiguration:
     """
     Represents the configuration for a single analysis rule.
@@ -29,35 +30,37 @@ class RuleConfiguration:
 
     name: str | None = None
     is_activated: bool = False
-    config: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, typing.Any] = dataclasses.field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, typing.Any]:
         """Serializes the rule configuration to a dictionary."""
-        return asdict(self)
+        return dataclasses.asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "RuleConfiguration":
+    def from_dict(cls, data: dict[str, typing.Any]) -> "RuleConfiguration":
         """Creates a RuleConfiguration instance from a dictionary."""
         return cls(**data)
 
 
-@dataclass(repr=False)
+@dataclasses.dataclass(slots=True, repr=False)
 class ProjectConfiguration:
     """
     Holds project-specific settings, including analysis rules.
     """
 
-    path: Path
+    path: pathlib.Path
     description: str = ""
-    ins_rules: list[RuleConfiguration] = field(default_factory=list)
-    blk_rules: list[RuleConfiguration] = field(default_factory=list)
-    additional_configuration: dict[str, Any] = field(default_factory=dict)
+    ins_rules: list[RuleConfiguration] = dataclasses.field(default_factory=list)
+    blk_rules: list[RuleConfiguration] = dataclasses.field(default_factory=list)
+    additional_configuration: dict[str, typing.Any] = dataclasses.field(
+        default_factory=dict
+    )
 
     def __repr__(self) -> str:
         return f"ProjectConfiguration(path={self.path}, description={self.description}, ins_rules={len(self.ins_rules)}, blk_rules={len(self.blk_rules)}, additional_configuration={len(self.additional_configuration)})"
 
     @classmethod
-    def from_file(cls, path: Path | str) -> "ProjectConfiguration":
+    def from_file(cls, path: pathlib.Path | str) -> "ProjectConfiguration":
         """
         Loads project configuration from a JSON file.
 
@@ -71,7 +74,7 @@ class ProjectConfiguration:
             FileNotFoundError: If the configuration file cannot be found.
             json.JSONDecodeError: If the file is not valid JSON.
         """
-        config_path = Path(path)
+        config_path = pathlib.Path(path)
         logging.info("Loading project configuration from %s", config_path)
         try:
             with config_path.open("r", encoding="utf-8") as fp:
@@ -139,7 +142,7 @@ class D810Configuration:
     >>> temp_dir.cleanup()
     """
 
-    def __init__(self, config_path: Path | str | None = None):
+    def __init__(self, config_path: pathlib.Path | str | None = None):
         """
         Initializes and loads the configuration.
 
@@ -149,8 +152,8 @@ class D810Configuration:
         """
         if config_path is not None:
             # Caller explicitly provided a path - honor it verbatim.
-            self.config_file = Path(config_path)
-            template_path: Path | None = None
+            self.config_file = pathlib.Path(config_path)
+            template_path: pathlib.Path | None = None
         else:
             # Default behaviour - locate user-specific options first.
             user_cfg_dir = self.config_dir
@@ -158,20 +161,21 @@ class D810Configuration:
             user_cfg_file = user_cfg_dir / ConfigConstants.OPTIONS_FILENAME
 
             template_path = (
-                Path(__file__).resolve().parent / ConfigConstants.OPTIONS_FILENAME
+                pathlib.Path(__file__).resolve().parent
+                / ConfigConstants.OPTIONS_FILENAME
             )
 
             # Use user copy if it exists, else fall back to template for reading.
             self.config_file = user_cfg_file
 
-        self._options: dict[str, Any] = {}
+        self._options: dict[str, typing.Any] = {}
 
         # When a template exists and the user file is absent, read from the template
         # but keep ``self.config_file`` pointing to the user path so that any save()
         # writes a copy in the writable directory.
         self._load(fallback_path=template_path)
 
-    def _load(self, fallback_path: Path | None = None) -> None:
+    def _load(self, fallback_path: pathlib.Path | None = None) -> None:
         """Loads configuration from the JSON file, handling potential errors."""
         paths_to_try = [self.config_file]
         if fallback_path is not None and fallback_path not in paths_to_try:
@@ -209,7 +213,7 @@ class D810Configuration:
         """
         user_dir = self.config_dir
         # The plugin's conf directory is relative to this file's location.
-        plugin_dir = Path(__file__).resolve().parent
+        plugin_dir = pathlib.Path(__file__).resolve().parent
 
         user_configs = (
             {
@@ -248,7 +252,7 @@ class D810Configuration:
 
         return projects
 
-    def _resolve_config_path(self, cfg_name: str) -> Path:
+    def _resolve_config_path(self, cfg_name: str) -> pathlib.Path:
         """Return the full path to the configuration file.
 
         Precedence order:
@@ -261,10 +265,10 @@ class D810Configuration:
             return user_path
 
         # Fallback to read-only template bundled with the plugin
-        return Path(__file__).resolve().parent / "conf" / cfg_name
+        return pathlib.Path(__file__).resolve().parent / "conf" / cfg_name
 
     @property
-    def config_dir(self) -> Path:
+    def config_dir(self) -> pathlib.Path:
         """Return the directory in the user profile that stores editable D-810 configuration files.
 
         The directory layout is:
@@ -275,29 +279,29 @@ class D810Configuration:
         placed here will _override_ the read-only templates shipped with the
         plugin (located in the plugin package under ``d810/conf``).
         """
-        return Path(ida_diskio.get_user_idadir()) / "cfg" / "d810"
+        return pathlib.Path(ida_diskio.get_user_idadir()) / "cfg" / "d810"
 
     @property
-    def log_dir(self) -> Path:
+    def log_dir(self) -> pathlib.Path:
         """Returns the configured log directory, or dynamically computes default if not set."""
         path_str = self._options.get("log_dir")
         if not path_str:
-            path_str = str(Path(ida_diskio.get_user_idadir(), "logs"))
+            path_str = str(pathlib.Path(ida_diskio.get_user_idadir(), "logs"))
             self._options["log_dir"] = path_str
-        return Path(path_str)
+        return pathlib.Path(path_str)
 
-    def __getitem__(self, name: str) -> Any:
+    def __getitem__(self, name: str) -> typing.Any:
         """Provides dictionary-style read access."""
         return self._options[name]
 
-    def __setitem__(self, name: str, value: Any) -> None:
+    def __setitem__(self, name: str, value: typing.Any) -> None:
         """Provides dictionary-style write access."""
         self._options[name] = value
 
-    def get(self, name: str, default: Any = None) -> Any:
+    def get(self, name: str, default: typing.Any = None) -> typing.Any:
         """Provides dictionary-style read access with a default value."""
         return self._options.get(name, default)
 
-    def set(self, name: str, value: Any) -> None:
+    def set(self, name: str, value: typing.Any) -> None:
         """Provides dictionary-style write access."""
         self._options[name] = value
