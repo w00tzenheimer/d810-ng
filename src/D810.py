@@ -736,6 +736,7 @@ class ReloadablePlugin(LateInitPlugin, idaapi.action_handler_t):
             self.unregister_reload_action()
             self.term()
             self.plugin = self._import_plugin_cls()
+            self.plugin.reset()
 
         yield
 

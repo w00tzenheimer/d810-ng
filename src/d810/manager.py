@@ -20,6 +20,7 @@ from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
 from d810.project_manager import ProjectManager
 from d810.registry import EventEmitter
+from d810.singleton import SingletonMeta
 from d810.ui.ida_ui import D810GUI
 
 try:
@@ -134,7 +135,7 @@ class D810Manager:
         self.event_emitter.clear()
 
 
-class D810State:
+class D810State(metaclass=SingletonMeta):
     """
     State class representing the runtime state of the D810 plugin.
 
@@ -152,9 +153,14 @@ class D810State:
     current_project: ProjectConfiguration
 
     def __init__(self):
+        self.reset()
+
+    def is_loaded(self):
+        return self._is_loaded
+
+    def reset(self) -> None:
         self._initialized: bool = False
         self.d810_config: D810Configuration = D810Configuration()
-        self._initialize()
         # manage projects via ProjectManager
         self.project_manager = ProjectManager(self.d810_config)
         self.current_project_index: int = 0
@@ -163,11 +169,6 @@ class D810State:
         self.known_ins_rules: typing.List = []
         self.known_blk_rules: typing.List = []
         self._is_loaded: bool = False
-
-    def is_loaded(self):
-        return self._is_loaded
-
-    def _initialize(self) -> None:
         # Perform logger setup based on current config
         self.log_dir = self.d810_config.log_dir / D810_LOG_DIR_NAME
         if self.d810_config.get("erase_logs_on_reload"):
@@ -252,7 +253,7 @@ class D810State:
         self.manager.stop()
 
     def load(self, gui: bool = True):
-        self._initialize()
+        self.reset()
         # Determine which project to auto-load. Fall back to first entry (0)
         # when the configuration value is missing or invalid, and clamp the
         # index to the available range to avoid IndexError when projects were
