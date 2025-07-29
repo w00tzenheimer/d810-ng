@@ -1,7 +1,6 @@
-from d810.hexrays.hexrays_formatters import string_to_maturity
-from d810.registry import Registrant
-
 import ida_hexrays
+
+from d810.hexrays.hexrays_formatters import string_to_maturity
 
 DEFAULT_INSTRUCTION_MATURITIES = [
     ida_hexrays.MMAT_LOCOPT,
@@ -14,7 +13,7 @@ DEFAULT_INSTRUCTION_MATURITIES = [
 DEFAULT_FLOW_MATURITIES = [ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1]
 
 
-class OptimizationRule(Registrant):
+class OptimizationRule:
     NAME = None
     DESCRIPTION = None
 
