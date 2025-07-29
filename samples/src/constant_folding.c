@@ -433,10 +433,6 @@ __int64 __fastcall sub_180001000(
 
 #include "ida_types.h"
 
-
-
-
-
 /* 62 */
 enum AccessMask
 {
@@ -2510,6 +2506,108 @@ const unsigned __int32 dword_1802D2DBC = 0xF4C84FC4;
 
 
 extern void _InterlockedExchangeW(int, int, int, int, int);
+
+
+__int64 constant_folding_test1() {
+    unsigned __int64 v46 = __ROL8__(
+              __ROL8__(
+                  (((__ROL4__(__ROL4__(0x6EBCBAA1, 4) + 0x6B9F6F9A, 3) ^ 0x770BB7B8u) + 0x33AC85C6)
+                 ^ 0x281C3663DA3197B5LL)
+                + 0x3A9CCBED1AC47F6LL,
+                  0x20)
+            ^ 0xDE838D86533A540LL,
+              0x3C);
+    unsigned __int64 v5 = __ROL8__(
+             __ROL8__(
+                 (((unsigned long)g_encDataRandomTable[((v46 >> 0x34) & 0xF)
+                                                                        + 0x60] << 0x34)
+                | (0x10LL * g_encDataRandomTable[((unsigned __int8)v46 >> 4) + 0x60])
+                | ((unsigned long)g_encDataRandomTable[((v46 >> 0x28) & 0xF)
+                                                                        + 0x60] << 0x28)
+                | (g_encDataRandomTable[(((unsigned int)v46 >> 8) & 0xF) + 0x60] << 8)
+                | ((unsigned long)g_encDataRandomTable[(v46 >> 0x3C) + 0x60] << 0x3C)
+                | ((unsigned long)g_encDataRandomTable[((v46 >> 0x2C) & 0xF)
+                                                                        + 0x60] << 0x2C)
+                | (g_encDataRandomTable[(((unsigned int)v46 >> 0x14) & 0xF) + 0x60] << 0x14)
+                | ((unsigned long)g_encDataRandomTable[(BYTE6(v46) & 0xF) + 0x60] << 0x30)
+                | (g_encDataRandomTable[(BYTE3(v46) & 0xF) + 0x60] << 0x18)
+                | (g_encDataRandomTable[((unsigned __int16)v46 >> 0xC) + 0x60] << 0xC)
+                | ((unsigned long)g_encDataRandomTable[(HIBYTE(v46) & 0xF) + 0x60] << 0x38)
+                | ((unsigned long)g_encDataRandomTable[(BYTE4(v46) & 0xF) + 0x60] << 0x20)
+                | (g_encDataRandomTable[(BYTE2(v46) & 0xF) + 0x60] << 0x10)
+                | ((unsigned long)g_encDataRandomTable[((unsigned int)v46 >> 0x1C)
+                                                                        + 0x60] << 0x1C)
+                | ((unsigned long)g_encDataRandomTable[((v46 >> 0x24) & 0xF)
+                                                                        + 0x60] << 0x24)
+                | g_encDataRandomTable[(v46 & 0xF) + 0x60])
+               - 0x2662A2D5F43B2FCCLL,
+                 0x2E),
+             0x12)
+       + 0x2662A2D5F43B2FCCLL;
+    unsigned __int64 v15 = g_encDataRandomTable[(v5 & 0xF) + 0x50]
+        | (g_encDataRandomTable[((unsigned __int16)v5 >> 0xC) + 0x50] << 0xC)
+        | ((unsigned long)g_encDataRandomTable[(v5 >> 0x3C) + 0x50] << 0x3C)
+        | (0x10
+         * (unsigned int)g_encDataRandomTable[((unsigned __int8)v5 >> 4) + 0x50])
+        | ((unsigned long)g_encDataRandomTable[((v5 >> 0x28) & 0xF) + 0x50] << 0x28)
+        | (g_encDataRandomTable[(BYTE1(v5) & 0xF) + 0x50] << 8)
+        | ((unsigned long)g_encDataRandomTable[((v5 >> 0x2C) & 0xF) + 0x50] << 0x2C)
+        | (g_encDataRandomTable[(((unsigned int)v5 >> 0x14) & 0xF) + 0x50] << 0x14)
+        | ((unsigned long)g_encDataRandomTable[(BYTE6(v5) & 0xF) + 0x50] << 0x30)
+        | (g_encDataRandomTable[(BYTE3(v5) & 0xF) + 0x50] << 0x18)
+        | ((unsigned long)g_encDataRandomTable[(HIBYTE(v5) & 0xF) + 0x50] << 0x38)
+        | ((unsigned long)g_encDataRandomTable[(BYTE4(v5) & 0xF) + 0x50] << 0x20)
+        | ((unsigned long)g_encDataRandomTable[(BYTE2(v5) & 0xF) + 0x50] << 0x10)
+        | ((unsigned long)g_encDataRandomTable[((unsigned int)v5 >> 0x1C) + 0x50] << 0x1C)
+        | ((unsigned long)g_encDataRandomTable[((v5 >> 0x24) & 0xF) + 0x50] << 0x24)
+        | ((unsigned long)g_encDataRandomTable[((v5 >> 0x34) & 0xF) + 0x50] << 0x34);
+    unsigned __int64 v47 = __ROL8__(v15, 4);
+    if ( (qword_1802D2B19 ^ (__ROL8__(v47 ^ 0xDE838D86533A540LL, 0x20) - 0x3A9CCBED1AC47F6LL)) == 0x4F )
+    {
+        unsigned __int64 v48 = __ROL8__(v15, 4);
+        if ( (qword_1802D2B19
+            ^ (__ROL8__(v48 ^ 0xDE838D86533A540LL, 0x20) - 0x3A9CCBED1AC47F6LL)) == 0x4F )
+        {
+            unsigned __int64 v49 = __ROL8__(v15, 4);
+            if ( (qword_1802D2B19
+                ^ (__ROL8__(v49 ^ 0xDE838D86533A540LL, 0x20) - 0x3A9CCBED1AC47F6LL)) == 0x4F )
+            {
+                unsigned __int64 v50 = __ROL8__(v15, 4);
+                if ( (qword_1802D2B19
+                    ^ (__ROL8__(v50 ^ 0xDE838D86533A540LL, 0x20) - 0x3A9CCBED1AC47F6LL)) == 0x4F )
+                    return 1;
+            }
+        }
+    }
+
+    unsigned __int64 v45 = __ROL4__(
+              __ROL4__((__ROL4__(0xEF449E19, 0x10) + 0x500EBDB) ^ 0xA33ADB1F, 0x16) - 0x5D8D7E02,
+              0x18);
+    unsigned __int64 v51 = __ROL4__(
+              __ROL4__(
+                  qword_1802D2C51
+                ^ (__ROL4__(
+                       __ROL4__((__ROL4__(v45 + 0x2773BBB2, 6) ^ 0x74A2863C) - 0x1E9A0ECF, 0x15),
+                       0xB)
+                 + 0x1E9A0ECF)
+                ^ 0x4F991284,
+                  0x1A)
+            - 0x2773BBB2,
+              8)
+        + 0x5D8D7E02;
+    unsigned __int64 v6 = (__ROL8__(
+              (__ROL8__(
+                   (((v51 ^ dword_1802D2DBC) + 0x61BBE9D7149134B0LL) ^ 0xDFEE542C76A7AAF0uLL)
+                 - 0x1509678523D640EALL,
+                   0xE)
+             ^ 0xF0LL)
+            - 0x57033546396F782ALL,
+              0xE)
+        + 0x7D019B7AE2EB4B6FLL)
+       ^ 0x2EFFBB12A651F46CLL;
+    return v6;
+}
+
 
 
 // outlined function 1
