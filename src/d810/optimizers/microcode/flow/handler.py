@@ -4,11 +4,12 @@ import logging
 import idc
 
 from d810.optimizers.microcode.handler import DEFAULT_FLOW_MATURITIES, OptimizationRule
+from d810.registry import Registrant
 
 logger = logging.getLogger("D810.optimizer")
 
 
-class FlowOptimizationRule(OptimizationRule, abc.ABC):
+class FlowOptimizationRule(OptimizationRule, Registrant, abc.ABC):
     def __init__(self):
         super().__init__()
         self.maturities = DEFAULT_FLOW_MATURITIES
