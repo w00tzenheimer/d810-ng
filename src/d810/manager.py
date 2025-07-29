@@ -317,12 +317,14 @@ class D810State:
             rule_cls()
             for rule_cls in InstructionOptimizationRule.registry.values()
             if not inspect.isabstract(rule_cls)
+            and issubclass(rule_cls, InstructionOptimizationRule)
         ]
 
         self.known_blk_rules = [
             rule_cls()
             for rule_cls in FlowOptimizationRule.registry.values()
             if not inspect.isabstract(rule_cls)
+            and issubclass(rule_cls, FlowOptimizationRule)
         ]
 
         # Clamp to available projects, if any
