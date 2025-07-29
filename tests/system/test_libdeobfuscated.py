@@ -62,7 +62,7 @@ class TestLibDeobfuscated(unittest.TestCase):
         # idaapi.user_iflags_free(iflags)
         # Decompile the function
 
-        state = D810State()  # TODO: use singleton
+        state = D810State()
         state.load(gui=False)
         project_index = state.project_manager.index("example_libobfuscated.json")
         existing_proj_index = state.current_project_index
