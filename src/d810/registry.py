@@ -263,8 +263,16 @@ class Registry(ABCMeta):
         bases: tuple[type, ...],
         attrs: dict[str, Any],
     ):
+        """Metaclass constructor that wires up class registries.
+
+        Every concrete subclass receives its *own* ``registry`` and
+        ``lazy_registry`` dictionaries so that sibling hierarchies do *not*
+        accidentally share the same registry from a common ancestor.
+        """
+
         super().__init__(name, bases, attrs)
-        # Don't touch the Registrant base itself
+
+        # Skip wiring for the Registrant sentinel itself.
         if name == "Registrant":
             return
 
@@ -272,9 +280,6 @@ class Registry(ABCMeta):
         if Registrant in bases:
             self.registry: dict[str, type] = {}
             self.lazy_registry: dict[str, Thunk] = {}
-        else:
-            # Otherwise auto‐register it into its parent’s registry
-            self.register(self)  # type: ignore[arg-type]
 
 
 class Registrant(metaclass=Registry):
@@ -290,14 +295,25 @@ class Registrant(metaclass=Registry):
     """Registry of lazy registrations."""
 
     def __init_subclass__(cls):
-        # For any subclass beyond the first level, register it
-        if Registrant not in cls.__bases__:
-            cls.register(cls)
+        # Register *cls* into every immediate parent that is itself a
+        # Registrant (except for the root Registrant, which we leave empty to
+        # avoid an unwieldy global registry).
+        visited = set()
+        to_visit = list(cls.__bases__)
+        while to_visit:
+            base = to_visit.pop()
+            if base in visited:
+                continue
+            visited.add(base)
+            if Registrant in base.__bases__:
+                base.register(cls)
+            else:
+                to_visit.extend(base.__bases__)
 
-    @classmethod
-    def keyof(cls) -> str:
+    @staticmethod
+    def keyof(kls: type) -> str:
         """Return the key of the resource."""
-        key_attr = getattr(cls, "registrant_name", cls.__name__)
+        key_attr = getattr(kls, "registrant_name", kls.__name__)
         # # If someone defined `name` as a @property on the class we end up with a
         # # `property` object - not the actual value.  Fallback to class-name in
         # # that case.
@@ -316,7 +332,7 @@ class Registrant(metaclass=Registry):
         # a class should not add itself to _its own_ registry
         if alt is cls and "registry" in cls.__dict__:
             return
-        name = cls.normalize_key(cls.keyof())
+        name = cls.normalize_key(cls.keyof(alt))
         # Pop any lazy registration
         cls.lazy_registry.pop(name, None)
         cls.registry[name] = alt
