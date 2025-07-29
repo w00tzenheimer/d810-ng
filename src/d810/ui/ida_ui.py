@@ -225,12 +225,25 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
         self.config_layout = QtWidgets.QVBoxLayout(self)
 
         # Configuration Name Selection Layout
-        self.layout_cfg_name = QtWidgets.QHBoxLayout()
+        self.layout_cfg_name = (
+            QtWidgets.QVBoxLayout()
+        )  # Changed to QVBoxLayout to stack vertically
+        self.layout_rule_name = QtWidgets.QHBoxLayout()
         self.lbl_cfg_name = QtWidgets.QLabel(self)
         self.lbl_cfg_name.setText("Rule Name")
-        self.layout_cfg_name.addWidget(self.lbl_cfg_name)
+        self.layout_rule_name.addWidget(self.lbl_cfg_name)
         self.in_cfg_name = QtWidgets.QLineEdit(self)
-        self.layout_cfg_name.addWidget(self.in_cfg_name)
+        self.layout_rule_name.addWidget(self.in_cfg_name)
+        self.layout_cfg_name.addLayout(self.layout_rule_name)
+
+        self.layout_description = QtWidgets.QHBoxLayout()
+        self.lbl_description = QtWidgets.QLabel(self)
+        self.lbl_description.setText("Description")
+        self.layout_description.addWidget(self.lbl_description)
+        self.in_description = QtWidgets.QLineEdit(self)
+        self.layout_description.addWidget(self.in_description)
+        self.layout_cfg_name.addLayout(self.layout_description)
+
         self.config_layout.addLayout(self.layout_cfg_name)
 
         # Instructions rule Selection Layout
@@ -323,7 +336,7 @@ class EditConfigurationFileForm_t(QtWidgets.QDialog):
     ):
         logger.debug("Calling update_form")
         if config_description:
-            self.in_cfg_name.setText(config_description)
+            self.in_description.setText(config_description)
         if (
             activated_ins_rule_config_list is not None
             or activated_blk_rule_config_list is not None
