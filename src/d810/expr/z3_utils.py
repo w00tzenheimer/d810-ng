@@ -1,11 +1,9 @@
 import functools
-import logging
 import typing
 
 import ida_hexrays
-from ida_hexrays import *
 
-from d810.conf.loggers import LevelFlag
+from d810.conf.loggers import getLogger
 from d810.errors import D810Z3Exception
 from d810.expr.ast import AstLeaf, AstNode, minsn_to_ast, mop_to_ast
 from d810.hexrays.hexrays_formatters import (
@@ -15,10 +13,8 @@ from d810.hexrays.hexrays_formatters import (
 )
 from d810.hexrays.hexrays_helpers import get_mop_index
 
-logger = logging.getLogger("D810.plugin")
-z3_file_logger = logging.getLogger("D810.z3_test")
-optimizer_logger = logging.getLogger("D810.optimizer")
-debug_on = LevelFlag(optimizer_logger.name, logging.DEBUG)
+logger = getLogger(__name__)
+z3_file_logger = getLogger("D810.z3_test")
 
 try:
     import z3
@@ -210,9 +206,9 @@ def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
 
 
 @requires_z3_installed
-def mop_list_to_z3_expression_list(mop_list: list[mop_t]):
-    if debug_on:
-        optimizer_logger.debug(
+def mop_list_to_z3_expression_list(mop_list: list[ida_hexrays.mop_t]):
+    if logger.debug_on:
+        logger.debug(
             "mop_list_to_z3_expression_list: mop_list: %s",
             [format_mop_t(mop) for mop in mop_list],
         )
@@ -223,8 +219,8 @@ def mop_list_to_z3_expression_list(mop_list: list[mop_t]):
             continue
         ast_leaf_list += ast.get_leaf_list()
     _ = create_z3_vars(ast_leaf_list)
-    if debug_on:
-        optimizer_logger.debug(
+    if logger.debug_on:
+        logger.debug(
             "mop_list_to_z3_expression_list: ast_leaf_list: %s",
             ast_leaf_list,
         )
@@ -233,7 +229,9 @@ def mop_list_to_z3_expression_list(mop_list: list[mop_t]):
 
 @requires_z3_installed
 def z3_check_mop_equality(
-    mop1: mop_t | None, mop2: mop_t | None, solver: z3.Solver | None = None
+    mop1: ida_hexrays.mop_t | None,
+    mop2: ida_hexrays.mop_t | None,
+    solver: z3.Solver | None = None,
 ) -> bool:
     if mop1 is None or mop2 is None:
         return False
@@ -252,13 +250,13 @@ def z3_check_mop_equality(
     #     if mop1.t == mop_d:
     #         return mop1.dstr() == mop2.dstr()
     # If quick checks didn't decide, fall back to Z3 even when types differ.
-    if debug_on:
-        optimizer_logger.debug(
+    if logger.debug_on:
+        logger.debug(
             "z3_check_mop_equality: mop1.t: %s, mop2.t: %s",
             format_mop_t(mop1),
             format_mop_t(mop2),
         )
-        optimizer_logger.debug(
+        logger.debug(
             "z3_check_mop_equality: mop1.dstr(): %s, mop2.dstr(): %s",
             mop1.dstr(),
             mop2.dstr(),
@@ -272,8 +270,8 @@ def z3_check_mop_equality(
     _solver.push()
     _solver.add(z3.Not(z3_mop1 == z3_mop2))
     is_equal = _solver.check() == z3.unsat
-    if debug_on:
-        optimizer_logger.debug(
+    if logger.debug_on:
+        logger.debug(
             "z3_mop1: %s, z3_mop2: %s, z3_check_mop_equality: is_equal: %s",
             z3_mop1,
             z3_mop2,
@@ -285,7 +283,9 @@ def z3_check_mop_equality(
 
 @requires_z3_installed
 def z3_check_mop_inequality(
-    mop1: mop_t | None, mop2: mop_t | None, solver: z3.Solver | None = None
+    mop1: ida_hexrays.mop_t | None,
+    mop2: ida_hexrays.mop_t | None,
+    solver: z3.Solver | None = None,
 ) -> bool:
     if mop1 is None or mop2 is None:
         return True
@@ -303,13 +303,13 @@ def z3_check_mop_inequality(
     #     if mop1.t == mop_d:
     #         return mop1.dstr() != mop2.dstr()
     # Otherwise fall back to Z3 (also handles differing types).
-    if debug_on:
-        optimizer_logger.debug(
+    if logger.debug_on:
+        logger.debug(
             "z3_check_mop_inequality: mop1.t: %s, mop2.t: %s",
             format_mop_t(mop1),
             format_mop_t(mop2),
         )
-        optimizer_logger.debug(
+        logger.debug(
             "z3_check_mop_inequality: mop1.dstr(): %s, mop2.dstr(): %s",
             mop1.dstr(),
             mop2.dstr(),
@@ -323,8 +323,8 @@ def z3_check_mop_inequality(
     _solver.push()
     _solver.add(z3_mop1 == z3_mop2)
     is_unequal = _solver.check() == z3.unsat
-    if debug_on:
-        optimizer_logger.debug(
+    if logger.debug_on:
+        logger.debug(
             "z3_check_mop_inequality: z3_mop1 ( %s ) != z3_mop2 ( %s ) ? is_unequal: %s",
             z3_mop1,
             z3_mop2,
@@ -341,7 +341,7 @@ def rename_leafs(leaf_list: list[AstLeaf]) -> list[str]:
         if leaf.is_constant() or leaf.mop is None:
             continue
 
-        if leaf.mop.t == mop_z:
+        if leaf.mop.t == ida_hexrays.mop_z:
             continue
 
         leaf_index = get_mop_index(leaf.mop, known_leaf_list)
@@ -357,7 +357,9 @@ def rename_leafs(leaf_list: list[AstLeaf]) -> list[str]:
 
 
 @requires_z3_installed
-def log_z3_instructions(original_ins: minsn_t, new_ins: minsn_t):
+def log_z3_instructions(
+    original_ins: ida_hexrays.minsn_t, new_ins: ida_hexrays.minsn_t
+):
     orig_mba_tree = minsn_to_ast(original_ins)
     new_mba_tree = minsn_to_ast(new_ins)
     if orig_mba_tree is None or new_mba_tree is None:

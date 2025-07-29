@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import abc
-import logging
+import dataclasses
 import typing
 
 import ida_hexrays
 import idaapi
 
 import d810._compat as _compat
-from d810.conf.loggers import LevelFlag
+from d810.conf.loggers import getLogger
 from d810.errors import AstEvaluationException
 from d810.expr.utils import (
     MOP_CONSTANT_CACHE,
@@ -37,8 +37,7 @@ from d810.hexrays.hexrays_helpers import (
 )
 from d810.registry import NOT_GIVEN, NotGiven
 
-logger = logging.getLogger("D810")
-debug_on = LevelFlag(logger.name, logging.DEBUG)
+logger = getLogger(__name__)
 
 
 def get_constant_mop(value: int, size: int) -> ida_hexrays.mop_t:
@@ -65,10 +64,10 @@ def clear_mop_to_ast_cache():
     MOP_TO_AST_CACHE.clear()
 
 
-class AstInfo(object):
-    def __init__(self, ast: AstNode | AstLeaf, number_of_use: int):
-        self.ast = ast
-        self.number_of_use = number_of_use
+@dataclasses.dataclass(slots=True)
+class AstInfo:
+    ast: AstNode | AstLeaf
+    number_of_use: int
 
     def __str__(self):
         return f"{self.ast} used {self.number_of_use} times: {format_mop_t(self.ast.mop) if self.ast.mop else 0}"
@@ -252,7 +251,7 @@ class AstNode(AstBase, dict):
     ) -> bool:
         if not read_only:
             self.reset_mops()
-        if debug_on:
+        if logger.debug_on:
             logger.debug(
                 "AstNode.check_pattern_and_copy_mops from %r",
                 ast,
@@ -284,7 +283,7 @@ class AstNode(AstBase, dict):
             self.dest_size = other.dest_size
             self.ea = other.ea
 
-        if debug_on:
+        if logger.debug_on:
             logger.debug(
                 "AstNode._copy_mops_from_ast: self.left: %r, other.left: %r",
                 self.left,
@@ -293,7 +292,7 @@ class AstNode(AstBase, dict):
         if self.left is not None and other.left is not None:
             if not self.left._copy_mops_from_ast(other.left, read_only):
                 return False
-        if debug_on:
+        if logger.debug_on:
             logger.debug(
                 "AstNode._copy_mops_from_ast: self.right: %r, other.right: %r",
                 self.right,
@@ -850,7 +849,7 @@ class AstLeaf(AstBase):
         if self.is_constant() and self.value is not None:
             # TODO: is this right?
             size = self.dest_size if self.dest_size is not None else self.size
-            if debug_on:
+            if logger.debug_on:
                 logger.debug(
                     "AstLeaf.create_mop: Constant operand @ 0x%x: %s, size: %s, dest_size: %s, equal? %s",
                     ea,
@@ -860,7 +859,7 @@ class AstLeaf(AstBase):
                     size == self.dest_size,
                 )
             val = get_constant_mop(self.value, size)
-            if debug_on:
+            if logger.debug_on:
                 logger.debug(
                     "AstLeaf.create_mop: Constant operand reused: %s",
                     val,
@@ -908,13 +907,13 @@ class AstLeaf(AstBase):
 
     def _copy_mops_from_ast(self, other, read_only: bool = False):
         if other.mop is None:
-            if debug_on:
+            if logger.debug_on:
                 logger.debug(
                     "AstLeaf._copy_mops_from_ast: other %r's mop is None",
                     other,
                 )
             return False
-        if debug_on:
+        if logger.debug_on:
             logger.debug(
                 "AstLeaf._copy_mops_from_ast: other %r's mop %s is not None",
                 other,
@@ -996,14 +995,14 @@ class AstConstant(AstLeaf):
 
     def _copy_mops_from_ast(self, other, read_only: bool = False):
         if other.mop is not None and other.mop.t != ida_hexrays.mop_n:
-            if debug_on:
+            if logger.debug_on:
                 logger.debug(
                     "AstConstant._copy_mops_from_ast: other.mop is not a constant: %r",
                     other.mop,
                 )
             return False
 
-        if debug_on:
+        if logger.debug_on:
             logger.debug(
                 "AstConstant._copy_mops_from_ast: other %r's mop %s is a constant",
                 other,
@@ -1357,7 +1356,7 @@ def mop_to_ast_internal(
     mop: ida_hexrays.mop_t, context: AstBuilderContext, root: bool = False
 ) -> AstBase | None:
     # Only log at root
-    if root and logger.isEnabledFor(logging.DEBUG):
+    if root and logger.debug_on:
         logger.debug(
             "[mop_to_ast_internal] Processing root mop: %s",
             str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
@@ -1378,7 +1377,7 @@ def mop_to_ast_internal(
             ):
                 dest_ast = mop_to_ast_internal(mop.d.d, context, root=True)
                 if dest_ast is not None:
-                    if debug_on:
+                    if logger.debug_on:
                         logger.debug(
                             "[mop_to_ast_internal] Unwrapped transparent call at 0x%X into dest AST: %s",
                             mop.d.ea if hasattr(mop.d, "ea") else -1,
@@ -1389,7 +1388,7 @@ def mop_to_ast_internal(
             if root_opcode not in MBA_RELATED_OPCODES and not _is_rotate_helper_call(
                 mop.d
             ):
-                if debug_on:
+                if logger.debug_on:
                     logger.debug(
                         "Skipping AST build for unsupported root opcode: %s",
                         opcode_to_string(root_opcode),
@@ -1438,7 +1437,7 @@ def mop_to_ast_internal(
                 tree.ast_index = new_index
                 context.unique_asts.append(tree)
                 context.mop_key_to_index[key] = new_index
-                if debug_on:
+                if logger.debug_on:
                     logger.debug(
                         "[mop_to_ast_internal] Built compact rotate helper node for ea=0x%X",
                         mop.d.ea if hasattr(mop.d, "ea") else -1,
@@ -1484,7 +1483,7 @@ def mop_to_ast_internal(
             tree.mop = const_mop
             tree.dest_size = const_size
 
-            if debug_on:
+            if logger.debug_on:
                 logger.debug(
                     "[mop_to_ast_internal] Collapsed call-with-constant to leaf 0x%X (size=%d)",
                     const_val,
@@ -1514,7 +1513,7 @@ def mop_to_ast_internal(
         # Require at least the mandatory operands; if missing, fall back to leaf
         if left_ast is None:
             # Can't build meaningful node - fallback later to leaf
-            if debug_on:
+            if logger.debug_on:
                 logger.debug(
                     "[mop_to_ast_internal] Missing mandatory operand(s) for opcode %s, will treat as leaf",
                     opcode_to_string(mop.d.opcode),
@@ -1539,7 +1538,7 @@ def mop_to_ast_internal(
             tree.mop = mop
             tree.ea = sanitize_ea(mop.d.ea)
 
-            if debug_on:
+            if logger.debug_on:
                 logger.debug(
                     "[mop_to_ast_internal] Created AstNode for opcode %s (ea=0x%X): %s",
                     opcode_to_string(mop.d.opcode),
@@ -1625,7 +1624,7 @@ def mop_to_ast_internal(
 
             if const_val is not None and const_size is not None:
                 # Success: build a constant leaf backed by the *inner* mop_n
-                if debug_on:
+                if logger.debug_on:
                     logger.debug(
                         "[mop_to_ast_internal] Extracted constant 0x%X (size=%d) from mop_f wrapper",
                         const_val,
@@ -1649,7 +1648,7 @@ def mop_to_ast_internal(
         # ------------------------------------------------------------------
         if tree is None:
             tree = AstLeaf(format_mop_t(mop))
-            if debug_on:
+            if logger.debug_on:
                 logger.debug(
                     "[mop_to_ast_internal] Tree is NONE! Defaulting to AstLeaf for mop type %s dstr=%s",
                     mop_type_to_string(mop.t),
@@ -1666,7 +1665,7 @@ def mop_to_ast_internal(
             tree.mop = getattr(tree, "mop", None) or mop
         else:
             tree = AstLeaf(format_mop_t(mop))
-            if debug_on:
+            if logger.debug_on:
                 logger.debug(
                     "[mop_to_ast_internal] Fallback to AstLeaf for mop type %s dstr=%s",
                     mop_type_to_string(mop.t),
@@ -1741,7 +1740,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
     try:
         # Early filter: forbidden opcodes
         if instruction.opcode in MINSN_TO_AST_FORBIDDEN_OPCODES:
-            if debug_on:
+            if logger.debug_on:
                 logger.debug(
                     "Skipping AST build for forbidden opcode: %s @ 0x%x %s",
                     opcode_to_string(instruction.opcode),
@@ -1761,7 +1760,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
             instruction.opcode not in MBA_RELATED_OPCODES
             and not _is_rotate_helper_call(instruction)
         ):
-            if debug_on:
+            if logger.debug_on:
                 logger.debug(
                     "Skipping AST build for unsupported opcode: %s @ 0x%x %s",
                     opcode_to_string(instruction.opcode),
@@ -1817,7 +1816,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                 leaf.dest_size = const_size
                 leaf.ea = sanitize_ea(instruction.ea)
 
-                if debug_on:
+                if logger.debug_on:
                     logger.debug(
                         "[minsn_to_ast] Collapsed call with constant destination to leaf 0x%X (size=%d)",
                         const_value,
@@ -1834,7 +1833,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
             and instruction.d is not None
             and instruction.d.t == ida_hexrays.mop_d
         ):
-            if debug_on:
+            if logger.debug_on:
                 logger.debug(
                     "[minsn_to_ast] Unwrapping call with empty args; using destination expression for AST",
                 )
@@ -1855,7 +1854,7 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
 
         tmp = mop_to_ast(ins_mop)
         if tmp is None:
-            if debug_on:
+            if logger.debug_on:
                 logger.debug(
                     "Skipping AST build for unsupported or nop instruction: %s @ 0x%x %s",
                     opcode_to_string(instruction.opcode),
@@ -1866,8 +1865,8 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                         else ""
                     ),
                 )
-            return None
-        tmp.dst_mop = instruction.d
+        else:
+            tmp.dst_mop = instruction.d
         return tmp
     except RuntimeError as e:
         logger.error(
@@ -1875,7 +1874,6 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
             format_minsn_t(instruction),
             e,
         )
-        return None
 
 
 def _is_rotate_helper_call(ins: ida_hexrays.minsn_t) -> bool:
