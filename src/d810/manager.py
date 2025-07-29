@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import inspect
 import logging
 import pathlib
-import threading
 import typing
 
 from d810.conf import D810Configuration, ProjectConfiguration
@@ -49,6 +49,10 @@ class D810Manager:
     block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
     hx_decompiler_hook: HexraysDecompilationHook = dataclasses.field(init=False)
     _started: bool = dataclasses.field(default=False, init=False)
+
+    @property
+    def started(self):
+        return self._started
 
     def configure(self, **kwargs):
         self.config = kwargs
@@ -305,3 +309,15 @@ class D810State(metaclass=SingletonMeta):
             self.gui.term()
             del self.gui
         self._is_loaded = False
+
+    @contextlib.contextmanager
+    def for_project(self, name: str) -> typing.Generator[int, None, None]:
+        _old_project_index = self.current_project_index
+        project_index = self.project_manager.index(name)
+        if project_index != _old_project_index:
+            logger.info("switching to project %s", name)
+        self.load_project(project_index)
+        yield project_index
+        if project_index != _old_project_index:
+            logger.info("switching back to project %s", _old_project_index)
+            self.load_project(_old_project_index)
