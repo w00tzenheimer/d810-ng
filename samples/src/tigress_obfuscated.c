@@ -32,7 +32,7 @@
  *   }
  */
 
-extern int printf(char const   * __restrict  __format  , ...);
+extern int printf(char const   *format  , ...) ;
 
 int _global_argc;
 char **_global_argv;
