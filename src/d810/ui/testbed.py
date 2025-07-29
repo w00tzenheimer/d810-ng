@@ -418,6 +418,12 @@ class PyUnitUiMixin(object):
             time.time() - cls.last_run_info._session_start_time
         )
         self._call_ui_method("on_all_tests_finished")
+        # Ensure that standard output/error streams and the root logger are
+        # restored to their original state when the complete test run
+        # finishes.  Without this call, further logging performed outside the
+        # testbed session would continue to be redirected to the UI log
+        # browser instead of the console.
+        self._stop_log_processors()
 
 
 class PyUnitTestRunnerWrapper(runner.TextTestRunner):
