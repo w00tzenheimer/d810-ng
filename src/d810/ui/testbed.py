@@ -389,6 +389,35 @@ class PyUnitUiMixin(object):
         sys.stdout = self._original_std_out
         sys.stderr = self._original_std_err
 
+        # Some third-party code (or the standard library itself when
+        # `logging.basicConfig(stream=sys.stdout...` was invoked while the
+        # tests were running) may have created new `logging.StreamHandler`
+        # instances bound to the *current* value of ``sys.stdout`` – i.e. the
+        # temporary `UiStream` (which is what we use to display the logs for the test).
+        #
+        # When we restore the original `sys.stdout`/`sys.stderr` above, those
+        # handlers still hold a stale reference to the deleted `LogBrowser`
+        # which ultimately crashes when the UI has been closed.
+        #
+        # To fix this, we walk *all* known loggers and patch any
+        # `StreamHandler` whose ``stream`` attribute is that stale object so
+        # that it points back to the real console stream.
+        def _all_loggers():
+            """Yield the root logger and every registered named logger."""
+            yield logging.getLogger()
+            for lg in logging.Logger.manager.loggerDict.values():
+                # Some entries in loggerDict can be placeholders (Loggers vs dict)
+                if isinstance(lg, logging.Logger):
+                    yield lg
+
+        for lg in _all_loggers():
+            for hdlr in list(lg.handlers):
+                if (
+                    isinstance(hdlr, logging.StreamHandler)
+                    and hdlr.stream is self.stream
+                ):
+                    hdlr.stream = self._original_std_out
+
     def _at_start_test(self, test):
         cls = type(self)
         cls.last_run_info.run_count += 1
