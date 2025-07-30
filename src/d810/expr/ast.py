@@ -1380,21 +1380,9 @@ def mop_to_ast_internal(
         if hasattr(mop, "d") and hasattr(mop.d, "opcode"):
             root_opcode = mop.d.opcode
 
-            # Special case: transparent call wrapper
-            if (
-                root_opcode == ida_hexrays.m_call
-                and (mop.d.r is None or mop.d.r.t == ida_hexrays.mop_z)
-                and mop.d.d is not None
-            ):
-                dest_ast = mop_to_ast_internal(mop.d.d, context, root=True)
-                if dest_ast is not None:
-                    if logger.debug_on:
-                        logger.debug(
-                            "[mop_to_ast_internal] Unwrapped transparent call at 0x%X into dest AST: %s",
-                            mop.d.ea if hasattr(mop.d, "ea") else -1,
-                            dest_ast,
-                        )
-                    return dest_ast
+            # Transparent helper call wrappers are now normalised by a
+            # peephole pass (TransparentCallUnwrapRule).  No special handling
+            # needed here anymore.
 
             if root_opcode not in MBA_RELATED_OPCODES and not _is_rotate_helper_call(
                 mop.d
@@ -1416,96 +1404,12 @@ def mop_to_ast_internal(
         existing_index = context.mop_key_to_index[key]
         return context.unique_asts[existing_index]
 
-    # Special handling for rotate calls
-    if mop.t == ida_hexrays.mop_d and _is_rotate_helper_call(mop.d):
-        # Layout A: classic helper - arguments are in an mop_f list
-        if mop.d.r.t == ida_hexrays.mop_f:
-            args = mop.d.r.f.args
-            if len(args) == 2 and args[0] is not None and args[1] is not None:
-                value_ast = mop_to_ast_internal(args[0], context)
-                shift_ast = mop_to_ast_internal(args[1], context)
-                tree = AstNode(ida_hexrays.m_call, value_ast, shift_ast)
-                tree.func_name = mop.d.l.helper
-                tree.mop = mop
-                tree.dest_size = mop.size
-                tree.ea = sanitize_ea(mop.d.ea)
-                new_index = len(context.unique_asts)
-                tree.ast_index = new_index
-                context.unique_asts.append(tree)
-                context.mop_key_to_index[key] = new_index
-                return tree
-        # Layout B: compact helper - r is value, d is shift amount
-        elif mop.d.r is not None and mop.d.d is not None:
-            value_ast = mop_to_ast_internal(mop.d.r, context)
-            shift_ast = mop_to_ast_internal(mop.d.d, context)
-            if value_ast is not None and shift_ast is not None:
-                tree = AstNode(ida_hexrays.m_call, value_ast, shift_ast)
-                tree.func_name = mop.d.l.helper
-                tree.mop = mop
-                tree.dest_size = mop.size
-                tree.ea = sanitize_ea(mop.d.ea)
-                new_index = len(context.unique_asts)
-                tree.ast_index = new_index
-                context.unique_asts.append(tree)
-                context.mop_key_to_index[key] = new_index
-                if logger.debug_on:
-                    logger.debug(
-                        "[mop_to_ast_internal] Built compact rotate helper node for ea=0x%X",
-                        mop.d.ea if hasattr(mop.d, "ea") else -1,
-                    )
-                return tree
+    # Rotate helper calls (__ROL*/__ROR*) are now inlined into plain shift/or
+    # instructions by RotateHelperInlineRule (peephole, MMAT_GLBOPT1).
+    # No special handling required here.
 
-    # NEW: collapse helper calls that directly yield a constant (dest is constant)
-    if mop.t == ida_hexrays.mop_d and mop.d.opcode == ida_hexrays.m_call:
-        dest_mop = mop.d.d
-        const_mop = None
-
-        if dest_mop is not None:
-            # Case A: plain numeric constant
-            if dest_mop.t == ida_hexrays.mop_n:
-                const_mop = dest_mop
-
-            # Case B: ldc wrapper around a constant
-            elif (
-                dest_mop.t == ida_hexrays.mop_d
-                and dest_mop.d is not None
-                and dest_mop.d.opcode == ida_hexrays.m_ldc
-                and dest_mop.d.l is not None
-                and dest_mop.d.l.t == ida_hexrays.mop_n
-            ):
-                const_mop = dest_mop.d.l
-
-            # Case C: typed-immediate held in a mop_f wrapper (e.g., <fast:_QWORD #0x42.8,char #4.1>.8)
-            elif dest_mop.t == ida_hexrays.mop_f and getattr(dest_mop, "f", None):
-                args = dest_mop.f.args
-                if (
-                    args
-                    and len(args) >= 1
-                    and args[0] is not None
-                    and args[0].t == ida_hexrays.mop_n
-                ):
-                    const_mop = args[0]
-
-        if const_mop is not None and getattr(const_mop, "nnn", None):
-            const_val = int(const_mop.nnn.value)
-            const_size = const_mop.size
-
-            tree = AstConstant(hex(const_val), const_val, const_size)
-            tree.mop = const_mop
-            tree.dest_size = const_size
-
-            if logger.debug_on:
-                logger.debug(
-                    "[mop_to_ast_internal] Collapsed call-with-constant to leaf 0x%X (size=%d)",
-                    const_val,
-                    const_size,
-                )
-
-            new_index = len(context.unique_asts)
-            tree.ast_index = new_index
-            context.unique_asts.append(tree)
-            context.mop_key_to_index[key] = new_index
-            return tree
+    # Helper calls that evaluate to constants are now canonicalised by
+    # ConstantCallResultFoldRule (peephole GLBOPT1).
 
     # NEW: Build AST nodes for MBA-related opcodes (binary or unary)
     if mop.t == ida_hexrays.mop_d and mop.d.opcode in MBA_RELATED_OPCODES:
@@ -1607,48 +1511,12 @@ def mop_to_ast_internal(
             # overhead of allocating a fresh object for every identical literal.
             tree.mop = get_constant_mop(const_val, const_size)
             tree.dest_size = const_size  # detached copy
+        # Typed-immediate wrappers (mop_f) are now normalised by the
+        # TypedImmediateCanonicaliseRule peephole pass.  If we still see one
+        # here it means it holds *no* literal value, therefore fall through to
+        # generic leaf creation.
         elif mop.t == ida_hexrays.mop_f:
-            """Handle typed-immediate wrappers produced by Hex-Rays.
-
-            Typical example:  <fast:_DWORD #0xDEADBEEF.4,char #4.1>.4
-            In most cases the numeric value is stored in *f.args[0]*, but it is
-            not guaranteed that *mop.f* or the *args* list exists on all Ida
-            versions/builds.  We therefore probe carefully and, when we do find
-            the value, create a real *AstConstant* **and** keep the inner
-            mop_n so that the evaluator recognises it as a constant later on.
-            """
-
-            const_val: int | None = None
-            const_size: int | None = None
-
-            f_info = getattr(mop, "f", None)
-            if f_info and getattr(f_info, "args", None):
-                args = f_info.args
-                if (
-                    args
-                    and len(args) >= 1
-                    and args[0] is not None
-                    and args[0].t == ida_hexrays.mop_n
-                ):
-                    const_val = int(args[0].nnn.value)
-                    const_size = mop.size or args[0].size
-
-            if const_val is not None and const_size is not None:
-                # Success: build a constant leaf backed by the *inner* mop_n
-                if logger.debug_on:
-                    logger.debug(
-                        "[mop_to_ast_internal] Extracted constant 0x%X (size=%d) from mop_f wrapper",
-                        const_val,
-                        const_size,
-                    )
-                tree = AstConstant(hex(const_val), const_val, const_size)
-                tree.mop = args[0]  # Preserve the numeric mop for evaluators
-                # Use the shared constant mop cache.
-                tree.mop = get_constant_mop(const_val, const_size)
-                tree.dest_size = const_size
-            else:
-                # Could not extract – fall through to generic leaf
-                tree = None
+            tree = None
         else:
             tree = None
 
@@ -1784,58 +1652,8 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
                 )
             return None
 
-        # NEW: Shortcut - treat helper call whose result is already a literal as a constant leaf
-        if instruction.opcode == ida_hexrays.m_call and instruction.d is not None:
-            dest_mop = instruction.d
-            const_mop = None
-
-            # Case A: direct constant result
-            if dest_mop.t == ida_hexrays.mop_n:
-                # Duplicate to avoid holding internal pointer
-                dup = ida_hexrays.mop_t()
-                dup.make_number(dest_mop.nnn.value, dest_mop.size)
-                const_mop = dup
-
-            # Case B: ldc wrapping a constant
-            elif (
-                dest_mop.t == ida_hexrays.mop_d
-                and dest_mop.d is not None
-                and dest_mop.d.opcode == ida_hexrays.m_ldc
-                and dest_mop.d.l is not None
-                and dest_mop.d.l.t == ida_hexrays.mop_n
-            ):
-                const_mop = dest_mop.d.l
-
-            # Case C: typed-immediate constant packed in mop_f
-            elif dest_mop.t == ida_hexrays.mop_f and getattr(dest_mop, "f", None):
-                args = dest_mop.f.args
-                if (
-                    args
-                    and len(args) >= 1
-                    and args[0] is not None
-                    and args[0].t == ida_hexrays.mop_n
-                ):
-                    const_mop = args[0]
-
-            if const_mop is not None:
-                const_value = int(const_mop.nnn.value)
-                const_size = const_mop.size
-
-                leaf = AstConstant(hex(const_value), const_value, const_size)
-                # Avoid allocating a new mop_t for every constant result.
-                leaf.mop = get_constant_mop(const_value, const_size)
-                leaf.dest_size = const_size
-                leaf.ea = sanitize_ea(instruction.ea)
-
-                if logger.debug_on:
-                    logger.debug(
-                        "[minsn_to_ast] Collapsed call with constant destination to leaf 0x%X (size=%d)",
-                        const_value,
-                        const_size,
-                    )
-
-                leaf.freeze()
-                return AstProxy(leaf)
+        # Constant-returning helper calls are folded to m_ldc by the peephole
+        # pass ConstantCallResultFoldRule.  No need for AST special case.
 
         # Transparent-call shortcut: no args, computation stored in destination mop_d
         if (
