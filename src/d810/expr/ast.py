@@ -645,6 +645,17 @@ class AstNode(AstBase, dict):
                     self.left.dest_size,
                 )
                 return res & res_mask
+            case ida_hexrays.m_call:
+                if logger.debug_on:
+                    logger.debug(
+                        "evaluate m_call: ast_index=%s, dest_size=%s, callee=%s, args=%s",
+                        self.ast_index,
+                        self.dest_size,
+                        self.left,
+                        self.right,
+                    )
+                # Unknown runtime value – treat as 0 to let constant evaluation proceed.
+                return 0 & res_mask
             case _:
                 raise AstEvaluationException(
                     "Can't evaluate opcode: {0}".format(self.opcode)
