@@ -1,5 +1,6 @@
 import collections
 import dataclasses
+import functools
 import logging
 import logging.config
 import pathlib
@@ -100,40 +101,10 @@ conf: dict[str, typing.Any] = {
         },
     },
     "root": {
-        "level": "INFO",
-        "handlers": ["consoleHandler"],
+        "level": "DEBUG",
+        "handlers": ["consoleHandler", "defaultFileHandler"],
     },
 }
-
-
-def clear_logs(log_dir: str | pathlib.Path) -> None:
-    """Removes the log directory."""
-    shutil.rmtree(log_dir, ignore_errors=True)
-
-
-def configure_loggers(log_dir: str | pathlib.Path) -> None:
-    """
-    Configures the loggers using a dictionary, creating log files in the specified directory.
-    """
-    log_dir = pathlib.Path(log_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    # Dynamically set the filenames in the configuration dictionary.
-    # This replaces the `defaults` mechanism from fileConfig.
-    conf["handlers"]["defaultFileHandler"]["filename"] = (
-        log_dir / LOG_FILENAME
-    ).as_posix()
-    conf["handlers"]["z3FileHandler"]["filename"] = (
-        log_dir / Z3_TEST_FILENAME
-    ).as_posix()
-
-    # Apply the configuration
-    logging.config.dictConfig(conf)
-
-    z3_file_logger = logging.getLogger("D810.z3_test")
-    z3_file_logger.info(
-        "from z3 import BitVec, BitVecVal, UDiv, URem, LShR, UGT, UGE, ULT, ULE, prove\n\n"
-    )
 
 
 _config = collections.Counter(version=0)
@@ -168,9 +139,7 @@ class LevelFlag:
         current = self.get_config_version()
         if self._last_version != current:
             # config changed (or first call) → re-compute once
-            self._cached = logging.getLogger(self._logger_name).isEnabledFor(
-                self._level
-            )
+            self._cached = getLogger(self._logger_name).isEnabledFor(self._level)
             self._last_version = current
         return self._cached
 
@@ -254,34 +223,88 @@ class LoggerConfigurator:
         lvl = getattr(logging, level_name.upper(), None)
         if lvl is None:
             raise ValueError(f"Unknown logging level: {level_name}")
-        getLogger(logger_name).setLevel(lvl)
+        # print(f"Setting level for {logger_name} to {level_name}")
+        getLogger(logger_name, lvl).setLevel(lvl)
         # invalidate all LevelFlags
         LevelFlag.bump_config_version()
 
 
 class D810Logger(logging.Logger):
-    @property
-    def debug_on(self) -> LevelFlag:
+
+    @functools.cached_property
+    def debug_on(self) -> LevelFlag:  # noqa: D401
+        """Fast flag: is DEBUG enabled for this logger?"""
         return LevelFlag(self.name, logging.DEBUG)
 
-    @property
-    def info_on(self) -> LevelFlag:
+    @functools.cached_property
+    def info_on(self) -> LevelFlag:  # noqa: D401
         return LevelFlag(self.name, logging.INFO)
 
-    @property
-    def warning_on(self) -> LevelFlag:
+    @functools.cached_property
+    def warning_on(self) -> LevelFlag:  # noqa: D401
         return LevelFlag(self.name, logging.WARNING)
 
-    @property
-    def error_on(self) -> LevelFlag:
+    @functools.cached_property
+    def error_on(self) -> LevelFlag:  # noqa: D401
         return LevelFlag(self.name, logging.ERROR)
 
-    @property
-    def critical_on(self) -> LevelFlag:
+    @functools.cached_property
+    def critical_on(self) -> LevelFlag:  # noqa: D401
         return LevelFlag(self.name, logging.CRITICAL)
 
 
+def clear_logs(log_dir: str | pathlib.Path) -> None:
+    """Removes the log directory."""
+    shutil.rmtree(log_dir, ignore_errors=True)
+
+
+def configure_loggers(log_dir: str | pathlib.Path) -> None:
+    """
+    Configures the loggers using a dictionary, creating log files in the specified directory.
+    """
+    log_dir = pathlib.Path(log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Dynamically set the filenames in the configuration dictionary.
+    # This replaces the `defaults` mechanism from fileConfig.
+    conf["handlers"]["defaultFileHandler"]["filename"] = (
+        log_dir / LOG_FILENAME
+    ).as_posix()
+    conf["handlers"]["z3FileHandler"]["filename"] = (
+        log_dir / Z3_TEST_FILENAME
+    ).as_posix()
+
+    # Apply the configuration
+    logging.config.dictConfig(conf)
+
+    z3_file_logger = logging.getLogger("D810.z3_test")
+    z3_file_logger.info(
+        "from z3 import BitVec, BitVecVal, UDiv, URem, LShR, UGT, UGE, ULT, ULE, prove\n\n"
+    )
+    LevelFlag.bump_config_version()
+
+
 def getLogger(name: str, default_level: int = logging.INFO) -> D810Logger:
+    """Return a :class:`D810Logger`.
+
+    Extra safety:
+
+    1. If the root logger has *no* handlers we assume logging was never
+       configured and transparently invoke :pyfunc:`configure_loggers` with a
+       sensible default directory.  This makes interactive sessions like
+
+       >>> from d810.conf.loggers import getLogger
+       >>> log = getLogger("d810.expr.ast")
+
+       work without the user having to remember to call
+       :pyfunc:`configure_loggers` first.
+
+    2. When wrapping an existing logger whose ``propagate`` flag is *False*
+       **and** that has **no handlers**, the record would be lost.  We flip
+       ``propagate`` back to *True* so that messages bubble to the root
+       handlers configured above.
+    """
+
     name = name or __name__
     # grab (or create) the underlying Logger
     base = logging.getLogger(name)
@@ -298,6 +321,15 @@ def getLogger(name: str, default_level: int = logging.INFO) -> D810Logger:
     new.filters = list(base.filters)
     new.propagate = base.propagate
     new.disabled = base.disabled
+    # Preserve the hierarchical parent so that records still bubble up to
+    # root handlers; otherwise ``p.parent is None`` and nothing is emitted
+    # when the logger itself has no handlers.
+    new.parent = base.parent
+    # Avoid silent drops: if the logger neither has handlers nor propagates
+    # up the hierarchy, re-enable propagation so the record reaches root.
+    if not new.handlers and not new.propagate:
+        new.propagate = True
+
     # replace it in the manager so future getLogger(...) calls return the subclass
     logging.Logger.manager.loggerDict[name] = new
     return new
