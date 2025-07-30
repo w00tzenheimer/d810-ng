@@ -244,7 +244,7 @@ class LoggerConfigurator:
     @staticmethod
     def get_level(name: str) -> int:
         """Return the effective level for logger `name`."""
-        return logging.getLogger(name).getEffectiveLevel()
+        return getLogger(name).getEffectiveLevel()
 
     @staticmethod
     def set_level(logger_name: str, level_name: str) -> None:
@@ -254,7 +254,7 @@ class LoggerConfigurator:
         lvl = getattr(logging, level_name.upper(), None)
         if lvl is None:
             raise ValueError(f"Unknown logging level: {level_name}")
-        logging.getLogger(logger_name).setLevel(lvl)
+        getLogger(logger_name).setLevel(lvl)
         # invalidate all LevelFlags
         LevelFlag.bump_config_version()
 
