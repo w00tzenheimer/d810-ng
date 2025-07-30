@@ -5,7 +5,7 @@ from .tutils import load_conf_classes
 
 # Ensure d810.conf and submodules import with dummy ida_diskio
 with load_conf_classes():
-    from d810.conf.loggers import LoggerConfigurator
+    from d810.conf.loggers import LoggerConfigurator, getLogger
 
 
 class TestLoggerConfigurator(unittest.TestCase):
@@ -14,7 +14,7 @@ class TestLoggerConfigurator(unittest.TestCase):
         self.prefix = "D810"
         self.test_logger_name = f"{self.prefix}.testunit"
         # Create and reset the test logger
-        self.logger = logging.getLogger(self.test_logger_name)
+        self.logger = getLogger(self.test_logger_name)
         self.logger.setLevel(logging.WARNING)
         # Also ensure the root prefix logger exists
         self.root_logger = logging.getLogger(self.prefix)
