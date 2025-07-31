@@ -1,64 +1,40 @@
 """Peephole normalisation passes that remove Hex-Rays helper quirks.
 
-GLBOPT0 rules:
-    • TransparentCallUnwrapRule         – unwrap call wrappers whose value is stored in the destination operand.
-    • TypedImmediateCanonicaliseRule    – turn typed-immediate wrappers into plain mop_n.
+MMAT_CALLS rules:
+    - TransparentCallUnwrapRule         - unwrap call wrappers whose value is stored in the destination operand.
+    - TypedImmediateCanonicaliseRule    - turn typed-immediate wrappers into plain mop_n.
 
 GLBOPT1 rules:
-    • ConstantCallResultFoldRule        – collapse helpers that already return a literal into m_ldc.
-    • RotateHelperInlineRule            – convert __ROL*/__ROR* helper calls into explicit shift/or tree.
+    - ConstantCallResultFoldRule        - collapse helpers that already return a literal into m_ldc.
+    - RotateHelperInlineRule            - convert __ROL*/__ROR* helper calls into explicit shift/or tree.
 
 All rules inherit from PeepholeSimplificationRule, therefore are auto-registered.
 """
 
 from __future__ import annotations
 
-import logging
 import typing
 
 import ida_hexrays
 
 from d810 import _compat
-from d810.hexrays.hexrays_formatters import (  # noqa: F401 – debug only
+from d810.conf.loggers import getLogger
+from d810.expr import utils
+from d810.hexrays.hexrays_formatters import (  # noqa: F401 - debug only
+    format_minsn_t,
+    format_mop_t,
     opcode_to_string,
     sanitize_ea,
 )
-from d810.hexrays.hexrays_helpers import AND_TABLE
+from d810.hexrays.hexrays_helpers import AND_TABLE, dup_mop, is_rotate_helper_call
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
 
-peephole_logger = logging.getLogger("D810.optimizer")
+logger = getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Helper utilities -----------------------------------------------------------
-# ---------------------------------------------------------------------------
-
-
-def _is_rotate_helper_call(ins: ida_hexrays.minsn_t | None) -> bool:
-    """Return True if *ins* is a call to one of Hex-Rays' synthetic
-    rotate helpers (__ROL* / __ROR*)."""
-
-    if (
-        ins is None
-        or ins.opcode != ida_hexrays.m_call
-        or ins.l is None
-        or ins.l.t != ida_hexrays.mop_h
-    ):
-        return False
-    helper = (ins.l.helper or "").lstrip("!")
-    return helper.startswith("__ROL") or helper.startswith("__ROR")
-
-
-def _dup_mop(src: ida_hexrays.mop_t) -> ida_hexrays.mop_t:
-    """Return a *detached* copy of *src*."""
-    dup = ida_hexrays.mop_t()
-    dup.assign(src)
-    return dup
-
-
-# ---------------------------------------------------------------------------
-# 1. Transparent call unwrapping (GLBOPT0) -----------------------------------
+# 1. Transparent call unwrapping (MMAT_CALLS) -----------------------------------
 # ---------------------------------------------------------------------------
 
 
@@ -100,8 +76,8 @@ class TransparentCallUnwrapRule(PeepholeSimplificationRule):
 
         inner: ida_hexrays.minsn_t = typing.cast(ida_hexrays.minsn_t, ins.d.d)
 
-        # Extra guard: do *not* unwrap rotate helper calls – another rule handles them
-        if _is_rotate_helper_call(inner):
+        # Extra guard: do *not* unwrap rotate helper calls - another rule handles them
+        if is_rotate_helper_call(inner):
             return None
         # ------------------------------------------------------------------
         # There is no public Python API to *deep-copy* a minsn_t, but Ida's
@@ -113,8 +89,8 @@ class TransparentCallUnwrapRule(PeepholeSimplificationRule):
 
         # Preserve the original EA so xrefs / logging stay consistent.
         new_ins.ea = ins.ea
-        if peephole_logger.isEnabledFor(logging.DEBUG):
-            peephole_logger.debug(
+        if logger.debug_on:
+            logger.debug(
                 "[transparent-call] 0x%X unwrap → %s",
                 sanitize_ea(ins.ea),
                 opcode_to_string(new_ins.opcode),
@@ -124,7 +100,7 @@ class TransparentCallUnwrapRule(PeepholeSimplificationRule):
 
 
 # ---------------------------------------------------------------------------
-# 2. Typed-immediate cleanup (GLBOPT0) ---------------------------------------
+# 2. Typed-immediate cleanup (MMAT_CALLS) ---------------------------------------
 # ---------------------------------------------------------------------------
 
 
@@ -132,15 +108,15 @@ class TypedImmediateCanonicaliseRule(PeepholeSimplificationRule):
     """Turn the various typed-immediate wrappers produced by Hex-Rays into
     plain numeric constants (mop_n).  Handles two frequent patterns:
 
-    • The typed immediate mop_f wrapper::
+    - The typed immediate mop_f wrapper::
 
           <fast:_QWORD #0x42.8,char #4.1>.8
 
       which is represented as an *mop_f* whose *f.args[0]* is the real
       mop_n literal.
 
-    • An *m_ldc* micro-instruction that loads a constant into a pseudo
-      temporal destination – the source literal sits in the *l* operand.
+    - An *m_ldc* micro-instruction that loads a constant into a pseudo
+      temporal destination - the source literal sits in the *l* operand.
       These appear inside nested expressions (eg. m_call wrappers).
     """
 
@@ -154,8 +130,12 @@ class TypedImmediateCanonicaliseRule(PeepholeSimplificationRule):
     ) -> ida_hexrays.minsn_t | None:
         """Replace *ins* when all it does is materialise a literal."""
 
+        # Skip rotate helper calls - they need special handling
+        if is_rotate_helper_call(ins):
+            return None
+
         # ------------------------------------------------------------------
-        # Case A – Stand-alone m_ldc that simply moves a literal.
+        # Case A - Stand-alone m_ldc that simply moves a literal.
         # ------------------------------------------------------------------
         if (
             ins.opcode == ida_hexrays.m_ldc
@@ -164,11 +144,11 @@ class TypedImmediateCanonicaliseRule(PeepholeSimplificationRule):
         ):
             # Up-convert to the canonical representation used by the constant
             # folder:    m_ldc  l=<mop_n>   d=<original dst>  r=mop_z
-            # Here the instruction is already in that form – nothing to do.
+            # Here the instruction is already in that form - nothing to do.
             return None  # keep as-is
 
         # ------------------------------------------------------------------
-        # Case B – Instruction *operands* that wrap the literal in mop_f.
+        # Case B - Instruction *operands* that wrap the literal in mop_f.
         #   We normalise *in-place* instead of emitting a new instruction to
         #   keep EA / control-flow untouched.
         # ------------------------------------------------------------------
@@ -236,12 +216,16 @@ class ConstantCallResultFoldRule(PeepholeSimplificationRule):
 
     DESCRIPTION = "Fold helper call with literal destination into single m_ldc"
 
-    maturities = [ida_hexrays.MMAT_GLBOPT1]
+    # maturities = [ida_hexrays.MMAT_GLBOPT1]
 
     @_compat.override
     def check_and_replace(
         self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:
+
+        # Skip rotate helper calls entirely (they aren't literal constants)
+        if is_rotate_helper_call(ins):
+            return None
 
         # Only consider calls.
         if ins.opcode != ida_hexrays.m_call or ins.d is None:
@@ -285,14 +269,21 @@ class ConstantCallResultFoldRule(PeepholeSimplificationRule):
         new.r = ida_hexrays.mop_t()
         new.r.erase()
         new.r.size = size_bytes
-        if peephole_logger.isEnabledFor(logging.DEBUG):
-            peephole_logger.debug(
-                "[const-call] 0x%X call→ldc 0x%X (size=%d)",
+        if logger.debug_on:
+            logger.debug(
+                "[const-call] 0x%X call -> ldc 0x%X (size=%d)",
                 sanitize_ea(ins.ea),
                 value,
                 size_bytes,
             )
         return new
+
+    """
+  File "/Users/mahmoud/.idapro/packages/d810/src/d810/optimizers/microcode/instructions/peephole/normalise_helpers.py", line 262, in check_and_replace
+    logger.debug(
+Message: '[const-call] 0x%X call→ldc 0x%X (size=%d)'
+Arguments: (6442468193, 15680791916180618035, 8)    
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -342,101 +333,225 @@ if mop.t == ida_hexrays.mop_d and _is_rotate_helper_call(mop.d):
 
 
 class RotateHelperInlineRule(PeepholeSimplificationRule):
-    """Replace `__ROL*` / `__ROR*` helper calls by explicit (shl, shr, or) tree.
+    DESCRIPTION = (
+        "Unwrap helper calls whose result is stored in a register and can be optimized"
+    )
+    """
+        mov  l=m_call <helper>  r=<mop_r>  d=<mop_d expr>
 
-    This exposes the rotate to algebraic simplifications and constant
-    folding, removing the need for special-case handling in the AST
-    builder.
+    by the expression stored in *r*.  This turns a value-only helper
+    (often emitted by the decompiler for things like casts or wrappers
+    around compiler intrinsics) into the real micro-instruction so that
+    subsequent passes can optimize it.
     """
 
-    DESCRIPTION = "Inline ROL/ROR helper calls into shifts + or"
-    maturities = [ida_hexrays.MMAT_GLBOPT1]
+    # Run *very* early so that the AST builder never sees the wrapper.
+    maturities = [ida_hexrays.MMAT_LOCOPT]
 
     @_compat.override
     def check_and_replace(
         self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
-    ) -> ida_hexrays.minsn_t | None:
-        if not _is_rotate_helper_call(ins):
+    ) -> ida_hexrays.minsn_t | None:  # noqa: D401
+        """Return a replacement `minsn_t` or None to keep *ins* unchanged."""
+
+        if logger.debug_on:
+            logger.debug(
+                "[RotateHelperInline] considering ea=%X, opcode=%s. is insn helper? %s  l=%s  r=%s",
+                sanitize_ea(ins.ea),
+                opcode_to_string(ins.opcode),
+                is_rotate_helper_call(ins),
+                format_mop_t(ins.l),
+                format_mop_t(ins.r),
+            )
+
+        # mov call, register
+        if ins.opcode != ida_hexrays.m_mov:
             return None
 
-        # Extract helper name and width from helper string (e.g., __ROL4__)
-        helper_name = (ins.l.helper or "").lstrip("!")
-        is_rol = helper_name.startswith("__ROL")
+        if ins.l.t != ida_hexrays.m_call or not is_rotate_helper_call(ins.l.d):
+            # bail out if the helper is not a rotate helper
+            return None
 
-        # Derive bit width from destination size if possible; fallback 32.
-        bits = (ins.d.size or 4) * 8 if ins.d else 32
+        register = ins.r
+        register_size = AND_TABLE[register.size]
+        insn_helper: ida_hexrays.mop_t = ins.l.d
+        # extract helper name and width from helper string (e.g., __ROL4__)
+        helper_name = (insn_helper.helper or "").lstrip("!")
+        args_list = insn_helper.r.f.args
 
-        # --------------------------------------------------------------
-        # Gather operands depending on layout.
-        # Layout A: argument list in mop_f.
-        # Layout B: r == value, d == shift
-        # --------------------------------------------------------------
-        if (
-            ins.r is not None
-            and ins.r.t == ida_hexrays.mop_f
-            and getattr(ins.r, "f", None)
-        ):
-            args = ins.r.f.args
-            if len(args) < 2 or args[0] is None or args[1] is None:
-                return None  # malformed, bail
-            val_mop = _dup_mop(args[0])
-            sh_mop = _dup_mop(args[1])
-        else:
-            # compact form
-            val_mop = _dup_mop(ins.r)
-            sh_mop = _dup_mop(ins.d)
-            if val_mop is None or sh_mop is None:
-                return None
-        # Build (bits - shift) expression:  sub_ins
-        bits_const = ida_hexrays.mop_t()
-        bits_const.make_number(bits, (bits // 8) if bits // 8 in AND_TABLE else 4)
-        sub_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
-        sub_ins.opcode = ida_hexrays.m_sub
-        sub_ins.l = bits_const
-        sub_ins.r = _dup_mop(sh_mop)
-        sub_mop = ida_hexrays.mop_t()
-        sub_mop.create_from_insn(sub_ins)
-
-        # Build left shift: val << sh
-        shl_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
-        shl_ins.opcode = ida_hexrays.m_shl
-        shl_ins.l = _dup_mop(val_mop)
-        shl_ins.r = _dup_mop(sh_mop)
-        shl_mop = ida_hexrays.mop_t()
-        shl_mop.create_from_insn(shl_ins)
-
-        # Build right shift (direction depends on rol/ror)
-        shift_opcode = ida_hexrays.m_shr if is_rol else ida_hexrays.m_shl
-        shr_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
-        shr_ins.opcode = shift_opcode
-        shr_ins.l = _dup_mop(val_mop)
-        shr_ins.r = sub_mop
-        shr_mop = ida_hexrays.mop_t()
-        shr_mop.create_from_insn(shr_ins)
-
-        # Build final or
-        or_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
-        or_ins.opcode = ida_hexrays.m_or
-        or_ins.l = shl_mop
-        or_ins.r = shr_mop
-
-        # Destination: keep original l-value when legal
-        or_ins.d = ida_hexrays.mop_t()
-        if ins.d and ins.d.t in {
-            ida_hexrays.mop_r,
-            ida_hexrays.mop_l,
-            ida_hexrays.mop_S,
-            ida_hexrays.mop_v,
-        }:
-            or_ins.d.assign(ins.d)
-        else:
-            or_ins.d.erase()
-        or_ins.d.size = ins.d.size if ins.d else (bits // 8)
-
-        if peephole_logger.isEnabledFor(logging.DEBUG):
-            peephole_logger.debug(
-                "[rotate-inline] 0x%X %s inlined into or/shl/shr",
+        if logger.debug_on:
+            logger.debug(
+                "[RotateHelperInline] considering ea=%X, opcode=%s. evaluating helper %s with args %s",
                 sanitize_ea(ins.ea),
+                opcode_to_string(ins.opcode),
                 helper_name,
+                format_mop_t(args_list),
             )
-        return or_ins
+
+        helper_func = getattr(utils, helper_name)
+        result = (
+            helper_func(args_list[0].nnn.value, args_list[1].nnn.value) & register_size
+        )
+        if logger.debug_on:
+            logger.debug(
+                "[RotateHelperInline] evaluating helper %s with args %s -> %s",
+                helper_name,
+                format_mop_t(args_list),
+                result,
+            )
+
+        # build the new insn
+        new_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
+        new_ins.opcode = ida_hexrays.m_mov
+        new_ins.r = register
+        new_ins.l = ida_hexrays.mop_t()
+        new_ins.l.make_number(result, register.size)
+        return new_ins
+
+
+# class RotateHelperInlineRule(PeepholeSimplificationRule):
+#     """Replace `__ROL*` / `__ROR*` helper calls by explicit (shl, shr, or) tree.
+
+#     This exposes the rotate to algebraic simplifications and constant
+#     folding, removing the need for special-case handling in the AST
+#     builder.
+#     """
+
+#     DESCRIPTION = "Inline ROL/ROR helper calls into shifts + or"
+#     # maturities = [ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS]
+
+#     @_compat.override
+#     def check_and_replace(
+#         self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
+#     ) -> ida_hexrays.minsn_t | None:
+#         if logger.debug_on:
+#             logger.debug(
+#                 "[RotateHelperInline] considering ea=%X, opcode=%s. is insn helper? %s  l=%s  r=%s",
+#                 sanitize_ea(ins.ea),
+#                 opcode_to_string(ins.opcode),
+#                 is_rotate_helper_call(ins),
+#                 format_mop_t(ins.l),
+#                 format_mop_t(ins.r),
+#             )
+#         if not is_rotate_helper_call(ins):
+#             return None
+
+#         # Extract helper name and width from helper string (e.g., __ROL4__)
+#         helper_name = (ins.l.helper or "").lstrip("!")
+#         is_rol = helper_name.startswith("__ROL")
+
+#         # Derive bit width from destination size if possible; fallback 32.
+#         bits = (ins.d.size or 4) * 8 if ins.d else 32
+
+#         # --------------------------------------------------------------
+#         # Gather operands depending on layout.
+#         # Layout A: argument list in mop_f.
+#         # Layout B: r == value, d == shift
+#         # --------------------------------------------------------------
+#         # For rotate helpers, arguments are in ins.r as mop_f
+#         func_mop = None
+#         if (
+#             ins.r is not None
+#             and ins.r.t == ida_hexrays.mop_f
+#             and getattr(ins.r, "f", None)
+#         ):
+#             func_mop = ins.r
+
+#         if func_mop:
+#             args = func_mop.f.args
+#             if len(args) < 2 or args[0] is None or args[1] is None:
+#                 return None
+#             val_mop = dup_mop(args[0])
+#             sh_mop = dup_mop(args[1])
+#         else:
+#             # compact form
+#             val_mop = dup_mop(ins.r)
+#             sh_mop = dup_mop(ins.d)
+#             if val_mop is None or sh_mop is None:
+#                 return None
+#         # Build (bits - shift) expression:  sub_ins
+#         bits_const = ida_hexrays.mop_t()
+#         bits_const.make_number(bits, (bits // 8) if bits // 8 in AND_TABLE else 4)
+#         sub_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
+#         sub_ins.opcode = ida_hexrays.m_sub
+#         sub_ins.l = bits_const
+#         sub_ins.r = dup_mop(sh_mop)
+#         sub_mop = ida_hexrays.mop_t()
+#         sub_mop.create_from_insn(sub_ins)
+
+#         val_mop_for_shl = (
+#             ida_hexrays.mop_t()
+#             if val_mop and val_mop.t == ida_hexrays.mop_d
+#             else dup_mop(val_mop)
+#         )
+#         if val_mop and val_mop.t == ida_hexrays.mop_d:
+#             val_mop_for_shl.t = ida_hexrays.mop_d
+#             val_mop_for_shl.d = ida_hexrays.minsn_t(val_mop.d)
+#             val_mop_for_shl.size = val_mop.size
+
+#         val_mop_for_shr = (
+#             ida_hexrays.mop_t()
+#             if val_mop and val_mop.t == ida_hexrays.mop_d
+#             else dup_mop(val_mop)
+#         )
+#         if val_mop and val_mop.t == ida_hexrays.mop_d:
+#             val_mop_for_shr.t = ida_hexrays.mop_d
+#             val_mop_for_shr.d = ida_hexrays.minsn_t(val_mop.d)
+#             val_mop_for_shr.size = val_mop.size
+
+#         # Build left shift: val << sh
+#         shl_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
+#         shl_ins.opcode = ida_hexrays.m_shl
+#         shl_ins.l = val_mop_for_shl
+#         shl_ins.r = dup_mop(sh_mop)
+#         shl_mop = ida_hexrays.mop_t()
+#         shl_mop.create_from_insn(shl_ins)
+
+#         # Build right shift (direction depends on rol/ror)
+#         shift_opcode = ida_hexrays.m_shr if is_rol else ida_hexrays.m_shl
+#         shr_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
+#         shr_ins.opcode = shift_opcode
+#         shr_ins.l = val_mop_for_shr
+#         shr_ins.r = sub_mop
+#         shr_mop = ida_hexrays.mop_t()
+#         shr_mop.create_from_insn(shr_ins)
+
+#         # Build final or
+#         or_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
+#         or_ins.opcode = ida_hexrays.m_or
+#         or_ins.l = shl_mop
+#         or_ins.r = shr_mop
+
+#         # # Destination: keep original l-value when legal
+#         # or_ins.d = ida_hexrays.mop_t()
+#         # if ins.d and ins.d.t in {
+#         #     ida_hexrays.mop_r,
+#         #     ida_hexrays.mop_l,
+#         #     ida_hexrays.mop_S,
+#         #     ida_hexrays.mop_v,
+#         # }:
+#         #     or_ins.d.assign(ins.d)
+#         # else:
+#         #     or_ins.d.erase()
+#         # or_ins.d.size = ins.d.size if ins.d else (bits // 8)
+
+#         # Destination: copy the mov‐dest (ins.r) into our new OR‐insn
+#         or_ins.r = shr_mop  # temporarily set to something of the right type…
+#         or_ins.r.assign(ins.r)
+#         or_ins.r.size = ins.r.size
+
+#         # ensure sizes propagate to l/r when they are mop_t (not mop_d)
+#         if or_ins.l.t != ida_hexrays.mop_d and or_ins.l.size == 0:
+#             or_ins.l.size = or_ins.d.size
+#         if or_ins.r.t != ida_hexrays.mop_d and or_ins.r.size == 0:
+#             or_ins.r.size = or_ins.d.size
+
+#         # Return brand-new instruction – do not modify *ins* in place.
+#         if logger.debug_on:
+#             logger.debug(
+#                 "[rotate-inline] 0x%X %s inlined into or/shl/shr → %s",
+#                 sanitize_ea(ins.ea),
+#                 helper_name,
+#                 format_minsn_t(or_ins),
+#             )
+#         return or_ins

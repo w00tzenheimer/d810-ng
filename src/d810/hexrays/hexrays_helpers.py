@@ -1,5 +1,4 @@
 import dataclasses
-import logging
 import typing
 
 import ida_hexrays
@@ -28,7 +27,9 @@ from ida_hexrays import (
     mop_z,
 )
 
-logger = logging.getLogger("D810")
+from d810.conf.loggers import getLogger
+
+logger = getLogger(__name__)
 
 OPCODES_INFO = {
     m_nop: {"name": "nop", "nb_operands": 0, "is_commutative": True},
@@ -710,3 +711,33 @@ OPCODES_LOOKUP: dict[int, MicrocodeOpcode] = {
     ida_hexrays.m_fmul: MicrocodeOpcode("fmul", 2, True),
     ida_hexrays.m_fdiv: MicrocodeOpcode("fdiv", 2, False),
 }
+
+
+def is_rotate_helper_call(ins: ida_hexrays.minsn_t) -> bool:
+    """Return True if *ins* is a call to one of Hex-Rays' synthetic rotate
+    helpers (`__ROL*` / `__ROR*`).  Thin wrapper so multiple modules can
+    share the same definition without import cycles.
+    """
+
+    if (
+        ins is None
+        or ins.opcode != ida_hexrays.m_call
+        or ins.l is None
+        or ins.l.t != ida_hexrays.mop_h
+    ):
+        return False
+
+    helper: str = (ins.l.helper or "").lstrip("!")
+    return helper.startswith("__ROL") or helper.startswith("__ROR")
+
+
+def dup_mop(src: ida_hexrays.mop_t) -> ida_hexrays.mop_t:
+    """Return a detached copy of a `mop_t`.
+
+    Using `mop_t.assign` duplicates the underlying C++ object so the new
+    operand is safe to attach to another micro-instruction without
+    dangling-pointer risks.
+    """
+    dst = ida_hexrays.mop_t()
+    dst.assign(src)
+    return dst

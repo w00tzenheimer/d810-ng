@@ -34,6 +34,7 @@ from d810.hexrays.hexrays_helpers import (
     OPCODES_INFO,
     Z3_SPECIAL_OPERANDS,
     equal_mops_ignore_size,
+    is_rotate_helper_call,
 )
 from d810.registry import NOT_GIVEN, NotGiven
 
@@ -1384,7 +1385,7 @@ def mop_to_ast_internal(
             # peephole pass (TransparentCallUnwrapRule).  No special handling
             # needed here anymore.
 
-            if root_opcode not in MBA_RELATED_OPCODES and not _is_rotate_helper_call(
+            if root_opcode not in MBA_RELATED_OPCODES and not is_rotate_helper_call(
                 mop.d
             ):
                 if logger.debug_on:
@@ -1635,9 +1636,8 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
         # Early filter: unsupported opcodes (not in MBA_RELATED_OPCODES)
         # Allow rotate helper calls ("__ROL*" / "__ROR*") even though m_call
         # is normally filtered out - they can be constant-folded later.
-        if (
-            instruction.opcode not in MBA_RELATED_OPCODES
-            and not _is_rotate_helper_call(instruction)
+        if instruction.opcode not in MBA_RELATED_OPCODES and not is_rotate_helper_call(
+            instruction
         ):
             if logger.debug_on:
                 logger.debug(
@@ -1703,22 +1703,3 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
             format_minsn_t(instruction),
             e,
         )
-
-
-def _is_rotate_helper_call(ins: ida_hexrays.minsn_t) -> bool:
-    """Return True if *ins* is a call to one of Hex-Rays' synthetic
-    rotate helpers (__ROL* / __ROR*).
-
-    The folding pass treats those helpers as pure arithmetic, so we
-    want to keep them instead of discarding them as "unsupported".
-    """
-
-    if ins is None or ins.opcode != ida_hexrays.m_call:
-        return False
-
-    func_mop = ins.l
-    if func_mop is None or func_mop.t != ida_hexrays.mop_h:
-        return False
-
-    helper_name: str = (func_mop.helper or "").lstrip("!")
-    return helper_name.startswith("__ROL") or helper_name.startswith("__ROR")
