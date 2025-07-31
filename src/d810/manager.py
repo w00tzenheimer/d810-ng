@@ -137,6 +137,8 @@ class D810Manager:
         self.block_optimizer.remove()
         self.hx_decompiler_hook.unhook()
         self.event_emitter.clear()
+        if self.profiler:
+            self.stop_profiling()
 
 
 class D810State(metaclass=SingletonMeta):

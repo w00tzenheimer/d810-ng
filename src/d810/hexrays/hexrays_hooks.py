@@ -26,30 +26,26 @@ optimizer_logger = logging.getLogger("D810.optimizer")
 helper_logger = logging.getLogger("D810.helper")
 
 DEFAULT_OPTIMIZATION_PATTERN_MATURITIES = [
+    MMAT_PREOPTIMIZED,
     MMAT_LOCOPT,
     MMAT_CALLS,
     MMAT_GLBOPT1,
 ]
 DEFAULT_OPTIMIZATION_CHAIN_MATURITIES = [
+    MMAT_PREOPTIMIZED,
     MMAT_LOCOPT,
     MMAT_CALLS,
     MMAT_GLBOPT1,
 ]
 DEFAULT_OPTIMIZATION_Z3_MATURITIES = [MMAT_LOCOPT, MMAT_CALLS, MMAT_GLBOPT1]
-DEFAULT_OPTIMIZATION_EARLY_MATURITIES = [MMAT_GENERATED, MMAT_PREOPTIMIZED, MMAT_LOCOPT]
+DEFAULT_OPTIMIZATION_EARLY_MATURITIES = [MMAT_GENERATED, MMAT_PREOPTIMIZED]
 DEFAULT_OPTIMIZATION_PEEPHOLE_MATURITIES = [
-    MMAT_GLBOPT1,
-    MMAT_GLBOPT2,
-]
-DEFAULT_ANALYZER_MATURITIES = [
-    MMAT_PREOPTIMIZED,
     MMAT_LOCOPT,
     MMAT_CALLS,
     MMAT_GLBOPT1,
     MMAT_GLBOPT2,
-    MMAT_GLBOPT3,
-    MMAT_LVARS,
 ]
+DEFAULT_ANALYZER_MATURITIES = [MMAT_PREOPTIMIZED, MMAT_LOCOPT, MMAT_CALLS, MMAT_GLBOPT1]
 
 
 class InstructionOptimizerManager(optinsn_t):
@@ -143,8 +139,6 @@ class InstructionOptimizerManager(optinsn_t):
             ins_optimizer.show_rule_usage_statistic()
 
     def log_info_on_input(self, blk: mblock_t, ins: minsn_t):
-        if blk is None:
-            return
         mba: mbl_array_t = blk.mba
 
         if (mba is not None) and (mba.maturity != self.current_maturity):
@@ -194,15 +188,19 @@ class InstructionOptimizerManager(optinsn_t):
                 if not check_ins_mop_size_are_ok(new_ins):
                     if check_ins_mop_size_are_ok(ins):
                         main_logger.error(
-                            "Invalid optimized instruction: {0} (original was {1})".format(
-                                format_minsn_t(new_ins), format_minsn_t(ins)
-                            )
+                            "Invalid optimized instruction (%s) for maturity %s:\n\toptimized: %s\n\toriginal: %s",
+                            ins_optimizer.name,
+                            maturity_to_string(self.current_maturity),  # type: ignore
+                            format_minsn_t(new_ins),
+                            format_minsn_t(ins),
                         )
                     else:
                         main_logger.error(
-                            "Invalid original instruction : {0} (original was {1})".format(
-                                format_minsn_t(new_ins), format_minsn_t(ins)
-                            )
+                            "Invalid original instruction (%s) for maturity %s:\n\toptimized: %s\n\toriginal: %s",
+                            ins_optimizer.name,
+                            maturity_to_string(self.current_maturity),  # type: ignore
+                            format_minsn_t(new_ins),
+                            format_minsn_t(ins),
                         )
                 else:
                     ins.swap(new_ins)

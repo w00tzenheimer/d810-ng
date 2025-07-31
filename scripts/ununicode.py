@@ -17,6 +17,7 @@ def clean_text(txt: str) -> str:
         "\u202f": " ",  # narrow no-break space → regular space
         "\u2060": "",  # word joiner → removed
         "\ufeff": "",  # zero-width no-break space (BOM) → removed
+        "\u2192": "->",  # right arrow → ->
         "—": "-",  # em-dash → hyphen
         "’": "'",  # right single quote → straight
         "‘": "'",  # left single quote → straight
@@ -26,9 +27,8 @@ def clean_text(txt: str) -> str:
     for uni, ascii_ in replacements.items():
         txt = txt.replace(uni, ascii_)
     # bullet points → asterisks
-    txt = txt.replace("•", "*").replace("◦", "*")
+    txt = txt.replace("•", "-").replace("◦", "*")
     # standardize “. ” → “* ”?
-    txt = txt.replace(". ", "* ")
     return txt
 
 

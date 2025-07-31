@@ -2507,8 +2507,9 @@ const unsigned __int32 dword_1802D2DBC = 0xF4C84FC4;
 
 extern void _InterlockedExchangeW(int, int, int, int, int);
 
-
+DONT_OPTIMIZE();
 __int64 constant_folding_test1() {
+    bool b = 0;
     unsigned __int64 v46 = __ROL8__(
               __ROL8__(
                   (((__ROL4__(__ROL4__(0x6EBCBAA1, 4) + 0x6B9F6F9A, 3) ^ 0x770BB7B8u) + 0x33AC85C6)
@@ -2575,7 +2576,7 @@ __int64 constant_folding_test1() {
                 unsigned __int64 v50 = __ROL8__(v15, 4);
                 if ( (qword_1802D2B19
                     ^ (__ROL8__(v50 ^ 0xDE838D86533A540LL, 0x20) - 0x3A9CCBED1AC47F6LL)) == 0x4F )
-                    return 1;
+                    b = 1;
             }
         }
     }
@@ -2607,8 +2608,7 @@ __int64 constant_folding_test1() {
        ^ 0x2EFFBB12A651F46CLL;
     return v6;
 }
-
-
+ENABLE_OPTIMIZE();
 
 // outlined function 1
 __int64 outlined_helper_1(__int64 a1, __int64 a2, __int64 a3, unsigned int *a4)
