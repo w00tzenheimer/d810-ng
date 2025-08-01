@@ -23,6 +23,7 @@ from d810.expr.utils import (
 from d810.hexrays.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,
+    log_mop_tree,
     mop_type_to_string,
     opcode_to_string,
     sanitize_ea,
@@ -1331,39 +1332,6 @@ def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
                 return key + (f"unsupported_mop_t_{t}",)
 
 
-def _log_mop_tree(mop, depth=0, max_depth=8):
-    indent = "  " * depth
-    if mop is None:
-        logger.debug("%s<mop=None>", indent)
-        return
-    try:
-        mop_type = mop.t if hasattr(mop, "t") else None
-        mop_str = str(mop.dstr()) if hasattr(mop, "dstr") else str(mop)
-        logger.debug(
-            "%s<mop_t type=%s size=%s valnum=%s dstr=%s>",
-            indent,
-            mop_type,
-            getattr(mop, "size", None),
-            getattr(mop, "valnum", None),
-            mop_str,
-        )
-        if depth >= max_depth:
-            logger.debug("%s<max depth reached>", indent)
-            return
-        # Recurse for sub-operands
-        if mop_type == ida_hexrays.mop_d and hasattr(mop, "d") and mop.d is not None:
-            _log_mop_tree(mop.d.l, depth + 1, max_depth)
-            _log_mop_tree(mop.d.r, depth + 1, max_depth)
-            _log_mop_tree(mop.d.d, depth + 1, max_depth)
-        elif mop_type == ida_hexrays.mop_a and hasattr(mop, "a") and mop.a is not None:
-            _log_mop_tree(mop.a, depth + 1, max_depth)
-        elif mop_type == ida_hexrays.mop_f and hasattr(mop, "f") and mop.f is not None:
-            for arg in getattr(mop.f, "args", []):
-                _log_mop_tree(arg, depth + 1, max_depth)
-    except Exception as e:
-        logger.debug("%s<error logging mop: %s>", indent, e)
-
-
 def mop_to_ast_internal(
     mop: ida_hexrays.mop_t, context: AstBuilderContext, root: bool = False
 ) -> AstBase | None:
@@ -1573,7 +1541,7 @@ def mop_to_ast_internal(
 
     # If we reach here, we failed to build an AST. Log the full mop tree.
     logger.error("[mop_to_ast_internal] Could not build AST for mop. Dumping mop tree:")
-    _log_mop_tree(mop)
+    log_mop_tree(mop)
     return None
 
 

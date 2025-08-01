@@ -1,12 +1,12 @@
 import abc
-import logging
 
 import idc
 
+from d810.conf.loggers import getLogger
 from d810.optimizers.microcode.handler import DEFAULT_FLOW_MATURITIES, OptimizationRule
 from d810.registry import Registrant
 
-logger = logging.getLogger("D810.optimizer")
+logger = getLogger("D810.optimizer")
 
 
 class FlowOptimizationRule(OptimizationRule, Registrant, abc.ABC):

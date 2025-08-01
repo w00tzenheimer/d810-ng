@@ -3,7 +3,6 @@ from __future__ import annotations
 import dataclasses
 import enum
 import hashlib
-import logging
 import typing
 import weakref
 
@@ -13,10 +12,11 @@ import ida_lines
 import ida_pro
 import ida_xref
 
+from d810.conf.loggers import getLogger
 from d810.hexrays.hexrays_helpers import MicrocodeHelper, MicrocodeInstruction
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
-logger = logging.getLogger("D810.unflattener_cf")
+logger = getLogger("D810.unflattener_cf")
 
 
 MIN_NUM_COMPARISONS = 2

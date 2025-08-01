@@ -1,10 +1,10 @@
+from ida_hexrays import *
+
 from d810.expr.ast import AstConstant, AstLeaf, AstNode
 from d810.hexrays.hexrays_helpers import AND_TABLE
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (
     PatternMatchingRule,
 )
-
-from ida_hexrays import *
 
 
 class Neg_HackersDelightRule_1(PatternMatchingRule):
@@ -27,7 +27,7 @@ class Neg_HackersDelightRule_2(PatternMatchingRule):
         return AstNode(m_neg, AstLeaf("x_0"))
 
 
-class NegAdd_HackersDelightRule_1(PatternMatchingRule):
+class NegSub_HackersDelightRule_1(PatternMatchingRule):
     @property
     def PATTERN(self) -> AstNode:
         return AstNode(

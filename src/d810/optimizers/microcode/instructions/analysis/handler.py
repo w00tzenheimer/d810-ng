@@ -1,15 +1,15 @@
 import abc
-import logging
 
 from ida_hexrays import *
 
+from d810.conf.loggers import getLogger
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizationRule,
     InstructionOptimizer,
 )
 
-optimizer_logger = logging.getLogger("D810.optimizer")
+optimizer_logger = getLogger("D810.optimizer")
 
 
 class InstructionAnalysisRule(InstructionOptimizationRule):

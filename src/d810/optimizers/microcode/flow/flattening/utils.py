@@ -1,8 +1,9 @@
 import logging
 
+from d810.conf.loggers import getLogger
 
-tracker_logger = logging.getLogger("D810.tracker")
-emulator_logger = logging.getLogger("D810.emulator")
+tracker_logger = getLogger("D810.tracker")
+emulator_logger = getLogger("D810.emulator")
 
 
 class UnflatteningException(Exception):

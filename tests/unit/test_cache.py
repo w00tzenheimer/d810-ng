@@ -4,7 +4,11 @@ import sys
 import unittest
 import weakref
 
-from d810.cache import LFU, CacheImpl, OverweightError, cache, lru_cache
+from .tutils import load_conf_classes
+
+# Ensure d810.conf and submodules import with dummy ida_diskio
+with load_conf_classes():
+    from d810.cache import LFU, CacheImpl, OverweightError, cache, lru_cache
 
 
 class FixedClock:

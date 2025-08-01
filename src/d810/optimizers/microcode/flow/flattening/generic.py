@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import abc
-import logging
 import typing
 
 from ida_hexrays import *
 
+from d810.conf.loggers import getLogger
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
 from d810.hexrays.cfg_utils import (
     change_1way_block_successor,
@@ -42,7 +42,7 @@ from d810.optimizers.microcode.flow.flattening.utils import (
 )
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
-unflat_logger = logging.getLogger("D810.unflat")
+unflat_logger = getLogger("D810.unflat")
 
 
 class GenericDispatcherBlockInfo(object):

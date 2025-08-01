@@ -3,14 +3,15 @@ import collections
 import contextlib
 import dataclasses
 import functools
-import logging
 import sys
 import threading
 import time
 import typing
 import weakref
 
-logger = logging.getLogger(__name__)
+from d810.conf.loggers import getLogger
+
+logger = getLogger(__name__)
 
 K = typing.TypeVar("K")
 V = typing.TypeVar("V")
