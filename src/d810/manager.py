@@ -3,12 +3,11 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import inspect
-import logging
 import pathlib
 import typing
 
 from d810.conf import D810Configuration, ProjectConfiguration
-from d810.conf.loggers import clear_logs, configure_loggers
+from d810.conf.loggers import clear_logs, configure_loggers, getLogger
 from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.hexrays.hexrays_hooks import (
     BlockOptimizerManager,
@@ -30,7 +29,7 @@ except ImportError:
 
 D810_LOG_DIR_NAME = "d810_logs"
 
-logger = logging.getLogger("D810")
+logger = getLogger("D810")
 
 
 @dataclasses.dataclass

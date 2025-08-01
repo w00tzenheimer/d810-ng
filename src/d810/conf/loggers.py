@@ -5,6 +5,7 @@ import logging
 import logging.config
 import pathlib
 import shutil
+import threading
 import typing
 
 LOG_FILENAME = "d810.log"
@@ -16,8 +17,9 @@ conf: dict[str, typing.Any] = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
-        "defaultFormatter": {
-            "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        "D810Formatter": {
+            "()": "d810.conf.loggers.D810Formatter",
+            "format": "%(asctime)s - %(name)s - %(levelname)s%(maturity)s - %(message)s",
         },
         "rawFormatter": {
             "format": "%(message)s",
@@ -27,13 +29,13 @@ conf: dict[str, typing.Any] = {
         "consoleHandler": {
             "class": "logging.StreamHandler",
             "level": "INFO",
-            "formatter": "defaultFormatter",
+            "formatter": "D810Formatter",
             "stream": "ext://sys.stdout",  # Modern way to specify stdout
         },
         "defaultFileHandler": {
             "class": "logging.FileHandler",
             "level": "DEBUG",
-            "formatter": "defaultFormatter",
+            "formatter": "D810Formatter",
             "filename": None,  # Placeholder, will be set dynamically
         },
         "z3FileHandler": {
@@ -108,6 +110,50 @@ conf: dict[str, typing.Any] = {
 
 
 _config = collections.Counter(version=0)
+
+
+class D810Formatter(logging.Formatter):
+    """Custom formatter that makes MDC key/values directly addressable in format strings."""
+
+    def format(self, record: logging.LogRecord) -> str:  # noqa: D401
+        # mdc = getattr(record, "mdc", None)
+        # if isinstance(mdc, dict):
+        #     # Expose MDC keys as attributes so %(key)s works in format strings.
+        #     for k, v in mdc.items():
+        #         if not hasattr(record, k):
+        #             setattr(record, k, v)
+        # Ensure 'maturity' placeholder always resolves
+        maturity = getattr(record, "maturity", "")
+        if maturity:
+            record.maturity = f" - {maturity}"
+        else:
+            record.maturity = ""
+
+        return super().format(record)
+
+
+# # Ensure *every* LogRecord, no matter the logger class, carries MDC data so
+# # that format strings with "%(maturity)s" never raise a KeyError.
+# _old_factory = logging.getLogRecordFactory()
+
+# def _d810_record_factory(*args, **kwargs):  # type: ignore
+#     record = _old_factory(*args, **kwargs)
+#     # Inject MDC data for non-D810Logger records
+#     if not hasattr(record, "mdc"):
+#         # Fetch MDC from the logger instance if available; else empty dict.
+#         try:
+#             logger_obj = logging.getLogger(record.name)
+#             if isinstance(logger_obj, D810Logger):
+#                 record.mdc = (
+#                     logger_obj._get_mdc()
+#                 )  # pylint: disable=protected-access
+#             else:
+#                 record.mdc = {}
+#         except Exception:
+#             record.mdc = {}
+#     return record
+
+# logging.setLogRecordFactory(_d810_record_factory)
 
 
 @dataclasses.dataclass(slots=True)
@@ -230,7 +276,23 @@ class LoggerConfigurator:
 
 
 class D810Logger(logging.Logger):
+    """Custom logger that supports a per-thread Mapped Diagnostic Context (MDC)."""
 
+    _mdc_local: "threading.local" = threading.local()
+
+    @classmethod
+    def mdc(cls) -> typing.Mapping[str, typing.Any]:
+        if not getattr(cls._mdc_local, "mdc", None):
+            cls.set_mdc({"maturity": ""})
+        return getattr(cls._mdc_local, "mdc", {})
+
+    @classmethod
+    def set_mdc(cls, d: dict[str, typing.Any]) -> None:
+        cls._mdc_local.mdc = d
+
+    # ------------------------------------------------------------------
+    # Quick level checks (cached)
+    # ------------------------------------------------------------------
     @functools.cached_property
     def debug_on(self) -> LevelFlag:  # noqa: D401
         """Fast flag: is DEBUG enabled for this logger?"""
@@ -251,6 +313,69 @@ class D810Logger(logging.Logger):
     @functools.cached_property
     def critical_on(self) -> LevelFlag:  # noqa: D401
         return LevelFlag(self.name, logging.CRITICAL)
+
+    # ---------------------------------------------------------------------
+    # MDC helpers
+    # ---------------------------------------------------------------------
+    @classmethod
+    def add_mdc(cls, key: str, value: typing.Any) -> None:
+        """Add or update a key/value pair to the thread-local MDC."""
+        d = dict(cls.mdc())
+        d[key] = value
+        cls.set_mdc(d)
+
+    def get_mdc(self, key: str, default: typing.Any | None = None):
+        """Return the value stored under *key* in the MDC (or *default*)."""
+        return self.mdc().get(key, default)
+
+    def remove_mdc(self, key: str) -> None:
+        """Remove *key* from the MDC if present."""
+        d = dict(self.mdc())
+        d.pop(key, None)
+        self.set_mdc(d)
+
+    def clean_mdc(self) -> None:
+        """Clear the MDC for the current thread."""
+        self.set_mdc({})
+
+    # Convenience: store current Hex-Rays maturity in MDC so formatters can
+    # include it in every record.
+    @classmethod
+    def update_maturity(cls, maturity: str) -> None:
+        cls.add_mdc("maturity", maturity)
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+    def makeRecord(
+        self,
+        name,
+        level,
+        fn,
+        lno,
+        msg,
+        args,
+        exc_info,
+        func=None,
+        extra: dict[str, typing.Any] | None = None,
+        sinfo=None,
+    ):
+        """Inject the current MDC into every ``LogRecord`` that we create."""
+        if not extra:
+            extra = {}
+        extra.update(self.mdc())
+        return super().makeRecord(
+            name,
+            level,
+            fn,
+            lno,
+            msg,
+            args,
+            exc_info,
+            func=func,
+            extra=extra,
+            sinfo=sinfo,
+        )
 
 
 def clear_logs(log_dir: str | pathlib.Path) -> None:

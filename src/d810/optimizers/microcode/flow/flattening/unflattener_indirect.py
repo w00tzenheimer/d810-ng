@@ -1,8 +1,7 @@
-import logging
-
 import idaapi
 from ida_hexrays import *
 
+from d810.conf.loggers import getLogger
 from d810.hexrays.hexrays_helpers import AND_TABLE, append_mop_if_not_in_list
 from d810.hexrays.tracker import MopHistory, MopTracker
 from d810.optimizers.microcode.flow.flattening.generic import (
@@ -12,7 +11,7 @@ from d810.optimizers.microcode.flow.flattening.generic import (
     GenericDispatcherUnflatteningRule,
 )
 
-unflat_logger = logging.getLogger("D810.unflat")
+unflat_logger = getLogger("D810.unflat")
 FLATTENING_JUMP_OPCODES = [m_jtbl]
 
 

@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import abc
-import logging
 import typing
 
 import ida_hexrays
 
 from d810 import _compat
+from d810.conf.loggers import getLogger
 from d810.errors import D810Exception
 from d810.expr.ast import AstNode, minsn_to_ast
 from d810.hexrays.hexrays_formatters import format_minsn_t, maturity_to_string
 from d810.optimizers.microcode.handler import OptimizationRule
 from d810.registry import Registrant
 
-d810_logger = logging.getLogger("D810")
-optimizer_logger = logging.getLogger("D810.optimizer")
+d810_logger = getLogger("D810")
+optimizer_logger = getLogger("D810.optimizer")
 
 
 class InstructionOptimizationRule(OptimizationRule, Registrant, abc.ABC):
@@ -88,14 +88,14 @@ class GenericPatternRule(InstructionOptimizationRule):
         # anything that modified it before.
         repl_pat = self.REPLACEMENT_PATTERN
         if not repl_pat:
-            if optimizer_logger.isEnabledFor(logging.DEBUG):
+            if optimizer_logger.debug_on:
                 optimizer_logger.debug(
                     "No replacement pattern for rule %s",
                     self.NAME,
                 )
             return None
         is_ok = repl_pat.update_leafs_mop(candidate)
-        if optimizer_logger.isEnabledFor(logging.DEBUG):
+        if optimizer_logger.debug_on:
             optimizer_logger.debug(
                 "Replacement pattern updated leaf mops OK?: %s",
                 is_ok,
@@ -103,14 +103,14 @@ class GenericPatternRule(InstructionOptimizationRule):
         if not is_ok:
             return None
         if not candidate.ea:
-            if optimizer_logger.isEnabledFor(logging.DEBUG):
+            if optimizer_logger.debug_on:
                 optimizer_logger.debug(
                     "No EA for candidate %s",
                     candidate,
                 )
             return None
         new_ins = repl_pat.create_minsn(candidate.ea, candidate.dst_mop)
-        if optimizer_logger.isEnabledFor(logging.DEBUG):
+        if optimizer_logger.debug_on:
             optimizer_logger.debug(
                 "Replacement instruction created: %s",
                 format_minsn_t(new_ins),

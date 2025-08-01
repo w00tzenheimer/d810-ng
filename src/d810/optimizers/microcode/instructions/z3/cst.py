@@ -1,18 +1,16 @@
-import logging
 import typing
 
 from ida_hexrays import *
 
 from d810 import _compat
-from d810.conf.loggers import LevelFlag
+from d810.conf.loggers import LevelFlag, getLogger
 from d810.errors import AstEvaluationException
 from d810.expr.ast import AstConstant, AstNode, minsn_to_ast
 from d810.expr.z3_utils import z3_check_mop_equality
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.z3.handler import Z3Rule
 
-optimizer_logger = logging.getLogger("D810.optimizer")
-debug_on = LevelFlag(optimizer_logger.name, logging.DEBUG)
+logger = getLogger(__name__)
 
 
 class Z3ConstantOptimization(Z3Rule):
@@ -55,15 +53,15 @@ class Z3ConstantOptimization(Z3Rule):
         ):
             return None
 
-        if debug_on:
-            optimizer_logger.debug("Found candidate: %s", format_minsn_t(instruction))
+        if logger.debug_on:
+            logger.debug("Found candidate: %s", format_minsn_t(instruction))
         try:
             val_0 = tmp.evaluate_with_leaf_info(leaf_info_list, [0])  # * leaf_num)
             val_1 = tmp.evaluate_with_leaf_info(
                 leaf_info_list, [0xFFFFFFFF]
             )  # * leaf_num)
-            if debug_on:
-                optimizer_logger.debug("  val_0: %s, val_1: %s", val_0, val_1)
+            if logger.debug_on:
+                logger.debug("  val_0: %s, val_1: %s", val_0, val_1)
             if val_0 != val_1 or tmp.mop is None:
                 return None
 
@@ -79,8 +77,8 @@ class Z3ConstantOptimization(Z3Rule):
             c_res_mop = mop_t()
             c_res_mop.make_number(val_0, tmp.mop.size)
             if z3_check_mop_equality(tmp.mop, c_res_mop):
-                if debug_on:
-                    optimizer_logger.debug("  z3_check_mop_equality is equal")
+                if logger.debug_on:
+                    logger.debug("  z3_check_mop_equality is equal")
 
                 tmp.add_constant_leaf("c_res", val_0, tmp.mop.size)
                 # TODO(w00tzenheimer): should we recompute caches so that leafs_by_name contains the new constant leaf?
@@ -88,13 +86,9 @@ class Z3ConstantOptimization(Z3Rule):
                 new_instruction = self.get_replacement(typing.cast(AstNode, tmp))
                 return new_instruction
         except ZeroDivisionError:
-            optimizer_logger.error(
-                "ZeroDivisionError while evaluating %s", tmp, exc_info=True
-            )
+            logger.error("ZeroDivisionError while evaluating %s", tmp, exc_info=True)
         except AstEvaluationException as e:
-            optimizer_logger.error(
-                "Error while evaluating %s: %s", tmp, e, exc_info=True
-            )
+            logger.error("Error while evaluating %s: %s", tmp, e, exc_info=True)
 
     @_compat.override
     def check_candidate(self, candidate: AstNode) -> bool:

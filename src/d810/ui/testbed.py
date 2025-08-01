@@ -16,13 +16,10 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 import ida_kernwin
 
+from d810.conf.loggers import getLogger
+
 # Configure a logger for the script
-LOGGER = logging.getLogger(__name__)
-# Set a basic configuration if one is not already set
-if not logging.root.handlers:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-    )
+LOGGER = getLogger(__name__)
 
 
 # --- Test Results ---

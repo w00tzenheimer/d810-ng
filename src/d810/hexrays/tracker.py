@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import logging
 from typing import Dict
 
 from ida_hexrays import *
 
+from d810.conf.loggers import getLogger
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
 from d810.hexrays.cfg_utils import (
     change_1way_block_successor,
@@ -37,7 +37,7 @@ from d810.hexrays.hexrays_helpers import (
 # the searched mops have only one possible values. For instance, this is a preliminary step used in code unflattening.
 
 
-logger = logging.getLogger("D810.tracker")
+logger = getLogger("D810.tracker")
 
 
 class InstructionDefUseCollector(mop_visitor_t):

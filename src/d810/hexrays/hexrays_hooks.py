@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import enum
-import logging
 import pathlib
 import typing
 
+import ida_hexrays
 from ida_hexrays import *
 
+from d810.conf.loggers import getLogger
 from d810.errors import D810Exception
 from d810.expr.z3_utils import log_z3_instructions
 from d810.hexrays.hexrays_formatters import (
@@ -21,9 +22,9 @@ from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
 )
 
-main_logger = logging.getLogger("D810")
-optimizer_logger = logging.getLogger("D810.optimizer")
-helper_logger = logging.getLogger("D810.helper")
+main_logger = getLogger("D810")
+optimizer_logger = getLogger("D810.optimizer")
+helper_logger = getLogger("D810.helper")
 
 DEFAULT_OPTIMIZATION_PATTERN_MATURITIES = [
     MMAT_PREOPTIMIZED,
@@ -143,6 +144,7 @@ class InstructionOptimizerManager(optinsn_t):
 
         if (mba is not None) and (mba.maturity != self.current_maturity):
             self.current_maturity = mba.maturity
+            main_logger.update_maturity(maturity_to_string(self.current_maturity))
             main_logger.debug(
                 "Instruction optimization function called at maturity: {0}".format(
                     maturity_to_string(self.current_maturity)
@@ -338,6 +340,20 @@ class HexraysDecompilationHook(Hexrays_Hooks):
     #     return 0
 
     def glbopt(self, mba: mbl_array_t) -> "int":
-        self.callback(DecompilationEvent.FINISHED)
         main_logger.info("glbopt finished for function at %s", hex(mba.entry_ea))
+        return 0
+
+    def structural(self, ct: "control_graph_t") -> int:  # type: ignore
+        """Structural analysis has been finished.
+
+        @param ct: (control_graph_t *)"""
+        main_logger.info("Structural analysis has been finished")
+        self.callback(DecompilationEvent.FINISHED)
+        return 0
+
+    def func_printed(self, cfunc: "cfunc_t") -> int:
+        """Function text has been generated. Plugins may modify the text in cfunc_t::sv. However, it is too late to modify the ctree or microcode. The text uses regular color codes (see lines.hpp) COLOR_ADDR is used to store pointers to ctree items.
+
+        @param cfunc: (cfunc_t *)"""
+        main_logger.info("Function text has been generated")
         return 0

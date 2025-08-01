@@ -1,6 +1,8 @@
-import logging
 import os
 
+import ida_hexrays
+
+from d810.conf.loggers import getLogger
 from d810.expr.ast import minsn_to_ast
 from d810.hexrays.hexrays_formatters import (
     format_minsn_t,
@@ -14,9 +16,7 @@ from d810.optimizers.microcode.instructions.analysis.handler import (
 )
 from d810.optimizers.microcode.instructions.analysis.utils import get_possible_patterns
 
-import ida_hexrays
-
-optimizer_logger = logging.getLogger("D810.optimizer")
+optimizer_logger = getLogger("D810.optimizer")
 
 
 class ExampleGuessingRule(InstructionAnalysisRule):

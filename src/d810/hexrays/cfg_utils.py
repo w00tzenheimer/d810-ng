@@ -1,13 +1,12 @@
-import logging
-
 import idaapi
 from ida_hexrays import *
 
+from d810.conf.loggers import getLogger
 from d810.errors import ControlFlowException
 from d810.hexrays.hexrays_formatters import block_printer
 from d810.hexrays.hexrays_helpers import CONDITIONAL_JUMP_OPCODES
 
-helper_logger = logging.getLogger("D810.helper")
+helper_logger = getLogger("D810.helper")
 
 
 def log_block_info(blk: mblock_t, logger_func=helper_logger.info):
