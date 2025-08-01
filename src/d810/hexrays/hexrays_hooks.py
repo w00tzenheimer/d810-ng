@@ -341,6 +341,7 @@ class HexraysDecompilationHook(Hexrays_Hooks):
 
     def glbopt(self, mba: mbl_array_t) -> "int":
         main_logger.info("glbopt finished for function at %s", hex(mba.entry_ea))
+        main_logger.reset_maturity()
         return 0
 
     def structural(self, ct: "control_graph_t") -> int:  # type: ignore
