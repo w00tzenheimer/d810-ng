@@ -324,25 +324,32 @@ class D810Logger(logging.Logger):
         d[key] = value
         cls.set_mdc(d)
 
-    def get_mdc(self, key: str, default: typing.Any | None = None):
+    @classmethod
+    def get_mdc(cls, key: str, default: typing.Any | None = None):
         """Return the value stored under *key* in the MDC (or *default*)."""
-        return self.mdc().get(key, default)
+        return cls.mdc().get(key, default)
 
-    def remove_mdc(self, key: str) -> None:
+    @classmethod
+    def remove_mdc(cls, key: str) -> None:
         """Remove *key* from the MDC if present."""
-        d = dict(self.mdc())
+        d = dict(cls.mdc())
         d.pop(key, None)
-        self.set_mdc(d)
+        cls.set_mdc(d)
 
-    def clean_mdc(self) -> None:
+    @classmethod
+    def clean_mdc(cls) -> None:
         """Clear the MDC for the current thread."""
-        self.set_mdc({})
+        cls.set_mdc({})
 
     # Convenience: store current Hex-Rays maturity in MDC so formatters can
     # include it in every record.
     @classmethod
     def update_maturity(cls, maturity: str) -> None:
         cls.add_mdc("maturity", maturity)
+
+    @classmethod
+    def reset_maturity(cls) -> None:
+        cls.remove_mdc("maturity")
 
     # ------------------------------------------------------------------
     # Internal
