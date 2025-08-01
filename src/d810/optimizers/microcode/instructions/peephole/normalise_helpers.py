@@ -13,6 +13,7 @@ All rules inherit from PeepholeSimplificationRule, therefore are auto-registered
 
 from __future__ import annotations
 
+import functools
 import typing
 
 import ida_hexrays
@@ -65,6 +66,16 @@ class TransparentCallUnwrapRule(PeepholeSimplificationRule):
         self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:  # noqa: D401
         """Return a replacement `minsn_t` or None to keep *ins* unchanged."""
+
+        if logger.debug_on:
+            logger.debug(
+                "[transparent-call] considering ea=%X, opcode=%s l=%s r=%s d=%s",
+                sanitize_ea(ins.ea),
+                opcode_to_string(ins.opcode),
+                format_mop_t(ins.l),
+                format_mop_t(ins.r),
+                format_mop_t(ins.d),
+            )
 
         # Pattern match -----------------------------------------------------------------
         if ins.opcode != ida_hexrays.m_call:
@@ -137,6 +148,16 @@ class TypedImmediateCanonicaliseRule(PeepholeSimplificationRule):
     ) -> ida_hexrays.minsn_t | None:
         """Replace *ins* when all it does is materialise a literal."""
 
+        if logger.debug_on:
+            logger.debug(
+                "[typed-imm] considering ea=%X, opcode=%s l=%s r=%s d=%s",
+                sanitize_ea(ins.ea),
+                opcode_to_string(ins.opcode),
+                format_mop_t(ins.l),
+                format_mop_t(ins.r),
+                format_mop_t(ins.d),
+            )
+
         # Skip rotate helper calls - they need special handling
         if is_rotate_helper_call(ins):
             return None
@@ -187,13 +208,15 @@ class TypedImmediateCanonicaliseRule(PeepholeSimplificationRule):
 # ---------------------------------------------------------------------------
 
 
-def _extract_literal_from_mop(mop: ida_hexrays.mop_t | None) -> tuple[int, int] | None:
+def _extract_literal_from_mop(
+    mop: ida_hexrays.mop_t | None,
+) -> list[tuple[int, int]] | None:
     """Return (value, size_bytes) if *mop* ultimately encodes a numeric constant."""
 
     if mop is None:
         return None
     if mop.t == ida_hexrays.mop_n:
-        return mop.nnn.value, mop.size
+        return [(mop.nnn.value, mop.size)]
 
     # m_ldc wrapper (mop_d → minsn_t(ldc …))
     if (
@@ -203,57 +226,117 @@ def _extract_literal_from_mop(mop: ida_hexrays.mop_t | None) -> tuple[int, int] 
         and mop.d.l is not None
         and mop.d.l.t == ida_hexrays.mop_n
     ):
-        return mop.d.l.nnn.value, mop.d.l.size
+        return [(mop.d.l.nnn.value, mop.d.l.size)]
 
     # typed-immediate mop_f
     if mop.t == ida_hexrays.mop_f and getattr(mop, "f", None):
         args = mop.f.args
-        if (
-            args
-            and len(args) >= 1
-            and args[0] is not None
-            and args[0].t == ida_hexrays.mop_n
-        ):
-            return args[0].nnn.value, args[0].size
+        if args:
+            rval: list[tuple[int, int]] = []
+            for arg in args:
+                if arg is not None and arg.t == ida_hexrays.mop_n:
+                    rval.append((arg.nnn.value, arg.size))
+                else:
+                    break
+            else:
+                # for else here means *every* arg is a literal
+                # and there was no early break in the for loop
+                # which means all the args are literals
+                return rval
+
     return None
 
 
+def example(msg: str) -> typing.Callable:
+    def decorator(func: typing.Callable) -> typing.Callable:
+        @functools.wraps(func)
+        def wrapper(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 class ConstantCallResultFoldRule(PeepholeSimplificationRule):
-    """Collapse helper calls whose *result* is already a literal into `m_ldc`."""
+    """Collapse helper calls whose *result* is already a literal into a constant"""
 
-    DESCRIPTION = "Fold helper call with literal destination into single m_ldc"
+    DESCRIPTION = (
+        "Fold helper calls with literal destination into single constant expression"
+    )
 
-    maturities = [
-        ida_hexrays.MMAT_CALLS,
-        ida_hexrays.MMAT_GLBOPT1,
-        ida_hexrays.MMAT_GLBOPT2,
-    ]
+    maturities = [ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS]
 
+    @example(
+        "opcode=call l=<mop_t type=mop_h size=-1 dstr=!__ROL8__> r=<mop_t type=mop_z size=-1 dstr=> d=<mop_t type=mop_f size=8 dstr=<fast:_QWORD #0x33637E66.8,char #4.1>.8>"
+    )
     @_compat.override
     def check_and_replace(
         self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:
 
-        # Skip rotate helper calls entirely (they aren't literal constants)
-        if is_rotate_helper_call(ins):
-            return None
+        if logger.debug_on:
+            logger.debug(
+                "[const-call] considering ea=%X, opcode=%s l=%s r=%s d=%s",
+                sanitize_ea(ins.ea),
+                opcode_to_string(ins.opcode),
+                format_mop_t(ins.l),
+                format_mop_t(ins.r),
+                format_mop_t(ins.d),
+            )
 
         # Only consider calls.
         if ins.opcode != ida_hexrays.m_call or ins.d is None:
             return None
 
-        extracted = _extract_literal_from_mop(ins.d)
-        if extracted is None:
+        # only consider rotate helper calls (for now)
+        if not is_rotate_helper_call(ins.l.d):
+            logger.info(
+                "[const-call] not a rotate helper call, it is a %s",
+                ins.l.dstr(),
+            )
             return None
 
-        value, size_bytes = extracted
-        if size_bytes not in AND_TABLE:
-            size_bytes = 4
+        # extract helper name and width from helper string (e.g., __ROL4__)
+        helper_name = (ins.l.d.helper or "").lstrip("!")
+        if not helper_name:
+            logger.debug(
+                "[const-call] helper name is None, bail out",
+                format_mop_t(ins.l.d),
+            )
+            return None
+
+        extracted = _extract_literal_from_mop(ins.d)
+        if not extracted:
+            if logger.debug_on:
+                logger.debug(
+                    "[const-call] no extracted literals",
+                    format_mop_t(ins.d),
+                )
+            return None
+
+        if len(extracted) != 2:
+            if logger.debug_on:
+                logger.debug("[const-call] unexpected arg count: %d", len(extracted))
+            return None
+
+        lhs_val, lhs_size = extracted[0]
+        rhs_val, _ = extracted[1]
+
+        if lhs_size > ins.d.size:
+            logger.warning(
+                "[const-call] lhs_size > ins.d.size, will have to truncate!",
+                lhs_size,
+                ins.d.size,
+            )
+
+        helper_func = getattr(utils, helper_name)
+        result = helper_func(lhs_val, rhs_val) & AND_TABLE[ins.d.size]
 
         new = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
         new.opcode = ida_hexrays.m_ldc
         cst = ida_hexrays.mop_t()
-        cst.make_number(value, size_bytes)
+        cst.make_number(result, ins.d.size)
         new.l = cst
         # clone destination when it's a real l-value
         if ins.d.t in {
@@ -264,34 +347,23 @@ class ConstantCallResultFoldRule(PeepholeSimplificationRule):
         }:
             new.d = ida_hexrays.mop_t()
             new.d.assign(ins.d)
-            new.d.size = size_bytes
+            new.d.size = ins.d.size
         else:
             new.d = ida_hexrays.mop_t()
             new.d.erase()
-            new.d.size = size_bytes
+            new.d.size = ins.d.size
         new.r = ida_hexrays.mop_t()
         new.r.erase()
-        new.r.size = size_bytes
+        new.r.size = ins.d.size
         if logger.debug_on:
             logger.debug(
                 "[const-call] 0x%X call -> ldc 0x%X (size=%d)",
                 sanitize_ea(ins.ea),
-                value,
-                size_bytes,
+                result,
+                ins.d.size,
             )
         return new
 
-    """
-  File "/Users/mahmoud/.idapro/packages/d810/src/d810/optimizers/microcode/instructions/peephole/normalise_helpers.py", line 262, in check_and_replace
-    logger.debug(
-Message: '[const-call] 0x%X call→ldc 0x%X (size=%d)'
-Arguments: (6442468193, 15680791916180618035, 8)    
-    """
-
-
-# ---------------------------------------------------------------------------
-# 4. Rotate helper inlining (GLBOPT1) ----------------------------------------
-# ---------------------------------------------------------------------------
 
 """
 # Special handling for rotate calls
@@ -335,25 +407,23 @@ if mop.t == ida_hexrays.mop_d and _is_rotate_helper_call(mop.d):
 """
 
 
+@example(
+    "mov l=call !__ROL8__<fast:_QWORD #-0x41675E3C1408CD87.8,char #0xE.1>.8 r= d=rax.8{62}"
+)
 class RotateHelperInlineRule(PeepholeSimplificationRule):
     DESCRIPTION = (
-        "Unwrap helper calls whose result is stored in a register and can be optimized"
+        "mov  l=m_call <helper>  r=  d=<register> -> mov  l=<constant>  d=<register>"
     )
     """
-        mov  l=m_call <helper>  r=<mop_r>  d=<mop_d expr>
+        mov  l=m_call <helper>  r=  d=<register>
 
-    by the expression stored in *r*.  This turns a value-only helper
-    (often emitted by the decompiler for things like casts or wrappers
+    This turns a value-only helper (often emitted by the decompiler for things like casts or wrappers
     around compiler intrinsics) into the real micro-instruction so that
     subsequent passes can optimize it.
     """
 
     # Run *very* early so that the AST builder never sees the wrapper.
-    maturities = [
-        ida_hexrays.MMAT_LOCOPT,
-        ida_hexrays.MMAT_GLBOPT1,
-        ida_hexrays.MMAT_GLBOPT2,
-    ]
+    maturities = [ida_hexrays.MMAT_LOCOPT]
 
     @_compat.override
     def check_and_replace(
@@ -378,9 +448,11 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
 
         left: ida_hexrays.mop_t = ins.l
         dest: ida_hexrays.mop_t = ins.d
+
         if (
             left is None
             or dest is None
+            or dest.t != ida_hexrays.mop_r
             or left.t != ida_hexrays.mop_d
             or left.d.opcode != ida_hexrays.m_call
             or not is_rotate_helper_call(left.d)
@@ -390,11 +462,8 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
             # bail out if the helper is not a rotate helper
             return None
 
-        if logger.debug_on:
-            logger.debug("[RotateHelperInline] okay, we're doing this!")
-
         register_size = AND_TABLE[dest.size]
-        log_mop_tree(left)
+        # log_mop_tree(left)
         insn_helper: ida_hexrays.mop_t = left.d.l  # so confusing.
         # extract helper name and width from helper string (e.g., __ROL4__)
         helper_name = (insn_helper.helper or "").lstrip("!")
@@ -420,7 +489,8 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
             and hasattr(call_ins.r, "f")
             and call_ins.r.f is not None
         ):
-            args_list = call_ins.r.f.args
+            # args_list = call_ins.r.f.args
+            args_list = _extract_literal_from_mop(call_ins.r)
 
         # Pattern B: arguments packed in a mop_f stored in call_ins.d (observed when call_ins.r is mop_z)
         elif (
@@ -429,11 +499,17 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
             and hasattr(call_ins.d, "f")
             and call_ins.d.f is not None
         ):
-            args_list = call_ins.d.f.args
+            # args_list = call_ins.d.f.args
+            args_list = _extract_literal_from_mop(call_ins.d)
 
         # Pattern C: compact helper – r is value, d is shift amount
         elif call_ins.r is not None and call_ins.d is not None:
-            args_list = [call_ins.r, call_ins.d]
+            # args_list = [call_ins.r, call_ins.d]
+            args_list = _extract_literal_from_mop(call_ins.r)
+            if args_list:
+                shift_list = _extract_literal_from_mop(call_ins.d)
+                if shift_list:
+                    args_list.extend(shift_list)
         else:
             logger.debug(
                 "[RotateHelperInline] unable to determine helper arguments (call_ins.l=%s r=%s d=%s), bail out",
@@ -453,22 +529,23 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
             )
 
         helper_func = getattr(utils, helper_name)
+
         # Safely extract literal values from the two arguments.  If either is not a
         # literal we cannot evaluate the helper at this stage.
+        if not args_list:
+            if logger.debug_on:
+                logger.debug("[RotateHelperInline] no args list")
+            return None
+
         if len(args_list) != 2:
-            logger.debug(
-                "[RotateHelperInline] unexpected arg count: %d", len(args_list)
-            )
+            if logger.debug_on:
+                logger.debug(
+                    "[RotateHelperInline] unexpected arg count: %d", len(args_list)
+                )
             return None
 
-        lhs = _extract_literal_from_mop(args_list[0])
-        rhs = _extract_literal_from_mop(args_list[1])
-        if lhs is None or rhs is None:
-            logger.debug("[RotateHelperInline] non-literal helper arguments - skipping")
-            return None
-
-        lhs_val, _ = lhs
-        rhs_val, _ = rhs
+        lhs_val, _ = args_list[0]
+        rhs_val, _ = args_list[1]
 
         result = helper_func(lhs_val, rhs_val) & register_size
         if logger.debug_on:
