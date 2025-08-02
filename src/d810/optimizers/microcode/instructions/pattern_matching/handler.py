@@ -30,11 +30,12 @@ class PatternMatchingRule(GenericPatternRule):
         if fuzz_pattern is not None:
             self.fuzz_pattern = fuzz_pattern
         self._generate_pattern_candidates()
-        pattern_search_logger.debug(
-            "Rule {0} configured with {1} patterns".format(
-                self.__class__.__name__, len(self.pattern_candidates)
+        if pattern_search_logger.debug_on:
+            pattern_search_logger.debug(
+                "Rule %s configured with %s patterns",
+                self.__class__.__name__,
+                len(self.pattern_candidates),
             )
-        )
 
     @property
     @abc.abstractmethod
@@ -156,7 +157,8 @@ class PatternStorage(object):
         return True
 
     def get_matching_rule_pattern_info(self, pattern: AstBase):
-        pattern_search_logger.info("Searching : {0}".format(pattern))
+        if pattern_search_logger.debug_on:
+            pattern_search_logger.debug("Searching for %s", pattern)
         return self.explore_one_level(pattern, 1)
 
     def explore_one_level(self, searched_pattern: AstBase, cur_level: int):
@@ -174,26 +176,30 @@ class PatternStorage(object):
             - searched_layer_signature.count("N")
             - searched_layer_signature.count("L")
         )
-        pattern_search_logger.debug(
-            "  Layer {0}: {1} -> {2} variations (storage has {3} signature)".format(
-                cur_level,
-                searched_layer_signature,
-                nb_possible_signature,
-                len(self.next_layer_patterns),
+        if pattern_search_logger.debug_on:
+            pattern_search_logger.debug(
+                "  Layer {0}: {1} -> {2} variations (storage has {3} signature)".format(
+                    cur_level,
+                    searched_layer_signature,
+                    nb_possible_signature,
+                    len(self.next_layer_patterns),
+                )
             )
-        )
         matched_rule_pattern_info = []
         if nb_possible_signature < len(self.next_layer_patterns):
-            pattern_search_logger.debug("  => Using method 1")
+            if pattern_search_logger.debug_on:
+                pattern_search_logger.debug("  => Using method 1")
             for possible_sig in signature_generator(searched_layer_signature):
                 try:
                     test_sig = self.layer_signature_to_key(possible_sig)
                     pattern_storage = self.next_layer_patterns[test_sig]
-                    pattern_search_logger.info(
-                        "    Compatible signature: {0} -> resolved: {1}".format(
-                            test_sig, pattern_storage.rule_resolved
+                    if pattern_search_logger.debug_on:
+                        pattern_search_logger.debug(
+                            "    Compatible signature: %s -> resolved: %s",
+                            test_sig,
+                            pattern_storage.rule_resolved,
                         )
-                    )
+
                     matched_rule_pattern_info += pattern_storage.rule_resolved
                     matched_rule_pattern_info += pattern_storage.explore_one_level(
                         searched_pattern, cur_level + 1
@@ -201,7 +207,8 @@ class PatternStorage(object):
                 except KeyError:
                     pass
         else:
-            pattern_search_logger.debug("  => Using method 2")
+            if pattern_search_logger.debug_on:
+                pattern_search_logger.debug("  => Using method 2")
             searched_layer_signature_key = self.layer_signature_to_key(
                 searched_layer_signature
             )
@@ -209,11 +216,12 @@ class PatternStorage(object):
                 if self.is_layer_signature_compatible(
                     searched_layer_signature_key, test_sig
                 ):
-                    pattern_search_logger.info(
-                        "    Compatible signature: {0} -> resolved: {1}".format(
-                            test_sig, pattern_storage.rule_resolved
+                    if pattern_search_logger.debug_on:
+                        pattern_search_logger.debug(
+                            "    Compatible signature: %s -> resolved: %s",
+                            test_sig,
+                            pattern_storage.rule_resolved,
                         )
-                    )
                     matched_rule_pattern_info += pattern_storage.rule_resolved
                     matched_rule_pattern_info += pattern_storage.explore_one_level(
                         searched_pattern, cur_level + 1

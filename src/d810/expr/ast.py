@@ -23,7 +23,7 @@ from d810.expr.utils import (
 from d810.hexrays.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,
-    log_mop_tree,
+    mop_tree,
     mop_type_to_string,
     opcode_to_string,
     sanitize_ea,
@@ -1060,6 +1060,7 @@ class AstConstant(AstLeaf):
 
 
 class AstProxy(AstBase):
+
     def __init__(self, target_ast: AstBase):
         # The proxy initially holds a reference to the shared, frozen template
         self._target = target_ast
@@ -1541,7 +1542,7 @@ def mop_to_ast_internal(
 
     # If we reach here, we failed to build an AST. Log the full mop tree.
     logger.error("[mop_to_ast_internal] Could not build AST for mop. Dumping mop tree:")
-    log_mop_tree(mop)
+    mop_tree(mop)
     return None
 
 
