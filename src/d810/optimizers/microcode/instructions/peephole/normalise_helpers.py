@@ -22,18 +22,16 @@ from d810 import _compat
 from d810.conf.loggers import getLogger
 from d810.expr import utils
 from d810.hexrays.hexrays_formatters import (  # noqa: F401 - debug only
-    format_minsn_t,
     format_mop_t,
-    log_mop_tree,
     opcode_to_string,
     sanitize_ea,
 )
-from d810.hexrays.hexrays_helpers import AND_TABLE, dup_mop, is_rotate_helper_call
+from d810.hexrays.hexrays_helpers import AND_TABLE, is_rotate_helper_call
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
 
-logger = getLogger(__name__, default_level=10)
+logger = getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 1. Transparent call unwrapping (MMAT_CALLS) -----------------------------------
@@ -57,8 +55,8 @@ class TransparentCallUnwrapRule(PeepholeSimplificationRule):
 
     # Run *very* early so that the AST builder never sees the wrapper.
     maturities = [
-        ida_hexrays.MMAT_CALLS,
-        ida_hexrays.MMAT_GLBOPT1,
+        # ida_hexrays.MMAT_CALLS,
+        # ida_hexrays.MMAT_GLBOPT1,
     ]
 
     @_compat.override
@@ -138,8 +136,8 @@ class TypedImmediateCanonicaliseRule(PeepholeSimplificationRule):
     DESCRIPTION = "Canonicalise typed immediates (mop_f) into plain mop_n literals"
 
     maturities = [
-        ida_hexrays.MMAT_CALLS,
-        ida_hexrays.MMAT_GLBOPT1,
+        # ida_hexrays.MMAT_CALLS,
+        # ida_hexrays.MMAT_GLBOPT1,
     ]
 
     @_compat.override
@@ -229,7 +227,7 @@ def _extract_literal_from_mop(
         return [(mop.d.l.nnn.value, mop.d.l.size)]
 
     # typed-immediate mop_f
-    if mop.t == ida_hexrays.mop_f and getattr(mop, "f", None):
+    if mop.t == ida_hexrays.mop_f and mop.f is not None:
         args = mop.f.args
         if args:
             rval: list[tuple[int, int]] = []
@@ -285,32 +283,37 @@ class ConstantCallResultFoldRule(PeepholeSimplificationRule):
                 format_mop_t(ins.d),
             )
 
-        # Only consider calls.
+        # Only consider calls that have a destination result
         if ins.opcode != ida_hexrays.m_call or ins.d is None:
             return None
 
+        # log_mop_tree(ins.l)
+        # log_mop_tree(ins.r)
+        # log_mop_tree(ins.d)
         # only consider rotate helper calls (for now)
-        if not is_rotate_helper_call(ins.l.d):
-            logger.info(
-                "[const-call] not a rotate helper call, it is a %s",
-                ins.l.dstr(),
-            )
+        if not is_rotate_helper_call(ins):
+            if logger.debug_on:
+                logger.debug(
+                    "[const-call] not a rotate helper call, it is a %s",
+                    ins.dstr(),
+                )
             return None
 
         # extract helper name and width from helper string (e.g., __ROL4__)
-        helper_name = (ins.l.d.helper or "").lstrip("!")
+        helper_name = (ins.l.helper or "").lstrip("!")
         if not helper_name:
-            logger.debug(
-                "[const-call] helper name is None, bail out",
-                format_mop_t(ins.l.d),
-            )
+            if logger.debug_on:
+                logger.debug(
+                    "[const-call] helper name is None, bail out",
+                    format_mop_t(ins.l.d),
+                )
             return None
 
         extracted = _extract_literal_from_mop(ins.d)
         if not extracted:
             if logger.debug_on:
                 logger.debug(
-                    "[const-call] no extracted literals",
+                    "[const-call] no extracted literals from %s",
                     format_mop_t(ins.d),
                 )
             return None
