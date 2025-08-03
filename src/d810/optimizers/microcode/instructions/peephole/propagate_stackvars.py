@@ -56,7 +56,7 @@ class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
         # Process constant assignments to stack variables
         if self._is_constant_stack_assignment(ins):
             self._record_stack_assignment(ins)
-            return None  # No change needed
+            return  # No change needed
 
         # Check if this instruction uses stack variables we can fold
         changed = False
@@ -69,14 +69,14 @@ class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
                 if self._process_operand(op):
                     changed = True
 
-        if changed:
-            if logger.debug_on:
-                logger.debug(
-                    "[stack-var-fold] folded instruction at ea=%X",
-                    sanitize_ea(ins.ea),
-                )
-            return None
-        return None
+        if not changed:
+            return
+        if logger.debug_on:
+            logger.debug(
+                "[stack-var-fold] folded instruction at ea=%X",
+                sanitize_ea(ins.ea),
+            )
+        return new_ins
 
     def _is_constant_stack_assignment(self, ins: ida_hexrays.minsn_t) -> bool:
         """Check if instruction is a constant assignment to a stack variable."""
@@ -234,9 +234,19 @@ class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
 
                 # If we found a stack variable, record the assignment
                 if stack_var_name is not None:
-                    # Create a composite name including the offset
-                    composite_name = f"{stack_var_name}+{offset:X}"
+                    # For true stack variables (mop_S) we keep track of the offset, but for
+                    # register based references (mop_r) the immediate that appears in an
+                    # expression like (rcx+#4) is not an offset into the *variable* – it's
+                    # simply an arithmetic addition on a pointer register.  In that case we
+                    # record the constant against the register itself so that later uses of
+                    # the register (e.g. an `add rcx, #4`) can be folded correctly.
+                    if stack_var and stack_var.t == ida_hexrays.mop_S:
+                        composite_name = f"{stack_var_name}+{offset:X}"
+                    else:
+                        composite_name = stack_var_name
+
                     self.stack_var_map[composite_name] = (value, size)
+
                     if logger.debug_on:
                         logger.debug(
                             "[stack-var-fold] recorded stx assignment: %s = 0x%X (size=%d)",
@@ -274,6 +284,24 @@ class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
                         size,
                     )
 
+        # If this is a register operand that we've tracked, replace it
+        elif op.t == ida_hexrays.mop_r:
+            reg_name = ida_hexrays.get_mreg_name(op.r, op.size)
+            reg_name += f".{op.size}{{{op.valnum}}}"
+            if reg_name in self.stack_var_map:
+                value, _ = self.stack_var_map[reg_name]
+                # Preserve the original operand size to avoid width mismatches
+                op.make_number(value, op.size)
+                changed = True
+
+                if logger.debug_on:
+                    logger.debug(
+                        "[stack-var-fold] replaced register %s with 0x%X (size=%d)",
+                        reg_name,
+                        value,
+                        op.size,
+                    )
+
         # Handle memory reads from stack variables
         elif op.t == ida_hexrays.mop_d and op.d is not None:
             # Check if this is a memory read from a stack variable
@@ -306,7 +334,10 @@ class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
                         offset = 0
 
                         # Check left operand
-                        if op.d.l.d.l is not None and op.d.l.d.l.t == ida_hexrays.mop_S:
+                        if op.d.l.d.l is not None and op.d.l.d.l.t in (
+                            ida_hexrays.mop_S,
+                            ida_hexrays.mop_r,
+                        ):
                             stack_var = op.d.l.d.l
                             if (
                                 op.d.l.d.r is not None
@@ -315,8 +346,9 @@ class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
                                 offset = op.d.l.d.r.nnn.value
 
                         # Check right operand
-                        elif (
-                            op.d.l.d.r is not None and op.d.l.d.r.t == ida_hexrays.mop_S
+                        elif op.d.l.d.r is not None and op.d.l.d.r.t in (
+                            ida_hexrays.mop_S,
+                            ida_hexrays.mop_r,
                         ):
                             stack_var = op.d.l.d.r
                             if (
