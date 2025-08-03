@@ -22,6 +22,57 @@ logger = getLogger(__name__, default_level=logging.DEBUG)
 class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
     DESCRIPTION = "Fold stack variables that are assigned constant values across blocks"
 
+    # ------------------------------------------------------------------
+    #  Propagate constants only for an *allowlist* of micro-opcodes that are
+    #  considered side-effect free with respect to control flow.  Anything
+    #  not explicitly mentioned below is skipped (e.g. jumps, switch
+    #  tables, etc.).  The list mirrors the one you provided.
+    # ------------------------------------------------------------------
+    ALLOW_PROPAGATION_OPCODES: set[int] = {
+        ida_hexrays.m_stx,
+        ida_hexrays.m_mov,
+        ida_hexrays.m_neg,
+        ida_hexrays.m_lnot,
+        ida_hexrays.m_bnot,
+        ida_hexrays.m_xds,
+        ida_hexrays.m_xdu,
+        ida_hexrays.m_low,
+        ida_hexrays.m_high,
+        ida_hexrays.m_add,
+        ida_hexrays.m_sub,
+        ida_hexrays.m_mul,
+        ida_hexrays.m_udiv,
+        ida_hexrays.m_sdiv,
+        ida_hexrays.m_umod,
+        ida_hexrays.m_smod,
+        ida_hexrays.m_or,
+        ida_hexrays.m_and,
+        ida_hexrays.m_xor,
+        ida_hexrays.m_shl,
+        ida_hexrays.m_shr,
+        ida_hexrays.m_sar,
+        ida_hexrays.m_cfadd,
+        ida_hexrays.m_ofadd,
+        ida_hexrays.m_cfshl,
+        ida_hexrays.m_cfshr,
+        ida_hexrays.m_sets,
+        ida_hexrays.m_seto,
+        ida_hexrays.m_setp,
+        ida_hexrays.m_setnz,
+        ida_hexrays.m_setz,
+        ida_hexrays.m_setae,
+        ida_hexrays.m_setb,
+        ida_hexrays.m_seta,
+        ida_hexrays.m_setbe,
+        ida_hexrays.m_setg,
+        ida_hexrays.m_setge,
+        ida_hexrays.m_setl,
+        ida_hexrays.m_setle,
+        ida_hexrays.m_call,
+        ida_hexrays.m_icall,
+        ida_hexrays.m_ret,
+    }
+
     def __init__(self):
         super().__init__()
         # Map to track stack variable assignments: {var_name: (value, size)}
@@ -60,10 +111,16 @@ class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
             else:
                 logger.debug("[stack-var-fold] constant map is currently empty")
 
-        # Process constant assignments to stack variables
+
+        # Record constant stack-variable assignments.  We always do this so
+        #    that future instructions can benefit from the recorded mapping even
+        #    if this particular instruction is not itself rewritten.--------
         if self._is_constant_stack_assignment(ins):
             self._record_stack_assignment(ins)
-            return  # No change needed
+            return  # This instruction is just an assignment – nothing to fold
+
+        if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
+            return  # Skip instructions outside the allow-list
 
         # Check if this instruction uses stack variables we can fold
         changed = False
