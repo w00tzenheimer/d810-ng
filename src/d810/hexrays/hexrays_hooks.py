@@ -92,6 +92,16 @@ class InstructionOptimizerManager(optinsn_t):
             DEFAULT_ANALYZER_MATURITIES, log_dir=self.log_dir
         )
 
+    def add_optimizer(self, optimizer: InstructionOptimizer):
+        self.instruction_optimizers.append(optimizer)
+        self.optimizer_usage_info[optimizer.name] = 0
+
+    def add_rule(self, rule: InstructionOptimizationRule):
+        # optimizer_log.info("Trying to add rule {0}".format(rule))
+        for ins_optimizer in self.instruction_optimizers:
+            ins_optimizer.add_rule(rule)
+        self.analyzer.add_rule(rule)
+
     def func(self, blk: mblock_t, ins: minsn_t) -> bool:
         self.log_info_on_input(blk, ins)
         try:
@@ -145,11 +155,11 @@ class InstructionOptimizerManager(optinsn_t):
         if (mba is not None) and (mba.maturity != self.current_maturity):
             self.current_maturity = mba.maturity
             main_logger.update_maturity(maturity_to_string(self.current_maturity))
-            main_logger.debug(
-                "Instruction optimization function called at maturity: {0}".format(
-                    maturity_to_string(self.current_maturity)
+            if main_logger.debug_on:
+                main_logger.debug(
+                    "Instruction optimization function called at maturity: %s",
+                    maturity_to_string(self.current_maturity),
                 )
-            )
             self.analyzer.set_maturity(self.current_maturity)
             self.current_blk_serial = None
 
@@ -163,16 +173,6 @@ class InstructionOptimizerManager(optinsn_t):
 
         if blk.serial != self.current_blk_serial:
             self.current_blk_serial = blk.serial
-
-    def add_optimizer(self, optimizer: InstructionOptimizer):
-        self.instruction_optimizers.append(optimizer)
-        self.optimizer_usage_info[optimizer.name] = 0
-
-    def add_rule(self, rule: InstructionOptimizationRule):
-        # optimizer_log.info("Trying to add rule {0}".format(rule))
-        for ins_optimizer in self.instruction_optimizers:
-            ins_optimizer.add_rule(rule)
-        self.analyzer.add_rule(rule)
 
     def configure(
         self, generate_z3_code=False, dump_intermediate_microcode=False, **kwargs
@@ -260,25 +260,24 @@ class BlockOptimizerManager(optblock_t):
                 )
 
     def log_info_on_input(self, blk: mblock_t):
-        if blk is None:
-            return
         mba: mbl_array_t = blk.mba
 
         if (mba is not None) and (mba.maturity != self.current_maturity):
-            main_logger.debug(
-                "BlockOptimizer called at maturity: {0}".format(
-                    maturity_to_string(mba.maturity)
+            if main_logger.debug_on:
+                main_logger.debug(
+                    "BlockOptimizer called at maturity: %s",
+                    maturity_to_string(mba.maturity),
                 )
-            )
+
             self.current_maturity = mba.maturity
 
     def optimize(self, blk: mblock_t):
         for cfg_rule in self.cfg_rules:
-            if (
-                blk.mba != None and blk.mba.entry_ea != None
-            ) and self.check_if_rule_is_activated_for_address(
+            guard = blk.mba is not None and blk.mba.entry_ea is not None
+            guard &= self.check_if_rule_is_activated_for_address(
                 cfg_rule, blk.mba.entry_ea
-            ):
+            )
+            if guard:
                 nb_patch = cfg_rule.optimize(blk)
                 if nb_patch > 0:
                     optimizer_logger.info(

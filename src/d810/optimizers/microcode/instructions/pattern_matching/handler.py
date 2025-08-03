@@ -255,10 +255,11 @@ class PatternOptimizer(InstructionOptimizer):
         if not is_ok:
             return False
         for pattern in rule.pattern_candidates:
-            optimizer_logger.debug(
-                "[PatternOptimizer.add_rule] Adding pattern: %s",
-                str(pattern),
-            )
+            if optimizer_logger.debug_on:
+                optimizer_logger.debug(
+                    "[PatternOptimizer.add_rule] Adding pattern: %s",
+                    str(pattern),
+                )
             self.pattern_storage.add_pattern_for_rule(pattern, rule)
         return True
 
@@ -301,17 +302,25 @@ class PatternOptimizer(InstructionOptimizer):
                 )
                 if new_ins is not None:
                     self.rules_usage_info[rule_pattern_info.rule.name] += 1
-                    optimizer_logger.info(
-                        "Rule {0} matched:".format(rule_pattern_info.rule.name)
-                    )
-                    optimizer_logger.info("  orig: {0}".format(format_minsn_t(ins)))
-                    optimizer_logger.info("  new : {0}".format(format_minsn_t(new_ins)))
+                    if optimizer_logger.info_on:
+                        optimizer_logger.info(
+                            "Rule %s matched in maturity %s:",
+                            rule_pattern_info.rule.name,
+                            self.cur_maturity,
+                        )
+                        optimizer_logger.info("  orig: %s", format_minsn_t(ins))
+                        optimizer_logger.info(
+                            "  new : %s",
+                            format_minsn_t(new_ins),
+                        )
                     return new_ins
             except RuntimeError as e:
                 optimizer_logger.error(
-                    "Error during rule {0} for instruction {1}: {2}".format(
-                        rule_pattern_info.rule, format_minsn_t(ins), e
-                    )
+                    "Error during rule %s for instruction %s: %s",
+                    rule_pattern_info.rule,
+                    format_minsn_t(ins),
+                    e,
+                    exc_info=True,
                 )
         return None
 
@@ -383,9 +392,17 @@ def get_opcode_operands(ref_opcode: int, ast_node: AstBase) -> list[AstBase]:
         return [ast_node]
     ast_node = typing.cast(AstNode, ast_node)
     if ast_node.opcode == ref_opcode:
-        return get_opcode_operands(ref_opcode, ast_node.left) + get_opcode_operands(
-            ref_opcode, ast_node.right
+        left = (
+            get_opcode_operands(ref_opcode, ast_node.left)
+            if ast_node.left is not None
+            else []
         )
+        right = (
+            get_opcode_operands(ref_opcode, ast_node.right)
+            if ast_node.right is not None
+            else []
+        )
+        return left + right
     else:
         return [ast_node]
 

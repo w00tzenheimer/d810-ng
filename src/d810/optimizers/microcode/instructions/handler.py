@@ -160,7 +160,8 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                 break
         if not is_valid_rule_class:
             return False
-        optimizer_logger.debug("Adding rule {0}".format(rule))
+        if optimizer_logger.debug_on:
+            optimizer_logger.debug("Adding rule %s", rule)
         if len(rule.maturities) == 0:
             rule.maturities = self.maturities
         self.rules.add(rule)

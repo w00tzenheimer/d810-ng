@@ -45,8 +45,10 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
     subsequent passes can optimize it.
     """
 
-    # Run *very* early so that the AST builder never sees the wrapper.
-    maturities = [ida_hexrays.MMAT_LOCOPT]
+    def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
+        super().__init__(*args, **kwargs)
+        # Run *very* early so that the AST builder never sees the wrapper.
+        self.maturities = [ida_hexrays.MMAT_LOCOPT]
 
     @_compat.override
     def check_and_replace(

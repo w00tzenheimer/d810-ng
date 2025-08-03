@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import typing
+
 """fold_readonlydata.py
 
 A peephole rule that replaces loads from a *provably read-only* table (typically
@@ -75,8 +77,9 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         "Example: Replaces ldx from constant .rodata offset with ldc if value is readable."
     )
 
-    # Run in many maturity stages so we catch the pattern early or late
-    maturities = [ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS]
+    def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.maturities = [ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS]
 
     # --------------------------------------------------------------------- #
     # Helper functions                                                      #

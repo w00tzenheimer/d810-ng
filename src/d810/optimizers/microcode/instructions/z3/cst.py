@@ -3,7 +3,7 @@ import typing
 from ida_hexrays import *
 
 from d810 import _compat
-from d810.conf.loggers import LevelFlag, getLogger
+from d810.conf.loggers import getLogger
 from d810.errors import AstEvaluationException
 from d810.expr.ast import AstConstant, AstNode, minsn_to_ast
 from d810.expr.z3_utils import z3_check_mop_equality

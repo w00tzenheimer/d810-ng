@@ -134,7 +134,7 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
             dump_microcode_for_debug(
                 self.mba,
                 self.log_dir,
-                "{0}_before_fake_jump".format(self.cur_maturity_pass),
+                f"{self.cur_maturity_pass}_before_fake_jump",
             )
         unflat_logger.info(
             "Making pred %s with value %s goto %s (%s)",
@@ -147,7 +147,7 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
             dump_microcode_for_debug(
                 self.mba,
                 self.log_dir,
-                "{0}_after_fake_jump".format(self.cur_maturity_pass),
+                f"{self.cur_maturity_pass}_after_fake_jump",
             )
         return change_1way_block_successor(pred, dst_serial)
 
