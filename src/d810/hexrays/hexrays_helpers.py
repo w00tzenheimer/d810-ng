@@ -751,6 +751,45 @@ def dup_mop(src: ida_hexrays.mop_t) -> ida_hexrays.mop_t:
     return dst
 
 
+def extract_literal_from_mop(
+    mop: ida_hexrays.mop_t | None,
+) -> list[tuple[int, int]] | None:
+    """Return (value, size_bytes) if *mop* ultimately encodes a numeric constant."""
+
+    if mop is None:
+        return None
+    if mop.t == ida_hexrays.mop_n:
+        return [(mop.nnn.value, mop.size)]
+
+    # m_ldc wrapper (mop_d → minsn_t(ldc …))
+    if (
+        mop.t == ida_hexrays.mop_d
+        and mop.d is not None
+        and mop.d.opcode == ida_hexrays.m_ldc
+        and mop.d.l is not None
+        and mop.d.l.t == ida_hexrays.mop_n
+    ):
+        return [(mop.d.l.nnn.value, mop.d.l.size)]
+
+    # typed-immediate mop_f
+    if mop.t == ida_hexrays.mop_f and mop.f is not None:
+        args = mop.f.args
+        if args:
+            rval: list[tuple[int, int]] = []
+            for arg in args:
+                if arg is not None and arg.t == ida_hexrays.mop_n:
+                    rval.append((arg.nnn.value, arg.size))
+                else:
+                    break
+            else:
+                # for else here means *every* arg is a literal
+                # and there was no early break in the for loop
+                # which means all the args are literals
+                return rval
+
+    return None
+
+
 # ============================================================================
 # Enums for Type Safety
 # ============================================================================

@@ -865,11 +865,6 @@
             "config": {}
         },
         {
-            "name": "FoldPureConstantRule",
-            "is_activated": true,
-            "config": {}
-        },
-        {
             "name": "ConstantCallResultFoldRule",
             "is_activated": true,
             "config": {}
@@ -881,6 +876,11 @@
         },
         {
             "name": "FoldReadonlyDataRule",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "StackVariableConstantFoldingRule",
             "is_activated": true,
             "config": {}
         }

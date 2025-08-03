@@ -95,7 +95,14 @@ def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
         case ida_hexrays.m_neg:
             return -left
         case ida_hexrays.m_lnot:
-            return not left
+            # Logical NOT (!) returns 1 when the operand is zero, otherwise 0.
+            # Implemented via a 32-bit conditional expression to avoid casting the
+            # symbolic BitVec to a Python bool (which would raise a Z3 exception).
+            return z3.If(
+                left == z3.BitVecVal(0, 32),
+                z3.BitVecVal(1, 32),
+                z3.BitVecVal(0, 32),
+            )
         case ida_hexrays.m_bnot:
             return ~left
         case ida_hexrays.m_add:

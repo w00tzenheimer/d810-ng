@@ -116,7 +116,7 @@ class PatternStorage(object):
     # Additionally, it stores the rule objects which are resolved for the PatternStorage depth
     def __init__(self, depth=1):
         self.depth = depth
-        self.next_layer_patterns = {}
+        self.next_layer_patterns: dict[str, tuple[list[str], PatternStorage]] = {}
         self.rule_resolved = []
 
     def add_pattern_for_rule(self, pattern: AstNode, rule: InstructionOptimizationRule):
@@ -127,10 +127,12 @@ class PatternStorage(object):
             self.rule_resolved.append(RulePatternInfo(rule, pattern))
         else:
             if layer_signature not in self.next_layer_patterns.keys():
-                self.next_layer_patterns[layer_signature] = PatternStorage(
-                    self.depth + 1
+                split = layer_signature.split(",")
+                self.next_layer_patterns[layer_signature] = (
+                    split,
+                    PatternStorage(self.depth + 1),
                 )
-            self.next_layer_patterns[layer_signature].add_pattern_for_rule(
+            self.next_layer_patterns[layer_signature][1].add_pattern_for_rule(
                 pattern, rule
             )
 
@@ -138,21 +140,28 @@ class PatternStorage(object):
     def layer_signature_to_key(sig: list[str]) -> str:
         return ",".join(sig)
 
+    # @staticmethod
+    # def is_layer_signature_compatible(
+    #     instruction_signature: str, pattern_signature: str
+    # ) -> bool:
+    #     if instruction_signature == pattern_signature:
+    #         return True
+    #     instruction_node_list = instruction_signature.split(",")
+    #     pattern_node_list = pattern_signature.split(",")
+    #     for ins_node_sig, pattern_node_sig in zip(
+    #         instruction_node_list, pattern_node_list
+    #     ):
+    #         if (
+    #             pattern_node_sig not in ["L", "C", "N"]
+    #             and ins_node_sig != pattern_node_sig
+    #         ):
+    #             return False
+    #     return True
+
     @staticmethod
-    def is_layer_signature_compatible(
-        instruction_signature: str, pattern_signature: str
-    ) -> bool:
-        if instruction_signature == pattern_signature:
-            return True
-        instruction_node_list = instruction_signature.split(",")
-        pattern_node_list = pattern_signature.split(",")
-        for ins_node_sig, pattern_node_sig in zip(
-            instruction_node_list, pattern_node_list
-        ):
-            if (
-                pattern_node_sig not in ["L", "C", "N"]
-                and ins_node_sig != pattern_node_sig
-            ):
+    def compatible(inst_sig: list[str], pat_sig: list[str]) -> bool:
+        for i, p in zip(inst_sig, pat_sig):
+            if p not in ("L", "C", "N") and i != p:
                 return False
         return True
 
@@ -170,17 +179,15 @@ class PatternStorage(object):
         # This piece of code tries to handles that in a (semi) efficient way
         if len(self.next_layer_patterns) == 0:
             return []
-        searched_layer_signature = searched_pattern.get_depth_signature(cur_level)
+        searched_split = searched_pattern.get_depth_signature(cur_level)
         nb_possible_signature = 2 ** (
-            len(searched_layer_signature)
-            - searched_layer_signature.count("N")
-            - searched_layer_signature.count("L")
+            len(searched_split) - searched_split.count("N") - searched_split.count("L")
         )
         if pattern_search_logger.debug_on:
             pattern_search_logger.debug(
                 "  Layer {0}: {1} -> {2} variations (storage has {3} signature)".format(
                     cur_level,
-                    searched_layer_signature,
+                    searched_split,
                     nb_possible_signature,
                     len(self.next_layer_patterns),
                 )
@@ -189,10 +196,10 @@ class PatternStorage(object):
         if nb_possible_signature < len(self.next_layer_patterns):
             if pattern_search_logger.debug_on:
                 pattern_search_logger.debug("  => Using method 1")
-            for possible_sig in signature_generator(searched_layer_signature):
+            for possible_sig in signature_generator(searched_split):
                 try:
                     test_sig = self.layer_signature_to_key(possible_sig)
-                    pattern_storage = self.next_layer_patterns[test_sig]
+                    _, pattern_storage = self.next_layer_patterns[test_sig]
                     if pattern_search_logger.debug_on:
                         pattern_search_logger.debug(
                             "    Compatible signature: %s -> resolved: %s",
@@ -209,13 +216,11 @@ class PatternStorage(object):
         else:
             if pattern_search_logger.debug_on:
                 pattern_search_logger.debug("  => Using method 2")
-            searched_layer_signature_key = self.layer_signature_to_key(
-                searched_layer_signature
-            )
-            for test_sig, pattern_storage in self.next_layer_patterns.items():
-                if self.is_layer_signature_compatible(
-                    searched_layer_signature_key, test_sig
-                ):
+            for test_sig, (
+                pat_sig_split,
+                pattern_storage,
+            ) in self.next_layer_patterns.items():
+                if self.compatible(searched_split, pat_sig_split):
                     if pattern_search_logger.debug_on:
                         pattern_search_logger.debug(
                             "    Compatible signature: %s -> resolved: %s",
