@@ -294,8 +294,11 @@ class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
         if op.t == ida_hexrays.mop_S:
             var_name = self._get_stack_var_name(op)
             if var_name is not None and var_name in self.stack_var_map:
-                value, size = self.stack_var_map[var_name]
-                op.make_number(value, size)
+                value, _ = self.stack_var_map[var_name]
+                # Ensure we don't create a literal that is wider than the stack variable itself
+                # IDA will raise an exception if the sizes are inconsistent.
+                truncated_value = value & ((1 << (op.size * 8)) - 1)
+                op.make_number(truncated_value, op.size)
                 changed = True
 
                 if logger.debug_on:
@@ -303,7 +306,7 @@ class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
                         "[stack-var-fold] replaced %s with 0x%X (size=%d)",
                         var_name,
                         value,
-                        size,
+                        op.size,
                     )
 
         # If this is a register that represents a stack variable, try to replace it

@@ -81,7 +81,6 @@ class LabelTableInfo(object):
 
 class UnflattenerTigressIndirect(GenericDispatcherUnflatteningRule):
     DESCRIPTION = ""
-    DISPATCHER_COLLECTOR_CLASS = TigressIndirectDispatcherCollector
     DEFAULT_UNFLATTENING_MATURITIES = [MMAT_LOCOPT]
     DEFAULT_MAX_DUPLICATION_PASSES = 20
     DEFAULT_MAX_PASSES = 1
@@ -90,6 +89,11 @@ class UnflattenerTigressIndirect(GenericDispatcherUnflatteningRule):
         super().__init__()
         self.label_info = None
         self.goto_table_info = {}
+
+    @property
+    def DISPATCHER_COLLECTOR_CLASS(self) -> type[GenericDispatcherCollector]:
+        """Return the class of the dispatcher collector."""
+        return TigressIndirectDispatcherCollector
 
     def configure(self, kwargs):
         super().configure(kwargs)

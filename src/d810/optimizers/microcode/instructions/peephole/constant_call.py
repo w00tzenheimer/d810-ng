@@ -37,7 +37,9 @@ class ConstantCallResultFoldRule(PeepholeSimplificationRule):
         "Fold helper calls with literal destination into single constant expression"
     )
 
-    maturities = [ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS]
+    def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.maturities = [ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS]
 
     @example(
         "opcode=call l=<mop_t type=mop_h size=-1 dstr=!__ROL8__> r=<mop_t type=mop_z size=-1 dstr=> d=<mop_t type=mop_f size=8 dstr=<fast:_QWORD #0x33637E66.8,char #4.1>.8>"

@@ -9,7 +9,7 @@ import ida_idaapi
 import ida_range
 import ida_typeinf
 
-from d810.optimizers.microcode.instructions.peephole.fold_const import (
+from d810.optimizers.microcode.instructions.peephole.fold_rotatehelper import (
     FoldPureConstantRule,
 )
 
