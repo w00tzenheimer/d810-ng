@@ -214,9 +214,10 @@ class GenericDispatcherInfo(object):
             )
             if initialization_mop_value is None:
                 raise NotResolvableFatherException(
-                    "Can't emulate dispatcher %s with history %s",
-                    self.entry_block.serial,
-                    father_history.block_serial_path,
+                    "Can't emulate dispatcher {0} with history {1}".format(
+                        self.entry_block.serial,
+                        father_history.block_serial_path,
+                    )
                 )
             # We store this value in the MicroCodeEnvironment
             microcode_environment.define(initialization_mop, initialization_mop_value)
@@ -536,18 +537,20 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         father_is_resolvable = self.check_if_histories_are_resolved(father_histories)
         if not father_is_resolvable:
             raise NotDuplicableFatherException(
-                "Dispatcher %s predecessor %s is not duplicable: %s",
-                dispatcher_entry_block.serial,
-                dispatcher_father.serial,
-                father_histories_cst,
+                "Dispatcher {0} predecessor {1} is not duplicable: {2}".format(
+                    dispatcher_entry_block.serial,
+                    dispatcher_father.serial,
+                    father_histories_cst,
+                )
             )
         for father_history_cst in father_histories_cst:
             if None in father_history_cst:
                 raise NotDuplicableFatherException(
-                    "Dispatcher %s predecessor %s has None value: %s",
-                    dispatcher_entry_block.serial,
-                    dispatcher_father.serial,
-                    father_histories_cst,
+                    "Dispatcher {0} predecessor {1} has None value: {2}".format(
+                        dispatcher_entry_block.serial,
+                        dispatcher_father.serial,
+                        father_histories_cst,
+                    )
                 )
 
         unflat_logger.info(
@@ -945,28 +948,30 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         all_values_found = check_if_all_values_are_found(mop_searched_values_list)
         if not all_values_found:
             raise NotResolvableFatherException(
-                "Can't fix block %s", dispatcher_father.serial
+                "Can't fix block {0}".format(dispatcher_father.serial)
             )
 
         ref_mop_searched_values = mop_searched_values_list[0]
         for tmp_mop_searched_values in mop_searched_values_list:
             if tmp_mop_searched_values != ref_mop_searched_values:
                 raise NotResolvableFatherException(
-                    "Dispatcher %s predecessor %s is not resolvable: %s",
-                    dispatcher_info.entry_block.serial,
-                    dispatcher_father.serial,
-                    mop_searched_values_list,
+                    "Dispatcher {0} predecessor {1} is not resolvable: {2}".format(
+                        dispatcher_info.entry_block.serial,
+                        dispatcher_father.serial,
+                        mop_searched_values_list,
+                    )
                 )
 
         target_blk, disp_ins = dispatcher_info.emulate_dispatcher_with_father_history(
             dispatcher_father_histories[0]
         )
         if target_blk is not None:
-            unflat_logger.debug(
-                "Unflattening graph: Making %s goto %s",
-                dispatcher_father.serial,
-                target_blk.serial,
-            )
+            if unflat_logger.debug_on:
+                unflat_logger.debug(
+                    "Unflattening graph: Making %s goto %s",
+                    dispatcher_father.serial,
+                    target_blk.serial,
+                )
             ins_to_copy = [
                 ins
                 for ins in disp_ins
@@ -999,9 +1004,10 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             return 2
 
         raise NotResolvableFatherException(
-            "Can't fix block %s: no block for key: %s",
-            dispatcher_father.serial,
-            mop_searched_values_list,
+            "Can't fix block {0}: no block for key: {1}".format(
+                dispatcher_father.serial,
+                mop_searched_values_list,
+            )
         )
 
     def fix_fathers_from_mop_history(
