@@ -371,7 +371,5 @@ def dump_microcode_for_debug(
     write_mc_to_file(mba, mc_filename)
 
 
-def sanitize_ea(ea: int | None) -> int | None:
-    if ea is None:
-        return None
+def sanitize_ea(ea: int) -> int:
     return ea & idaapi.BADADDR  # BADADDR = 0xFFFF_FFFF_FFFF_FFFF on x64

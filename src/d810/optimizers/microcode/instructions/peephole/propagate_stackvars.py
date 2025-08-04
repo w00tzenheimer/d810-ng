@@ -79,7 +79,7 @@ class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
         self.stack_var_map = {}
         # Track the current function being processed
         self.current_func = None
-        self.maturities = [ida_hexrays.MMAT_CALLS]
+        # self.maturities = [ida_hexrays.MMAT_CALLS]
 
     @_compat.override
     def check_and_replace(
