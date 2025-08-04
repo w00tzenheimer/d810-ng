@@ -49,6 +49,21 @@ DEFAULT_OPTIMIZATION_PEEPHOLE_MATURITIES = [
 DEFAULT_ANALYZER_MATURITIES = [MMAT_PREOPTIMIZED, MMAT_LOCOPT, MMAT_CALLS, MMAT_GLBOPT1]
 
 
+if typing.TYPE_CHECKING:
+    from d810.optimizers.microcode.instructions.analysis.handler import (
+        InstructionAnalyzer,
+    )
+    from d810.optimizers.microcode.instructions.chain.handler import ChainOptimizer
+    from d810.optimizers.microcode.instructions.early.handler import EarlyOptimizer
+    from d810.optimizers.microcode.instructions.pattern_matching.handler import (
+        PatternOptimizer,
+    )
+    from d810.optimizers.microcode.instructions.peephole.handler import (
+        PeepholeOptimizer,
+    )
+    from d810.optimizers.microcode.instructions.z3.handler import Z3Optimizer
+
+
 class InstructionOptimizerManager(optinsn_t):
     def __init__(self, log_dir: pathlib.Path):
         optimizer_logger.debug("Initializing {0}...".format(self.__class__.__name__))
@@ -63,12 +78,22 @@ class InstructionOptimizerManager(optinsn_t):
 
         self.instruction_optimizers = []
         self.optimizer_usage_info = {}
-        ChainOptimizer = InstructionOptimizer.get("ChainOptimizer")
-        EarlyOptimizer = InstructionOptimizer.get("EarlyOptimizer")
-        InstructionAnalyzer = InstructionOptimizer.get("InstructionAnalyzer")
-        PatternOptimizer = InstructionOptimizer.get("PatternOptimizer")
-        PeepholeOptimizer = InstructionOptimizer.get("PeepholeOptimizer")
-        Z3Optimizer = InstructionOptimizer.get("Z3Optimizer")
+        ChainOptimizer: type[ChainOptimizer] = InstructionOptimizer.get(
+            "ChainOptimizer"
+        )
+        EarlyOptimizer: type[EarlyOptimizer] = InstructionOptimizer.get(
+            "EarlyOptimizer"
+        )
+        InstructionAnalyzer: type[InstructionAnalyzer] = InstructionOptimizer.get(
+            "InstructionAnalyzer"
+        )
+        PatternOptimizer: type[PatternOptimizer] = InstructionOptimizer.get(
+            "PatternOptimizer"
+        )
+        PeepholeOptimizer: type[PeepholeOptimizer] = InstructionOptimizer.get(
+            "PeepholeOptimizer"
+        )
+        Z3Optimizer: type[Z3Optimizer] = InstructionOptimizer.get("Z3Optimizer")
         self.add_optimizer(
             PatternOptimizer(
                 DEFAULT_OPTIMIZATION_PATTERN_MATURITIES, log_dir=self.log_dir

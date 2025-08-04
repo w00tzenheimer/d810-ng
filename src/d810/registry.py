@@ -34,6 +34,7 @@ from weakref import WeakKeyDictionary
 from d810._compat import LiteralString, Self, TypeAliasType
 
 T = TypeVar("T")
+_R = TypeVar("_R", bound="Registrant")
 AnnotatedAny: TypeAlias = Annotated[Any, ...]  # safely parameterized
 
 
@@ -278,8 +279,8 @@ class Registry(ABCMeta):
 
         # If this is a direct subclass of Registrant, give it its own registries
         if Registrant in bases:
-            self.registry: dict[str, type] = {}
-            self.lazy_registry: dict[str, Thunk] = {}
+            self.registry: dict[str, type[Any]] = {}
+            self.lazy_registry: dict[str, Thunk[type[Any]]] = {}
 
 
 class Registrant(metaclass=Registry):
@@ -288,10 +289,10 @@ class Registrant(metaclass=Registry):
     registrant_name: ClassVar[str]
     """Name to register the resource under."""
 
-    registry: ClassVar[dict[str, type[Self]]] = {}
+    registry: ClassVar[dict[str, type[Any]]] = {}
     """Registry of registered resources."""
 
-    lazy_registry: ClassVar[dict[str, Thunk[type[Self]]]] = {}
+    lazy_registry: ClassVar[dict[str, Thunk[type[Any]]]] = {}
     """Registry of lazy registrations."""
 
     def __init_subclass__(cls):
@@ -327,7 +328,7 @@ class Registrant(metaclass=Registry):
         return key.lower()
 
     @classmethod
-    def register(cls, alt: type[Self]):
+    def register(cls, alt: type[Any]):
         """Directly register a subclass (unless it tries to register itself)."""
         # a class should not add itself to _its own_ registry
         if alt is cls and "registry" in cls.__dict__:
@@ -338,13 +339,13 @@ class Registrant(metaclass=Registry):
         cls.registry[name] = alt
 
     @classmethod
-    def lazy_register(cls, load: Thunk[type[Self]]):
+    def lazy_register(cls, load: Thunk[type[Any]]):
         """Register a thunk (hook) under its function name for lazy initialization."""
         if load.__name__ not in cls.registry:
             cls.lazy_registry[load.__name__] = load
 
     @classmethod
-    def get(cls, name: str) -> type[Self]:
+    def get(cls, name: str) -> _R:
         """Look up a registered subclass by name, loading lazily if needed."""
         key = cls.normalize_key(name)
         if factory := cls.lazy_registry.get(key):
@@ -352,12 +353,12 @@ class Registrant(metaclass=Registry):
             # move from lazy to real registry
             del cls.lazy_registry[key]
             cls.registry[key] = sub
-            return sub
+            return cast(_R, sub)
 
-        return cls.registry[key]
+        return cast(_R, cls.registry[key])
 
     @classmethod
-    def all(cls) -> list[type[Self]]:  # type: ignore[type-var]
+    def all(cls) -> list[type[Any]]:
         """Return every concrete subclass currently registered for *cls*."""
         return list(cls.registry.values())
 
