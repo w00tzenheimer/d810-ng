@@ -1,3 +1,4 @@
+import ida_hexrays
 import idaapi
 from ida_hexrays import *
 
@@ -23,6 +24,65 @@ def log_block_info(blk: mblock_t, logger_func=helper_logger.info):
             vp.get_block_mc(),
         )
     )
+
+
+def get_stack_var_name(mop: ida_hexrays.mop_t) -> str | None:
+    if mop.t == ida_hexrays.mop_S:
+        mba = getattr(mop.s, "mba", None)
+        frame_size = None
+        if mba:
+            for att in ("minstkref", "stacksize", "frsize", "fullsize"):
+                val = getattr(mba, att, None)
+                if val:
+                    disp = val - mop.s.off
+                    if disp >= 0:
+                        frame_size = val
+                        break
+        if frame_size is not None:
+            disp = frame_size - mop.s.off
+            base = f"%var_{disp:X}.{mop.size}"
+        else:
+            base = f"stk_{mop.s.off:X}.{mop.size}"
+        return f"{base}{{{mop.valnum}}}"
+    if mop.t == ida_hexrays.mop_r:
+        base = ida_hexrays.get_mreg_name(mop.r, mop.size)
+        return f"{base}.{mop.size}{{{mop.valnum}}}"
+    return None
+
+
+def extract_base_and_offset(mop: ida_hexrays.mop_t) -> tuple[mop_t | None, int]:
+    if (
+        mop.t == ida_hexrays.mop_d
+        and mop.d is not None
+        and mop.d.opcode == ida_hexrays.m_add
+    ):
+        # (base + const)
+        if mop.d.l and mop.d.l.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
+            off = mop.d.r.nnn.value if mop.d.r and mop.d.r.t == ida_hexrays.mop_n else 0
+            return mop.d.l, off
+        if mop.d.r and mop.d.r.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
+            off = mop.d.l.nnn.value if mop.d.l and mop.d.l.t == ida_hexrays.mop_n else 0
+            return mop.d.r, off
+    return None, 0
+
+
+def safe_verify(
+    mba: ida_hexrays.mba_t, ctx: str, logger_func=helper_logger.error
+) -> None:
+    """Run mba.verify(True) and produce helpful diagnostics on failure."""
+    try:
+        mba.verify(True)
+    except RuntimeError as e:
+        logger_func("verify failed after %s: %s", ctx, e, exc_info=True)
+        # attempt to locate a problematic block: dump the last one
+        try:
+            last_blk = (
+                mba.get_mblock(mba.qty - 2) if mba.qty >= 2 else mba.get_mblock(0)
+            )
+            log_block_info(last_blk, logger_func)
+        except Exception:  # pragma: no cover
+            pass
+        raise
 
 
 def insert_goto_instruction(
