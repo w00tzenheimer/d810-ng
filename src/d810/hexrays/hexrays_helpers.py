@@ -407,13 +407,30 @@ def extract_num_mop(ins: minsn_t) -> tuple[mop_t, mop_t]:
 
 
 def check_ins_mop_size_are_ok(ins: minsn_t) -> bool:
-    """
-    This function can be used to check if a created instruction has consistent mop size
-    Use it to avoid Hex-Rays decompilation errors when replacing instructions
+    """Return *True* when the operand sizes are *semantically* consistent.
 
-    :param ins:
-    :return:
+    The helper is intentionally conservative (it prefers returning *False* rather
+    than letting an inconsistent instruction slip through).  However, for some
+    micro-instructions such as *m_call* / *m_icall* the operand sizes are not
+    required to match the result size  a function can legitimately take
+    1-byte, 2-byte … arguments and still return a 4-byte (or 8-byte) value.  In
+    that case the previous implementation rejected perfectly valid instructions
+    created by the peephole optimizers and the optimiser framework would
+    subsequently complain with the misleading message "Invalid original
+    instruction".
+
+    In practice we can safely trust Hex-Rays here, therefore any *call*
+    instruction is now considered size-OK and short-circuits the rest of the
+    checks.
+
+    Usage: This function can be used to check if a created instruction has consistent mop size
+    Use it to avoid Hex-Rays decompilation errors when replacing instructions
     """
+    # Calls / indirect calls: argument sizes may legitimately differ from the
+    # destination size – skip the strict size checks for them.
+    if ins.opcode in (m_call, m_icall, m_ret):
+        return True
+
     ins_dest_size = ins.d.size
     if ins.opcode in [m_stx, m_ldx]:
         if ins.r.t == mop_d:

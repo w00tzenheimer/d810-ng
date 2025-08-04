@@ -507,7 +507,7 @@ class MicroCodeInterpreter(object):
                 if (value := environment.lookup(mop)) is not None:
                     return value
                 raise EmulationException(
-                    "Variable '{0}' is not defined for mop_v".format(format_mop_t(mop))
+                    "Variable '{0}' is not defined for mop_v".format(mop.dstr())
                 )
             else:
                 memory_value = idaapi.get_qword(mop.g)
@@ -567,7 +567,10 @@ class MicroCodeInterpreter(object):
             return res
         except EmulationException as e:
             emulator_log.warning(
-                "Can't get constant mop value: '{0}': {1}".format(format_mop_t(mop), e)
+                "Can't get constant mop value: '%s' for mop: '%s': %s",
+                mop.dstr(),
+                format_mop_t(mop),
+                e,
             )
             if raise_exception:
                 raise e

@@ -131,9 +131,11 @@ class ConstantCallResultFoldRule(PeepholeSimplificationRule):
             new.d = ida_hexrays.mop_t()
             new.d.erase()
             new.d.size = ins.d.size
+        # 'r' is unused for m_ldc. Keep it as a mop_z with size 0 so that
+        # later optimizers (e.g. stack-var propagation) can update it safely
+        # without breaking the size invariants.
         new.r = ida_hexrays.mop_t()
-        new.r.erase()
-        new.r.size = ins.d.size
+        new.r.erase()  # will set t=mop_z and size=0
         if logger.debug_on:
             logger.debug(
                 "[const-call] 0x%X call -> ldc 0x%X (size=%d)",

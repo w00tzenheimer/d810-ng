@@ -111,7 +111,6 @@ class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
             else:
                 logger.debug("[stack-var-fold] constant map is currently empty")
 
-
         # Record constant stack-variable assignments.  We always do this so
         #    that future instructions can benefit from the recorded mapping even
         #    if this particular instruction is not itself rewritten.--------
@@ -328,18 +327,60 @@ class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
 
     def _get_stack_var_name(self, mop: ida_hexrays.mop_t) -> str | None:
         """Get a unique identifier for a stack or memory location base."""
+        base_name = None
         if mop.t == ida_hexrays.mop_S:
-            # Stack variable: use offset and size
-            return f"stk_{mop.s.off:X}.{mop.size}"
+            # Try to derive the same human-readable name ("%var_18.4") that IDA prints without
+            # resorting to the heavyweight `format_mop_t()` formatter.  The trick is that Hex-Rays
+            # stores stack offsets in `mop.s.off` counting *up* from the bottom of the frame,
+            # whereas the listing that users see shows the distance *down* from the base pointer
+            # (i.e. a negative offset).  If we know the total frame size we can convert:
+            #
+            #     display_offset = frame_size - mop.s.off
+            #
+            # Various `mba_t` fields record the frame size depending on architecture / compiler
+            # settings.  We probe a few of them and take the first non-zero value.
+            mba = getattr(mop.s, "mba", None)
+            frame_size = None
+            candidate_offsets = []  # collect for diagnostics if we must fall back
+            if mba is not None:
+                # Prefer the smallest non-zero size that yields a non-negative display offset.
+                for attr in ("minstkref", "stacksize", "frsize", "fullsize"):
+                    val = getattr(mba, attr, None)
+                    if not val:
+                        continue
+                    disp_off = val - mop.s.off
+                    candidate_offsets.append((attr, val, disp_off))
+                    if disp_off >= 0:
+                        frame_size = val
+                        break
+            if frame_size is not None:
+                disp_off = frame_size - mop.s.off
+                base_name = f"%var_{disp_off:X}.{mop.size}"
+            else:
+                # Fallback to raw offset if frame size isn't available.
+                if logger.debug_on and candidate_offsets:
+                    for attr, val, disp in candidate_offsets:
+                        logger.debug(
+                            "[stack-var-fold] fallback raw-offset key: mba.%s=0x%X -> disp=0x%X (neg? %s)",
+                            attr,
+                            val,
+                            disp & ((1 << 64) - 1),
+                            disp < 0,
+                        )
+                base_name = f"stk_{mop.s.off:X}.{mop.size}"
+
+            # Append the value number to distinguish SSA versions. This is the crucial fix.
+            return f"{base_name}{{{mop.valnum}}}"
+
         elif mop.t == ida_hexrays.mop_r:
             # Register-based pointer (e.g. function argument passed in a register)
             # Use the same naming scheme we employ when recording assignments so that
             # look-ups succeed. Include the value number to distinguish SSA versions
             # of the same register and omit the "reg_" prefix for consistency with
             # the keys generated in _record_stack_assignment.
-            reg_name = ida_hexrays.get_mreg_name(mop.r, mop.size)
-            return f"{reg_name}.{mop.size}{{{mop.valnum}}}"
-        return None
+            base_name = ida_hexrays.get_mreg_name(mop.r, mop.size)
+            return f"{base_name}.{mop.size}{{{mop.valnum}}}"
+        return base_name
 
     def _process_operand(self, op: ida_hexrays.mop_t) -> bool:
         """Process an operand, replacing stack variables with constants.
