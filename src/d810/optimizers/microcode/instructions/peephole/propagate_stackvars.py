@@ -19,8 +19,8 @@ from d810.optimizers.microcode.instructions.peephole.handler import (
 logger = getLogger(__name__, default_level=logging.DEBUG)
 
 
-class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
-    DESCRIPTION = "Fold stack variables that are assigned constant values across blocks"
+class LocalizedConstantPropagationRule(PeepholeSimplificationRule):
+    DESCRIPTION = "Propagate local constants within blocks with local stack variables"
 
     # ------------------------------------------------------------------
     #  Propagate constants only for an *allowlist* of micro-opcodes that are
