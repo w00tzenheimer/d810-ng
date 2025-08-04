@@ -345,7 +345,7 @@ class Registrant(metaclass=Registry):
             cls.lazy_registry[load.__name__] = load
 
     @classmethod
-    def get(cls, name: str) -> _R:
+    def get(cls, name: str) -> _R:  # type: ignore
         """Look up a registered subclass by name, loading lazily if needed."""
         key = cls.normalize_key(name)
         if factory := cls.lazy_registry.get(key):
