@@ -19,6 +19,7 @@ import ida_hexrays
 
 from d810 import _compat
 from d810.conf.loggers import getLogger
+from d810.hexrays.cfg_utils import log_block_info
 from d810.hexrays.hexrays_formatters import opcode_to_string, sanitize_ea
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
@@ -46,6 +47,8 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         ida_hexrays.m_xdu,
         ida_hexrays.m_low,
         ida_hexrays.m_high,
+        ida_hexrays.m_ldx,
+        ida_hexrays.m_ldc,
         ida_hexrays.m_add,
         ida_hexrays.m_sub,
         ida_hexrays.m_mul,
@@ -111,6 +114,12 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         curr_blk: ida_hexrays.mblock_t = mba.get_mblock(0)
         while curr_blk:
             consts: ConstMap = IN[curr_blk.serial].copy()
+            if logger.debug_on and consts:
+                logger.debug(
+                    "[stack-var-cprop] constant map before blk %d: %s",
+                    curr_blk.serial,
+                    consts,
+                )
             ins: ida_hexrays.minsn_t = curr_blk.head
             while ins:
                 changes += self._rewrite_instruction(ins, consts)
@@ -122,7 +131,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         if changes:
             mba.mark_chains_dirty()
             mba.optimize_local(0)
-            mba.verify(True)
+            self._safe_verify(mba, "rewriting")
         return changes
 
     # ------------------------------------------------------------------
@@ -179,13 +188,21 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
     # transfer for a single instruction (GEN/KILL)
     def _transfer_single(self, ins: ida_hexrays.minsn_t, env: ConstMap):
         # -------------------------------------------------------------
-        # 1. Side-effecting instructions (calls, stores, etc.)
+        # 1. Side-effects handling
         # -------------------------------------------------------------
-        # Hex-Rays exposes a reliable predicate: ``minsn_t.has_side_effects()``.
-        # If it returns True we conservatively assume the stack frame could be
-        # modified through an alias we cannot track and purge our constant map.
-        if ins.has_side_effects():
-            self._kill_all_stack_vars(env, "side-effect insn", sanitize_ea(ins.ea))
+        # For *imprecise* side-effecting instructions (e.g. calls) we must drop
+        # every tracked constant.  A plain store (stx) is a *precise* write that
+        # we interpret below, so we exclude it from the blanket kill.
+        if ins.has_side_effects() and ins.opcode != ida_hexrays.m_stx:
+            if env and logger.debug_on:
+                logger.debug(
+                    "[stack-var-cprop] KILL-ALL at %X due to %s",
+                    sanitize_ea(ins.ea),
+                    opcode_to_string(ins.opcode),
+                )
+            env.clear()
+            # Nothing more to learn from this instruction.
+            return
 
         # -------------------------------------------------------------
         # 2. Determine written variable & apply precise KILL / GEN.
@@ -226,12 +243,23 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
     def _rewrite_instruction(self, ins: ida_hexrays.minsn_t, env: ConstMap) -> int:
         if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
             return 0
-        op = getattr(ins, "l", None)
-        if op and self._process_operand(op, env):
-            if logger.debug_on:
-                logger.debug("[stack-var-cprop] folded at %X", sanitize_ea(ins.ea))
-            return 1
-        return 0
+        changed = False
+        # left operand
+        if ins.l and self._process_operand(ins.l, env):
+            changed = True
+        # right operand for binary ops
+        if ins.r and self._process_operand(ins.r, env):
+            changed = True
+        # stx destination address is also an input
+        if (
+            ins.opcode == ida_hexrays.m_stx
+            and ins.d
+            and self._process_operand(ins.d, env)
+        ):
+            changed = True
+        if changed and logger.debug_on:
+            logger.debug("[stack-var-cprop] folded at %X", sanitize_ea(ins.ea))
+        return 1 if changed else 0
 
     # ------------------------------------------------------------------
     # Helper utilities
@@ -323,6 +351,24 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         return None
 
     # ------------------------------------------------------------------
+    # Utility -----------------------------------------------------------------
+
+    def _safe_verify(self, mba: ida_hexrays.mba_t, ctx: str):
+        """Run mba.verify(True) and produce helpful diagnostics on failure."""
+        try:
+            mba.verify(True)
+        except RuntimeError as e:
+            logger.error("[stack-var-cprop] verify failed after %s: %s", ctx, e)
+            # attempt to locate a problematic block: dump the last one
+            try:
+                last_blk = (
+                    mba.get_mblock(mba.qty - 2) if mba.qty >= 2 else mba.get_mblock(0)
+                )
+                log_block_info(last_blk, logger.error)
+            except Exception:  # pragma: no cover
+                pass
+            raise
+
     # Operand folding (recursive)
     # ------------------------------------------------------------------
 
@@ -338,17 +384,31 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
             name = self._get_stack_var_name(op)
             if name and name in consts:
                 val, _ = consts[name]
-                op.make_number(val, op.size)
+                op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
                 return True
         elif op.t == ida_hexrays.mop_d and op.d is not None:
+            # ------------------------------------------------------------------
+            # Case 1: the *value* of this mop_d is itself an address expression
+            #         "(base + const)" that we have a constant for.  Fold the
+            #         whole operand before peeking into nested instructions.
+            # ------------------------------------------------------------------
+            base, off = self._extract_base_and_offset(op)
+            if base is not None:
+                base_name = self._get_stack_var_name(base)
+                if base_name:
+                    key = f"{base_name}+{off:X}" if off else base_name
+                    if key in consts:
+                        val, _ = consts[key]
+                        op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
+                        return True
             if op.d.opcode in {ida_hexrays.m_ldx, ida_hexrays.m_ldc}:
-                addr = op.d.r if op.d.r else op.d.l
+                addr = op.d.l
                 # direct stack var
                 if addr and addr.t == ida_hexrays.mop_S:
                     name = self._get_stack_var_name(addr)
                     if name and name in consts:
                         val, sz = consts[name]
-                        op.make_number(val, sz)
+                        op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
                         return True
                 # base+offset
                 base, off = self._extract_base_and_offset(addr)
@@ -357,13 +417,19 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                     comp = f"{base_name}+{off:X}" if off else base_name
                     if comp in consts:
                         val, sz = consts[comp]
-                        op.make_number(val, sz)
+                        op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
                         return True
-            # recurse into d’s operands
-            for attr in ("l", "r", "d"):
+            # Recurse into *source* operands of the nested instruction.  Do NOT
+            # touch its destination ('.d').
+            if op.d.opcode == ida_hexrays.m_stx:
+                return changed
+            for attr in ("l", "r"):
                 sub = getattr(op.d, attr, None)
-                if sub and self._process_operand(sub, consts):
+                if sub is not None and self._process_operand(sub, consts):
                     changed = True
+            # ensure nested instruction is internally consistent after edits
+            if changed and op.t == ida_hexrays.mop_d and op.d is not None:
+                op.d.optimize_solo()
         elif op.t == ida_hexrays.mop_f and op.f is not None:
             for a in op.f.args:
                 if a and self._process_operand(a, consts):
