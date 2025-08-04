@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
+import typing
+
 import ida_hexrays
 import idaapi
 
@@ -533,22 +536,23 @@ class MicroCodeInterpreter(object):
         try:
             if environment is None:
                 environment = self.global_environment
-            emulator_log.info(
-                "Evaluating microcode instruction : '{0}'".format(format_minsn_t(ins))
-            )
             if ins is None:
                 return False
+            if emulator_log.debug_on:
+                emulator_log.debug(
+                    "Evaluating microcode instruction : '%s'", format_minsn_t(ins)
+                )
             self._eval_instruction_and_update_environment(blk, ins, environment)
             return True
         except EmulationException as e:
             emulator_log.warning(
-                "Can't evaluate instruction: '{0}': {1}".format(format_minsn_t(ins), e)
+                "Can't evaluate instruction: '%s': %s", format_minsn_t(ins), e
             )
             if raise_exception:
                 raise e
         except Exception as e:
             emulator_log.warning(
-                "Error during evaluation of: '{0}': {1}".format(format_minsn_t(ins), e)
+                "Error during evaluation of: '%s': %s", format_minsn_t(ins), e
             )
             if raise_exception:
                 raise e
@@ -578,9 +582,9 @@ class MicroCodeInterpreter(object):
                 return None
         except Exception as e:
             emulator_log.error(
-                "Unexpected exception while computing constant mop value: '{0}': {1}".format(
-                    format_mop_t(mop), e
-                )
+                "Unexpected exception while computing constant mop value: '%s': %s",
+                format_mop_t(mop),
+                e,
             )
             if raise_exception:
                 raise e
@@ -588,7 +592,7 @@ class MicroCodeInterpreter(object):
                 return None
 
 
-class MopMapping(object):
+class MopMapping(typing.MutableMapping[ida_hexrays.mop_t, int]):
     def __init__(self):
         self.mops = []
         self.mops_values = []
@@ -645,16 +649,16 @@ class MopMapping(object):
         return self.has_key(mop)
 
 
-class MicroCodeEnvironment(object):
-    def __init__(self, parent: MicroCodeEnvironment | None = None):
-        self.parent = parent
-        self.mop_r_record = MopMapping()
-        self.mop_S_record = MopMapping()
+@dataclasses.dataclass
+class MicroCodeEnvironment:
+    parent: MicroCodeEnvironment | None = dataclasses.field(default=None)
+    mop_r_record: MopMapping = dataclasses.field(default_factory=MopMapping)
+    mop_S_record: MopMapping = dataclasses.field(default_factory=MopMapping)
 
-        self.cur_blk = None
-        self.cur_ins = None
-        self.next_blk = None
-        self.next_ins = None
+    cur_blk: ida_hexrays.mblock_t = dataclasses.field(init=False)
+    cur_ins: ida_hexrays.minsn_t = dataclasses.field(init=False)
+    next_blk: ida_hexrays.mblock_t = dataclasses.field(init=False)
+    next_ins: ida_hexrays.minsn_t = dataclasses.field(init=False)
 
     def items(self):
         return [x for x in self.mop_r_record.items() + self.mop_S_record.items()]
