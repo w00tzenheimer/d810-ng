@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from d810.hexrays.hexrays_helpers import AND_TABLE
-
 """Global forward constant-propagation of stack / frame variables.
 
 This pass is a *function-level* optimisation implemented as a
@@ -13,27 +11,27 @@ constants back into the micro-code.
 Compared with the former peephole rule this implementation is
 function-wide and therefore safe at control-flow merge points.
 """
-
-import logging
-from typing import Dict, List, Tuple
-
 import ida_hexrays
 
 from d810 import _compat
 from d810.conf.loggers import getLogger
-from d810.hexrays.cfg_utils import extract_base_and_offset, get_stack_var_name, safe_verify
+from d810.hexrays.cfg_utils import (
+    extract_base_and_offset,
+    get_stack_var_name,
+    safe_verify,
+)
 from d810.hexrays.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,
     opcode_to_string,
     sanitize_ea,
 )
+from d810.hexrays.hexrays_helpers import AND_TABLE
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
-logger = getLogger(__name__, default_level=logging.DEBUG)
+logger = getLogger(__name__)
 
-# Typing helpers -------------------------------------------------------------
-ConstMap = Dict[str, Tuple[int, int]]  # var  -> (value, size)
+ConstMap = dict[str, tuple[int, int]]  # var  -> (value, size)
 
 
 class StackVariableConstantPropagationRule(FlowOptimizationRule):
@@ -177,10 +175,10 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
 
     def _run_dataflow(self, mba: ida_hexrays.mba_t):
         nb = mba.qty
-        IN: Dict[int, ConstMap] = {i: {} for i in range(nb)}
-        OUT: Dict[int, ConstMap] = {i: {} for i in range(nb)}
+        IN: dict[int, ConstMap] = {i: {} for i in range(nb)}
+        OUT: dict[int, ConstMap] = {i: {} for i in range(nb)}
 
-        worklist: List[int] = list(range(nb))
+        worklist: list[int] = list(range(nb))
 
         preds: dict[int, list[int]] = {}
         for i in range(nb):
@@ -202,7 +200,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
 
     # meet = intersection of keys where all values agree
     @staticmethod
-    def _meet(pred_outs: List[ConstMap]) -> ConstMap:
+    def _meet(pred_outs: list[ConstMap]) -> ConstMap:
         if not pred_outs:
             return {}
         keys = set.intersection(*(set(m.keys()) for m in pred_outs))
@@ -224,12 +222,11 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
 
     # transfer for a single instruction (GEN/KILL)
     def _transfer_single(self, ins: ida_hexrays.minsn_t, env: ConstMap):
-        # -------------------------------------------------------------
-        # 1. Side-effects handling
-        # -------------------------------------------------------------
-        # For *imprecise* side-effecting instructions (e.g. calls) we must drop
-        # every tracked constant.  A plain store (stx) is a *precise* write that
-        # we interpret below, so we exclude it from the blanket kill.
+        # 1. Side-effects handling - for *imprecise* side-effecting instructions
+        # (e.g. calls) we must drop every tracked constant.
+        #
+        # A plain store (stx) is a *precise* write that we interpret below,
+        # so we exclude it from the blanket kill.
         if ins.has_side_effects() and ins.opcode != ida_hexrays.m_stx:
             if env and logger.debug_on:
                 logger.debug(
@@ -241,9 +238,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
             # Nothing more to learn from this instruction.
             return
 
-        # -------------------------------------------------------------
         # 2. Determine written variable & apply precise KILL / GEN.
-        # -------------------------------------------------------------
         written_var = self._get_written_var_name(ins)
         is_const_assign = self._is_constant_stack_assignment(ins)
 
@@ -258,7 +253,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                 )
             del env[written_var]
 
-        # GEN – introduce new constant
+        # 3. GEN - introduce new constant
         if is_const_assign:
             res = self._extract_assignment(ins)
             if res:
@@ -280,6 +275,11 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
     def _rewrite_instruction(self, ins: ida_hexrays.minsn_t, env: ConstMap) -> int:
         if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
             return 0
+
+        # We must process one operand, and if it changes, optimize and exit
+        # immediately. Calling `optimize_solo()` can invalidate the `ins`
+        # object, so we cannot continue to access its other operands like
+        # `ins.r`.
 
         changed = False
         # left operand
@@ -473,45 +473,12 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                                     const_info[1],
                                 )
                 if const_info:
-                    # val, size = const_info
-                    # op.d.opcode = ida_hexrays.m_ldc
-                    # op.d.l = ida_hexrays.mop_t()
-                    # # op.d.l.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
-                    # op.d.l.make_number(val & ((1 << (addr.size * 8)) - 1), addr.size)
-                    # op.d.r = ida_hexrays.mop_t()
-                    # op.d.r.erase()
-                    # op.d.r.size = 0
-                    # # op.d.d = ida_hexrays.mop_t()
-                    # # op.d.d.erase()
-                    # # op.d.d.size = addr.size
-                    # val, _ = const_info  # The size from consts is for the value itself.
-
-                    # # The size of the operation is determined by the destination
-                    # # of the original `ldx` instruction.
-                    # dest_size = op.d.d.size
-
-                    # # Transformation: ldx -> ldc
-                    # # An `ldx d, [l:r]` becomes an `ldc d, l`.
-                    # # We must modify the existing operands IN-PLACE.
-                    # # Creating new mop_t objects and assigning them will crash IDA.
-                    # op.d.opcode = ida_hexrays.m_ldc
-
-                    # # 1. Modify `l` to be the constant number.
-                    # op.d.l.make_number(val, dest_size)
-
-                    # # 2. Erase `r`, as `ldc` only has one source operand.
-                    # op.d.r.erase()
-
-                    # # Recompute internal flags/sizes for the nested instruction
-                    # op.d.optimize_solo()
                     val, _ = const_info
                     # The size of the operand is the size of the mop_d itself.
                     op_size = op.size
-                    # mask = (1 << (op_size * 8)) - 1
 
                     tmp = ida_hexrays.mop_t()
                     tmp.make_number(val & AND_TABLE[op_size], op_size)
-
                     op.assign(tmp)
 
                     if logger.debug_on:
@@ -522,13 +489,6 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                             op_size,
                             format_mop_t(op),
                         )
-                    # if logger.debug_on:
-                    #     logger.debug(
-                    #         "[stack-var-cprop] mop_d: folded base+off '%s' to constant 0x%X (size=%d) and replaced with ldc: %s",
-                    #         comp,
-                    #         val,
-                    #         format_minsn_t(op.d),
-                    #     )
                     return True
 
             # If the load couldn't be resolved, recurse into its children.
@@ -558,47 +518,4 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                     format_mop_t(op),
                 )
             return changed
-            # # ------------------------------------------------------------------
-            # # Case 1: the *value* of this mop_d is itself an address expression
-            # #         "(base + const)" that we have a constant for.  Fold the
-            # #         whole operand before peeking into nested instructions.
-            # # ------------------------------------------------------------------
-            # base, off = self._extract_base_and_offset(op)
-            # if base is not None:
-            #     base_name = self._get_stack_var_name(base)
-            #     if base_name:
-            #         key = f"{base_name}+{off:X}" if off else base_name
-            #         if key in consts:
-            #             val, _ = consts[key]
-            #             op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
-            #             return True
-            # if op.d.opcode in {ida_hexrays.m_ldx, ida_hexrays.m_ldc}:
-            #     addr = op.d.l
-            #     # # direct stack var
-            #     # if addr and addr.t == ida_hexrays.mop_S:
-            #     #     name = self._get_stack_var_name(addr)
-            #     #     if name and name in consts:
-            #     #         val, sz = consts[name]
-            #     #         op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
-            #     #         return True
-            #     # base+offset
-            #     base, off = self._extract_base_and_offset(addr)
-            #     if base is not None:
-            #         base_name = self._get_stack_var_name(base)
-            #         comp = f"{base_name}+{off:X}" if off else base_name
-            #         if comp in consts:
-            #             val, sz = consts[comp]
-            #             op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
-            #             return True
-            # # Recurse into *source* operands of the nested instruction.  Do NOT
-            # # touch its destination ('.d').
-            # if op.d.opcode == ida_hexrays.m_stx:
-            #     return changed
-            # for attr in ("l", "r"):
-            #     sub = getattr(op.d, attr, None)
-            #     if sub is not None and self._process_operand(sub, consts):
-            #         changed = True
-            # # ensure nested instruction is internally consistent after edits
-            # if changed and op.t == ida_hexrays.mop_d and op.d is not None:
-            #     op.d.optimize_solo()
         return changed
