@@ -648,6 +648,9 @@ class MopMapping(typing.MutableMapping[ida_hexrays.mop_t, int]):
     def __contains__(self, mop: ida_hexrays.mop_t):
         return self.has_key(mop)
 
+    def __iter__(self):
+        return iter(self.mops)
+
 
 @dataclasses.dataclass
 class MicroCodeEnvironment:
@@ -655,10 +658,10 @@ class MicroCodeEnvironment:
     mop_r_record: MopMapping = dataclasses.field(default_factory=MopMapping)
     mop_S_record: MopMapping = dataclasses.field(default_factory=MopMapping)
 
-    cur_blk: ida_hexrays.mblock_t = dataclasses.field(init=False)
-    cur_ins: ida_hexrays.minsn_t = dataclasses.field(init=False)
-    next_blk: ida_hexrays.mblock_t = dataclasses.field(init=False)
-    next_ins: ida_hexrays.minsn_t = dataclasses.field(init=False)
+    cur_blk: ida_hexrays.mblock_t | None = dataclasses.field(init=False, default=None)
+    cur_ins: ida_hexrays.minsn_t | None = dataclasses.field(init=False, default=None)
+    next_blk: ida_hexrays.mblock_t | None = dataclasses.field(init=False, default=None)
+    next_ins: ida_hexrays.minsn_t | None = dataclasses.field(init=False, default=None)
 
     def items(self):
         return [x for x in self.mop_r_record.items() + self.mop_S_record.items()]
@@ -683,13 +686,19 @@ class MicroCodeEnvironment:
         self.cur_ins = cur_ins
         self.next_blk = cur_blk
         if self.cur_ins is None:
-            self.next_blk = self.cur_blk.mba.get_mblock(self.cur_blk.serial + 1)
-            self.next_ins = self.next_blk.head
+            self.next_blk = typing.cast(
+                ida_hexrays.mblock_t,
+                self.cur_blk.mba.get_mblock(self.cur_blk.serial + 1),
+            )
+            self.next_ins = typing.cast(ida_hexrays.minsn_t, self.next_blk.head)
         else:
             self.next_ins = self.cur_ins.next
             if self.next_ins is None:
-                self.next_blk = self.cur_blk.mba.get_mblock(self.cur_blk.serial + 1)
-                self.next_ins = self.next_blk.head
+                self.next_blk = typing.cast(
+                    ida_hexrays.mblock_t,
+                    self.cur_blk.mba.get_mblock(self.cur_blk.serial + 1),
+                )
+                self.next_ins = typing.cast(ida_hexrays.minsn_t, self.next_blk.head)
         emulator_log.debug(
             "Setting next block {0} and next ins {1}".format(
                 self.next_blk.serial, format_minsn_t(self.next_ins)

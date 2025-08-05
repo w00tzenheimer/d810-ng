@@ -1,3 +1,5 @@
+import functools
+
 import ida_hexrays
 import idaapi
 from ida_hexrays import *
@@ -26,27 +28,59 @@ def log_block_info(blk: mblock_t, logger_func=helper_logger.info):
     )
 
 
-def get_stack_var_name(mop: ida_hexrays.mop_t) -> str | None:
-    if mop.t == ida_hexrays.mop_S:
-        mba = getattr(mop.s, "mba", None)
-        frame_size = None
-        if mba:
-            for att in ("minstkref", "stacksize", "frsize", "fullsize"):
-                val = getattr(mba, att, None)
-                if val:
-                    disp = val - mop.s.off
-                    if disp >= 0:
-                        frame_size = val
-                        break
-        if frame_size is not None:
-            disp = frame_size - mop.s.off
-            base = f"%var_{disp:X}.{mop.size}"
+@functools.lru_cache(maxsize=1024)
+def _get_mba_frame_size(mba: ida_hexrays.mba_t | None) -> int | None:
+    """Return cached frame size for an MBA (fast C-level functools cache)."""
+    if mba is None:
+        return None
+    for att in ("minstkref", "stacksize", "frsize", "fullsize"):
+        val = getattr(mba, att, None)
+        if val:
+            return val
+    return None
+
+
+@functools.lru_cache(maxsize=16384)
+def _cached_stack_var_name(
+    mop_identity: int,
+    t: int,
+    reg_or_off: int,
+    size: int,
+    valnum: int,
+    frame_size: int | None,
+) -> str:
+    """Compute & cache printable variable names (identity-based).
+
+    All arguments are immutable scalars, so the function is safe for
+    functools.lru_cache.  The *mop_identity* (id(mop)) ensures each concrete
+    mop_t instance gets its own entry even if scalar fields collide.
+    """
+    if t == ida_hexrays.mop_S:
+        if frame_size is not None and frame_size >= reg_or_off:
+            disp = frame_size - reg_or_off
+            base = f"%var_{disp:X}.{size}"
         else:
-            base = f"stk_{mop.s.off:X}.{mop.size}"
-        return f"{base}{{{mop.valnum}}}"
+            base = f"stk_{reg_or_off:X}.{size}"
+    else:  # mop_r
+        base = ida_hexrays.get_mreg_name(reg_or_off, size)
+    return f"{base}{{{valnum}}}"
+
+
+def get_stack_var_name(mop: ida_hexrays.mop_t) -> str | None:
+    """Return a stable human-readable name for a stack/register operand.
+
+    Converts the mutable *mop_t* into an identity + scalar tuple and leverages
+    `functools.lru_cache` for O(1) subsequent look-ups.
+    """
+    if mop.t == ida_hexrays.mop_S:
+        frame_size = _get_mba_frame_size(getattr(mop.s, "mba", None))
+        return _cached_stack_var_name(
+            id(mop), mop.t, mop.s.off, mop.size, mop.valnum, frame_size
+        )
+
     if mop.t == ida_hexrays.mop_r:
-        base = ida_hexrays.get_mreg_name(mop.r, mop.size)
-        return f"{base}.{mop.size}{{{mop.valnum}}}"
+        return _cached_stack_var_name(id(mop), mop.t, mop.r, mop.size, mop.valnum, None)
+
     return None
 
 
