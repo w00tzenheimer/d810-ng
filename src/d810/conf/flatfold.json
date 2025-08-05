@@ -878,14 +878,14 @@
             "name": "FoldReadonlyDataRule",
             "is_activated": true,
             "config": {}
-        },
-        {
-            "name": "StackVariableConstantFoldingRule",
-            "is_activated": true,
-            "config": {}
         }
     ],
     "blk_rules": [
+        {
+            "name": "StackVariableConstantPropagationRule",
+            "is_activated": true,
+            "config": {}
+        },
         {
             "name": "UnflattenControlFlowRule",
             "is_activated": false,
@@ -898,7 +898,7 @@
         },
         {
             "name": "JumpFixer",
-            "is_activated": false,
+            "is_activated": true,
             "config": {
                 "enabled_rules": [
                     "CompareConstantRule1",
