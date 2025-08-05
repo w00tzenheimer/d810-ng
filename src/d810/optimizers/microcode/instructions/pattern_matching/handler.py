@@ -1,11 +1,11 @@
 import abc
 import dataclasses
 import itertools
-import logging
 import typing
 
 from ida_hexrays import *
 
+from d810.conf.loggers import getLogger
 from d810.expr.ast import AstBase, AstNode, minsn_to_ast
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.handler import (
@@ -14,8 +14,8 @@ from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
 )
 
-optimizer_logger = logging.getLogger("D810.optimizer")
-pattern_search_logger = logging.getLogger("D810.pattern_search")
+optimizer_logger = getLogger("D810.optimizer")
+pattern_search_logger = getLogger("D810.pattern_search")
 
 
 class PatternMatchingRule(GenericPatternRule):
@@ -30,11 +30,12 @@ class PatternMatchingRule(GenericPatternRule):
         if fuzz_pattern is not None:
             self.fuzz_pattern = fuzz_pattern
         self._generate_pattern_candidates()
-        pattern_search_logger.debug(
-            "Rule {0} configured with {1} patterns".format(
-                self.__class__.__name__, len(self.pattern_candidates)
+        if pattern_search_logger.debug_on:
+            pattern_search_logger.debug(
+                "Rule %s configured with %s patterns",
+                self.__class__.__name__,
+                len(self.pattern_candidates),
             )
-        )
 
     @property
     @abc.abstractmethod
@@ -58,7 +59,7 @@ class PatternMatchingRule(GenericPatternRule):
             self.pattern_candidates += [x for x in self.PATTERNS]
 
     def check_pattern_and_replace(self, candidate_pattern: AstNode, test_ast: AstNode):
-        if optimizer_logger.isEnabledFor(logging.DEBUG):
+        if optimizer_logger.debug_on:
             optimizer_logger.debug(
                 " 1. Checking pattern: %s against %s",
                 candidate_pattern.get_pattern(),
@@ -66,20 +67,20 @@ class PatternMatchingRule(GenericPatternRule):
             )
         if not candidate_pattern.check_pattern_and_copy_mops(test_ast):
             return None
-        if optimizer_logger.isEnabledFor(logging.DEBUG):
+        if optimizer_logger.debug_on:
             optimizer_logger.debug(
                 " 2. Pattern matched: %s",
                 candidate_pattern.get_pattern(),
             )
         if not self.check_candidate(candidate_pattern):
             return None
-        if optimizer_logger.isEnabledFor(logging.DEBUG):
+        if optimizer_logger.debug_on:
             optimizer_logger.debug(
                 " 3. Candidate check passed: %s",
                 candidate_pattern.get_pattern(),
             )
         new_instruction = self.get_replacement(candidate_pattern)
-        if optimizer_logger.isEnabledFor(logging.DEBUG):
+        if optimizer_logger.debug_on:
             optimizer_logger.debug(
                 " 4. Replacement: %s",
                 None if new_instruction is None else new_instruction,
@@ -115,7 +116,7 @@ class PatternStorage(object):
     # Additionally, it stores the rule objects which are resolved for the PatternStorage depth
     def __init__(self, depth=1):
         self.depth = depth
-        self.next_layer_patterns = {}
+        self.next_layer_patterns: dict[str, tuple[list[str], PatternStorage]] = {}
         self.rule_resolved = []
 
     def add_pattern_for_rule(self, pattern: AstNode, rule: InstructionOptimizationRule):
@@ -126,10 +127,12 @@ class PatternStorage(object):
             self.rule_resolved.append(RulePatternInfo(rule, pattern))
         else:
             if layer_signature not in self.next_layer_patterns.keys():
-                self.next_layer_patterns[layer_signature] = PatternStorage(
-                    self.depth + 1
+                split = layer_signature.split(",")
+                self.next_layer_patterns[layer_signature] = (
+                    split,
+                    PatternStorage(self.depth + 1),
                 )
-            self.next_layer_patterns[layer_signature].add_pattern_for_rule(
+            self.next_layer_patterns[layer_signature][1].add_pattern_for_rule(
                 pattern, rule
             )
 
@@ -137,26 +140,34 @@ class PatternStorage(object):
     def layer_signature_to_key(sig: list[str]) -> str:
         return ",".join(sig)
 
+    # @staticmethod
+    # def is_layer_signature_compatible(
+    #     instruction_signature: str, pattern_signature: str
+    # ) -> bool:
+    #     if instruction_signature == pattern_signature:
+    #         return True
+    #     instruction_node_list = instruction_signature.split(",")
+    #     pattern_node_list = pattern_signature.split(",")
+    #     for ins_node_sig, pattern_node_sig in zip(
+    #         instruction_node_list, pattern_node_list
+    #     ):
+    #         if (
+    #             pattern_node_sig not in ["L", "C", "N"]
+    #             and ins_node_sig != pattern_node_sig
+    #         ):
+    #             return False
+    #     return True
+
     @staticmethod
-    def is_layer_signature_compatible(
-        instruction_signature: str, pattern_signature: str
-    ) -> bool:
-        if instruction_signature == pattern_signature:
-            return True
-        instruction_node_list = instruction_signature.split(",")
-        pattern_node_list = pattern_signature.split(",")
-        for ins_node_sig, pattern_node_sig in zip(
-            instruction_node_list, pattern_node_list
-        ):
-            if (
-                pattern_node_sig not in ["L", "C", "N"]
-                and ins_node_sig != pattern_node_sig
-            ):
+    def compatible(inst_sig: list[str], pat_sig: list[str]) -> bool:
+        for i, p in zip(inst_sig, pat_sig):
+            if p not in ("L", "C", "N") and i != p:
                 return False
         return True
 
     def get_matching_rule_pattern_info(self, pattern: AstBase):
-        pattern_search_logger.info("Searching : {0}".format(pattern))
+        if pattern_search_logger.debug_on:
+            pattern_search_logger.debug("Searching for %s", pattern)
         return self.explore_one_level(pattern, 1)
 
     def explore_one_level(self, searched_pattern: AstBase, cur_level: int):
@@ -168,32 +179,34 @@ class PatternStorage(object):
         # This piece of code tries to handles that in a (semi) efficient way
         if len(self.next_layer_patterns) == 0:
             return []
-        searched_layer_signature = searched_pattern.get_depth_signature(cur_level)
+        searched_split = searched_pattern.get_depth_signature(cur_level)
         nb_possible_signature = 2 ** (
-            len(searched_layer_signature)
-            - searched_layer_signature.count("N")
-            - searched_layer_signature.count("L")
+            len(searched_split) - searched_split.count("N") - searched_split.count("L")
         )
-        pattern_search_logger.debug(
-            "  Layer {0}: {1} -> {2} variations (storage has {3} signature)".format(
-                cur_level,
-                searched_layer_signature,
-                nb_possible_signature,
-                len(self.next_layer_patterns),
+        if pattern_search_logger.debug_on:
+            pattern_search_logger.debug(
+                "  Layer {0}: {1} -> {2} variations (storage has {3} signature)".format(
+                    cur_level,
+                    searched_split,
+                    nb_possible_signature,
+                    len(self.next_layer_patterns),
+                )
             )
-        )
         matched_rule_pattern_info = []
         if nb_possible_signature < len(self.next_layer_patterns):
-            pattern_search_logger.debug("  => Using method 1")
-            for possible_sig in signature_generator(searched_layer_signature):
+            if pattern_search_logger.debug_on:
+                pattern_search_logger.debug("  => Using method 1")
+            for possible_sig in signature_generator(searched_split):
                 try:
                     test_sig = self.layer_signature_to_key(possible_sig)
-                    pattern_storage = self.next_layer_patterns[test_sig]
-                    pattern_search_logger.info(
-                        "    Compatible signature: {0} -> resolved: {1}".format(
-                            test_sig, pattern_storage.rule_resolved
+                    _, pattern_storage = self.next_layer_patterns[test_sig]
+                    if pattern_search_logger.debug_on:
+                        pattern_search_logger.debug(
+                            "    Compatible signature: %s -> resolved: %s",
+                            test_sig,
+                            pattern_storage.rule_resolved,
                         )
-                    )
+
                     matched_rule_pattern_info += pattern_storage.rule_resolved
                     matched_rule_pattern_info += pattern_storage.explore_one_level(
                         searched_pattern, cur_level + 1
@@ -201,19 +214,19 @@ class PatternStorage(object):
                 except KeyError:
                     pass
         else:
-            pattern_search_logger.debug("  => Using method 2")
-            searched_layer_signature_key = self.layer_signature_to_key(
-                searched_layer_signature
-            )
-            for test_sig, pattern_storage in self.next_layer_patterns.items():
-                if self.is_layer_signature_compatible(
-                    searched_layer_signature_key, test_sig
-                ):
-                    pattern_search_logger.info(
-                        "    Compatible signature: {0} -> resolved: {1}".format(
-                            test_sig, pattern_storage.rule_resolved
+            if pattern_search_logger.debug_on:
+                pattern_search_logger.debug("  => Using method 2")
+            for test_sig, (
+                pat_sig_split,
+                pattern_storage,
+            ) in self.next_layer_patterns.items():
+                if self.compatible(searched_split, pat_sig_split):
+                    if pattern_search_logger.debug_on:
+                        pattern_search_logger.debug(
+                            "    Compatible signature: %s -> resolved: %s",
+                            test_sig,
+                            pattern_storage.rule_resolved,
                         )
-                    )
                     matched_rule_pattern_info += pattern_storage.rule_resolved
                     matched_rule_pattern_info += pattern_storage.explore_one_level(
                         searched_pattern, cur_level + 1
@@ -242,10 +255,11 @@ class PatternOptimizer(InstructionOptimizer):
         if not is_ok:
             return False
         for pattern in rule.pattern_candidates:
-            optimizer_logger.debug(
-                "[PatternOptimizer.add_rule] Adding pattern: %s",
-                str(pattern),
-            )
+            if optimizer_logger.debug_on:
+                optimizer_logger.debug(
+                    "[PatternOptimizer.add_rule] Adding pattern: %s",
+                    str(pattern),
+                )
             self.pattern_storage.add_pattern_for_rule(pattern, rule)
         return True
 
@@ -258,7 +272,7 @@ class PatternOptimizer(InstructionOptimizer):
         # This avoids the (potentially expensive) AST conversion and pattern lookup
         # overhead when the user has not enabled any pattern rules.
         if len(self.rules) == 0:
-            if optimizer_logger.isEnabledFor(logging.DEBUG):
+            if optimizer_logger.debug_on:
                 optimizer_logger.debug(
                     "[PatternOptimizer.get_optimized_instruction] No rules configured, skipping"
                 )
@@ -266,7 +280,7 @@ class PatternOptimizer(InstructionOptimizer):
 
         tmp = minsn_to_ast(ins)
         if tmp is None:
-            if optimizer_logger.isEnabledFor(logging.DEBUG):
+            if optimizer_logger.debug_on:
                 optimizer_logger.debug(
                     "[PatternOptimizer.get_optimized_instruction] minsn_to_ast failed, skipping"
                 )
@@ -275,7 +289,7 @@ class PatternOptimizer(InstructionOptimizer):
         all_matches = self.pattern_storage.get_matching_rule_pattern_info(tmp)
         match_len = len(all_matches)
         for i, rule_pattern_info in enumerate(all_matches):
-            if optimizer_logger.isEnabledFor(logging.DEBUG):
+            if optimizer_logger.debug_on:
                 optimizer_logger.debug(
                     "[PatternOptimizer.get_optimized_instruction] %s/%s rule_pattern_info: %s",
                     i + 1,
@@ -288,17 +302,25 @@ class PatternOptimizer(InstructionOptimizer):
                 )
                 if new_ins is not None:
                     self.rules_usage_info[rule_pattern_info.rule.name] += 1
-                    optimizer_logger.info(
-                        "Rule {0} matched:".format(rule_pattern_info.rule.name)
-                    )
-                    optimizer_logger.info("  orig: {0}".format(format_minsn_t(ins)))
-                    optimizer_logger.info("  new : {0}".format(format_minsn_t(new_ins)))
+                    if optimizer_logger.info_on:
+                        optimizer_logger.info(
+                            "Rule %s matched in maturity %s:",
+                            rule_pattern_info.rule.name,
+                            self.cur_maturity,
+                        )
+                        optimizer_logger.info("  orig: %s", format_minsn_t(ins))
+                        optimizer_logger.info(
+                            "  new : %s",
+                            format_minsn_t(new_ins),
+                        )
                     return new_ins
             except RuntimeError as e:
                 optimizer_logger.error(
-                    "Error during rule {0} for instruction {1}: {2}".format(
-                        rule_pattern_info.rule, format_minsn_t(ins), e
-                    )
+                    "Error during rule %s for instruction %s: %s",
+                    rule_pattern_info.rule,
+                    format_minsn_t(ins),
+                    e,
+                    exc_info=True,
                 )
         return None
 
@@ -370,9 +392,17 @@ def get_opcode_operands(ref_opcode: int, ast_node: AstBase) -> list[AstBase]:
         return [ast_node]
     ast_node = typing.cast(AstNode, ast_node)
     if ast_node.opcode == ref_opcode:
-        return get_opcode_operands(ref_opcode, ast_node.left) + get_opcode_operands(
-            ref_opcode, ast_node.right
+        left = (
+            get_opcode_operands(ref_opcode, ast_node.left)
+            if ast_node.left is not None
+            else []
         )
+        right = (
+            get_opcode_operands(ref_opcode, ast_node.right)
+            if ast_node.right is not None
+            else []
+        )
+        return left + right
     else:
         return [ast_node]
 

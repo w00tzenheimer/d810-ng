@@ -91,6 +91,25 @@ typedef int bool;       // we want to use bool in our C programs
 #define __noreturn  __declspec(noreturn)
 #endif
 
+// Used to annotate functions, methods and classes so they
+// are not optimized by the compiler. Useful for tests
+// where you expect loops to stay in place churning cycles
+#if defined( _MSC_VER )
+#  define DONT_OPTIMIZE() __pragma( optimize( "", off ) )
+#  define ENABLE_OPTIMIZE() __pragma( optimize( "", on ) )
+#elif defined(__clang__)
+// [[clang::optnone]]
+#  define DONT_OPTIMIZE() _Pragma( "clang optimize off" )
+#  define ENABLE_OPTIMIZE() _Pragma( "clang optimize on" )
+#elif defined(__GNUC__) || defined(__GNUG__)
+#  define DONT_OPTIMIZE() \
+	_Pragma( "GCC push_options" ) \
+	_Pragma( "GCC optimize (\"O0\")" ) \
+    _Pragma( "GCC optimize (\"cold\")" )
+#  define ENABLE_OPTIMIZE() _Pragma( "GCC pop_options" )
+#else
+#  error new compiler
+#endif
 
 #ifndef NULL
 #define NULL 0

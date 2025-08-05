@@ -1,10 +1,13 @@
 import dataclasses
 import json
-import logging
 import pathlib
 import typing
 
 import ida_diskio
+
+from .loggers import getLogger
+
+logger = getLogger(__name__)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -75,15 +78,15 @@ class ProjectConfiguration:
             json.JSONDecodeError: If the file is not valid JSON.
         """
         config_path = pathlib.Path(path)
-        logging.info("Loading project configuration from %s", config_path)
+        logger.info("Loading project configuration from %s", config_path)
         try:
             with config_path.open("r", encoding="utf-8") as fp:
                 data = json.load(fp)
         except FileNotFoundError:
-            logging.error("Project configuration file not found: %s", config_path)
+            logger.error("Project configuration file not found: %s", config_path)
             raise
         except json.JSONDecodeError as e:
-            logging.error("Failed to parse project config %s: %s", config_path, e)
+            logger.error("Failed to parse project config %s: %s", config_path, e)
             raise
 
         return cls(
@@ -99,7 +102,7 @@ class ProjectConfiguration:
 
     def save(self) -> None:
         """Saves the project configuration back to its file."""
-        logging.info("Saving project configuration to %s", self.path)
+        logger.info("Saving project configuration to %s", self.path)
         project_data = {
             "description": self.description,
             "ins_rules": [rule.to_dict() for rule in self.ins_rules],
@@ -111,9 +114,7 @@ class ProjectConfiguration:
             with self.path.open("w", encoding="utf-8") as fp:
                 json.dump(project_data, fp, indent=2)
         except IOError as e:
-            logging.error(
-                "Could not save project configuration to %s: %s", self.path, e
-            )
+            logger.error("Could not save project configuration to %s: %s", self.path, e)
 
 
 class D810Configuration:
@@ -185,16 +186,16 @@ class D810Configuration:
             try:
                 with path.open("r", encoding="utf-8") as fp:
                     self._options = json.load(fp)
-                logging.info("Loaded configuration from %s", path)
+                logger.info("Loaded configuration from %s", path)
                 break
             except FileNotFoundError:
-                logging.debug("Configuration file %s not found", path)
+                logger.debug("Configuration file %s not found", path)
             except json.JSONDecodeError:
-                logging.error("Failed to parse config file: %s", path)
+                logger.error("Failed to parse config file: %s", path)
 
         else:
             # None of the candidate files succeeded.
-            logging.warning("No valid configuration found; using defaults in memory.")
+            logger.warning("No valid configuration found; using defaults in memory.")
             self._options = {}
 
     def save(self) -> None:
@@ -203,9 +204,9 @@ class D810Configuration:
             self.config_file.parent.mkdir(parents=True, exist_ok=True)
             with self.config_file.open("w", encoding="utf-8") as fp:
                 json.dump(self._options, fp, indent=2)
-            logging.info("Configuration saved to %s", self.config_file)
+            logger.info("Configuration saved to %s", self.config_file)
         except IOError as e:
-            logging.error("Failed to save configuration to %s: %s", self.config_file, e)
+            logger.error("Failed to save configuration to %s: %s", self.config_file, e)
 
     def discover_projects(self) -> list[ProjectConfiguration]:
         """
@@ -247,7 +248,7 @@ class D810Configuration:
                 project = ProjectConfiguration.from_file(path)
                 projects.append(project)
             except Exception as e:
-                logging.error("Failed to load project config %s: %s", path, e)
+                logger.error("Failed to load project config %s: %s", path, e)
                 continue
 
         return projects

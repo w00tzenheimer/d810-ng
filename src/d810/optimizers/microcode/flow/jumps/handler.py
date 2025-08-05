@@ -1,6 +1,8 @@
-import logging
 from typing import Union
 
+from ida_hexrays import *
+
+from d810.conf.loggers import getLogger
 from d810.expr.ast import AstNode, mop_to_ast
 from d810.hexrays.cfg_utils import (
     change_2way_block_conditional_successor,
@@ -18,10 +20,8 @@ from d810.optimizers.microcode.instructions.pattern_matching.handler import (
 )
 from d810.registry import Registrant
 
-from ida_hexrays import *
-
-logger = logging.getLogger("D810.branch_fixer")
-optimizer_logger = logging.getLogger("D810.optimizer")
+logger = getLogger("D810.branch_fixer")
+optimizer_logger = getLogger("D810.optimizer")
 
 
 class JumpOptimizationRule(Registrant):

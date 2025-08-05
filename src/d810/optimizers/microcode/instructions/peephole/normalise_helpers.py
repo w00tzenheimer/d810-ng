@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import logging
+import functools
 import typing
 
 import ida_hexrays
 
 from d810 import _compat
 from d810.cache import CacheImpl
+from d810.conf.loggers import getLogger
+from d810.expr import utils
 from d810.expr.ast import AstBase, AstLeaf, AstNode, mop_to_ast
 from d810.expr.utils import get_parity_flag
-from d810.hexrays.hexrays_formatters import (
+from d810.hexrays.hexrays_formatters import (  # noqa: F401 - debug only
     format_mop_t,
     mop_type_to_string,
     opcode_to_string,
@@ -19,12 +21,362 @@ from d810.hexrays.hexrays_helpers import (  # already maps size→mask
     AND_TABLE,
     CONTROL_FLOW_OPCODES,
     OPCODES_INFO,
+    is_rotate_helper_call,
 )
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
 
-peephole_logger = logging.getLogger("D810.optimizer")
+logger = getLogger(__name__)
+
+
+class TransparentCallUnwrapRule(PeepholeSimplificationRule):
+    DESCRIPTION = (
+        "Unwrap helper calls whose result is stored in their destination expression"
+    )
+    """
+        m_call  l=<helper>  r=<empty>  d=<mop_d expr>
+
+    by the expression stored in *d*.  This turns a value-only helper
+    (often emitted by the decompiler for things like casts or wrappers
+    around compiler intrinsics) into the real micro-instruction so that
+    subsequent passes do not need to care.
+    """
+
+    DESCRIPTION = "Unwrap helper calls whose result is directly stored in their destination expression"
+
+    # Run *very* early so that the AST builder never sees the wrapper.
+    maturities = [
+        # ida_hexrays.MMAT_CALLS,
+        # ida_hexrays.MMAT_GLBOPT1,
+    ]
+
+    @_compat.override
+    def check_and_replace(
+        self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
+    ) -> ida_hexrays.minsn_t | None:  # noqa: D401
+        """Return a replacement `minsn_t` or None to keep *ins* unchanged."""
+
+        if logger.debug_on:
+            logger.debug(
+                "[transparent-call] considering ea=%X, opcode=%s l=%s r=%s d=%s",
+                sanitize_ea(ins.ea),
+                opcode_to_string(ins.opcode),
+                format_mop_t(ins.l),
+                format_mop_t(ins.r),
+                format_mop_t(ins.d),
+            )
+
+        # Pattern match -----------------------------------------------------------------
+        if ins.opcode != ida_hexrays.m_call:
+            return None
+
+        # We only consider *transparent* helpers: no argument list (r is None or mop_z)
+        if ins.r is not None and ins.r.t != ida_hexrays.mop_z:
+            return None
+
+        # Destination must be a mop_d wrapping an *expression* (another minsn_t)
+        if ins.d is None or ins.d.t != ida_hexrays.mop_d or ins.d.d is None:
+            return None
+
+        inner: ida_hexrays.minsn_t = typing.cast(ida_hexrays.minsn_t, ins.d.d)
+
+        # Extra guard: do *not* unwrap rotate helper calls - another rule handles them
+        if is_rotate_helper_call(inner):
+            return None
+        # ------------------------------------------------------------------
+        # There is no public Python API to *deep-copy* a minsn_t, but Ida's
+        # C++ bindings expose the copy-constructor through normal assignment
+        # semantics:  new_ins = ida_hexrays.minsn_t(other).  Empirically this
+        # produces a full, independent copy.
+        # ------------------------------------------------------------------
+        new_ins = ida_hexrays.minsn_t(inner)  # type: ignore[arg-type]
+
+        # Preserve the original EA so xrefs / logging stay consistent.
+        new_ins.ea = ins.ea
+        if logger.debug_on:
+            logger.debug(
+                "[transparent-call] 0x%X unwrap → %s",
+                sanitize_ea(ins.ea),
+                opcode_to_string(new_ins.opcode),
+            )
+
+        return new_ins
+
+
+class TypedImmediateCanonicaliseRule(PeepholeSimplificationRule):
+    """Turn the various typed-immediate wrappers produced by Hex-Rays into
+    plain numeric constants (mop_n).  Handles two frequent patterns:
+
+    - The typed immediate mop_f wrapper::
+
+          <fast:_QWORD #0x42.8,char #4.1>.8
+
+      which is represented as an *mop_f* whose *f.args[0]* is the real
+      mop_n literal.
+
+    - An *m_ldc* micro-instruction that loads a constant into a pseudo
+      temporal destination - the source literal sits in the *l* operand.
+      These appear inside nested expressions (eg. m_call wrappers).
+    """
+
+    DESCRIPTION = "Canonicalise typed immediates (mop_f) into plain mop_n literals"
+
+    maturities = [
+        # ida_hexrays.MMAT_CALLS,
+        # ida_hexrays.MMAT_GLBOPT1,
+    ]
+
+    @_compat.override
+    def check_and_replace(
+        self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
+    ) -> ida_hexrays.minsn_t | None:
+        """Replace *ins* when all it does is materialise a literal."""
+
+        if logger.debug_on:
+            logger.debug(
+                "[typed-imm] considering ea=%X, opcode=%s l=%s r=%s d=%s",
+                sanitize_ea(ins.ea),
+                opcode_to_string(ins.opcode),
+                format_mop_t(ins.l),
+                format_mop_t(ins.r),
+                format_mop_t(ins.d),
+            )
+
+        # Skip rotate helper calls - they need special handling
+        if is_rotate_helper_call(ins):
+            return None
+
+        # ------------------------------------------------------------------
+        # Case A - Stand-alone m_ldc that simply moves a literal.
+        # ------------------------------------------------------------------
+        if (
+            ins.opcode == ida_hexrays.m_ldc
+            and ins.l is not None
+            and ins.l.t == ida_hexrays.mop_n
+        ):
+            # Up-convert to the canonical representation used by the constant
+            # folder:    m_ldc  l=<mop_n>   d=<original dst>  r=mop_z
+            # Here the instruction is already in that form - nothing to do.
+            return None  # keep as-is
+
+        # ------------------------------------------------------------------
+        # Case B - Instruction *operands* that wrap the literal in mop_f.
+        #   We normalise *in-place* instead of emitting a new instruction to
+        #   keep EA / control-flow untouched.
+        # ------------------------------------------------------------------
+        changed = False
+        for op_name in ("l", "r", "d"):
+            mop = getattr(ins, op_name, None)
+            if (
+                mop is not None
+                and mop.t == ida_hexrays.mop_f
+                and getattr(mop, "f", None)
+            ):
+                args = mop.f.args
+                if (
+                    args
+                    and len(args) >= 1
+                    and args[0] is not None
+                    and args[0].t == ida_hexrays.mop_n
+                ):
+                    lit = args[0]
+                    dup = ida_hexrays.mop_t()
+                    dup.make_number(lit.nnn.value, lit.size)
+                    setattr(ins, op_name, dup)
+                    changed = True
+        return ins if changed else None
+
+
+"""
+# Special handling for rotate calls
+if mop.t == ida_hexrays.mop_d and _is_rotate_helper_call(mop.d):
+    # Layout A: classic helper - arguments are in an mop_f list
+    if mop.d.r.t == ida_hexrays.mop_f:
+        args = mop.d.r.f.args
+        if len(args) == 2 and args[0] is not None and args[1] is not None:
+            value_ast = mop_to_ast_internal(args[0], context)
+            shift_ast = mop_to_ast_internal(args[1], context)
+            tree = AstNode(ida_hexrays.m_call, value_ast, shift_ast)
+            tree.func_name = mop.d.l.helper
+            tree.mop = mop
+            tree.dest_size = mop.size
+            tree.ea = sanitize_ea(mop.d.ea)
+            new_index = len(context.unique_asts)
+            tree.ast_index = new_index
+            context.unique_asts.append(tree)
+            context.mop_key_to_index[key] = new_index
+            return tree
+    # Layout B: compact helper - r is value, d is shift amount
+    elif mop.d.r is not None and mop.d.d is not None:
+        value_ast = mop_to_ast_internal(mop.d.r, context)
+        shift_ast = mop_to_ast_internal(mop.d.d, context)
+        if value_ast is not None and shift_ast is not None:
+            tree = AstNode(ida_hexrays.m_call, value_ast, shift_ast)
+            tree.func_name = mop.d.l.helper
+            tree.mop = mop
+            tree.dest_size = mop.size
+            tree.ea = sanitize_ea(mop.d.ea)
+            new_index = len(context.unique_asts)
+            tree.ast_index = new_index
+            context.unique_asts.append(tree)
+            context.mop_key_to_index[key] = new_index
+            if logger.debug_on:
+                logger.debug(
+                    "[mop_to_ast_internal] Built compact rotate helper node for ea=0x%X",
+                    mop.d.ea if hasattr(mop.d, "ea") else -1,
+                )
+            return tree
+"""
+
+
+# class RotateHelperInlineRule(PeepholeSimplificationRule):
+#     """Replace `__ROL*` / `__ROR*` helper calls by explicit (shl, shr, or) tree.
+
+#     This exposes the rotate to algebraic simplifications and constant
+#     folding, removing the need for special-case handling in the AST
+#     builder.
+#     """
+
+#     DESCRIPTION = "Inline ROL/ROR helper calls into shifts + or"
+#     # maturities = [ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS]
+
+#     @_compat.override
+#     def check_and_replace(
+#         self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
+#     ) -> ida_hexrays.minsn_t | None:
+#         if logger.debug_on:
+#             logger.debug(
+#                 "[RotateHelperInline] considering ea=%X, opcode=%s. is insn helper? %s  l=%s  r=%s",
+#                 sanitize_ea(ins.ea),
+#                 opcode_to_string(ins.opcode),
+#                 is_rotate_helper_call(ins),
+#                 format_mop_t(ins.l),
+#                 format_mop_t(ins.r),
+#             )
+#         if not is_rotate_helper_call(ins):
+#             return None
+
+#         # Extract helper name and width from helper string (e.g., __ROL4__)
+#         helper_name = (ins.l.helper or "").lstrip("!")
+#         is_rol = helper_name.startswith("__ROL")
+
+#         # Derive bit width from destination size if possible; fallback 32.
+#         bits = (ins.d.size or 4) * 8 if ins.d else 32
+
+#         # --------------------------------------------------------------
+#         # Gather operands depending on layout.
+#         # Layout A: argument list in mop_f.
+#         # Layout B: r == value, d == shift
+#         # --------------------------------------------------------------
+#         # For rotate helpers, arguments are in ins.r as mop_f
+#         func_mop = None
+#         if (
+#             ins.r is not None
+#             and ins.r.t == ida_hexrays.mop_f
+#             and getattr(ins.r, "f", None)
+#         ):
+#             func_mop = ins.r
+
+#         if func_mop:
+#             args = func_mop.f.args
+#             if len(args) < 2 or args[0] is None or args[1] is None:
+#                 return None
+#             val_mop = dup_mop(args[0])
+#             sh_mop = dup_mop(args[1])
+#         else:
+#             # compact form
+#             val_mop = dup_mop(ins.r)
+#             sh_mop = dup_mop(ins.d)
+#             if val_mop is None or sh_mop is None:
+#                 return None
+#         # Build (bits - shift) expression:  sub_ins
+#         bits_const = ida_hexrays.mop_t()
+#         bits_const.make_number(bits, (bits // 8) if bits // 8 in AND_TABLE else 4)
+#         sub_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
+#         sub_ins.opcode = ida_hexrays.m_sub
+#         sub_ins.l = bits_const
+#         sub_ins.r = dup_mop(sh_mop)
+#         sub_mop = ida_hexrays.mop_t()
+#         sub_mop.create_from_insn(sub_ins)
+
+#         val_mop_for_shl = (
+#             ida_hexrays.mop_t()
+#             if val_mop and val_mop.t == ida_hexrays.mop_d
+#             else dup_mop(val_mop)
+#         )
+#         if val_mop and val_mop.t == ida_hexrays.mop_d:
+#             val_mop_for_shl.t = ida_hexrays.mop_d
+#             val_mop_for_shl.d = ida_hexrays.minsn_t(val_mop.d)
+#             val_mop_for_shl.size = val_mop.size
+
+#         val_mop_for_shr = (
+#             ida_hexrays.mop_t()
+#             if val_mop and val_mop.t == ida_hexrays.mop_d
+#             else dup_mop(val_mop)
+#         )
+#         if val_mop and val_mop.t == ida_hexrays.mop_d:
+#             val_mop_for_shr.t = ida_hexrays.mop_d
+#             val_mop_for_shr.d = ida_hexrays.minsn_t(val_mop.d)
+#             val_mop_for_shr.size = val_mop.size
+
+#         # Build left shift: val << sh
+#         shl_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
+#         shl_ins.opcode = ida_hexrays.m_shl
+#         shl_ins.l = val_mop_for_shl
+#         shl_ins.r = dup_mop(sh_mop)
+#         shl_mop = ida_hexrays.mop_t()
+#         shl_mop.create_from_insn(shl_ins)
+
+#         # Build right shift (direction depends on rol/ror)
+#         shift_opcode = ida_hexrays.m_shr if is_rol else ida_hexrays.m_shl
+#         shr_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
+#         shr_ins.opcode = shift_opcode
+#         shr_ins.l = val_mop_for_shr
+#         shr_ins.r = sub_mop
+#         shr_mop = ida_hexrays.mop_t()
+#         shr_mop.create_from_insn(shr_ins)
+
+#         # Build final or
+#         or_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
+#         or_ins.opcode = ida_hexrays.m_or
+#         or_ins.l = shl_mop
+#         or_ins.r = shr_mop
+
+#         # # Destination: keep original l-value when legal
+#         # or_ins.d = ida_hexrays.mop_t()
+#         # if ins.d and ins.d.t in {
+#         #     ida_hexrays.mop_r,
+#         #     ida_hexrays.mop_l,
+#         #     ida_hexrays.mop_S,
+#         #     ida_hexrays.mop_v,
+#         # }:
+#         #     or_ins.d.assign(ins.d)
+#         # else:
+#         #     or_ins.d.erase()
+#         # or_ins.d.size = ins.d.size if ins.d else (bits // 8)
+
+#         # Destination: copy the mov‐dest (ins.r) into our new OR‐insn
+#         or_ins.r = shr_mop  # temporarily set to something of the right type…
+#         or_ins.r.assign(ins.r)
+#         or_ins.r.size = ins.r.size
+
+#         # ensure sizes propagate to l/r when they are mop_t (not mop_d)
+#         if or_ins.l.t != ida_hexrays.mop_d and or_ins.l.size == 0:
+#             or_ins.l.size = or_ins.d.size
+#         if or_ins.r.t != ida_hexrays.mop_d and or_ins.r.size == 0:
+#             or_ins.r.size = or_ins.d.size
+
+#         # Return brand-new instruction – do not modify *ins* in place.
+#         if logger.debug_on:
+#             logger.debug(
+#                 "[rotate-inline] 0x%X %s inlined into or/shl/shr → %s",
+#                 sanitize_ea(ins.ea),
+#                 helper_name,
+#                 format_minsn_t(or_ins),
+#             )
+#         return or_ins
+
 
 # ────────────────────────────────────────────────────────────────────
 # Lightweight cache for expensive mop→str conversions (debug only).
@@ -59,7 +411,7 @@ def _mop_to_str(mop: "ida_hexrays.mop_t | None") -> str:  # noqa: ANN001
             _MOP_STR_CACHE[key] = res
             return res
         except Exception:
-            peephole_logger.error(
+            logger.error(
                 "[fold_const] [_mop_to_str] Error formatting mop, fall: %s", mop
             )
             res = f"<mop_t t={getattr(mop,'t',None)} size={getattr(mop,'size',None)}>"
@@ -201,7 +553,7 @@ def _fold(op, a, b, bits):
         return 1 if get_parity_flag(a, b, nb_bytes) else 0
 
     _mcode_op: dict[str, typing.Any] = OPCODES_INFO[op]
-    peephole_logger.error(
+    logger.error(
         "[fold_const] [_fold] Unknown opcode: %s with args: %s %s and bits: %s",
         _mcode_op["name"],
         a,
@@ -214,20 +566,16 @@ def _fold(op, a, b, bits):
 def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     """returns an int if subtree is constant, else None"""
     if ast is None:
-        if peephole_logger.isEnabledFor(logging.DEBUG):
-            peephole_logger.debug(
-                "[fold_const] [_eval_subtree] ast is None - cannot evaluate"
-            )
+        if logger.debug_on:
+            logger.debug("[fold_const] [_eval_subtree] ast is None - cannot evaluate")
         return None
 
     if ast.is_leaf():
         ast = typing.cast(AstLeaf, ast)
         mop = ast.mop
         if mop is None:
-            if peephole_logger.isEnabledFor(logging.DEBUG):
-                peephole_logger.debug(
-                    "[fold_const] [_eval_subtree] Leaf with no mop: %s", ast
-                )
+            if logger.debug_on:
+                logger.debug("[fold_const] [_eval_subtree] Leaf with no mop: %s", ast)
             return None
 
         # Unified constant extraction (handles mop_n and wrapped constants)
@@ -303,8 +651,8 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     l = _eval_subtree(ast.left, bits)  # type: ignore
     r = _eval_subtree(ast.right, bits)  # type: ignore
     if l is None or r is None:
-        if peephole_logger.isEnabledFor(logging.DEBUG):
-            peephole_logger.debug(
+        if logger.debug_on:
+            logger.debug(
                 "[fold_const] [_eval_subtree] Cannot evaluate binary node (%s) because %s is None",
                 opcode_to_string(ast.opcode),
                 "left" if l is None else "right",
@@ -313,8 +661,8 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
 
     # special handling for rotate calls
     if ast.opcode == ida_hexrays.m_call and ast.func_name:
-        if peephole_logger.isEnabledFor(logging.DEBUG):
-            peephole_logger.debug(
+        if logger.debug_on:
+            logger.debug(
                 "[fold_const] [_eval_subtree] opcode == mcall, func_name: %s",
                 ast.func_name,
             )
@@ -326,7 +674,7 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
         elif helper_name.startswith("__ROR"):
             return ((l >> shift) | (l << (bits - shift))) & mask
         # if needed, handle specific widths or other variants
-        peephole_logger.error(
+        logger.error(
             "[fold_const] [_eval_subtree] Unknown width for rotate call: %s with args: %s %s and bits: %s",
             helper_name,
             l,
@@ -337,26 +685,26 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     return _fold(ast.opcode, l, r, bits)  # type: ignore
 
 
-class FoldPureConstantRule(PeepholeSimplificationRule):
+class FoldPureConstantRule:  # (PeepholeSimplificationRule):
     DESCRIPTION = (
         "Collapse any instruction whose whole expression "
         "is a compile-time constant into a single m_ldc"
     )
 
-    maturities = [
-        ida_hexrays.MMAT_GLBOPT2,
-    ]
+    # maturities = [
+    #     ida_hexrays.MMAT_GLBOPT2,
+    # ]
 
     # Class-level sentinel so multiple instances of the rule share it.
     _last_mba_id: set[int] = set()
 
-    @_compat.override
+    # @_compat.override
     def check_and_replace(
         self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:
 
         if blk is None:
-            peephole_logger.debug(
+            logger.debug(
                 "[fold_const] blk is None, ins @ 0x%X with opcode: %s",
                 sanitize_ea(ins.ea),
                 opcode_to_string(ins.opcode),
@@ -364,32 +712,30 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
 
         # Skip flow-control instructions that can never be folded to a constant.
         if ins.opcode in CONTROL_FLOW_OPCODES:
-            peephole_logger.debug("[fold_const] Skipping control flow instruction")
+            logger.debug("[fold_const] Skipping control flow instruction")
             return None
 
         # Flush caches whenever we get a new mba.
         if blk is not None:
             if id(blk.mba) not in self._last_mba_id:
-                peephole_logger.debug("[fold_const] New MBA detected! %s", id(blk.mba))
+                logger.debug("[fold_const] New MBA detected! %s", id(blk.mba))
                 self._last_mba_id.add(id(blk.mba))
                 _MOP_STR_CACHE.clear()
             else:
-                peephole_logger.debug(
-                    "[fold_const] Previous MBA detected! %s", id(blk.mba)
-                )
+                logger.debug("[fold_const] Previous MBA detected! %s", id(blk.mba))
 
         # Skip instructions that are already in optimal form or would cause infinite loops
         if ins.opcode == ida_hexrays.m_ldc:
-            if peephole_logger.isEnabledFor(logging.DEBUG):
-                peephole_logger.debug(
+            if logger.debug_on:
+                logger.debug(
                     "[fold_const] Skipping m_ldc instruction (already optimal)"
                 )
             return None
 
         # Skip mov instructions where source is already a constant (prevents infinite loop)
         if ins.opcode == ida_hexrays.m_mov and ins.l and ins.l.t == ida_hexrays.mop_n:
-            if peephole_logger.isEnabledFor(logging.DEBUG):
-                peephole_logger.debug(
+            if logger.debug_on:
+                logger.debug(
                     "[fold_const] Skipping mov with constant source (would create infinite loop)"
                 )
             return None
@@ -418,8 +764,8 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 ida_hexrays.m_sar,
             ]
         ):
-            if peephole_logger.isEnabledFor(logging.DEBUG):
-                peephole_logger.debug(
+            if logger.debug_on:
+                logger.debug(
                     "[fold_const] Skipping binary op with two constants (would create infinite loop)"
                 )
             return None
@@ -452,8 +798,8 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                     )
                 )
             ):
-                if peephole_logger.isEnabledFor(logging.DEBUG):
-                    peephole_logger.debug(
+                if logger.debug_on:
+                    logger.debug(
                         "[fold_const] Skipping identity operation (should be handled by other rules)"
                     )
                 return None
@@ -470,8 +816,8 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
             ida_hexrays.mop_f,  # typed immediate
             ida_hexrays.mop_d,  # destination is an expression (will be erased)
         }:
-            if peephole_logger.isEnabledFor(logging.DEBUG):
-                peephole_logger.debug(
+            if logger.debug_on:
+                logger.debug(
                     "[fold_const] Skipping instruction @ 0x%X with invalid destination: (opcode=%s) (ins.d.t=%s) -- dstr=%s",
                     sanitize_ea(ins.ea),
                     opcode_to_string(ins.opcode),
@@ -481,8 +827,8 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
             return None
 
         bits = ins.d.size * 8 if ins.d.size else 32
-        if peephole_logger.isEnabledFor(logging.DEBUG):
-            peephole_logger.debug(
+        if logger.debug_on:
+            logger.debug(
                 "[fold_const] Checking ins @ 0x%X (opcode=%s) l=%s r=%s d=%s",
                 sanitize_ea(ins.ea),
                 opcode_to_string(ins.opcode),
@@ -493,8 +839,8 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
 
         # Ensure bits is valid and positive
         if bits <= 0:
-            if peephole_logger.isEnabledFor(logging.DEBUG):
-                peephole_logger.debug(
+            if logger.debug_on:
+                logger.debug(
                     "[fold_const] Invalid bits value %d, defaulting to 32", bits
                 )
             bits = 32
@@ -510,10 +856,8 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 bits = 32
             else:
                 bits = 64
-            if peephole_logger.isEnabledFor(logging.DEBUG):
-                peephole_logger.debug(
-                    "[fold_const] Adjusted bits to supported size: %d", bits
-                )
+            if logger.debug_on:
+                logger.debug("[fold_const] Adjusted bits to supported size: %d", bits)
 
         # Try to collapse the *whole* instruction tree.
         # Build AST from just the computation (left and right operands), not the destination
@@ -552,13 +896,13 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 ast.ea = ins.ea
 
         if ast is not None:
-            if peephole_logger.isEnabledFor(logging.DEBUG):
-                peephole_logger.debug("[fold_const] AST for ins: %s", ast)
+            if logger.debug_on:
+                logger.debug("[fold_const] AST for ins: %s", ast)
             value = _eval_subtree(ast, bits)
-            if peephole_logger.isEnabledFor(logging.DEBUG):
-                peephole_logger.debug("[fold_const] _eval_subtree result: %r", value)
+            if logger.debug_on:
+                logger.debug("[fold_const] _eval_subtree result: %r", value)
             if value is not None:
-                peephole_logger.info(
+                logger.info(
                     "[fold_const] Collapsed ins at 0x%X to constant 0x%X (opcode=%s)",
                     sanitize_ea(ins.ea),
                     value,
@@ -627,13 +971,13 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                 # ------------------------------------------------------------------
                 # Debug-only sanity checks
                 # ------------------------------------------------------------------
-                if peephole_logger.isEnabledFor(logging.DEBUG):
+                if logger.debug_on:
                     # Sanity-check: size agreement when destination *has* a size.
                     if new.d.t != ida_hexrays.mop_z and new.d.size not in (0, None):
                         try:
                             assert new.l.size == new.d.size
                         except AssertionError as _e:
-                            peephole_logger.error(
+                            logger.error(
                                 "[fold_const] Built m_ldc with mismatching sizes (l=%d, d=%d): %s",
                                 new.l.size,
                                 new.d.size,
@@ -648,7 +992,7 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                         try:
                             mba.verify(True)
                         except RuntimeError as e:
-                            peephole_logger.error(
+                            logger.error(
                                 "[fold_const] MBA verify failed after folding: %s",
                                 e,
                                 exc_info=True,
@@ -658,7 +1002,7 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                                     try:
                                         ins2.verify(True)  # verifies one instruction
                                     except RuntimeError as e2:
-                                        peephole_logger.error(
+                                        logger.error(
                                             "[fold_const]  ↳ bad ins 0x%X %s : %s",
                                             ins2.ea,
                                             opcode_to_string(ins2.opcode),
@@ -672,15 +1016,15 @@ class FoldPureConstantRule(PeepholeSimplificationRule):
                             return None
                 return new
         else:
-            if peephole_logger.isEnabledFor(logging.DEBUG):
-                peephole_logger.debug(
+            if logger.debug_on:
+                logger.debug(
                     "[fold_const] Could not build AST for computation: opcode=%s, dstr=%s",
                     opcode_to_string(ins.opcode),
                     ins.dstr(),
                 )
 
-        if peephole_logger.isEnabledFor(logging.DEBUG):
-            peephole_logger.debug(
+        if logger.debug_on:
+            logger.debug(
                 "[fold_const] No folding possible for ins at 0x%X (opcode=%s)",
                 sanitize_ea(ins.ea),
                 opcode_to_string(ins.opcode),
