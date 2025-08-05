@@ -97,35 +97,35 @@ def __ror__(value: int, count: int, bits: int) -> int:
     return __rol__(value, -count, bits)
 
 
-def rol1(value: int, count: int) -> int:
+def __ROL1__(value: int, count: int) -> int:
     return __rol__(value, count, 8)
 
 
-def rol2(value: int, count: int) -> int:
+def __ROL2__(value: int, count: int) -> int:
     return __rol__(value, count, 16)
 
 
-def rol4(value: int, count: int) -> int:
+def __ROL4__(value: int, count: int) -> int:
     return __rol__(value, count, 32)
 
 
-def rol8(value: int, count: int) -> int:
+def __ROL8__(value: int, count: int) -> int:
     return __rol__(value, count, 64)
 
 
-def ror1(value: int, count: int) -> int:
+def __ROR1__(value: int, count: int) -> int:
     return __ror__(value, count, 8)
 
 
-def ror2(value: int, count: int) -> int:
+def __ROR2__(value: int, count: int) -> int:
     return __ror__(value, count, 16)
 
 
-def ror4(value: int, count: int) -> int:
+def __ROR4__(value: int, count: int) -> int:
     return __ror__(value, count, 32)
 
 
-def ror8(value: int, count: int) -> int:
+def __ROR8__(value: int, count: int) -> int:
     return __ror__(value, count, 64)
 
 

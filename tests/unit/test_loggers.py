@@ -40,6 +40,13 @@ class TestLoggerConfigurator(unittest.TestCase):
         with self.assertRaises(ValueError):
             LoggerConfigurator.set_level(self.test_logger_name, "NOTALEVEL")
 
+    def test_mdc_maturity_update(self):
+        """Ensure that the maturity value is carried via the MDC and accessible."""
+        maturity_val = "LOCOPT"
+        log = getLogger(self.test_logger_name)
+        log.update_maturity(maturity_val)
+        self.assertEqual(log.get_mdc("maturity"), maturity_val)
+
 
 if __name__ == "__main__":
     unittest.main()

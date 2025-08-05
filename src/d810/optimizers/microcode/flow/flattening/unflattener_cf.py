@@ -3,7 +3,6 @@ from __future__ import annotations
 import dataclasses
 import enum
 import hashlib
-import logging
 import typing
 import weakref
 
@@ -13,10 +12,12 @@ import ida_lines
 import ida_pro
 import ida_xref
 
-from d810.hexrays.hexrays_helpers import MicrocodeHelper, MicrocodeInstruction
+from d810.conf.loggers import getLogger
+from d810.hexrays.hexrays_formatters import format_minsn_t
+from d810.hexrays.hexrays_helpers import MicrocodeHelper, MicroInstruction, MicroOperand
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
-logger = logging.getLogger("D810.unflattener_cf")
+logger = getLogger("D810.unflattener_cf")
 
 
 MIN_NUM_COMPARISONS = 2
@@ -136,9 +137,7 @@ def find_numeric_def_backwards(
             # an "stx" instruction, which is assumed to redefine everything
             # until its aliasing information is refined.
             if _def.opcode != ida_hexrays.m_mov:
-                logger.error(
-                    "FindNumericDef: found %s" % MicrocodeInstruction.repr(_def)
-                )
+                logger.error("FindNumericDef: found %s", format_minsn_t(_def))
                 return False, None
 
             # Now that we found a mov, add it to the chain.
@@ -647,7 +646,7 @@ class SwitchInfo:
     jtbl_insn: ida_hexrays.minsn_t
     index_reg: ida_hexrays.mop_t
     table: ida_hexrays.mop_t
-    state_var: ida_hexrays.mop_t
+    state_var: MicroOperand
     cases: ida_hexrays.mcases_t
 
 
@@ -660,7 +659,7 @@ class switch_state_collector_t(ida_hexrays.minsn_visitor_t):
 
     def __init__(self):
         super().__init__()
-        self.xdu_map: list[MicrocodeInstruction] = []
+        self.xdu_map: list[MicroInstruction] = []
         self.switches: list[SwitchInfo] = []
 
     def visit_minsn(self):
@@ -668,7 +667,7 @@ class switch_state_collector_t(ida_hexrays.minsn_visitor_t):
 
         if ins.opcode == ida_hexrays.m_xdu:
             # record dest_reg ← src_var
-            self.xdu_map.append(MicrocodeInstruction.from_minsn(ins))
+            self.xdu_map.append(MicroInstruction(ins))
 
         elif ins.opcode == ida_hexrays.m_jtbl:
             idx_mop = ins.l
@@ -676,12 +675,16 @@ class switch_state_collector_t(ida_hexrays.minsn_visitor_t):
             state_var = None
             logger.debug(f"jump table at: {hex(ins.ea)}")
             for msin in reversed(self.xdu_map):
-                dest = msin.minsn.d
-                src = msin.minsn.l
+                dest = msin.destination_operand
+                src = msin.left_operand
                 logger.debug(
-                    f"{msin}, {hex(msin.minsn.ea)}, {dest.dstr()}, {src.dstr()}"
+                    "%s, %s, %s, %s",
+                    msin,
+                    hex(msin.ea),
+                    dest.dstr() if dest else "None",
+                    src.dstr() if src else "None",
                 )
-                if dest.equal_mops(idx_mop, ida_hexrays.EQ_IGNSIZE):
+                if dest and dest.equal_mops(idx_mop, ida_hexrays.EQ_IGNSIZE):
                     state_var = src
                     break
             assert (

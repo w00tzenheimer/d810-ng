@@ -1,8 +1,7 @@
-import logging
-
 import idaapi
 from ida_hexrays import *
 
+from d810.conf.loggers import getLogger
 from d810.hexrays.hexrays_helpers import AND_TABLE, append_mop_if_not_in_list
 from d810.hexrays.tracker import MopHistory, MopTracker
 from d810.optimizers.microcode.flow.flattening.generic import (
@@ -12,7 +11,7 @@ from d810.optimizers.microcode.flow.flattening.generic import (
     GenericDispatcherUnflatteningRule,
 )
 
-unflat_logger = logging.getLogger("D810.unflat")
+unflat_logger = getLogger("D810.unflat")
 FLATTENING_JUMP_OPCODES = [m_jtbl]
 
 
@@ -82,7 +81,6 @@ class LabelTableInfo(object):
 
 class UnflattenerTigressIndirect(GenericDispatcherUnflatteningRule):
     DESCRIPTION = ""
-    DISPATCHER_COLLECTOR_CLASS = TigressIndirectDispatcherCollector
     DEFAULT_UNFLATTENING_MATURITIES = [MMAT_LOCOPT]
     DEFAULT_MAX_DUPLICATION_PASSES = 20
     DEFAULT_MAX_PASSES = 1
@@ -91,6 +89,11 @@ class UnflattenerTigressIndirect(GenericDispatcherUnflatteningRule):
         super().__init__()
         self.label_info = None
         self.goto_table_info = {}
+
+    @property
+    def DISPATCHER_COLLECTOR_CLASS(self) -> type[GenericDispatcherCollector]:
+        """Return the class of the dispatcher collector."""
+        return TigressIndirectDispatcherCollector
 
     def configure(self, kwargs):
         super().configure(kwargs)

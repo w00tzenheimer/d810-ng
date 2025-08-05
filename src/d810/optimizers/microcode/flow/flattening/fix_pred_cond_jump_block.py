@@ -1,7 +1,6 @@
-import logging
-
 from ida_hexrays import *
 
+from d810.conf.loggers import getLogger
 from d810.expr.utils import unsigned_to_signed
 from d810.hexrays.cfg_utils import (
     duplicate_block,
@@ -13,7 +12,7 @@ from d810.hexrays.tracker import MopTracker
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
 from d810.optimizers.microcode.flow.flattening.utils import get_all_possibles_values
 
-unflat_logger = logging.getLogger("D810.unflat")
+unflat_logger = getLogger("D810.unflat")
 
 JMP_OPCODE_HANDLED = [m_jnz, m_jz, m_jae, m_jb, m_ja, m_jbe, m_jge, m_jg, m_jl, m_jle]
 

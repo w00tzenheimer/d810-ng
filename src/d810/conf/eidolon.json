@@ -895,11 +895,6 @@
             }
         },
         {
-            "name": "FoldPureConstantRule",
-            "is_activated": true,
-            "config": {}
-        },
-        {
             "name": "Xor_Hodur_1",
             "is_activated": true,
             "config": {}

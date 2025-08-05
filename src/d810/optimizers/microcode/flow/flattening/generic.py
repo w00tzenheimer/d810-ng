@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import abc
-import logging
-import typing
 
 from ida_hexrays import *
 
+from d810.conf.loggers import getLogger
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
 from d810.hexrays.cfg_utils import (
     change_1way_block_successor,
@@ -42,7 +41,7 @@ from d810.optimizers.microcode.flow.flattening.utils import (
 )
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
-unflat_logger = logging.getLogger("D810.unflat")
+unflat_logger = getLogger("D810.unflat")
 
 
 class GenericDispatcherBlockInfo(object):
@@ -120,24 +119,22 @@ class GenericDispatcherBlockInfo(object):
 
     def show_history(self):
         full_father_list = self.recursive_get_father()
-        unflat_logger.info("    Show history of Block {0}".format(self.blk.serial))
+        unflat_logger.info("    Show history of Block %s", self.blk.serial)
         for father in full_father_list[:-1]:
             for ins in father.ins:
                 unflat_logger.info(
-                    "      {0}.{1}".format(father.blk.serial, format_minsn_t(ins))
+                    "      %s.%s", father.blk.serial, format_minsn_t(ins)
                 )
 
     def print_info(self):
-        unflat_logger.info("Block {0} information:".format(self.blk.serial))
-        unflat_logger.info("  USE list: {0}".format(format_mop_list(self.use_list)))
-        unflat_logger.info("  DEF list: {0}".format(format_mop_list(self.def_list)))
+        unflat_logger.info("Block %s information:", self.blk.serial)
+        unflat_logger.info("  USE list: %s", format_mop_list(self.use_list))
+        unflat_logger.info("  DEF list: %s", format_mop_list(self.def_list))
         unflat_logger.info(
-            "  USE BEFORE DEF list: {0}".format(
-                format_mop_list(self.use_before_def_list)
-            )
+            "  USE BEFORE DEF list: %s", format_mop_list(self.use_before_def_list)
         )
         unflat_logger.info(
-            "  ASSUME DEF list: {0}".format(format_mop_list(self.assume_def_list))
+            "  ASSUME DEF list: %s", format_mop_list(self.assume_def_list)
         )
 
 
@@ -218,21 +215,20 @@ class GenericDispatcherInfo(object):
             if initialization_mop_value is None:
                 raise NotResolvableFatherException(
                     "Can't emulate dispatcher {0} with history {1}".format(
-                        self.entry_block.serial, father_history.block_serial_path
+                        self.entry_block.serial,
+                        father_history.block_serial_path,
                     )
                 )
             # We store this value in the MicroCodeEnvironment
             microcode_environment.define(initialization_mop, initialization_mop_value)
             dispatcher_input_info.append(
-                "{0} = {1:x}".format(
-                    format_mop_t(initialization_mop), initialization_mop_value
-                )
+                f"{format_mop_t(initialization_mop)} = {initialization_mop_value:x}"
             )
 
         unflat_logger.info(
-            "Executing dispatcher {0} with: {1}".format(
-                self.entry_block.blk.serial, ", ".join(dispatcher_input_info)
-            )
+            "Executing dispatcher %s with: %s",
+            self.entry_block.blk.serial,
+            ", ".join(dispatcher_input_info),
         )
 
         # Now, we start the emulation of the code at the dispatcher entry block
@@ -242,7 +238,7 @@ class GenericDispatcherInfo(object):
         # We will continue emulation while we are in one of the dispatcher blocks
         while self.should_emulation_continue(cur_blk):
             unflat_logger.debug(
-                "  Executing: {0}.{1}".format(cur_blk.serial, format_minsn_t(cur_ins))
+                "  Executing: %s.%s", cur_blk.serial, format_minsn_t(cur_ins)
             )
             # We evaluate the current instruction of the dispatcher to determine
             # which block and instruction should be executed next
@@ -261,51 +257,47 @@ class GenericDispatcherInfo(object):
     def print_info(self, verbose=False):
         unflat_logger.info("Dispatcher information: ")
         unflat_logger.info(
-            "  Entry block: {0}.{1}: ".format(
-                self.entry_block.blk.serial, format_minsn_t(self.entry_block.blk.tail)
-            )
+            "  Entry block: %s.%s: ",
+            self.entry_block.blk.serial,
+            format_minsn_t(self.entry_block.blk.tail),
         )
         unflat_logger.info(
-            "  Entry block predecessors: {0}: ".format(
-                [blk_serial for blk_serial in self.entry_block.blk.predset]
-            )
+            "  Entry block predecessors: %s: ",
+            [blk_serial for blk_serial in self.entry_block.blk.predset],
         )
         unflat_logger.info(
             "    Compared mop: %s ",
             format_mop_t(self.mop_compared),
         )
         unflat_logger.info(
-            "    Comparison values: {0} ".format(
-                ", ".join([hex(x) for x in self.comparison_values])
-            )
+            "    Comparison values: %s ",
+            ", ".join([hex(x) for x in self.comparison_values]),
         )
         self.entry_block.print_info()
         unflat_logger.info(
-            "  Number of internal blocks: {0} ({1})".format(
-                len(self.dispatcher_internal_blocks),
-                [blk_info.blk.serial for blk_info in self.dispatcher_internal_blocks],
-            )
+            "  Number of internal blocks: %s (%s)",
+            len(self.dispatcher_internal_blocks),
+            [blk_info.blk.serial for blk_info in self.dispatcher_internal_blocks],
         )
         if verbose:
             for disp_blk in self.dispatcher_internal_blocks:
                 unflat_logger.info(
-                    "    Internal block: {0}.{1} ".format(
-                        disp_blk.blk.serial, format_minsn_t(disp_blk.blk.tail)
-                    )
+                    "    Internal block: %s.%s ",
+                    disp_blk.blk.serial,
+                    format_minsn_t(disp_blk.blk.tail),
                 )
                 disp_blk.show_history()
         unflat_logger.info(
-            "  Number of Exit blocks: {0} ({1})".format(
-                len(self.dispatcher_exit_blocks),
-                [blk_info.blk.serial for blk_info in self.dispatcher_exit_blocks],
-            )
+            "  Number of Exit blocks: %s (%s)",
+            len(self.dispatcher_exit_blocks),
+            [blk_info.blk.serial for blk_info in self.dispatcher_exit_blocks],
         )
         if verbose:
             for exit_blk in self.dispatcher_exit_blocks:
                 unflat_logger.info(
-                    "    Exit block: {0}.{1} ".format(
-                        exit_blk.blk.serial, format_minsn_t(exit_blk.blk.head)
-                    )
+                    "    Exit block: %s.%s ",
+                    exit_blk.blk.serial,
+                    format_minsn_t(exit_blk.blk.head),
                 )
                 exit_blk.show_history()
 
@@ -338,12 +330,11 @@ class GenericDispatcherCollector(minsn_visitor_t):
 
     def specific_checks(self, disp_info: GenericDispatcherInfo) -> bool:
         unflat_logger.debug(
-            "DispatcherInfo {0} : {1} internals, {2} exits, {3} comparison".format(
-                self.blk.serial,
-                len(disp_info.dispatcher_internal_blocks),
-                len(disp_info.dispatcher_exit_blocks),
-                len(set(disp_info.comparison_values)),
-            )
+            "DispatcherInfo %s : %s internals, %s exits, %s comparison",
+            self.blk.serial,
+            len(disp_info.dispatcher_internal_blocks),
+            len(disp_info.dispatcher_exit_blocks),
+            len(set(disp_info.comparison_values)),
         )
         if (
             len(disp_info.dispatcher_internal_blocks)
@@ -563,22 +554,20 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 )
 
         unflat_logger.info(
-            "Dispatcher {0} predecessor {1} is resolvable: {2}".format(
-                dispatcher_entry_block.serial,
-                dispatcher_father.serial,
-                father_histories_cst,
-            )
+            "Dispatcher %s predecessor %s is resolvable: %s",
+            dispatcher_entry_block.serial,
+            dispatcher_father.serial,
+            father_histories_cst,
         )
         nb_duplication, nb_change = duplicate_histories(
             father_histories, max_nb_pass=self.max_duplication_passes
         )
         unflat_logger.info(
-            "Dispatcher {0} predecessor {1} duplication: {2} blocks created, {3} changes made".format(
-                dispatcher_entry_block.serial,
-                dispatcher_father.serial,
-                nb_duplication,
-                nb_change,
-            )
+            "Dispatcher %s predecessor %s duplication: %s blocks created, %s changes made",
+            dispatcher_entry_block.serial,
+            dispatcher_father.serial,
+            nb_duplication,
+            nb_change,
         )
         return 0
 
@@ -977,11 +966,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             dispatcher_father_histories[0]
         )
         if target_blk is not None:
-            unflat_logger.debug(
-                "Unflattening graph: Making {0} goto {1}".format(
-                    dispatcher_father.serial, target_blk.serial
+            if unflat_logger.debug_on:
+                unflat_logger.debug(
+                    "Unflattening graph: Making %s goto %s",
+                    dispatcher_father.serial,
+                    target_blk.serial,
                 )
-            )
             ins_to_copy = [
                 ins
                 for ins in disp_ins
@@ -989,12 +979,11 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             ]
             if len(ins_to_copy) > 0:
                 unflat_logger.info(
-                    "Instruction copied: {0}: {1}".format(
-                        len(ins_to_copy),
-                        ", ".join(
-                            [format_minsn_t(ins_copied) for ins_copied in ins_to_copy]
-                        ),
-                    )
+                    "Instruction copied: %s: %s",
+                    len(ins_to_copy),
+                    ", ".join(
+                        [format_minsn_t(ins_copied) for ins_copied in ins_to_copy]
+                    ),
                 )
                 tail_serial = self.mba.qty - 1
                 block_to_copy = self.mba.get_mblock(tail_serial)
@@ -1016,7 +1005,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
         raise NotResolvableFatherException(
             "Can't fix block {0}: no block for key: {1}".format(
-                dispatcher_father.serial, mop_searched_values_list
+                dispatcher_father.serial,
+                mop_searched_values_list,
             )
         )
 
@@ -1120,9 +1110,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     ),
                 )
 
-        unflat_logger.info(
-            "Unflattening removed {0} branch".format(nb_flattened_branches)
-        )
+        unflat_logger.info("Unflattening removed %s branch", nb_flattened_branches)
         total_nb_change += nb_flattened_branches
         return total_nb_change
 
