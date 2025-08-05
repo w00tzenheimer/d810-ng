@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
+import typing
+
 import ida_hexrays
 import idaapi
 
@@ -533,22 +536,23 @@ class MicroCodeInterpreter(object):
         try:
             if environment is None:
                 environment = self.global_environment
-            emulator_log.info(
-                "Evaluating microcode instruction : '{0}'".format(format_minsn_t(ins))
-            )
             if ins is None:
                 return False
+            if emulator_log.debug_on:
+                emulator_log.debug(
+                    "Evaluating microcode instruction : '%s'", format_minsn_t(ins)
+                )
             self._eval_instruction_and_update_environment(blk, ins, environment)
             return True
         except EmulationException as e:
             emulator_log.warning(
-                "Can't evaluate instruction: '{0}': {1}".format(format_minsn_t(ins), e)
+                "Can't evaluate instruction: '%s': %s", format_minsn_t(ins), e
             )
             if raise_exception:
                 raise e
         except Exception as e:
             emulator_log.warning(
-                "Error during evaluation of: '{0}': {1}".format(format_minsn_t(ins), e)
+                "Error during evaluation of: '%s': %s", format_minsn_t(ins), e
             )
             if raise_exception:
                 raise e
@@ -578,9 +582,9 @@ class MicroCodeInterpreter(object):
                 return None
         except Exception as e:
             emulator_log.error(
-                "Unexpected exception while computing constant mop value: '{0}': {1}".format(
-                    format_mop_t(mop), e
-                )
+                "Unexpected exception while computing constant mop value: '%s': %s",
+                format_mop_t(mop),
+                e,
             )
             if raise_exception:
                 raise e
@@ -588,7 +592,7 @@ class MicroCodeInterpreter(object):
                 return None
 
 
-class MopMapping(object):
+class MopMapping(typing.MutableMapping[ida_hexrays.mop_t, int]):
     def __init__(self):
         self.mops = []
         self.mops_values = []
@@ -644,17 +648,20 @@ class MopMapping(object):
     def __contains__(self, mop: ida_hexrays.mop_t):
         return self.has_key(mop)
 
+    def __iter__(self):
+        return iter(self.mops)
 
-class MicroCodeEnvironment(object):
-    def __init__(self, parent: MicroCodeEnvironment | None = None):
-        self.parent = parent
-        self.mop_r_record = MopMapping()
-        self.mop_S_record = MopMapping()
 
-        self.cur_blk = None
-        self.cur_ins = None
-        self.next_blk = None
-        self.next_ins = None
+@dataclasses.dataclass
+class MicroCodeEnvironment:
+    parent: MicroCodeEnvironment | None = dataclasses.field(default=None)
+    mop_r_record: MopMapping = dataclasses.field(default_factory=MopMapping)
+    mop_S_record: MopMapping = dataclasses.field(default_factory=MopMapping)
+
+    cur_blk: ida_hexrays.mblock_t | None = dataclasses.field(init=False, default=None)
+    cur_ins: ida_hexrays.minsn_t | None = dataclasses.field(init=False, default=None)
+    next_blk: ida_hexrays.mblock_t | None = dataclasses.field(init=False, default=None)
+    next_ins: ida_hexrays.minsn_t | None = dataclasses.field(init=False, default=None)
 
     def items(self):
         return [x for x in self.mop_r_record.items() + self.mop_S_record.items()]
@@ -679,13 +686,19 @@ class MicroCodeEnvironment(object):
         self.cur_ins = cur_ins
         self.next_blk = cur_blk
         if self.cur_ins is None:
-            self.next_blk = self.cur_blk.mba.get_mblock(self.cur_blk.serial + 1)
-            self.next_ins = self.next_blk.head
+            self.next_blk = typing.cast(
+                ida_hexrays.mblock_t,
+                self.cur_blk.mba.get_mblock(self.cur_blk.serial + 1),
+            )
+            self.next_ins = typing.cast(ida_hexrays.minsn_t, self.next_blk.head)
         else:
             self.next_ins = self.cur_ins.next
             if self.next_ins is None:
-                self.next_blk = self.cur_blk.mba.get_mblock(self.cur_blk.serial + 1)
-                self.next_ins = self.next_blk.head
+                self.next_blk = typing.cast(
+                    ida_hexrays.mblock_t,
+                    self.cur_blk.mba.get_mblock(self.cur_blk.serial + 1),
+                )
+                self.next_ins = typing.cast(ida_hexrays.minsn_t, self.next_blk.head)
         emulator_log.debug(
             "Setting next block {0} and next ins {1}".format(
                 self.next_blk.serial, format_minsn_t(self.next_ins)

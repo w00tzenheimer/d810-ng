@@ -6,12 +6,7 @@ import ida_hexrays
 
 from d810 import _compat
 from d810.conf.loggers import getLogger
-from d810.hexrays.hexrays_formatters import (
-    format_mop_t,
-    mop_tree,
-    opcode_to_string,
-    sanitize_ea,
-)
+from d810.hexrays.hexrays_formatters import format_mop_t, opcode_to_string, sanitize_ea
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
@@ -19,8 +14,8 @@ from d810.optimizers.microcode.instructions.peephole.handler import (
 logger = getLogger(__name__, default_level=logging.DEBUG)
 
 
-class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
-    DESCRIPTION = "Fold stack variables that are assigned constant values across blocks"
+class LocalizedConstantPropagationRule(PeepholeSimplificationRule):
+    DESCRIPTION = "Propagate local constants within blocks with local stack variables"
 
     # ------------------------------------------------------------------
     #  Propagate constants only for an *allowlist* of micro-opcodes that are
@@ -79,7 +74,7 @@ class StackVariableConstantFoldingRule(PeepholeSimplificationRule):
         self.stack_var_map = {}
         # Track the current function being processed
         self.current_func = None
-        self.maturities = [ida_hexrays.MMAT_CALLS]
+        # self.maturities = [ida_hexrays.MMAT_CALLS]
 
     @_compat.override
     def check_and_replace(
