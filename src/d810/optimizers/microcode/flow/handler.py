@@ -1,5 +1,6 @@
 import abc
 
+import ida_hexrays
 import idc
 
 from d810.conf.loggers import getLogger
@@ -12,11 +13,20 @@ logger = getLogger("D810.optimizer")
 class FlowOptimizationRule(OptimizationRule, Registrant, abc.ABC):
     def __init__(self):
         super().__init__()
+        self._current_maturity = ida_hexrays.MMAT_ZERO
         self.maturities = DEFAULT_FLOW_MATURITIES
         self.use_whitelist = False
         self.whitelisted_function_ea_list: list[int] = []
         self.use_blacklist = False
         self.blacklisted_function_ea_list: list[int] = []
+
+    @property
+    def current_maturity(self):
+        return self._current_maturity
+
+    @current_maturity.setter
+    def current_maturity(self, maturity_level):
+        self._current_maturity = maturity_level
 
     @abc.abstractmethod
     def optimize(self, blk):
