@@ -42,7 +42,7 @@ def _get_mba_frame_size(mba: ida_hexrays.mba_t | None) -> int | None:
 
 @functools.lru_cache(maxsize=16384)
 def _cached_stack_var_name(
-    mop_identity: int,
+    mop_identity: int,  #  not used in the function but we need this bad boy for caching
     t: int,
     reg_or_off: int,
     size: int,
@@ -69,19 +69,19 @@ def _cached_stack_var_name(
 def get_stack_var_name(mop: ida_hexrays.mop_t) -> str | None:
     """Return a stable human-readable name for a stack/register operand.
 
-    Converts the mutable *mop_t* into an identity + scalar tuple and leverages
-    `functools.lru_cache` for O(1) subsequent look-ups.
+    Fast path: lookup by ``mop.valnum`` in `_VALNUM_NAME_CACHE`.  Falls back to
+    identity-based LRU cache on a miss.
     """
     if mop.t == ida_hexrays.mop_S:
         frame_size = _get_mba_frame_size(getattr(mop.s, "mba", None))
         return _cached_stack_var_name(
             id(mop), mop.t, mop.s.off, mop.size, mop.valnum, frame_size
         )
-
-    if mop.t == ida_hexrays.mop_r:
-        return _cached_stack_var_name(id(mop), mop.t, mop.r, mop.size, mop.valnum, None)
-
-    return None
+    elif mop.t == ida_hexrays.mop_r:
+        name = _cached_stack_var_name(id(mop), mop.t, mop.r, mop.size, mop.valnum, None)
+    else:
+        return None
+    return name
 
 
 def extract_base_and_offset(mop: ida_hexrays.mop_t) -> tuple[mop_t | None, int]:
