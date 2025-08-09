@@ -94,6 +94,12 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
 
     @_compat.override
     def optimize(self, blk: ida_hexrays.mblock_t):
+        logger.debug("Optimizing block %d", blk.serial)
+        if self.current_maturity not in self.maturities:
+            logger.debug(
+                "Skipping block %d, maturity %d", blk.serial, self.current_maturity
+            )
+            return 0
         mba = blk.mba
         if mba is None:
             return 0

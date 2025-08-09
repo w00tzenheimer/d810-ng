@@ -268,6 +268,18 @@ class BlockOptimizerManager(optblock_t):
         nb_patch = self.optimize(blk)
         return nb_patch
 
+    def log_info_on_input(self, blk: mblock_t):
+        mba: mbl_array_t = blk.mba
+
+        if (mba is not None) and (mba.maturity != self.current_maturity):
+            if main_logger.debug_on:
+                main_logger.debug(
+                    "BlockOptimizer called at maturity: %s",
+                    maturity_to_string(mba.maturity),
+                )
+
+            self.current_maturity = mba.maturity
+
     def reset_rule_usage_statistic(self):
         self.cfg_rules_usage_info = {}
         for rule in self.cfg_rules:
@@ -298,6 +310,7 @@ class BlockOptimizerManager(optblock_t):
 
     def optimize(self, blk: mblock_t):
         for cfg_rule in self.cfg_rules:
+            cfg_rule.current_maturity = self.current_maturity
             guard = blk.mba is not None and blk.mba.entry_ea is not None
             guard &= self.check_if_rule_is_activated_for_address(
                 cfg_rule, blk.mba.entry_ea
