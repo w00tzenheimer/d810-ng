@@ -5,6 +5,7 @@ from d810.expr.utils import unsigned_to_signed
 from d810.hexrays.cfg_utils import (
     duplicate_block,
     make_2way_block_goto,
+    safe_verify,
     update_blk_successor,
 )
 from d810.hexrays.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
@@ -311,7 +312,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         if self.last_pass_nb_patch_done > 0:
             self.mba.mark_chains_dirty()
             self.mba.optimize_local(0)
-            self.mba.verify(True)
+            safe_verify(self.mba, "optimizing FixPredecessorOfConditionalJumpBlock", logger_func=unflat_logger.error)
         return self.last_pass_nb_patch_done
 
     def check_if_rule_should_be_used(self, blk: mblock_t) -> bool:

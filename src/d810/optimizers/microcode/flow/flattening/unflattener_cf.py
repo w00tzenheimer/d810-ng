@@ -13,6 +13,7 @@ import ida_pro
 import ida_xref
 
 from d810.conf.loggers import getLogger
+from d810.hexrays.cfg_utils import safe_verify
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.hexrays.hexrays_helpers import MicrocodeHelper, MicroInstruction, MicroOperand
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
@@ -1792,7 +1793,11 @@ class cf_unflattener_t:
         changed = remove_single_gotos(mba)
         logger.info(f"Number of single GOTOS changed = {changed}")
         if changed != 0:
-            mba.verify(True)
+            safe_verify(
+                mba,
+                "optimizing cf_unflattener_t.func in UnflattenControlFlowRule after removing single gotos",
+                logger_func=logger.error,
+            )
 
         # Otherwise, we need to do the full unflattening.
         # (This is the slow path.)
@@ -2024,7 +2029,11 @@ class cf_unflattener_t:
         # If we changed the graph, verify that we did so legally.
         if changed:
             logger.info(f"UNFLATTENER: blk.start={hex(blk.start)} (changed={changed})")
-            mba.verify(True)
+            safe_verify(
+                mba,
+                "optimizing cf_unflattener_t.func in UnflattenControlFlowRule",
+                logger_func=logger.error,
+            )
 
         # if safe mode, deactivate the plugin after usage to prevent the annoying crashes
         if self.plugin.SAFE_MODE:

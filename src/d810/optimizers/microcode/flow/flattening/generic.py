@@ -12,6 +12,7 @@ from d810.hexrays.cfg_utils import (
     ensure_child_has_an_unconditional_father,
     ensure_last_block_is_goto,
     mba_deep_cleaning,
+    safe_verify,
 )
 from d810.hexrays.hexrays_formatters import (
     dump_microcode_for_debug,
@@ -856,12 +857,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         new_block1.end = dispatcher_father.end
 
         mba.mark_chains_dirty()
-        try:
-            mba.verify(True)
-            return new_block0, new_block1
-        except RuntimeError as e:
-            unflat_logger.error(e, exc_info=True)
-            raise e
+        safe_verify(
+            mba,
+            "optimizing GenericDispatcherUnflatteningRule.father_patcher_abc_create_blocks",
+            logger_func=unflat_logger.error,
+        )
+        return new_block0, new_block1
 
     def father_history_patcher_abc(self, father_history: mblock_t) -> int:
         # father can have instructions that we are not interested in but need to copy and remove from generated childs.
@@ -1184,5 +1185,9 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         if self.last_pass_nb_patch_done + nb_clean + self.non_significant_changes > 0:
             self.mba.mark_chains_dirty()
             self.mba.optimize_local(0)
-        self.mba.verify(True)
+        safe_verify(
+            self.mba,
+            "optimizing GenericDispatcherUnflatteningRule.optimize",
+            logger_func=unflat_logger.error,
+        )
         return self.last_pass_nb_patch_done

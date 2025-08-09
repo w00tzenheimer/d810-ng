@@ -10,6 +10,7 @@ from ida_hexrays import *
 from d810.conf.loggers import getLogger
 from d810.errors import D810Exception
 from d810.expr.z3_utils import log_z3_instructions
+from d810.hexrays.cfg_utils import safe_verify
 from d810.hexrays.hexrays_formatters import (
     dump_microcode_for_debug,
     format_minsn_t,
@@ -140,7 +141,9 @@ class InstructionOptimizerManager(optinsn_t):
 
                 if blk is not None:
                     blk.mark_lists_dirty()
-                    blk.mba.verify(True)
+                    safe_verify(
+                        blk.mba, "rewriting", logger_func=optimizer_logger.error
+                    )
 
             return bool(optimization_performed)
         except RuntimeError as e:
@@ -295,18 +298,6 @@ class BlockOptimizerManager(optblock_t):
                     nb_use,
                     sum(rule_nb_patch_list),
                 )
-
-    def log_info_on_input(self, blk: mblock_t):
-        mba: mbl_array_t = blk.mba
-
-        if (mba is not None) and (mba.maturity != self.current_maturity):
-            if main_logger.debug_on:
-                main_logger.debug(
-                    "BlockOptimizer called at maturity: %s",
-                    maturity_to_string(mba.maturity),
-                )
-
-            self.current_maturity = mba.maturity
 
     def optimize(self, blk: mblock_t):
         for cfg_rule in self.cfg_rules:
