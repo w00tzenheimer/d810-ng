@@ -56,13 +56,14 @@ In `samples/src`, there are various `C` programs compiled using the `samples/src
 
 ### How to build
 
-The sample binaries are built via the `samples/Makefile`. You can cross-target OS and architecture, and the output filename encodes the host OS and arch:
+The sample binaries are built via the `samples/Makefile`. You can cross-target OS and architecture.
 
-* Output name: `bins/<binary_name>_<hostos>_<arch>.<suffix>`
+* Default output name: `bins/<binary_name>_<hostos>_<arch>.<suffix>`
   * `<binary_name>` defaults to `libobfuscated` (override with `BINARY_NAME`)
   * `<hostos>` is the system you build on: `windows`, `darwin`, or `linux`
   * `<arch>` is the requested build arch (normalized): `x86_64`, `x86`, `arm64`, …
   * `<suffix>` comes from the target OS: `dll` (windows), `dylib` (darwin), `so` (linux)
+* If you explicitly set `BINARY_NAME` (env or CLI), the output name is simplified to: `bins/<BINARY_NAME>.<suffix>`
 
 Flags you can pass to `make`:
 
@@ -98,9 +99,9 @@ make TARGET_OS=darwin BUILD_ARCH=x86_64
 make TARGET_OS=native BUILD_ARCH=x86
 # → bins/libobfuscated_<hostos>_x86.<ext>
 
-# Customize the base name
+# Customize the base name (explicit BINARY_NAME removes host/arch suffixes)
 make BINARY_NAME=libobfuscatedv2
-# → bins/libobfuscatedv2_<hostos>_<arch>.<ext>
+# → bins/libobfuscatedv2.<ext>
 
 # Clean artifacts
 make clean

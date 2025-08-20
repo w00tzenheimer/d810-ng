@@ -2021,14 +2021,13 @@ struct _EXCEPTION_POINTERS
 };
 
 // Fake Windows structures to avoid including Windows headers
-#ifndef _WIN32
 #ifndef _NT_TIB_DEFINED
 #define _NT_TIB_DEFINED
 typedef struct _NT_TIB
 {
     void *FiberData;
 } NT_TIB;
-#endif
+#endif // _NT_TIB_DEFINED
 
 #ifndef _TEB_DEFINED
 #define _TEB_DEFINED
@@ -2036,13 +2035,13 @@ typedef struct _TEB
 {
     NT_TIB NtTib;
 } TEB;
-#endif
+#endif // _TEB_DEFINED
 
 #ifndef FAKE_FIBER_DATA_DEFINED
 #define FAKE_FIBER_DATA_DEFINED
 // Global variable to simulate FiberData
 static uint64 fake_fiber_data = 0x123456789ABCDEF0LL;
-#endif
+#endif // FAKE_FIBER_DATA_DEFINED
 
 #ifndef NT_CURRENT_TEB_DEFINED
 #define NT_CURRENT_TEB_DEFINED
@@ -2053,19 +2052,21 @@ static inline TEB *NtCurrentTeb(void)
     fake_teb.NtTib.FiberData = &fake_fiber_data;
     return &fake_teb;
 }
-#endif
+#endif // NT_CURRENT_TEB_DEFINED
 
+#ifndef _RTL_CRITICAL_SECTION_DEFINED
+#define _RTL_CRITICAL_SECTION_DEFINED
 // Forward declarations for external functions and variables
 typedef struct _RTL_CRITICAL_SECTION
 {
+    void *Lock;
     void *DebugInfo;
-    long LockCount;
-    long RecursionCount;
+    int LockCount;
+    int RecursionCount;
     void *OwningThread;
     void *LockSemaphore;
-    unsigned long SpinCount;
-} _RTL_CRITICAL_SECTION;
+    void *SpinCount;
+} RTL_CRITICAL_SECTION, *PRTL_CRITICAL_SECTION;
+#endif // _RTL_CRITICAL_SECTION_DEFINED
 
-#endif
-
-#endif
+#endif // POLYFILL_H

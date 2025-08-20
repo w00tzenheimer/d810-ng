@@ -1,7 +1,10 @@
 #include "polyfill.h"
 
-extern _RTL_CRITICAL_SECTION g_mutex;
+#ifndef _WIN32
 extern long _InterlockedCompareExchange(volatile signed __int32 *Destination, signed __int32 Exchange, signed __int32 Comperand);
+#endif
+extern RTL_CRITICAL_SECTION g_mutex;
+
 extern void unk_1802CCC58(int);
 extern void sub_1800D3BF0(int, int, int, int, __int64);
 extern void sub_180221640(unsigned __int64, int, int, unsigned __int64, int, int);
