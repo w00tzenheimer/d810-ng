@@ -6,8 +6,52 @@
 **.pyc
 **.log
 
+<<<<<<< Updated upstream
 samples/src/*.d
 samples/src/*.o
 samples/bins/*
 !samples/bins/**/*.dll
 !samples/bins/**/*.so
+=======
+# AI tools
+.cursorindexignore
+.cursorignore
+.cursorrules
+.cursor/
+
+# AI CLI Crap
+GEMINI.md
+CLAUDE.md
+CODEX.md
+ANTHROPIC.md
+
+
+# C
+build/
+c*?_debug/
+
+# ionide
+.fake
+
+# Project Specific
+samples/src/**/*.d
+samples/src/**/*.o
+samples/bins/*
+!samples/bins/**/*.dll
+!samples/bins/**/*.so
+!samples/bins/**/*.dylib
+
+!src/include/**/*.h
+!src/include/**/*.hpp
+!src/include/**/*.hxx
+!src/include/**/*.hpp
+
+src/d810/**/*.cpp
+src/d810/**/*.so
+src/d810/**/*.dll
+src/d810/**/*.html
+src/d810/**/*.so.dSYM
+
+.env
+_indexable
+>>>>>>> Stashed changes
