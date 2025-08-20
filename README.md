@@ -54,6 +54,58 @@ Test reloading exists without needing to restart `IDA Pro` and you can execute d
 
 In `samples/src`, there are various `C` programs compiled using the `samples/src/Makefile` into a shared library, without optimizations (`-O0`). On Windows, that shared library is a `.dll`, on Darwin(Mac)/Linux, it is a `.so`. Included is an example compiled dll, `libobfuscated.dll`, that can serve as a testing ground for seeing the plugin in action. Please make a pull request with more obfuscation `C` examples to build a repository of obfuscated sample code for further research.
 
+### How to build
+
+The sample binaries are built via the `samples/Makefile`. You can cross-target OS and architecture, and the output filename encodes the host OS and arch:
+
+* Output name: `bins/<binary_name>_<hostos>_<arch>.<suffix>`
+  * `<binary_name>` defaults to `libobfuscated` (override with `BINARY_NAME`)
+  * `<hostos>` is the system you build on: `windows`, `darwin`, or `linux`
+  * `<arch>` is the requested build arch (normalized): `x86_64`, `x86`, `arm64`, …
+  * `<suffix>` comes from the target OS: `dll` (windows), `dylib` (darwin), `so` (linux)
+
+Flags you can pass to `make`:
+
+* `TARGET_OS` (default: `windows`)
+  * One of: `windows`, `darwin`, `linux`, `native` (uses the host OS)
+* `BUILD_ARCH` (default: `x86_64`)
+  * Examples: `x86_64`, `x86`, `arm64`
+  * Also accepts explicit compiler flags (e.g., `-m64`, `-m32`)
+  * On macOS we use `-arch <name>` under the hood (e.g., `-arch x86_64`)
+* `BINARY_NAME` (default: `libobfuscated`)
+
+Notes:
+
+* Builds are unoptimized by default: `-O0 -g` and inlining/vectorization are disabled.
+* We rely on the host toolchain for linking. `TARGET_OS` selects the output suffix; cross-linking toolchains are up to your environment.
+
+Examples (run from the repo root):
+
+```bash
+# Build defaults: Windows DLL for x86_64; name includes your host OS
+cd samples && make
+# → bins/libobfuscated_<hostos>_x86_64.dll
+
+# Build Linux .so for arm64
+make TARGET_OS=linux BUILD_ARCH=arm64
+# → bins/libobfuscated_<hostos>_arm64.so
+
+# Build macOS .dylib for x86_64
+make TARGET_OS=darwin BUILD_ARCH=x86_64
+# → bins/libobfuscated_<hostos>_x86_64.dylib
+
+# Build for the native host OS, 32-bit x86
+make TARGET_OS=native BUILD_ARCH=x86
+# → bins/libobfuscated_<hostos>_x86.<ext>
+
+# Customize the base name
+make BINARY_NAME=libobfuscatedv2
+# → bins/libobfuscatedv2_<hostos>_<arch>.<ext>
+
+# Clean artifacts
+make clean
+```
+
 ### Test Constant Simplifications
 
 **Before**: !["Before"](./docs/source/images/test_cst_simplification_before.png "Before Plugin")
