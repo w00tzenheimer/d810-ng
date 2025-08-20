@@ -1,4 +1,8 @@
+ifeq ($(OS),Windows_NT)
+UNAME_S :=
+else
 UNAME_S := $(shell uname -s)
+endif
 
 # Target selection: allow cross-targeting. Defaults to building a Windows DLL
 # for x86_64 as requested. Set TARGET_OS to one of: windows, darwin, linux or
@@ -113,7 +117,13 @@ else
 OUTPUT_EXT := so
 endif
 
+# If user provided BINARY_NAME via env or command line, output is just that
+# name with the suffix. Otherwise, include host and arch for clarity.
+ifneq (,$(filter environment command line,$(origin BINARY_NAME)))
+TARGET_LIB = bins/$(BINARY_NAME).$(OUTPUT_EXT)
+else
 TARGET_LIB = bins/$(BINARY_NAME)_$(HOST_OS)_$(NORM_ARCH).$(OUTPUT_EXT)
+endif
 TARGET_LIB_IDA = $(TARGET_LIB).i64
 
 # Linker flags should match the host toolchain for compatibility
@@ -126,7 +136,7 @@ LDFLAGS = -shared -Wl,--unresolved-symbols=ignore-in-shared-libs $(ARCH_FLAGS)
 endif
 
 ifeq ($(OS),Windows_NT)
-CFLAGS = -Wall -Wextra -O0 -g -fno-inline -fno-builtin -fno-vectorize -fno-slp-vectorize  # C flags for Windows (no -fPIC)
+CFLAGS = -Wall -Wextra $(ARCH_FLAGS) -O0 -g -Iinclude -fno-inline -fno-builtin -fno-vectorize -fno-slp-vectorize  # C flags for Windows (no -fPIC)
 else
 # Add include directory and include arch flags so the compiler receives
 # normalized flags (e.g. -m64) instead of a raw arch token. Disable optimizations fully.
