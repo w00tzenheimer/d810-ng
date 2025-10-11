@@ -1,0 +1,15 @@
+{
+    "IDAMetadataDescriptorVersion": 1,
+    "plugin": {
+        "name": "d810-ng",
+        "entryPoint": "src/D810.py",
+        "categories": [
+            "decompilation",
+            "debugging-and-tracing"
+        ],
+        "logoPath": "resources/d810ng-logo.png",
+        "idaVersions": ">=9.0",
+        "description": "D810-ng (Next Generation) is an updated, tested, refactored, and optimized IDA Pro plugin that serves as a framework and deobfuscation harness used to deobfuscate code at decompilation time by modifying IDA Pro microcode.",
+        "version": "0.1.0"
+    }
+}
