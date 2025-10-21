@@ -7,7 +7,14 @@ import os
 import pathlib
 import typing
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+    if not hasattr(QtCore, "pyqtSignal"):
+        QtCore.pyqtSignal = QtCore.Signal
+    if not hasattr(QtCore, "pyqtSlot"):
+        QtCore.pyqtSlot = QtCore.Slot
+except ImportError:
+    from PyQt5 import QtCore, QtGui, QtWidgets
 
 import ida_kernwin
 import idaapi
