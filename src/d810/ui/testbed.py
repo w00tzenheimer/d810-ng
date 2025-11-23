@@ -647,7 +647,7 @@ class InlineButtonLineEdit(QtWidgets.QLineEdit):
     def __init__(self, with_clear_button=False, parent=None):
         super().__init__(parent)
         self._buttons = collections.OrderedDict()
-        # Use compatibility helper function for getTextMargins()
+        # Use compatibility helper function for textMargins()
         self._init_margins = get_text_margins_as_tuple(self)
         if with_clear_button:
             self.add_clear_button()
