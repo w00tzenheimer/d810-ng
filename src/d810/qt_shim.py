@@ -65,6 +65,7 @@ try:
         QTextCursor,
     )
     from PySide6.QtWidgets import (
+        QAbstractItemView,
         QApplication,
         QCheckBox,
         QComboBox,
@@ -113,6 +114,7 @@ except ImportError:
             QTextCursor,
         )
         from PyQt5.QtWidgets import (
+            QAbstractItemView,
             QApplication,
             QCheckBox,
             QComboBox,
@@ -208,13 +210,27 @@ def _setup_compatibility() -> None:
     # PySide6 uses QAbstractItemView.SelectionMode.ExtendedSelection
     # PyQt5 uses QTreeWidget.ExtendedSelection
     # Add compatibility attributes to QTreeWidget for PySide6
-    if not hasattr(QTreeWidget, "ExtendedSelection"):
-        if hasattr(QTreeWidget, "SelectionMode"):
+    # In PySide6, SelectionMode enum exists but hasattr returns False
+    # Try direct access - it may work even though hasattr returns False
+    try:
+        # Direct access to enum values (works even if hasattr returns False)
+        QTreeWidget.ExtendedSelection = QAbstractItemView.SelectionMode.ExtendedSelection  # type: ignore[attr-defined]
+        QTreeWidget.SingleSelection = QAbstractItemView.SelectionMode.SingleSelection  # type: ignore[attr-defined]
+        QTreeWidget.MultiSelection = QAbstractItemView.SelectionMode.MultiSelection  # type: ignore[attr-defined]
+        QTreeWidget.NoSelection = QAbstractItemView.SelectionMode.NoSelection  # type: ignore[attr-defined]
+        QTreeWidget.ContiguousSelection = QAbstractItemView.SelectionMode.ContiguousSelection  # type: ignore[attr-defined]
+    except (AttributeError, TypeError):
+        # Fallback: try QTreeWidget.SelectionMode (shouldn't happen in PySide6)
+        try:
             QTreeWidget.ExtendedSelection = QTreeWidget.SelectionMode.ExtendedSelection  # type: ignore[attr-defined]
             QTreeWidget.SingleSelection = QTreeWidget.SelectionMode.SingleSelection  # type: ignore[attr-defined]
             QTreeWidget.MultiSelection = QTreeWidget.SelectionMode.MultiSelection  # type: ignore[attr-defined]
             QTreeWidget.NoSelection = QTreeWidget.SelectionMode.NoSelection  # type: ignore[attr-defined]
             QTreeWidget.ContiguousSelection = QTreeWidget.SelectionMode.ContiguousSelection  # type: ignore[attr-defined]
+        except (AttributeError, TypeError):
+            # If both fail, we can't set up the compatibility shim
+            # This should not happen in normal circumstances
+            pass
 
 
 def set_high_dpi_attributes() -> None:
@@ -245,8 +261,8 @@ def get_text_margins_as_tuple(line_edit: QLineEdit) -> tuple[int, int, int, int]
     """
     Get text margins from a QLineEdit as a tuple, compatible with both Qt5 and Qt6.
 
-    In Qt5, getTextMargins() returns a tuple (left, top, right, bottom).
-    In Qt6, getTextMargins() returns a QMargins object.
+    In both Qt5 and Qt6, textMargins() returns a QMargins object.
+    This function converts it to a tuple for easier use.
 
     Args:
         line_edit: The QLineEdit widget to get margins from.
@@ -254,12 +270,14 @@ def get_text_margins_as_tuple(line_edit: QLineEdit) -> tuple[int, int, int, int]
     Returns:
         A tuple (left, top, right, bottom) of margin values.
     """
-    margins = line_edit.getTextMargins()
-    if QT6 and hasattr(margins, "left"):
-        # Qt6: QMargins object
+    # QLineEdit uses textMargins() method, not getTextMargins()
+    margins = line_edit.textMargins()
+    # QMargins object has left(), top(), right(), bottom() methods
+    if hasattr(margins, "left"):
+        # QMargins object (both Qt5 and Qt6)
         return (margins.left(), margins.top(), margins.right(), margins.bottom())
     else:
-        # Qt5: tuple (left, top, right, bottom)
+        # Fallback: if it's already a tuple, return as-is
         return margins
 
 
@@ -350,6 +368,7 @@ __all__ = [
     "QIcon",
     "QTextCursor",
     # Qt Widgets
+    "QAbstractItemView",
     "QApplication",
     "QCheckBox",
     "QComboBox",
