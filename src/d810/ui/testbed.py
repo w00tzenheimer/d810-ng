@@ -14,12 +14,33 @@ from unittest import loader, runner, suite
 
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
+
+    QT6 = True
+except ImportError:
+    from PyQt5 import QtCore, QtGui, QtWidgets
+
+    QT6 = False
+
+# Apply compatibility shims (pyqtSignal/pyqtSlot aliases)
+# Note: If using qt_shim module, these are set up automatically
+if QT6:
     if not hasattr(QtCore, "pyqtSignal"):
         QtCore.pyqtSignal = QtCore.Signal
     if not hasattr(QtCore, "pyqtSlot"):
         QtCore.pyqtSlot = QtCore.Slot
+
+# Try to import helper function from qt_shim for better compatibility
+try:
+    from d810.qt_shim import get_text_margins_as_tuple
 except ImportError:
-    from PyQt5 import QtCore, QtGui, QtWidgets
+    # Fallback: define locally if qt_shim not available
+    def get_text_margins_as_tuple(line_edit):
+        """Get text margins as tuple, compatible with Qt5 and Qt6."""
+        margins = line_edit.getTextMargins()
+        if QT6 and hasattr(margins, "left"):
+            return (margins.left(), margins.top(), margins.right(), margins.bottom())
+        return margins
+
 
 import ida_kernwin
 
@@ -652,7 +673,8 @@ class InlineButtonLineEdit(QtWidgets.QLineEdit):
     def __init__(self, with_clear_button=False, parent=None):
         super().__init__(parent)
         self._buttons = collections.OrderedDict()
-        self._init_margins = self.getTextMargins()
+        # Use compatibility helper function for getTextMargins()
+        self._init_margins = get_text_margins_as_tuple(self)
         if with_clear_button:
             self.add_clear_button()
 
