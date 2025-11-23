@@ -12,39 +12,13 @@ from pathlib import Path
 from typing import TextIO
 from unittest import loader, runner, suite
 
-try:
-    from PySide6 import QtCore, QtGui, QtWidgets
-
-    QT6 = True
-except ImportError:
-    from PyQt5 import QtCore, QtGui, QtWidgets
-
-    QT6 = False
-
-# Apply compatibility shims (pyqtSignal/pyqtSlot aliases)
-# Note: If using qt_shim module, these are set up automatically
-if QT6:
-    if not hasattr(QtCore, "pyqtSignal"):
-        QtCore.pyqtSignal = QtCore.Signal
-    if not hasattr(QtCore, "pyqtSlot"):
-        QtCore.pyqtSlot = QtCore.Slot
-
-# Try to import helper function from qt_shim for better compatibility
-try:
-    from d810.qt_shim import get_text_margins_as_tuple
-except ImportError:
-    # Fallback: define locally if qt_shim not available
-    def get_text_margins_as_tuple(line_edit):
-        """Get text margins as tuple, compatible with Qt5 and Qt6."""
-        margins = line_edit.getTextMargins()
-        if QT6 and hasattr(margins, "left"):
-            return (margins.left(), margins.top(), margins.right(), margins.bottom())
-        return margins
-
-
 import ida_kernwin
 
 from d810.conf.loggers import getLogger
+
+# Import Qt classes through qt_shim for compatibility
+# All compatibility shims are automatically set up by qt_shim
+from d810.qt_shim import QtCore, QtGui, QtWidgets, get_text_margins_as_tuple
 
 # Configure a logger for the script
 LOGGER = getLogger(__name__)
