@@ -7,20 +7,19 @@ import os
 import pathlib
 import typing
 
-try:
-    from PySide6 import QtCore, QtGui, QtWidgets
-    if not hasattr(QtCore, "pyqtSignal"):
-        QtCore.pyqtSignal = QtCore.Signal
-    if not hasattr(QtCore, "pyqtSlot"):
-        QtCore.pyqtSlot = QtCore.Slot
-except ImportError:
-    from PyQt5 import QtCore, QtGui, QtWidgets
-
 import ida_kernwin
 import idaapi
 
+from d810.qt_shim import QtCore, QtGui, QtWidgets, qt_flag_or
+
 if typing.TYPE_CHECKING:
+    from typing import cast
     from d810.manager import D810State
+else:
+    # Runtime: cast is a no-op
+    def cast(typ, val):
+        return val
+
 
 from d810.conf import ProjectConfiguration, RuleConfiguration
 from d810.conf.loggers import LoggerConfigurator, getLogger
@@ -700,15 +699,24 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         for rule in self.state.current_ins_rules:
             cell_file_path = QtWidgets.QTableWidgetItem(rule.name)
             cell_file_path.setFlags(
-                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
+                cast(
+                    "QtCore.Qt.ItemFlag",
+                    qt_flag_or(QtCore.Qt.ItemIsSelectable, QtCore.Qt.ItemIsEnabled),
+                )
             )
             cell_rule_description = QtWidgets.QTableWidgetItem(rule.description)
             cell_rule_description.setFlags(
-                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
+                cast(
+                    "QtCore.Qt.ItemFlag",
+                    qt_flag_or(QtCore.Qt.ItemIsSelectable, QtCore.Qt.ItemIsEnabled),
+                )
             )
             cell_rule_config = QtWidgets.QTableWidgetItem(json.dumps(rule.config))
             cell_rule_config.setFlags(
-                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
+                cast(
+                    "QtCore.Qt.ItemFlag",
+                    qt_flag_or(QtCore.Qt.ItemIsSelectable, QtCore.Qt.ItemIsEnabled),
+                )
             )
             self.cfg_ins_preview.setItem(i, 0, cell_file_path)
             self.cfg_ins_preview.setItem(i, 1, cell_rule_description)
@@ -730,15 +738,24 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         for rule in self.state.current_blk_rules:
             cell_file_path = QtWidgets.QTableWidgetItem(rule.name)
             cell_file_path.setFlags(
-                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
+                cast(
+                    "QtCore.Qt.ItemFlag",
+                    qt_flag_or(QtCore.Qt.ItemIsSelectable, QtCore.Qt.ItemIsEnabled),
+                )
             )
             cell_rule_description = QtWidgets.QTableWidgetItem(rule.description)
             cell_rule_description.setFlags(
-                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
+                cast(
+                    "QtCore.Qt.ItemFlag",
+                    qt_flag_or(QtCore.Qt.ItemIsSelectable, QtCore.Qt.ItemIsEnabled),
+                )
             )
             cell_rule_config = QtWidgets.QTableWidgetItem(json.dumps(rule.config))
             cell_rule_config.setFlags(
-                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled
+                cast(
+                    "QtCore.Qt.ItemFlag",
+                    qt_flag_or(QtCore.Qt.ItemIsSelectable, QtCore.Qt.ItemIsEnabled),
+                )
             )
             self.cfg_blk_preview.setItem(i, 0, cell_file_path)
             self.cfg_blk_preview.setItem(i, 1, cell_rule_description)
