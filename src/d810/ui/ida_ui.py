@@ -10,22 +10,17 @@ import typing
 import ida_kernwin
 import idaapi
 
-from d810.qt_shim import QtCore, QtGui, QtWidgets, qt_flag_or
+from d810.qt_shim import QtCore, QtWidgets, qt_flag_or
 
 if typing.TYPE_CHECKING:
-    from typing import cast
     from d810.manager import D810State
-else:
-    # Runtime: cast is a no-op
-    def cast(typ, val):
-        return val
-
 
 from d810.conf import ProjectConfiguration, RuleConfiguration
 from d810.conf.loggers import LoggerConfigurator, getLogger
 from d810.ui.testbed import TestRunnerForm
 
 logger = getLogger("D810.ui")
+cast = typing.cast
 
 
 class LoggingConfigDialog(QtWidgets.QDialog):

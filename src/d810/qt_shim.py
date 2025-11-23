@@ -169,38 +169,52 @@ def _setup_compatibility() -> None:
     - Keyboard modifier enum access patterns
     - pyqtSignal/pyqtSlot aliases for PySide6
     """
-    if QT_VERSION == 6:
-        # PySide6 uses exec() instead of exec_()
-        # Create exec_ alias for backward compatibility
-        if not hasattr(QMessageBox, "exec_"):
-            QMessageBox.exec_ = QMessageBox.exec  # type: ignore[method-assign]
-        if not hasattr(QMenu, "exec_"):
-            QMenu.exec_ = QMenu.exec  # type: ignore[method-assign]
+    if not QT_VERSION or QT_VERSION != 6:
+        return
 
-        # PySide6 uses Signal/Slot, but PyQt5 uses pyqtSignal/pyqtSlot
-        # Create aliases for backward compatibility
-        if not hasattr(QtCore, "pyqtSignal"):
-            QtCore.pyqtSignal = QtCore.Signal  # type: ignore[attr-defined]
-        if not hasattr(QtCore, "pyqtSlot"):
-            QtCore.pyqtSlot = QtCore.Slot  # type: ignore[attr-defined]
+    # PySide6 uses exec() instead of exec_()
+    # Create exec_ alias for backward compatibility
+    if not hasattr(QMessageBox, "exec_"):
+        QMessageBox.exec_ = QMessageBox.exec  # type: ignore[method-assign]
+    if not hasattr(QMenu, "exec_"):
+        QMenu.exec_ = QMenu.exec  # type: ignore[method-assign]
 
-        # Ensure keyboard modifier shortcuts work (Qt.CTRL, Qt.ALT, etc.)
-        # PySide6 may use different enum access patterns
-        if not hasattr(Qt, "CTRL"):
-            if hasattr(Qt, "KeyboardModifier"):
-                Qt.CTRL = Qt.KeyboardModifier.ControlModifier  # type: ignore[attr-defined]
-            elif hasattr(Qt, "ControlModifier"):
-                Qt.CTRL = Qt.ControlModifier  # type: ignore[attr-defined]
-        if not hasattr(Qt, "ALT"):
-            if hasattr(Qt, "KeyboardModifier"):
-                Qt.ALT = Qt.KeyboardModifier.AltModifier  # type: ignore[attr-defined]
-            elif hasattr(Qt, "AltModifier"):
-                Qt.ALT = Qt.AltModifier  # type: ignore[attr-defined]
-        if not hasattr(Qt, "SHIFT"):
-            if hasattr(Qt, "KeyboardModifier"):
-                Qt.SHIFT = Qt.KeyboardModifier.ShiftModifier  # type: ignore[attr-defined]
-            elif hasattr(Qt, "ShiftModifier"):
-                Qt.SHIFT = Qt.ShiftModifier  # type: ignore[attr-defined]
+    # PySide6 uses Signal/Slot, but PyQt5 uses pyqtSignal/pyqtSlot
+    # Create aliases for backward compatibility
+    if not hasattr(QtCore, "pyqtSignal"):
+        QtCore.pyqtSignal = QtCore.Signal  # type: ignore[attr-defined]
+    if not hasattr(QtCore, "pyqtSlot"):
+        QtCore.pyqtSlot = QtCore.Slot  # type: ignore[attr-defined]
+
+    # Ensure keyboard modifier shortcuts work (Qt.CTRL, Qt.ALT, etc.)
+    # PySide6 may use different enum access patterns
+    if not hasattr(Qt, "CTRL"):
+        if hasattr(Qt, "KeyboardModifier"):
+            Qt.CTRL = Qt.KeyboardModifier.ControlModifier  # type: ignore[attr-defined]
+        elif hasattr(Qt, "ControlModifier"):
+            Qt.CTRL = Qt.ControlModifier  # type: ignore[attr-defined]
+    if not hasattr(Qt, "ALT"):
+        if hasattr(Qt, "KeyboardModifier"):
+            Qt.ALT = Qt.KeyboardModifier.AltModifier  # type: ignore[attr-defined]
+        elif hasattr(Qt, "AltModifier"):
+            Qt.ALT = Qt.AltModifier  # type: ignore[attr-defined]
+    if not hasattr(Qt, "SHIFT"):
+        if hasattr(Qt, "KeyboardModifier"):
+            Qt.SHIFT = Qt.KeyboardModifier.ShiftModifier  # type: ignore[attr-defined]
+        elif hasattr(Qt, "ShiftModifier"):
+            Qt.SHIFT = Qt.ShiftModifier  # type: ignore[attr-defined]
+
+    # QTreeWidget selection mode compatibility
+    # PySide6 uses QAbstractItemView.SelectionMode.ExtendedSelection
+    # PyQt5 uses QTreeWidget.ExtendedSelection
+    # Add compatibility attributes to QTreeWidget for PySide6
+    if not hasattr(QTreeWidget, "ExtendedSelection"):
+        if hasattr(QTreeWidget, "SelectionMode"):
+            QTreeWidget.ExtendedSelection = QTreeWidget.SelectionMode.ExtendedSelection  # type: ignore[attr-defined]
+            QTreeWidget.SingleSelection = QTreeWidget.SelectionMode.SingleSelection  # type: ignore[attr-defined]
+            QTreeWidget.MultiSelection = QTreeWidget.SelectionMode.MultiSelection  # type: ignore[attr-defined]
+            QTreeWidget.NoSelection = QTreeWidget.SelectionMode.NoSelection  # type: ignore[attr-defined]
+            QTreeWidget.ContiguousSelection = QTreeWidget.SelectionMode.ContiguousSelection  # type: ignore[attr-defined]
 
 
 def set_high_dpi_attributes() -> None:
