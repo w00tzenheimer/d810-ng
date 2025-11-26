@@ -110,7 +110,6 @@ except ImportError:
             QKeySequence,
             QPalette,
             QPixmap,
-            QShortcut,
             QTextCursor,
         )
         from PyQt5.QtWidgets import (
@@ -129,6 +128,7 @@ except ImportError:
             QMessageBox,
             QPushButton,
             QSizePolicy,
+            QShortcut,
             QSplitter,
             QStatusBar,
             QStyleFactory,
@@ -314,8 +314,12 @@ def qt_flag_or(*flags) -> Union[int, "Qt.ItemFlag"]:  # type: ignore[valid-type]
             # If conversion fails, return int (fallback)
             return result
 
-    # PyQt5: return integer directly
-    return result
+    # PyQt5: Attempt to return Qt.ItemFlags object to satisfy strict type checks
+    # Some bindings (like IDA's) are strict about types and don't accept raw ints
+    try:
+        return Qt.ItemFlags(result)  # type: ignore[attr-defined]
+    except (AttributeError, TypeError):
+        return result
 
 
 def wrapinstance(ptr: int, base) -> object:
