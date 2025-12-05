@@ -55,6 +55,9 @@ unflat_logger = getLogger("D810.unflat.hodur")
 MIN_STATE_CONSTANT = 0x10000
 # Minimum number of unique state constants to consider it a state machine
 MIN_STATE_CONSTANTS = 3
+# Maximum number of state constants - if more, it's likely OLLVM FLA not Hodur
+# Hodur typically has ~10-20 states, OLLVM FLA can have 50+
+MAX_STATE_CONSTANTS_HODUR = 30
 
 
 @dataclass
@@ -145,6 +148,16 @@ class HodurStateMachineDetector:
             )
             return None
 
+        # Step 1.5: Check if this looks more like OLLVM FLA than Hodur
+        # OLLVM FLA typically has many more state constants (50+)
+        # Hodur typically has ~10-20 states
+        if len(state_check_blocks) > MAX_STATE_CONSTANTS_HODUR:
+            unflat_logger.info(
+                "Too many state check blocks (%d > %d) - likely OLLVM FLA, not Hodur",
+                len(state_check_blocks), MAX_STATE_CONSTANTS_HODUR
+            )
+            return None
+
         # Step 2: Find the state variable (the operand being compared)
         # Prefer cached state variable from DispatcherCache (more sophisticated detection)
         state_var = None
@@ -186,6 +199,16 @@ class HodurStateMachineDetector:
 
         # Step 4: Find state assignments and build transition graph
         state_assignments = self._find_state_assignments(state_constants)
+
+        # Step 4.5: Check for bitwise state modifications (OR-based patterns)
+        # If state is modified via OR/XOR/AND, this is not a pure Hodur state machine
+        # because state depends on input, not just control flow
+        if self._has_bitwise_state_modifications(state_var):
+            unflat_logger.info(
+                "Found bitwise state modifications (OR/XOR/AND) on state var - "
+                "skipping OR-based state machine pattern"
+            )
+            return None
 
         # Step 5: Find initial state (assignment in entry block or its immediate successors)
         # Use cached value if available
@@ -266,6 +289,41 @@ class HodurStateMachineDetector:
                             assignments.append((blk.serial, const_val))
                 insn = insn.next
         return assignments
+
+    def _has_bitwise_state_modifications(
+        self, state_var: ida_hexrays.mop_t
+    ) -> bool:
+        """Check if state variable is modified via bitwise operations.
+
+        Returns True if any m_or, m_xor, or m_and instruction writes to
+        the state variable. This indicates an OR-based state machine pattern
+        where state depends on input, not suitable for Hodur unflattening.
+
+        In OR-based patterns like ABC (state = state | input), the final state
+        depends on the input value, not just control flow. HodurUnflattener
+        assumes pure state assignments (state = CONST) and will produce
+        incorrect results for bitwise state patterns.
+        """
+        if state_var is None:
+            return False
+
+        BITWISE_OPCODES = [ida_hexrays.m_or, ida_hexrays.m_xor, ida_hexrays.m_and]
+
+        for i in range(self.mba.qty):
+            blk = self.mba.get_mblock(i)
+            insn = blk.head
+            while insn:
+                if insn.opcode in BITWISE_OPCODES:
+                    # Check if destination is the state variable
+                    if insn.d and insn.d.equal_mops(state_var, ida_hexrays.EQ_IGNSIZE):
+                        unflat_logger.debug(
+                            "Block %d: bitwise op %d modifies state var - "
+                            "detected OR-based pattern",
+                            blk.serial, insn.opcode
+                        )
+                        return True
+                insn = insn.next
+        return False
 
     def _find_initial_state(self, state_constants: set[int]) -> int | None:
         """Find the initial state value (set before entering the state machine)."""
@@ -533,6 +591,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                 block_serial=transition.from_block,
                 new_target=target_block,
                 description=f"transition {hex(transition.from_state)} -> {hex(transition.to_state)}",
+                rule_priority=50,  # Medium priority - path-based analysis
             )
 
     def _queue_predecessor_patches(self) -> None:
@@ -669,7 +728,8 @@ class HodurUnflattener(GenericUnflatteningRule):
                     self.deferred.queue_goto_change(
                         block_serial=blk_serial,
                         new_target=success_target,
-                        description=f"terminal back-edge -> success path"
+                        description=f"terminal back-edge -> success path",
+                        rule_priority=50,  # Medium priority - path-based analysis
                     )
 
     def _log_state_machine(self) -> None:

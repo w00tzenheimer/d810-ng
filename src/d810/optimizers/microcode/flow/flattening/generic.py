@@ -1354,6 +1354,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         block_serial=dispatcher_father.serial,
                         new_target=target_blk.serial,
                         description=f"resolve_dispatcher_father {dispatcher_father.serial} -> {target_blk.serial}",
+                        rule_priority=100,  # High priority - proven constant analysis
                     )
             else:
                 # Legacy direct CFG modifications

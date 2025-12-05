@@ -624,7 +624,6 @@ OLLVM_CASES = [
             "ArithmeticChain",
             "AndBnot_FactorRule_2",
         ],
-        skip="Known issue: OLLVM FLA+BCF+SUB not fully deobfuscated - needs investigation",
     ),
 ]
 

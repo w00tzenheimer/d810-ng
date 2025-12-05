@@ -19,18 +19,6 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
     DEFAULT_UNFLATTENING_MATURITIES = [ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1]
     DEFAULT_MAX_PASSES = None
 
-    def __init__(self):
-        super().__init__()
-        # Threshold ratio for unresolved path safety check.
-        # 0 = disabled (old behavior - ignores unresolved paths)
-        # > 0 = enabled (e.g., 2.0 means skip if unresolved > 2x resolved)
-        self.unresolved_threshold_ratio = 0
-
-    def configure(self, kwargs):
-        super().configure(kwargs)
-        # Load unresolved_threshold_ratio from config (default 0 = disabled)
-        self.unresolved_threshold_ratio = self.config.get("unresolved_threshold_ratio", 0)
-
     def analyze_blk(self, blk: ida_hexrays.mblock_t) -> int:
         if (blk.tail is None) or blk.tail.opcode not in FAKE_LOOP_OPCODES:
             return 0
@@ -70,20 +58,30 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
                 )
                 continue  # Try next predecessor instead of failing entirely
 
-            # SAFETY CHECK: Configurable threshold for unresolved paths
-            # When enabled (ratio > 0), skip if unresolved paths exceed threshold
-            # Default is 0 (disabled) to match old behavior that worked for most cases
-            if self.unresolved_threshold_ratio > 0:
-                if unresolved_count > self.unresolved_threshold_ratio * len(resolved_histories):
-                    unflat_logger.warning(
-                        "Pred %s has more unresolved (%d) than %.1fx resolved (%d) paths - "
-                        "unsafe to ignore unresolved, skipping",
-                        pred_serial,
-                        unresolved_count,
-                        self.unresolved_threshold_ratio,
-                        len(resolved_histories),
-                    )
-                    continue
+            # SAFETY CHECK: If too many unresolved paths, consider skipping.
+            # Z3 analysis shows ignoring unresolved paths can be unsafe when they could
+            # have different state values leading to different jump outcomes.
+            #
+            # However, for OLLVM FLA patterns:
+            # - Many paths are unresolved due to nested loop back-edges
+            # - These back-edges don't set state values, so they don't affect jump direction
+            # - The resolved paths still correctly determine if jump is always/never taken
+            #
+            # Relaxed heuristic: Skip only when unresolved massively outnumber resolved
+            # (10x threshold) AND we have very few resolved paths (< 3). This handles:
+            # - Simple cases: few paths, strict check (original behavior)
+            # - OLLVM FLA: many resolved paths, relax ratio requirement
+            few_resolved = len(resolved_histories) < 3
+            extreme_ratio = unresolved_count > 10 * len(resolved_histories)
+            if few_resolved and extreme_ratio:
+                unflat_logger.warning(
+                    "Pred %s has extreme unresolved:resolved ratio (%d vs %d) with few resolved - "
+                    "unsafe to ignore unresolved, skipping",
+                    pred_serial,
+                    unresolved_count,
+                    len(resolved_histories),
+                )
+                continue
 
             if unresolved_count > 0:
                 unflat_logger.debug(

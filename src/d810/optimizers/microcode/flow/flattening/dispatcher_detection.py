@@ -802,12 +802,18 @@ class DispatcherCache:
         if not has_jtbl and len(analysis.state_constants) >= MIN_UNIQUE_CONSTANTS:
             conditional_chain_score += 20
 
+        # Dynamic threshold: lower requirement when nested loops are detected
+        # Nested loops are a strong structural indicator even when constants are gone
+        min_score = 30 if analysis.nested_loop_depth >= 2 else 50
+
         # Classify based on score
-        if conditional_chain_score >= 50:
+        if conditional_chain_score >= min_score:
             analysis.dispatcher_type = DispatcherType.CONDITIONAL_CHAIN
             logger.info(
-                "Classified as CONDITIONAL_CHAIN dispatcher (score=%d)",
-                conditional_chain_score
+                "Classified as CONDITIONAL_CHAIN dispatcher (score=%d, threshold=%d, maturity=%d)",
+                conditional_chain_score,
+                min_score,
+                self.mba.maturity
             )
             # Find initial state for conditional chain dispatchers
             self._find_initial_state(analysis)
