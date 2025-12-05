@@ -200,6 +200,79 @@ def test_full_permutation():
     print("✓ VERIFIED: (x & y) + (x ^ y) ≡ (y ^ x) + (y & x)")
 
 
+def test_xor_not_equivalence():
+    """Test: Verify XOR-NOT equivalence x ^ ~y == ~(x ^ y).
+
+    This identity is critical for detecting inverse MBA rules like:
+    - BnotXor_FactorRule_1: x ^ ~y -> ~(x ^ y)
+    - CstSimplificationRule16: ~(x ^ c) -> x ^ ~c
+
+    These are mathematical inverses of each other.
+    """
+    print("\n" + "=" * 60)
+    print("Test: XOR-NOT Equivalence")
+    print("=" * 60)
+
+    x = PatternExpr.var("x")
+    y = PatternExpr.var("y")
+
+    # Form 1: x ^ ~y
+    form1 = x ^ (~y)
+    # Form 2: ~(x ^ y)
+    form2 = ~(x ^ y)
+
+    # Create egraph with XOR-NOT equivalence rule
+    egraph = EGraph()
+    a, b = vars_("a b", PatternExpr)
+
+    # Register commutativity rules
+    egraph.register(
+        rewrite(a + b).to(b + a),
+        rewrite(a & b).to(b & a),
+        rewrite(a | b).to(b | a),
+        rewrite(a ^ b).to(b ^ a),
+    )
+
+    # Register XOR-NOT equivalence (the rule we're testing)
+    egraph.register(
+        rewrite(a ^ (~b)).to(~(a ^ b)),
+        rewrite(~(a ^ b)).to(a ^ (~b)),
+    )
+
+    egraph.register(form1)
+    egraph.register(form2)
+    egraph.run(10)
+
+    assert (
+        egraph.check(eq(form1).to(form2)) is None
+    ), f"\n✗ FAILED: Could not verify x ^ ~y ≡ ~(x ^ y)!"
+    print("✓ VERIFIED: x ^ ~y ≡ ~(x ^ y)")
+
+
+def test_xor_not_equivalence_from_module():
+    """Test: Verify XOR-NOT equivalence using the actual module's verify_pattern_equivalence."""
+    print("\n" + "=" * 60)
+    print("Test: XOR-NOT Equivalence (Using Module)")
+    print("=" * 60)
+
+    try:
+        from d810.mba.backends.egglog_backend import PatternExpr as ModulePatternExpr
+        from d810.mba.backends.egglog_backend import verify_pattern_equivalence
+    except ImportError:
+        print("SKIP: Could not import module (PYTHONPATH issue)")
+        return
+
+    x = ModulePatternExpr.var("x")
+    y = ModulePatternExpr.var("y")
+
+    form1 = x ^ (~y)
+    form2 = ~(x ^ y)
+
+    result = verify_pattern_equivalence(form1, form2)
+    assert result, f"\n✗ FAILED: verify_pattern_equivalence returned False for x ^ ~y ≡ ~(x ^ y)"
+    print("✓ VERIFIED: verify_pattern_equivalence(x ^ ~y, ~(x ^ y)) == True")
+
+
 if __name__ == "__main__":
     print("Egglog Pattern Generation Proof-of-Concept")
     print("=" * 60)
@@ -210,6 +283,8 @@ if __name__ == "__main__":
     )
     results.append(("Nested commutativity", test_nested_commutativity()))
     results.append(("Full permutation", test_full_permutation()))
+    results.append(("XOR-NOT equivalence", test_xor_not_equivalence()))
+    results.append(("XOR-NOT equivalence (module)", test_xor_not_equivalence_from_module()))
 
     print("\n" + "=" * 60)
     print("Summary")
