@@ -1,4 +1,6 @@
-// https://github.com/Neutrino6/thesis_project/blob/main/C_files_analysis/C_obfuscated/minmaxarray_tigress.c 
+#include "export.h"
+
+// https://github.com/Neutrino6/thesis_project/blob/main/C_files_analysis/C_obfuscated/minmaxarray_tigress.c
 /** Original code:
  *  #include<stdio.h>
  *  int main(int argc, char* argv[]){
@@ -39,7 +41,7 @@ int _global_argc;
 char **_global_argv;
 char **_global_envp;
 
-int tigress_minmaxarray(int argc , char **argv , char **_formal_envp ) 
+EXPORT int tigress_minmaxarray(int argc , char **argv , char **_formal_envp ) 
 { 
   int a[10] ;
   int i ;

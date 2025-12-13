@@ -1,0 +1,23 @@
+LIBRARY libobfuscated
+EXPORTS
+    constant_folding_test1
+    constant_folding_test2
+    outlined_helper_1
+    outlined_helper_2
+    AntiDebug_ExceptionFilter
+    test_chained_add
+    test_cst_simplification
+    test_opaque_predicate
+    test_xor
+    test_or
+    test_and
+    test_neg
+    test_mba_guessing
+    test_function_ollvm_fla_bcf_sub
+    tigress_minmaxarray
+    unwrap_loops
+    unwrap_loops_2
+    unwrap_loops_3
+    while_switch_flattened
+    NtCurrentTeb
+    _hodur_func

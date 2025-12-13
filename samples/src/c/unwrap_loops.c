@@ -1,13 +1,66 @@
 #include "polyfill.h"
 
-#ifndef _WIN32
-extern long _InterlockedCompareExchange(volatile signed __int32 *Destination, signed __int32 Exchange, signed __int32 Comperand);
-#endif
-extern RTL_CRITICAL_SECTION g_mutex;
+RTL_CRITICAL_SECTION g_mutex = {0};
 
 extern void unk_1802CCC58(int);
+extern int lolclose(unsigned __int64 hObject);
 extern void sub_1800D3BF0(int, int, int, int, __int64);
 extern void sub_180221640(unsigned __int64, int, int, unsigned __int64, int, int);
+
+/**
+ * @brief
+ *
+ * @param n0x59
+ * @param n0xA
+ * @param n0x48
+ * @param a4
+ *
+ */
+__int64 __fastcall SafeCloseHandle(
+    int unusedParam1,
+    int unusedParam2,
+    int unusedParam3,
+    unsigned __int64 hHandleToClose)
+{
+    int cleanupState;
+    int finalState;
+    unsigned __int64 hObject;
+
+    for (cleanupState = 0;; cleanupState = 2)
+    {
+        while (1)
+        {
+            finalState = cleanupState;
+            if (cleanupState)
+                break;
+
+            hObject = hHandleToClose;
+            if (hHandleToClose == (unsigned __int64)0xFFFFFFFFFFFFFFFFULL)
+                cleanupState = 2;
+            else
+                cleanupState = 1;
+        }
+
+        if (cleanupState != 1)
+            break;
+
+        lolclose(hObject);
+        hHandleToClose = (unsigned __int64)0xFFFFFFFFFFFFFFFFULL;
+    }
+
+    return finalState;
+}
+
+void bogus_loops(int n0x59, int n0xA, int n0x48, unsigned int *a4)
+{
+    int i;           // [rsp+Ch] [rbp-Ch]
+    unsigned int v5; // [rsp+14h] [rbp-4h]
+
+    for (i = 0; !i; i = 1)
+        v5 = *a4 ^ (*a4 << 0xD) ^ ((*a4 ^ (*a4 << 0xD)) >> 0x11);
+
+    *a4 = v5 ^ (0x20 * v5);
+}
 
 __int64 unwrap_loops()
 {

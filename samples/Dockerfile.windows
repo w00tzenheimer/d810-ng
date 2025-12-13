@@ -1,0 +1,4 @@
+FROM debian:stable-slim
+RUN apt-get update && apt-get install -y clang lld mingw-w64 make && rm -rf /var/lib/apt/lists/*
+WORKDIR /work
+CMD ["make", "TARGET_OS=windows", "MINGW_SYSROOT=/usr"]

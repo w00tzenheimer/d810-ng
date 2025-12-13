@@ -3,6 +3,182 @@
 
 #include "ida_types.h"
 
+/* ============================================================================
+ * Windows API Stubs for Cross-Platform Compilation
+ * These allow code using Windows APIs to compile on non-Windows platforms.
+ * Functions are stubbed to return failure/NULL - only structure is preserved.
+ * ============================================================================ */
+
+/* Ensure Windows base types are defined even when _WIN32 is set */
+#if !defined(BYTE)
+typedef int8 BYTE;
+#endif
+#if !defined(WORD)
+typedef int16 WORD;
+#endif
+#if !defined(DWORD)
+typedef int32 DWORD;
+#endif
+#if !defined(LONG)
+typedef int32 LONG;
+#endif
+#if !defined(BOOL)
+typedef int BOOL;
+#endif
+
+/* Calling conventions */
+#define WINAPI
+#define CALLBACK
+#ifndef __stdcall
+#define __stdcall
+#endif
+#ifndef __cdecl
+#define __cdecl
+#endif
+
+/* Basic handle types */
+typedef void *HANDLE;
+typedef void *HMODULE;
+typedef void *HINSTANCE;
+typedef void *HINTERNET;
+typedef void *LPVOID;
+typedef const void *LPCVOID;
+
+/* Pointer-sized integer */
+#ifdef __LP64__
+typedef unsigned long long DWORD_PTR;
+typedef unsigned long long ULONG_PTR;
+typedef long long LONG_PTR;
+#else
+typedef unsigned long DWORD_PTR;
+typedef unsigned long ULONG_PTR;
+typedef long LONG_PTR;
+#endif
+
+/* String types */
+typedef char *LPSTR;
+typedef const char *LPCSTR;
+typedef wchar_t *LPWSTR;
+typedef const wchar_t *LPCWSTR;
+
+/* Wide character */
+typedef wchar_t WCHAR;
+
+/* Kernel32 stubs */
+static inline HMODULE LoadLibraryA(const char *name)
+{
+    (void)name;
+    return NULL;
+}
+static inline HMODULE LoadLibraryW(const wchar_t *name)
+{
+    (void)name;
+    return NULL;
+}
+static inline void *GetProcAddress(HMODULE mod, const char *name)
+{
+    (void)mod;
+    (void)name;
+    return NULL;
+}
+static inline BOOL FreeLibrary(HMODULE mod)
+{
+    (void)mod;
+    return 0;
+}
+static inline void Sleep(DWORD ms) { (void)ms; }
+
+/* Interlocked functions */
+static inline long _InterlockedCompareExchange(volatile long *Destination, long Exchange, long Comparand)
+{
+    (void)Destination;
+    (void)Exchange;
+    (void)Comparand;
+    return 0;
+}
+/* _InterlockedExchangeW - defined in constant_folding.c */
+
+/* Boolean constants */
+#ifndef TRUE
+#define TRUE 1
+#endif
+#ifndef FALSE
+#define FALSE 0
+#endif
+
+/* WinHTTP constants */
+#define WINHTTP_ACCESS_TYPE_DEFAULT_PROXY 0
+#define WINHTTP_NO_PROXY_NAME NULL
+#define WINHTTP_NO_PROXY_BYPASS NULL
+#define INTERNET_DEFAULT_HTTPS_PORT 443
+#define WINHTTP_OPTION_CONNECT_TIMEOUT 3
+#define WINHTTP_OPTION_RECEIVE_TIMEOUT 6
+#define WINHTTP_OPTION_SEND_TIMEOUT 5
+#define WINHTTP_FLAG_SECURE 0x00800000
+#define WINHTTP_NO_REFERER NULL
+#define WINHTTP_DEFAULT_ACCEPT_TYPES NULL
+#define WINHTTP_NO_ADDITIONAL_HEADERS NULL
+
+/* WinHTTP function stubs */
+static inline HINTERNET WinHttpOpen(LPCWSTR agent, DWORD type, LPCWSTR proxy, LPCWSTR bypass, DWORD flags)
+{
+    (void)agent;
+    (void)type;
+    (void)proxy;
+    (void)bypass;
+    (void)flags;
+    return NULL;
+}
+static inline HINTERNET WinHttpConnect(HINTERNET session, LPCWSTR server, DWORD port, DWORD reserved)
+{
+    (void)session;
+    (void)server;
+    (void)port;
+    (void)reserved;
+    return NULL;
+}
+static inline BOOL WinHttpCloseHandle(HINTERNET handle)
+{
+    (void)handle;
+    return 0;
+}
+static inline BOOL WinHttpSetOption(HINTERNET handle, DWORD option, LPVOID buffer, DWORD bufferLength)
+{
+    (void)handle;
+    (void)option;
+    (void)buffer;
+    (void)bufferLength;
+    return 0;
+}
+static inline HINTERNET WinHttpOpenRequest(HINTERNET connect, LPCWSTR verb, LPCWSTR objectName, LPCWSTR version, LPCWSTR referrer, LPCWSTR *acceptTypes, DWORD flags)
+{
+    (void)connect;
+    (void)verb;
+    (void)objectName;
+    (void)version;
+    (void)referrer;
+    (void)acceptTypes;
+    (void)flags;
+    return NULL;
+}
+static inline BOOL WinHttpSendRequest(HINTERNET request, LPCWSTR headers, DWORD headersLength, LPVOID optional, DWORD optionalLength, DWORD totalLength, DWORD_PTR context)
+{
+    (void)request;
+    (void)headers;
+    (void)headersLength;
+    (void)optional;
+    (void)optionalLength;
+    (void)totalLength;
+    (void)context;
+    return 0;
+}
+static inline BOOL WinHttpReceiveResponse(HINTERNET request, LPVOID reserved)
+{
+    (void)request;
+    (void)reserved;
+    return 0;
+}
+
 /* 62 */
 enum AccessMask
 {
@@ -1950,7 +2126,7 @@ union _XSAVE_UNION
 };
 
 /* 67 */
-struct _CONTEXT_X64
+struct _CONTEXT
 {
     unsigned __int64 P1Home;
     unsigned __int64 P2Home;
@@ -2001,6 +2177,8 @@ struct _CONTEXT_X64
 };
 
 /* 68 */
+/* _CONTEXT_X64 is an alias for _CONTEXT (x64 version) */
+typedef struct _CONTEXT _CONTEXT_X64;
 
 /* 69 */
 struct _EXCEPTION_RECORD
@@ -2017,7 +2195,7 @@ struct _EXCEPTION_RECORD
 struct _EXCEPTION_POINTERS
 {
     struct _EXCEPTION_RECORD *ExceptionRecord;
-    struct _CONTEXT_X64 *ContextRecord;
+    _CONTEXT_X64 *ContextRecord;
 };
 
 // Fake Windows structures to avoid including Windows headers
@@ -2068,5 +2246,7 @@ typedef struct _RTL_CRITICAL_SECTION
     void *SpinCount;
 } RTL_CRITICAL_SECTION, *PRTL_CRITICAL_SECTION;
 #endif // _RTL_CRITICAL_SECTION_DEFINED
+
+/* Stub definitions for undefined external symbols are in src/c/stubs.c */
 
 #endif // POLYFILL_H
