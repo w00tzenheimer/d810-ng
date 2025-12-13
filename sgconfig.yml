@@ -1,0 +1,5 @@
+# ast-grep configuration for d810-ng
+# Run: sg scan --rule rules/
+
+ruleDirs:
+  - rules

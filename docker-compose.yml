@@ -1,0 +1,35 @@
+services:
+    idapro-tests:
+        image: ghcr.io/mahmoudimus/idapro-linux:idapro-tests@sha256:6acc4756c48d3eecfbb85904361365e6f138844f784a93827597074d3d451ab2
+        entrypoint: ["python3"]
+        working_dir: /work
+        environment:
+            - CONTAINER_TIMEZONE=America/Los_Angeles
+            - DISPLAY=host.docker.internal:0
+            - QT_X11_NO_MITSHM=1
+            - LIBGL_ALWAYS_INDIRECT=1
+            - IDAUSR=/root/.idapro
+            - PYTHONPATH=/app/ida/python:/work
+            - PYTHONWARNINGS=ignore
+        volumes:
+            - ./src/:/root/.idapro/plugins:ro # the plugin
+            - ./:/work # the test suite to operate on
+
+    idapro-tests-9.2:
+        image: ghcr.io/mahmoudimus/idapro-linux:idapro-tests-9.2@sha256:541790eb853f2a46ff713476c596cb3164d719bc33d5d3c4027687d5d9e2f1ba
+        entrypoint: ["python3"]
+        working_dir: /work
+        environment:
+            - CONTAINER_TIMEZONE=America/Los_Angeles
+            - DISPLAY=host.docker.internal:0
+            - QT_X11_NO_MITSHM=1
+            - LIBGL_ALWAYS_INDIRECT=1
+            - IDAUSR=/root/.idapro
+            - PYTHONPATH=/app/ida/python:/work
+            - PYTHONWARNINGS=ignore
+        volumes:
+            - ./src/:/root/.idapro/plugins:ro # the plugin
+            - ./:/work # the test suite to operate on
+
+volumes:
+    idausr:
