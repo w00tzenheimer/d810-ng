@@ -1,0 +1,38 @@
+# d810 Vendored Dependencies
+#
+# This file lists vendored dependencies that are automatically synced
+# using the `vendoring` tool (https://pypi.org/project/vendoring/).
+#
+# To update vendored packages:
+#   python -m vendoring sync
+#
+# To update a specific package version:
+#   1. Update version in this file
+#   2. Run: python -m vendoring sync
+#   3. Test thoroughly
+#
+# All packages must be available on PyPI.
+
+# ida-reloader - Hot-reload infrastructure for IDA Pro plugins
+# Source: https://github.com/mahmoudimus/ida-reloader (PyPI: https://pypi.org/project/ida-reloader/)
+# Reason: Core infrastructure for plugin hot-reloading
+# Provides: Reloader, DependencyGraph, _Scanner, reload_package()
+ida-reloader==0.1.0
+
+# typing_extensions - Backport of the latest typing features
+# Source: https://github.com/python/typing_extensions (PyPI: https://pypi.org/project/typing-extensions/)
+# Reason: Ensure consistent typing support across Python 3.10-3.13
+# Provides: Protocol, TypedDict, Literal, Final, override, Self, etc.
+typing_extensions==4.15.0
+
+# clang - Python bindings for the Clang indexing library
+# Source: https://github.com/llvm/llvm-project/tree/main/clang/bindings/python
+# NOTE: Manually vendored (not available as standalone PyPI package)
+# Reason: Required for C/C++ AST parsing in test infrastructure
+# Provides: cindex module (Index, TranslationUnit, Cursor, etc.)
+# License: Apache-2.0 WITH LLVM-exception
+clang==13.0.1+d810
+
+# Candidates for future vendoring:
+# - miasm2: If we need specific version/patches for IDA compatibility
+# - z3-solver: If bundling is needed for binary distributions
