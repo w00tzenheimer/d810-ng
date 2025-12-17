@@ -1,15 +1,177 @@
 {
-  "description": "Unflattening Tigress with switch case dispatcher",
+  "description": "Example of configuration with multiple variants of control flow flattening (use it on libobfuscated.so)",
   "ins_rules": [
+    {
+      "name": "TransparentCallUnwrapRule",
+      "is_activated": false,
+      "config": {}
+    },
+    {
+      "name": "TypedImmediateCanonicaliseRule",
+      "is_activated": false,
+      "config": {}
+    },
+    {
+      "name": "LocalizedConstantPropagationRule",
+      "is_activated": false,
+      "config": {}
+    },
+    {
+      "name": "RotateHelperInlineRule",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "FoldReadonlyDataRule",
+      "is_activated": true,
+      "config": {
+        "default": {},
+        "macho": {
+          "allow_executable_readonly": true
+        }
+      }
+    },
+    {
+      "name": "ConstantCallResultFoldRule",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Add_SpecialConstantRule_1",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Add_SpecialConstantRule_2",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Add_SpecialConstantRule_3",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Add_OllvmRule_1",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Add_OllvmRule_2",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
     {
       "name": "AddXor_Rule_1",
       "is_activated": true,
-      "config": {}
+      "config": {
+        "dump_intermediate_microcode": null
+      }
     },
     {
       "name": "AddXor_Rule_2",
       "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "SetGlobalVariablesToZero",
+      "is_activated": false,
       "config": {}
+    },
+    {
+      "name": "SetGlobalVariablesToZeroIfDetectedReadOnly",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "ReplaceReadonlyAddressOfWithImmediate",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "XorChain",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "AndChain",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "OrChain",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "ArithmeticChain",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Z3setzRuleGeneric",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Z3setnzRuleGeneric",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Z3lnotRuleGeneric",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Z3SmodRuleGeneric",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Z3ConstantOptimization",
+      "is_activated": true,
+      "config": {
+        "min_nb_opcode": 4,
+        "min_nb_constant": 3,
+        "dump_intermediate_microcode": null
+      }
     },
     {
       "name": "Add_HackersDelightRule_1",
@@ -39,105 +201,69 @@
     {
       "name": "Add_OllvmRule_1",
       "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Add_OllvmRule_2",
-      "is_activated": true,
-      "config": {}
+      "config": {
+        "dump_intermediate_microcode": null
+      }
     },
     {
       "name": "Add_OllvmRule_3",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Add_OllvmRule_4",
-      "is_activated": true,
+      "is_activated": false,
       "config": {}
     },
     {
       "name": "Add_SpecialConstantRule_1",
       "is_activated": true,
-      "config": {}
+      "config": {
+        "dump_intermediate_microcode": null
+      }
     },
     {
       "name": "Add_SpecialConstantRule_2",
       "is_activated": true,
-      "config": {}
+      "config": {
+        "dump_intermediate_microcode": null
+      }
     },
     {
       "name": "Add_SpecialConstantRule_3",
       "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Add_OllvmRule_DynamicConst",
+      "is_activated": false,
       "config": {}
     },
     {
-      "name": "And1_MbaRule_1",
+      "name": "Add_OllvmRule_2",
       "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Add_OllvmRule_4",
+      "is_activated": false,
       "config": {}
     },
     {
-      "name": "AndBnot_FactorRule_1",
+      "name": "AddXor_Rule_1",
       "is_activated": true,
-      "config": {}
+      "config": {
+        "dump_intermediate_microcode": null
+      }
     },
     {
-      "name": "AndBnot_FactorRule_2",
+      "name": "AddXor_Rule_2",
       "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "AndBnot_FactorRule_3",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "AndBnot_FactorRule_4",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "AndBnot_HackersDelightRule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "AndBnot_HackersDelightRule_2",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "AndGetUpperBits_FactorRule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "AndOr_FactorRule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "AndXor_FactorRule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "And_FactorRule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "And_FactorRule_2",
-      "is_activated": true,
-      "config": {}
+      "config": {
+        "dump_intermediate_microcode": null
+      }
     },
     {
       "name": "And_HackersDelightRule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "And_HackersDelightRule_2",
       "is_activated": true,
       "config": {}
     },
@@ -157,82 +283,77 @@
       "config": {}
     },
     {
-      "name": "And_OllvmRule_2",
-      "is_activated": true,
-      "config": {}
-    },
-    {
       "name": "And_OllvmRule_3",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "BnotAdd_MbaRule_1",
+      "name": "And_FactorRule_2",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "BnotAnd_FactorRule_1",
+      "name": "AndBnot_HackersDelightRule_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "BnotAnd_FactorRule_2",
+      "name": "AndBnot_HackersDelightRule_2",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "BnotAnd_FactorRule_3",
+      "name": "AndBnot_FactorRule_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "BnotAnd_FactorRule_4",
+      "name": "AndBnot_FactorRule_2",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "BnotOr_FactorRule_1",
+      "name": "AndBnot_FactorRule_3",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "BnotXor_FactorRule_1",
+      "name": "AndOr_FactorRule_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "BnotXor_Rule_1",
+      "name": "AndXor_FactorRule_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "BnotXor_Rule_2",
+      "name": "And_HackersDelightRule_2",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "BnotXor_Rule_3",
+      "name": "And_OllvmRule_2",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "Bnot_FactorRule_1",
+      "name": "And_FactorRule_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "Bnot_FactorRule_2",
+      "name": "AndBnot_FactorRule_4",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "Bnot_FactorRule_3",
+      "name": "And1_MbaRule_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "Bnot_FactorRule_4",
+      "name": "AndGetUpperBits_FactorRule_1",
       "is_activated": true,
       "config": {}
     },
@@ -252,7 +373,32 @@
       "config": {}
     },
     {
-      "name": "Bnot_Rule_1",
+      "name": "Bnot_FactorRule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Bnot_FactorRule_4",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "BnotXor_FactorRule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "BnotAnd_FactorRule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "BnotAnd_FactorRule_3",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "BnotOr_FactorRule_1",
       "is_activated": true,
       "config": {}
     },
@@ -262,7 +408,92 @@
       "config": {}
     },
     {
+      "name": "Bnot_FactorRule_2",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Bnot_FactorRule_3",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "BnotXor_Rule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "BnotXor_Rule_2",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "BnotXor_Rule_3",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "BnotAnd_FactorRule_2",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "BnotAnd_FactorRule_4",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "BnotAdd_MbaRule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Bnot_Rule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
       "name": "CstSimplificationRule1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "CstSimplificationRule2",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "CstSimplificationRule3",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "CstSimplificationRule4",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "CstSimplificationRule5",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "CstSimplificationRule6",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "CstSimplificationRule7",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "CstSimplificationRule8",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "CstSimplificationRule9",
       "is_activated": true,
       "config": {}
     },
@@ -317,11 +548,6 @@
       "config": {}
     },
     {
-      "name": "CstSimplificationRule2",
-      "is_activated": true,
-      "config": {}
-    },
-    {
       "name": "CstSimplificationRule20",
       "is_activated": true,
       "config": {}
@@ -337,37 +563,57 @@
       "config": {}
     },
     {
-      "name": "CstSimplificationRule3",
+      "name": "Xor_Hodur_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "CstSimplificationRule4",
+      "name": "Bnot_Hodur_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "CstSimplificationRule5",
+      "name": "Or_Hodur_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "CstSimplificationRule6",
+      "name": "Or_Hodur_2",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "CstSimplificationRule7",
+      "name": "Xor_Hodur_2",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "CstSimplificationRule8",
+      "name": "WeirdRule1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "CstSimplificationRule9",
+      "name": "WeirdRule2",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "WeirdRule3",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "WeirdRule4",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "WeirdRule5",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "WeirdRule6",
       "is_activated": true,
       "config": {}
     },
@@ -383,16 +629,6 @@
     },
     {
       "name": "GetIdentRule3",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Mul_FactorRule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Mul_FactorRule_2",
       "is_activated": true,
       "config": {}
     },
@@ -413,6 +649,31 @@
     },
     {
       "name": "Mul_MBA_4",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Mul_FactorRule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Mul_FactorRule_2",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Neg_HackersDelightRule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Neg_HackersDelightRule_2",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "NegSub_HackersDelightRule_1",
       "is_activated": true,
       "config": {}
     },
@@ -442,56 +703,6 @@
       "config": {}
     },
     {
-      "name": "Neg_HackersDelightRule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Neg_HackersDelightRule_2",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "OrBnot_FactorRule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "OrBnot_FactorRule_2",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "OrBnot_FactorRule_3",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "OrBnot_FactorRule_4",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Or_FactorRule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Or_FactorRule_2",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Or_FactorRule_3",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Or_HackersDelightRule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
       "name": "Or_HackersDelightRule_2",
       "is_activated": true,
       "config": {}
@@ -507,12 +718,57 @@
       "config": {}
     },
     {
+      "name": "Or_MbaRule_1_Commuted",
+      "is_activated": true,
+      "config": {}
+    },
+    {
       "name": "Or_MbaRule_2",
       "is_activated": true,
       "config": {}
     },
     {
       "name": "Or_MbaRule_3",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Or_FactorRule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Or_FactorRule_2",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Or_Rule_2",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Or_Rule_4",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "OrBnot_FactorRule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "OrBnot_FactorRule_2",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Or_HackersDelightRule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Or_FactorRule_3",
       "is_activated": true,
       "config": {}
     },
@@ -527,87 +783,17 @@
       "config": {}
     },
     {
-      "name": "Or_Rule_2",
-      "is_activated": true,
-      "config": {}
-    },
-    {
       "name": "Or_Rule_3",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "Or_Rule_4",
+      "name": "OrBnot_FactorRule_3",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "Pred0Rule1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Pred0Rule2",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Pred0Rule3",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Pred0Rule4",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Pred0Rule5",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "PredFFRule1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "PredFFRule2",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "PredFFRule3",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "PredFFRule4",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "PredOdd1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "PredOdd2",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "PredOr1_Rule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "PredOr2_Rule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "PredSetbRule1",
+      "name": "OrBnot_FactorRule_4",
       "is_activated": true,
       "config": {}
     },
@@ -662,32 +848,82 @@
       "config": {}
     },
     {
-      "name": "Sub1Add_HackersDelightRule_1",
+      "name": "PredSetbRule1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "Sub1And1_MbaRule_1",
+      "name": "Pred0Rule1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "Sub1And_HackersDelightRule_1",
+      "name": "Pred0Rule2",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "Sub1Or_MbaRule_1",
+      "name": "Pred0Rule3",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "Sub1_FactorRule_1",
+      "name": "Pred0Rule4",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "Sub1_FactorRule_2",
+      "name": "Pred0Rule5",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Pred0Rule6",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Pred0Rule7",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "PredFFRule1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "PredFFRule2",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "PredFFRule3",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "PredFFRule4",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "PredOr2_Rule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "PredOr1_Rule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "PredOdd1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "PredOdd2",
       "is_activated": true,
       "config": {}
     },
@@ -712,57 +948,32 @@
       "config": {}
     },
     {
-      "name": "WeirdRule1",
+      "name": "Sub1_FactorRule_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "WeirdRule2",
+      "name": "Sub1_FactorRule_2",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "WeirdRule3",
+      "name": "Sub1Add_HackersDelightRule_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "WeirdRule4",
+      "name": "Sub1And_HackersDelightRule_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "WeirdRule5",
+      "name": "Sub1Or_MbaRule_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "WeirdRule6",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Xor1_MbaRule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "XorAlmost_Rule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Xor_FactorRule_1",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Xor_FactorRule_2",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Xor_FactorRule_3",
+      "name": "Sub1And1_MbaRule_1",
       "is_activated": true,
       "config": {}
     },
@@ -807,7 +1018,37 @@
       "config": {}
     },
     {
-      "name": "Xor_NestedStuff",
+      "name": "Xor_FactorRule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Xor_FactorRule_2",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Xor_FactorRule_3",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Xor_Rule_4",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Xor_SpecialConstantRule_1",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Xor_SpecialConstantRule_2",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Xor1_MbaRule_1",
       "is_activated": true,
       "config": {}
     },
@@ -827,79 +1068,89 @@
       "config": {}
     },
     {
-      "name": "Xor_SpecialConstantRule_1",
+      "name": "XorAlmost_Rule_1",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "Xor_SpecialConstantRule_2",
+      "name": "Xor_NestedStuff",
       "is_activated": true,
       "config": {}
     },
     {
-      "name": "AndChain",
+      "name": "ReplaceMovHighContext",
       "is_activated": true,
       "config": {}
-    },
-    {
-      "name": "ArithmeticChain",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "OrChain",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "XorChain",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Z3ConstantOptimization",
-      "is_activated": true,
-      "config": {
-        "min_nb_opcode": 4,
-        "min_nb_constant": 3
-      }
-    },
-    {
-      "name": "Z3SmodRuleGeneric",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Z3lnotRuleGeneric",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Z3setnzRuleGeneric",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "Z3setzRuleGeneric",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "ExampleGuessingRule",
-      "is_activated": true,
-      "config": {
-        "min_nb_var": 1,
-        "max_nb_var": 3,
-        "min_nb_diff_opcodes": 3,
-        "max_nb_diff_opcodes": 6
-      }
     }
   ],
   "blk_rules": [
     {
+      "name": "StackVariableConstantPropagationRule",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
       "name": "UnflattenerSwitchCase",
       "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "SingleIterationLoopUnflattener",
+      "is_activated": true,
       "config": {}
+    },
+    {
+      "name": "UnflattenerTigressIndirect",
+      "is_activated": true,
+      "config": {
+        "goto_table_info": {
+          "0x1839": {
+            "stack_table_offset": "0x40",
+            "table_address": "0x5080",
+            "table_nb_elt": 38
+          }
+        },
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "HodurUnflattener",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "UnflattenerFakeJump",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "BadWhileLoop",
+      "is_activated": true,
+      "config": {
+        "min_dispatcher_comparison_value": 2,
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Unflattener",
+      "is_activated": true,
+      "config": {
+        "whitelisted_functions": [
+          "0x1de2"
+        ],
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "FixPredecessorOfConditionalJumpBlock",
+      "is_activated": false,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
     },
     {
       "name": "JumpFixer",
@@ -920,7 +1171,8 @@
           "JnzRule7",
           "JnzRule8",
           "JmpRuleZ3Const"
-        ]
+        ],
+        "dump_intermediate_microcode": null
       }
     }
   ]

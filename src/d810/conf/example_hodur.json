@@ -1,6 +1,26 @@
 {
-    "description": "eidolon deobfuscation",
+    "description": "Configuration for Hodur-style nested while-loop state machines (DO NOT use FixPredecessorOfConditionalJumpBlock - it causes cascading unreachability)",
     "ins_rules": [
+        {
+            "name": "RotateHelperInlineRule",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "FoldReadonlyDataRule",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "ConstantCallResultFoldRule",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "ReplaceReadonlyAddressOfWithImmediate",
+            "is_activated": true,
+            "config": {}
+        },
         {
             "name": "AddXor_Rule_1",
             "is_activated": true,
@@ -108,7 +128,7 @@
         },
         {
             "name": "AndGetUpperBits_FactorRule_1",
-            "is_activated": false,
+            "is_activated": true,
             "config": {}
         },
         {
@@ -278,7 +298,7 @@
         },
         {
             "name": "CstSimplificationRule12",
-            "is_activated": false,
+            "is_activated": true,
             "config": {}
         },
         {
@@ -318,7 +338,7 @@
         },
         {
             "name": "CstSimplificationRule2",
-            "is_activated": false,
+            "is_activated": true,
             "config": {}
         },
         {
@@ -403,12 +423,12 @@
         },
         {
             "name": "Mul_MBA_2",
-            "is_activated": false,
+            "is_activated": true,
             "config": {}
         },
         {
             "name": "Mul_MBA_3",
-            "is_activated": false,
+            "is_activated": true,
             "config": {}
         },
         {
@@ -418,6 +438,11 @@
         },
         {
             "name": "NegAdd_HackersDelightRule_1",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "NegSub_HackersDelightRule_1",
             "is_activated": true,
             "config": {}
         },
@@ -503,6 +528,11 @@
         },
         {
             "name": "Or_MbaRule_1",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Or_MbaRule_1_Commuted",
             "is_activated": true,
             "config": {}
         },
@@ -858,7 +888,7 @@
         },
         {
             "name": "Z3ConstantOptimization",
-            "is_activated": false,
+            "is_activated": true,
             "config": {
                 "min_nb_opcode": 4,
                 "min_nb_constant": 3
@@ -866,22 +896,27 @@
         },
         {
             "name": "Z3SmodRuleGeneric",
-            "is_activated": false,
+            "is_activated": true,
             "config": {}
         },
         {
             "name": "Z3lnotRuleGeneric",
-            "is_activated": false,
+            "is_activated": true,
             "config": {}
         },
         {
             "name": "Z3setnzRuleGeneric",
-            "is_activated": false,
+            "is_activated": true,
             "config": {}
         },
         {
             "name": "Z3setzRuleGeneric",
-            "is_activated": false,
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "SetGlobalVariablesToZeroIfDetectedReadOnly",
+            "is_activated": true,
             "config": {}
         },
         {
@@ -893,37 +928,42 @@
                 "min_nb_diff_opcodes": 3,
                 "max_nb_diff_opcodes": 6
             }
-        },
-        {
-            "name": "Xor_Hodur_1",
-            "is_activated": true,
-            "config": {}
-        },
-        {
-            "name": "Bnot_Hodur_1",
-            "is_activated": true,
-            "config": {}
-        },
-        {
-            "name": "Or_Hodur_1",
-            "is_activated": true,
-            "config": {}
-        },
-        {
-            "name": "Or_Hodur_2",
-            "is_activated": true,
-            "config": {}
         }
     ],
     "blk_rules": [
         {
+            "name": "StackVariableConstantPropagationRule",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "FixPredecessorOfConditionalJumpBlock",
+            "is_activated": false,
+            "config": {}
+        },
+        {
+            "name": "Unflattener",
+            "is_activated": false,
+            "config": {}
+        },
+        {
             "name": "UnflattenerSwitchCase",
+            "is_activated": false,
+            "config": {}
+        },
+        {
+            "name": "UnflattenerTigressIndirect",
+            "is_activated": false,
+            "config": {}
+        },
+        {
+            "name": "HodurUnflattener",
             "is_activated": true,
             "config": {}
         },
         {
             "name": "JumpFixer",
-            "is_activated": false,
+            "is_activated": true,
             "config": {
                 "enabled_rules": [
                     "CompareConstantRule1",

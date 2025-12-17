@@ -1,0 +1,56 @@
+{
+    "description": "Configuration to unroll bogus loops",
+    "ins_rules": [],
+    "blk_rules": [
+        {
+            "name": "UnflattenerSwitchCase",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "UnflattenerTigressIndirect",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "BadWhileLoop",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Unflattener",
+            "is_activated": true,
+            "config": {
+                "max_passes": 5,
+                "min_dispatcher_internal_block": 2,
+                "min_dispatcher_exit_block": 2,
+                "min_dispatcher_comparison_value": 2,
+                "min_entropy": 0.0,
+                "max_entropy": 1.0
+            }
+        },
+        {
+            "name": "JumpFixer",
+            "is_activated": true,
+            "config": {
+                "enabled_rules": [
+                    "CompareConstantRule1",
+                    "CompareConstantRule2",
+                    "CompareConstantRule3",
+                    "JaeRule1",
+                    "JbRule1",
+                    "JnzRule1",
+                    "JnzRule2",
+                    "JnzRule3",
+                    "JnzRule4",
+                    "JnzRule5",
+                    "JnzRule6",
+                    "JnzRule7",
+                    "JnzRule8",
+                    "JmpRuleZ3Const"
+                ],
+                "dump_intermediate_microcode": false
+            }
+        }
+    ]
+}

@@ -2,6 +2,31 @@
     "description": "Example of configuration with multiple variants of control flow flattening (use it on libobfuscated.so)",
     "ins_rules": [
         {
+            "name": "RotateHelperInlineRule",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "FoldReadonlyDataRule",
+            "is_activated": true,
+            "config": {
+                "default": {},
+                "macho": {
+                    "allow_executable_readonly": true
+                }
+            }
+        },
+        {
+            "name": "ConstantCallResultFoldRule",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "ReplaceReadonlyAddressOfWithImmediate",
+            "is_activated": true,
+            "config": {}
+        },
+        {
             "name": "AddXor_Rule_1",
             "is_activated": true,
             "config": {}
@@ -397,22 +422,22 @@
             "config": {}
         },
         {
-            "name": "Mul_MbaRule_1",
+            "name": "Mul_MBA_1",
             "is_activated": true,
             "config": {}
         },
         {
-            "name": "Mul_MbaRule_2",
+            "name": "Mul_MBA_2",
             "is_activated": true,
             "config": {}
         },
         {
-            "name": "Mul_MbaRule_3",
+            "name": "Mul_MBA_3",
             "is_activated": true,
             "config": {}
         },
         {
-            "name": "Mul_MbaRule_4",
+            "name": "Mul_MBA_4",
             "is_activated": true,
             "config": {}
         },
@@ -508,6 +533,11 @@
         },
         {
             "name": "Or_MbaRule_1",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Or_MbaRule_1_Commuted",
             "is_activated": true,
             "config": {}
         },
@@ -907,6 +937,21 @@
     ],
     "blk_rules": [
         {
+            "name": "BlockLevelEgglogOptimizer",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "StackVariableConstantPropagationRule",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "FixPredecessorOfConditionalJumpBlock",
+            "is_activated": true,
+            "config": {}
+        },
+        {
             "name": "Unflattener",
             "is_activated": true,
             "config": {
@@ -916,8 +961,13 @@
         {
             "name": "UnflattenerSwitchCase",
             "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "BadWhileLoop",
+            "is_activated": true,
             "config": {
-                "whitelisted_functions": ["0x1355"]
+                "min_dispatcher_comparison_value": 2
             }
         },
         {
