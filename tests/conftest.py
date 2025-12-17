@@ -21,7 +21,18 @@ PROJECT_ROOT = pathlib.Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "tests"))
 
-from d810._vendor.clang.cindex import Config, Cursor, CursorKind, Index, TranslationUnit
+# Try to import clang bindings - optional dependency for AST comparison
+_CLANG_AVAILABLE = False
+try:
+    from d810._vendor.clang.cindex import Config, Cursor, CursorKind, Index, TranslationUnit
+    _CLANG_AVAILABLE = True
+except ImportError:
+    logger.info("Clang bindings not available - AST comparison tests will be skipped")
+    Config = None
+    Cursor = None
+    CursorKind = None
+    Index = None
+    TranslationUnit = None
 
 
 # region .env Loader
@@ -140,8 +151,11 @@ def env() -> EnvWrapper:
 # =============================================================================
 
 
-def _init_clang(env: EnvWrapper) -> Index | None:
+def _init_clang(env: EnvWrapper) -> "Index | None":
     """Initialize libclang with the library from IDA Pro installation."""
+    if not _CLANG_AVAILABLE:
+        return None
+
     system = platform.system()
     ida_install_dir = env.as_path("IDA_INSTALL_DIR")
     logger.info("Initializing libclang from %s", ida_install_dir)
@@ -205,10 +219,10 @@ def _init_clang(env: EnvWrapper) -> Index | None:
 class CodeComparator:
     """Parses and compares C/C++ code snippets for structural equivalence using Clang ASTs."""
 
-    def __init__(self, index: Index):
+    def __init__(self, index: "Index"):
         self.index = index
 
-    def _parse(self, code: str, filename: str = "dummy.cpp") -> TranslationUnit:
+    def _parse(self, code: str, filename: str = "dummy.cpp") -> "TranslationUnit":
         args = [
             "-target",
             "x86_64-pc-windows-msvc",
@@ -225,7 +239,7 @@ class CodeComparator:
                 logger.debug("Clang Parse Diagnostic: %s", diag)
         return tu
 
-    def _get_function_cursor(self, tu: TranslationUnit) -> Cursor | None:
+    def _get_function_cursor(self, tu: "TranslationUnit") -> "Cursor | None":
         if tu.cursor is None:
             return None
         for cursor in tu.cursor.get_children():
@@ -236,7 +250,7 @@ class CodeComparator:
     def _normalize_spelling(self, spelling: str) -> str:
         return spelling.strip()
 
-    def _get_literal_value(self, cursor: Cursor) -> str | None:
+    def _get_literal_value(self, cursor: "Cursor") -> str | None:
         """Extract the literal value from a cursor using its tokens."""
         # Literal kinds that need token-based value extraction
         literal_kinds = (
@@ -256,7 +270,7 @@ class CodeComparator:
         return None
 
     def _cursors_equal(
-        self, c1: Cursor, c2: Cursor, ignore_comments: bool = True
+        self, c1: "Cursor", c2: "Cursor", ignore_comments: bool = True
     ) -> bool:
         if ignore_comments and c1.kind in (
             CursorKind.UNEXPOSED_ATTR,

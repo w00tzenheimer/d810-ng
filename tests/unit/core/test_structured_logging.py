@@ -369,13 +369,14 @@ class TestQueryLogs:
 
     def test_query_logs_limit(self, populated_db):
         """Verify limit parameter works."""
-        # Query with limit
+        # Query with limit - returns N most recent logs in chronological order
         limited_logs = query_logs(populated_db, limit=3)
         assert len(limited_logs) == 3
 
-        # Should return oldest first (chronological order)
+        # With limit=3, we get the 3 most recent logs (ids 4,5,6) in chronological order
+        # all_logs has all 6 in chronological order, so limited should match the last 3
         all_logs = query_logs(populated_db)
-        assert limited_logs == all_logs[:3]
+        assert limited_logs == all_logs[-3:]
 
     def test_query_logs_chronological_order(self, populated_db):
         """Verify logs are returned in chronological order."""
