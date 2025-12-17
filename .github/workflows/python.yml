@@ -2,18 +2,11 @@ name: d810-ng tests
 
 on:
     push:
-        branches:
-            - "main"
+        branches: ["main"]
     pull_request:
-        types:
-            - synchronize
-            - opened
-            - reopened
-            - ready_for_review
-        branches:
-            - "main"
+        types: [synchronize, opened, reopened, ready_for_review]
+        branches: ["main"]
 
-# cancel previous workflow jobs for PRs
 concurrency:
     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
     cancel-in-progress: true
@@ -27,13 +20,10 @@ jobs:
         env:
             PYTHONPATH: ${{ github.workspace }}
         steps:
-            - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
-              uses: actions/checkout@v4
+            - uses: actions/checkout@v4
               with:
                   persist-credentials: false
-
-            - name: Set up Python${{ matrix.python-version }}
-              uses: actions/setup-python@v5
+            - uses: actions/setup-python@v5
               with:
                   python-version: ${{ matrix.python-version }}
                   cache: pip
