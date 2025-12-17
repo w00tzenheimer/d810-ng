@@ -1,0 +1,27 @@
+# Detect isinstance() with concrete classes that may break on hot reload
+# Use @runtime_checkable Protocol instead for structural typing
+#
+# BAD:  isinstance(expr, SymbolicExpression)
+# GOOD: isinstance(expr, SymbolicExpressionProtocol)
+#
+# See: REFACTORING.md "Key Lessons Learned" #8
+# See: d810ng-0cw for the bug this caused
+
+id: no-concrete-isinstance
+language: python
+severity: warning
+message: |
+  isinstance() with concrete class may break after hot reload.
+  Use a @runtime_checkable Protocol instead for structural typing.
+
+rule:
+  pattern: isinstance($OBJ, $CLASS)
+
+note: |
+  After hot reload, class identity changes between module load cycles.
+  Use @runtime_checkable Protocol for structural typing instead.
+
+  Allowlist (ignore these warnings):
+  - *Protocol suffix (correct pattern)
+  - Builtins: int, str, float, bool, list, dict, tuple, set, bytes
+  - Abstract bases: Exception, BaseException, ABC

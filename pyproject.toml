@@ -14,10 +14,47 @@ description = "This is a next generation version of D-810, an IDA Pro plugin whi
 dependencies = ["z3-solver", "typing-extensions"]
 
 [project.optional-dependencies]
-dev = ["pyinstrument"]
+dev = [
+    "pyinstrument",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "coverage[toml]>=7.0.0",
+]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# pytest configuration
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "pure_python: Tests that run without IDA Pro (fast, no external dependencies)",
+    "requires_ida: Tests that require IDA Pro to run",
+    "slow: Slow tests (>10s) - typically Z3 verification or complex deobfuscation",
+]
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["src/d810"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
