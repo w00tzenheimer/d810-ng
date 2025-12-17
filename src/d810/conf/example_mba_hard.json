@@ -1,0 +1,63 @@
+{
+    "description": "Config for testing hard MBA patterns that IDA cannot simplify (use it on libmba_hard.dylib)",
+    "ins_rules": [
+        {
+            "name": "Xor_HackersDelightRule_1",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Xor_HackersDelightRule_3",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Or_MbaRule_1",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Add_HackersDelightRule_1",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Add_HackersDelightRule_2",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Add_HackersDelightRule_3",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Add_HackersDelightRule_4",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "Add_HackersDelightRule_5",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "And_HackersDelightRule_1",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "And_HackersDelightRule_4",
+            "is_activated": true,
+            "config": {}
+        }
+    ],
+    "blk_rules": [
+        {
+            "name": "BlockLevelEgglogOptimizer",
+            "is_activated": true,
+            "config": {}
+        }
+    ],
+    "cfg_rules": []
+}
