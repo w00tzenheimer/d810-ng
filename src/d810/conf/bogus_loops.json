@@ -1,5 +1,5 @@
 {
-    "description": "Configuration to unroll bogus loops",
+    "description": "Control flow deobfuscation: unflattens control flow, removes dispatcher blocks, and unrolls bogus while loops (e.g., Approov-style obfuscation). This config combines Unflattener rules with BadWhileLoop detection and JumpFixer to restore natural control flow.",
     "ins_rules": [],
     "blk_rules": [
         {
