@@ -9,275 +9,502 @@ import enum
 import typing
 from typing import Optional, Tuple, Union
 
-import ida_hexrays
-from ida_hexrays import *
-from ida_hexrays import (
-    EQ_IGNSIZE,
-    m_ldx,
-    m_stx,
-    m_xds,
-    m_xdu,
-    mop_a,
-    mop_b,
-    mop_c,
-    mop_d,
-    mop_f,
-    mop_fn,
-    mop_h,
-    mop_l,
-    mop_n,
-    mop_p,
-    mop_r,
-    mop_S,
-    mop_sc,
-    mop_str,
-    mop_v,
-    mop_z,
-)
+# Try to import IDA modules, allow module to be imported for unit testing
+try:
+    import ida_hexrays
+    IDA_AVAILABLE = True
+except ImportError:
+    # Allow module to be imported for unit testing without IDA Pro
+    # Mock all IDA constants that are used in module-level code
+    IDA_AVAILABLE = False
 
-from d810.conf.loggers import getLogger
+    # Create a mock ida_hexrays module with necessary attributes
+    class _MockIDAHexrays:  # type: ignore
+        # Mock minimal IDA types/constants needed for AST construction
+        class mop_t:
+            pass
+
+        class minsn_t:
+            pass
+
+        class mblock_t:
+            pass
+
+        class mba_t:
+            pass
+
+        # Mock all IDA constants - MUST use unique values so OPCODES_INFO dict works
+        # These values must match those in dsl.py and z3_utils.py for consistency
+        # Core opcodes (matching z3_utils.py)
+        m_add = 0
+        m_and = 1
+        m_bnot = 2
+        m_mul = 3
+        m_neg = 4
+        m_or = 5
+        m_sar = 6
+        m_shl = 7
+        m_shr = 8
+        m_sub = 9
+        m_xor = 10
+        m_lnot = 11
+        m_udiv = 12
+        m_sdiv = 13
+        m_umod = 14
+        m_smod = 15
+        m_setnz = 16
+        m_setz = 17
+        m_setae = 18
+        m_setb = 19
+        m_seta = 20
+        m_setbe = 21
+        m_setg = 22
+        m_setge = 23
+        m_setl = 24
+        m_setle = 25
+        m_setp = 26
+        m_sets = 27
+        m_xdu = 28
+        m_xds = 29
+        m_low = 30
+        m_high = 31
+
+        # Additional opcodes not used in Z3 but needed for OPCODES_INFO dict
+        m_nop = 32
+        m_stx = 33
+        m_ldx = 34
+        m_ldc = 35
+        m_mov = 36
+        m_cfadd = 37
+        m_ofadd = 38
+        m_cfshl = 39
+        m_cfshr = 40
+        m_seto = 41
+        m_jcnd = 42
+        m_jnz = 43
+        m_jz = 44
+        m_jae = 45
+        m_jb = 46
+        m_ja = 47
+        m_jbe = 48
+        m_jg = 49
+        m_jge = 50
+        m_jl = 51
+        m_jle = 52
+        m_jtbl = 53
+        m_ijmp = 54
+        m_goto = 55
+        m_call = 56
+        m_icall = 57
+        m_ret = 58
+        m_push = 59
+        m_pop = 60
+        m_und = 61
+        m_ext = 62
+        m_f2i = 63
+        m_f2u = 64
+        m_i2f = 65
+        m_u2f = 66
+        m_f2f = 67
+        m_fneg = 68
+        m_fadd = 69
+        m_fsub = 70
+        m_fmul = 71
+        m_fdiv = 72
+
+        # Maturity levels
+        MMAT_ZERO = 0
+        MMAT_GENERATED = 1
+        MMAT_PREOPTIMIZED = 2
+        MMAT_LOCOPT = 3
+        MMAT_CALLS = 4
+        MMAT_GLBOPT1 = 5
+        MMAT_GLBOPT2 = 6
+        MMAT_GLBOPT3 = 7
+        MMAT_LVARS = 8
+
+        # Operand types
+        mop_z = 0
+        mop_r = 1
+        mop_n = 2
+        mop_str = 3
+        mop_d = 4
+        mop_S = 5
+        mop_v = 6
+        mop_b = 7
+        mop_f = 8
+        mop_l = 9
+        mop_a = 10
+        mop_h = 11
+        mop_c = 12
+        mop_fn = 13
+        mop_p = 14
+        mop_sc = 15
+
+    ida_hexrays = _MockIDAHexrays()
+
+from d810.core import getLogger
+from d810.core.cymode import CythonMode
+
+# Try to import Cython hash_mop if CythonMode is enabled
+cy_hash_mop = None
+if CythonMode().is_enabled():
+    try:
+        from d810.speedups.cythxr._chexrays_api import hash_mop as cy_hash_mop
+    except ImportError:
+        pass
 
 logger = getLogger(__name__)
 
 OPCODES_INFO = {
-    m_nop: {"name": "nop", "nb_operands": 0, "is_commutative": True},
-    m_stx: {"name": "stx", "nb_operands": 2, "is_commutative": False},
-    m_ldx: {"name": "ldx", "nb_operands": 2, "is_commutative": False},
-    m_ldc: {"name": "ldc", "nb_operands": 1, "is_commutative": False},
-    m_mov: {"name": "mov", "nb_operands": 1, "is_commutative": False, "symbol": ""},
-    m_neg: {"name": "neg", "nb_operands": 1, "is_commutative": False, "symbol": "-"},
-    m_lnot: {"name": "lnot", "nb_operands": 1, "is_commutative": False, "symbol": "!"},
-    m_bnot: {"name": "bnot", "nb_operands": 1, "is_commutative": False, "symbol": "~"},
-    m_xds: {"name": "xds", "nb_operands": 1, "is_commutative": False, "symbol": "xds"},
-    m_xdu: {"name": "xdu", "nb_operands": 1, "is_commutative": False, "symbol": "xdu"},
-    m_low: {"name": "low", "nb_operands": 1, "is_commutative": False, "symbol": "low"},
-    m_high: {
+    ida_hexrays.m_nop: {"name": "nop", "nb_operands": 0, "is_commutative": True},
+    ida_hexrays.m_stx: {"name": "stx", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_ldx: {"name": "ldx", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_ldc: {"name": "ldc", "nb_operands": 1, "is_commutative": False},
+    ida_hexrays.m_mov: {"name": "mov", "nb_operands": 1, "is_commutative": False, "symbol": ""},
+    ida_hexrays.m_neg: {"name": "neg", "nb_operands": 1, "is_commutative": False, "symbol": "-"},
+    ida_hexrays.m_lnot: {"name": "lnot", "nb_operands": 1, "is_commutative": False, "symbol": "!"},
+    ida_hexrays.m_bnot: {"name": "bnot", "nb_operands": 1, "is_commutative": False, "symbol": "~"},
+    ida_hexrays.m_xds: {"name": "xds", "nb_operands": 1, "is_commutative": False, "symbol": "xds"},
+    ida_hexrays.m_xdu: {"name": "xdu", "nb_operands": 1, "is_commutative": False, "symbol": "xdu"},
+    ida_hexrays.m_low: {"name": "low", "nb_operands": 1, "is_commutative": False, "symbol": "low"},
+    ida_hexrays.m_high: {
         "name": "high",
         "nb_operands": 1,
         "is_commutative": False,
         "symbol": "high",
     },
-    m_add: {"name": "add", "nb_operands": 2, "is_commutative": True, "symbol": "+"},
-    m_sub: {"name": "sub", "nb_operands": 2, "is_commutative": False, "symbol": "-"},
-    m_mul: {"name": "mul", "nb_operands": 2, "is_commutative": True, "symbol": "*"},
-    m_udiv: {
+    ida_hexrays.m_add: {"name": "add", "nb_operands": 2, "is_commutative": True, "symbol": "+"},
+    ida_hexrays.m_sub: {"name": "sub", "nb_operands": 2, "is_commutative": False, "symbol": "-"},
+    ida_hexrays.m_mul: {"name": "mul", "nb_operands": 2, "is_commutative": True, "symbol": "*"},
+    ida_hexrays.m_udiv: {
         "name": "udiv",
         "nb_operands": 2,
         "is_commutative": False,
         "symbol": "UDiv",
     },
-    m_sdiv: {"name": "sdiv", "nb_operands": 2, "is_commutative": False, "symbol": "/"},
-    m_umod: {
+    ida_hexrays.m_sdiv: {"name": "sdiv", "nb_operands": 2, "is_commutative": False, "symbol": "/"},
+    ida_hexrays.m_umod: {
         "name": "umod",
         "nb_operands": 2,
         "is_commutative": False,
         "symbol": "URem",
     },
-    m_smod: {"name": "smod", "nb_operands": 2, "is_commutative": False, "symbol": "%"},
-    m_or: {"name": "or", "nb_operands": 2, "is_commutative": True, "symbol": "|"},
-    m_and: {"name": "and", "nb_operands": 2, "is_commutative": True, "symbol": "&"},
-    m_xor: {"name": "xor", "nb_operands": 2, "is_commutative": True, "symbol": "^"},
-    m_shl: {"name": "shl", "nb_operands": 2, "is_commutative": False, "symbol": "<<"},
-    m_shr: {"name": "shr", "nb_operands": 2, "is_commutative": False, "symbol": "LShR"},
-    m_sar: {"name": "sar", "nb_operands": 2, "is_commutative": False, "symbol": ">>"},
-    m_cfadd: {"name": "cfadd", "nb_operands": 2, "is_commutative": True},
-    m_ofadd: {"name": "ofadd", "nb_operands": 2, "is_commutative": True},
-    m_cfshl: {"name": "cfshl", "nb_operands": 2, "is_commutative": False},
-    m_cfshr: {"name": "cfshr", "nb_operands": 2, "is_commutative": False},
-    m_sets: {"name": "sets", "nb_operands": 2, "is_commutative": False},
-    m_seto: {"name": "seto", "nb_operands": 2, "is_commutative": False},
-    m_setp: {"name": "setp", "nb_operands": 2, "is_commutative": False},
-    m_setnz: {
+    ida_hexrays.m_smod: {"name": "smod", "nb_operands": 2, "is_commutative": False, "symbol": "%"},
+    ida_hexrays.m_or: {"name": "or", "nb_operands": 2, "is_commutative": True, "symbol": "|"},
+    ida_hexrays.m_and: {"name": "and", "nb_operands": 2, "is_commutative": True, "symbol": "&"},
+    ida_hexrays.m_xor: {"name": "xor", "nb_operands": 2, "is_commutative": True, "symbol": "^"},
+    ida_hexrays.m_shl: {"name": "shl", "nb_operands": 2, "is_commutative": False, "symbol": "<<"},
+    ida_hexrays.m_shr: {"name": "shr", "nb_operands": 2, "is_commutative": False, "symbol": "LShR"},
+    ida_hexrays.m_sar: {"name": "sar", "nb_operands": 2, "is_commutative": False, "symbol": ">>"},
+    ida_hexrays.m_cfadd: {"name": "cfadd", "nb_operands": 2, "is_commutative": True},
+    ida_hexrays.m_ofadd: {"name": "ofadd", "nb_operands": 2, "is_commutative": True},
+    ida_hexrays.m_cfshl: {"name": "cfshl", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_cfshr: {"name": "cfshr", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_sets: {"name": "sets", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_seto: {"name": "seto", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_setp: {"name": "setp", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_setnz: {
         "name": "setnz",
         "nb_operands": 2,
         "is_commutative": True,
         "symbol": "!=",
     },
-    m_setz: {"name": "setz", "nb_operands": 2, "is_commutative": True, "symbol": "=="},
-    m_seta: {"name": "seta", "nb_operands": 2, "is_commutative": False, "symbol": ">"},
-    m_setae: {
+    ida_hexrays.m_setz: {"name": "setz", "nb_operands": 2, "is_commutative": True, "symbol": "=="},
+    ida_hexrays.m_seta: {"name": "seta", "nb_operands": 2, "is_commutative": False, "symbol": ">"},
+    ida_hexrays.m_setae: {
         "name": "setae",
         "nb_operands": 2,
         "is_commutative": False,
         "symbol": ">=",
     },
-    m_setb: {"name": "setb", "nb_operands": 2, "is_commutative": False, "symbol": "<"},
-    m_setbe: {
+    ida_hexrays.m_setb: {"name": "setb", "nb_operands": 2, "is_commutative": False, "symbol": "<"},
+    ida_hexrays.m_setbe: {
         "name": "setbe",
         "nb_operands": 2,
         "is_commutative": False,
         "symbol": "<=",
     },
-    m_setg: {
+    ida_hexrays.m_setg: {
         "name": "setg",
         "nb_operands": 2,
         "is_commutative": False,
         "symbol": "UGT",
     },
-    m_setge: {
+    ida_hexrays.m_setge: {
         "name": "setge",
         "nb_operands": 2,
         "is_commutative": False,
         "symbol": "UGE",
     },
-    m_setl: {
+    ida_hexrays.m_setl: {
         "name": "setl",
         "nb_operands": 2,
         "is_commutative": False,
         "symbol": "ULT",
     },
-    m_setle: {
+    ida_hexrays.m_setle: {
         "name": "setle",
         "nb_operands": 2,
         "is_commutative": False,
         "symbol": "ULE",
     },
-    m_jcnd: {"name": "jcnd", "nb_operands": 1, "is_commutative": False},
-    m_jnz: {"name": "jnz", "nb_operands": 2, "is_commutative": True},
-    m_jz: {"name": "jz", "nb_operands": 2, "is_commutative": True},
-    m_jae: {"name": "jae", "nb_operands": 2, "is_commutative": False},
-    m_jb: {"name": "jb", "nb_operands": 2, "is_commutative": False},
-    m_ja: {"name": "ja", "nb_operands": 2, "is_commutative": False},
-    m_jbe: {"name": "jbe", "nb_operands": 2, "is_commutative": False},
-    m_jg: {"name": "jg", "nb_operands": 2, "is_commutative": False},
-    m_jge: {"name": "jge", "nb_operands": 2, "is_commutative": False},
-    m_jl: {"name": "jl", "nb_operands": 2, "is_commutative": False},
-    m_jle: {"name": "jle", "nb_operands": 2, "is_commutative": False},
-    m_jtbl: {"name": "jtbl", "nb_operands": 2, "is_commutative": False},
-    m_ijmp: {"name": "ijmp", "nb_operands": 2, "is_commutative": False},
-    m_goto: {"name": "goto", "nb_operands": 1, "is_commutative": False},
-    m_call: {"name": "call", "nb_operands": 2, "is_commutative": False},
-    m_icall: {"name": "icall", "nb_operands": 2, "is_commutative": False},
-    m_ret: {"name": "ret", "nb_operands": 0, "is_commutative": False},
-    m_push: {"name": "push", "nb_operands": 0, "is_commutative": False},
-    m_pop: {"name": "pop", "nb_operands": 0, "is_commutative": False},
-    m_und: {"name": "und", "nb_operands": 0, "is_commutative": False},
-    m_ext: {"name": "ext", "nb_operands": 0, "is_commutative": False},
-    m_f2i: {"name": "f2i", "nb_operands": 2, "is_commutative": False},
-    m_f2u: {"name": "f2u", "nb_operands": 2, "is_commutative": False},
-    m_i2f: {"name": "i2f", "nb_operands": 2, "is_commutative": False},
-    m_u2f: {"name": "u2f", "nb_operands": 2, "is_commutative": False},
-    m_f2f: {"name": "f2f", "nb_operands": 2, "is_commutative": False},
-    m_fneg: {"name": "fneg", "nb_operands": 2, "is_commutative": False},
-    m_fadd: {"name": "fadd", "nb_operands": 2, "is_commutative": True},
-    m_fsub: {"name": "fsub", "nb_operands": 2, "is_commutative": False},
-    m_fmul: {"name": "fmul", "nb_operands": 2, "is_commutative": True},
-    m_fdiv: {"name": "fdiv", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_jcnd: {"name": "jcnd", "nb_operands": 1, "is_commutative": False},
+    ida_hexrays.m_jnz: {"name": "jnz", "nb_operands": 2, "is_commutative": True},
+    ida_hexrays.m_jz: {"name": "jz", "nb_operands": 2, "is_commutative": True},
+    ida_hexrays.m_jae: {"name": "jae", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_jb: {"name": "jb", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_ja: {"name": "ja", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_jbe: {"name": "jbe", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_jg: {"name": "jg", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_jge: {"name": "jge", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_jl: {"name": "jl", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_jle: {"name": "jle", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_jtbl: {"name": "jtbl", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_ijmp: {"name": "ijmp", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_goto: {"name": "goto", "nb_operands": 1, "is_commutative": False},
+    ida_hexrays.m_call: {"name": "call", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_icall: {"name": "icall", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_ret: {"name": "ret", "nb_operands": 0, "is_commutative": False},
+    ida_hexrays.m_push: {"name": "push", "nb_operands": 0, "is_commutative": False},
+    ida_hexrays.m_pop: {"name": "pop", "nb_operands": 0, "is_commutative": False},
+    ida_hexrays.m_und: {"name": "und", "nb_operands": 0, "is_commutative": False},
+    ida_hexrays.m_ext: {"name": "ext", "nb_operands": 0, "is_commutative": False},
+    ida_hexrays.m_f2i: {"name": "f2i", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_f2u: {"name": "f2u", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_i2f: {"name": "i2f", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_u2f: {"name": "u2f", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_f2f: {"name": "f2f", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_fneg: {"name": "fneg", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_fadd: {"name": "fadd", "nb_operands": 2, "is_commutative": True},
+    ida_hexrays.m_fsub: {"name": "fsub", "nb_operands": 2, "is_commutative": False},
+    ida_hexrays.m_fmul: {"name": "fmul", "nb_operands": 2, "is_commutative": True},
+    ida_hexrays.m_fdiv: {"name": "fdiv", "nb_operands": 2, "is_commutative": False},
 }
 
 
-MATURITY_TO_STRING_DICT = {
-    MMAT_ZERO: "MMAT_ZERO",
-    MMAT_GENERATED: "MMAT_GENERATED",
-    MMAT_PREOPTIMIZED: "MMAT_PREOPTIMIZED",
-    MMAT_LOCOPT: "MMAT_LOCOPT",
-    MMAT_CALLS: "MMAT_CALLS",
-    MMAT_GLBOPT1: "MMAT_GLBOPT1",
-    MMAT_GLBOPT2: "MMAT_GLBOPT2",
-    MMAT_GLBOPT3: "MMAT_GLBOPT3",
-    MMAT_LVARS: "MMAT_LVARS",
+MATURITY_TO_STRING_DICT: dict[int, str] = {
+    ida_hexrays.MMAT_ZERO: "MMAT_ZERO",
+    ida_hexrays.MMAT_GENERATED: "MMAT_GENERATED",
+    ida_hexrays.MMAT_PREOPTIMIZED: "MMAT_PREOPTIMIZED",
+    ida_hexrays.MMAT_LOCOPT: "MMAT_LOCOPT",
+    ida_hexrays.MMAT_CALLS: "MMAT_CALLS",
+    ida_hexrays.MMAT_GLBOPT1: "MMAT_GLBOPT1",
+    ida_hexrays.MMAT_GLBOPT2: "MMAT_GLBOPT2",
+    ida_hexrays.MMAT_GLBOPT3: "MMAT_GLBOPT3",
+    ida_hexrays.MMAT_LVARS: "MMAT_LVARS",
 }
-STRING_TO_MATURITY_DICT = {v: k for k, v in MATURITY_TO_STRING_DICT.items()}
-
-MOP_TYPE_TO_STRING_DICT = {
-    mop_z: "mop_z",
-    mop_r: "mop_r",
-    mop_n: "mop_n",
-    mop_str: "mop_str",
-    mop_d: "mop_d",
-    mop_S: "mop_S",
-    mop_v: "mop_v",
-    mop_b: "mop_b",
-    mop_f: "mop_f",
-    mop_l: "mop_l",
-    mop_a: "mop_a",
-    mop_h: "mop_h",
-    mop_c: "mop_c",
-    mop_fn: "mop_fn",
-    mop_p: "mop_p",
-    mop_sc: "mop_sc",
+STRING_TO_MATURITY_DICT: dict[str, int] = {
+    v: k for k, v in MATURITY_TO_STRING_DICT.items()
 }
 
-Z3_SPECIAL_OPERANDS = ["UDiv", "URem", "LShR", "UGT", "UGE", "ULT", "ULE"]
+MOP_TYPE_TO_STRING_DICT: dict[int, str] = {
+    ida_hexrays.mop_z: "mop_z",
+    ida_hexrays.mop_r: "mop_r",
+    ida_hexrays.mop_n: "mop_n",
+    ida_hexrays.mop_str: "mop_str",
+    ida_hexrays.mop_d: "mop_d",
+    ida_hexrays.mop_S: "mop_S",
+    ida_hexrays.mop_v: "mop_v",
+    ida_hexrays.mop_b: "mop_b",
+    ida_hexrays.mop_f: "mop_f",
+    ida_hexrays.mop_l: "mop_l",
+    ida_hexrays.mop_a: "mop_a",
+    ida_hexrays.mop_h: "mop_h",
+    ida_hexrays.mop_c: "mop_c",
+    ida_hexrays.mop_fn: "mop_fn",
+    ida_hexrays.mop_p: "mop_p",
+    ida_hexrays.mop_sc: "mop_sc",
+}
 
-BOOLEAN_OPCODES = [m_lnot, m_bnot, m_or, m_and, m_xor]
-ARITHMETICAL_OPCODES = [m_neg, m_add, m_sub, m_mul, m_udiv, m_sdiv, m_umod, m_smod]
-BIT_OPERATIONS_OPCODES = [m_shl, m_shr, m_sar, m_mov, m_xds, m_xdu, m_low, m_high]
-CHECK_OPCODES = [
-    m_sets,
-    m_seto,
-    m_setp,
-    m_setnz,
-    m_setz,
-    m_seta,
-    m_setae,
-    m_setb,
-    m_setbe,
-    m_setg,
-    m_setge,
-    m_setl,
-    m_setle,
+Z3_SPECIAL_OPERANDS: list[str] = ["UDiv", "URem", "LShR", "UGT", "UGE", "ULT", "ULE"]
+
+BOOLEAN_OPCODES: list[int] = [ida_hexrays.m_lnot, ida_hexrays.m_bnot, ida_hexrays.m_or, ida_hexrays.m_and, ida_hexrays.m_xor]
+ARITHMETICAL_OPCODES: list[int] = [
+    ida_hexrays.m_neg,
+    ida_hexrays.m_add,
+    ida_hexrays.m_sub,
+    ida_hexrays.m_mul,
+    ida_hexrays.m_udiv,
+    ida_hexrays.m_sdiv,
+    ida_hexrays.m_umod,
+    ida_hexrays.m_smod,
+]
+BIT_OPERATIONS_OPCODES: list[int] = [
+    ida_hexrays.m_shl,
+    ida_hexrays.m_shr,
+    ida_hexrays.m_sar,
+    ida_hexrays.m_mov,
+    ida_hexrays.m_xds,
+    ida_hexrays.m_xdu,
+    ida_hexrays.m_low,
+    ida_hexrays.m_high,
+]
+CHECK_OPCODES: list[int] = [
+    ida_hexrays.m_sets,
+    ida_hexrays.m_seto,
+    ida_hexrays.m_setp,
+    ida_hexrays.m_setnz,
+    ida_hexrays.m_setz,
+    ida_hexrays.m_seta,
+    ida_hexrays.m_setae,
+    ida_hexrays.m_setb,
+    ida_hexrays.m_setbe,
+    ida_hexrays.m_setg,
+    ida_hexrays.m_setge,
+    ida_hexrays.m_setl,
+    ida_hexrays.m_setle,
 ]
 
-MBA_RELATED_OPCODES = (
+MBA_RELATED_OPCODES: list[int] = (
     BOOLEAN_OPCODES + ARITHMETICAL_OPCODES + BIT_OPERATIONS_OPCODES + CHECK_OPCODES
 )
 
-CONDITIONAL_JUMP_OPCODES = [
-    m_jcnd,
-    m_jnz,
-    m_jz,
-    m_jae,
-    m_ja,
-    m_jb,
-    m_jbe,
-    m_jg,
-    m_jge,
-    m_jl,
-    m_jle,
-    m_jtbl,
+CONDITIONAL_JUMP_OPCODES: list[int] = [
+    ida_hexrays.m_jcnd,
+    ida_hexrays.m_jnz,
+    ida_hexrays.m_jz,
+    ida_hexrays.m_jae,
+    ida_hexrays.m_ja,
+    ida_hexrays.m_jb,
+    ida_hexrays.m_jbe,
+    ida_hexrays.m_jg,
+    ida_hexrays.m_jge,
+    ida_hexrays.m_jl,
+    ida_hexrays.m_jle,
+    ida_hexrays.m_jtbl,
 ]
-UNCONDITIONAL_JUMP_OPCODES = [m_goto, m_ijmp]
-CONTROL_FLOW_OPCODES = CONDITIONAL_JUMP_OPCODES + UNCONDITIONAL_JUMP_OPCODES
+UNCONDITIONAL_JUMP_OPCODES: list[int] = [ida_hexrays.m_goto, ida_hexrays.m_ijmp]
+CONTROL_FLOW_OPCODES: list[int] = CONDITIONAL_JUMP_OPCODES + UNCONDITIONAL_JUMP_OPCODES
 
-MINSN_TO_AST_FORBIDDEN_OPCODES = CONTROL_FLOW_OPCODES + [
-    m_ret,
-    m_nop,
-    m_stx,
-    m_push,
-    m_pop,
-    m_und,
-    m_ext,
+MINSN_TO_AST_FORBIDDEN_OPCODES: list[int] = CONTROL_FLOW_OPCODES + [
+    ida_hexrays.m_ret,
+    ida_hexrays.m_nop,
+    ida_hexrays.m_stx,
+    ida_hexrays.m_push,
+    ida_hexrays.m_pop,
+    ida_hexrays.m_und,
+    ida_hexrays.m_ext,
 ]
 
-SUB_TABLE = {
-    1: 0x100,
-    2: 0x10000,
-    4: 0x100000000,
-    8: 0x10000000000000000,
-    16: 0x100000000000000000000000000000000,
-}
-# The AND_TABLE is an all-ones mask (equivalent to -1 in two's complement).
-# XORing with an all-ones mask is the same as a bitwise NOT (~).
-AND_TABLE = {
-    1: 0xFF,
-    2: 0xFFFF,
-    4: 0xFFFFFFFF,
-    8: 0xFFFFFFFFFFFFFFFF,
-    16: 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF,
-}
-MSB_TABLE = {
-    1: 0x80,
-    2: 0x8000,
-    4: 0x80000000,
-    8: 0x8000000000000000,
-    16: 0x80000000000000000000000000000000,
-}
+# Import constant tables from d810.core (IDA-independent)
+from d810.core.bits import AND_TABLE, MSB_TABLE
 
 
 # Hex-Rays mop equality checking
-def equal_bnot_cst(lo: mop_t, ro: mop_t, mop_size=None) -> bool:
-    if (lo.t != mop_n) or (ro.t != mop_n):
+_EQUAL_BNOT_CACHE: dict[tuple[int, int], bool] = {}
+_EQUAL_BNOT_MAX = 8192
+_EQUAL_IGN_CACHE: dict[tuple[int, int], bool] = {}
+_EQUAL_IGN_MAX = 8192
+
+
+def _mop_cache_key(op: ida_hexrays.mop_t) -> str:
+    """Stable, cheap key for caching equality checks without using dstr()."""
+    t = op.t
+    sz = op.size
+    # Constants: include value
+    if t == ida_hexrays.mop_n:
+        try:
+            return f"n:{sz}:{op.nnn.value}"
+        except Exception:
+            return f"n:{sz}:?"
+    # Global address
+    if t == ida_hexrays.mop_v:
+        try:
+            return f"v:{sz}:{op.g}"
+        except Exception:
+            return f"v:{sz}:?"
+    # Symbolic reference; prefer start_ea when available (exclude stkvars)
+    if t == ida_hexrays.mop_S:
+        start_ea = getattr(op.s, "start_ea", None)
+        if start_ea is not None:
+            return f"S:{sz}:{start_ea}"
+        off = getattr(op.s, "off", -1)
+        return f"Sstk:{sz}:{off}"
+    # Nested instruction: use opcode + identity of the inner instruction
+    if t == ida_hexrays.mop_d and op.d is not None:
+        try:
+            return f"d:{sz}:{op.d.opcode}:{id(op.d)}"
+        except Exception:
+            return f"d:{sz}:{id(op)}"
+    # Register
+    if t == ida_hexrays.mop_r:
+        return f"r:{sz}:{getattr(op, 'r', '?')}"
+    # Memory b form: capture base type; avoid non-existent fields access
+    if t == ida_hexrays.mop_b:
+        bt = getattr(op.b, "t", -1)
+        return f"b:{sz}:{bt}:{id(op)}"
+    # Pair
+    if t == ida_hexrays.mop_p:
+        return f"p:{sz}:{id(op)}"
+    # Fallback to type+size+identity
+    return f"{t}:{sz}:{id(op)}"
+
+
+def mop_quick_key_ignore_size(op: ida_hexrays.mop_t) -> str:
+    """Cheap signature for grouping operands under ignore-size equality.
+
+    This intentionally ignores the operand size and uses structural fields that
+    are compared in equal_mops_ignore_size. It is not a perfect hash: keys may
+    collide across non-equal operands, so callers must still verify equality
+    within a bucket using equal_mops_ignore_size.
+    """
+    # Validate SWIG object before accessing attributes
+    if not hasattr(op, 't'):
+        return f"invalid:{id(op)}"
+    t = op.t
+    if t == ida_hexrays.mop_n:
+        try:
+            return f"n:{op.nnn.value}"
+        except Exception:
+            return "n:?"
+    if t == ida_hexrays.mop_v:
+        try:
+            return f"v:{op.g}"
+        except Exception:
+            return "v:?"
+    if t == ida_hexrays.mop_S:
+        start_ea = getattr(op.s, "start_ea", None)
+        if start_ea is not None:
+            return f"S:{start_ea}"
+        off = getattr(op.s, "off", -1)
+        return f"Soff:{off}"
+    if t == ida_hexrays.mop_r:
+        return f"r:{getattr(op, 'r', '?')}"
+    if t == ida_hexrays.mop_b:
+        bt = getattr(op.b, "t", -1)
+        return f"b:{bt}"
+    if t == ida_hexrays.mop_d and op.d is not None:
+        # Group by opcode only; detailed check is done later
+        return f"d:{op.d.opcode}"
+    if t == ida_hexrays.mop_p:
+        return "p"
+    return f"t:{t}"
+
+
+def structural_mop_hash(op: ida_hexrays.mop_t, func_entry_ea: int = 0) -> int:
+    """Use Cython fast hasher if available; fallback to Python quick key.
+
+    This returns a 64-bit int when Cython is present; otherwise a Python hash
+    of the quick key which is still cheap and avoids dstr().
+    """
+    # Validate mop_t object before attempting to hash it
+    # Check if the object has the essential 't' attribute to detect invalid SWIG objects
+    if not hasattr(op, 't') or not hasattr(op, 'size'):
+        # Invalid or freed SWIG object - return a sentinel hash
+        return hash(("invalid_mop", id(op)))
+
+    if cy_hash_mop is not None:
+        try:
+            return int(cy_hash_mop(op, func_entry_ea))
+        except Exception:
+            # Fall through to Python implementation
+            pass
+    return hash(mop_quick_key_ignore_size(op))
+
+
+def equal_bnot_cst(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t, mop_size=None) -> bool:
+    if (lo.t != ida_hexrays.mop_n) or (ro.t != ida_hexrays.mop_n):
         return False
     if lo.size != ro.size:
         return False
@@ -286,33 +513,48 @@ def equal_bnot_cst(lo: mop_t, ro: mop_t, mop_size=None) -> bool:
     return lo.nnn.value ^ ro.nnn.value == AND_TABLE[mop_size]
 
 
-def equal_bnot_mop(lo: mop_t, ro: mop_t, test_two_sides=True) -> bool:
-    if lo.t == mop_n:
-        return equal_bnot_cst(lo, ro)
+def equal_bnot_mop(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t, test_two_sides=True) -> bool:
+    # Try cache first (symmetry-aware)
+    try:
+        h1 = int(structural_mop_hash(lo, 0))
+        h2 = int(structural_mop_hash(ro, 0))
+        key = (h1, h2) if h1 <= h2 else (h2, h1)
+    except Exception:
+        key = (id(lo), id(ro)) if id(lo) <= id(ro) else (id(ro), id(lo))
+    cached = _EQUAL_BNOT_CACHE.get(key)
+    if cached is not None:
+        return cached
 
-    # We first check for a bnot operand
-    if (lo.t == mop_d) and lo.d.opcode == m_bnot:
-        if equal_mops_ignore_size(lo.d.l, ro):
-            return True
+    result = False
+    if lo.t == ida_hexrays.mop_n:
+        result = equal_bnot_cst(lo, ro)
+    else:
+        # Direct ~x pattern
+        if (lo.t == ida_hexrays.mop_d) and lo.d.opcode == ida_hexrays.m_bnot:
+            if equal_mops_ignore_size(lo.d.l, ro):
+                result = True
+        # Hex-Rays: ~(-x) == x - 1
+        if not result and (lo.t == ida_hexrays.mop_d) and lo.d.opcode == ida_hexrays.m_neg:
+            if (ro.t == ida_hexrays.mop_d) and ro.d.opcode == ida_hexrays.m_sub:
+                if ro.d.r.t == ida_hexrays.mop_n and ro.d.r.nnn.value == 1:
+                    if equal_mops_ignore_size(ro.d.l, lo.d.l):
+                        result = True
+        # Unsigned extend wrapper
+        if not result and (lo.t == ida_hexrays.mop_d) and lo.d.opcode == ida_hexrays.m_xds:
+            if equal_bnot_mop(lo.d.l, ro):
+                result = True
+        # Symmetry
+        if not result and test_two_sides:
+            result = equal_bnot_mop(ro, lo, test_two_sides=False)
 
-    # Otherwise Hexrays may have optimized using ~(-x) = x - 1
-    if (lo.t == mop_d) and lo.d.opcode == m_neg:
-        if (ro.t == mop_d) and ro.d.opcode == m_sub:
-            if ro.d.r.t == mop_n and ro.d.r.nnn.value == 1:
-                if equal_mops_ignore_size(ro.d.l, lo.d.l):
-                    return True
-
-    if (lo.t == mop_d) and lo.d.opcode == m_xds:
-        if equal_bnot_mop(lo.d.l, ro):
-            return True
-
-    if test_two_sides:
-        return equal_bnot_mop(ro, lo, test_two_sides=False)
-    return False
+    if len(_EQUAL_BNOT_CACHE) > _EQUAL_BNOT_MAX:
+        _EQUAL_BNOT_CACHE.clear()
+    _EQUAL_BNOT_CACHE[key] = result
+    return result
 
 
-def equal_ignore_msb_cst(lo: mop_t, ro: mop_t) -> bool:
-    if (lo.t != mop_n) or (ro.t != mop_n):
+def equal_ignore_msb_cst(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t) -> bool:
+    if (lo.t != ida_hexrays.mop_n) or (ro.t != ida_hexrays.mop_n):
         return False
     if lo.size != ro.size:
         return False
@@ -320,98 +562,124 @@ def equal_ignore_msb_cst(lo: mop_t, ro: mop_t) -> bool:
     return lo.nnn.value & mask == ro.nnn.value & mask
 
 
-def equal_mops_bypass_xdu(lo: mop_t, ro: mop_t) -> bool:
+def equal_mops_bypass_xdu(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t) -> bool:
     if (lo is None) or (ro is None):
         return False
-    if (lo.t == mop_d) and (lo.d.opcode == m_xdu):
+    if (lo.t == ida_hexrays.mop_d) and (lo.d.opcode == ida_hexrays.m_xdu):
         return equal_mops_bypass_xdu(lo.d.l, ro)
-    if (ro.t == mop_d) and (ro.d.opcode == m_xdu):
+    if (ro.t == ida_hexrays.mop_d) and (ro.d.opcode == ida_hexrays.m_xdu):
         return equal_mops_bypass_xdu(lo, ro.d.l)
     return equal_mops_ignore_size(lo, ro)
 
 
-def equal_mops_ignore_size(lo: mop_t, ro: mop_t) -> bool:
+def equal_mops_ignore_size(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t) -> bool:
     if (lo is None) or (ro is None):
         return False
+    # Exact same SWIG object → equal
+    if lo is ro:
+        return True
+    # Cheap type check first
     if lo.t != ro.t:
         return False
-    if lo.t == mop_z:
-        return True
-    elif lo.t == mop_fn:
-        return lo.fpc == ro.fpc
-    elif lo.t == mop_n:
-        return lo.nnn.value == ro.nnn.value
-    elif lo.t == mop_S:
+    # Symmetry-aware bounded cache using structural hash (fast path)
+    try:
+        h1 = int(structural_mop_hash(lo, 0))
+        h2 = int(structural_mop_hash(ro, 0))
+        key = (h1, h2) if h1 <= h2 else (h2, h1)
+        cached = _EQUAL_IGN_CACHE.get(key)
+        if cached is not None:
+            return cached
+    except Exception:
+        key = None  # fallback
+    if lo.t == ida_hexrays.mop_z:
+        result = True
+    elif lo.t == ida_hexrays.mop_fn:
+        result = lo.fpc == ro.fpc
+    elif lo.t == ida_hexrays.mop_n:
+        result = lo.nnn.value == ro.nnn.value
+    elif lo.t == ida_hexrays.mop_S:
         if lo.s == ro.s:
-            return True
-        if lo.s.off == ro.s.off:
-            # Is it right?
-            return True
-        return False
-    elif lo.t == mop_v:
-        return lo.g == ro.g
-    elif lo.t == mop_d:
-        return lo.d.equal_insns(ro.d, EQ_IGNSIZE)
-        # return lo.d.equal_insns(ro.d, EQ_IGNSIZE | EQ_IGNCODE)
-    elif lo.t == mop_b:
-        return lo.b == ro.b
-    elif lo.t == mop_r:
-        return lo.r == ro.r
-    elif lo.t == mop_f:
-        return False
-    elif lo.t == mop_l:
-        return lo.l == ro.l
-    elif lo.t == mop_a:
+            result = True
+        elif lo.s.off == ro.s.off:
+            result = True
+        else:
+            result = False
+    elif lo.t == ida_hexrays.mop_v:
+        result = lo.g == ro.g
+    elif lo.t == ida_hexrays.mop_d:
+        result = lo.d.equal_insns(ro.d, ida_hexrays.EQ_IGNSIZE)
+        # return lo.d.equal_insns(ro.d, ida_hexrays.EQ_IGNSIZE | ida_hexrays.EQ_IGNCODE)
+    elif lo.t == ida_hexrays.mop_b:
+        result = lo.b == ro.b
+    elif lo.t == ida_hexrays.mop_r:
+        result = lo.r == ro.r
+    elif lo.t == ida_hexrays.mop_f:
+        result = False
+    elif lo.t == ida_hexrays.mop_l:
+        result = lo.l == ro.l
+    elif lo.t == ida_hexrays.mop_a:
         if lo.a.insize != ro.a.insize:
-            return False
-        if lo.a.outsize != ro.a.outsize:
-            return False
-        return equal_mops_ignore_size(lo.a, ro.a)
-    elif lo.t == mop_h:
-        return ro.helper == lo.helper
-    elif lo.t == mop_str:
-        return ro.cstr == lo.cstr
-    elif lo.t == mop_c:
-        return ro.c == lo.c
-    elif lo.t == mop_p:
-        return equal_mops_ignore_size(
+            result = False
+        elif lo.a.outsize != ro.a.outsize:
+            result = False
+        else:
+            result = equal_mops_ignore_size(lo.a, ro.a)
+        if key is not None:
+            if len(_EQUAL_IGN_CACHE) > _EQUAL_IGN_MAX:
+                _EQUAL_IGN_CACHE.clear()
+            _EQUAL_IGN_CACHE[key] = result
+        return result
+    elif lo.t == ida_hexrays.mop_h:
+        result = ro.helper == lo.helper
+    elif lo.t == ida_hexrays.mop_str:
+        result = ro.cstr == lo.cstr
+    elif lo.t == ida_hexrays.mop_c:
+        result = ro.c == lo.c
+    elif lo.t == ida_hexrays.mop_p:
+        result = equal_mops_ignore_size(
             lo.pair.lop, ro.pair.lop
         ) and equal_mops_ignore_size(lo.pair.hop, ro.pair.hop)
-    elif lo.t == mop_sc:
-        return False
+    elif lo.t == ida_hexrays.mop_sc:
+        result = False
     else:
-        return False
+        result = False
+
+    if key is not None:
+        if len(_EQUAL_IGN_CACHE) > _EQUAL_IGN_MAX:
+            _EQUAL_IGN_CACHE.clear()
+        _EQUAL_IGN_CACHE[key] = result
+    return result
 
 
-def is_check_mop(lo: mop_t) -> bool:
-    if lo.t != mop_d:
+def is_check_mop(lo: ida_hexrays.mop_t) -> bool:
+    if lo.t != ida_hexrays.mop_d:
         return False
     if lo.d.opcode in CHECK_OPCODES:
         return True
-    if lo.d.opcode in [m_xds, m_xdu]:
+    if lo.d.opcode in [ida_hexrays.m_xds, ida_hexrays.m_xdu]:
         return is_check_mop(lo.d.l)
     return False
 
 
-def extract_num_mop(ins: minsn_t) -> tuple[mop_t, mop_t]:
-    num_mop = typing.cast(mop_t, None)
-    other_mop = typing.cast(mop_t, None)
+def extract_num_mop(ins: ida_hexrays.minsn_t) -> tuple[ida_hexrays.mop_t, ida_hexrays.mop_t]:
+    num_mop = typing.cast(ida_hexrays.mop_t, None)
+    other_mop = typing.cast(ida_hexrays.mop_t, None)
 
-    if ins.l.t == mop_n:
+    if ins.l.t == ida_hexrays.mop_n:
         num_mop = ins.l
         other_mop = ins.r
-    if ins.r.t == mop_n:
+    if ins.r.t == ida_hexrays.mop_n:
         num_mop = ins.r
         other_mop = ins.l
     return (num_mop, other_mop)
 
 
-def check_ins_mop_size_are_ok(ins: minsn_t) -> bool:
+def check_ins_mop_size_are_ok(ins: ida_hexrays.minsn_t) -> bool:
     """Return *True* when the operand sizes are *semantically* consistent.
 
     The helper is intentionally conservative (it prefers returning *False* rather
     than letting an inconsistent instruction slip through).  However, for some
-    micro-instructions such as *m_call* / *m_icall* the operand sizes are not
+    micro-instructions such as *ida_hexrays.m_call* / *m_icall* the operand sizes are not
     required to match the result size  a function can legitimately take
     1-byte, 2-byte … arguments and still return a 4-byte (or 8-byte) value.  In
     that case the previous implementation rejected perfectly valid instructions
@@ -428,67 +696,67 @@ def check_ins_mop_size_are_ok(ins: minsn_t) -> bool:
     """
     # Calls / indirect calls: argument sizes may legitimately differ from the
     # destination size – skip the strict size checks for them.
-    if ins.opcode in (m_call, m_icall, m_ret):
+    if ins.opcode in (ida_hexrays.m_call, ida_hexrays.m_icall, ida_hexrays.m_ret):
         return True
 
     ins_dest_size = ins.d.size
-    if ins.opcode in [m_stx, m_ldx]:
-        if ins.r.t == mop_d:
+    if ins.opcode in [ida_hexrays.m_stx, ida_hexrays.m_ldx]:
+        if ins.r.t == ida_hexrays.mop_d:
             if not check_ins_mop_size_are_ok(ins.r.d):
                 return False
         return True
 
-    if ins.opcode in [m_xdu, m_xds, m_low, m_high]:
-        if (ins.l.t == mop_d) and (not check_ins_mop_size_are_ok(ins.l.d)):
+    if ins.opcode in [ida_hexrays.m_xdu, ida_hexrays.m_xds, ida_hexrays.m_low, ida_hexrays.m_high]:
+        if (ins.l.t == ida_hexrays.mop_d) and (not check_ins_mop_size_are_ok(ins.l.d)):
             return False
         return True
 
-    if ins.opcode in [m_sar, m_shr, m_shl]:
+    if ins.opcode in [ida_hexrays.m_sar, ida_hexrays.m_shr, ida_hexrays.m_shl]:
         if ins.l.size != ins_dest_size:
             return False
-        if (ins.l.t == mop_d) and (not check_ins_mop_size_are_ok(ins.l.d)):
+        if (ins.l.t == ida_hexrays.mop_d) and (not check_ins_mop_size_are_ok(ins.l.d)):
             return False
-        if (ins.r.t == mop_d) and (not check_ins_mop_size_are_ok(ins.r.d)):
+        if (ins.r.t == ida_hexrays.mop_d) and (not check_ins_mop_size_are_ok(ins.r.d)):
             return False
         return True
 
     if ins.opcode in CHECK_OPCODES:
-        if (ins.l.t == mop_d) and (not check_ins_mop_size_are_ok(ins.l.d)):
+        if (ins.l.t == ida_hexrays.mop_d) and (not check_ins_mop_size_are_ok(ins.l.d)):
             return False
-        if (ins.r.t == mop_d) and (not check_ins_mop_size_are_ok(ins.r.d)):
+        if (ins.r.t == ida_hexrays.mop_d) and (not check_ins_mop_size_are_ok(ins.r.d)):
             return False
         return True
 
     if ins.l is not None:
         if ins.l.size != ins_dest_size:
             return False
-        if ins.l.t == mop_d and (not check_ins_mop_size_are_ok(ins.l.d)):
+        if ins.l.t == ida_hexrays.mop_d and (not check_ins_mop_size_are_ok(ins.l.d)):
             return False
 
-    if ins.r is not None and ins.r.t != mop_z:
+    if ins.r is not None and ins.r.t != ida_hexrays.mop_z:
         if ins.r.size != ins_dest_size:
             return False
-        if ins.r.t == mop_d and (not check_ins_mop_size_are_ok(ins.r.d)):
+        if ins.r.t == ida_hexrays.mop_d and (not check_ins_mop_size_are_ok(ins.r.d)):
             return False
     return True
 
 
-def check_mop_is_result_of(lo: mop_t, mc) -> bool:
-    if lo.t != mop_d:
+def check_mop_is_result_of(lo: ida_hexrays.mop_t, mc) -> bool:
+    if lo.t != ida_hexrays.mop_d:
         return False
     return lo.d.opcode == mc
 
 
-def extract_by_opcode_type(ins: minsn_t, mc) -> tuple[mop_t, mop_t]:
+def extract_by_opcode_type(ins: ida_hexrays.minsn_t, mc) -> tuple[ida_hexrays.mop_t, ida_hexrays.mop_t]:
     if check_mop_is_result_of(ins.l, mc):
         return (ins.l, ins.r)
     if check_mop_is_result_of(ins.r, mc):
         return (ins.r, ins.l)
-    return (typing.cast(mop_t, None), typing.cast(mop_t, None))
+    return (typing.cast(ida_hexrays.mop_t, None), typing.cast(ida_hexrays.mop_t, None))
 
 
 def check_ins_have_same_operands(
-    ins1: minsn_t, ins2: minsn_t, ignore_order=False
+    ins1: ida_hexrays.minsn_t, ins2: ida_hexrays.minsn_t, ignore_order=False
 ) -> bool:
     if equal_mops_ignore_size(ins1.l, ins2.l) and equal_mops_ignore_size(
         ins1.r, ins2.r
@@ -501,14 +769,14 @@ def check_ins_have_same_operands(
     )
 
 
-def get_mop_index(searched_mop: mop_t, mop_list) -> int:
+def get_mop_index(searched_mop: ida_hexrays.mop_t, mop_list) -> int:
     for i, test_mop in enumerate(mop_list):
         if equal_mops_ignore_size(searched_mop, test_mop):
             return i
     return -1
 
 
-def append_mop_if_not_in_list(mop: mop_t, mop_list) -> bool:
+def append_mop_if_not_in_list(mop: ida_hexrays.mop_t, mop_list) -> bool:
     mop_index = get_mop_index(mop, mop_list)
     if mop_index == -1:
         mop_list.append(mop)
@@ -516,7 +784,7 @@ def append_mop_if_not_in_list(mop: mop_t, mop_list) -> bool:
     return False
 
 
-def get_blk_index(searched_blk: mblock_t, blk_list: list[mblock_t]) -> int:
+def get_blk_index(searched_blk: ida_hexrays.mblock_t, blk_list: list[ida_hexrays.mblock_t]) -> int:
     blk_serial_list = [blk.serial for blk in blk_list]
     try:
         return blk_serial_list.index(searched_blk.serial)
@@ -525,15 +793,15 @@ def get_blk_index(searched_blk: mblock_t, blk_list: list[mblock_t]) -> int:
 
 
 _mmat_strs = {
-    ida_hexrays.MMAT_ZERO: "MMAT_ZERO",
-    ida_hexrays.MMAT_GENERATED: "MMAT_GENERATED",
-    ida_hexrays.MMAT_PREOPTIMIZED: "MMAT_PREOPTIMIZED",
-    ida_hexrays.MMAT_LOCOPT: "MMAT_LOCOPT",
-    ida_hexrays.MMAT_CALLS: "MMAT_CALLS",
-    ida_hexrays.MMAT_GLBOPT1: "MMAT_GLBOPT1",
-    ida_hexrays.MMAT_GLBOPT2: "MMAT_GLBOPT2",
-    ida_hexrays.MMAT_GLBOPT3: "MMAT_GLBOPT3",
-    ida_hexrays.MMAT_LVARS: "MMAT_LVARS",
+    ida_hexrays.MMAT_ZERO: "ida_hexrays.MMAT_ZERO",
+    ida_hexrays.MMAT_GENERATED: "ida_hexrays.MMAT_GENERATED",
+    ida_hexrays.MMAT_PREOPTIMIZED: "ida_hexrays.MMAT_PREOPTIMIZED",
+    ida_hexrays.MMAT_LOCOPT: "ida_hexrays.MMAT_LOCOPT",
+    ida_hexrays.MMAT_CALLS: "ida_hexrays.MMAT_CALLS",
+    ida_hexrays.MMAT_GLBOPT1: "ida_hexrays.MMAT_GLBOPT1",
+    ida_hexrays.MMAT_GLBOPT2: "ida_hexrays.MMAT_GLBOPT2",
+    ida_hexrays.MMAT_GLBOPT3: "ida_hexrays.MMAT_GLBOPT3",
+    ida_hexrays.MMAT_LVARS: "ida_hexrays.MMAT_LVARS",
 }
 
 
@@ -649,14 +917,14 @@ class MicrocodeHelper:
 #             return f"m_{opcode.name}"
 #         elif opcode.nb_operands == 1:
 #             return f"m_{opcode.name}(%s,%s)" % (
-#                 MicrocodeHelper.get_mopt_name(minsn.l.t),
-#                 MicrocodeHelper.get_mopt_name(minsn.d.t),
+#                 MicrocodeHelper.ida_hexrays.get_mopt_name(minsn.l.t),
+#                 MicrocodeHelper.ida_hexrays.get_mopt_name(minsn.d.t),
 #             )
 #         elif opcode.nb_operands == 2:
 #             return f"m_{opcode.name}(%s,%s,%s)" % (
-#                 MicrocodeHelper.get_mopt_name(minsn.l.t),
-#                 MicrocodeHelper.get_mopt_name(minsn.r.t),
-#                 MicrocodeHelper.get_mopt_name(minsn.d.t),
+#                 MicrocodeHelper.ida_hexrays.get_mopt_name(minsn.l.t),
+#                 MicrocodeHelper.ida_hexrays.get_mopt_name(minsn.r.t),
+#                 MicrocodeHelper.ida_hexrays.get_mopt_name(minsn.d.t),
 #             )
 #         return "???"
 
@@ -757,9 +1025,9 @@ def is_rotate_helper_call(ins: ida_hexrays.minsn_t) -> bool:
 
 
 def dup_mop(src: ida_hexrays.mop_t) -> ida_hexrays.mop_t:
-    """Return a detached copy of a `mop_t`.
+    """Return a detached copy of a `ida_hexrays.mop_t`.
 
-    Using `mop_t.assign` duplicates the underlying C++ object so the new
+    Using `ida_hexrays.mop_t.assign` duplicates the underlying C++ object so the new
     operand is safe to attach to another micro-instruction without
     dangling-pointer risks.
     """
@@ -778,7 +1046,7 @@ def extract_literal_from_mop(
     if mop.t == ida_hexrays.mop_n:
         return [(mop.nnn.value, mop.size)]
 
-    # m_ldc wrapper (mop_d → minsn_t(ldc …))
+    # ida_hexrays.m_ldc wrapper (ida_hexrays.mop_d → ida_hexrays.minsn_t(ldc …))
     if (
         mop.t == ida_hexrays.mop_d
         and mop.d is not None
@@ -788,7 +1056,7 @@ def extract_literal_from_mop(
     ):
         return [(mop.d.l.nnn.value, mop.d.l.size)]
 
-    # typed-immediate mop_f
+    # typed-immediate ida_hexrays.mop_f
     if mop.t == ida_hexrays.mop_f and mop.f is not None:
         args = mop.f.args
         if args:
@@ -1027,14 +1295,14 @@ _OPCODE_INFO = {
 class MaturityLevel(enum.IntEnum):
     """Type-safe enumeration of microcode maturity levels."""
 
-    GENERATED = 0  # MMAT_GENERATED: immediately after generation
-    PREOPTIMIZED = 1  # MMAT_PREOPTIMIZED
-    LOCOPT = 2  # MMAT_LOCOPT: after local optimizations
-    CALLS = 3  # MMAT_CALLS: after analysis of function calls
-    GLBOPT1 = 4  # MMAT_GLBOPT1
-    GLBOPT2 = 5  # MMAT_GLBOPT2
-    GLBOPT3 = 6  # MMAT_GLBOPT3
-    LVARS = 7  # MMAT_LVARS
+    GENERATED = 0  # ida_hexrays.MMAT_GENERATED: immediately after generation
+    PREOPTIMIZED = 1  # ida_hexrays.MMAT_PREOPTIMIZED
+    LOCOPT = 2  # ida_hexrays.MMAT_LOCOPT: after local optimizations
+    CALLS = 3  # ida_hexrays.MMAT_CALLS: after analysis of function calls
+    GLBOPT1 = 4  # ida_hexrays.MMAT_GLBOPT1
+    GLBOPT2 = 5  # ida_hexrays.MMAT_GLBOPT2
+    GLBOPT3 = 6  # ida_hexrays.MMAT_GLBOPT3
+    LVARS = 7  # ida_hexrays.MMAT_LVARS
 
     @property
     def name(self) -> str:
@@ -1121,14 +1389,14 @@ class OperandType(enum.IntEnum):
 @dataclasses.dataclass
 class MicroOperand:
     """
-    Modern, type-safe representation of IDA Hex-Rays mop_t.
+    Modern, type-safe representation of IDA Hex-Rays ida_hexrays.mop_t.
     Supports structural pattern matching and provides friendly representations.
     """
 
     _internal_mop: ida_hexrays.mop_t
 
     def __post_init__(self):
-        """Initialize after the internal mop_t is set."""
+        """Initialize after the internal ida_hexrays.mop_t is set."""
         if not isinstance(self._internal_mop, ida_hexrays.mop_t):
             raise TypeError("Internal operand must be an ida_hexrays.mop_t")
 
@@ -1222,7 +1490,7 @@ class MicroOperand:
         """Get nested instruction (more readable alias)."""
         return self.get_instruction()
 
-    def equal_mops(self, other: "MicroOperand|mop_t", flags: int) -> bool:
+    def equal_mops(self, other: "MicroOperand|ida_hexrays.mop_t", flags: int) -> bool:
         """Check if operands are equal."""
         if isinstance(other, ida_hexrays.mop_t):
             return self._internal_mop.equal_mops(other, flags)
@@ -1270,7 +1538,7 @@ class MicroOperand:
 @dataclasses.dataclass
 class MicroInstruction:
     """
-    Modern, type-safe representation of IDA Hex-Rays minsn_t.
+    Modern, type-safe representation of IDA Hex-Rays ida_hexrays.minsn_t.
     Supports structural pattern matching and provides friendly representations.
     Enhanced with readable operand property names.
     """
@@ -1278,7 +1546,7 @@ class MicroInstruction:
     _internal_minsn: ida_hexrays.minsn_t
 
     def __post_init__(self):
-        """Initialize after the internal minsn_t is set."""
+        """Initialize after the internal ida_hexrays.minsn_t is set."""
         if not isinstance(self._internal_minsn, ida_hexrays.minsn_t):
             raise TypeError("Internal instruction must be an ida_hexrays.minsn_t")
 
