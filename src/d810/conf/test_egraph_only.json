@@ -1,0 +1,42 @@
+{
+    "description": "Test config: Disables all MBA pattern rules, relies only on BlockLevelEgglogOptimizer. NOTE: E-graph currently sees individual instructions, not full MBA expressions (see d810ng-851 for details on expression inlining requirement).",
+    "ins_rules": [
+        {
+            "name": "RotateHelperInlineRule",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "FoldReadonlyDataRule",
+            "is_activated": true,
+            "config": {
+                "default": {},
+                "macho": {
+                    "allow_executable_readonly": true
+                }
+            }
+        },
+        {
+            "name": "CstSimplificationRule1",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "CstSimplificationRule2",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "CstSimplificationRule3",
+            "is_activated": true,
+            "config": {}
+        }
+    ],
+    "blk_rules": [
+        {
+            "name": "BlockLevelEgglogOptimizer",
+            "is_activated": true,
+            "config": {}
+        }
+    ]
+}
