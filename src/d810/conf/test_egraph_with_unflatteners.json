@@ -1,0 +1,204 @@
+{
+  "description": "E-graph MBA simplification + all unflatteners/infrastructure. Disables pattern matcher MBA rules (Add_*, And_*, Or_*, Xor_*, etc.) - e-graph handles these.",
+  "ins_rules": [
+    {
+      "name": "RotateHelperInlineRule",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "FoldReadonlyDataRule",
+      "is_activated": true,
+      "config": {
+        "default": {},
+        "macho": {
+          "allow_executable_readonly": true
+        }
+      }
+    },
+    {
+      "name": "ConstantCallResultFoldRule",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "SetGlobalVariablesToZeroIfDetectedReadOnly",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "ReplaceReadonlyAddressOfWithImmediate",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "XorChain",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "AndChain",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "OrChain",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "ArithmeticChain",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Z3setzRuleGeneric",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Z3setnzRuleGeneric",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Z3lnotRuleGeneric",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Z3SmodRuleGeneric",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Z3ConstantOptimization",
+      "is_activated": true,
+      "config": {
+        "min_nb_opcode": 4,
+        "min_nb_constant": 3,
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "ReplaceMovHighContext",
+      "is_activated": true,
+      "config": {}
+    }
+  ],
+  "blk_rules": [
+    {
+      "name": "StackVariableConstantPropagationRule",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "UnflattenerSwitchCase",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "SingleIterationLoopUnflattener",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "UnflattenerTigressIndirect",
+      "is_activated": true,
+      "config": {
+        "goto_table_info": {
+          "0x1839": {
+            "stack_table_offset": "0x40",
+            "table_address": "0x5080",
+            "table_nb_elt": 38
+          }
+        },
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "HodurUnflattener",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "UnflattenerFakeJump",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "BadWhileLoop",
+      "is_activated": true,
+      "config": {
+        "min_dispatcher_comparison_value": 2,
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "Unflattener",
+      "is_activated": true,
+      "config": {
+        "whitelisted_functions": [
+          "0x1de2"
+        ],
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "JumpFixer",
+      "is_activated": true,
+      "config": {
+        "enabled_rules": [
+          "CompareConstantRule1",
+          "CompareConstantRule2",
+          "CompareConstantRule3",
+          "JaeRule1",
+          "JbRule1",
+          "JnzRule1",
+          "JnzRule2",
+          "JnzRule3",
+          "JnzRule4",
+          "JnzRule5",
+          "JnzRule6",
+          "JnzRule7",
+          "JnzRule8",
+          "JmpRuleZ3Const"
+        ],
+        "dump_intermediate_microcode": null
+      }
+    },
+    {
+      "name": "BlockLevelEgglogOptimizer",
+      "is_activated": true,
+      "config": {}
+    }
+  ]
+}

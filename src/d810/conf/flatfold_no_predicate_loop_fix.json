@@ -555,14 +555,154 @@
       }
     },
     {
-      "name": "CstSimplificationRule1",
+      "name": "Or_Rule_3",
       "is_activated": true,
       "config": {
         "dump_intermediate_microcode": false
       }
     },
     {
-      "name": "CstSimplificationRule2",
+      "name": "Or_Rule_4",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "OrBnot_FactorRule_1",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "OrBnot_FactorRule_2",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "OrBnot_FactorRule_3",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "OrBnot_FactorRule_4",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "Neg_HackersDelightRule_1",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "Neg_HackersDelightRule_2",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "NegSub_HackersDelightRule_1",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "NegAdd_HackersDelightRule_2",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "NegAdd_HackersDelightRule_1",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "NegOr_HackersDelightRule_1",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "NegXor_HackersDelightRule_1",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "NegXor_HackersDelightRule_2",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "Mul_MbaRule_1",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "Mul_MbaRule_4",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "Mul_FactorRule_1",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "Mul_FactorRule_2",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "GetIdentRule1",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "GetIdentRule2",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "GetIdentRule3",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "CstSimplificationRule1",
       "is_activated": true,
       "config": {
         "dump_intermediate_microcode": false
@@ -1112,7 +1252,50 @@
       }
     },
     {
-      "name": "FixPredecessorOfConditionalJumpBlock",
+      "name": "UnflattenerTigressIndirect",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "UnflattenerFakeJump",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "BadWhileLoop",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "Unflattener",
+      "is_activated": true,
+      "config": {
+        "max_passes": 3,
+        "maturities": [
+          "MMAT_LOCOPT",
+          "MMAT_CALLS"
+        ],
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "SimplifiedLoopUnflattener",
+      "is_activated": true,
+      "config": {
+        "max_passes": 3,
+        "maturities": [
+          "MMAT_LOCOPT",
+          "MMAT_CALLS"
+        ],
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
+      "name": "JumpFixer",
       "is_activated": true,
       "config": {
         "dump_intermediate_microcode": false
