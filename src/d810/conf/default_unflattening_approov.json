@@ -904,7 +904,9 @@
       {
         "name": "BadWhileLoop",
         "is_activated":true,
-        "config":{}
+        "config":{
+          "min_comparison_value": 2
+        }
       },
       {
         "name": "JumpFixer",
