@@ -23,7 +23,10 @@ from .constraints import (
     OrConstraint,
 )
 from .dsl import Const, SymbolicExpression, Var, Zext
-from .rules import SymbolicRule, VerifiableRule
+
+# Note: Rules module (SymbolicRule, VerifiableRule) will be added in PR #21 (mba-rules)
+# from .rules import SymbolicRule, VerifiableRule
+
 from .verifier import (
     DEFAULT_OPTIONS,
     ConstrainedMBARule,
@@ -60,7 +63,7 @@ __all__ = [
     "MBARule",
     "ConstrainedMBARule",
     "verify_transformation",
-    # Rules
-    "SymbolicRule",
-    "VerifiableRule",
+    # Rules - will be added in PR #21 (mba-rules)
+    # "SymbolicRule",
+    # "VerifiableRule",
 ]
