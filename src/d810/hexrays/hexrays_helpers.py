@@ -793,15 +793,15 @@ def get_blk_index(searched_blk: ida_hexrays.mblock_t, blk_list: list[ida_hexrays
 
 
 _mmat_strs = {
-    ida_hexrays.MMAT_ZERO: "ida_hexrays.MMAT_ZERO",
-    ida_hexrays.MMAT_GENERATED: "ida_hexrays.MMAT_GENERATED",
-    ida_hexrays.MMAT_PREOPTIMIZED: "ida_hexrays.MMAT_PREOPTIMIZED",
-    ida_hexrays.MMAT_LOCOPT: "ida_hexrays.MMAT_LOCOPT",
-    ida_hexrays.MMAT_CALLS: "ida_hexrays.MMAT_CALLS",
-    ida_hexrays.MMAT_GLBOPT1: "ida_hexrays.MMAT_GLBOPT1",
-    ida_hexrays.MMAT_GLBOPT2: "ida_hexrays.MMAT_GLBOPT2",
-    ida_hexrays.MMAT_GLBOPT3: "ida_hexrays.MMAT_GLBOPT3",
-    ida_hexrays.MMAT_LVARS: "ida_hexrays.MMAT_LVARS",
+    ida_hexrays.MMAT_ZERO: "MMAT_ZERO",
+    ida_hexrays.MMAT_GENERATED: "MMAT_GENERATED",
+    ida_hexrays.MMAT_PREOPTIMIZED: "MMAT_PREOPTIMIZED",
+    ida_hexrays.MMAT_LOCOPT: "MMAT_LOCOPT",
+    ida_hexrays.MMAT_CALLS: "MMAT_CALLS",
+    ida_hexrays.MMAT_GLBOPT1: "MMAT_GLBOPT1",
+    ida_hexrays.MMAT_GLBOPT2: "MMAT_GLBOPT2",
+    ida_hexrays.MMAT_GLBOPT3: "MMAT_GLBOPT3",
+    ida_hexrays.MMAT_LVARS: "MMAT_LVARS",
 }
 
 
@@ -917,14 +917,14 @@ class MicrocodeHelper:
 #             return f"m_{opcode.name}"
 #         elif opcode.nb_operands == 1:
 #             return f"m_{opcode.name}(%s,%s)" % (
-#                 MicrocodeHelper.ida_hexrays.get_mopt_name(minsn.l.t),
-#                 MicrocodeHelper.ida_hexrays.get_mopt_name(minsn.d.t),
+#                 MicrocodeHelper.get_mopt_name(minsn.l.t),
+#                 MicrocodeHelper.get_mopt_name(minsn.d.t),
 #             )
 #         elif opcode.nb_operands == 2:
 #             return f"m_{opcode.name}(%s,%s,%s)" % (
-#                 MicrocodeHelper.ida_hexrays.get_mopt_name(minsn.l.t),
-#                 MicrocodeHelper.ida_hexrays.get_mopt_name(minsn.r.t),
-#                 MicrocodeHelper.ida_hexrays.get_mopt_name(minsn.d.t),
+#                 MicrocodeHelper.get_mopt_name(minsn.l.t),
+#                 MicrocodeHelper.get_mopt_name(minsn.r.t),
+#                 MicrocodeHelper.get_mopt_name(minsn.d.t),
 #             )
 #         return "???"
 
