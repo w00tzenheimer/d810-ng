@@ -1,0 +1,27 @@
+{
+    "description": "E-graph-only config: ALL PatternOptimizer rules disabled. Only BlockLevelEgglogOptimizer handles MBA simplification. Helper rules (rotate, readonly data) kept for IDA compatibility.",
+    "ins_rules": [
+        {
+            "name": "RotateHelperInlineRule",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "FoldReadonlyDataRule",
+            "is_activated": true,
+            "config": {
+                "default": {},
+                "macho": {
+                    "allow_executable_readonly": true
+                }
+            }
+        }
+    ],
+    "blk_rules": [
+        {
+            "name": "BlockLevelEgglogOptimizer",
+            "is_activated": true,
+            "config": {}
+        }
+    ]
+}
