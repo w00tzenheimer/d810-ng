@@ -9,12 +9,12 @@ import enum
 import typing
 from typing import Optional, Tuple, Union
 
-# Try to import IDA modules, allow module to be imported for unit testing
+# Try to import IDA modules - allows pytest collection and static analysis without IDA
 try:
     import ida_hexrays
     IDA_AVAILABLE = True
 except ImportError:
-    # Allow module to be imported for unit testing without IDA Pro
+    # Mock for pytest collection and static analysis without IDA Pro
     # Mock all IDA constants that are used in module-level code
     IDA_AVAILABLE = False
 

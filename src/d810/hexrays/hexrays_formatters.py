@@ -2,13 +2,13 @@ import functools
 import pathlib
 import typing
 
-# Try to import IDA modules, allow module to be imported for unit testing
+# Try to import IDA modules - allows pytest collection and static analysis without IDA
 try:
     import ida_hexrays
     import idaapi
     IDA_AVAILABLE = True
 except ImportError:
-    # Mock for unit testing
+    # Mock for pytest collection and static analysis
     IDA_AVAILABLE = False
     idaapi = None  # type: ignore
 
