@@ -4,6 +4,16 @@ This package provides a data-driven testing framework for deobfuscation tests.
 Instead of writing repetitive test code, tests are defined as dataclasses
 that specify inputs, expected outputs, and assertions.
 
+Architecture Note:
+    This module lives in ``src/d810/testing/`` (not ``tests/``) because:
+
+    1. It runs inside IDA Pro and imports IDA modules (idaapi, idc)
+    2. System tests import from ``d810.testing`` as part of the d810 package
+    3. Moving to ``tests/`` would break those imports since tests/ is not a package
+
+    Unit tests mock the IDA imports, so this package can still be tested
+    without IDA running.
+
 Example usage::
 
     from d810.testing import DeobfuscationCase, run_deobfuscation_test
