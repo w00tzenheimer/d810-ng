@@ -2,13 +2,18 @@
 
 This module provides the main entry point for running deobfuscation tests
 defined as DeobfuscationCase dataclasses.
+
+Note:
+    IDA imports (idaapi, idc) are done locally inside functions rather than
+    at module level. This allows unit tests to import this module and test
+    the data structures without needing IDA. The actual IDA-dependent functions
+    only run inside IDA where these modules are available.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import Any, Callable, Optional
 
 import pytest
 
@@ -20,9 +25,6 @@ from .assertions import (
     assert_rules_fired,
 )
 from .cases import DeobfuscationCase
-
-if TYPE_CHECKING:
-    import idaapi
 
 
 def get_func_ea(name: str) -> int:
