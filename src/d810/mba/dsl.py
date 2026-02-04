@@ -401,12 +401,13 @@ class ConstraintPredicate:
         """
 
         def check(ctx):
-            from d810.hexrays.hexrays_helpers import equal_mops_ignore_size
+            import importlib
 
             if var1 not in ctx or var2 not in ctx:
                 return False
             if ignore_size:
-                return equal_mops_ignore_size(ctx[var1].mop, ctx[var2].mop)
+                helpers = importlib.import_module("d810.hexrays.hexrays_helpers")
+                return helpers.equal_mops_ignore_size(ctx[var1].mop, ctx[var2].mop)
             else:
                 return ctx[var1].mop == ctx[var2].mop
 
@@ -429,11 +430,12 @@ class ConstraintPredicate:
         """
 
         def check(ctx):
-            from d810.hexrays.hexrays_helpers import equal_bnot_mop
+            import importlib
 
             if var1 not in ctx or var2 not in ctx:
                 return False
-            return equal_bnot_mop(ctx[var1].mop, ctx[var2].mop)
+            helpers = importlib.import_module("d810.hexrays.hexrays_helpers")
+            return helpers.equal_bnot_mop(ctx[var1].mop, ctx[var2].mop)
 
         return check
 
@@ -566,7 +568,7 @@ class ConstraintPredicate:
         def check(ctx):
             if var not in ctx:
                 return False
-            from d810.hexrays.hexrays_helpers import AND_TABLE
+            from d810.core import AND_TABLE
 
             # Check (val + 2) & mask == 0, which means val == -2 in two's complement
             return (ctx[var].value + 2) & AND_TABLE[ctx[var].size] == 0

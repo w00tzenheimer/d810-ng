@@ -322,9 +322,10 @@ class EqualityConstraint(ConstraintExpr):
 
         # Use IDA's structural BNOT comparison
         try:
-            from d810.hexrays.hexrays_helpers import equal_bnot_mop
+            import importlib
 
-            return equal_bnot_mop(left_mop, right_mop)
+            helpers = importlib.import_module("d810.hexrays.hexrays_helpers")
+            return helpers.equal_bnot_mop(left_mop, right_mop)
         except ImportError:
             # IDA not available - can't check structural constraint
             return False
