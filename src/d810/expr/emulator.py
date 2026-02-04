@@ -202,6 +202,26 @@ class SyntheticCallReturnCache:
 
 
 class MicroCodeInterpreter(object):
+    """MicroCodeInterpreter - Abstract interpretation of HexRays microcode.
+
+    Supports two interpretation modes:
+
+    **Concrete mode** (symbolic_mode=False): Tracks actual values as microcode
+    executes (e.g., `eax = 0x10`). Used for standard emulation and value
+    propagation.
+
+    **Symbolic mode** (symbolic_mode=True): Tracks expressions symbolically
+    (e.g., `eax = arg1 + 5`). Enables analysis without knowing runtime values:
+    - Opaque predicate detection - identifying predicates that always evaluate
+      the same way regardless of input
+    - State variable tracking - following control flow flattening state
+      variables through the CFG
+    - Constant propagation - without needing concrete values
+
+    The tracker caches are invalidated on mode switch because symbolic and
+    concrete states are not interchangeable.
+    """
+
     def __init__(self, global_environment=None, symbolic_mode=False):
         self.global_environment = (
             MicroCodeEnvironment() if global_environment is None else global_environment
