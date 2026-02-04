@@ -72,23 +72,13 @@ Low priority since this code works and is only used at runtime inside IDA.
 =============================================================================
 """
 
+from __future__ import annotations
+
 import functools
 import typing
-from typing import Dict, Tuple
+from typing import TYPE_CHECKING, Dict, Tuple
 
-# Check if IDA is available
-try:
-    import ida_hexrays
-    IDA_AVAILABLE = True
-except ImportError:
-    IDA_AVAILABLE = False
-    # Mock IDA types for function signatures only
-    class _MockIDAHexrays:  # type: ignore
-        class mop_t:
-            pass
-        class minsn_t:
-            pass
-    ida_hexrays = _MockIDAHexrays()
+import ida_hexrays
 
 from d810.core import getLogger
 from d810.errors import D810Z3Exception
@@ -513,9 +503,6 @@ def _resolve_memory_load_via_store(
     Returns:
         The AST of the stored value, or None if not found
     """
-    if not IDA_AVAILABLE:
-        return None
-
     # m_ldx format: ldx result, segment, address
     # m_stx format: stx value, segment, address
     # We need to match the address operand (r) between load and store
@@ -593,9 +580,6 @@ def _resolve_mop_to_ast_via_tracker(
     Returns:
         The AST of the defining instruction's RHS, or None if not found
     """
-    if not IDA_AVAILABLE:
-        return None
-
     # Handle mop_d with m_ldx - resolve memory loads to their defining stores
     if mop.t == ida_hexrays.mop_d:
         nested = mop.d
@@ -714,9 +698,6 @@ def _recursively_resolve_ast(
 
     if ast is None:
         return None
-
-    if not IDA_AVAILABLE:
-        return ast
 
     # If it's a leaf with a register/stack mop or memory load, try to resolve it
     if ast.is_leaf():
