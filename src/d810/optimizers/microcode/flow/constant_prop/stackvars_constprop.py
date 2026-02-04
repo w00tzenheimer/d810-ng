@@ -11,21 +11,17 @@ constants back into the micro-code.
 Compared with the former peephole rule this implementation is
 function-wide and therefore safe at control-flow merge points.
 """
+import weakref
+
 import ida_hexrays
 
-from d810 import _compat
-from d810.conf.loggers import getLogger
+from d810.core import getLogger, typing
 from d810.hexrays.cfg_utils import (
     extract_base_and_offset,
     get_stack_var_name,
     safe_verify,
 )
-from d810.hexrays.hexrays_formatters import (
-    format_minsn_t,
-    format_mop_t,
-    opcode_to_string,
-    sanitize_ea,
-)
+from d810.hexrays.hexrays_formatters import maturity_to_string
 from d810.hexrays.hexrays_helpers import AND_TABLE
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
@@ -40,7 +36,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
     DESCRIPTION = "Fold stack variables that are assigned constant values across the whole function"
 
     # Opcodes whose *operands* we are willing to fold to constants.  The list is
-    # **not** used for KILL/GEN decisions – those depend on the actual destination
+    # **not** used for KILL/GEN decisions - those depend on the actual destination
     # operand, not on the opcode.
     ALLOW_PROPAGATION_OPCODES: set[int] = {
         ida_hexrays.m_stx,
@@ -88,22 +84,58 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
 
     def __init__(self):
         super().__init__()
-        self._done_funcs: set[tuple[int, int]] = set()
         # run when SSA names are fixed but before aggressive global opts
         self.maturities = [ida_hexrays.MMAT_CALLS]
+        self._seen = weakref.WeakKeyDictionary()  # mba -> last_maturity_run
+        self.cython_enabled = False
 
-    @_compat.override
+    @typing.override
     def optimize(self, blk: ida_hexrays.mblock_t):
-        logger.debug("Optimizing block %d", blk.serial)
         if self.current_maturity not in self.maturities:
-            logger.debug(
-                "Skipping block %d, maturity %d", blk.serial, self.current_maturity
-            )
+            if logger.debug_on:
+                logger.debug(
+                    "maturity is %s (%d), expecting one of: %s",
+                    maturity_to_string(self.current_maturity),
+                    self.current_maturity,
+                    ", ".join(map(maturity_to_string, self.maturities)),
+                )
             return 0
         mba = blk.mba
         if mba is None:
+            if logger.debug_on:
+                logger.debug("Block %d has no mba", blk.serial)
             return 0
+
+        # Run once per function per maturity; only from block 0
+        last = self._seen.get(mba)
+        if last == self.current_maturity:
+            if logger.debug_on:
+                logger.debug(
+                    "Skipping previous run of block %d, maturity %s (%d)",
+                    blk.serial,
+                    maturity_to_string(self.current_maturity),
+                    self.current_maturity,
+                )
+            return 0
+        if blk.serial != 1:
+            if logger.debug_on:
+                logger.debug(
+                    "Skipping, this block serial is: %d, expecting 1, maturity %s (%d)",
+                    blk.serial,
+                    maturity_to_string(self.current_maturity),
+                    self.current_maturity,
+                )
+            return 0
+        if logger.debug_on:
+            logger.debug(
+                "Running %s analysis on block %d, maturity %s (%d)",
+                self.__class__.__name__,
+                blk.serial,
+                maturity_to_string(self.current_maturity),
+                self.current_maturity,
+            )
         nb_changes = self._run_on_function(mba)
+        self._seen[mba] = self.current_maturity  # remember we've run
         return nb_changes
 
     def _run_on_function(self, mba: ida_hexrays.mba_t) -> int:
@@ -114,10 +146,55 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         the standard, safe way to handle optimizers that can delete or replace
         the instruction being worked on (e.g., via `optimize_solo`), which
         invalidates simple instruction list iterators.
+
+        If Cython is enabled and available, delegates to a highly optimized
+        Cython implementation for better performance.
         """
-        # Phase A: Dataflow analysis to find where constants are known at the
-        # start of each block.
-        IN, _ = self._run_dataflow(mba)
+        if not self.cython_enabled:
+            # Fallback to the slower, pure-Python implementation if Cython is disabled
+            return self._slow_run_on_function(mba)
+
+        try:
+            from . import _fast_dataflow
+
+            total_changes = _fast_dataflow.cy_run_full_pass(mba)
+        except ImportError:
+            logger.warning(
+                "Cython module `_fast_dataflow` not found. Falling back to slow Python implementation."
+            )
+            return self._slow_run_on_function(mba)
+
+        if total_changes > 0:
+            safe_verify(mba, "rewriting", logger_func=logger.error)
+
+        return total_changes
+
+    def _run_dataflow(self, mba: ida_hexrays.mba_t):
+        """Phase A - classic forward data-flow (GEN/KILL)."""
+        logger.debug("Running dataflow analysis")
+        if self.cython_enabled:
+            try:
+                from . import _fast_dataflow
+
+                return _fast_dataflow.run_dataflow_cython(mba)
+            except ImportError:
+                logger.warning(
+                    "Cython module `_fast_dataflow` not found. Falling back to slow Python implementation."
+                )
+        return self._slow_dataflow(mba)
+
+    def _slow_run_on_function(self, mba: ida_hexrays.mba_t) -> int:
+        """The pure Python implementation of the analysis and rewrite pass.
+
+        Phase A: Dataflow analysis to find where constants are known at the
+        start of each block.
+
+        Phase B: Iterate over each block and apply optimizations until the
+        block is stable (reaches a fixed point).
+        """
+        IN, _ = self._slow_dataflow(mba)
+        if not IN:
+            return 0
 
         total_changes = 0
         # Phase B: Iterate over each block and apply optimizations until the
@@ -137,11 +214,12 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                         curr_blk.serial,
                         consts,
                     )
+
                 made_change_this_pass = False
                 ins = curr_blk.head
                 while ins:
                     # Attempt to rewrite the current instruction.
-                    if self._rewrite_instruction(ins, consts) > 0:
+                    if self._slow_rewrite_instruction(mba, ins, consts) > 0:
                         total_changes += 1
                         made_change_this_pass = True
                         block_was_changed = True
@@ -152,7 +230,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
 
                     # If no rewrite happened, update the local constant map
                     # with the effects of the current instruction.
-                    self._transfer_single(ins, consts)
+                    self._slow_transfer_single(mba, ins, consts)
                     ins = ins.next
 
                 if not made_change_this_pass:
@@ -171,26 +249,70 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         if total_changes > 0:
             mba.mark_chains_dirty()
             mba.optimize_local(0)
-            safe_verify(mba, "rewriting", logger_func=logger.error)
-
         return total_changes
 
     # ------------------------------------------------------------------
-    # Phase A – classic forward data-flow (GEN/KILL)
+    # Phase B - rewrite helpers
     # ------------------------------------------------------------------
 
-    def _run_dataflow(self, mba: ida_hexrays.mba_t):
+    def _rewrite_instruction(
+        self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
+    ) -> int:
+        if self.cython_enabled:
+            return self._fast_rewrite_instruction(mba, ins, env)
+        else:
+            return self._slow_rewrite_instruction(mba, ins, env)
+
+    def _transfer_single(
+        self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
+    ):
+        """Transfer function for a single instruction (GEN/KILL)."""
+        if self.cython_enabled:
+            self._fast_transfer_single(mba, ins, env)
+        else:
+            self._slow_transfer_single(mba, ins, env)
+
+    def _fast_rewrite_instruction(
+        self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
+    ) -> int:
+        from . import _fast_dataflow
+
+        if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
+            return 0
+
+        return _fast_dataflow.cy_rewrite_instruction(ins, env)
+
+    def _fast_transfer_single(
+        self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
+    ):
+        from . import _fast_dataflow
+
+        # Side-effects handling - for *imprecise* side-effecting instructions
+        # (e.g. calls) we must drop every tracked constant.
+        if ins.is_unknown_call():
+            env.clear()
+            return
+        written_var = _fast_dataflow.cy_get_written_var_name(ins)
+        is_const_assign = _fast_dataflow.cy_is_constant_stack_assignment(ins)
+        # KILL when variable overwritten by non-constant value
+        if written_var and not is_const_assign and written_var in env:
+            del env[written_var]
+        # GEN - introduce new constant
+        if is_const_assign:
+            res = _fast_dataflow.cy_extract_assignment(ins)
+            if res:
+                var, val_size = res
+                if var:
+                    env[var] = val_size
+
+    def _slow_dataflow(self, mba: ida_hexrays.mba_t):
         nb = mba.qty
         IN: dict[int, ConstMap] = {i: {} for i in range(nb)}
         OUT: dict[int, ConstMap] = {i: {} for i in range(nb)}
-
         worklist: list[int] = list(range(nb))
-
-        preds: dict[int, list[int]] = {}
-        for i in range(nb):
-            blk: ida_hexrays.mblock_t = mba.get_mblock(i)
-            preds[i] = list(blk.predset)
-
+        preds: dict[int, list[int]] = {
+            i: list(mba.get_mblock(i).predset) for i in range(nb)
+        }
         while worklist:
             idx = worklist.pop()
             inm = self._meet([OUT[p] for p in preds[idx]]) if preds[idx] else {}
@@ -211,33 +333,19 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         Compute the meet (intersection) of constant maps coming from the
         predecessors.
 
-        The previous implementation built *N* temporary ``set`` objects and an
-        additional ``set`` for the intersection result on **every** call – on
-        large functions with thousands of blocks this showed up as a hotspot in
-        the profiler (≈250 ms of a 635 ms pass in the example trace).
-
-        This optimised version avoids most of that overhead:
+        This optimised version avoids most overhead:
         1. Early-out when there are 0 or 1 predecessors.
         2. Iterate only over the keys of the *first* predecessor and compare the
-           value in the remaining maps.  This replaces costly ``set``
-           allocations with plain dictionary look-ups and short-circuiting.
-
-        For functions with few predecessors per block (the common case) the
-        runtime of ``_meet`` drops by roughly an order of magnitude.
+           value in the remaining maps.
         """
         if not pred_outs:
             return {}
         if len(pred_outs) == 1:
-            # Fast-path: single predecessor – just copy its map.
+            # Fast-path: single predecessor - just copy its map.
             return dict(pred_outs[0])
-
-        first = pred_outs[0]
-        res: ConstMap = {}
+        first, res = pred_outs[0], {}
         for k, v in first.items():
-            for other in pred_outs[1:]:
-                if other.get(k) != v:
-                    break
-            else:  # no ``break`` means all predecessors agree on (k, v)
+            if all(other.get(k) == v for other in pred_outs[1:]):
                 res[k] = v
         return res
 
@@ -245,25 +353,22 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
     def _transfer_block(self, blk: ida_hexrays.mblock_t, in_map: ConstMap) -> ConstMap:
         env = dict(in_map)
         ins = blk.head
+        mba = blk.mba
         while ins:
-            self._transfer_single(ins, env)
+            self._slow_transfer_single(mba, ins, env)
             ins = ins.next
         return env
 
     # transfer for a single instruction (GEN/KILL)
-    def _transfer_single(self, ins: ida_hexrays.minsn_t, env: ConstMap):
+    def _slow_transfer_single(
+        self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
+    ):
         # 1. Side-effects handling - for *imprecise* side-effecting instructions
         # (e.g. calls) we must drop every tracked constant.
         #
         # A plain store (stx) is a *precise* write that we interpret below,
         # so we exclude it from the blanket kill.
         if ins.has_side_effects() and ins.opcode != ida_hexrays.m_stx:
-            if env and logger.debug_on:
-                logger.debug(
-                    "[stack-var-cprop] KILL-ALL at %X due to %s",
-                    sanitize_ea(ins.ea),
-                    opcode_to_string(ins.opcode),
-                )
             env.clear()
             # Nothing more to learn from this instruction.
             return
@@ -274,35 +379,17 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
 
         # KILL when variable overwritten by non-constant value
         if written_var and not is_const_assign and written_var in env:
-            if logger.debug_on:
-                logger.debug(
-                    "[stack-var-cprop] KILL %s at %X via %s",
-                    written_var,
-                    sanitize_ea(ins.ea),
-                    opcode_to_string(ins.opcode),
-                )
             del env[written_var]
 
         # 3. GEN - introduce new constant
         if is_const_assign:
             res = self._extract_assignment(ins)
-            if res:
-                var, val_size = res
-                if var:
-                    env[var] = val_size
-                    if logger.debug_on:
-                        logger.debug(
-                            "[stack-var-cprop] GEN %s = 0x%X at %X",
-                            var,
-                            val_size[0],
-                            sanitize_ea(ins.ea),
-                        )
+            if res and res[0]:
+                env[res[0]] = res[1]
 
-    # ------------------------------------------------------------------
-    # Phase B – rewrite helpers
-    # ------------------------------------------------------------------
-
-    def _rewrite_instruction(self, ins: ida_hexrays.minsn_t, env: ConstMap) -> int:
+    def _slow_rewrite_instruction(
+        self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
+    ) -> int:
         if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
             return 0
 
@@ -310,69 +397,85 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         # immediately. Calling `optimize_solo()` can invalidate the `ins`
         # object, so we cannot continue to access its other operands like
         # `ins.r`.
-
         changed = False
         # left operand
-        if ins.l and self._process_operand(ins.l, env):
+        if ins.l and self._slow_process_operand(ins.l, env):
             changed = True
         # right operand for binary ops
-        if ins.r and self._process_operand(ins.r, env):
+        if ins.r and self._slow_process_operand(ins.r, env):
             changed = True
         # stx destination address is also an input
         if (
             ins.opcode == ida_hexrays.m_stx
             and ins.d
-            and self._process_operand(ins.d, env)
+            and self._slow_process_operand(ins.d, env)
         ):
             changed = True
-
         if not changed:
             return 0
-
         # Ensure the instruction is internally consistent after we rewrote its operands.
-        # An operand was changed to a constant. Let Hex-Rays recompute internal
-        # metadata for this instruction.
-        if logger.debug_on:
-            old_repr = format_minsn_t(ins)
         ins.optimize_solo()
-        if logger.debug_on:
-            logger.debug(
-                "[stack-var-cprop] optimized insn at %X: %s -> %s",
-                sanitize_ea(ins.ea),
-                old_repr,
-                format_minsn_t(ins),
-            )
         return 1
+
+    def _slow_process_operand(self, op: ida_hexrays.mop_t, consts: ConstMap) -> bool:
+        changed = False
+        if op.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
+            name = get_stack_var_name(op)
+            if name and name in consts:
+                val, _ = consts[name]
+                op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
+                return True
+        elif op.t == ida_hexrays.mop_f and op.f is not None:
+            for a in op.f.args:
+                if a and self._slow_process_operand(a, consts):
+                    changed = True
+        elif op.t == ida_hexrays.mop_d and op.d is not None:
+            if op.d.opcode == ida_hexrays.m_ldx:
+                addr = op.d.r
+                const_info, name = None, None
+                if addr and addr.t == ida_hexrays.mop_S:
+                    name = get_stack_var_name(addr)
+                    if name and name in consts:
+                        const_info = consts[name]
+                else:
+                    base, off = extract_base_and_offset(addr)
+                    if base:
+                        base_name = get_stack_var_name(base)
+                        name = f"{base_name}+{off:X}" if off else base_name
+                        if name in consts:
+                            const_info = consts[name]
+                if const_info:
+                    val, _ = const_info
+                    tmp = ida_hexrays.mop_t()
+                    tmp.make_number(val & AND_TABLE[op.size], op.size)
+                    op.assign(tmp)
+                    return True
+            for attr in ("l", "r"):
+                sub = getattr(op.d, attr, None)
+                if sub and self._slow_process_operand(sub, consts):
+                    changed = True
+            if changed:
+                op.d.optimize_solo()
+        return changed
 
     # ------------------------------------------------------------------
     # Helper utilities
     # ------------------------------------------------------------------
 
-    # conservative wiping helper
-    def _kill_all_stack_vars(self, env: ConstMap, reason: str, ea: int):
-        prefixes = ("%var_", "stk_", "rsp", "rbp", "esp", "ebp")
-        to_del = [k for k in env if k.startswith(prefixes)]
-        if to_del and logger.debug_on:
-            logger.debug(
-                "[stack-var-cprop] KILL-ALL at %X (%s): %s", ea, reason, to_del
-            )
-        for k in to_del:
-            del env[k]
-
     # identify destination variable of an instruction (None if unknown)
     def _get_written_var_name(self, ins: ida_hexrays.minsn_t):
-        if ins.d is None:
+        d = ins.d
+        if d is None:
             return None
-        if ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
-            return get_stack_var_name(ins.d)
-        if ins.opcode == ida_hexrays.m_stx:
-            if ins.d.t == ida_hexrays.mop_S:
-                return get_stack_var_name(ins.d)
-            base, off = extract_base_and_offset(ins.d)
-            if base is not None:
-                base_name = get_stack_var_name(base)
-                if base_name:
-                    return f"{base_name}+{off:X}" if off else base_name
+        if d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
+            return get_stack_var_name(d)
+        if ins.opcode != ida_hexrays.m_stx:
+            return None
+        if d.t == ida_hexrays.mop_S:
+            return get_stack_var_name(d)
+        base, off = extract_base_and_offset(d)
+        if base and (base_name := get_stack_var_name(base)):
+            return f"{base_name}+{off:X}" if off else base_name
         return None
 
     # is instruction a constant store into stack?
@@ -396,156 +499,14 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
     def _extract_assignment(self, ins: ida_hexrays.minsn_t):
         if not self._is_constant_stack_assignment(ins):
             return None
-        value = ins.l.nnn.value  # type: ignore[attr-defined]
-        size = ins.l.size  # type: ignore[attr-defined]
+        value, size = ins.l.nnn.value, ins.l.size
+        var = None
         if ins.opcode == ida_hexrays.m_mov:
             var = get_stack_var_name(ins.d)
-            return var, (value, size)
-        # stx / mov forms
-        if ins.d.t == ida_hexrays.mop_S:
+        elif ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
             var = get_stack_var_name(ins.d)
-            return var, (value, size)
-        if ins.d.t == ida_hexrays.mop_r:
-            var = get_stack_var_name(ins.d)
-            return var, (value, size)
-        base, off = extract_base_and_offset(ins.d)
-        if base is not None:
-            var_base = get_stack_var_name(base)
-            if var_base:
-                comp = f"{var_base}+{off:X}" if off else var_base
-                return comp, (value, size)
-        return None
-
-    def _process_operand(self, op: ida_hexrays.mop_t, consts: ConstMap):
-        changed = False
-        if op.t == ida_hexrays.mop_S:
-            name = get_stack_var_name(op)
-            if name and name in consts:
-                val, _ = consts[name]
-                op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
-                return True
-        elif op.t == ida_hexrays.mop_r:
-            name = get_stack_var_name(op)
-            if name and name in consts:
-                val, _ = consts[name]
-                op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
-                return True
-        elif op.t == ida_hexrays.mop_f and op.f is not None:
-            for a in op.f.args:
-                if a and self._process_operand(a, consts):
-                    changed = True
-        elif op.t == ida_hexrays.mop_d and op.d is not None:
-            if logger.debug_on:
-                logger.debug(
-                    "[stack-var-cprop] mop_d: considering nested insn at ea=0x%X, opcode=%s, l=%s, r=%s, d=%s",
-                    sanitize_ea(op.d.ea),
-                    opcode_to_string(op.d.opcode),
-                    format_mop_t(op.d.l) if op.d.l else "",
-                    format_mop_t(op.d.r) if op.d.r else "",
-                    format_mop_t(op.d.d) if op.d.d else "",
-                )
-            # If a nested instruction is a load from a known constant location,
-            # replace the entire load operation (`mop_d`) with the constant value
-            # itself (`mop_n`).
-            if op.d.opcode == ida_hexrays.m_ldx:
-                # For `ldx`, the address is in the right operand 'r'.
-                addr = op.d.r
-                if logger.debug_on:
-                    logger.debug(
-                        "[stack-var-cprop] mop_d: found load (ldx/ldc), addr=%s",
-                        format_mop_t(addr),
-                    )
-                const_info = None
-                name = None
-                # Case 1: Direct stack variable access
-                if addr and addr.t == ida_hexrays.mop_S:
-                    name = get_stack_var_name(addr)
-                    if logger.debug_on:
-                        logger.debug(
-                            "[stack-var-cprop] mop_d: direct stack var access, name=%s, in consts=%s",
-                            name,
-                            name in consts if name else None,
-                        )
-                    if name and name in consts:
-                        const_info = consts[name]
-                        if logger.debug_on:
-                            logger.debug(
-                                "[stack-var-cprop] mop_d: folding direct stack var '%s' to constant 0x%X (size=%d)",
-                                name,
-                                const_info[0],
-                                const_info[1],
-                            )
-                else:
-                    # Case 2: Base + offset access
-                    base, off = extract_base_and_offset(addr)
-                    if base is not None:
-                        if logger.debug_on:
-                            logger.debug(
-                                "[stack-var-cprop] mop_d: base+off extraction: base=%s, off=%s",
-                                format_mop_t(base),
-                                off,
-                            )
-                        base_name = get_stack_var_name(base)
-                        name = f"{base_name}+{off:X}" if off else base_name
-                        if logger.debug_on:
-                            logger.debug(
-                                "[stack-var-cprop] mop_d: base+off access, comp=%s, in consts=%s",
-                                name,
-                                name in consts,
-                            )
-                        if name in consts:
-                            const_info = consts[name]
-                            if logger.debug_on:
-                                logger.debug(
-                                    "[stack-var-cprop] mop_d: folding base+off '%s' to constant 0x%X (size=%d)",
-                                    name,
-                                    const_info[0],
-                                    const_info[1],
-                                )
-                if const_info:
-                    val, _ = const_info
-                    # The size of the operand is the size of the mop_d itself.
-                    op_size = op.size
-
-                    tmp = ida_hexrays.mop_t()
-                    tmp.make_number(val & AND_TABLE[op_size], op_size)
-                    op.assign(tmp)
-
-                    if logger.debug_on:
-                        logger.debug(
-                            "[stack-var-cprop] mop_d: folded load '%s' -> #%X (size=%d): %s",
-                            name,
-                            val & AND_TABLE[op_size],
-                            op_size,
-                            format_mop_t(op),
-                        )
-                    return True
-
-            # If the load couldn't be resolved, recurse into its children.
-            changed = False
-            for attr in ("l", "r"):
-                sub = getattr(op.d, attr, None)
-                if logger.debug_on:
-                    logger.debug(
-                        "[stack-var-cprop] mop_d: recursing into child attr '%s': %s",
-                        attr,
-                        format_mop_t(sub) if sub else "",
-                    )
-                if sub is not None and self._process_operand(sub, consts):
-                    if logger.debug_on:
-                        logger.debug(
-                            "[stack-var-cprop] mop_d: child attr '%s' changed during recursion",
-                            attr,
-                        )
-                    changed = True
-            # ensure nested instruction is internally consistent after edits
-            if changed and op.t == ida_hexrays.mop_d and op.d is not None:
-                op.d.optimize_solo()
-            if logger.debug_on:
-                logger.debug(
-                    "[stack-var-cprop] mop_d: finished recursion, changed=%s, insn=%s",
-                    changed,
-                    format_mop_t(op),
-                )
-            return changed
-        return changed
+        else:
+            base, off = extract_base_and_offset(ins.d)
+            if base and (base_name := get_stack_var_name(base)):
+                var = f"{base_name}+{off:X}" if off else base_name
+        return (var, (value, size)) if var else None

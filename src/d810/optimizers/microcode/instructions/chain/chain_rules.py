@@ -1,14 +1,14 @@
 from functools import reduce
 
-from ida_hexrays import *
+import ida_hexrays
 
-from d810.conf.loggers import getLogger
+from d810.core import getLogger
 from d810.hexrays.hexrays_formatters import format_minsn_t
+from d810.core.bits import AND_TABLE, SUB_TABLE
 from d810.hexrays.hexrays_helpers import (
-    AND_TABLE,
-    SUB_TABLE,
     equal_bnot_mop,
     equal_mops_ignore_size,
+    structural_mop_hash,
 )
 from d810.optimizers.microcode.instructions.chain.handler import ChainSimplificationRule
 
@@ -16,19 +16,20 @@ rules_chain_logger = getLogger("D810.rules.chain")
 
 
 class ChainSimplification(object):
-    def __init__(self, opcode):
+    def __init__(self, opcode, func_entry_ea: int = 0):
         self.opcode = opcode
         self.formatted_ins = ""
         self.non_cst_mop_list = []
         self.cst_mop_list = []
         self._is_instruction_simplified = False
+        self.func_entry_ea = func_entry_ea
 
     def add_mop(self, mop):
-        if (mop.t == mop_d) and (mop.d.opcode == self.opcode):
+        if (mop.t == ida_hexrays.mop_d) and (mop.d.opcode == self.opcode):
             self.add_mop(mop.d.l)
             self.add_mop(mop.d.r)
         else:
-            if mop.t == mop_n:
+            if mop.t == ida_hexrays.mop_n:
                 self.cst_mop_list.append(mop)
             else:
                 self.non_cst_mop_list.append(mop)
@@ -51,77 +52,142 @@ class ChainSimplification(object):
                 "Doing cst simplification: {0}".format(cst_value_list)
             )
             self._is_instruction_simplified = True
-            if self.opcode == m_xor:
+            if self.opcode == ida_hexrays.m_xor:
                 final_cst = reduce(lambda x, y: x ^ y, cst_value_list)
-            elif self.opcode == m_and:
+            elif self.opcode == ida_hexrays.m_and:
                 final_cst = reduce(lambda x, y: x & y, cst_value_list)
-            elif self.opcode == m_or:
+            elif self.opcode == ida_hexrays.m_or:
                 final_cst = reduce(lambda x, y: x | y, cst_value_list)
-            elif self.opcode == m_add:
+            elif self.opcode == ida_hexrays.m_add:
                 final_cst = reduce(lambda x, y: x + y, cst_value_list)
             else:
                 raise NotImplementedError("Euh")
             final_cst = final_cst & AND_TABLE[final_cst_size]
             rules_chain_logger.debug("Final cst: {0}".format(final_cst))
-            final_cst_mop = mop_t()
+            final_cst_mop = ida_hexrays.mop_t()
             final_cst_mop.make_number(final_cst, max(cst_size_list))
             return [final_cst_mop]
 
     def get_simplified_non_constant(self):
+        """
+        Remove duplicate mops using hash-bucketing to avoid O(n^2) comparisons.
+
+        Algorithm:
+        1. Hash each mop using structural_mop_hash -> O(n)
+        2. Within each bucket, find unique representatives using equality -> O(b*m^2)
+           where b = buckets, m = avg bucket size (typically small due to good hashing)
+        3. Apply opcode-specific reduction rules (XOR: pairs cancel, AND/OR: dedupe)
+        4. For AND: cross-bucket check for a & ~a = 0 patterns
+
+        This is much faster than O(n^2) all-pairs comparison for large operand lists.
+        """
+        # Fast path
         if len(self.non_cst_mop_list) == 0:
             return []
-        elif len(self.non_cst_mop_list) == 1:
+        if len(self.non_cst_mop_list) == 1:
             return self.non_cst_mop_list
-        else:
-            is_always_0 = False
-            index_removed = []
-            for i in range(len(self.non_cst_mop_list)):
-                for j in range(i + 1, len(self.non_cst_mop_list)):
-                    if (i not in index_removed) and (j not in index_removed):
-                        if equal_mops_ignore_size(
-                            self.non_cst_mop_list[i], self.non_cst_mop_list[j]
-                        ):
-                            if self.opcode == m_xor:
-                                # x ^ x == 0
-                                rules_chain_logger.debug(
-                                    "Doing non cst simplification (xor): {0}, {1} in {2}".format(
-                                        i, j, self.formatted_ins
-                                    )
-                                )
-                                index_removed += [i, j]
-                            elif self.opcode == m_and:
-                                # x & x == x
-                                rules_chain_logger.debug(
-                                    "Doing non cst simplification (and): {0}, {1} in {2}".format(
-                                        i, j, self.formatted_ins
-                                    )
-                                )
-                                index_removed += [j]
-                            elif self.opcode == m_or:
-                                # x | x == x
-                                rules_chain_logger.debug(
-                                    "Doing non cst simplification (or): {0}, {1} in {2}".format(
-                                        i, j, self.formatted_ins
-                                    )
-                                )
-                                index_removed += [j]
-                        elif equal_bnot_mop(
-                            self.non_cst_mop_list[i], self.non_cst_mop_list[j]
-                        ):
-                            if self.opcode == m_and:
-                                is_always_0 = True
 
-            if len(index_removed) == 0 and not is_always_0:
-                return self.non_cst_mop_list
-            final_mop_list = []
-            self._is_instruction_simplified = True
-            if is_always_0:
-                final_mop_list.append(self.create_cst_mop(0, self.res_mop_size))
-                return final_mop_list
-            for i in range(len(self.non_cst_mop_list)):
-                if i not in index_removed:
-                    final_mop_list.append(self.non_cst_mop_list[i])
+        # Local memo for equality to avoid recomputing within one instruction
+        eq_memo: dict[tuple[int, int], bool] = {}
+
+        def _eq(a, b) -> bool:
+            ka, kb = id(a), id(b)
+            key = (ka, kb) if ka <= kb else (kb, ka)
+            cached = eq_memo.get(key)
+            if cached is not None:
+                return cached
+            res = equal_mops_ignore_size(a, b)
+            eq_memo[key] = res
+            return res
+
+        # Bucket first by structural hash and build per-bucket unique reps
+        buckets: dict[int, list[ida_hexrays.mop_t]] = {}
+        bucket_reps: dict[int, list[ida_hexrays.mop_t]] = {}
+        unique: list[ida_hexrays.mop_t] = []
+
+        for m in self.non_cst_mop_list:
+            try:
+                k = structural_mop_hash(m, self.func_entry_ea)
+            except Exception:
+                k = m.t
+            reps = bucket_reps.setdefault(k, [])
+            for rep in reps:
+                if _eq(m, rep):
+                    break
+            else:
+                reps.append(m)
+                unique.append(m)
+            buckets.setdefault(k, []).append(m)
+
+        # Index mapping for removals over the flattened unique list
+        idx_of = {id(m): i for i, m in enumerate(unique)}
+        index_removed: set[int] = set()
+        is_always_0 = False
+
+        # Within-bucket reduction without O(n^2): group by equality
+        for key, members in bucket_reps.items():
+            if len(members) < 2:
+                continue
+            # Map representative id -> all indices in 'unique' that are equal to it
+            groups: list[ida_hexrays.mop_t] = []
+            group_indices: dict[int, list[int]] = {}
+
+            # For each original member occurrence in this bucket, assign to a group
+            for m in buckets[key]:
+                # Find representative for this member
+                for rep in members:
+                    if _eq(m, rep):
+                        rid = id(rep)
+                        groups.append(rep) if rid not in group_indices else None
+                        group_indices.setdefault(rid, []).append(idx_of[id(m)])
+                        break
+
+            # Now apply opcode-specific consolidation
+            if self.opcode == ida_hexrays.m_xor:
+                for rid, idxs in group_indices.items():
+                    if len(idxs) % 2 == 0:
+                        index_removed.update(idxs)
+                    else:
+                        # keep one, drop the rest
+                        index_removed.update(idxs[1:])
+            elif self.opcode in (ida_hexrays.m_and, ida_hexrays.m_or):
+                for rid, idxs in group_indices.items():
+                    # keep first occurrence only
+                    index_removed.update(idxs[1:])
+
+        # Cross-bucket bnot only when needed for AND → zero
+        if self.opcode == ida_hexrays.m_and and not is_always_0:
+            keys = list(bucket_reps.keys())
+            for i in range(len(keys)):
+                for j in range(i + 1, len(keys)):
+                    for mi in bucket_reps[keys[i]]:
+                        ii = idx_of[id(mi)]
+                        if ii in index_removed:
+                            continue
+                        for mj in bucket_reps[keys[j]]:
+                            jj = idx_of[id(mj)]
+                            if jj in index_removed:
+                                continue
+                            if equal_bnot_mop(mi, mj):
+                                is_always_0 = True
+                                break
+                        if is_always_0:
+                            break
+                if is_always_0:
+                    break
+
+        if len(index_removed) == 0 and not is_always_0:
+            return unique
+
+        final_mop_list: list[ida_hexrays.mop_t] = []
+        self._is_instruction_simplified = True
+        if is_always_0:
+            final_mop_list.append(self.create_cst_mop(0, self.res_mop_size))
             return final_mop_list
+        for idx, mop in enumerate(unique):
+            if idx not in index_removed:
+                final_mop_list.append(mop)
+        return final_mop_list
 
     def simplify(self, ins):
         self.res_mop_size = ins.d.size
@@ -142,7 +208,7 @@ class ChainSimplification(object):
         return self.create_new_chain(ins, final_mop_list)
 
     def create_new_chain(self, original_ins, mop_list):
-        new_ins = minsn_t(original_ins.ea)
+        new_ins = ida_hexrays.minsn_t(original_ins.ea)
         new_ins.opcode = self.opcode
         if len(mop_list) == 0:
             mop_list.append(self.create_cst_mop(0, original_ins.d.size))
@@ -152,26 +218,26 @@ class ChainSimplification(object):
             original_ins, mop_list[:-1], original_ins.d.size
         )
         new_ins.r = mop_list[-1]
-        if new_ins.r.t == mop_n:
+        if new_ins.r.t == ida_hexrays.mop_n:
             new_ins.r.size = original_ins.d.size
         new_ins.d = original_ins.d
         return new_ins
 
     def create_cst_mop(self, value, size):
-        cst_mop = mop_t()
+        cst_mop = ida_hexrays.mop_t()
         cst_mop.make_number(value, size)
         return cst_mop
 
     def _create_mop_chain(self, ea, mop_list, size):
         if len(mop_list) == 1:
             return mop_list[0]
-        new_ins = minsn_t(ea)
+        new_ins = ida_hexrays.minsn_t(ea)
         new_ins.opcode = self.opcode
         new_ins.l = self._create_mop_chain(ea, mop_list[:-1], size)
         new_ins.r = mop_list[-1]
-        new_ins.d = mop_t()
+        new_ins.d = ida_hexrays.mop_t()
         new_ins.d.size = size
-        mop = mop_t()
+        mop = ida_hexrays.mop_t()
         mop.create_from_insn(new_ins)
         return mop
 
@@ -189,17 +255,17 @@ class ArithmeticChainSimplification(object):
 
     def add_mop(self, sign, mop):
         # sign is 0 if +, 1 is minus => minus minus = 1 ^ 1 = 0 so add
-        if (mop.t == mop_d) and (mop.d.opcode in [m_add, m_sub]):
+        if (mop.t == ida_hexrays.mop_d) and (mop.d.opcode in [ida_hexrays.m_add, ida_hexrays.m_sub]):
 
             self.add_mop(sign, mop.d.l)
-            if mop.d.opcode == m_add:
+            if mop.d.opcode == ida_hexrays.m_add:
                 self.add_mop(sign, mop.d.r)
             else:
                 self.add_mop(sign ^ 1, mop.d.r)
-        elif (mop.t == mop_d) and (mop.d.opcode == m_neg):
+        elif (mop.t == ida_hexrays.mop_d) and (mop.d.opcode == ida_hexrays.m_neg):
             self.add_mop(sign ^ 1, mop.d.l)
         else:
-            if mop.t == mop_n:
+            if mop.t == ida_hexrays.mop_n:
                 if sign == 0:
                     self.add_cst_mop_list.append(mop)
                 else:
@@ -243,13 +309,16 @@ class ArithmeticChainSimplification(object):
         final_cst = reduce(lambda x, y: x + y, add_cst_value_list + sub_cst_value_list)
         final_cst = final_cst & AND_TABLE[final_cst_size]
         rules_chain_logger.debug("Final cst: {0}".format(final_cst))
-        final_cst_mop = mop_t()
+        final_cst_mop = ida_hexrays.mop_t()
         final_cst_mop.make_number(final_cst, final_cst_size)
         return [final_cst_mop], []
 
     def get_simplified_non_constant(self):
         if len(self.add_non_cst_mop_list) == 0 and len(self.sub_non_cst_mop_list) == 0:
-            return [[], []]
+            # Return an explicit zero-constant mop so callers can safely inspect .nnn
+            zero = ida_hexrays.mop_t()
+            zero.make_number(0, 1)
+            return [], [], zero
         final_add_list = self.add_non_cst_mop_list
         final_sub_list = self.sub_non_cst_mop_list
         index_add_removed = []
@@ -301,7 +370,7 @@ class ArithmeticChainSimplification(object):
                         cst_value += 1
                         sub_index_removed += [i, j]
 
-        final_add_cst_mop = mop_t()
+        final_add_cst_mop = ida_hexrays.mop_t()
         final_add_cst_mop.make_number(
             cst_value & AND_TABLE[final_cst_size], final_cst_size
         )
@@ -321,7 +390,7 @@ class ArithmeticChainSimplification(object):
         return final_add_non_cst_mop_list, final_sub_non_cst_mop_list, final_add_cst_mop
 
     def simplify(self, ins):
-        if ins.opcode not in [m_add, m_sub]:
+        if ins.opcode not in [ida_hexrays.m_add, ida_hexrays.m_sub]:
             return None
         self.formatted_ins = format_minsn_t(ins)
         self.add_non_cst_mop_list = []
@@ -329,7 +398,7 @@ class ArithmeticChainSimplification(object):
         self.sub_non_cst_mop_list = []
         self.sub_cst_mop_list = []
         self.add_mop(0, ins.l)
-        if ins.opcode == m_add:
+        if ins.opcode == ida_hexrays.m_add:
             self.add_mop(0, ins.r)
         else:
             self.add_mop(1, ins.r)
@@ -361,8 +430,8 @@ class ArithmeticChainSimplification(object):
         mod_sub = self._create_mop_add_chain(
             original_ins.ea, final_sub_list + final_sub_cst_list, original_ins.d.size
         )
-        new_ins = minsn_t(original_ins.ea)
-        new_ins.opcode = m_sub
+        new_ins = ida_hexrays.minsn_t(original_ins.ea)
+        new_ins.opcode = ida_hexrays.m_sub
         new_ins.l = mod_add
         new_ins.r = mod_sub
         new_ins.d = original_ins.d
@@ -370,18 +439,18 @@ class ArithmeticChainSimplification(object):
 
     def _create_mop_add_chain(self, ea, mop_list, size):
         if len(mop_list) == 0:
-            res = mop_t()
+            res = ida_hexrays.mop_t()
             res.make_number(0, size)
             return res
         elif len(mop_list) == 1:
             return mop_list[0]
-        new_ins = minsn_t(ea)
-        new_ins.opcode = m_add
+        new_ins = ida_hexrays.minsn_t(ea)
+        new_ins.opcode = ida_hexrays.m_add
         new_ins.l = self._create_mop_add_chain(ea, mop_list[:-1], size)
         new_ins.r = mop_list[-1]
-        new_ins.d = mop_t()
+        new_ins.d = ida_hexrays.mop_t()
         new_ins.d.size = size
-        mop = mop_t()
+        mop = ida_hexrays.mop_t()
         mop.create_from_insn(new_ins)
         return mop
 
@@ -392,7 +461,8 @@ class XorChain(ChainSimplificationRule):
     )
 
     def check_and_replace(self, blk, ins):
-        xor_simplifier = ChainSimplification(m_xor)
+        func_ea = getattr(getattr(blk, "mba", None), "entry_ea", 0)
+        xor_simplifier = ChainSimplification(ida_hexrays.m_xor, func_entry_ea=func_ea)
         new_ins = xor_simplifier.simplify(ins)
         return new_ins
 
@@ -403,7 +473,8 @@ class AndChain(ChainSimplificationRule):
     )
 
     def check_and_replace(self, blk, ins):
-        and_simplifier = ChainSimplification(m_and)
+        func_ea = getattr(getattr(blk, "mba", None), "entry_ea", 0)
+        and_simplifier = ChainSimplification(ida_hexrays.m_and, func_entry_ea=func_ea)
         new_ins = and_simplifier.simplify(ins)
         return new_ins
 
@@ -414,7 +485,8 @@ class OrChain(ChainSimplificationRule):
     )
 
     def check_and_replace(self, blk, ins):
-        or_simplifier = ChainSimplification(m_or)
+        func_ea = getattr(getattr(blk, "mba", None), "entry_ea", 0)
+        or_simplifier = ChainSimplification(ida_hexrays.m_or, func_entry_ea=func_ea)
         new_ins = or_simplifier.simplify(ins)
         return new_ins
 

@@ -1,48 +1,65 @@
-from d810.expr.ast import AstConstant, AstLeaf, AstNode
-from d810.hexrays.hexrays_formatters import format_mop_t
-from d810.optimizers.microcode.instructions.pattern_matching.handler import (
-    PatternMatchingRule,
-)
+"""Context-aware move instruction rules using the declarative DSL.
 
-from ida_hexrays import *
+These rules demonstrate the context-aware DSL for pattern matching rules that need
+to inspect or modify the instruction context beyond the source operands.
+"""
+
+from d810.mba.dsl import Const, Var
+from d810.optimizers.extensions import context, when
+from d810.mba.rules import VerifiableRule
+
+# Common variables
+c_0 = Const("c_0")
+full_reg = Var("full_reg")
 
 
-class ReplaceMovHigh(PatternMatchingRule):
+class ReplaceMovHighContext(VerifiableRule):
+    """Fix IDA's constant propagation limitation for high-half register writes.
 
-    def check_candidate(self, candidate):
-        # IDA does not do constant propagation for pattern such as:
-        # mov     #0x65A4.2, r6.2
-        # mov     #0x210F.2, r6^2.2
-        # jz      r0.4, r6.4
-        # Thus, we try to detect mov to r6^2 and replace by (or #0x210F0000.4, r6.4 & 0x0000ffff.4, r6.4
-        # By doing that, IDA constant propagation will work again.
+    IDA does not perform constant propagation for patterns like:
+        mov #0x65A4.2, r6.2      ; Low half
+        mov #0x210F.2, r6^2.2    ; High half (THIS IS THE PROBLEM)
+        jz  r0.4, r6.4           ; IDA doesn't know r6 = 0x210F65A4
 
-        if candidate.dst_mop.t != mop_r:
-            return False
-        dst_reg_name = format_mop_t(candidate.dst_mop)
-        if dst_reg_name is None:
-            return False
-        if "^2" in dst_reg_name:
-            if candidate["c_0"].mop.size != 2:
-                return False
-            candidate.add_constant_leaf("new_c_0", candidate["c_0"].value << 16, 4)
-            candidate.add_constant_leaf("mask", 0xFFFF, 4)
-            new_dst_reg = mop_t()
-            new_dst_reg.make_reg(candidate.dst_mop.r - 2, 4)
-            candidate.add_leaf("new_reg", new_dst_reg)
-            candidate.dst_mop = new_dst_reg
-            return True
-        else:
-            return False
+    This rule transforms:
+        mov #c, rX^2  →  mov ((rX & 0xFFFF) | (#c << 16)), rX
 
-    @property
-    def PATTERN(self) -> AstNode:
-        return AstNode(m_mov, AstConstant("c_0"))
+    By writing to the full register with the computed value, IDA's constant
+    propagation can now track the full 32-bit value.
 
-    @property
-    def REPLACEMENT_PATTERN(self) -> AstNode:
-        return AstNode(
-            m_or,
-            AstConstant("new_c_0"),
-            AstNode(m_and, AstLeaf("new_reg"), AstConstant("mask")),
-        )
+    Context-aware features used:
+    - when.dst.is_high_half: Checks if destination is high-half register (e.g., r6^2)
+    - context.dst.parent_register: Binds the full register (e.g., r6 from r6^2)
+    - UPDATE_DESTINATION: Changes destination from r6^2 to r6
+
+    Example:
+        Before: mov #0x210F.2, r6^2.2
+        After:  mov #0x210F0000 | (r6 & 0xFFFF), r6.4
+    """
+
+    # Pattern: mov #constant, dst (where dst is checked by constraint)
+    PATTERN = c_0
+
+    # Replacement: (#c << 16) | (full_reg & 0xFFFF)
+    # Combines the new high bits with the existing low bits
+    REPLACEMENT = (c_0 << 16) | (full_reg & 0xFFFF)
+
+    # Constraint: Destination must be a high-half register (e.g., r6^2)
+    CONSTRAINTS = [
+        when.dst.is_high_half
+    ]
+
+    # Context: Bind 'full_reg' to the parent register (e.g., r6 from r6^2)
+    CONTEXT_VARS = {
+        "full_reg": context.dst.parent_register
+    }
+
+    # Side effect: Change destination from r6^2 to r6
+    UPDATE_DESTINATION = "full_reg"
+
+    # Skip verification: This rule changes the destination size and semantics
+    # The verification would need special handling for size mismatches
+    SKIP_VERIFICATION = True
+
+    DESCRIPTION = "Fix IDA constant propagation for high-half register writes"
+    REFERENCE = "IDA limitation workaround"

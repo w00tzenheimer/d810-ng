@@ -1,8 +1,8 @@
 import abc
 
-from ida_hexrays import *
+import ida_hexrays
 
-from d810.conf.loggers import getLogger
+from d810.core import getLogger
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizationRule,
@@ -14,7 +14,7 @@ optimizer_logger = getLogger("D810.optimizer")
 
 class InstructionAnalysisRule(InstructionOptimizationRule):
     @abc.abstractmethod
-    def analyze_instruction(self, blk: mblock_t, ins: minsn_t):
+    def analyze_instruction(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t):
         """Analyze the instruction and return a replacement instruction if the rule matches, otherwise None."""
         ...
 
@@ -30,7 +30,7 @@ class InstructionAnalyzer(InstructionOptimizer):
         for rule in self.rules:
             rule.set_maturity(self.cur_maturity)
 
-    def analyze(self, blk: mblock_t, ins: minsn_t):
+    def analyze(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t):
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
 

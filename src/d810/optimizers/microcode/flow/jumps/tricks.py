@@ -2,23 +2,23 @@ from d810.expr.ast import AstConstant, AstLeaf, AstNode
 from d810.hexrays.hexrays_helpers import equal_bnot_mop, equal_mops_bypass_xdu
 from d810.optimizers.microcode.flow.jumps.handler import JumpOptimizationRule
 
-from ida_hexrays import *
+import ida_hexrays
 
 
 class CompareConstantRule1(JumpOptimizationRule):
-    ORIGINAL_JUMP_OPCODES = [m_jge]
+    ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jge]
     LEFT_PATTERN = AstNode(
-        m_and,
-        AstNode(m_or, AstLeaf("xdu_x_0"), AstConstant("c_2")),
+        ida_hexrays.m_and,
+        AstNode(ida_hexrays.m_or, AstLeaf("xdu_x_0"), AstConstant("c_2")),
         AstNode(
-            m_or,
-            AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_1")),
-            AstNode(m_bnot, AstNode(m_sub, AstLeaf("x_0"), AstConstant("c_1"))),
+            ida_hexrays.m_or,
+            AstNode(ida_hexrays.m_xor, AstLeaf("x_0"), AstConstant("c_1")),
+            AstNode(ida_hexrays.m_bnot, AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("c_1"))),
         ),
     )
     RIGHT_PATTERN = AstConstant("0", 0)
 
-    REPLACEMENT_OPCODE = m_jl
+    REPLACEMENT_OPCODE = ida_hexrays.m_jl
     REPLACEMENT_LEFT_PATTERN = AstLeaf("x_0")
     REPLACEMENT_RIGHT_PATTERN = AstLeaf("c_1")
 
@@ -34,26 +34,26 @@ class CompareConstantRule1(JumpOptimizationRule):
 
 
 class CompareConstantRule2(JumpOptimizationRule):
-    ORIGINAL_JUMP_OPCODES = [m_jge]
+    ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jge]
     LEFT_PATTERN = AstNode(
-        m_or,
+        ida_hexrays.m_or,
         AstNode(
-            m_xdu, AstNode(m_and, AstNode(m_bnot, AstLeaf("x_0")), AstConstant("c_1"))
+            ida_hexrays.m_xdu, AstNode(ida_hexrays.m_and, AstNode(ida_hexrays.m_bnot, AstLeaf("x_0")), AstConstant("c_1"))
         ),
         AstNode(
-            m_and,
-            AstNode(m_sub, AstLeaf("xdu_x_0"), AstConstant("xdu_c_1")),
+            ida_hexrays.m_and,
+            AstNode(ida_hexrays.m_sub, AstLeaf("xdu_x_0"), AstConstant("xdu_c_1")),
             AstNode(
-                m_bnot,
+                ida_hexrays.m_bnot,
                 AstNode(
-                    m_xdu, AstNode(m_xor, AstLeaf("xdu1_x_0"), AstConstant("xdu_c_1"))
+                    ida_hexrays.m_xdu, AstNode(ida_hexrays.m_xor, AstLeaf("xdu1_x_0"), AstConstant("xdu_c_1"))
                 ),
             ),
         ),
     )
     RIGHT_PATTERN = AstConstant("0", 0)
 
-    REPLACEMENT_OPCODE = m_jge
+    REPLACEMENT_OPCODE = ida_hexrays.m_jge
     REPLACEMENT_LEFT_PATTERN = AstLeaf("x_0")
     REPLACEMENT_RIGHT_PATTERN = AstLeaf("c_1")
 
@@ -71,15 +71,15 @@ class CompareConstantRule2(JumpOptimizationRule):
 
 
 class CompareConstantRule3(JumpOptimizationRule):
-    ORIGINAL_JUMP_OPCODES = [m_jge]
+    ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jge]
     LEFT_PATTERN = AstNode(
-        m_and,
-        AstNode(m_sub, AstLeaf("x_0"), AstConstant("c_1")),
-        AstNode(m_bnot, AstLeaf("x_0")),
+        ida_hexrays.m_and,
+        AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("c_1")),
+        AstNode(ida_hexrays.m_bnot, AstLeaf("x_0")),
     )
     RIGHT_PATTERN = AstConstant("0", 0)
 
-    REPLACEMENT_OPCODE = m_jg
+    REPLACEMENT_OPCODE = ida_hexrays.m_jg
     REPLACEMENT_LEFT_PATTERN = AstLeaf("x_0")
     REPLACEMENT_RIGHT_PATTERN = AstLeaf("c_1")
 
@@ -89,20 +89,20 @@ class CompareConstantRule3(JumpOptimizationRule):
 
 
 class CompareConstantRule4(JumpOptimizationRule):
-    ORIGINAL_JUMP_OPCODES = [m_jl, m_jge]
+    ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jl, ida_hexrays.m_jge]
     LEFT_PATTERN = AstNode(
-        m_and,
+        ida_hexrays.m_and,
         AstNode(
-            m_or,
-            AstNode(m_bnot, AstNode(m_sub, AstLeaf("x_0"), AstConstant("c_1"))),
-            AstNode(m_xor, AstLeaf("x_0"), AstConstant("c_1")),
+            ida_hexrays.m_or,
+            AstNode(ida_hexrays.m_bnot, AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("c_1"))),
+            AstNode(ida_hexrays.m_xor, AstLeaf("x_0"), AstConstant("c_1")),
         ),
-        AstNode(m_or, AstLeaf("xdu_x_0"), AstConstant("bnot_c_1")),
+        AstNode(ida_hexrays.m_or, AstLeaf("xdu_x_0"), AstConstant("bnot_c_1")),
     )
 
     RIGHT_PATTERN = AstConstant("0", 0)
 
-    REPLACEMENT_OPCODE = m_jge
+    REPLACEMENT_OPCODE = ida_hexrays.m_jge
     REPLACEMENT_LEFT_PATTERN = AstLeaf("x_0")
     REPLACEMENT_RIGHT_PATTERN = AstLeaf("c_1")
 
