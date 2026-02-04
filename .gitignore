@@ -39,6 +39,8 @@ samples/bins/*
 !src/include/**/*.hxx
 !src/include/**/*.hpp
 
+# Cython compiled files
+*.so
 src/d810/**/*.cpp
 src/d810/**/*.so
 src/d810/**/*.dll
