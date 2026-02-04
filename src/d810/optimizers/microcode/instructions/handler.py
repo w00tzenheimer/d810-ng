@@ -5,13 +5,14 @@ import typing
 
 import ida_hexrays
 
-from d810 import _compat
-from d810.conf.loggers import getLogger
+from d810.core import Registrant, getLogger, typing
 from d810.errors import D810Exception
 from d810.expr.ast import AstNode, minsn_to_ast
 from d810.hexrays.hexrays_formatters import format_minsn_t, maturity_to_string
 from d810.optimizers.microcode.handler import OptimizationRule
-from d810.registry import Registrant
+
+if typing.TYPE_CHECKING:
+    from d810.core import OptimizationStatistics
 
 d810_logger = getLogger("D810")
 optimizer_logger = getLogger("D810.optimizer")
@@ -64,14 +65,17 @@ class GenericPatternRule(InstructionOptimizationRule):
         for candidate_pattern in self.pattern_candidates:
             if not candidate_pattern:
                 continue
-            # Use a read-only check first
+            # Use a read-only check first for structural matching (no mops copied)
             if not candidate_pattern.check_pattern_and_copy_mops(tmp, read_only=True):
                 continue
-            if not self.check_candidate(candidate_pattern):
-                continue
             # If the read-only check passes, then we can create a mutable copy
+            # and populate mops
             mutable_candidate = candidate_pattern.clone()
             if not mutable_candidate.check_pattern_and_copy_mops(tmp):
+                continue
+            # Check candidate AFTER mops are populated, since check_candidate
+            # may need to access leaf mops (e.g., to check segment permissions)
+            if not self.check_candidate(mutable_candidate):
                 continue
             valid_candidates.append(mutable_candidate)
             if stop_early:
@@ -117,7 +121,7 @@ class GenericPatternRule(InstructionOptimizationRule):
             )
         return new_ins
 
-    @_compat.override
+    @typing.override
     def check_and_replace(
         self, blk: ida_hexrays.mblock_t, instruction: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:
@@ -145,46 +149,51 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
     RULE_CLASSES: list[typing.Type[T_Rule]] = []
     NAME = None
 
-    def __init__(self, maturities: list[int], log_dir=None):
+    def __init__(
+        self, maturities: list[int], stats: OptimizationStatistics, log_dir=None
+    ):
         self.rules: set[T_Rule] = set()
-        self.rules_usage_info: dict[str, int] = {}
         self.maturities = maturities
         self.log_dir = log_dir
         self.cur_maturity = ida_hexrays.MMAT_PREOPTIMIZED
+        # Centralized statistics collector injected by the manager
+        self.stats = stats
 
     def add_rule(self, rule: T_Rule) -> bool:
+        """Add a rule to this optimizer if it matches RULE_CLASSES.
+
+        Rules must inherit from one of the classes in RULE_CLASSES to be accepted.
+        This ensures type safety and proper interface compliance.
+        """
+        # Check if rule inherits from one of RULE_CLASSES
         is_valid_rule_class = False
         for rule_class in self.RULE_CLASSES:
             if isinstance(rule, rule_class):
                 is_valid_rule_class = True
                 break
+
         if not is_valid_rule_class:
             return False
+
         if optimizer_logger.debug_on:
             optimizer_logger.debug("Adding rule %s", rule)
         if len(rule.maturities) == 0:
             rule.maturities = self.maturities
         self.rules.add(rule)
-        self.rules_usage_info[rule.name] = 0
         return True
-
-    def reset_rule_usage_statistic(self):
-        self.rules_usage_info = {}
-        for rule in self.rules:
-            self.rules_usage_info[rule.name] = 0
-
-    def show_rule_usage_statistic(self):
-        for rule_name, rule_nb_match in self.rules_usage_info.items():
-            if rule_nb_match > 0:
-                d810_logger.info(
-                    "Instruction Rule '%s' has been used %d times",
-                    rule_name,
-                    rule_nb_match,
-                )
 
     def get_optimized_instruction(
         self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:
+        # Fast opcode gate for chain rules to avoid work on unrelated instructions
+        # Only applies to optimizers whose rules expose a "TARGET_OPCODES" set.
+        try:
+            target_opcodes = getattr(self, "_allowed_root_opcodes", None)
+            if target_opcodes:
+                if ins.opcode not in target_opcodes:
+                    return None
+        except Exception:
+            pass
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
         # This was commented out in the original code,
@@ -199,7 +208,13 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
             try:
                 new_ins = rule.check_and_replace(blk, ins)
                 if new_ins is not None:
-                    self.rules_usage_info[rule.name] += 1
+                    if self.stats is not None:
+                        # Use new API with actual rule object
+                        self.stats.record_rule_fired(
+                            rule=rule,
+                            optimizer=self.name,
+                            maturity=self.cur_maturity,
+                        )
                     optimizer_logger.info(
                         "Rule %s matched in maturity %s:",
                         rule.name,
@@ -207,6 +222,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                     )
                     optimizer_logger.info("  orig: %s", format_minsn_t(ins))
                     optimizer_logger.info("  new : %s", format_minsn_t(new_ins))
+
                     return new_ins
             except RuntimeError as e:
                 optimizer_logger.error(
@@ -231,3 +247,8 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         if self.NAME is not None:
             return self.NAME
         return self.__class__.__name__
+
+
+# Note: VerifiableRule instances are registered in RULE_REGISTRY (d810.mba.rules)
+# and injected into PatternOptimizer at construction time by InstructionOptimizerManager.
+# This avoids duck typing and keeps the registration explicit.

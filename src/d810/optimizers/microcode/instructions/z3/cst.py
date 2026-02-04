@@ -1,9 +1,9 @@
 import typing
 
-from ida_hexrays import *
+import ida_hexrays
 
-from d810 import _compat
-from d810.conf.loggers import getLogger
+from d810.core import typing
+from d810.core import getLogger
 from d810.errors import AstEvaluationException
 from d810.expr.ast import AstConstant, AstNode, minsn_to_ast
 from d810.expr.z3_utils import z3_check_mop_equality
@@ -28,9 +28,9 @@ class Z3ConstantOptimization(Z3Rule):
 
     @property
     def REPLACEMENT_PATTERN(self) -> AstNode:
-        return AstNode(m_mov, AstConstant("c_res"))
+        return AstNode(ida_hexrays.m_mov, AstConstant("c_res"))
 
-    @_compat.override
+    @typing.override
     def configure(self, kwargs):
         super().configure(kwargs)
         if "min_nb_opcode" in kwargs.keys():
@@ -38,8 +38,8 @@ class Z3ConstantOptimization(Z3Rule):
         if "min_nb_constant" in kwargs.keys():
             self.min_nb_constant = kwargs["min_nb_constant"]
 
-    @_compat.override
-    def check_and_replace(self, blk: mblock_t, instruction: minsn_t) -> minsn_t | None:
+    @typing.override
+    def check_and_replace(self, blk: ida_hexrays.mblock_t, instruction: ida_hexrays.minsn_t) -> ida_hexrays.minsn_t | None:
         tmp = minsn_to_ast(instruction)
         if tmp is None:
             return None
@@ -74,8 +74,8 @@ class Z3ConstantOptimization(Z3Rule):
             #   tmp.compute_sub_ast()
             #   new_instruction = self.get_replacement(typing.cast(AstNode, tmp))
             #   return new_instruction
-            c_res_mop = mop_t()
-            c_res_mop.make_number(val_0, tmp.mop.size)
+            c_res_mop = ida_hexrays.mop_t()
+            c_res_mop.make_number(val_0, tmp.mop.size or 1)
             if z3_check_mop_equality(tmp.mop, c_res_mop):
                 if logger.debug_on:
                     logger.debug("  z3_check_mop_equality is equal")
@@ -90,7 +90,7 @@ class Z3ConstantOptimization(Z3Rule):
         except AstEvaluationException as e:
             logger.error("Error while evaluating %s: %s", tmp, e, exc_info=True)
 
-    @_compat.override
+    @typing.override
     def check_candidate(self, candidate: AstNode) -> bool:
         """Return True if the candidate matches the rule, otherwise False."""
         return True

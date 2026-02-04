@@ -2,12 +2,13 @@ import ida_hexrays
 
 from d810.hexrays.hexrays_formatters import string_to_maturity
 
+# Practical maturities - MMAT_GLBOPT3 is rarely/never called by Hex-Rays
+# MMAT_GLBOPT2 is the latest practical maturity level for most operations
 DEFAULT_INSTRUCTION_MATURITIES = [
     ida_hexrays.MMAT_LOCOPT,
     ida_hexrays.MMAT_CALLS,
     ida_hexrays.MMAT_GLBOPT1,
     ida_hexrays.MMAT_GLBOPT2,
-    ida_hexrays.MMAT_GLBOPT3,
     ida_hexrays.MMAT_LVARS,
 ]
 DEFAULT_FLOW_MATURITIES = [ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1]
