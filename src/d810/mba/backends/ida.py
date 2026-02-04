@@ -163,20 +163,6 @@ def _filter_equivalent_patterns(
     return candidates
 
 
-class _LeafWrapper:
-    """Lightweight wrapper to give AstLeaf nodes a leafs_by_name interface.
-
-    Used by IDAPatternAdapter.get_replacement() to handle AstLeaf candidates
-    that don't natively have leafs_by_name attribute.
-    """
-    __slots__ = ('leafs_by_name', 'ea', 'dst_mop')
-
-    def __init__(self, leaf: AstLeaf):
-        self.leafs_by_name = {leaf.name: leaf} if leaf.name else {}
-        self.ea = leaf.ea
-        self.dst_mop = leaf.mop
-
-
 class IDANodeVisitor:
     """Converts SymbolicExpression trees to IDA AstNode trees.
 
@@ -571,12 +557,8 @@ class IDAPatternAdapter:
             logger.debug(f"No replacement pattern for rule {self.name}")
             return None
 
-        # Handle AstLeaf candidates specially - they don't have leafs_by_name
-        if isinstance(candidate, AstLeafProtocol):
-            candidate_for_update = _LeafWrapper(candidate)
-            is_ok = repl_pat.update_leafs_mop(candidate_for_update)
-        else:
-            is_ok = repl_pat.update_leafs_mop(candidate)
+        # AstLeaf now has leafs_by_name property, so we can use it directly
+        is_ok = repl_pat.update_leafs_mop(candidate)
 
         if not is_ok:
             logger.debug(f"Failed to update leaf mops for rule {self.name}")

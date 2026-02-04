@@ -6,11 +6,11 @@ This package contains different backend implementations for working with MBA exp
 
 ```
 d810/mba/backends/
-├── __init__.py     # Package exports
-├── z3.py           # Z3 SMT solver backend (for verification)
-├── ida.py          # IDA Pro integration (placeholder)
-├── egraph.py       # E-graph optimization (placeholder)
-└── README.md       # This file
+├── __init__.py         # Package exports
+├── z3.py               # Z3 SMT solver backend (for verification)
+├── ida.py              # IDA Pro integration
+├── egglog_backend.py   # E-graph pattern matching (optional, requires egglog)
+└── README.md           # This file
 ```
 
 ## Available Backends
@@ -45,36 +45,36 @@ functions. The pure MBA verification via `z3_prove_equivalence()` works without 
 
 ### 2. IDA Backend (`ida.py`)
 
-**Purpose:** Convert between IDA microcode and SymbolicExpression
+**Purpose:** Adapt VerifiableRule for IDA pattern matching, convert SymbolicExpression to AstNode
 **Dependencies:** IDA Pro SDK
-**Status:** 📋 Placeholder (implementation pending)
+**Status:** ✅ Complete
 
-**Planned API:**
+**API:**
 ```python
-from d810.mba.backends.ida import minsn_to_symbolic, symbolic_to_minsn
+from d810.mba.backends.ida import IDAPatternAdapter, IDANodeVisitor, adapt_rules
 
-# Convert IDA → SymbolicExpression
-expr = minsn_to_symbolic(ins)  # ins: minsn_t
+# Adapt rules for IDA integration
+ida_rules = adapt_rules(rule_instances)
 
-# Optimize using MBA framework
-optimized = optimizer.optimize(expr)
+# Use adapter directly
+adapter = IDAPatternAdapter(my_rule)
+new_ins = adapter.check_and_replace(blk, instruction)
 
-# Convert back: SymbolicExpression → IDA
-new_ins = symbolic_to_minsn(optimized, template=ins)
+# Convert DSL expression to AstNode
+visitor = IDANodeVisitor()
+ast_node = visitor.visit(pattern)
 ```
 
-**Current location:** Functionality exists in `d810.expr.ast` but needs refactoring.
+**Key classes:**
+- `IDAPatternAdapter` - Wraps a VerifiableRule for IDA pattern matching
+- `IDANodeVisitor` - Converts SymbolicExpression trees to IDA AstNode trees
+- `adapt_rules()` - Batch wrap rules with IDAPatternAdapter
 
-**Migration plan:**
-1. Extract pure conversion logic from `d810.expr.ast`
-2. Move to `d810.mba.backends.ida`
-3. Keep `d810.expr.ast` as thin wrapper for backward compatibility
+### 3. E-graph Backend (`egglog_backend.py`)
 
-### 3. E-graph Backend (`egraph.py`)
-
-**Purpose:** Optimize expressions via e-graph saturation
-**Dependencies:** `egg-python` or `egglog-python` (optional)
-**Status:** 📋 Placeholder (design complete, see `docs/EGRAPH_DESIGN.md`)
+**Purpose:** E-graph pattern matching and equivalence verification
+**Dependencies:** `egglog` (optional)
+**Status:** ✅ Complete
 
 **Planned API:**
 ```python
