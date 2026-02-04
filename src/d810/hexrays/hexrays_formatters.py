@@ -1,46 +1,14 @@
 import functools
 import pathlib
 import typing
+from typing import TYPE_CHECKING
 
-# Try to import IDA modules - allows pytest collection and static analysis without IDA
-try:
-    import ida_hexrays
-    import idaapi
-    IDA_AVAILABLE = True
-except ImportError:
-    # Mock for pytest collection and static analysis
-    IDA_AVAILABLE = False
-    idaapi = None  # type: ignore
+import ida_hexrays
+import idaapi
 
-    class _MockIDAHexrays:  # type: ignore
-        class mbl_array_t:
-            pass
-        class minsn_t:
-            pass
-        class mop_t:
-            pass
-        class vd_printer_t:
-            def __init__(self):
-                pass
-
-        # Operand types for type comparisons
-        mop_d = 4
-        mop_a = 10
-        mop_f = 8
-        mop_l = 9
-        mop_S = 5
-        mop_c = 12
-        mop_p = 14
-        mop_sc = 15
-        mop_n = 2
-        mop_fn = 13
-        mop_r = 1
-        mop_v = 6
-        mop_b = 7
-        mop_str = 3
-        mop_h = 11
-
-    ida_hexrays = _MockIDAHexrays()
+if TYPE_CHECKING:
+    # Type hints for IDE support when IDA stubs are available
+    from ida_hexrays import mbl_array_t, minsn_t, mop_t
 
 from d810.core import getLogger
 from d810.hexrays.hexrays_helpers import (
