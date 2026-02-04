@@ -1,7 +1,7 @@
 """Unit tests for tracker_components.py - extracted hot path components."""
 
 import pytest
-from d810.hexrays.tracker_components import (
+from d810.core.tracker_components import (
     ImmutableBlockInfo,
     CachedBlockPath,
     MopSet,

@@ -168,9 +168,9 @@ class MopSet:
         elif t == 8:  # mop_b (block ref)
             return hash((t, mop.b))
         else:
-            # Generic fallback
-            from d810.hexrays.hexrays_formatters import format_mop_t
-            return hash(format_mop_t(mop))
+            # Generic fallback - use repr() for unknown types
+            # This avoids importing hexrays modules into core
+            return hash((t, repr(mop)))
 
     @staticmethod
     def _equal_mops(a: "ida_hexrays.mop_t", b: "ida_hexrays.mop_t") -> bool:
@@ -192,9 +192,9 @@ class MopSet:
         elif t == 8:  # mop_b
             return a.b == b.b
         else:
-            # Fallback to full comparison
-            from d810.hexrays.hexrays_helpers import equal_mops_ignore_size
-            return equal_mops_ignore_size(a, b)
+            # Fallback - compare by representation for unknown types
+            # This avoids importing hexrays modules into core
+            return repr(a) == repr(b)
 
     def add(self, mop: "ida_hexrays.mop_t") -> bool:
         """Add mop to set. Returns True if added, False if already present."""

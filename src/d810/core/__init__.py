@@ -144,6 +144,16 @@ from .platform import (
     ARCH_CONFIG_KEYS,
 )
 
+# Tracker components (extracted hot-path components)
+from .tracker_components import (
+    ImmutableBlockInfo,
+    CachedBlockPath,
+    MopSet,
+    benchmark_block_info_copy,
+    benchmark_cached_path,
+    benchmark_mop_set,
+)
+
 
 # =============================================================================
 # MOP (Microcode OPerand) Caches
@@ -284,4 +294,11 @@ __all__ = [
     "is_arch_specific_config",
     "resolve_arch_config",
     "ARCH_CONFIG_KEYS",
+    # tracker_components
+    "ImmutableBlockInfo",
+    "CachedBlockPath",
+    "MopSet",
+    "benchmark_block_info_copy",
+    "benchmark_cached_path",
+    "benchmark_mop_set",
 ]
