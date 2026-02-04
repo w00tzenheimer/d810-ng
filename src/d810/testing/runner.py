@@ -3,11 +3,12 @@
 This module provides the main entry point for running deobfuscation tests
 defined as DeobfuscationCase dataclasses.
 
-Note:
-    IDA imports (idaapi, idc) are done locally inside functions rather than
-    at module level. This allows unit tests to import this module and test
-    the data structures without needing IDA. The actual IDA-dependent functions
-    only run inside IDA where these modules are available.
+Architecture Note:
+    This module runs inside IDA Pro and requires IDA modules (idaapi, idc).
+    It is NOT re-exported from d810.testing.__init__ to avoid breaking unit
+    tests that import from d810.testing. System tests should import directly::
+
+        from d810.testing.runner import run_deobfuscation_test
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import idaapi
+import idc
 import pytest
 
 from .assertions import (
@@ -36,9 +39,6 @@ def get_func_ea(name: str) -> int:
     Returns:
         The function's effective address, or BADADDR if not found.
     """
-    import idaapi
-    import idc
-
     ea = idc.get_name_ea_simple(name)
     if ea == idaapi.BADADDR:
         # Try with macOS underscore prefix
@@ -52,8 +52,6 @@ def get_binary_suffix() -> str:
     Returns:
         The file suffix (e.g., ".dll", ".dylib", ".so").
     """
-    import idaapi
-
     input_file = idaapi.get_input_file_path()
     return Path(input_file).suffix if input_file else ""
 
@@ -89,8 +87,6 @@ def run_deobfuscation_test(
         pytest.skip: If the test should be skipped.
         AssertionError: If any assertion fails.
     """
-    import idaapi
-
     # Apply binary-specific overrides
     binary_suffix = get_binary_suffix()
     effective_case = case.get_effective_config(binary_suffix)
