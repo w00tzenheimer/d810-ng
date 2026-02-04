@@ -1,0 +1,12 @@
+{
+  "name": "test_antidebug",
+  "blk_rules": [
+    {"name": "StackVariableConstantPropagationRule", "is_activated": true, "config": {}},
+    {"name": "UnflattenerSwitchCase", "is_activated": true, "config": {}},
+    {"name": "UnflattenerTigressIndirect", "is_activated": true, "config": {}},
+    {"name": "UnflattenerFakeJump", "is_activated": true, "config": {}},
+    {"name": "BlockLevelEgglogOptimizer", "is_activated": true, "config": {}}
+  ],
+  "insn_rules": [],
+  "maturity_to_optimize_by_default": ["MMAT_CALLS", "MMAT_GLBOPT1", "MMAT_GLBOPT2"]
+}

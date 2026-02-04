@@ -1,26 +1,42 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import typing
 
 import ida_hexrays
 import idaapi
 
-from d810.conf.loggers import getLogger
+from d810.core import getLogger
+from d810.core import bits as rotate_helpers
+from d810.core.bits import (
+    get_add_cf,
+    get_add_of,
+    get_parity_flag,
+    get_sub_of,
+    signed_to_unsigned,
+    unsigned_to_signed,
+)
+from d810.core.cymode import CythonMode
+
+# Try to import Cython speedups if CythonMode is enabled
+get_stack_or_reg_name = None
+cy_hash_mop = None
+if CythonMode().is_enabled():
+    try:
+        from d810.speedups.cythxr._chexrays_api import get_stack_or_reg_name
+        from d810.speedups.cythxr._chexrays_api import hash_mop as cy_hash_mop
+    except ImportError:
+        pass
+
+# Pure Python fallback when Cython is disabled or failed to import
+if get_stack_or_reg_name is None:
+    from d810.hexrays.cfg_utils import get_stack_var_name as get_stack_or_reg_name
 from d810.errors import (
     EmulationException,
     EmulationIndirectJumpException,
     UnresolvedMopException,
     WritableMemoryReadException,
-)
-from d810.expr.utils import (
-    get_add_cf,
-    get_add_of,
-    get_parity_flag,
-    get_sub_of,
-    ror,
-    signed_to_unsigned,
-    unsigned_to_signed,
 )
 from d810.hexrays.cfg_utils import get_block_serials_by_address
 from d810.hexrays.hexrays_formatters import (
@@ -40,11 +56,180 @@ from d810.hexrays.hexrays_helpers import (
 emulator_log = getLogger(__name__)
 
 
+# Extracted class
+class SyntheticCallReturnCache:
+    """
+    Provides stable, synthetic return values for calls based on (EA, dest_size).
+
+    Also tracks provenance: chained synthetic values can be traced back to their origin.
+    """
+
+    DEFAULT_TAG = 0xD810000000000000
+    DEFAULT_MASK = 0xFFFFFFFFFFFF
+
+    def __init__(self, tag: int = DEFAULT_TAG, mask: int = DEFAULT_MASK):
+        self.tag = tag
+        self.mask = mask
+        self._cache: dict[tuple[int, ...], int] = {}
+        # Track provenance: maps synthetic value -> origin synthetic value
+        self._provenance: dict[int, int] = {}
+
+    def _ensure_nonzero(self, value: int, dest_size: int) -> int:
+        """Ensure value is non-zero after masking to dest_size."""
+        mask = AND_TABLE.get(dest_size, AND_TABLE[8])
+        val = value & mask
+        if val == 0:
+            val = (value | 1) & mask
+            if val == 0:
+                val = 1  # final fallback
+        return val
+
+    def _get_or_create(
+        self,
+        key: tuple[int, ...],
+        dest_size: int,
+        base_value: int,
+        origin: int,
+    ) -> int:
+        """Common caching logic: check cache, compute if needed, track provenance."""
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+
+        val = self._ensure_nonzero(base_value, dest_size)
+        self._cache[key] = val
+        self._provenance[val] = origin
+        return val
+
+    @functools.singledispatchmethod
+    def get(self, ins: ida_hexrays.minsn_t) -> int:
+        """Return a stable, non-zero synthetic value for a call result.
+
+        Keyed by (EA, dest_size). Ensures non-zero after masking to dest size.
+        """
+        dest_size = getattr(ins.d, "size", 0) or 8
+        ea = getattr(ins, "ea", 0) or id(ins)
+        key = (ea, dest_size)
+
+        # Construct a high-tagged synthetic pointer-like value
+        base = self.tag ^ (ea & self.mask)
+        # Root synthetic values are their own origin (pass base as origin placeholder)
+        val = self._get_or_create(key, dest_size, base, origin=0)
+        # Update origin after creation for root values
+        if val not in self._provenance or self._provenance[val] == 0:
+            self._provenance[val] = val
+        return val
+
+    @get.register(ida_hexrays.mop_t)
+    def _(self, mop: ida_hexrays.mop_t) -> int:
+        """Return a stable, non-zero synthetic value for an unresolved mop.
+
+        Uses structural info when available to keep values stable across runs.
+        """
+        try:
+            if cy_hash_mop is not None:
+                h = int(cy_hash_mop(mop, 0)) & self.mask
+            else:
+                h = hash(format_mop_t(mop)) & self.mask
+        except Exception:
+            h = id(mop) & self.mask
+        dest_size = getattr(mop, "size", 0) or 8
+        key = (h, dest_size)
+        tag = self.tag
+        base = tag ^ h
+        val = self._get_or_create(key, dest_size, base, origin=0)
+        # Update origin after creation for root values
+        if val not in self._provenance or self._provenance[val] == 0:
+            self._provenance[val] = val
+        return val
+
+    def chain(self, ins: ida_hexrays.minsn_t, from_address: int) -> int:
+        """Return a cached, stable synthetic value derived from from_address.
+
+        This allows symbolic propagation through pointer chains while maintaining
+        provenance tracking back to the original synthetic value.
+
+        Args:
+            ins: The instruction (used for dest_size and optional EA)
+            from_address: The synthetic address being dereferenced
+
+        Returns:
+            A new synthetic value that is tracked and cacheable
+        """
+        dest_size = ins.d.size
+        key = (from_address, dest_size, getattr(ins, "ea", 0) or id(ins))
+
+        # Compute a new synthetic value based on the address + dest size
+        base = from_address ^ (dest_size << 48)
+        if (base & AND_TABLE[dest_size]) == 0:
+            base = (from_address & 0xFFFFFFFF) | self.tag
+
+        # Track provenance: find the origin of from_address and propagate it
+        origin = self._provenance.get(from_address, from_address)
+
+        val = self._get_or_create(key, dest_size, base, origin)
+
+        if emulator_log.debug_on:
+            emulator_log.debug(
+                "ldx %x (synthetic sentinel -> chained %x, origin %x)",
+                from_address,
+                val,
+                origin,
+            )
+        return val
+
+    def get_origin(self, synthetic_value: int) -> int | None:
+        """Return the original synthetic value that this value was derived from.
+
+        Args:
+            synthetic_value: A synthetic value (either root or chained)
+
+        Returns:
+            The original synthetic value, or None if not tracked
+        """
+        return self._provenance.get(synthetic_value)
+
+    def is_synthetic_address(self, addr: int) -> bool:
+        """
+        Returns True if 'addr' matches the synthetic call/TEB/PEB sentinel pattern.
+        this is used to avoid spurious MEMORY[0] issues, rather than erroring out.
+        """
+        # TODO: make the mask configurable or derived from the passed in tag
+        if (addr & 0xFFF0000000000000) == self.tag:
+            emulator_log.debug("ldx %x (synthetic sentinel, skip deref)", addr)
+            return True
+        return False
+
+
 class MicroCodeInterpreter(object):
-    def __init__(self, global_environment=None):
+    """MicroCodeInterpreter - Abstract interpretation of HexRays microcode.
+
+    Supports two interpretation modes:
+
+    **Concrete mode** (symbolic_mode=False): Tracks actual values as microcode
+    executes (e.g., `eax = 0x10`). Used for standard emulation and value
+    propagation.
+
+    **Symbolic mode** (symbolic_mode=True): Tracks expressions symbolically
+    (e.g., `eax = arg1 + 5`). Enables analysis without knowing runtime values:
+    - Opaque predicate detection - identifying predicates that always evaluate
+      the same way regardless of input
+    - State variable tracking - following control flow flattening state
+      variables through the CFG
+    - Constant propagation - without needing concrete values
+
+    The tracker caches are invalidated on mode switch because symbolic and
+    concrete states are not interchangeable.
+    """
+
+    def __init__(self, global_environment=None, symbolic_mode=False):
         self.global_environment = (
             MicroCodeEnvironment() if global_environment is None else global_environment
         )
+        # Stable synthetic return values for calls (per EA, per size)
+        self.synthetic_call = SyntheticCallReturnCache()
+        # Enable symbolic fallback for unresolved variables
+        self.symbolic_mode: bool = symbolic_mode
 
     def _eval_instruction_and_update_environment(
         self,
@@ -392,87 +577,246 @@ class MicroCodeInterpreter(object):
         helper_name = ins.l.helper
         args_list = ins.d
 
-        emulator_log.debug("Call helper for {0}".format(helper_name))
-        # and we support only __ROR4__ (we should add other Hex-Rays created helper calls)
-        if helper_name == "__ROR4__":
+        if emulator_log.debug_on:
+            emulator_log.debug("Call helper for %s", helper_name)
+        # and we support only __RORX__/__ROLX__
+        if helper_name.startswith("__ROR") or helper_name.startswith("__ROL"):
+            # Helper name is already complete, e.g., "__ROL8__" or "__ROR4__"
+            helper_func = getattr(rotate_helpers, helper_name, None)
+            if helper_func is None:
+                if emulator_log.debug_on:
+                    emulator_log.debug(
+                        "Call helper for %s: helper not found in rotate_helpers",
+                        helper_name,
+                    )
+                return None
             data_1 = self.eval(args_list.f.args[0], environment)
             data_2 = self.eval(args_list.f.args[1], environment)
-            return ror(data_1, data_2, 8 * args_list.f.args[0].size) & res_mask
-        elif helper_name == "__readfsqword":
-            return 0
+            if data_1 is None or data_2 is None:
+                if emulator_log.debug_on:
+                    emulator_log.debug(
+                        "Call helper for %s: data_1 (%s) or data_2 (%s) is None",
+                        helper_name,
+                        data_1,
+                        data_2,
+                    )
+                return None
+            return helper_func(data_1, data_2) & res_mask
+        elif helper_name in ("__readfsqword", "__readgsqword"):
+            # These helpers read from FS/GS: they are known to be non-null in practice.
+            # Return a stable non-zero synthetic value to avoid null folding.
+            return self.synthetic_call.get(ins) & res_mask
         return None
 
     def _eval_load(
         self, ins: ida_hexrays.minsn_t, environment: MicroCodeEnvironment
     ) -> int | None:
         res_mask = AND_TABLE[ins.d.size]
-        if ins.opcode == ida_hexrays.m_ldx and environment.cur_blk is not None:
-            load_address = self.eval(ins.r, environment)
-            formatted_seg_register = format_mop_t(ins.l)
-            if formatted_seg_register == "ss.2":
-                stack_mop = ida_hexrays.mop_t()
-                stack_mop.erase()
-                stack_mop._make_stkvar(environment.cur_blk.mba, load_address)
+        if ins.opcode != ida_hexrays.m_ldx or environment.cur_blk is None:
+            return None
+
+        load_address = self.eval(ins.r, environment)
+        formatted_seg_register = format_mop_t(ins.l)
+        # formatted segment register: <mop_t type=mop_r size=2 dstr=ds.2>
+        if formatted_seg_register == "ss.2":
+            stack_mop = ida_hexrays.mop_t()
+            stack_mop.erase()
+            stack_mop._make_stkvar(environment.cur_blk.mba, load_address)
+            if emulator_log.debug_on:
                 emulator_log.debug(
                     "Searching for stack mop {0}".format(format_mop_t(stack_mop))
                 )
-                if (stack_mop_value := environment.lookup(stack_mop)) is None:
-                    raise EmulationException(
-                        "Variable '{0}' is not defined for mop_r or mop_S".format(
-                            format_mop_t(stack_mop)
+            if (
+                stack_mop_value := environment.lookup(
+                    stack_mop, raise_exception=not self.symbolic_mode
+                )
+            ) is None:
+                if self.symbolic_mode:
+                    stack_mop_value = self.synthetic_call.get(stack_mop)
+                    environment.define(stack_mop, stack_mop_value)
+                    if emulator_log.info_on:
+                        emulator_log.info(
+                            " synthetic stack mop {0} @ address {1:x} defined as: {2:x}".format(
+                                get_stack_or_reg_name(stack_mop),
+                                load_address,
+                                stack_mop_value,
+                            )
                         )
+                else:
+                    # Avoid dstr/format_mop_t in exception text (hot path)
+                    _name = get_stack_or_reg_name(stack_mop)
+                    raise EmulationException(
+                        "Variable {0} is not defined for mop_r or mop_S".format(_name)
                     )
+            if emulator_log.debug_on:
                 emulator_log.debug(
                     "  stack mop {0} value : {1}".format(
                         format_mop_t(stack_mop), stack_mop_value
                     )
                 )
-                return stack_mop_value & res_mask
-            else:
-                mem_seg = idaapi.getseg(load_address)
-                seg_perm = mem_seg.perm
-                if (seg_perm & idaapi.SEGPERM_WRITE) != 0:
-                    raise WritableMemoryReadException(
-                        "ldx {0:x} (writable -> return None)".format(load_address)
-                    )
-                else:
-                    memory_value = idaapi.get_qword(load_address)
-                    emulator_log.debug(
-                        "ldx {0:x} (non writable -> return {1:x})".format(
-                            load_address, memory_value & res_mask
+            return stack_mop_value & res_mask
+        else:
+            if emulator_log.debug_on:
+                # formatted segment register: <mop_t type=mop_r size=2 dstr=ds.2>
+                emulator_log.debug(
+                    "formatted segment register: {0}".format(formatted_seg_register)
+                )
+            mem_seg = idaapi.getseg(load_address)
+            if mem_seg is None:
+                # If this address looks like a synthetic call/TEB/PEB sentinel, treat as unknown
+                # to avoid spurious MEMORY[0] issues, rather than erroring out.
+                if self.synthetic_call.is_synthetic_address(load_address):
+                    # Return a cached, stable synthetic value based on the address + dest size
+                    # This allows symbolic propagation through pointer chains
+                    return self.synthetic_call.chain(ins, load_address)
+                # Treat null deref as unknown to avoid spurious MEMORY[0]
+                if load_address == 0:
+                    emulator_log.warning(
+                        "ldx 0 @ {0:x} (null deref, returning None)".format(
+                            load_address
                         )
                     )
-                    return memory_value & res_mask
+                    return None
+                raise EmulationException(
+                    "ldx {0:x} (no segment -> return None)".format(load_address)
+                )
+            seg_perm = mem_seg.perm
+            if (seg_perm & idaapi.SEGPERM_WRITE) != 0:
+                raise WritableMemoryReadException(
+                    "ldx {0:x} (writable -> return None)".format(load_address)
+                )
+            else:
+                memory_value = idaapi.get_qword(load_address)
+                if emulator_log.debug_on:
+                    emulator_log.debug(
+                        "ldx %x (non writable -> return %x)",
+                        load_address,
+                        memory_value & res_mask,
+                    )
+                return memory_value & res_mask
 
     def _eval_store(
         self, ins: ida_hexrays.minsn_t, environment: MicroCodeEnvironment
     ) -> int | None:
-        # TODO: implement
-        emulator_log.warning(
-            "Evaluation of %s not implemented: bypassing", format_minsn_t(ins)
-        )
-        return None
+        """Evaluate store to memory (stx) instruction.
+
+        Format: stx source, segment, address
+        - ins.l = value to store (source)
+        - ins.d = segment register (typically ds.2 or ss.2)
+        - ins.r = address to store to
+
+        For stack stores (ss.2), we convert the address to a stack variable and store it.
+        For other segments, we currently don't track memory writes (would need memory model).
+        """
+        res_mask = AND_TABLE[ins.l.size]
+        if ins.opcode != ida_hexrays.m_stx or environment.cur_blk is None:
+            return None
+
+        try:
+            # Evaluate the value to store
+            store_value = self.eval(ins.l, environment)
+
+            # Evaluate the address
+            store_address = self.eval(ins.r, environment)
+        except EmulationException as e:
+            # If we can't evaluate operands and symbolic mode is off, bypass
+            if not self.symbolic_mode:
+                emulator_log.warning("Can't evaluate stx operands: %s, bypassing", e)
+                return None
+            raise
+
+        # Get segment register (formatted like "ss.2" or "ds.2")
+        formatted_seg_register = format_mop_t(ins.d)
+
+        if formatted_seg_register == "ss.2":
+            # Stack store - create a stack mop and store the value in the environment
+            stack_mop = ida_hexrays.mop_t()
+            stack_mop.erase()
+            stack_mop._make_stkvar(environment.cur_blk.mba, store_address)
+
+            if emulator_log.debug_on:
+                emulator_log.debug(
+                    "Storing stack mop {0} @ address {1:x} with value: {2:x}".format(
+                        format_mop_t(stack_mop), store_address, store_value & res_mask
+                    )
+                )
+            environment.define(stack_mop, store_value & res_mask)
+        else:
+            # Non-stack memory write - we don't track writes to global memory
+            # but we shouldn't fail either (this is common in real code)
+            if emulator_log.debug_on:
+                emulator_log.debug(
+                    "Ignoring store to non-stack memory (segment: {0}) @ address {1:x}".format(
+                        formatted_seg_register, store_address
+                    )
+                )
+        return store_value & res_mask
 
     def _eval_call(
         self, ins: ida_hexrays.minsn_t, environment: MicroCodeEnvironment
     ) -> int | None:
-        # TODO: implement
+        # call   ld   l is mop_v or mop_b or mop_h
+        if ins.l.t in [ida_hexrays.mop_v, ida_hexrays.mop_b]:
+            # TODO: implement
+            emulator_log.warning(
+                "Evaluation of call with unsupported mop type %s (%s): bypassing",
+                mop_type_to_string(ins.l.t),
+                format_minsn_t(ins),
+            )
+            return None
+        # we only support ida_hexrays.mop_h for calls atm
+        res_mask = AND_TABLE[ins.d.size]
+        insn_helper: ida_hexrays.mop_t = ins.l
+        # extract helper name and width from helper string (e.g., __ROL4__)
+        helper_name = (insn_helper.helper or "").lstrip("!")
+        # Windows-specific helpers sometimes show up as named helpers (e.g., !NtCurrentPeb <fast:>)
+        hname = (helper_name or "").lstrip("!")
+        if hname.startswith("NtCurrentPeb"):
+            return self.synthetic_call.get(ins) & res_mask
+
         emulator_log.warning(
-            "Evaluation of %s not implemented: bypassing", format_minsn_t(ins)
+            "Evaluation of helper %s (%s) not implemented: bypassing",
+            helper_name,
+            format_minsn_t(ins),
         )
-        return None
+        return
 
     def eval(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int:
+        # Check for invalid mop sizes (e.g., function references have size=-1)
+        if mop.size < 0:
+            raise EmulationException(
+                "Cannot evaluate mop with invalid size ({0}): {1}".format(
+                    mop.size, mop_type_to_string(mop.t)
+                )
+            )
+
         if mop.t == ida_hexrays.mop_n:
             return mop.nnn.value
         elif mop.t in [ida_hexrays.mop_r, ida_hexrays.mop_S]:
-            if (value := environment.lookup(mop)) is not None:
+            if (
+                value := environment.lookup(mop, raise_exception=not self.symbolic_mode)
+            ) is not None:
                 return value
-            raise EmulationException(
-                "Variable '{0}' is not defined for mop_r or mop_S".format(
-                    format_mop_t(mop)
+            if self.symbolic_mode:
+                value = self.synthetic_call.get(mop)
+                environment.define(mop, value)
+                if emulator_log.info_on:
+                    emulator_log.info(
+                        " synthetic mop_r/mop_S {0} defined as: {1:x}".format(
+                            get_stack_or_reg_name(mop),
+                            value,
+                        )
+                    )
+                return value
+            else:
+                # Avoid dstr/format_mop_t in exception text (hot path)
+                _name = get_stack_or_reg_name(mop)
+                # Dump environment for debugging
+                if emulator_log.debug_on:
+                    environment.dump(f"Environment when looking up {_name}")
+                raise EmulationException(
+                    "Variable {0} is not defined for mop_r or mop_S".format(_name)
                 )
-            )
         elif mop.t == ida_hexrays.mop_d:
             res = self._eval_instruction(mop.d, environment)
             if res is None:
@@ -484,46 +828,54 @@ class MicroCodeInterpreter(object):
             return res
         elif mop.t == ida_hexrays.mop_a:
             if mop.a.t == ida_hexrays.mop_v:
-                emulator_log.debug(
-                    "Reading a mop_a '{0}' -> {1:x}".format(format_mop_t(mop), mop.a.g)
-                )
+                if emulator_log.debug_on:
+                    emulator_log.debug(
+                        "Reading a mop_a '%s' -> %x", format_mop_t(mop), mop.a.g
+                    )
                 return mop.a.g
             elif mop.a.t == ida_hexrays.mop_S:
-                emulator_log.debug(
-                    "Reading a mop_a '{0}' -> {1:x}".format(
-                        format_mop_t(mop), mop.a.s.off
+                if emulator_log.debug_on:
+                    emulator_log.debug(
+                        "Reading a mop_a '%s' -> %x", format_mop_t(mop), mop.a.s.off
                     )
-                )
                 return mop.a.s.off
+            # Keep message compact and avoid dstr
             raise UnresolvedMopException(
-                "Calling get_cst with unsupported mop type {0} - {1}: '{2}'".format(
-                    mop.t, mop.a.t, format_mop_t(mop)
+                "Calling get_cst with unsupported mop type {0} - {1}".format(
+                    mop_type_to_string(mop.t), mop_type_to_string(mop.a.t)
                 )
             )
         elif mop.t == ida_hexrays.mop_v:
             mem_seg = idaapi.getseg(mop.g)
+            if mem_seg is None:
+                raise EmulationException(
+                    "Reading a mop_v at 0x{0:X} (no segment)".format(mop.g)
+                )
             seg_perm = mem_seg.perm
             if (seg_perm & idaapi.SEGPERM_WRITE) != 0:
-                emulator_log.debug(
-                    "Reading a (writable) mop_v {0}".format(format_mop_t(mop))
-                )
+                if emulator_log.debug_on:
+                    emulator_log.debug(
+                        "Reading a (writable) mop_v %s", format_mop_t(mop)
+                    )
                 if (value := environment.lookup(mop)) is not None:
                     return value
                 raise EmulationException(
-                    "Variable '{0}' is not defined for mop_v".format(mop.dstr())
+                    "Variable for mop_v at 0x{0:X} (size={1}) is not defined".format(
+                        mop.g, mop.size
+                    )
                 )
             else:
                 memory_value = idaapi.get_qword(mop.g)
-                emulator_log.debug(
-                    "Reading a mop_v {0:x} (non writable -> return {1:x})".format(
-                        mop.g, memory_value
+                if emulator_log.debug_on:
+                    emulator_log.debug(
+                        "Reading a mop_v %x (non writable -> return %x)",
+                        mop.g,
+                        memory_value,
                     )
-                )
-                return mop.g
+                return memory_value & AND_TABLE[mop.size]
+        # Avoid dstr in exception text
         raise EmulationException(
-            "Unsupported mop type '{0}': '{1}'".format(
-                mop_type_to_string(mop.t), format_mop_t(mop)
-            )
+            "Unsupported mop type '{0}'".format(mop_type_to_string(mop.t))
         )
 
     def eval_instruction(
@@ -533,15 +885,15 @@ class MicroCodeInterpreter(object):
         environment: MicroCodeEnvironment | None = None,
         raise_exception: bool = False,
     ) -> bool:
+        if environment is None:
+            environment = self.global_environment
+        if ins is None:
+            return False
+        if emulator_log.debug_on:
+            emulator_log.debug(
+                "Evaluating microcode instruction : '%s'", format_minsn_t(ins)
+            )
         try:
-            if environment is None:
-                environment = self.global_environment
-            if ins is None:
-                return False
-            if emulator_log.debug_on:
-                emulator_log.debug(
-                    "Evaluating microcode instruction : '%s'", format_minsn_t(ins)
-                )
             self._eval_instruction_and_update_environment(blk, ins, environment)
             return True
         except EmulationException as e:
@@ -570,12 +922,17 @@ class MicroCodeInterpreter(object):
             res = self.eval(mop, environment)
             return res
         except EmulationException as e:
+            # Prefer canonical name for registers/stack vars; fall back to hash
+            name = get_stack_or_reg_name(mop)
             emulator_log.warning(
-                "Can't get constant mop value: '%s' for mop: '%s': %s",
-                mop.dstr(),
-                format_mop_t(mop),
+                "Can't get constant mop value: %s for mop '%s': %s",
+                name,
+                mop_type_to_string(mop.t),
                 e,
             )
+            # Dump environment for debugging
+            if emulator_log.debug_on and environment is not None:
+                environment.dump("Environment at lookup failure")
             if raise_exception:
                 raise e
             else:
@@ -699,11 +1056,12 @@ class MicroCodeEnvironment:
                     self.cur_blk.mba.get_mblock(self.cur_blk.serial + 1),
                 )
                 self.next_ins = typing.cast(ida_hexrays.minsn_t, self.next_blk.head)
-        emulator_log.debug(
-            "Setting next block {0} and next ins {1}".format(
-                self.next_blk.serial, format_minsn_t(self.next_ins)
+        if emulator_log.debug_on:
+            emulator_log.debug(
+                "Setting next block %d and next ins %s",
+                self.next_blk.serial,
+                format_minsn_t(self.next_ins),
             )
-        )
 
     def set_next_flow(
         self, next_blk: ida_hexrays.mblock_t, next_ins: ida_hexrays.minsn_t
@@ -742,8 +1100,11 @@ class MicroCodeEnvironment:
             self.define(searched_mop, new_mop_value)
             return new_mop_value
         if raise_exception:
+            _name = get_stack_or_reg_name(searched_mop)
             raise EmulationException(
-                "Variable '{0}' is not defined".format(format_mop_t(searched_mop))
+                "Variable {0} of type {1} is not defined".format(
+                    _name, mop_type_to_string(searched_mop.t)
+                )
             )
 
     def lookup(
@@ -770,3 +1131,14 @@ class MicroCodeEnvironment:
                 mop_type_to_string(mop.t), format_mop_t(mop)
             )
         )
+
+    def dump(self, header: str = "Environment dump"):
+        """Dump the current environment state for debugging."""
+        emulator_log.debug("=== %s ===", header)
+        emulator_log.debug("  mop_r records (%d):", len(self.mop_r_record))
+        for mop, value in self.mop_r_record.items():
+            emulator_log.debug("    %s = 0x%x", format_mop_t(mop), value)
+        emulator_log.debug("  mop_S records (%d):", len(self.mop_S_record))
+        for mop, value in self.mop_S_record.items():
+            emulator_log.debug("    %s = 0x%x", format_mop_t(mop), value)
+        emulator_log.debug("=== End %s ===", header)
