@@ -31,7 +31,10 @@ jobs:
               run: |
                   pip install --upgrade pip setuptools wheel uv
                   uv pip install --system -e .
-                  uv pip install --system pytest pytest-cov
+                  uv pip install --system pytest pytest-cov import-linter
+            - name: Check import boundaries
+              run: |
+                  lint-imports
             - name: Run pytest
               run: |
                   pytest tests/unit/ -v --tb=short
