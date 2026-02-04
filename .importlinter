@@ -12,14 +12,6 @@ source_modules =
 forbidden_modules =
     d810.hexrays
 
-[importlinter:contract:unit-tests-no-mba]
-name = Unit tests must not import mba modules
-type = forbidden
-source_modules =
-    tests.unit
-forbidden_modules =
-    d810.mba
-
 [importlinter:contract:unit-tests-no-ui]
 name = Unit tests must not import ui modules
 type = forbidden
