@@ -1,0 +1,37 @@
+[importlinter]
+root_packages =
+    d810
+    tests
+include_external_packages = False
+
+[importlinter:contract:unit-tests-no-hexrays]
+name = Unit tests must not import hexrays modules
+type = forbidden
+source_modules =
+    tests.unit
+forbidden_modules =
+    d810.hexrays
+
+[importlinter:contract:unit-tests-no-mba]
+name = Unit tests must not import mba modules
+type = forbidden
+source_modules =
+    tests.unit
+forbidden_modules =
+    d810.mba
+
+[importlinter:contract:unit-tests-no-ui]
+name = Unit tests must not import ui modules
+type = forbidden
+source_modules =
+    tests.unit
+forbidden_modules =
+    d810.ui
+
+[importlinter:contract:unit-tests-no-optimizers]
+name = Unit tests must not import optimizers modules
+type = forbidden
+source_modules =
+    tests.unit
+forbidden_modules =
+    d810.optimizers
