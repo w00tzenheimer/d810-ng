@@ -11,12 +11,15 @@ Architecture Note:
     2. System tests import from ``d810.testing`` as part of the d810 package
     3. Moving to ``tests/`` would break those imports since tests/ is not a package
 
-    Unit tests mock the IDA imports, so this package can still be tested
-    without IDA running.
+    The ``runner`` module requires IDA and is NOT re-exported from this package.
+    System tests should import it directly::
+
+        from d810.testing.runner import run_deobfuscation_test
 
 Example usage::
 
-    from d810.testing import DeobfuscationCase, run_deobfuscation_test
+    from d810.testing import DeobfuscationCase
+    from d810.testing.runner import run_deobfuscation_test
 
     CASES = [
         DeobfuscationCase(
@@ -37,7 +40,6 @@ Example usage::
 """
 
 from .cases import DeobfuscationCase, BinaryOverride
-from .runner import run_deobfuscation_test
 from .assertions import (
     assert_contains,
     assert_not_contains,
@@ -48,7 +50,6 @@ from .assertions import (
 __all__ = [
     "DeobfuscationCase",
     "BinaryOverride",
-    "run_deobfuscation_test",
     "assert_contains",
     "assert_not_contains",
     "assert_code_equivalent",
