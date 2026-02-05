@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from d810.conf import D810Configuration, ProjectConfiguration
 from d810.conf.loggers import clear_logs, configure_loggers, getLogger
+from d810.core.project import ProjectContext
 from d810.core.stats import OptimizationStatistics
 from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.hexrays.hexrays_hooks import (
@@ -332,13 +333,18 @@ class D810State(metaclass=SingletonMeta):
         self._is_loaded = False
 
     @contextlib.contextmanager
-    def for_project(self, name: str) -> typing.Generator[int, None, None]:
+    def for_project(self, name: str) -> typing.Generator[ProjectContext, None, None]:
         _old_project_index = self.current_project_index
         project_index = self.project_manager.index(name)
         if project_index != _old_project_index:
             logger.info("switching to project %s", name)
         self.load_project(project_index)
-        yield project_index
-        if project_index != _old_project_index:
-            logger.info("switching back to project %s", _old_project_index)
-            self.load_project(_old_project_index)
+
+        ctx = ProjectContext(state=self, project_index=project_index)
+        try:
+            yield ctx
+        finally:
+            ctx.restore()
+            if project_index != _old_project_index:
+                logger.info("switching back to project %s", _old_project_index)
+                self.load_project(_old_project_index)
