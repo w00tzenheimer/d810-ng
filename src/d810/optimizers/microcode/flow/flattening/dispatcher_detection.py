@@ -572,12 +572,10 @@ class DispatcherCache:
                             analysis.state_constants.add(const_val)
 
         # Find the state variable (most comparisons)
-        best_var_key = None
         best_mop = None
         best_comparisons = []
         for var_key, (mop, comparisons) in var_comparisons.items():
             if len(comparisons) > len(best_comparisons):
-                best_var_key = var_key
                 best_mop = mop
                 best_comparisons = comparisons
 

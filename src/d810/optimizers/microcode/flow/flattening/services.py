@@ -232,7 +232,6 @@ class PathEmulator:
         )
 
         # Step 3: Emulate the dispatcher blocks
-        exit_block_serials = {blk.serial for blk in dispatcher.exit_blocks}
         internal_block_serials = {blk.serial for blk in dispatcher.internal_blocks}
         all_dispatcher_serials = {dispatcher.entry_block.serial} | internal_block_serials
 

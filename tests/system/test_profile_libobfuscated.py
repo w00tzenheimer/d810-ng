@@ -52,6 +52,7 @@ def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_fun
     return ida_database
 
 
+@pytest.mark.profile
 @pytest.mark.skipif(not PYINSTRUMENT_AVAILABLE, reason="pyinstrument not installed")
 class TestProfileLibObfuscated:
     """Profile d810 deobfuscation performance."""

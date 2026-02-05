@@ -37,10 +37,12 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+addopts = ["-m", "not profile"]
 markers = [
     "pure_python: Tests that run without IDA Pro (fast, no external dependencies)",
     "requires_ida: Tests that require IDA Pro to run",
     "slow: Slow tests (>10s) - typically Z3 verification or complex deobfuscation",
+    "profile: marks tests as performance profiling (deselect with '-m \"not profile\"')",
 ]
 
 # Coverage configuration

@@ -240,12 +240,14 @@ class VerifiableRule(SymbolicRule, Registrant):
         self.config = kwargs if kwargs is not None else {}
         if "maturities" in self.config:
             try:
-                from d810.hexrays.hexrays_formatters import string_to_maturity
+                import importlib
 
+                _fmt = importlib.import_module("d810.hexrays.hexrays_formatters")
+                string_to_maturity = _fmt.string_to_maturity
                 self.maturities = [
                     string_to_maturity(x) for x in self.config["maturities"]
                 ]
-            except ImportError:
+            except (ImportError, ModuleNotFoundError):
                 pass
         if "dump_intermediate_microcode" in self.config:
             self.dump_intermediate_microcode = self.config[
@@ -476,9 +478,10 @@ class VerifiableRule(SymbolicRule, Registrant):
 
                     if var_name is not None:
                         # This is a defining constraint - add the computed value
-                        from d810.expr.ast import AstConstant
+                        import importlib
 
-                        match_context[var_name] = AstConstant(var_name, value)
+                        _ast_mod = importlib.import_module("d810.expr.ast")
+                        match_context[var_name] = _ast_mod.AstConstant(var_name, value)
                     else:
                         # This is a checking constraint - verify it holds
                         if not constraint.check(match_context):

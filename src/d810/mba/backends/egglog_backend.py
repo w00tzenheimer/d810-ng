@@ -491,11 +491,12 @@ if EGGLOG_AVAILABLE:
             Returns:
                 BitExpr representation, or None if conversion fails.
             """
-            from d810.expr.ast import (
-                AstConstantProtocol,
-                AstLeafProtocol,
-                AstNodeProtocol,
-            )
+            import importlib
+
+            _ast_mod = importlib.import_module("d810.expr.ast")
+            AstConstantProtocol = _ast_mod.AstConstantProtocol
+            AstLeafProtocol = _ast_mod.AstLeafProtocol
+            AstNodeProtocol = _ast_mod.AstNodeProtocol
 
             if ast_node is None:
                 return None
@@ -599,7 +600,9 @@ if EGGLOG_AVAILABLE:
             Returns:
                 Simplified AstNode if a simplification was found, None otherwise.
             """
-            from d810.expr.ast import AstNode
+            import importlib
+
+            AstNode = importlib.import_module("d810.expr.ast").AstNode
 
             # Convert to BitExpr
             converter = AstToBitExprConverter()
@@ -636,7 +639,9 @@ if EGGLOG_AVAILABLE:
             This method creates candidate simplified expressions and checks
             if they're equivalent to the original using equality saturation.
             """
-            from d810.expr.ast import AstNode
+            import importlib
+
+            AstNode = importlib.import_module("d810.expr.ast").AstNode
 
             # If we have exactly 2 variables, try standard MBA simplifications
             if len(leaf_mapping) != 2:

@@ -3,6 +3,7 @@ root_packages =
     d810
     tests
 include_external_packages = False
+exclude_type_checking_imports = True
 
 [importlinter:contract:unit-tests-no-hexrays]
 name = Unit tests must not import hexrays modules

@@ -119,6 +119,58 @@ make clean
 
 **After**: !["After"](./docs/source/images/test_xor_after.png "After Plugin")
 
+## Running Tests
+
+D-810 ng has a comprehensive test suite that runs inside IDA Pro's headless mode (`idalib`). Tests are executed in Docker containers that bundle IDA Pro with the required Python environment.
+
+### Prerequisites
+
+- Docker and Docker Compose
+- Access to the `ghcr.io/mahmoudimus/idapro-linux` container images
+
+### Quick Start
+
+```bash
+# Run all system tests (excludes profiling tests by default)
+docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
+  "pip install -e .[dev] -q && pytest tests/system/ -v --tb=short"
+```
+
+### Test Categories
+
+| Marker | Description | Default |
+|--------|-------------|---------|
+| `pure_python` | Tests that run without IDA Pro (fast, no external dependencies) | Included |
+| `requires_ida` | Tests that require IDA Pro to run | Included |
+| `slow` | Slow tests (>10s) — typically Z3 verification or complex deobfuscation | Included |
+| `profile` | Performance profiling tests (decompiles functions repeatedly) | **Excluded** |
+
+### Running Specific Test Suites
+
+```bash
+# Run only unit tests (no IDA required)
+pytest tests/unit/ -v
+
+# Run a specific test class
+docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
+  "pip install -e .[dev] -q && pytest tests/system/test_libdeobfuscated_dsl.py::TestOLLVMPatterns -v --tb=short"
+
+# Run profiling tests (excluded by default, opt-in only)
+docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
+  "pip install -e .[dev] -q && pytest tests/system/test_profile_libobfuscated.py -m profile -v -s"
+
+# Override default marker filter to run everything
+docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
+  "pip install -e .[dev] -q && pytest tests/system/ -o 'addopts=' -v"
+```
+
+### Docker Services
+
+| Service | Image | Python | Description |
+|---------|-------|--------|-------------|
+| `idapro-tests` | `idapro-linux:idapro-tests` | 3.10 | Legacy test container |
+| `idapro-tests-9.2` | `idapro-linux:idapro-tests-9.2-py312` | 3.12 | Primary test container (recommended) |
+
 ## Warnings
 
 This plugin is still in early stage of development, so issues ~~may~~ will happen.

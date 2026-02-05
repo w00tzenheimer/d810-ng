@@ -2,11 +2,8 @@
 Unflattener for Bad While Loop
 TODO:
 
-# - Accept m_jz and m_jnz (plus support for == or != with non-zero constants).
-# - Allow the state register to be either l or r operand (code should not assume only l).
 # - Add an optional alias check: for example, if there is 'mov eax, tmp', look back for an earlier 'mov tmp, #CONST'.
 # - If possible, do not rely only on prevb/nextb; make sure selected exits are actual successors using the CFG (succset) to avoid incorrect matches after layout changes.
-# - Keep 'min_constant' and 'max_constant' as configuration options; these are important to filter out irrelevant matches.
 
 """
 
