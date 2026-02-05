@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import functools
-import logging
 import typing
 
 import ida_hexrays
 
-from d810 import _compat
-from d810.conf.loggers import getLogger
-from d810.expr import utils
+from d810.core import typing
+from d810.core import getLogger
+from d810.core import bits as rotate_helpers
 from d810.hexrays.hexrays_formatters import format_mop_t, opcode_to_string, sanitize_ea
 from d810.hexrays.hexrays_helpers import AND_TABLE  # already maps size→mask
 from d810.hexrays.hexrays_helpers import extract_literal_from_mop, is_rotate_helper_call
@@ -50,7 +49,7 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
         # Run *very* early so that the AST builder never sees the wrapper.
         self.maturities = [ida_hexrays.MMAT_LOCOPT]
 
-    @_compat.override
+    @typing.override
     def check_and_replace(
         self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:  # noqa: D401
@@ -153,7 +152,11 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
                 args_list,
             )
 
-        helper_func = getattr(utils, helper_name)
+        helper_func = getattr(rotate_helpers, helper_name, None)
+        if helper_func is None:
+            if logger.debug_on:
+                logger.debug("[RotateHelperInline] helper %s not found in rotate_helpers", helper_name)
+            return None
 
         # Safely extract literal values from the two arguments.  If either is not a
         # literal we cannot evaluate the helper at this stage.
