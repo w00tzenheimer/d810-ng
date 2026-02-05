@@ -92,6 +92,7 @@ if TYPE_CHECKING:
 
 import d810
 import d810._vendor.ida_reloader as reloadable
+from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 
 # Just scan/import modules to populate registries - no reload needed for tests
 reloadable.Scanner.scan(d810.__path__, "d810.", skip_packages=False)
@@ -606,6 +607,9 @@ def _d810_state_cm(*, all_rules=False):
         t_start_elapsed = time.perf_counter() - t_start
         print(f"    D810State.start_d810() took {t_start_elapsed:.2f}s")
 
+    # Clear caches to prevent stale microcode pointer issues between tests
+    MOP_CONSTANT_CACHE.clear()
+    MOP_TO_AST_CACHE.clear()
     state.stats.reset()
 
     try:
