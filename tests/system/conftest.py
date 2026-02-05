@@ -93,6 +93,11 @@ if TYPE_CHECKING:
 import d810
 import d810._vendor.ida_reloader as reloadable
 from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
+# Also import from d810.core to ensure both cache locations are accessible
+from d810.core import (
+    MOP_CONSTANT_CACHE as CORE_MOP_CONSTANT_CACHE,
+    MOP_TO_AST_CACHE as CORE_MOP_TO_AST_CACHE,
+)
 
 # Just scan/import modules to populate registries - no reload needed for tests
 reloadable.Scanner.scan(d810.__path__, "d810.", skip_packages=False)
@@ -326,6 +331,38 @@ class CodeComparator:
 # =============================================================================
 # Pytest Fixtures - Basic
 # =============================================================================
+
+
+@pytest.fixture(scope="class", autouse=True)
+def clear_all_caches():
+    """Clear all global caches before each test class.
+
+    This prevents stale microcode pointer issues and segfaults between tests
+    by ensuring all caches that may hold references to IDA objects are cleared.
+    """
+    from d810.optimizers.microcode.flow.flattening.dispatcher_detection import DispatcherCache
+    from d810.hexrays.tracker import MopTracker
+    from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block
+
+    # Clear all caches before test class
+    MOP_CONSTANT_CACHE.clear()
+    MOP_TO_AST_CACHE.clear()
+    CORE_MOP_CONSTANT_CACHE.clear()
+    CORE_MOP_TO_AST_CACHE.clear()
+    DispatcherCache.clear_cache()
+    MopTracker.reset()
+    fix_pred_cond_jump_block.clear_cache()
+
+    yield
+
+    # Clear again after test class to prevent cross-class contamination
+    MOP_CONSTANT_CACHE.clear()
+    MOP_TO_AST_CACHE.clear()
+    CORE_MOP_CONSTANT_CACHE.clear()
+    CORE_MOP_TO_AST_CACHE.clear()
+    DispatcherCache.clear_cache()
+    MopTracker.reset()
+    fix_pred_cond_jump_block.clear_cache()
 
 
 @pytest.fixture
@@ -608,8 +645,18 @@ def _d810_state_cm(*, all_rules=False):
         print(f"    D810State.start_d810() took {t_start_elapsed:.2f}s")
 
     # Clear caches to prevent stale microcode pointer issues between tests
+    # Import and clear from both locations to ensure complete cleanup
+    from d810.optimizers.microcode.flow.flattening.dispatcher_detection import DispatcherCache
+    from d810.hexrays.tracker import MopTracker
+    from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block
+
     MOP_CONSTANT_CACHE.clear()
     MOP_TO_AST_CACHE.clear()
+    CORE_MOP_CONSTANT_CACHE.clear()
+    CORE_MOP_TO_AST_CACHE.clear()
+    DispatcherCache.clear_cache()
+    MopTracker.reset()
+    fix_pred_cond_jump_block.clear_cache()
     state.stats.reset()
 
     try:
