@@ -19,6 +19,18 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
     DEFAULT_UNFLATTENING_MATURITIES = [ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1]
     DEFAULT_MAX_PASSES = None
 
+    def __init__(self):
+        super().__init__()
+        # Threshold ratio for unresolved path safety check.
+        # 0 = disabled (old behavior - ignores unresolved paths)
+        # > 0 = enabled (e.g., 2.0 means skip if unresolved > 2x resolved)
+        self.unresolved_threshold_ratio = 0
+
+    def configure(self, kwargs):
+        super().configure(kwargs)
+        # Load unresolved_threshold_ratio from config (default 0 = disabled)
+        self.unresolved_threshold_ratio = self.config.get("unresolved_threshold_ratio", 0)
+
     def analyze_blk(self, blk: ida_hexrays.mblock_t) -> int:
         if (blk.tail is None) or blk.tail.opcode not in FAKE_LOOP_OPCODES:
             return 0
@@ -58,19 +70,20 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
                 )
                 continue  # Try next predecessor instead of failing entirely
 
-            # SAFETY CHECK: If unresolved paths outnumber resolved paths, bail out
-            # Z3 analysis shows ignoring unresolved paths is unsafe when they could
-            # have different state values leading to different jump outcomes.
-            # Conservative heuristic: only trust resolved paths when they're the majority.
-            if unresolved_count > len(resolved_histories):
-                unflat_logger.warning(
-                    "Pred %s has more unresolved (%d) than resolved (%d) paths - "
-                    "unsafe to ignore unresolved, skipping",
-                    pred_serial,
-                    unresolved_count,
-                    len(resolved_histories),
-                )
-                continue
+            # SAFETY CHECK: Configurable threshold for unresolved paths
+            # When enabled (ratio > 0), skip if unresolved paths exceed threshold
+            # Default is 0 (disabled) to match old behavior that worked for most cases
+            if self.unresolved_threshold_ratio > 0:
+                if unresolved_count > self.unresolved_threshold_ratio * len(resolved_histories):
+                    unflat_logger.warning(
+                        "Pred %s has more unresolved (%d) than %.1fx resolved (%d) paths - "
+                        "unsafe to ignore unresolved, skipping",
+                        pred_serial,
+                        unresolved_count,
+                        self.unresolved_threshold_ratio,
+                        len(resolved_histories),
+                    )
+                    continue
 
             if unresolved_count > 0:
                 unflat_logger.debug(
