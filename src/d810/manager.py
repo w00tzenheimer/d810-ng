@@ -17,6 +17,8 @@ from d810.hexrays.hexrays_hooks import (
     HexraysDecompilationHook,
     InstructionOptimizerManager,
 )
+from d810.mba.backends.ida import adapt_rules
+from d810.mba.rules import VerifiableRule
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
 from d810.project_manager import ProjectManager
@@ -294,6 +296,11 @@ class D810State(metaclass=SingletonMeta):
             for rule_cls in InstructionOptimizationRule.registry.values()
             if not inspect.isabstract(rule_cls)
         ]
+
+        # Add VerifiableRules (DSL-based MBA rules) wrapped with IDA adapter
+        # These rules use the new DSL system for pattern matching and verification
+        verifiable_instances = VerifiableRule.instantiate_all()
+        self.known_ins_rules.extend(adapt_rules(verifiable_instances))
 
         self.known_blk_rules = [
             rule_cls()
