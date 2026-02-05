@@ -16,7 +16,7 @@ services:
             - ./:/work # the test suite to operate on
 
     idapro-tests-9.2:
-        image: ghcr.io/mahmoudimus/idapro-linux:idapro-tests-9.2@sha256:541790eb853f2a46ff713476c596cb3164d719bc33d5d3c4027687d5d9e2f1ba
+        image: ghcr.io/mahmoudimus/idapro-linux:idapro-tests-9.2-py312
         entrypoint: ["python3"]
         working_dir: /work
         environment:

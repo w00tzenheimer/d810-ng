@@ -12,6 +12,11 @@ This runs ONCE at startup, so egglog's overhead is acceptable.
 
 import logging
 
+import pytest
+
+# Skip entire module if egglog not installed
+egglog = pytest.importorskip("egglog", reason="egglog not installed")
+
 # Suppress egglog's verbose logging
 logging.getLogger("egglog").setLevel(logging.WARNING)
 logging.getLogger("egglog.egraph").setLevel(logging.WARNING)
