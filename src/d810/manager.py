@@ -5,9 +5,11 @@ import dataclasses
 import inspect
 import pathlib
 import typing
+from typing import TYPE_CHECKING
 
 from d810.conf import D810Configuration, ProjectConfiguration
 from d810.conf.loggers import clear_logs, configure_loggers, getLogger
+from d810.core.stats import OptimizationStatistics
 from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.hexrays.hexrays_hooks import (
     BlockOptimizerManager,
@@ -20,7 +22,9 @@ from d810.optimizers.microcode.instructions.handler import InstructionOptimizati
 from d810.project_manager import ProjectManager
 from d810.registry import EventEmitter
 from d810.singleton import SingletonMeta
-from d810.ui.ida_ui import D810GUI
+
+if TYPE_CHECKING:
+    from d810.ui.ida_ui import D810GUI
 
 try:
     import pyinstrument  # type: ignore
@@ -35,6 +39,7 @@ logger = getLogger("D810")
 @dataclasses.dataclass
 class D810Manager:
     log_dir: pathlib.Path
+    stats: OptimizationStatistics = dataclasses.field(default_factory=OptimizationStatistics)
     instruction_optimizer_rules: list = dataclasses.field(default_factory=list)
     instruction_optimizer_config: dict = dataclasses.field(default_factory=dict)
     block_optimizer_rules: list = dataclasses.field(default_factory=list)
@@ -76,9 +81,9 @@ class D810Manager:
         logger.debug("Starting manager...")
 
         # Instantiate core manager classes from registry
-        self.instruction_optimizer = InstructionOptimizerManager(self.log_dir)
+        self.instruction_optimizer = InstructionOptimizerManager(self.stats, self.log_dir)
         self.instruction_optimizer.configure(**self.instruction_optimizer_config)
-        self.block_optimizer = BlockOptimizerManager(self.log_dir)
+        self.block_optimizer = BlockOptimizerManager(self.stats, self.log_dir)
         self.block_optimizer.configure(**self.block_optimizer_config)
 
         for rule in self.instruction_optimizer_rules:
@@ -97,8 +102,7 @@ class D810Manager:
         # must become before listeners are installed
         for _subscriber in (
             self.start_profiling,
-            self.instruction_optimizer.reset_rule_usage_statistic,
-            self.block_optimizer.reset_rule_usage_statistic,
+            self.stats.reset,
             MOP_CONSTANT_CACHE.clear,
             MOP_TO_AST_CACHE.clear,
         ):
@@ -106,8 +110,7 @@ class D810Manager:
 
         for _subscriber in (
             self.stop_profiling,
-            self.instruction_optimizer.show_rule_usage_statistic,
-            self.block_optimizer.show_rule_usage_statistic,
+            self.stats.report,
             lambda: logger.info(
                 "MOP_CONSTANT_CACHE stats: %s", MOP_CONSTANT_CACHE.stats
             ),
@@ -162,6 +165,14 @@ class D810State(metaclass=SingletonMeta):
 
     def is_loaded(self):
         return self._is_loaded
+
+    @property
+    def stats(self) -> OptimizationStatistics:
+        """Forward stats access to the manager."""
+        if hasattr(self, 'manager') and self.manager is not None:
+            return self.manager.stats
+        # Return a fresh stats object if manager not yet initialized
+        return OptimizationStatistics()
 
     def reset(self) -> None:
         self._initialized: bool = False
@@ -301,6 +312,8 @@ class D810State(metaclass=SingletonMeta):
             self._is_loaded = False
 
         if gui and self._is_loaded:
+            # Lazy import to avoid Qt dependency in headless mode
+            from d810.ui.ida_ui import D810GUI
             self.gui = D810GUI(self)
             self.gui.show_windows()
 

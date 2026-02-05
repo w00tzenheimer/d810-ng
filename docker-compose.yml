@@ -9,6 +9,7 @@ services:
             - QT_X11_NO_MITSHM=1
             - LIBGL_ALWAYS_INDIRECT=1
             - IDAUSR=/root/.idapro
+            - IDA_INSTALL_DIR=/app/ida
             - PYTHONPATH=/app/ida/python:/work
             - PYTHONWARNINGS=ignore
         volumes:
@@ -25,6 +26,7 @@ services:
             - QT_X11_NO_MITSHM=1
             - LIBGL_ALWAYS_INDIRECT=1
             - IDAUSR=/root/.idapro
+            - IDA_INSTALL_DIR=/app/ida
             - PYTHONPATH=/app/ida/python:/work
             - PYTHONWARNINGS=ignore
         volumes:

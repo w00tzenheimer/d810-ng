@@ -23,7 +23,7 @@ import pytest
 
 import idaapi
 
-from d810.testing import run_deobfuscation_test
+from d810.testing.runner import run_deobfuscation_test
 from tests.system.cases.libobfuscated_comprehensive import (
     ALL_CASES,
     CORE_CASES,
