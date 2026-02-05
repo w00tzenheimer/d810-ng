@@ -1,0 +1,16 @@
+{
+  "cfg_rule_usages": {},
+  "instruction_rule_matches": {
+    "ConstantCallResultFoldRule": 1
+  },
+  "optimizer_matches": {
+    "PeepholeOptimizer": 1
+  },
+  "rule_executions": {
+    "constantcallresultfoldrule": {
+      "match_count": 1,
+      "rule_name": "ConstantCallResultFoldRule"
+    }
+  },
+  "total_rule_firings": 1
+}
