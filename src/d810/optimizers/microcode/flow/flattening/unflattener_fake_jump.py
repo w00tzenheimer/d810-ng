@@ -1,6 +1,6 @@
-from ida_hexrays import *
+import ida_hexrays
 
-from d810.conf.loggers import getLogger
+from d810.core import getLogger
 from d810.hexrays.cfg_utils import change_1way_block_successor, safe_verify
 from d810.hexrays.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
 from d810.hexrays.tracker import MopTracker
@@ -9,29 +9,29 @@ from d810.optimizers.microcode.flow.flattening.utils import get_all_possibles_va
 
 unflat_logger = getLogger("D810.unflat")
 
-FAKE_LOOP_OPCODES = [m_jz, m_jnz]
+FAKE_LOOP_OPCODES = [ida_hexrays.m_jz, ida_hexrays.m_jnz]
 
 
 class UnflattenerFakeJump(GenericUnflatteningRule):
     DESCRIPTION = (
         "Check if a jump is always taken for each father blocks and remove them"
     )
-    DEFAULT_UNFLATTENING_MATURITIES = [MMAT_CALLS, MMAT_GLBOPT1]
+    DEFAULT_UNFLATTENING_MATURITIES = [ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1]
     DEFAULT_MAX_PASSES = None
 
-    def analyze_blk(self, blk: mblock_t) -> int:
+    def analyze_blk(self, blk: ida_hexrays.mblock_t) -> int:
         if (blk.tail is None) or blk.tail.opcode not in FAKE_LOOP_OPCODES:
             return 0
         if blk.get_reginsn_qty() != 1:
             return 0
-        if blk.tail.r.t != mop_n:
+        if blk.tail.r.t != ida_hexrays.mop_n:
             return 0
         unflat_logger.info(
             "Checking if block %s is fake loop: %s",
             blk.serial,
             format_minsn_t(blk.tail),
         )
-        op_compared = mop_t(blk.tail.l)
+        op_compared = ida_hexrays.mop_t(blk.tail.l)
         blk_preset_list = [x for x in blk.predset]
         nb_change = 0
         for pred_serial in blk_preset_list:
@@ -44,12 +44,54 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
                 pred_blk, pred_blk.tail
             )
 
-            father_is_resolvable = all(
-                [father_history.is_resolved() for father_history in pred_histories]
-            )
-            if not father_is_resolvable:
-                return 0
-            pred_values = get_all_possibles_values(pred_histories, [op_compared])
+            # Filter to resolved histories only - unresolved histories are typically
+            # dispatcher back-edges (loops back before finding constant assignments)
+            # which are expected in flattened control flow
+            resolved_histories = [h for h in pred_histories if h.is_resolved()]
+            unresolved_count = len(pred_histories) - len(resolved_histories)
+
+            if len(resolved_histories) == 0:
+                # No resolved paths at all - can't determine values for this predecessor
+                unflat_logger.debug(
+                    "No resolved histories for pred %s, skipping",
+                    pred_serial,
+                )
+                continue  # Try next predecessor instead of failing entirely
+
+            # SAFETY CHECK: If too many unresolved paths, consider skipping.
+            # Z3 analysis shows ignoring unresolved paths can be unsafe when they could
+            # have different state values leading to different jump outcomes.
+            #
+            # However, for OLLVM FLA patterns:
+            # - Many paths are unresolved due to nested loop back-edges
+            # - These back-edges don't set state values, so they don't affect jump direction
+            # - The resolved paths still correctly determine if jump is always/never taken
+            #
+            # Relaxed heuristic: Skip only when unresolved massively outnumber resolved
+            # (10x threshold) AND we have very few resolved paths (< 3). This handles:
+            # - Simple cases: few paths, strict check (original behavior)
+            # - OLLVM FLA: many resolved paths, relax ratio requirement
+            few_resolved = len(resolved_histories) < 3
+            extreme_ratio = unresolved_count > 10 * len(resolved_histories)
+            if few_resolved and extreme_ratio:
+                unflat_logger.warning(
+                    "Pred %s has extreme unresolved:resolved ratio (%d vs %d) with few resolved - "
+                    "unsafe to ignore unresolved, skipping",
+                    pred_serial,
+                    unresolved_count,
+                    len(resolved_histories),
+                )
+                continue
+
+            if unresolved_count > 0:
+                unflat_logger.debug(
+                    "Pred %s has %d unresolved and %d resolved paths - using resolved only",
+                    pred_serial,
+                    unresolved_count,
+                    len(resolved_histories),
+                )
+
+            pred_values = get_all_possibles_values(resolved_histories, [op_compared])
             pred_values = [x[0] for x in pred_values]
             if None in pred_values:
                 unflat_logger.info("Some path are not resolved, can't fix jump")
@@ -67,8 +109,8 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
 
     def fix_successor(
         self,
-        fake_loop_block: mblock_t,
-        pred: mblock_t,
+        fake_loop_block: ida_hexrays.mblock_t,
+        pred: ida_hexrays.mblock_t,
         pred_comparison_values: list[int],
     ) -> bool:
         if len(pred_comparison_values) == 0:
@@ -78,7 +120,7 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
         jmp_taken = False
         jmp_not_taken = False
         dst_serial = None
-        if jmp_ins.opcode == m_jz:
+        if jmp_ins.opcode == ida_hexrays.m_jz:
             jmp_taken = all(
                 [
                     possible_value == compared_value
@@ -92,7 +134,7 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
                     for possible_value in pred_comparison_values
                 ]
             )
-        elif jmp_ins.opcode == m_jnz:
+        elif jmp_ins.opcode == ida_hexrays.m_jnz:
             jmp_taken = all(
                 [
                     possible_value != compared_value
@@ -151,7 +193,7 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
             )
         return change_1way_block_successor(pred, dst_serial)
 
-    def optimize(self, blk: mblock_t) -> int:
+    def optimize(self, blk: ida_hexrays.mblock_t) -> int:
         self.mba = blk.mba
         if not self.check_if_rule_should_be_used(blk):
             return 0

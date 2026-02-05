@@ -1,9 +1,10 @@
 import logging
 
-from d810.conf.loggers import getLogger
+from d810.core import getLogger
 
-tracker_logger = getLogger("D810.tracker")
-emulator_logger = getLogger("D810.emulator")
+# TODO: this doesn't belong in this module, move it a different module
+tracker_logger = getLogger("d810.expr.tracker")
+emulator_logger = getLogger("d810.expr.emulator")
 
 
 class UnflatteningException(Exception):
@@ -22,6 +23,7 @@ class NotResolvableFatherException(UnflatteningException):
     pass
 
 
+# TODO: this doesn't belong in this module, move it a different module
 def configure_mop_tracker_log_verbosity(verbose=False):
     tracker_log_level = tracker_logger.getEffectiveLevel()
     emulator_log_level = emulator_logger.getEffectiveLevel()
@@ -36,6 +38,7 @@ def restore_mop_tracker_log_verbosity(tracker_log_level, emulator_log_level):
     emulator_logger.setLevel(emulator_log_level)
 
 
+# TODO: this doesn't belong in this module, move it a different module
 def get_all_possibles_values(mop_histories, searched_mop_list, verbose=False):
     log_levels = configure_mop_tracker_log_verbosity(verbose)
     mop_cst_values_list = []

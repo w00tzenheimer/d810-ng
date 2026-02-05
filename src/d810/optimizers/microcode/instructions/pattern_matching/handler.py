@@ -19,6 +19,7 @@ pattern_search_logger = getLogger("D810.pattern_search")
 
 if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
+    from d810.mba.backends.ida import IDAPatternAdapter
 
 
 class PatternMatchingRule(GenericPatternRule):
@@ -318,9 +319,20 @@ class PatternOptimizer(InstructionOptimizer):
                 pass
         return True
 
-    def add_rule(self, rule: PatternMatchingRule):
-        """Add a traditional PatternMatchingRule to this optimizer."""
-        # Only accept rules that inherit from RULE_CLASSES
+    def add_rule(self, rule: "PatternMatchingRule | IDAPatternAdapter"):
+        """Add a rule to this optimizer.
+
+        Accepts both traditional PatternMatchingRule instances and
+        IDAPatternAdapter instances (VerifiableRule wrappers).
+        """
+        # Check if this is an IDAPatternAdapter (VerifiableRule wrapper)
+        # These bypass the RULE_CLASSES check and use _add_rule_internal directly
+        rule_class_name = rule.__class__.__name__
+        if rule_class_name == "IDAPatternAdapter":
+            self._add_rule_internal(rule)
+            return True
+
+        # For traditional PatternMatchingRule instances, check RULE_CLASSES
         is_ok = super().add_rule(rule)
         if not is_ok:
             return False

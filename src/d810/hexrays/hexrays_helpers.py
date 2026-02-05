@@ -3,6 +3,7 @@ Modern Pythonic representation of IDA Hex-Rays microcode primitives.
 Provides type-safe, high-performance dataclasses with IntEnum support and structural pattern matching.
 Enhanced with readable property names for operands.
 """
+from __future__ import annotations
 
 import dataclasses
 import enum
