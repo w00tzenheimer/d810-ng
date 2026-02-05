@@ -14,6 +14,8 @@ description = "This is a next generation version of D-810, an IDA Pro plugin whi
 dependencies = ["z3-solver", "typing-extensions"]
 
 [project.optional-dependencies]
+speedups = ["Cython>=3.0.0"]
+egraph = ["egglog>=12.0.0", "cloudpickle>=3.0.0"]
 dev = [
     "pyinstrument",
     "pytest>=7.0.0",
