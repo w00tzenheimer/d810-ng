@@ -72,7 +72,7 @@ jobs:
 
             - name: Build with Cython speedups
               run: |
-                  uv pip install --system -e ".[speedups]"
+                  uv pip install --system --no-build-isolation -e ".[speedups]"
 
             - name: Verify speedups installed
               run: |
