@@ -15,7 +15,7 @@ import weakref
 
 import ida_hexrays
 
-from d810.core import getLogger, typing
+from d810.core import CythonMode, getLogger, typing
 from d810.hexrays.cfg_utils import (
     extract_base_and_offset,
     get_stack_var_name,
@@ -87,7 +87,12 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         # run when SSA names are fixed but before aggressive global opts
         self.maturities = [ida_hexrays.MMAT_CALLS]
         self._seen = weakref.WeakKeyDictionary()  # mba -> last_maturity_run
-        self.cython_enabled = False
+        self.cython_enabled = CythonMode().is_enabled()
+
+    @typing.override
+    def configure(self, kwargs):
+        super().configure(kwargs)
+        self.cython_enabled = kwargs.get("cython_enabled", CythonMode().is_enabled())
 
     @typing.override
     def optimize(self, blk: ida_hexrays.mblock_t):
