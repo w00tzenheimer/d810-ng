@@ -6,13 +6,6 @@
 **.pyc
 **.log
 
-<<<<<<< Updated upstream
-samples/src/*.d
-samples/src/*.o
-samples/bins/*
-!samples/bins/**/*.dll
-!samples/bins/**/*.so
-=======
 # AI tools
 .cursorindexignore
 .cursorignore
@@ -54,4 +47,6 @@ src/d810/**/*.so.dSYM
 
 .env
 _indexable
->>>>>>> Stashed changes
+
+# Auto-downloaded IDA SDK
+.ida-sdk/
