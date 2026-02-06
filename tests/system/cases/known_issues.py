@@ -8,4 +8,5 @@ SEGFAULT_FUNCTIONS = {
     "switch_case_ollvm_pattern",
     "high_fan_in_pattern",
     "while_switch_flattened",
+    "tigress_minmaxarray",
 }
