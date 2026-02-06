@@ -11,6 +11,7 @@
 .cursorignore
 .cursorrules
 .cursor/
+.claude/
 
 # AI CLI Crap
 GEMINI.md
@@ -52,3 +53,5 @@ _indexable
 
 # Auto-downloaded IDA SDK
 .ida-sdk/
+
+\.*db
