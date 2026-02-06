@@ -1,6 +1,6 @@
 import ctypes
 
-from d810.cache import CacheImpl
+from d810.core.cache import CacheImpl
 from d810.hexrays.hexrays_helpers import MSB_TABLE
 
 CTYPE_SIGNED_TABLE = {

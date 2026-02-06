@@ -4,12 +4,21 @@ import contextlib
 import dataclasses
 import inspect
 import pathlib
+import pstats
+
+try:
+    import cProfile
+except ImportError:
+    cProfile = None  # type: ignore[assignment]
+import time
 import typing
 from typing import TYPE_CHECKING
 
-from d810.conf import D810Configuration, ProjectConfiguration
-from d810.conf.loggers import clear_logs, configure_loggers, getLogger
-from d810.core.project import ProjectContext
+from d810.core.config import D810Configuration, ProjectConfiguration
+from d810.core.logging import clear_logs, configure_loggers, getLogger
+from d810.core.project import ProjectContext, ProjectManager
+from d810.core.registry import EventEmitter
+from d810.core.singleton import SingletonMeta
 from d810.core.stats import OptimizationStatistics
 from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.hexrays.hexrays_hooks import (
@@ -22,9 +31,6 @@ from d810.mba.backends.ida import adapt_rules
 from d810.mba.rules import VerifiableRule
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
-from d810.project_manager import ProjectManager
-from d810.registry import EventEmitter
-from d810.singleton import SingletonMeta
 
 if TYPE_CHECKING:
     from d810.ui.ida_ui import D810GUI
@@ -37,6 +43,32 @@ except ImportError:
 D810_LOG_DIR_NAME = "d810_logs"
 
 logger = getLogger("D810")
+
+
+class CProfileWrapper:
+    """
+    A simple wrapper around cProfile.Profile that exposes an `.is_running` property.
+    """
+
+    def __init__(self):
+        self._profiler = cProfile.Profile()
+        self._is_running = False
+
+    @property
+    def is_running(self):
+        return self._is_running
+
+    def enable(self, *args, **kwargs):
+        self._profiler.enable(*args, **kwargs)
+        self._is_running = True
+
+    def disable(self):
+        self._profiler.disable()
+        self._is_running = False
+
+    @property
+    def profiler(self):
+        return self._profiler
 
 
 @dataclasses.dataclass
@@ -52,10 +84,15 @@ class D810Manager:
     profiler: typing.Any = dataclasses.field(
         default_factory=lambda: pyinstrument.Profiler() if pyinstrument else None
     )
+    cprofiler: CProfileWrapper | None = dataclasses.field(
+        default_factory=lambda: CProfileWrapper() if cProfile else None
+    )
     instruction_optimizer: InstructionOptimizerManager = dataclasses.field(init=False)
     block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
     hx_decompiler_hook: HexraysDecompilationHook = dataclasses.field(init=False)
     _started: bool = dataclasses.field(default=False, init=False)
+    _profiling_enabled: bool = dataclasses.field(default=False, init=False)
+    _start_ts: float = dataclasses.field(default=0.0, init=False)
 
     @property
     def started(self):
@@ -65,10 +102,21 @@ class D810Manager:
         self.config = kwargs
 
     def start_profiling(self):
+        if not self._profiling_enabled:
+            return
+
+        if self.cprofiler and not self.cprofiler.is_running:
+            self.cprofiler.enable()
         if self.profiler and not self.profiler.is_running:
             self.profiler.start()
 
     def stop_profiling(self) -> pathlib.Path | None:
+        if self.cprofiler and self.cprofiler.is_running:
+            self.cprofiler.disable()
+            output_path = self.log_dir / "d810_cprofile.prof"
+            self.cprofiler.profiler.dump_stats(str(output_path))
+            pstats.Stats(str(output_path)).strip_dirs().sort_stats("time").print_stats()
+            return output_path
         if self.profiler and self.profiler.is_running:
             self.profiler.stop()
             self.profiler.print()
@@ -77,6 +125,14 @@ class D810Manager:
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(self.profiler.output_html())
             return output_path
+
+    def enable_profiling(self):
+        self._profiling_enabled = True
+        self.start_profiling()
+
+    def disable_profiling(self):
+        self._profiling_enabled = False
+        self.stop_profiling()
 
     def start(self):
         if self._started:
@@ -101,6 +157,19 @@ class D810Manager:
         self._install_hooks()
         self._started = True
 
+    def _start_timer(self):
+        self._start_ts = time.perf_counter()
+
+    def _stop_timer(self, report: bool = True):
+        if report:
+            m, s = divmod(time.perf_counter() - self._start_ts, 60)
+            logger.info(
+                "Decompilation finished in %dm %ds",
+                int(m),
+                int(s),
+            )
+        self._start_ts = 0.0
+
     def _install_hooks(self):
         # must become before listeners are installed
         for _subscriber in (
@@ -108,6 +177,7 @@ class D810Manager:
             self.stats.reset,
             MOP_CONSTANT_CACHE.clear,
             MOP_TO_AST_CACHE.clear,
+            self._start_timer,
         ):
             self.event_emitter.on(DecompilationEvent.STARTED, _subscriber)
 
@@ -118,6 +188,7 @@ class D810Manager:
                 "MOP_CONSTANT_CACHE stats: %s", MOP_CONSTANT_CACHE.stats
             ),
             lambda: logger.info("MOP_TO_AST_CACHE stats: %s", MOP_TO_AST_CACHE.stats),
+            self._stop_timer,
         ):
             self.event_emitter.on(DecompilationEvent.FINISHED, _subscriber)
 
@@ -142,7 +213,7 @@ class D810Manager:
         self.block_optimizer.remove()
         self.hx_decompiler_hook.unhook()
         self.event_emitter.clear()
-        if self.profiler:
+        if self.profiler or self.cprofiler:
             self.stop_profiling()
 
 

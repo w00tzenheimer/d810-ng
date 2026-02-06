@@ -1,7 +1,7 @@
 import dataclasses
 import unittest
 
-from d810.singleton import SingletonMeta, singleton
+from d810.core.singleton import SingletonMeta, singleton
 
 
 class TestSingleton(unittest.TestCase):

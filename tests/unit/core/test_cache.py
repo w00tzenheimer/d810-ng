@@ -28,16 +28,16 @@ class TestCacheImpl(unittest.TestCase):
 
     def test_stats_hits_misses(self):
         c = CacheImpl(max_size=10, clock=FixedClock())
-        stats = c.stats()
+        stats = c.stats
         self.assertEqual(stats.hits, 0)
         self.assertEqual(stats.misses, 0)
         with self.assertRaises(KeyError):
             _ = c["missing"]
-        stats = c.stats()
+        stats = c.stats
         self.assertEqual(stats.misses, 1)
         c["x"] = 99
         _ = c["x"]
-        stats = c.stats()
+        stats = c.stats
         self.assertEqual(stats.hits, 1)
 
     def test_lru_eviction(self):
@@ -232,7 +232,7 @@ class TestCacheDecorator(unittest.TestCase):
         self.assertEqual(f(10), 20)
         self.assertEqual(calls, [10])
         # stats via wrapper.cache
-        stats = f.cache.stats()
+        stats = f.cache.stats
         self.assertEqual(stats.misses, 1)
         self.assertEqual(stats.hits, 1)
 
@@ -274,7 +274,7 @@ class TestCPythonCacheBehavior(unittest.TestCase):
         for i in range(5):
             f(i)
         # Unlimited caching: cache grows without eviction ([stackoverflow.com](https://stackoverflow.com/questions/78875431/how-to-disable-functools-lru-cache-when-developing-locally?utm_source=chatgpt.com))
-        self.assertEqual(f.cache.stats().size, 5)
+        self.assertEqual(f.cache.stats.size, 5)
 
     def test_cache_info_and_clear(self):
         @cache
@@ -283,12 +283,12 @@ class TestCPythonCacheBehavior(unittest.TestCase):
 
         f(1)
         f(1)
-        stats = f.cache.stats()
+        stats = f.cache.stats
         self.assertEqual(stats.hits, 1)
         self.assertEqual(stats.misses, 1)
         # clear removes entries but does not reset stats ([docs.python.org](https://docs.python.org/3/library/functools.html?utm_source=chatgpt.com))
         f.cache.clear()
-        self.assertEqual(f.cache.stats().size, 0)
+        self.assertEqual(f.cache.stats.size, 0)
 
     def test_unhashable_argument(self):
         @lru_cache(max_size=10)
@@ -306,7 +306,7 @@ class TestCPythonCacheBehavior(unittest.TestCase):
 
         for i in range(3):
             f(i)
-        self.assertEqual(f.cache.stats().size, 3)
+        self.assertEqual(f.cache.stats.size, 3)
 
     def test_wrapper_attributes(self):
         @cache

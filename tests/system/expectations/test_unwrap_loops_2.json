@@ -1,0 +1,41 @@
+{
+  "cfg_rule_usages": {
+    "FixPredecessorOfConditionalJumpBlock": [
+      4,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+    ]
+  },
+  "instruction_rule_matches": {},
+  "optimizer_matches": {},
+  "rule_executions": {},
+  "total_rule_firings": 0
+}

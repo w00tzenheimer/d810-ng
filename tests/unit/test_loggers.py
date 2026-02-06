@@ -1,11 +1,7 @@
 import logging
 import unittest
 
-from .tutils import load_conf_classes
-
-# Ensure d810.conf and submodules import with dummy ida_diskio
-with load_conf_classes():
-    from d810.conf.loggers import LoggerConfigurator, getLogger
+from d810.core.logging import LoggerConfigurator, getLogger
 
 
 class TestLoggerConfigurator(unittest.TestCase):

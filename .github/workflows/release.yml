@@ -1,0 +1,68 @@
+name: Release
+
+on:
+    push:
+        tags:
+            - "v*"
+    workflow_dispatch:
+        inputs:
+            tag:
+                description: "Release tag name (e.g. v1.2.3). If empty, uses the current ref."
+                required: false
+                default: ""
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+    cancel-in-progress: true
+
+permissions:
+    contents: write
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Resolve tag
+              id: version
+              run: |
+                  if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
+                    IN='${{ github.event.inputs.tag }}'
+                    if [[ "$IN" == refs/* ]]; then REF="$IN"; else REF="refs/tags/$IN"; fi
+                    TAG="${REF#refs/tags/}"
+                    echo "ref=$REF"       >> "$GITHUB_OUTPUT"
+                    echo "tag=$TAG"       >> "$GITHUB_OUTPUT"
+                    echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "ref=${{ github.ref }}"                    >> "$GITHUB_OUTPUT"
+                    echo "tag=${GITHUB_REF#refs/tags/}"             >> "$GITHUB_OUTPUT"
+                    echo "version=${GITHUB_REF#refs/tags/v}"        >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: Checkout code
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ steps.version.outputs.ref }}
+                  persist-credentials: false
+
+            - name: Skip if release already exists
+              id: guard
+              run: |
+                  if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+                    echo "already=true" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "already=false" >> "$GITHUB_OUTPUT"
+                  fi
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Create GitHub Release
+              if: steps.guard.outputs.already == 'false'
+              uses: softprops/action-gh-release@v2
+              with:
+                  tag_name: ${{ steps.version.outputs.tag }}
+                  name: ${{ steps.version.outputs.tag }}
+                  draft: false
+                  generate_release_notes: true
+                  prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
