@@ -167,6 +167,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
             logger.warning(
                 "Cython module `_fast_dataflow` not found. Falling back to slow Python implementation."
             )
+            self.cython_enabled = False
             return self._slow_run_on_function(mba)
 
         if total_changes > 0:
@@ -186,6 +187,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                 logger.warning(
                     "Cython module `_fast_dataflow` not found. Falling back to slow Python implementation."
                 )
+                self.cython_enabled = False
         return self._slow_dataflow(mba)
 
     def _slow_run_on_function(self, mba: ida_hexrays.mba_t) -> int:
