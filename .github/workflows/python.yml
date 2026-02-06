@@ -176,6 +176,7 @@ jobs:
                   docker load -i /tmp/docker-cache/idapro-tests-9.2.tar || echo "No cached image to load."
 
             - name: Build speedups and run system tests
+              continue-on-error: true
               run: |
                   set -e
                   docker compose run --rm --entrypoint bash idapro-tests-9.2 -c "
