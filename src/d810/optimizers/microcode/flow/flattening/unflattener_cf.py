@@ -12,7 +12,7 @@ import ida_lines
 import ida_pro
 import ida_xref
 
-from d810.conf.loggers import getLogger
+from d810.core.logging import getLogger
 from d810.hexrays.cfg_utils import safe_verify
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.hexrays.hexrays_helpers import MicrocodeHelper, MicroInstruction, MicroOperand

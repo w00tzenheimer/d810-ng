@@ -34,10 +34,10 @@ def load_conf_classes():
     setattr(dummy_mod, "get_user_idadir", MockIdaDiskio.get_user_idadir)
     sys.modules["ida_diskio"] = dummy_mod
     try:
-        if "d810.conf" in sys.modules:
-            module = importlib.reload(sys.modules["d810.conf"])
+        if "d810.core.config" in sys.modules:
+            module = importlib.reload(sys.modules["d810.core.config"])
         else:
-            module = importlib.import_module("d810.conf")
+            module = importlib.import_module("d810.core.config")
         yield module.D810Configuration, module.ProjectConfiguration, module.RuleConfiguration
     finally:
         # Restore original module or remove dummy

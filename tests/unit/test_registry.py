@@ -4,7 +4,7 @@ import inspect
 import unittest
 from typing import Annotated, AnyStr, Literal
 
-from d810.registry import (
+from d810.core.registry import (
     FilterableGenerator,
     Registrant,
     deferred_property,

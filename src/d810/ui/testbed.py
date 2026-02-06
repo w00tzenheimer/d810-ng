@@ -14,7 +14,7 @@ from unittest import loader, runner, suite
 
 import ida_kernwin
 
-from d810.conf.loggers import getLogger
+from d810.core.logging import getLogger
 
 # Import Qt classes through qt_shim for compatibility
 # All compatibility shims are automatically set up by qt_shim

@@ -1,0 +1,16 @@
+{
+  "cfg_rule_usages": {},
+  "instruction_rule_matches": {
+    "RotateHelperInlineRule": 7
+  },
+  "optimizer_matches": {
+    "PeepholeOptimizer": 7
+  },
+  "rule_executions": {
+    "rotatehelperinlinerule": {
+      "match_count": 7,
+      "rule_name": "RotateHelperInlineRule"
+    }
+  },
+  "total_rule_firings": 7
+}

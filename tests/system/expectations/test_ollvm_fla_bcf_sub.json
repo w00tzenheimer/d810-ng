@@ -1,0 +1,174 @@
+{
+  "cfg_rule_usages": {
+    "FixPredecessorOfConditionalJumpBlock": [
+      53,
+      50,
+      49,
+      48,
+      48,
+      47,
+      47,
+      43,
+      43,
+      41,
+      40,
+      39,
+      38,
+      36,
+      34,
+      32,
+      31,
+      31,
+      31,
+      31,
+      27,
+      26,
+      25,
+      24,
+      23,
+      22,
+      22,
+      20,
+      19,
+      19,
+      18,
+      17,
+      17,
+      15,
+      15,
+      15,
+      14,
+      13,
+      13,
+      12,
+      12,
+      10,
+      9,
+      7,
+      7,
+      6,
+      5,
+      5,
+      4,
+      3,
+      3,
+      2,
+      2,
+      1,
+      1,
+      2,
+      2,
+      2,
+      2,
+      2,
+      1,
+      2,
+      2,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      2,
+      1,
+      1,
+      2,
+      2,
+      2,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "JumpFixer": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "StackVariableConstantPropagationRule": [
+      9
+    ]
+  },
+  "instruction_rule_matches": {
+    "AndBnot_FactorRule_2": 7,
+    "ArithmeticChain": 1,
+    "BnotAnd_FactorRule_3": 2,
+    "BnotOr_FactorRule_1": 1,
+    "BnotXor_FactorRule_1": 6,
+    "BnotXor_Rule_1": 4,
+    "Or_FactorRule_1": 3,
+    "Or_OllvmRule_1": 1,
+    "XorChain": 1,
+    "Xor_Hodur_1": 1
+  },
+  "optimizer_matches": {
+    "ChainOptimizer": 2,
+    "PatternOptimizer": 25
+  },
+  "rule_executions": {
+    "andbnot_factorrule_2": {
+      "match_count": 7,
+      "rule_name": "AndBnot_FactorRule_2"
+    },
+    "arithmeticchain": {
+      "match_count": 1,
+      "rule_name": "ArithmeticChain"
+    },
+    "bnotand_factorrule_3": {
+      "match_count": 2,
+      "rule_name": "BnotAnd_FactorRule_3"
+    },
+    "bnotor_factorrule_1": {
+      "match_count": 1,
+      "rule_name": "BnotOr_FactorRule_1"
+    },
+    "bnotxor_factorrule_1": {
+      "match_count": 6,
+      "rule_name": "BnotXor_FactorRule_1"
+    },
+    "bnotxor_rule_1": {
+      "match_count": 4,
+      "rule_name": "BnotXor_Rule_1"
+    },
+    "or_factorrule_1": {
+      "match_count": 3,
+      "rule_name": "Or_FactorRule_1"
+    },
+    "or_ollvmrule_1": {
+      "match_count": 1,
+      "rule_name": "Or_OllvmRule_1"
+    },
+    "xor_hodur_1": {
+      "match_count": 1,
+      "rule_name": "Xor_Hodur_1"
+    },
+    "xorchain": {
+      "match_count": 1,
+      "rule_name": "XorChain"
+    }
+  },
+  "total_rule_firings": 27
+}
