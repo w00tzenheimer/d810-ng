@@ -452,7 +452,6 @@ class GenericDispatcherCollector(ida_hexrays.minsn_visitor_t):
             return False
         if len(set(disp_info.comparison_values)) < self.dispatcher_min_comparison_value:
             return False
-        self.dispatcher_list.append(disp_info)
         return True
 
     def visit_minsn(self):
