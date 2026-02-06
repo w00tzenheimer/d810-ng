@@ -47,21 +47,21 @@ else:
 
 def ensure_ida_sdk(sdk_path: pathlib.Path) -> pathlib.Path:
     """Ensure IDA SDK is available, downloading if necessary."""
-    # If SDK exists, use it
-    if sdk_path.exists() and (sdk_path / "include").exists():
+    # If SDK exists, use it (GitHub SDK has include under src/)
+    if sdk_path.exists() and (sdk_path / "src" / "include").exists():
         print(f"Using IDA SDK at: {sdk_path}", file=sys.stderr)
         return sdk_path
 
     # Check cached SDK
-    if DEFAULT_SDK_DIR.exists() and (DEFAULT_SDK_DIR / "include").exists():
+    if DEFAULT_SDK_DIR.exists() and (DEFAULT_SDK_DIR / "src" / "include").exists():
         print(f"Using cached IDA SDK at: {DEFAULT_SDK_DIR}", file=sys.stderr)
         return DEFAULT_SDK_DIR
 
     # Download SDK from GitHub
     print(f"IDA SDK not found. Downloading from {IDA_SDK_REPO}...", file=sys.stderr)
 
-    # Clean up partial/corrupt SDK directory (exists but missing include/)
-    if DEFAULT_SDK_DIR.exists() and not (DEFAULT_SDK_DIR / "include").exists():
+    # Clean up partial/corrupt SDK directory (exists but missing src/include/)
+    if DEFAULT_SDK_DIR.exists() and not (DEFAULT_SDK_DIR / "src" / "include").exists():
         print(f"Removing partial SDK directory: {DEFAULT_SDK_DIR}", file=sys.stderr)
         shutil.rmtree(DEFAULT_SDK_DIR)
 
@@ -79,7 +79,7 @@ def ensure_ida_sdk(sdk_path: pathlib.Path) -> pathlib.Path:
         except subprocess.CalledProcessError as e:
             print(f"git clone failed: {e.stderr.decode()}", file=sys.stderr)
             # Clean up partial clone before tarball fallback
-            if DEFAULT_SDK_DIR.exists() and not (DEFAULT_SDK_DIR / "include").exists():
+            if DEFAULT_SDK_DIR.exists() and not (DEFAULT_SDK_DIR / "src" / "include").exists():
                 shutil.rmtree(DEFAULT_SDK_DIR)
 
     # Fallback: download tarball
@@ -157,22 +157,22 @@ def get_ext_modules():
     sdk_path = pathlib.Path(sdk_env) if sdk_env else DEFAULT_SDK_DIR
     IDA_SDK = ensure_ida_sdk(sdk_path)
 
-    include_dirs = [str(IDA_SDK / "include"), str(pathlib.Path(__file__).parent / "src" / "include")]
-    library_dirs = [str(IDA_SDK / "lib")]
+    include_dirs = [str(IDA_SDK / "src" / "include"), str(pathlib.Path(__file__).parent / "src" / "include")]
+    library_dirs = [str(IDA_SDK / "src" / "lib")]
 
-    # Platform-specific library paths
+    # Platform-specific library paths (GitHub SDK has lib under src/)
     if OSTYPE == "Windows":
         library_dirs.extend([
-            str(IDA_SDK / "lib" / "x64_win_vc_64"),
-            str(IDA_SDK / "lib" / "x64_win_qt"),
+            str(IDA_SDK / "src" / "lib" / "x64_win_vc_64"),
+            str(IDA_SDK / "src" / "lib" / "x64_win_qt"),
         ])
         libraries = ["Qt5Core", "Qt5Gui", "Qt5Widgets", "ida", "idalib"]
     elif OSTYPE == "Darwin":
         subdir = "arm64_mac_clang_64" if LIBRARY == "arm64" else "x64_mac_clang_64"
-        library_dirs.append(str(IDA_SDK / "lib" / subdir))
+        library_dirs.append(str(IDA_SDK / "src" / "lib" / subdir))
         libraries = []
     else:  # Linux
-        library_dirs.append(str(IDA_SDK / "lib" / "x64_linux_gcc_64"))
+        library_dirs.append(str(IDA_SDK / "src" / "lib" / "x64_linux_gcc_64"))
         libraries = []
 
     macros = [("__EA64__", "1")] if x64 else []

@@ -69,7 +69,7 @@ jobs:
 
             - name: Clone IDA SDK
               run: |
-                  if [ -d ".ida-sdk/include" ]; then
+                  if [ -d ".ida-sdk/src/include" ]; then
                     echo "IDA SDK already present, skipping clone"
                   else
                     rm -rf .ida-sdk
