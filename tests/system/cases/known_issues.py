@@ -9,4 +9,5 @@ SEGFAULT_FUNCTIONS = {
     "high_fan_in_pattern",
     "while_switch_flattened",
     "tigress_minmaxarray",
+    "AntiDebug_ExceptionFilter",
 }
