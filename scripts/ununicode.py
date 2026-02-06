@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import argparse
 import sys
+import unicodedata
 from pathlib import Path
 
 
@@ -10,6 +11,7 @@ def clean_text(txt: str) -> str:
     replacements = {
         "–": "-",  # en-dash → hyphen
         "‐": "-",  # unicode hyphen → hyphen
+        "‑": "-",  # unicode hyphen → hyphen
         "\u00a0": " ",  # non-breaking space → regular space
         "\u200b": "",  # zero-width space → removed
         "\u200c": "",  # zero-width non-joiner → removed
@@ -23,13 +25,36 @@ def clean_text(txt: str) -> str:
         "‘": "'",  # left single quote → straight
         "“": '"',  # left double quote → straight
         "”": '"',  # right double quote → straight
+        "【": "[",  # left square bracket → [
+        "】": "]",  # right square bracket → ]
+        "†": "+",  # dagger → *
+        "‡": "*",  # double dagger → *
+        "§": "*",  # section sign → *
+        "¶": "*",  # paragraph sign → *
+        "™": "*",  # trademark symbol → *
+        "©": "*",  # copyright symbol → *
+        "®": "*",  # registered trademark symbol → *
+        "`": "`",  # backtick → `,
+        "•": "*",
+        "◦": "*",
     }
     for uni, ascii_ in replacements.items():
         txt = txt.replace(uni, ascii_)
-    # bullet points → asterisks
-    txt = txt.replace("•", "-").replace("◦", "*")
-    # standardize “. ” → “* ”?
-    return txt
+    normalized = unicodedata.normalize("NFKD", txt)
+    result = []
+    for char in normalized:
+        # Try to get ASCII equivalent through decomposition
+        if ord(char) < 128:
+            result.append(char)
+        elif unicodedata.category(char).startswith(
+            "M"
+        ):  # Mark category (combining marks)
+            # Skip combining marks (they're removed in NFKD normalization)
+            continue
+        else:
+            # Default to "*" for non-ASCII
+            result.append("*")
+    return "".join(result)
 
 
 def main():
@@ -83,5 +108,9 @@ def main():
         parser.error(f"Unexpected error: {e}")
 
 
+if __name__ == "__main__":
+    main()
+if __name__ == "__main__":
+    main()
 if __name__ == "__main__":
     main()
