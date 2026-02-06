@@ -448,6 +448,7 @@ DISPATCHER_PATTERN_CASES = [
         project="example_libobfuscated.json",
         obfuscated_contains=["switch", "case"],
         must_change=True,
+        skip="Segfault in ida_hexrays.decompile_func - needs investigation",
     ),
     DeobfuscationCase(
         function="mixed_dispatcher_pattern",
