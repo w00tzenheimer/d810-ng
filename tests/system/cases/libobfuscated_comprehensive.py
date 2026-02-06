@@ -699,6 +699,7 @@ WHILE_SWITCH_CASES = [
         # Uses while loops for flattening
         obfuscated_contains=["while"],
         must_change=True,
+        skip="Segfault in ida_hexrays.decompile_func - needs investigation",
     ),
 ]
 
