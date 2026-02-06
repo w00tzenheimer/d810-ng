@@ -161,6 +161,7 @@ def get_ext_modules():
     library_dirs = [str(IDA_SDK / "src" / "lib")]
 
     # Platform-specific library paths (GitHub SDK has lib under src/)
+    runtime_library_dirs = []
     if OSTYPE == "Windows":
         library_dirs.extend([
             str(IDA_SDK / "src" / "lib" / "x64_win_vc_64"),
@@ -172,8 +173,10 @@ def get_ext_modules():
         library_dirs.append(str(IDA_SDK / "src" / "lib" / subdir))
         libraries = []
     else:  # Linux
-        library_dirs.append(str(IDA_SDK / "src" / "lib" / "x64_linux_gcc_64"))
-        libraries = []
+        linux_lib_dir = str(IDA_SDK / "src" / "lib" / "x64_linux_gcc_64")
+        library_dirs.append(linux_lib_dir)
+        libraries = ["ida"]
+        runtime_library_dirs = [linux_lib_dir]
 
     macros = [("__EA64__", "1")] if x64 else []
     if DEBUG:
@@ -187,6 +190,7 @@ def get_ext_modules():
             include_dirs=include_dirs,
             library_dirs=library_dirs,
             libraries=libraries,
+            runtime_library_dirs=runtime_library_dirs,
             extra_compile_args=get_compile_args(),
             extra_link_args=get_link_args(),
             define_macros=macros,

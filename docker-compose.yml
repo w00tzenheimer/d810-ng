@@ -10,6 +10,7 @@ services:
             - LIBGL_ALWAYS_INDIRECT=1
             - IDAUSR=/root/.idapro
             - IDA_INSTALL_DIR=/app/ida
+            - LD_LIBRARY_PATH=/app/ida
             - PYTHONPATH=/app/ida/python:/work
             - PYTHONWARNINGS=ignore
         volumes:
@@ -27,6 +28,7 @@ services:
             - LIBGL_ALWAYS_INDIRECT=1
             - IDAUSR=/root/.idapro
             - IDA_INSTALL_DIR=/app/ida
+            - LD_LIBRARY_PATH=/app/ida
             - PYTHONPATH=/app/ida/python:/work
             - PYTHONWARNINGS=ignore
         volumes:
