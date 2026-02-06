@@ -5,7 +5,7 @@ import idaapi
 import d810
 import d810._vendor
 import d810._vendor.ida_reloader as reloadable
-import d810._compat as _compat
+from d810.core.typing import override
 
 D810_VERSION = "0.1"
 
@@ -67,7 +67,7 @@ class D810Plugin(
         )
         self.suppress_reload_errors = False
 
-    @_compat.override
+    @override
     def init(self):
         if not init_hexrays():
             print(f"{self.wanted_name} need Hex-Rays decompiler. Skipping")
@@ -79,7 +79,7 @@ class D810Plugin(
             return idaapi.PLUGIN_SKIP
         return super().init()
 
-    @_compat.override
+    @override
     def late_init(self):
         super().late_init()
         if not ida_hexrays.init_hexrays_plugin():
@@ -87,11 +87,11 @@ class D810Plugin(
             self.term()
         print(f"{self.wanted_name} initialized (version {D810_VERSION})")
 
-    @_compat.override
+    @override
     def run(self, args):
         self.reload()
 
-    @_compat.override
+    @override
     def term(self):
         super().term()
         print(f"Terminating {self.wanted_name}...")
@@ -110,19 +110,19 @@ class D810Plugin(
         """Unregister the reload action from IDA."""
         idaapi.unregister_action(f"{self.global_name}:reload_plugin")
 
-    @_compat.override
+    @override
     def update(self, ctx: ida_kernwin.action_ctx_base_t) -> int:
         """Action handler update - always enabled."""
         return idaapi.AST_ENABLE_ALWAYS
 
-    @_compat.override
+    @override
     def activate(self, ctx: ida_kernwin.action_ctx_base_t):
         """Action handler activate - triggers reload."""
         with self.plugin_setup_reload():
             self.reload()
         return 1
 
-    @_compat.override
+    @override
     def reload(self):
         """Hot-reload the *entire* package.
 

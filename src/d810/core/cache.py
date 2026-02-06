@@ -3,6 +3,7 @@ import collections
 import contextlib
 import dataclasses
 import functools
+import sys
 import threading
 import time
 import typing
@@ -17,11 +18,39 @@ V = typing.TypeVar("V")
 Eviction = typing.Callable[["Cache"], None]
 
 
+class SurvivesReload(abc.ABCMeta):
+    """
+    SurvivesReload intercepts calls to the constructor (`__call__`) and, when
+    `survive_reload=True`, stores or returns a shared instance on the module
+    object keyed by `reload_key` (or `_SHARED_<ClassName>`).
+
+    `survive_reload`/`reload_key` are handled only in the metaclass.
+    """
+
+    def __call__(
+        cls,
+        *args,
+        survive_reload: bool = False,
+        reload_key: str = "",
+        **kwargs,
+    ):
+        if survive_reload:
+            module = sys.modules[cls.__module__]
+            key = reload_key or f"_SHARED_{cls.__name__}"
+            existing = getattr(module, key, None)
+            if existing is not None:
+                return existing
+            inst = super().__call__(*args, **kwargs)
+            setattr(module, key, inst)
+            return inst
+        return super().__call__(*args, **kwargs)
+
+
 class OverweightError(Exception):
     pass
 
 
-class Cache(typing.MutableMapping[K, V]):
+class Cache(typing.MutableMapping[K, V], metaclass=SurvivesReload):
     @abc.abstractmethod
     def reap(self) -> None: ...
 
@@ -524,6 +553,7 @@ class CacheImpl(Cache[K, V]):
                     raise ValueError
                 link = nxt
 
+    @property
     def stats(self) -> Stats:
         with self._lock:
             return Stats(

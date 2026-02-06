@@ -10,9 +10,11 @@ import time
 import typing
 from typing import TYPE_CHECKING
 
-from d810.conf import D810Configuration, ProjectConfiguration
-from d810.conf.loggers import clear_logs, configure_loggers, getLogger
-from d810.core.project import ProjectContext
+from d810.core.config import D810Configuration, ProjectConfiguration
+from d810.core.logging import clear_logs, configure_loggers, getLogger
+from d810.core.project import ProjectContext, ProjectManager
+from d810.core.registry import EventEmitter
+from d810.core.singleton import SingletonMeta
 from d810.core.stats import OptimizationStatistics
 from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.hexrays.hexrays_hooks import (
@@ -25,9 +27,6 @@ from d810.mba.backends.ida import adapt_rules
 from d810.mba.rules import VerifiableRule
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
-from d810.project_manager import ProjectManager
-from d810.registry import EventEmitter
-from d810.singleton import SingletonMeta
 
 if TYPE_CHECKING:
     from d810.ui.ida_ui import D810GUI

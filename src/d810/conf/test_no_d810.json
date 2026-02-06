@@ -1,5 +1,0 @@
-{
-    "description": "All d810 rules disabled - test IDA baseline",
-    "ins_rules": [],
-    "blk_rules": []
-}

@@ -15,8 +15,8 @@ from d810.qt_shim import QtCore, QtWidgets, qt_flag_or
 if typing.TYPE_CHECKING:
     from d810.manager import D810State
 
-from d810.conf import ProjectConfiguration, RuleConfiguration
-from d810.conf.loggers import LoggerConfigurator, getLogger
+from d810.core.config import ProjectConfiguration, RuleConfiguration
+from d810.core.logging import LoggerConfigurator, getLogger
 from d810.ui.testbed import TestRunnerForm
 
 logger = getLogger("D810.ui")
