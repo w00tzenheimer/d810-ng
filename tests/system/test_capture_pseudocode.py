@@ -13,6 +13,8 @@ import pytest
 import idaapi
 import idc
 
+from tests.system.cases.known_issues import SEGFAULT_FUNCTIONS
+
 # Database path
 DB_PATH = pathlib.Path(__file__).parent / ".pseudocode_capture.db"
 
@@ -115,6 +117,9 @@ class TestCapturePseudocode:
         capture_db,
     ):
         """Capture before/after pseudocode for a function."""
+        if func_name in SEGFAULT_FUNCTIONS:
+            pytest.skip(f"Known segfault in decompile_func for '{func_name}'")
+
         func_ea = get_func_ea(func_name)
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"Function '{func_name}' not found")

@@ -493,7 +493,14 @@ class Scanner:
         if spec.loader is None:
             return
 
-        module = importlib.util.module_from_spec(spec)
+        try:
+            module = importlib.util.module_from_spec(spec)
+        except BaseException as e:
+            print(
+                f"Error while creating module {spec.name} - {e}\n{traceback.format_exc()}",
+                file=sys.stderr,
+            )
+            return
         # module is already loaded
         if module.__name__ in sys.modules:
             module = sys.modules[module.__name__]
