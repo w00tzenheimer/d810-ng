@@ -14,11 +14,10 @@ The canonical approach is always available. The egglog approach requires:
     pip install egglog cloudpickle
 """
 
-# from d810.optimizers.microcode.instructions.egraph.handler import (
-#     PatternOptimizer2,
-# )
-
-# Alias for clarity
-# CanonicalPatternOptimizer = PatternOptimizer2
-
-# __all__ = ["PatternOptimizer2", "CanonicalPatternOptimizer"]
+# Deferred imports: PatternOptimizer2 and EgglogOptimizer depend on
+# ida_hexrays which is only available inside IDA Pro.  Importing them at
+# package level would cause ImportError in headless / testing environments.
+# Consumers should import directly from the submodules instead:
+#
+#   from d810.optimizers.microcode.instructions.egraph.handler import PatternOptimizer2
+#   from d810.optimizers.microcode.instructions.egraph.egglog_handler import EgglogOptimizer

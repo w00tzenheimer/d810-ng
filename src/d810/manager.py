@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import contextlib
-import cProfile
 import dataclasses
 import inspect
 import pathlib
 import pstats
+
+try:
+    import cProfile
+except ImportError:
+    cProfile = None  # type: ignore[assignment]
 import time
 import typing
 from typing import TYPE_CHECKING

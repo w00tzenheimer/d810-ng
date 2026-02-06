@@ -53,13 +53,15 @@ def _is_ida_gui_available() -> bool:
 
     # Check if we're in IDA at all
     in_ida = exec_name.startswith("ida")
-    if in_ida:
-        try:
-            import idaapi
-        except ImportError:
-            return False
+    if not in_ida:
+        return False
 
-    return idaapi.is_idaq() if in_ida else False
+    try:
+        import idaapi
+    except ImportError:
+        return False
+
+    return idaapi.is_idaq()
 
 
 # Skip Qt imports entirely if not in GUI mode
@@ -116,6 +118,7 @@ if not _QT_AVAILABLE:
         class QTimer(ProxyClass): ...
 
         # Signal/Slot compatibility (will be set up by _setup_compatibility)
+        @staticmethod
         def pyqtSignal(*args, **kwargs): ...  # type: ignore[misc]
 
     class QtGui(ProxyNamespace):
