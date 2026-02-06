@@ -60,6 +60,11 @@ def ensure_ida_sdk(sdk_path: pathlib.Path) -> pathlib.Path:
     # Download SDK from GitHub
     print(f"IDA SDK not found. Downloading from {IDA_SDK_REPO}...", file=sys.stderr)
 
+    # Clean up partial/corrupt SDK directory (exists but missing include/)
+    if DEFAULT_SDK_DIR.exists() and not (DEFAULT_SDK_DIR / "include").exists():
+        print(f"Removing partial SDK directory: {DEFAULT_SDK_DIR}", file=sys.stderr)
+        shutil.rmtree(DEFAULT_SDK_DIR)
+
     # Try git clone first (faster, gets only latest)
     if shutil.which("git"):
         try:
@@ -73,6 +78,9 @@ def ensure_ida_sdk(sdk_path: pathlib.Path) -> pathlib.Path:
             return DEFAULT_SDK_DIR
         except subprocess.CalledProcessError as e:
             print(f"git clone failed: {e.stderr.decode()}", file=sys.stderr)
+            # Clean up partial clone before tarball fallback
+            if DEFAULT_SDK_DIR.exists() and not (DEFAULT_SDK_DIR / "include").exists():
+                shutil.rmtree(DEFAULT_SDK_DIR)
 
     # Fallback: download tarball
     try:
@@ -84,7 +92,10 @@ def ensure_ida_sdk(sdk_path: pathlib.Path) -> pathlib.Path:
 
             with tarfile.open(tmp.name, "r:gz") as tar:
                 with tempfile.TemporaryDirectory() as tmpdir:
-                    tar.extractall(tmpdir)
+                    try:
+                        tar.extractall(tmpdir, filter="data")
+                    except TypeError:
+                        tar.extractall(tmpdir)
                     extracted = next(pathlib.Path(tmpdir).iterdir())
                     shutil.move(str(extracted), str(DEFAULT_SDK_DIR))
 
@@ -146,7 +157,7 @@ def get_ext_modules():
     sdk_path = pathlib.Path(sdk_env) if sdk_env else DEFAULT_SDK_DIR
     IDA_SDK = ensure_ida_sdk(sdk_path)
 
-    include_dirs = [str(IDA_SDK / "include"), "src/include"]
+    include_dirs = [str(IDA_SDK / "include"), str(pathlib.Path(__file__).parent / "src" / "include")]
     library_dirs = [str(IDA_SDK / "lib")]
 
     # Platform-specific library paths

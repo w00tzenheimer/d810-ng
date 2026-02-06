@@ -51,6 +51,7 @@ jobs:
         env:
             PYTHONPATH: ${{ github.workspace }}
             D810_BUILD_SPEEDUPS: "1"
+            IDA_SDK: ${{ github.workspace }}/.ida-sdk
         steps:
             - uses: actions/checkout@v4
               with:
@@ -68,7 +69,12 @@ jobs:
 
             - name: Clone IDA SDK
               run: |
-                  git clone --depth=1 https://github.com/HexRaysSA/ida-sdk.git .ida-sdk
+                  if [ -d ".ida-sdk/include" ]; then
+                    echo "IDA SDK already present, skipping clone"
+                  else
+                    rm -rf .ida-sdk
+                    git clone --depth=1 https://github.com/HexRaysSA/ida-sdk.git .ida-sdk
+                  fi
 
             - name: Build with Cython speedups
               run: |
