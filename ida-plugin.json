@@ -2,7 +2,7 @@
     "IDAMetadataDescriptorVersion": 1,
     "plugin": {
         "name": "d810-ng",
-        "entryPoint": "src/D810.py",
+        "entryPoint": "src/d810ng.py",
         "categories": [
             "decompilation",
             "debugging-and-tracing"
