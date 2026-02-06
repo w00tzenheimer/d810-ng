@@ -261,7 +261,7 @@ MINSN_TO_AST_FORBIDDEN_OPCODES: list[int] = CONTROL_FLOW_OPCODES + [
 ]
 
 # Import constant tables from d810.core (IDA-independent)
-from d810.core.bits import AND_TABLE, MSB_TABLE
+from d810.core.bits import AND_TABLE, MSB_TABLE, SUB_TABLE
 
 
 # Hex-Rays mop equality checking

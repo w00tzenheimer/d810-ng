@@ -12,10 +12,7 @@ try:
     )
     _USING_CYTHON = True
 except ImportError:
-    # TODO: Fall back to pure Python implementation if needed
-    # For now, raise the import error so we know if Cython is unavailable
     _USING_CYTHON = False
-    raise
 
 __all__ = [
     "cy_extract_assignment",
