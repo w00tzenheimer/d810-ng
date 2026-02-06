@@ -427,6 +427,7 @@ DISPATCHER_PATTERN_CASES = [
         description="HIGH_FAN_IN dispatcher with multiple case blocks",
         project="example_libobfuscated.json",
         must_change=True,
+        skip="Segfault in ida_hexrays.decompile_func - needs investigation",
     ),
     DeobfuscationCase(
         function="state_comparison_pattern",

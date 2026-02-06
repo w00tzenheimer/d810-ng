@@ -525,7 +525,10 @@ class Scanner:
         if isinstance(package_path, pathlib.Path):
             package_path = str(package_path)
         # print(f"Scanning package {package_path} with prefix {prefix}")
-        for mod_info in pkgutil.walk_packages(package_path, prefix=prefix):
+        def _on_walk_error(name):
+            print(f"Warning: failed to import package {name}", file=sys.stderr)
+
+        for mod_info in pkgutil.walk_packages(package_path, prefix=prefix, onerror=_on_walk_error):
             if skip_packages and mod_info.ispkg:
                 continue
 
