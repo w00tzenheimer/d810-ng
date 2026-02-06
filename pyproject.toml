@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "d810"
 requires-python = ">= 3.10"
-version = "0.1.0"
+dynamic = ["version"]
 authors = [
     { name = "w00tzenheimer", email = "w00tzenheimer@gmail.com" },
     { name = "Boris Batteux", email = "boris.batteux@eshard.com" },
@@ -27,6 +27,9 @@ dev = [
 
 [tool.setuptools]
 package-dir = { "" = "src" }
+
+[tool.setuptools.dynamic]
+version = {attr = "d810.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
