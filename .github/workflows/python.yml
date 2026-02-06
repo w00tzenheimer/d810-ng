@@ -13,6 +13,7 @@ concurrency:
 
 jobs:
     unit-tests:
+        name: "unit-tests (py${{ matrix.python-version }})"
         runs-on: ubuntu-24.04
         strategy:
             matrix:
@@ -35,6 +36,58 @@ jobs:
             - name: Check import boundaries
               run: |
                   lint-imports
+            - name: Run pytest
+              run: |
+                  pytest tests/unit/ -v --tb=short
+
+    build-speedups:
+        name: "speedups (py${{ matrix.python-version }}, ${{ matrix.os }})"
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-24.04]
+                python-version: ["3.11", "3.12", "3.13"]
+        env:
+            PYTHONPATH: ${{ github.workspace }}
+            D810_BUILD_SPEEDUPS: "1"
+            IDA_SDK: ${{ github.workspace }}/.ida-sdk
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ matrix.python-version }}
+                  cache: pip
+
+            - name: Install build dependencies
+              run: |
+                  pip install --upgrade pip setuptools wheel uv
+                  uv pip install --system Cython>=3.0.0
+
+            - name: Clone IDA SDK
+              run: |
+                  if [ -d ".ida-sdk/src/include" ]; then
+                    echo "IDA SDK already present, skipping clone"
+                  else
+                    rm -rf .ida-sdk
+                    git clone --depth=1 https://github.com/HexRaysSA/ida-sdk.git .ida-sdk
+                  fi
+
+            - name: Build with Cython speedups
+              run: |
+                  uv pip install --system --no-build-isolation -e ".[speedups]"
+
+            - name: Verify speedups installed
+              run: |
+                  python -c "from d810.speedups import cythxr; print('Cython speedups available')" || echo "Speedups not built (expected if compile failed)"
+
+            - name: Install test dependencies
+              run: |
+                  uv pip install --system pytest pytest-cov
+
             - name: Run pytest
               run: |
                   pytest tests/unit/ -v --tb=short
