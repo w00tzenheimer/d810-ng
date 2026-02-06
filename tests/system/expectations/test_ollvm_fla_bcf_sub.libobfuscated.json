@@ -1,0 +1,175 @@
+{
+  "cfg_rule_usages": {
+    "FixPredecessorOfConditionalJumpBlock": [
+      47,
+      46,
+      45,
+      44,
+      44,
+      43,
+      43,
+      39,
+      39,
+      38,
+      37,
+      37,
+      36,
+      34,
+      32,
+      30,
+      29,
+      29,
+      29,
+      28,
+      24,
+      23,
+      22,
+      21,
+      20,
+      19,
+      19,
+      17,
+      16,
+      16,
+      15,
+      14,
+      14,
+      13,
+      13,
+      13,
+      12,
+      12,
+      12,
+      12,
+      12,
+      10,
+      9,
+      7,
+      7,
+      6,
+      5,
+      5,
+      4,
+      3,
+      3,
+      2,
+      2,
+      1,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      5,
+      6,
+      6,
+      4,
+      4,
+      3,
+      3,
+      4,
+      3,
+      4,
+      3,
+      3,
+      3,
+      3,
+      3,
+      4,
+      4,
+      4,
+      4,
+      3,
+      3,
+      4,
+      4,
+      4,
+      3,
+      3,
+      3,
+      1,
+      1,
+      1,
+      2,
+      1,
+      1
+    ],
+    "JumpFixer": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "StackVariableConstantPropagationRule": [
+      6
+    ]
+  },
+  "instruction_rule_matches": {
+    "AndBnot_FactorRule_2": 7,
+    "ArithmeticChain": 5,
+    "BnotAnd_FactorRule_3": 1,
+    "BnotXor_FactorRule_1": 5,
+    "BnotXor_Rule_1": 3,
+    "Or_FactorRule_1": 3,
+    "Xor_Hodur_1": 1,
+    "Z3ConstantOptimization": 1,
+    "Z3setnzRuleGeneric": 747,
+    "Z3setzRuleGeneric": 671
+  },
+  "optimizer_matches": {
+    "ChainOptimizer": 5,
+    "PatternOptimizer": 20,
+    "Z3Optimizer": 1
+  },
+  "rule_executions": {
+    "andbnot_factorrule_2": {
+      "match_count": 7,
+      "rule_name": "AndBnot_FactorRule_2"
+    },
+    "arithmeticchain": {
+      "match_count": 5,
+      "rule_name": "ArithmeticChain"
+    },
+    "bnotand_factorrule_3": {
+      "match_count": 1,
+      "rule_name": "BnotAnd_FactorRule_3"
+    },
+    "bnotxor_factorrule_1": {
+      "match_count": 5,
+      "rule_name": "BnotXor_FactorRule_1"
+    },
+    "bnotxor_rule_1": {
+      "match_count": 3,
+      "rule_name": "BnotXor_Rule_1"
+    },
+    "or_factorrule_1": {
+      "match_count": 3,
+      "rule_name": "Or_FactorRule_1"
+    },
+    "xor_hodur_1": {
+      "match_count": 1,
+      "rule_name": "Xor_Hodur_1"
+    },
+    "z3constantoptimization": {
+      "match_count": 1,
+      "rule_name": "Z3ConstantOptimization"
+    },
+    "z3setnzrulegeneric": {
+      "match_count": 747,
+      "rule_name": "Z3setnzRuleGeneric"
+    },
+    "z3setzrulegeneric": {
+      "match_count": 671,
+      "rule_name": "Z3setzRuleGeneric"
+    }
+  },
+  "total_rule_firings": 1444
+}

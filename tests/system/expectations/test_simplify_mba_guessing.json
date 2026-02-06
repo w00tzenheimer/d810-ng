@@ -1,0 +1,32 @@
+{
+  "cfg_rule_usages": {},
+  "instruction_rule_matches": {
+    "AddXor_Rule_1": 1,
+    "Add_HackersDelightRule_2": 3,
+    "ArithmeticChain": 3,
+    "BnotXor_FactorRule_1": 6
+  },
+  "optimizer_matches": {
+    "ChainOptimizer": 3,
+    "PatternOptimizer": 10
+  },
+  "rule_executions": {
+    "add_hackersdelightrule_2": {
+      "match_count": 3,
+      "rule_name": "Add_HackersDelightRule_2"
+    },
+    "addxor_rule_1": {
+      "match_count": 1,
+      "rule_name": "AddXor_Rule_1"
+    },
+    "arithmeticchain": {
+      "match_count": 3,
+      "rule_name": "ArithmeticChain"
+    },
+    "bnotxor_factorrule_1": {
+      "match_count": 6,
+      "rule_name": "BnotXor_FactorRule_1"
+    }
+  },
+  "total_rule_firings": 13
+}

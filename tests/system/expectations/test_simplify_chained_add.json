@@ -1,0 +1,16 @@
+{
+  "cfg_rule_usages": {},
+  "instruction_rule_matches": {
+    "ArithmeticChain": 2
+  },
+  "optimizer_matches": {
+    "ChainOptimizer": 2
+  },
+  "rule_executions": {
+    "arithmeticchain": {
+      "match_count": 2,
+      "rule_name": "ArithmeticChain"
+    }
+  },
+  "total_rule_firings": 2
+}
