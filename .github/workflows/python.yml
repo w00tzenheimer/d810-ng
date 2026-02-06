@@ -131,7 +131,7 @@ jobs:
                   docker compose run --rm --entrypoint bash idapro-tests-9.2 -c "
                       set -e
                       pip install -e .[dev] -q
-                      pytest tests/system/ -v --tb=short
+                      pytest tests/system/ -v --tb=short --forked
                   "
 
             - name: Save Docker image to cache
@@ -185,7 +185,7 @@ jobs:
                       D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e '.[dev]' -q
                       echo 'Speedups .so files built:'
                       find /work/src/d810/speedups -name '*.so' -type f
-                      pytest tests/system/ -v --tb=short
+                      pytest tests/system/ -v --tb=short --forked
                   "
 
             - name: Save Docker image to cache
