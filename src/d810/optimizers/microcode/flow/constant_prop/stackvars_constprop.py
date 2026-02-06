@@ -163,7 +163,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
             from . import _fast_dataflow
 
             total_changes = _fast_dataflow.cy_run_full_pass(mba)
-        except ImportError:
+        except (ImportError, AttributeError, TypeError):
             logger.warning(
                 "Cython module `_fast_dataflow` not found. Falling back to slow Python implementation."
             )
@@ -183,7 +183,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                 from . import _fast_dataflow
 
                 return _fast_dataflow.run_dataflow_cython(mba)
-            except ImportError:
+            except (ImportError, AttributeError, TypeError):
                 logger.warning(
                     "Cython module `_fast_dataflow` not found. Falling back to slow Python implementation."
                 )
@@ -282,35 +282,49 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
     def _fast_rewrite_instruction(
         self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
     ) -> int:
-        from . import _fast_dataflow
+        try:
+            from . import _fast_dataflow
 
-        if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
-            return 0
+            if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
+                return 0
 
-        return _fast_dataflow.cy_rewrite_instruction(ins, env)
+            return _fast_dataflow.cy_rewrite_instruction(ins, env)
+        except (ImportError, AttributeError, TypeError):
+            logger.warning(
+                "Cython module `_fast_dataflow` not available. Falling back to slow rewrite."
+            )
+            self.cython_enabled = False
+            return self._slow_rewrite_instruction(mba, ins, env)
 
     def _fast_transfer_single(
         self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
     ):
-        from . import _fast_dataflow
+        try:
+            from . import _fast_dataflow
 
-        # Side-effects handling - for *imprecise* side-effecting instructions
-        # (e.g. calls) we must drop every tracked constant.
-        if ins.is_unknown_call():
-            env.clear()
-            return
-        written_var = _fast_dataflow.cy_get_written_var_name(ins)
-        is_const_assign = _fast_dataflow.cy_is_constant_stack_assignment(ins)
-        # KILL when variable overwritten by non-constant value
-        if written_var and not is_const_assign and written_var in env:
-            del env[written_var]
-        # GEN - introduce new constant
-        if is_const_assign:
-            res = _fast_dataflow.cy_extract_assignment(ins)
-            if res:
-                var, val_size = res
-                if var:
-                    env[var] = val_size
+            # Side-effects handling - for *imprecise* side-effecting instructions
+            # (e.g. calls) we must drop every tracked constant.
+            if ins.is_unknown_call():
+                env.clear()
+                return
+            written_var = _fast_dataflow.cy_get_written_var_name(ins)
+            is_const_assign = _fast_dataflow.cy_is_constant_stack_assignment(ins)
+            # KILL when variable overwritten by non-constant value
+            if written_var and not is_const_assign and written_var in env:
+                del env[written_var]
+            # GEN - introduce new constant
+            if is_const_assign:
+                res = _fast_dataflow.cy_extract_assignment(ins)
+                if res:
+                    var, val_size = res
+                    if var:
+                        env[var] = val_size
+        except (ImportError, AttributeError, TypeError):
+            logger.warning(
+                "Cython module `_fast_dataflow` not available. Falling back to slow transfer."
+            )
+            self.cython_enabled = False
+            self._slow_transfer_single(mba, ins, env)
 
     def _slow_dataflow(self, mba: ida_hexrays.mba_t):
         nb = mba.qty

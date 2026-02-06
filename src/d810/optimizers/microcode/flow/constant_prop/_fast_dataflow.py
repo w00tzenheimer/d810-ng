@@ -13,6 +13,12 @@ try:
     _USING_CYTHON = True
 except ImportError:
     _USING_CYTHON = False
+    cy_run_full_pass = None
+    cy_extract_assignment = None
+    cy_get_written_var_name = None
+    cy_is_constant_stack_assignment = None
+    cy_rewrite_instruction = None
+    run_dataflow_cython = None
 
 __all__ = [
     "cy_extract_assignment",
