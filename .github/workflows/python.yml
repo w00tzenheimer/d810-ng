@@ -84,6 +84,14 @@ jobs:
               run: |
                   python -c "from d810.speedups import cythxr; print('Cython speedups available')" || echo "Speedups not built (expected if compile failed)"
 
+            - name: Upload speedups artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: speedups-py${{ matrix.python-version }}-${{ matrix.os }}
+                  path: src/d810/speedups/**/*.so
+                  if-no-files-found: warn
+                  retention-days: 1
+
             - name: Install test dependencies
               run: |
                   uv pip install --system pytest pytest-cov
@@ -91,3 +99,117 @@ jobs:
             - name: Run pytest
               run: |
                   pytest tests/unit/ -v --tb=short
+
+    system-tests:
+        name: "system-tests (idapro-9.2, pure-python)"
+        runs-on: ubuntu-24.04
+        env:
+            PYTHONPATH: ${{ github.workspace }}
+        steps:
+            - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
+              uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+
+            - name: Login to GHCR
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GHCR_TOKEN }}
+
+            - name: Cache Docker image
+              id: docker-cache
+              uses: actions/cache@v4
+              with:
+                  path: /tmp/docker-cache
+                  key: docker-image-${{ runner.os }}-idapro-tests-9.2-${{ hashFiles('docker-compose.yml') }}
+                  restore-keys: |
+                      docker-image-${{ runner.os }}-idapro-tests-9.2-
+
+            - name: Load cached Docker image
+              if: steps.docker-cache.outputs.cache-hit == 'true'
+              run: |
+                  echo "Loading Docker image from cache..."
+                  docker load -i /tmp/docker-cache/idapro-tests-9.2.tar || echo "No cached image to load."
+
+            - name: Run system tests
+              run: |
+                  set -e
+                  docker compose run --rm --entrypoint bash idapro-tests-9.2 -c "
+                      set -e
+                      pip install -e .[dev] -q
+                      pytest tests/system/ -v --tb=short
+                  "
+
+            - name: Save Docker image to cache
+              if: steps.docker-cache.outputs.cache-hit != 'true'
+              run: |
+                  echo "Caching docker image for next run..."
+                  mkdir -p /tmp/docker-cache
+                  IMAGE_ID=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep idapro-linux | head -1)
+                  docker save "$IMAGE_ID" -o /tmp/docker-cache/idapro-tests-9.2.tar || echo "Failed to save image."
+
+    system-tests-speedups:
+        name: "system-tests (idapro-9.2, speedups)"
+        needs: [build-speedups]
+        runs-on: ubuntu-24.04
+        env:
+            PYTHONPATH: ${{ github.workspace }}
+        steps:
+            - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
+              uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+
+            - name: Download speedups artifacts (py3.12)
+              uses: actions/download-artifact@v4
+              with:
+                  name: speedups-py3.12-ubuntu-24.04
+                  path: src/d810/speedups/
+
+            - name: Verify speedups files
+              run: |
+                  echo "Speedups .so files:"
+                  find src/d810/speedups/ -name '*.so' -type f
+
+            - name: Login to GHCR
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GHCR_TOKEN }}
+
+            - name: Cache Docker image
+              id: docker-cache
+              uses: actions/cache@v4
+              with:
+                  path: /tmp/docker-cache
+                  key: docker-image-${{ runner.os }}-idapro-tests-9.2-${{ hashFiles('docker-compose.yml') }}
+                  restore-keys: |
+                      docker-image-${{ runner.os }}-idapro-tests-9.2-
+
+            - name: Load cached Docker image
+              if: steps.docker-cache.outputs.cache-hit == 'true'
+              run: |
+                  echo "Loading Docker image from cache..."
+                  docker load -i /tmp/docker-cache/idapro-tests-9.2.tar || echo "No cached image to load."
+
+            - name: Run system tests with speedups
+              run: |
+                  set -e
+                  docker compose run --rm --entrypoint bash idapro-tests-9.2 -c "
+                      set -e
+                      pip install -e .[dev] -q
+                      echo 'Checking speedups availability...'
+                      python -c 'from d810.speedups.expr.c_ast import AstNode; print(\"Cython speedups loaded\")'
+                      pytest tests/system/ -v --tb=short
+                  "
+
+            - name: Save Docker image to cache
+              if: steps.docker-cache.outputs.cache-hit != 'true'
+              run: |
+                  echo "Caching docker image for next run..."
+                  mkdir -p /tmp/docker-cache
+                  IMAGE_ID=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep idapro-linux | head -1)
+                  docker save "$IMAGE_ID" -o /tmp/docker-cache/idapro-tests-9.2.tar || echo "Failed to save image."

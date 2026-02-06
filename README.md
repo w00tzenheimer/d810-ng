@@ -1,3 +1,5 @@
+[![d810-ng tests](https://github.com/w00tzenheimer/d810-ng/actions/workflows/python.yml/badge.svg)](https://github.com/w00tzenheimer/d810-ng/actions/workflows/python.yml)
+
 # Introduction
 
 ## What is D-810 ng
@@ -126,7 +128,7 @@ D-810 ng has a comprehensive test suite that runs inside IDA Pro's headless mode
 ### Prerequisites
 
 - Docker and Docker Compose
-- Access to the `ghcr.io/mahmoudimus/idapro-linux` container images
+- Access to the `ghcr.io/w00tzenheimer/idapro-linux` container images
 
 ### Quick Start
 
