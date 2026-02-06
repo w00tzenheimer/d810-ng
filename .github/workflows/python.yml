@@ -180,6 +180,7 @@ jobs:
                   set -e
                   docker compose run --rm --entrypoint bash idapro-tests-9.2 -c "
                       set -e
+                      apt-get update -qq && apt-get install -y -qq g++ > /dev/null 2>&1
                       pip install setuptools wheel Cython>=3.0.0 -q
                       D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e '.[dev]' -q
                       python -c 'from d810.speedups.expr.c_ast import AstNode; print(\"Cython speedups loaded\")'
