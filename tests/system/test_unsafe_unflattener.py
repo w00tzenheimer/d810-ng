@@ -118,8 +118,10 @@ class TestUnflattenerSafetyCheck:
                 rule.is_activated = False
 
             # Find and enable UnflattenerFakeJump
+            # Search known_blk_rules (all registered rules) since the loaded
+            # project config may not include UnflattenerFakeJump
             fake_jump_rule = None
-            for rule in state.current_blk_rules:
+            for rule in state.known_blk_rules:
                 if rule.__class__.__name__ == "UnflattenerFakeJump":
                     rule.is_activated = True
                     fake_jump_rule = rule
@@ -127,6 +129,10 @@ class TestUnflattenerSafetyCheck:
 
             if fake_jump_rule is None:
                 pytest.skip("UnflattenerFakeJump rule not found")
+
+            # Ensure the rule is in current_blk_rules so d810 will use it
+            if fake_jump_rule not in state.current_blk_rules:
+                state.current_blk_rules.append(fake_jump_rule)
 
             # Reset statistics
             state.stats.reset()
@@ -235,10 +241,20 @@ class TestUnflattenerSafetyCheck:
                 pytest.skip(f"Project '{project_name}' not found")
 
             # Disable all rules, enable only UnflattenerFakeJump
+            # Search known_blk_rules since project config may not include it
             for rule in state.current_blk_rules:
-                rule.is_activated = rule.__class__.__name__ == "UnflattenerFakeJump"
+                rule.is_activated = False
             for rule in state.current_ins_rules:
                 rule.is_activated = False
+
+            fake_jump_rule = None
+            for rule in state.known_blk_rules:
+                if rule.__class__.__name__ == "UnflattenerFakeJump":
+                    rule.is_activated = True
+                    fake_jump_rule = rule
+                    break
+            if fake_jump_rule is not None and fake_jump_rule not in state.current_blk_rules:
+                state.current_blk_rules.append(fake_jump_rule)
 
             state.stats.reset()
 
@@ -294,10 +310,20 @@ class TestUnflattenerSafetyCheck:
                 pytest.skip(f"Project '{project_name}' not found")
 
             # Disable all rules, enable only UnflattenerFakeJump
+            # Search known_blk_rules since project config may not include it
             for rule in state.current_blk_rules:
-                rule.is_activated = rule.__class__.__name__ == "UnflattenerFakeJump"
+                rule.is_activated = False
             for rule in state.current_ins_rules:
                 rule.is_activated = False
+
+            fake_jump_rule = None
+            for rule in state.known_blk_rules:
+                if rule.__class__.__name__ == "UnflattenerFakeJump":
+                    rule.is_activated = True
+                    fake_jump_rule = rule
+                    break
+            if fake_jump_rule is not None and fake_jump_rule not in state.current_blk_rules:
+                state.current_blk_rules.append(fake_jump_rule)
 
             state.stats.reset()
 
@@ -346,8 +372,8 @@ class TestUnflattenerSafetyCheckRegression:
         hodur_func is a known-good unflattening case. The safety check should
         NOT prevent it from being unflattened.
         """
-        func_name = "_hodur_func"  # macOS adds underscore
-        func_ea = get_func_ea("hodur_func")
+        func_name = "_hodur_func"  # C source already has underscore; macOS adds another
+        func_ea = get_func_ea("_hodur_func")
 
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"Function 'hodur_func' not found in binary")
