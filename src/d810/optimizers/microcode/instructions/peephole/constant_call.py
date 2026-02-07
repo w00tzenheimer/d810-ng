@@ -117,6 +117,16 @@ class ConstantCallResultFoldRule(PeepholeSimplificationRule):
             if logger.debug_on:
                 logger.debug("[const-call] helper %s not found in rotate_helpers", helper_name)
             return None
+
+        # Guard against invalid destination size (0 or unexpected values)
+        # which would cause a KeyError on AND_TABLE or create a zero-size
+        # mop_n that crashes IDA's verify / optimize_local.
+        if ins.d.size not in AND_TABLE:
+            logger.warning(
+                "[const-call] invalid ins.d.size=%d, skipping fold", ins.d.size
+            )
+            return None
+
         result = helper_func(lhs_val, rhs_val) & AND_TABLE[ins.d.size]
 
         new = ida_hexrays.minsn_t(sanitize_ea(ins.ea))

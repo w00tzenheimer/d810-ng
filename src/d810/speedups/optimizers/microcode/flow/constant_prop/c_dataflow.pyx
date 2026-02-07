@@ -430,6 +430,8 @@ cdef bint _cy_process_operand(mop_t* op, CppConstMap& consts):
         if not name.empty():
             it = consts.find(name)
             if it != consts.end():
+                if op.size not in (1, 2, 4, 8, 16):
+                    return <bint>False
                 val = deref(it).second.first
                 temp_mop.make_number(val & _mask_for_bytes(op.size), op.size)
                 op.assign(temp_mop)
@@ -460,6 +462,8 @@ cdef bint _cy_process_operand(mop_t* op, CppConstMap& consts):
                             const_info_found = <bint>True
 
             if const_info_found:
+                if op.size not in (1, 2, 4, 8, 16):
+                    return <bint>False
                 val = deref(it).second.first
                 temp_mop.make_number(val & _mask_for_bytes(op.size), op.size)
                 op.assign(temp_mop)
@@ -494,6 +498,7 @@ cpdef int cy_rewrite_instruction(object ins_py, dict consts_py):
     cdef mop_t nm
     cdef mop_t zr
     cdef int dsize
+    cdef int rsize
     cdef bytes b_string
 
     cdef CppConstMap consts
@@ -538,11 +543,16 @@ cpdef int cy_rewrite_instruction(object ins_py, dict consts_py):
             res = lval >> (rval & 0x3F); can_fold = <bint>True
         if can_fold:
             dsize = ins.d.size if ins.d.size != 0 else ins.l.size
+            if dsize not in (1, 2, 4, 8, 16):
+                dsize = 4
             nm.make_number(res & _mask_for_bytes(dsize), dsize)
             ins.opcode = mcode_t.m_mov
             ins.l.assign(nm)
             # Clear r by assigning a neutral mop_t() declared above
-            zr.make_number(0, ins.r.size if ins.r.size != 0 else dsize)
+            rsize = ins.r.size if ins.r.size != 0 else dsize
+            if rsize not in (1, 2, 4, 8, 16):
+                rsize = dsize
+            zr.make_number(0, rsize)
             ins.r.assign(zr)
             changed = <bint>True
 
