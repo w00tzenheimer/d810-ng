@@ -17,8 +17,10 @@ import ida_hexrays
 
 from d810.core import CythonMode, getLogger, typing
 from d810.hexrays.cfg_utils import (
+    _VALID_MOP_SIZES,
     extract_base_and_offset,
     get_stack_var_name,
+    safe_make_number,
     safe_verify,
 )
 from d810.hexrays.hexrays_formatters import maturity_to_string
@@ -444,6 +446,12 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
             name = get_stack_var_name(op)
             if name and name in consts:
                 val, _ = consts[name]
+                if op.size not in _VALID_MOP_SIZES:
+                    logger.warning(
+                        "Skipping constprop rewrite: invalid op.size %d for var %s",
+                        op.size, name,
+                    )
+                    return False
                 op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
                 return True
         elif op.t == ida_hexrays.mop_f and op.f is not None:
@@ -467,6 +475,12 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                             const_info = consts[name]
                 if const_info:
                     val, _ = const_info
+                    if op.size not in _VALID_MOP_SIZES:
+                        logger.warning(
+                            "Skipping constprop ldx rewrite: invalid op.size %d",
+                            op.size,
+                        )
+                        return False
                     tmp = ida_hexrays.mop_t()
                     tmp.make_number(val & AND_TABLE[op.size], op.size)
                     op.assign(tmp)

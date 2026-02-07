@@ -14,6 +14,22 @@ from d810.hexrays.hexrays_helpers import CONDITIONAL_JUMP_OPCODES
 
 helper_logger = getLogger(__name__)
 
+_VALID_MOP_SIZES = frozenset({1, 2, 4, 8, 16})
+
+
+def safe_make_number(mop, value, size):
+    """Create a number operand with validated size.
+
+    If *size* is not one of the valid IDA operand sizes (1, 2, 4, 8, 16),
+    it is replaced with 4 (32-bit) to prevent a zero-size ``mop_n`` from
+    crashing Hex-Rays' C++ verify / optimize_local passes.
+    """
+    if size not in _VALID_MOP_SIZES:
+        helper_logger.warning("Invalid mop size %d, defaulting to 4", size)
+        size = 4
+    mask = (1 << (size * 8)) - 1
+    mop.make_number(value & mask, size)
+
 
 def log_block_info(blk: ida_hexrays.mblock_t, logger_func=helper_logger.info, ctx: str = ""):
     if blk is None:
@@ -472,7 +488,13 @@ def update_block_successors(blk: ida_hexrays.mblock_t, blk_succ_serial_list: lis
 
 def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
     mba = blk.mba
-    nop_block = mba.copy_block(blk, blk.nextb.serial)
+    # Append the new block at the end of the MBA (before the dummy last block)
+    # instead of inserting in the middle.  Inserting in the middle shifts all
+    # block serials >= the insertion point by +1 but does NOT update operand
+    # references (m_goto .l.b, jcond .d.b, m_jtbl case targets), leading to
+    # stale serial references and segfaults in later passes.
+    original_successor_serial = blk.nextb.serial
+    nop_block = mba.copy_block(blk, mba.qty - 1)
     cur_ins = nop_block.head
     if cur_ins == None:
         cur_inst = ida_hexrays.minsn_t(blk.start)
@@ -496,10 +518,12 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
         if prev_succ.serial != mba.qty - 1:
             prev_succ.mark_lists_dirty()
 
-    nop_block.succset.push_back(nop_block.serial + 1)
+    # Point the NOP block's successor to the original next block of blk,
+    # preserving the same logical relationship as the old mid-insertion approach.
+    nop_block.succset.push_back(original_successor_serial)
     nop_block.mark_lists_dirty()
 
-    new_blk_successor = mba.get_mblock(nop_block.serial + 1)
+    new_blk_successor = mba.get_mblock(original_successor_serial)
     new_blk_successor.predset.push_back(nop_block.serial)
     if new_blk_successor.serial != mba.qty - 1:
         new_blk_successor.mark_lists_dirty()

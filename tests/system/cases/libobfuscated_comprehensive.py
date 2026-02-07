@@ -414,7 +414,7 @@ CONSTANT_FOLDING_CASES = [
         description="Anti-debugging exception handler with constant folding",
         project="example_libobfuscated.json",
         must_change=False,
-        skip="Segfault in ida_hexrays.decompile_func - needs investigation",
+        # AntiDebug_ExceptionFilter segfault fixed by safe_make_number guard
     ),
 ]
 
@@ -429,7 +429,6 @@ DISPATCHER_PATTERN_CASES = [
         description="HIGH_FAN_IN dispatcher with multiple case blocks",
         project="example_libobfuscated.json",
         must_change=True,
-        skip="Segfault in ida_hexrays.decompile_func - needs investigation",
     ),
     DeobfuscationCase(
         function="state_comparison_pattern",
@@ -451,7 +450,6 @@ DISPATCHER_PATTERN_CASES = [
         project="example_libobfuscated.json",
         obfuscated_contains=["switch", "case"],
         must_change=True,
-        skip="Segfault in ida_hexrays.decompile_func - needs investigation",
     ),
     DeobfuscationCase(
         function="mixed_dispatcher_pattern",
@@ -647,7 +645,6 @@ TIGRESS_CASES = [
         # Must restore natural control flow (for/if instead of switch cases)
         deobfuscated_contains=["for ("],
         must_change=True,  # Original test: case_count_after < case_count_before
-        skip="Segfault in ida_hexrays.decompile_func - needs investigation",
     ),
 ]
 
@@ -702,7 +699,6 @@ WHILE_SWITCH_CASES = [
         # Uses while loops for flattening
         obfuscated_contains=["while"],
         must_change=True,
-        skip="Segfault in ida_hexrays.decompile_func - needs investigation",
     ),
 ]
 
