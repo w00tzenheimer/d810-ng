@@ -48,12 +48,10 @@ class CstSimplificationRule2(VerifiableRule):
 
     This simplifies OR of AND-XOR expressions with complementary masks.
 
-    NOTE: This rule is marked as KNOWN_INCORRECT because the identity requires
-    that the constants used in the & and ^ operations are disjoint, which is
-    not fully captured by the current constraints.
+    The constraints ensure c_2_1 and c_2_2 are bitwise complements, which
+    together with the computed c_res makes this identity provably correct.
+    Z3-verified.
     """
-
-    KNOWN_INCORRECT = True  # Requires disjoint constants constraint
 
     c_1_1 = Const("c_1_1")
     c_1_2 = Const("c_1_2")
@@ -641,21 +639,21 @@ CST Rules Migration Status
 
 Original file: rewrite_cst.py
 - Total rules: 22
-- Migrated: 21 (95.5%)
-- Not migrated: 1 (CstSimplificationRule2 - marked as INVALID)
+- Migrated: 22 (100%)
 
 Rule breakdown:
 - Simple constant folding: 8 rules
-- DynamicConst generation: 21 rules (all migrated rules)
+- DynamicConst generation: 22 rules (all migrated rules)
 - Lambda constraints: 7 rules
 - De Morgan's laws: 3 rules
 - OLLVM patterns: 3 rules (with complex multi-constraint validation)
 
-Not migrated:
-- CstSimplificationRule2: Marked as "This rule is invalid" with counterexample
-  The rule has a mathematical error and was never correct.
+Previously marked invalid:
+- CstSimplificationRule2: Was marked KNOWN_INCORRECT but Z3 proves it correct
+  with constraints c_2_1 == ~c_2_2 and c_res == (((c_1_1 ^ c_1_2) & c_2_1) ^ c_1_2).
+  The complementary mask constraint makes the identity valid.
 
-All 21 migrated rules are Z3-verified ✓
+All 22 migrated rules are Z3-verified ✓
 
 Code metrics:
 - Original: ~642 lines with imperative patterns

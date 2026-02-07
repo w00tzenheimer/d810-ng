@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Run overlapping tests from both suites and capture before/after pseudocode.
+"""Run DSL tests and capture before/after pseudocode.
 
-This script runs the 13 overlapping test functions from both test suites
-and captures the deobfuscation results to SQLite for comparison.
+This script runs deobfuscation test functions from the DSL test suite
+and captures the deobfuscation results to SQLite for analysis.
 
 Usage:
     python tests/system/run_comparison.py
 
 Results are stored in tests/system/.test_results.db
+
+Note: The legacy test_libdeobfuscated.py has been removed. All tests are now
+in test_libdeobfuscated_dsl.py using the data-driven DSL format.
 """
 
 import os
@@ -17,8 +20,8 @@ import pathlib
 # Add src to path
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent / "src"))
 
-# The 13 overlapping functions between both test suites
-OVERLAPPING_FUNCTIONS = [
+# Key test functions covered by the DSL test suite
+TEST_FUNCTIONS = [
     "test_chained_add",
     "test_cst_simplification",
     "test_opaque_predicate",
@@ -34,64 +37,20 @@ OVERLAPPING_FUNCTIONS = [
     "test_function_ollvm_fla_bcf_sub",
 ]
 
-# Mapping from function name to test method name in test_libdeobfuscated.py
-FUNCTION_TO_TEST_METHOD = {
-    "test_chained_add": "test_simplify_chained_add",
-    "test_cst_simplification": "test_cst_simplification",
-    "test_opaque_predicate": "test_deobfuscate_opaque_predicate",
-    "test_xor": "test_simplify_xor",
-    "test_or": "test_simplify_or",
-    "test_and": "test_simplify_and",
-    "test_neg": "test_simplify_neg",
-    "tigress_minmaxarray": "test_tigress_minmaxarray",
-    "unwrap_loops": "test_unwrap_loops",
-    "unwrap_loops_2": "test_unwrap_loops_2",
-    "unwrap_loops_3": "test_unwrap_loops_3",
-    "while_switch_flattened": "test_while_switch_flattened",
-    "test_function_ollvm_fla_bcf_sub": "test_ollvm_fla_bcf_sub",
-}
-
 
 def run_comparison_tests():
-    """Run pytest with --capture-to-db for both test suites."""
+    """Run pytest with --capture-to-db for the DSL test suite."""
     import subprocess
 
     test_dir = pathlib.Path(__file__).parent
 
-    # Build test selection for test_libdeobfuscated.py
-    libdeob_tests = [
-        f"tests/system/test_libdeobfuscated.py::TestLibDeobfuscated::{method}"
-        for method in FUNCTION_TO_TEST_METHOD.values()
-    ]
-
-    # Build test selection for test_libdeobfuscated_dsl.py (parametrized)
-    # These use test IDs like test_core_deobfuscation[test_xor]
-    dsl_tests = []
-    for func in OVERLAPPING_FUNCTIONS:
-        # The DSL tests are parametrized, so we match by function name in test ID
-        dsl_tests.append(f"-k {func}")
-
     print("=" * 60)
-    print("Running test_libdeobfuscated.py tests with --capture-to-db")
-    print("=" * 60)
-
-    cmd1 = [
-        sys.executable, "-m", "pytest",
-        "--capture-to-db",
-        "-v",
-        "--tb=short",
-    ] + libdeob_tests
-
-    print(f"Command: {' '.join(cmd1)}")
-    result1 = subprocess.run(cmd1, cwd=test_dir.parent.parent)
-
-    print("\n" + "=" * 60)
     print("Running test_libdeobfuscated_dsl.py tests with --capture-to-db")
     print("=" * 60)
 
-    # For DSL tests, we need to filter by function names
-    func_filter = " or ".join(OVERLAPPING_FUNCTIONS)
-    cmd2 = [
+    # For DSL tests, we filter by function names
+    func_filter = " or ".join(TEST_FUNCTIONS)
+    cmd = [
         sys.executable, "-m", "pytest",
         "tests/system/test_libdeobfuscated_dsl.py",
         "--capture-to-db",
@@ -100,15 +59,15 @@ def run_comparison_tests():
         "-k", func_filter,
     ]
 
-    print(f"Command: {' '.join(cmd2)}")
-    result2 = subprocess.run(cmd2, cwd=test_dir.parent.parent)
+    print(f"Command: {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=test_dir.parent.parent)
 
     print("\n" + "=" * 60)
     print("Test runs complete. Query results with:")
-    print("  python -m tests.system.test_capture compare-suites test_libdeobfuscated test_libdeobfuscated_dsl")
+    print("  python -m tests.system.test_capture compare-suites test_libdeobfuscated_dsl")
     print("=" * 60)
 
-    return result1.returncode == 0 and result2.returncode == 0
+    return result.returncode == 0
 
 
 def capture_single_function(func_name: str, binary_path: str):
@@ -175,7 +134,7 @@ def capture_single_function(func_name: str, binary_path: str):
 
 
 def display_results():
-    """Display comparison results from the database."""
+    """Display test results from the database."""
     from tests.system.test_capture import TestResultQuery, DB_PATH
 
     if not DB_PATH.exists():
@@ -186,10 +145,10 @@ def display_results():
     query = TestResultQuery(DB_PATH)
 
     print("\n" + "=" * 80)
-    print("COMPARISON: test_libdeobfuscated.py vs test_libdeobfuscated_dsl.py")
+    print("RESULTS: test_libdeobfuscated_dsl.py")
     print("=" * 80)
 
-    for func_name in OVERLAPPING_FUNCTIONS:
+    for func_name in TEST_FUNCTIONS:
         print(f"\n{'=' * 80}")
         print(f"FUNCTION: {func_name}")
         print("=" * 80)

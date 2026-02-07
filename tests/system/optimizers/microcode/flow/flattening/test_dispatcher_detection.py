@@ -41,11 +41,11 @@ def mock_ida_hexrays():
     # Mock mop_t types
     mock_module.mop_n = 2  # Number/constant
     mock_module.mop_r = 1  # Register
-    mock_module.mop_S = 3  # Stack variable
-    mock_module.mop_v = 5  # Global variable
-    mock_module.mop_l = 6  # Local variable
+    mock_module.mop_S = 5  # Stack variable
+    mock_module.mop_v = 6  # Global variable
+    mock_module.mop_l = 9  # Local variable
     mock_module.mop_d = 4  # Result of another instruction
-    mock_module.mop_b = 8  # Block reference
+    mock_module.mop_b = 7  # Block reference
 
     mock_module.BADADDR = 0xFFFFFFFFFFFFFFFF
 
@@ -62,7 +62,11 @@ def mock_ida_hexrays():
     mock_module.mop_t = mock_mop_t_constructor
 
     with patch.dict('sys.modules', {'ida_hexrays': mock_module}):
-        yield mock_module
+        # Also patch the module-level ida_hexrays binding in dispatcher_detection,
+        # since it was already imported with the real ida_hexrays module.
+        import d810.optimizers.microcode.flow.flattening.dispatcher_detection as dd_mod
+        with patch.object(dd_mod, 'ida_hexrays', mock_module):
+            yield mock_module
 
 
 class TestDispatcherStrategy:
@@ -139,7 +143,6 @@ class TestBlockAnalysis:
 class TestStateVariableCandidate:
     """Tests for StateVariableCandidate and stack offset conversion."""
 
-    @pytest.mark.xfail(reason="Pre-existing: stack offset API mismatch")
     def test_stack_offset_conversion(self, mock_ida_hexrays):
         from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
             StateVariableCandidate
@@ -148,7 +151,7 @@ class TestStateVariableCandidate:
         # Create stack variable candidate
         sv = StateVariableCandidate(
             mop=None,
-            mop_type=3,  # mop_S (stack)
+            mop_type=5,  # mop_S (stack)
             mop_offset=0x20,  # Microcode offset
             mop_size=4,
         )
@@ -242,7 +245,7 @@ class TestDispatcherCacheWithMocks:
             tail = Mock()
             tail.opcode = 0x41 if has_jtbl and i == 5 else 0x40  # m_jtbl or m_goto
             tail.l = Mock()
-            tail.l.t = 8  # mop_b
+            tail.l.t = 7  # mop_b
             tail.r = Mock()
             tail.r.t = 2  # mop_n
             tail.r.nnn = Mock()
@@ -453,7 +456,6 @@ class TestMopKeyGeneration:
         key = cache._get_mop_key(mock_mop)
         assert key == "r0"
 
-    @pytest.mark.xfail(reason="Pre-existing: stack offset API mismatch")
     def test_stack_key(self, mock_ida_hexrays):
         from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
             DispatcherCache
@@ -464,7 +466,7 @@ class TestMopKeyGeneration:
         cache = DispatcherCache(mock_mba)
 
         mock_mop = Mock()
-        mock_mop.t = 3  # mop_S
+        mock_mop.t = 5  # mop_S
         mock_mop.s = Mock()
         mock_mop.s.off = 0x20
 
@@ -542,7 +544,7 @@ class TestHodurDispatcherSkipping:
                     blk.tail.r.nnn = Mock()
                     blk.tail.r.nnn.value = right_val
                     blk.tail.l = Mock()
-                    blk.tail.l.t = 3  # mop_S
+                    blk.tail.l.t = 5  # mop_S
                     blk.tail.l.s = Mock()
                     blk.tail.l.s.off = 0x20
                     blk.tail.l.size = 4

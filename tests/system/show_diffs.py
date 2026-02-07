@@ -16,23 +16,6 @@ import sys
 
 DB_PATH = pathlib.Path(__file__).parent / ".pseudocode_capture.db"
 
-# Mapping from function name to test method in test_libdeobfuscated.py
-FUNCTION_TO_LIBDEOB_TEST = {
-    "test_chained_add": "TestLibDeobfuscated::test_simplify_chained_add",
-    "test_cst_simplification": "TestLibDeobfuscated::test_cst_simplification",
-    "test_opaque_predicate": "TestLibDeobfuscated::test_deobfuscate_opaque_predicate",
-    "test_xor": "TestLibDeobfuscated::test_simplify_xor",
-    "test_or": "TestLibDeobfuscated::test_simplify_or",
-    "test_and": "TestLibDeobfuscated::test_simplify_and",
-    "test_neg": "TestLibDeobfuscated::test_simplify_neg",
-    "tigress_minmaxarray": "TestLibDeobfuscated::test_tigress_minmaxarray",
-    "unwrap_loops": "TestLibDeobfuscated::test_unwrap_loops",
-    "unwrap_loops_2": "TestLibDeobfuscated::test_unwrap_loops_2",
-    "unwrap_loops_3": "TestLibDeobfuscated::test_unwrap_loops_3",
-    "while_switch_flattened": "TestLibDeobfuscated::test_while_switch_flattened",
-    "test_function_ollvm_fla_bcf_sub": "TestLibDeobfuscated::test_ollvm_fla_bcf_sub",
-}
-
 # Mapping from function name to DSL test classes
 FUNCTION_TO_DSL_TESTS = {
     "test_chained_add": ["TestCoreDeobfuscation", "TestMBASimplification", "TestSmoke", "TestAllCases"],
@@ -128,11 +111,7 @@ def show_function_diff(func_name: str, compact: bool = False):
     print("=" * 100)
 
     # Test origins
-    libdeob_test = FUNCTION_TO_LIBDEOB_TEST.get(func_name, "N/A")
     dsl_tests = FUNCTION_TO_DSL_TESTS.get(func_name, [])
-
-    print(f"\nTested by test_libdeobfuscated.py:")
-    print(f"  → {libdeob_test}")
 
     print(f"\nTested by test_libdeobfuscated_dsl.py:")
     for test_class in dsl_tests:
@@ -214,23 +193,23 @@ def show_summary_table():
     print("DEOBFUSCATION RESULTS BY TEST ORIGIN")
     print("=" * 120)
 
-    print(f"\n{'Function':<35} {'Changed':<8} {'Lines':<12} {'Original Test':<45}")
+    print(f"\n{'Function':<35} {'Changed':<8} {'Lines':<12} {'DSL Test Classes':<45}")
     print("-" * 120)
 
     for row in cursor:
         func = row['function_name']
-        changed = "✓" if row['code_changed'] else "✗"
+        changed = "Y" if row['code_changed'] else "N"
 
         # Estimate line counts from byte lengths (rough approximation)
         before_len = row['before_len'] or 0
         after_len = row['after_len'] or 0
         before_lines = before_len // 40 if before_len else 0
         after_lines = after_len // 40 if after_len else 0
-        lines = f"{before_lines}→{after_lines}"
+        lines = f"{before_lines}->{after_lines}"
 
-        libdeob = FUNCTION_TO_LIBDEOB_TEST.get(func, "N/A")
+        dsl_classes = ", ".join(FUNCTION_TO_DSL_TESTS.get(func, ["N/A"]))
 
-        print(f"{func:<35} {changed:<8} {lines:<12} {libdeob:<45}")
+        print(f"{func:<35} {changed:<8} {lines:<12} {dsl_classes:<45}")
 
     print("-" * 120)
 
