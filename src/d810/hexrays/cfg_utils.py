@@ -564,11 +564,11 @@ def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t) -> tuple[ida_hexra
         block_to_duplicate.tail.opcode
     ):
         block_to_duplicate_default_successor = mba.get_mblock(
-            block_to_duplicate.serial + 1
+            block_to_duplicate.nextb.serial
         )
         duplicated_blk_default = insert_nop_blk(duplicated_blk)
         change_1way_block_successor(
-            duplicated_blk_default, block_to_duplicate.serial + 1
+            duplicated_blk_default, block_to_duplicate.nextb.serial
         )
         helper_logger.debug(
             "  {0} is conditional, so created a default child {1} for {2} which goto {3}".format(

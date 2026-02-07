@@ -455,13 +455,13 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                 )
 
         # Queue modifications for never-taken predecessors
-        # Target: fallthrough (blk.serial + 1)
+        # Target: fallthrough (blk.nextb.serial)
         for pred_blk in pred_jmp_never_taken:
             self._pending_modifications.append(PredecessorModification(
                 mod_type=PredecessorModificationType.NEVER_TAKEN,
                 pred_serial=pred_blk.serial,
                 cond_block_serial=blk.serial,
-                target_serial=blk.serial + 1,  # Fallthrough
+                target_serial=blk.nextb.serial,  # Fallthrough
                 description=f"pred {pred_blk.serial} never takes jump in block {blk.serial}"
             ))
             nb_queued += 1
@@ -469,7 +469,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             if unflat_logger.isEnabledFor(10):  # DEBUG level
                 unflat_logger.debug(
                     "Queued NEVER_TAKEN: pred %d -> cond block %d -> fallthrough %d",
-                    pred_blk.serial, blk.serial, blk.serial + 1
+                    pred_blk.serial, blk.serial, blk.nextb.serial
                 )
 
         return nb_queued

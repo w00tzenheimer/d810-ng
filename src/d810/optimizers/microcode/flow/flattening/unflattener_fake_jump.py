@@ -163,7 +163,7 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
                 pred.serial,
                 pred_comparison_values,
             )
-            dst_serial = fake_loop_block.serial + 1
+            dst_serial = fake_loop_block.nextb.serial
         if dst_serial is None:
             unflat_logger.debug(
                 "Jump seems legit '%s' from %s: %s",

@@ -460,7 +460,7 @@ class MicroCodeInterpreter(object):
                     format_minsn_t(ins)
                 )
             )
-        direct_child_serial = cur_blk.serial + 1
+        direct_child_serial = cur_blk.nextb.serial
         if ins.opcode == ida_hexrays.m_jcnd:
             jump_taken = self.eval(ins.l, environment) != 0
         elif ins.opcode == ida_hexrays.m_jnz:
@@ -1045,7 +1045,7 @@ class MicroCodeEnvironment:
         if self.cur_ins is None:
             self.next_blk = typing.cast(
                 ida_hexrays.mblock_t,
-                self.cur_blk.mba.get_mblock(self.cur_blk.serial + 1),
+                self.cur_blk.nextb,
             )
             self.next_ins = typing.cast(ida_hexrays.minsn_t, self.next_blk.head)
         else:
@@ -1053,7 +1053,7 @@ class MicroCodeEnvironment:
             if self.next_ins is None:
                 self.next_blk = typing.cast(
                     ida_hexrays.mblock_t,
-                    self.cur_blk.mba.get_mblock(self.cur_blk.serial + 1),
+                    self.cur_blk.nextb,
                 )
                 self.next_ins = typing.cast(ida_hexrays.minsn_t, self.next_blk.head)
         if emulator_log.debug_on:

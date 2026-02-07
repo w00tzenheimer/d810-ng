@@ -901,13 +901,13 @@ def try_to_duplicate_one_block(var_histories: list[MopHistory]) -> tuple[int, in
                 else:
                     logger.warning(" not sure this is suppose to happen")
                     change_1way_block_successor(
-                        pred_block.mba.get_mblock(pred_block.serial + 1),
+                        pred_block.nextb,
                         duplicated_blk_jmp.serial,
                     )
                     nb_change += 1
 
             block_to_duplicate_default_successor = mba.get_mblock(
-                block_to_duplicate.serial + 1
+                block_to_duplicate.nextb.serial
             )
             logger.debug("  Now, we fix var histories...")
             for var_history in pred_history_group:
