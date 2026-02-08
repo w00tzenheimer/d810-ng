@@ -10,9 +10,12 @@
             "name": "FoldReadonlyDataRule",
             "is_activated": true,
             "config": {
-                "default": {},
+                "default": {
+                    "fold_writable_constants": true
+                },
                 "macho": {
-                    "allow_executable_readonly": true
+                    "allow_executable_readonly": true,
+                    "fold_writable_constants": true
                 }
             }
         },

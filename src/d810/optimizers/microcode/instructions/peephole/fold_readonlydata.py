@@ -77,6 +77,9 @@ import idaapi
 import d810.core.typing as typing
 from d810.core import getLogger
 from d810.hexrays.hexrays_helpers import extract_literal_from_mop
+from d810.optimizers.microcode.instructions.early.mem_read import (
+    is_never_written_var,
+)
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
@@ -105,6 +108,10 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         # permissions even though they contain read-only data. Set this to
         # True to allow folding from segments that are R+!W (ignoring X).
         self._allow_executable: bool = False
+        # When True, also fold constants from writable segments that have no
+        # write cross-references.  This is needed for hardened OLLVM where
+        # opaque constant tables are placed in .data (writable) segments.
+        self._fold_writable_constants: bool = False
 
     def configure(self, kwargs: dict) -> None:
         """Configure rule from project settings."""
@@ -112,6 +119,8 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         # Allow configuration via project config:
         # "allow_executable_readonly": true
         self._allow_executable = kwargs.get("allow_executable_readonly", False)
+        # "fold_writable_constants": true
+        self._fold_writable_constants = kwargs.get("fold_writable_constants", False)
 
     # --------------------------------------------------------------------- #
     # Helper functions                                                      #
@@ -142,6 +151,21 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
 
         # Default strict check: no execute permission
         return not has_exec
+
+    def _is_foldable_address(self, addr: int) -> bool:
+        """Check if the global at *addr* can safely be folded to a constant.
+
+        Returns True if either:
+        1. The address is in a read-only segment (original behaviour), OR
+        2. ``_fold_writable_constants`` is enabled **and** the address resides
+           in a writable segment that has no write cross-references (i.e. an
+           opaque constant table used by obfuscation).
+        """
+        if self._segment_is_read_only(addr):
+            return True
+        if self._fold_writable_constants:
+            return is_never_written_var(addr)
+        return False
 
     @staticmethod
     def _fetch_constant(addr: int, size: int) -> Optional[int]:
@@ -183,7 +207,7 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         # We have an effective address for a memory load.  Is it really read-only?
         if ea is None:
             return None
-        if not self._segment_is_read_only(ea):
+        if not self._is_foldable_address(ea):
             return None
 
         # Compute the immediate value from memory contents at the EA.
@@ -385,7 +409,7 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                 elif src and getattr(src, "t", None) == ida_hexrays.mop_v:
                     ea = src.g
 
-                if ea is not None and self._segment_is_read_only(ea):
+                if ea is not None and self._is_foldable_address(ea):
                     out_size = (
                         getattr(op, "size", 0) or getattr(inner, "size", 0) or 0
                     )
