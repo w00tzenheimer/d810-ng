@@ -36,9 +36,13 @@ def is_never_written_var(address: int) -> bool:
     to be read-only. It only checks that no code writes to this address,
     making it suitable for detecting opaque constant tables in writable
     segments (e.g., volatile globals used in OLLVM obfuscation).
+
+    Note: we intentionally do NOT call ``is_loaded(address)`` here.
+    ``idaapi.is_loaded`` returns True whenever the address has bytes
+    present in the IDB, which is the normal case for global variables
+    in ``.data``.  Rejecting loaded addresses would make this function
+    always return False for the exact variables we need to resolve.
     """
-    if is_loaded(address):
-        return False
     ref_finder = xrefblk_t()
     is_ok = ref_finder.first_to(address, XREF_DATA)
     while is_ok:
