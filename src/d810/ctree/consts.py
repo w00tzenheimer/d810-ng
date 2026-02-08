@@ -86,7 +86,7 @@ try:
         idaapi.cot_memref,
         idaapi.cot_memptr,
     ]
-except ImportError:
+except (ImportError, AttributeError):
     idaapi = None  # type: ignore[assignment]
     cexpr_op2str = {}
     cinsn_op2str = {}
