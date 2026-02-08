@@ -12,7 +12,6 @@ Results are stored in tests/system/.test_results.db
 
 import json
 import pathlib
-import platform
 import sqlite3
 import sys
 
@@ -122,7 +121,7 @@ def capture_function(func_name: str, project_config: str | None, conn: sqlite3.C
     state.stop_d810()
 
     # Store in database
-    binary_name = "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    binary_name = "libobfuscated.dylib"
 
     conn.execute("""
         INSERT INTO pseudocode_capture
@@ -158,7 +157,7 @@ def capture_all():
     from d810.manager import D810State
 
     # Determine binary path
-    binary_name = "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    binary_name = "libobfuscated.dylib"
     binary_path = pathlib.Path(__file__).parent.parent.parent / "samples" / "bins" / binary_name
 
     print(f"Opening database: {binary_path}")

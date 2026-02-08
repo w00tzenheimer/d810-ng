@@ -5,7 +5,6 @@ and via the pytest plugin.
 """
 
 import os
-import platform
 from pathlib import Path
 import tempfile
 
@@ -18,7 +17,7 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return "libobfuscated.dylib"
 
 
 def example_manual_capture():

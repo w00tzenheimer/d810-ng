@@ -13,11 +13,10 @@ Test Organization:
 - TestSmoke: Quick smoke tests for CI
 
 Override binary via environment variable:
-    D810_TEST_BINARY=libobfuscated.dll pytest tests/system/test_libdeobfuscated_dsl.py
+    D810_TEST_BINARY=libobfuscated.dylib pytest tests/system/test_libdeobfuscated_dsl.py
 """
 
 import os
-import platform
 
 import pytest
 
@@ -52,7 +51,7 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return "libobfuscated.dylib"
 
 
 @pytest.fixture(scope="class")

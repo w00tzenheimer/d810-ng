@@ -12,8 +12,6 @@ Supports both:
 
 from __future__ import annotations
 
-import platform
-
 import pytest
 
 import idaapi
@@ -58,7 +56,7 @@ class TestProfileLibObfuscated:
     """Profile d810 deobfuscation performance."""
 
     # Use platform-appropriate binary
-    binary_name = "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    binary_name = "libobfuscated.dylib"
 
     def test_profile_all_functions(self, libobfuscated_setup, d810_state):
         """Profile deobfuscation of all test functions."""
