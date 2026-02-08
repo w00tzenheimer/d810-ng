@@ -21,14 +21,7 @@ Test Functions (from fake_jumps.dylib):
 - fake_jump_dispatcher_like: sequential state transitions
 - fake_jump_multiple_cfg: three sequential fake jumps
 
-Comparison with Mock Tests
-==========================
-The mock-based tests in test_unflattener_fake_jump_mock.py remain valuable for:
-- Testing edge cases that are hard to produce from real binaries
-- Testing error handling paths (unresolved paths, empty predecessors)
-- Fast execution without IDA decompiler dependency
-
-These real-microcode tests complement the mocks by verifying:
+These real-microcode tests verify:
 - Real mop_t/minsn_t field values are handled correctly
 - MopTracker integration works with actual microcode
 - No hangs or crashes from real ida_hexrays.mop_t constructors
