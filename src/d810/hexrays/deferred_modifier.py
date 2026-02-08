@@ -199,6 +199,7 @@ from d810.hexrays.cfg_utils import (
     change_1way_block_successor,
     change_2way_block_conditional_successor,
     create_block,
+    create_standalone_block,
     make_2way_block_goto,
     mba_deep_cleaning,
     safe_verify,
@@ -774,10 +775,12 @@ class DeferredGraphModifier:
         is_0_way: bool,
     ) -> bool:
         """
-        Create an intermediate block and redirect source through it to target.
+        Create a standalone intermediate block and redirect source through it.
 
         Creates: source_blk -> new_block -> final_target
-        The new block contains copies of instructions_to_copy.
+
+        Uses :func:`create_standalone_block` instead of :func:`create_block`
+        to avoid corrupting ``ref_block``'s CFG edges (INTERR 50856/50858).
         """
         if not instructions_to_copy:
             logger.warning(
@@ -788,7 +791,7 @@ class DeferredGraphModifier:
 
         mba = self.mba
 
-        # Find reference block for insertion (tail block, avoiding XTRN/STOP)
+        # Find reference block for copy_block template (tail block, avoiding XTRN/STOP)
         tail_serial = mba.qty - 1
         ref_block = mba.get_mblock(tail_serial)
         while ref_block.type in (ida_hexrays.BLT_XTRN, ida_hexrays.BLT_STOP):
@@ -800,8 +803,13 @@ class DeferredGraphModifier:
         actual_is_0_way = is_0_way or (target_blk and target_blk.type == ida_hexrays.BLT_0WAY)
 
         try:
-            # Create the intermediate block with the instructions
-            new_block = create_block(ref_block, instructions_to_copy, is_0_way=actual_is_0_way)
+            # Create a standalone block -- ref_block's CFG edges are NOT modified.
+            new_block = create_standalone_block(
+                ref_block,
+                instructions_to_copy,
+                target_serial=None if actual_is_0_way else final_target,
+                is_0_way=actual_is_0_way,
+            )
 
             # Redirect source block to the new block
             if not change_1way_block_successor(source_blk, new_block.serial):
@@ -810,15 +818,6 @@ class DeferredGraphModifier:
                     source_blk.serial, new_block.serial
                 )
                 return False
-
-            # If not 0-way, redirect new block to final target
-            if not actual_is_0_way:
-                if not change_1way_block_successor(new_block, final_target):
-                    logger.warning(
-                        "Failed to redirect new block %d to target %d",
-                        new_block.serial, final_target
-                    )
-                    return False
 
             logger.debug(
                 "Created block %d: %d -> %d -> %d",
@@ -1117,10 +1116,12 @@ class ImmediateGraphModifier:
         is_0_way: bool,
     ) -> bool:
         """
-        Create an intermediate block and redirect source through it to target.
+        Create a standalone intermediate block and redirect source through it.
 
         Creates: source_blk -> new_block -> final_target
-        The new block contains copies of instructions_to_copy.
+
+        Uses :func:`create_standalone_block` instead of :func:`create_block`
+        to avoid corrupting ``ref_block``'s CFG edges (INTERR 50856/50858).
         """
         if not instructions_to_copy:
             logger.warning(
@@ -1131,7 +1132,7 @@ class ImmediateGraphModifier:
 
         mba = self.mba
 
-        # Find reference block for insertion (tail block, avoiding XTRN/STOP)
+        # Find reference block for copy_block template (tail block, avoiding XTRN/STOP)
         tail_serial = mba.qty - 1
         ref_block = mba.get_mblock(tail_serial)
         while ref_block.type in (ida_hexrays.BLT_XTRN, ida_hexrays.BLT_STOP):
@@ -1143,8 +1144,13 @@ class ImmediateGraphModifier:
         actual_is_0_way = is_0_way or (target_blk and target_blk.type == ida_hexrays.BLT_0WAY)
 
         try:
-            # Create the intermediate block with the instructions
-            new_block = create_block(ref_block, instructions_to_copy, is_0_way=actual_is_0_way)
+            # Create a standalone block -- ref_block's CFG edges are NOT modified.
+            new_block = create_standalone_block(
+                ref_block,
+                instructions_to_copy,
+                target_serial=None if actual_is_0_way else final_target,
+                is_0_way=actual_is_0_way,
+            )
 
             # Redirect source block to the new block
             if not change_1way_block_successor(source_blk, new_block.serial):
@@ -1153,15 +1159,6 @@ class ImmediateGraphModifier:
                     source_blk.serial, new_block.serial
                 )
                 return False
-
-            # If not 0-way, redirect new block to final target
-            if not actual_is_0_way:
-                if not change_1way_block_successor(new_block, final_target):
-                    logger.warning(
-                        "Failed to redirect new block %d to target %d",
-                        new_block.serial, final_target
-                    )
-                    return False
 
             logger.debug(
                 "Created block %d: %d -> %d -> %d",

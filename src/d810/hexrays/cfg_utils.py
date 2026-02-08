@@ -429,6 +429,11 @@ def create_block(
 
     if is_0_way:
         new_blk.type = ida_hexrays.BLT_0WAY
+        # Remove the goto instruction left by insert_nop_blk -- a 0-way block
+        # must NOT contain a goto, otherwise verify() raises INTERR 50856.
+        if new_blk.tail is not None and new_blk.tail.opcode == ida_hexrays.m_goto:
+            new_blk.make_nop(new_blk.tail)
+        new_blk.flags &= ~ida_hexrays.MBL_GOTO
         # Bookkeeping
         prev_successor_serial = new_blk.succset[0]
         new_blk.succset._del(prev_successor_serial)
@@ -444,6 +449,96 @@ def create_block(
         return new_blk
     except RuntimeError as e:
         helper_logger.error("Error in create_block: {0}".format(e))
+        log_block_info(new_blk, helper_logger.error)
+        raise e
+
+
+def create_standalone_block(
+    ref_blk: ida_hexrays.mblock_t,
+    blk_ins: list[ida_hexrays.minsn_t],
+    target_serial: int | None = None,
+    is_0_way: bool = False,
+) -> ida_hexrays.mblock_t:
+    """Create a standalone block without modifying ref_blk's CFG edges.
+
+    Unlike :func:`create_block` which uses :func:`insert_nop_blk` and rewires
+    ``ref_blk``'s successors/predecessors (causing INTERR 50858 when the
+    caller later redirects those edges), this function uses ``copy_block``
+    directly and builds the new block's CFG from scratch.
+
+    Args:
+        ref_blk: Template block used only for ``copy_block``; its CFG edges
+            are **not** modified.
+        blk_ins: Instructions to place in the new block.
+        target_serial: If not ``None`` and ``is_0_way`` is ``False``, a goto
+            to this serial is inserted and the block is wired as 1-way.
+        is_0_way: If ``True``, the block is created with ``BLT_0WAY``, no
+            goto instruction, and no successors.
+
+    Returns:
+        The newly created :class:`ida_hexrays.mblock_t`.
+    """
+    mba = ref_blk.mba
+
+    # 1. Copy ref_blk to get a fresh block at the end of the MBA
+    new_blk = mba.copy_block(ref_blk, mba.qty - 1)
+
+    # 2. Clean ALL inherited successor edges (copy_block clones them)
+    prev_successor_serials = [x for x in new_blk.succset]
+    for prev_serial in prev_successor_serials:
+        new_blk.succset._del(prev_serial)
+        prev_succ = mba.get_mblock(prev_serial)
+        prev_succ.predset._del(new_blk.serial)
+        if prev_succ.serial != mba.qty - 1:
+            prev_succ.mark_lists_dirty()
+
+    # 3. Clean ALL inherited predecessor edges (stale from ref_blk)
+    prev_predecessor_serials = [x for x in new_blk.predset]
+    for prev_serial in prev_predecessor_serials:
+        new_blk.predset._del(prev_serial)
+
+    # 4. NOP all inherited instructions
+    cur_ins = new_blk.head
+    if cur_ins is None:
+        # Empty block -- insert a NOP placeholder so we have a valid tail.ea
+        nop_ins = ida_hexrays.minsn_t(ref_blk.start)
+        nop_ins.opcode = ida_hexrays.m_nop
+        new_blk.insert_into_block(nop_ins, new_blk.head)
+    else:
+        while cur_ins is not None:
+            new_blk.make_nop(cur_ins)
+            cur_ins = cur_ins.next
+
+    # 5. Copy the desired instructions into the block
+    for ins in blk_ins:
+        tmp_ins = ida_hexrays.minsn_t(ins)
+        tmp_ins.setaddr(new_blk.tail.ea)
+        new_blk.insert_into_block(tmp_ins, new_blk.tail)
+
+    # 6. Set block type and wire edges
+    if is_0_way:
+        new_blk.type = ida_hexrays.BLT_0WAY
+        new_blk.flags &= ~ida_hexrays.MBL_GOTO
+    else:
+        new_blk.type = ida_hexrays.BLT_1WAY
+        if target_serial is not None:
+            # Add goto instruction to the target
+            insert_goto_instruction(new_blk, target_serial, nop_previous_instruction=False)
+            new_blk.flags |= ida_hexrays.MBL_GOTO
+            # Wire successor edge: new_blk -> target
+            new_blk.succset.push_back(target_serial)
+            target_blk = mba.get_mblock(target_serial)
+            target_blk.predset.push_back(new_blk.serial)
+            if target_blk.serial != mba.qty - 1:
+                target_blk.mark_lists_dirty()
+
+    new_blk.mark_lists_dirty()
+    mba.mark_chains_dirty()
+    try:
+        mba.verify(True)
+        return new_blk
+    except RuntimeError as e:
+        helper_logger.error("Error in create_standalone_block: {0}".format(e))
         log_block_info(new_blk, helper_logger.error)
         raise e
 
