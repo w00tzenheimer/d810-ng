@@ -116,19 +116,49 @@ def env() -> EnvWrapper:
     """
     Session fixture that loads .env and returns a helper object.
 
+    Searches for .env files in multiple locations and loads all of them.
+    Earlier files take precedence (since _maybe_load_dotenv does not
+    override existing variables).
+
+    Locations searched (in order):
+    1. Current working directory
+    2. PROJECT_ROOT (parent of tests/)
+    3. Git toplevel (handles worktrees where CWD differs from repo root)
+
     Usage in tests:
         def test_something(env):
             if env.as_bool("DEBUG"):
                 assert env.as_int("MAX_RETRIES") == 5
     """
-    # 1. Try current working directory
-    env_path = pathlib.Path.cwd() / ".env"
+    candidates = [
+        pathlib.Path.cwd() / ".env",
+        PROJECT_ROOT / ".env",
+    ]
 
-    # 2. Fallback to project root
-    if not env_path.exists():
-        env_path = PROJECT_ROOT / ".env"
+    # In a git worktree, CWD and PROJECT_ROOT may both point to the
+    # worktree directory, which might have an empty or missing .env.
+    # Use git to discover the main repository root as a fallback.
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+        )
+        if result.returncode == 0:
+            # --git-common-dir returns e.g. /repo/.git or /repo/.git for worktrees
+            git_common = pathlib.Path(result.stdout.strip())
+            repo_root = git_common.parent if git_common.name == ".git" else git_common
+            candidates.append(repo_root / ".env")
+    except (OSError, FileNotFoundError):
+        pass
 
-    _maybe_load_dotenv(env_path)
+    # Deduplicate while preserving order
+    seen = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            _maybe_load_dotenv(candidate)
 
     return EnvWrapper()
 
