@@ -15,19 +15,12 @@ from unittest import mock
 import pytest
 
 # ---------------------------------------------------------------------------
-# Ensure that the worktree's ``src/`` directory takes priority over any
-# editable install of d810 from the main repo.  This must happen before
-# any ``d810.*`` import so that modules added only on this branch (e.g.
-# ``d810.hexrays.table_utils``) can be found.
+# Ensure that the project ``src/`` directory is on sys.path so that d810
+# modules can be found.
 # ---------------------------------------------------------------------------
-_WORKTREE_SRC = str(pathlib.Path(__file__).resolve().parent.parent.parent / "src")
-if _WORKTREE_SRC not in sys.path:
-    sys.path.insert(0, _WORKTREE_SRC)
-# Invalidate cached d810 modules so Python re-discovers them from the
-# worktree path.
-for _mod_key in list(sys.modules):
-    if _mod_key == "d810" or _mod_key.startswith("d810."):
-        del sys.modules[_mod_key]
+_PROJECT_SRC = str(pathlib.Path(__file__).resolve().parent.parent.parent / "src")
+if _PROJECT_SRC not in sys.path:
+    sys.path.insert(0, _PROJECT_SRC)
 
 
 # ---------------------------------------------------------------------------
@@ -73,8 +66,8 @@ class _AutoIntModule(types.ModuleType):
         return val
 
 
-def _stub_ida_modules():
-    """Create and inject minimal IDA module stubs into sys.modules."""
+def _create_ida_stubs():
+    """Create minimal IDA module stubs (does NOT inject into sys.modules)."""
     stubs = {}
 
     # --- ida_bytes ---
@@ -195,27 +188,92 @@ def _stub_ida_modules():
     ida_diskio.get_user_idadir = mock.MagicMock(return_value="/tmp")
     stubs["ida_diskio"] = ida_diskio
 
-    # Inject all stubs
-    for name, mod in stubs.items():
-        sys.modules[name] = mod
-
     return stubs
 
 
-# Install stubs BEFORE any d810 import
-_stubs = _stub_ida_modules()
+# ---------------------------------------------------------------------------
+# Module-level globals populated by the ``_ida_stubs`` fixture below.
+# They are set once (module scope) before any test in this file executes.
+# ---------------------------------------------------------------------------
+_stubs: dict = {}
+IndirectCallResolver = None  # type: ignore[assignment]
+DEFAULT_ENTRY_SIZE = None
+MAX_TABLE_ENTRIES = None
+MIN_SUB_OFFSET = None
+MAX_SUB_OFFSET = None
 
 
-# ---------------------------------------------------------------------------
-# Now safe to import d810 modules
-# ---------------------------------------------------------------------------
-from d810.optimizers.microcode.flow.indirect_call import (
-    DEFAULT_ENTRY_SIZE,
-    IndirectCallResolver,
-    MAX_SUB_OFFSET,
-    MAX_TABLE_ENTRIES,
-    MIN_SUB_OFFSET,
-)
+@pytest.fixture(scope="module")
+def _ida_stubs():
+    """Inject IDA stubs into sys.modules for the duration of this module's tests."""
+    global _stubs, IndirectCallResolver, DEFAULT_ENTRY_SIZE
+    global MAX_TABLE_ENTRIES, MIN_SUB_OFFSET, MAX_SUB_OFFSET
+
+    stubs = _create_ida_stubs()
+
+    # Snapshot the complete set of IDA + d810 modules before we touch anything.
+    saved: dict[str, types.ModuleType | None] = {}
+    for name in list(sys.modules):
+        if (
+            name in stubs
+            or name == "d810" or name.startswith("d810.")
+            or name.startswith("ida") or name == "idc" or name == "idaapi"
+        ):
+            saved[name] = sys.modules.get(name)
+
+    # Inject mock IDA modules.
+    for name, mod in stubs.items():
+        sys.modules[name] = mod
+
+    # Evict cached d810 modules so they re-import with the mocked IDA stubs.
+    for mod_name in sorted(sys.modules, reverse=True):
+        if mod_name == "d810" or mod_name.startswith("d810."):
+            del sys.modules[mod_name]
+
+    # Now safe to import d810 modules under the stubs.
+    from d810.optimizers.microcode.flow.indirect_call import (
+        DEFAULT_ENTRY_SIZE as _DEFAULT_ENTRY_SIZE,
+        IndirectCallResolver as _IndirectCallResolver,
+        MAX_SUB_OFFSET as _MAX_SUB_OFFSET,
+        MAX_TABLE_ENTRIES as _MAX_TABLE_ENTRIES,
+        MIN_SUB_OFFSET as _MIN_SUB_OFFSET,
+    )
+
+    # Publish to module globals so test code can reference them.
+    _stubs.update(stubs)
+    IndirectCallResolver = _IndirectCallResolver
+    DEFAULT_ENTRY_SIZE = _DEFAULT_ENTRY_SIZE
+    MAX_TABLE_ENTRIES = _MAX_TABLE_ENTRIES
+    MIN_SUB_OFFSET = _MIN_SUB_OFFSET
+    MAX_SUB_OFFSET = _MAX_SUB_OFFSET
+
+    yield stubs
+
+    # --- Teardown: restore the pre-fixture module state exactly. ---
+
+    # 1. Remove any d810/IDA modules that were (re-)imported during the tests.
+    for mod_name in list(sys.modules):
+        if (
+            mod_name == "d810" or mod_name.startswith("d810.")
+            or mod_name in stubs
+        ):
+            sys.modules.pop(mod_name, None)
+
+    # 2. Restore every saved entry.
+    for name, orig in saved.items():
+        if orig is not None:
+            sys.modules[name] = orig
+        else:
+            sys.modules.pop(name, None)
+
+    # 3. Clear module globals.
+    _stubs.clear()
+
+
+@pytest.fixture(autouse=True)
+def _use_ida_stubs(_ida_stubs):
+    """Auto-use wrapper so every test in this module gets IDA stubs."""
+    return _ida_stubs
 
 
 # ===========================================================================
