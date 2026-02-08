@@ -29,6 +29,25 @@ def segment_is_read_only(addr: int) -> bool:
     return (s.perm & SEGPERM_READ) != 0 and (s.perm & SEGPERM_WRITE) == 0
 
 
+def is_never_written_var(address: int) -> bool:
+    """Check if a variable at address is never written to by any code.
+
+    Unlike is_read_only_inited_var(), this does NOT require the segment
+    to be read-only. It only checks that no code writes to this address,
+    making it suitable for detecting opaque constant tables in writable
+    segments (e.g., volatile globals used in OLLVM obfuscation).
+    """
+    if is_loaded(address):
+        return False
+    ref_finder = xrefblk_t()
+    is_ok = ref_finder.first_to(address, XREF_DATA)
+    while is_ok:
+        if ref_finder.type == dr_W:
+            return False
+        is_ok = ref_finder.next_to()
+    return True
+
+
 def is_read_only_inited_var(address: int) -> bool:
     """
     Stricter check for truly read-only initialized variables.
