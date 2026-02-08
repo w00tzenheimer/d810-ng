@@ -24,6 +24,7 @@ Test Functions:
 
 import logging
 import os
+import platform
 
 import pytest
 
@@ -36,7 +37,7 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib"
+    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
 
 
 @pytest.fixture(scope="class")

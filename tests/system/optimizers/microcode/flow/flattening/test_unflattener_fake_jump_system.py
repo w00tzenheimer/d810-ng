@@ -4,7 +4,7 @@ These tests verify that the UnflattenerFakeJump optimizer correctly detects
 and removes fake jumps (conditional jumps that are always taken or never taken
 based on predecessor value analysis) in real compiled binaries.
 
-Test Functions (from fake_jumps.dylib):
+Test Functions (from fake_jumps.dylib or fake_jumps.dll):
 - fake_jump_always_true: Conditional always true (jump never taken)
 - fake_jump_always_false: Conditional always false (jump always taken)
 - fake_jump_sequence: Multiple fake jumps in sequence
@@ -20,6 +20,7 @@ Test Functions (from fake_jumps.dylib):
 from __future__ import annotations
 
 import os
+import platform
 import textwrap
 from typing import TYPE_CHECKING
 
@@ -42,7 +43,7 @@ def _get_default_binary() -> str:
     if override:
         return override
     # Default: platform-appropriate binary
-    return "fake_jumps.dylib"
+    return "fake_jumps.dylib" if platform.system() == "Darwin" else "fake_jumps.dll"
 
 
 def get_func_ea(name: str) -> int:
