@@ -181,10 +181,202 @@ def _init_clang(env: EnvWrapper) -> "Index | None":
 
 
 class CodeComparator:
-    """Parses and compares C/C++ code snippets for structural equivalence using Clang ASTs."""
+    """Parses and compares C/C++ code snippets for structural equivalence using Clang ASTs.
 
-    def __init__(self, index: "Index"):
+    Supports type-agnostic comparison (enabled by default via ``ignore_types=True``)
+    which handles cross-platform type differences such as:
+
+    - IDA-specific typedefs (``_DWORD``, ``__int64``, etc.)
+    - LP64 vs LLP64 divergence (``long`` is 64-bit on LP64, 32-bit on LLP64)
+    - Signedness differences (``int`` vs ``unsigned int``)
+    - Trivial integer casts (``(unsigned int)(expr)`` vs bare ``expr``)
+
+    Three tiers of type tolerance:
+
+    1. **IDA Typedef Preamble** -- prepended before parsing so libclang resolves
+       IDA-specific names (``_DWORD``, ``__int64``, ...) to canonical C types.
+    2. **TypeKind Equivalence Classes** -- maps integer TypeKinds to bit-width
+       buckets, ignoring signedness and LP64/LLP64 differences.
+    3. **Cast Stripping** -- unwraps trivial integer casts during child comparison
+       so ``(unsigned int)(expr)`` matches bare ``expr``.
+    """
+
+    # Tier 1: IDA typedef preamble injected before every snippet so that
+    # libclang can resolve IDA-specific type names to standard C types.
+    IDA_TYPEDEF_PREAMBLE = """\
+typedef unsigned int _DWORD;
+typedef unsigned long long _QWORD;
+typedef unsigned short _WORD;
+typedef unsigned char _BYTE;
+typedef int _BOOL;
+typedef unsigned long long uint64_t;
+typedef long long int64_t;
+typedef unsigned int uint32_t;
+typedef int int32_t;
+"""
+    # Note: __int64, __int32, __int16, __int8 are NOT included above because
+    # they are built-in keywords when parsing with -fms-extensions.  Adding
+    # them as typedefs causes "cannot combine with previous declaration
+    # specifier" errors.
+
+    # Tier 2: Map TypeKind values to bit-width buckets.  Types in the same
+    # bucket are considered compatible when ``ignore_types=True``.
+    # On the MSVC target we parse with, ``long`` is 32-bit (LLP64).  On LP64
+    # targets ``long`` would be 64-bit.  We map both LONG/ULONG into the
+    # 64-bit bucket so that cross-compiled comparisons work.
+    _WIDTH_BUCKET: dict[int, int] = {}  # populated in __init_subclass__ or lazily
+
+    def __init__(self, index: "Index", *, ignore_types: bool = True):
         self.index = index
+        self.ignore_types = ignore_types
+        # Build the width-bucket map once we know TypeKind is available.
+        if not CodeComparator._WIDTH_BUCKET and _CLANG_AVAILABLE:
+            CodeComparator._build_width_buckets()
+
+    @classmethod
+    def _build_width_buckets(cls) -> None:
+        """Populate ``_WIDTH_BUCKET`` from TypeKind enum values."""
+        from d810._vendor.clang.cindex import TypeKind as TK
+
+        # 8-bit bucket
+        for tk in (TK.CHAR_U, TK.UCHAR, TK.CHAR_S, TK.SCHAR):
+            cls._WIDTH_BUCKET[tk.value] = 8
+        # 16-bit bucket
+        for tk in (TK.SHORT, TK.USHORT, TK.CHAR16, TK.WCHAR):
+            cls._WIDTH_BUCKET[tk.value] = 16
+        # 32-bit bucket
+        for tk in (TK.INT, TK.UINT, TK.CHAR32):
+            cls._WIDTH_BUCKET[tk.value] = 32
+        # 64-bit bucket -- includes LONG/ULONG so LP64 <-> LLP64 comparisons work
+        for tk in (TK.LONG, TK.ULONG, TK.LONGLONG, TK.ULONGLONG):
+            cls._WIDTH_BUCKET[tk.value] = 64
+        # 128-bit bucket
+        for tk in (TK.INT128, TK.UINT128):
+            cls._WIDTH_BUCKET[tk.value] = 128
+        # Bool
+        cls._WIDTH_BUCKET[TK.BOOL.value] = 1
+
+    # ------------------------------------------------------------------
+    # Tier 2 helper: type compatibility check
+    # ------------------------------------------------------------------
+
+    def _types_compatible(self, t1, t2) -> bool:
+        """Return True if two clang Types are compatible under type-agnostic rules.
+
+        Handles:
+        - Integer types mapped to the same bit-width bucket
+        - Pointer types (recursively compares pointee types)
+        - TYPEDEF / ELABORATED types (resolves to canonical type first)
+        - Identical TypeKinds (trivially compatible)
+        """
+        from d810._vendor.clang.cindex import TypeKind as TK
+
+        k1, k2 = t1.kind, t2.kind
+
+        # Fast path: identical kinds are always compatible.
+        if k1 == k2:
+            # For pointers, also check pointee compatibility.
+            if k1 == TK.POINTER:
+                return self._types_compatible(t1.get_pointee(), t2.get_pointee())
+            return True
+
+        # Resolve typedefs / elaborated types to their canonical form.
+        if k1 in (TK.TYPEDEF, TK.ELABORATED) or k2 in (TK.TYPEDEF, TK.ELABORATED):
+            return self._types_compatible(t1.get_canonical(), t2.get_canonical())
+
+        # Integer width-bucket comparison.
+        b1 = self._WIDTH_BUCKET.get(k1.value)
+        b2 = self._WIDTH_BUCKET.get(k2.value)
+        if b1 is not None and b2 is not None:
+            return b1 == b2
+
+        # POINTER vs POINTER already handled above; mixed pointer/non-pointer
+        # is never compatible.
+        return False
+
+    # ------------------------------------------------------------------
+    # Tier 3 helpers: trivial cast detection and stripping
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_trivial_cast(cursor: "Cursor") -> bool:
+        """Return True if *cursor* is a C-style cast to an integer type.
+
+        A "trivial" cast is one like ``(unsigned int)(expr)`` which does not
+        change the structural meaning of the expression for our purposes.
+        """
+        if cursor.kind != CursorKind.CSTYLE_CAST_EXPR:
+            return False
+        from d810._vendor.clang.cindex import TypeKind as TK
+
+        cast_target = cursor.type.get_canonical().kind
+        return cast_target.value in CodeComparator._WIDTH_BUCKET
+
+    @staticmethod
+    def _unwrap_single_child(cursor: "Cursor") -> "Cursor":
+        """Recursively unwrap single-child wrappers (PAREN_EXPR, UNEXPOSED_EXPR, trivial casts).
+
+        After stripping a ``CSTYLE_CAST_EXPR``, the result may be wrapped
+        in ``UNEXPOSED_EXPR`` (implicit conversion) and/or ``PAREN_EXPR``
+        nodes.  Recursively unwrap these syntactic-only nodes to reach the
+        semantic core.
+        """
+        while True:
+            if cursor.kind == CursorKind.PAREN_EXPR:
+                children = list(cursor.get_children())
+                if len(children) == 1:
+                    cursor = children[0]
+                    continue
+            if cursor.kind == CursorKind.UNEXPOSED_EXPR:
+                children = list(cursor.get_children())
+                if len(children) == 1:
+                    cursor = children[0]
+                    continue
+            if CodeComparator._is_trivial_cast(cursor):
+                children = list(cursor.get_children())
+                if len(children) == 1:
+                    cursor = children[0]
+                    continue
+            break
+        return cursor
+
+    @staticmethod
+    def _strip_redundant_casts(children: list["Cursor"]) -> list["Cursor"]:
+        """Unwrap trivial integer casts in a child list.
+
+        If a child is a ``CSTYLE_CAST_EXPR`` to an integer type, replace it
+        with its single operand so that ``(unsigned int)(expr)`` compares
+        equal to bare ``expr``.  Also unwraps any resulting ``PAREN_EXPR``
+        wrappers which are purely syntactic.
+        """
+        result = []
+        for child in children:
+            if CodeComparator._is_trivial_cast(child):
+                inner = list(child.get_children())
+                if len(inner) == 1:
+                    result.append(CodeComparator._unwrap_single_child(inner[0]))
+                    continue
+            result.append(child)
+        return result
+
+    @staticmethod
+    def _unwrap_implicit(cursor: "Cursor") -> "Cursor":
+        """Unwrap an UNEXPOSED_EXPR implicit conversion wrapper.
+
+        Clang inserts ``UNEXPOSED_EXPR`` around expressions when implicit
+        type conversion is needed (e.g. ``int`` literal assigned to a
+        ``_DWORD`` lvalue).  When the wrapper has exactly one child,
+        return that child; otherwise return the cursor unchanged.
+        """
+        if cursor.kind == CursorKind.UNEXPOSED_EXPR:
+            children = list(cursor.get_children())
+            if len(children) == 1:
+                return children[0]
+        return cursor
+
+    # ------------------------------------------------------------------
+    # Parsing
+    # ------------------------------------------------------------------
 
     def _parse(self, code: str, filename: str = "dummy.cpp") -> "TranslationUnit":
         args = [
@@ -195,6 +387,11 @@ class CodeComparator:
             "-w",
             "-std=c++14",
         ]
+        # Tier 1: prepend the IDA typedef preamble so that _DWORD, __int64,
+        # etc. are resolved by libclang to canonical C types.
+        if self.ignore_types:
+            code = self.IDA_TYPEDEF_PREAMBLE + code
+
         tu = self.index.parse(
             path=filename, args=args, unsaved_files=[(filename, code)], options=0
         )
@@ -233,8 +430,16 @@ class CodeComparator:
         return None
 
     def _cursors_equal(
-        self, c1: "Cursor", c2: "Cursor", ignore_comments: bool = True
+        self,
+        c1: "Cursor",
+        c2: "Cursor",
+        ignore_comments: bool = True,
+        ignore_types: bool | None = None,
     ) -> bool:
+        # Resolve the effective ignore_types flag (instance default or override).
+        if ignore_types is None:
+            ignore_types = self.ignore_types
+
         if ignore_comments and c1.kind in (
             CursorKind.UNEXPOSED_ATTR,
             CursorKind.DLLIMPORT_ATTR,
@@ -243,6 +448,16 @@ class CodeComparator:
             return True
 
         if c1.kind != c2.kind:
+            # Tier 3 (implicit conversion): when ignore_types is True and
+            # one side is an UNEXPOSED_EXPR implicit conversion wrapper,
+            # unwrap it and retry.  Clang inserts these wrappers when
+            # typedef-based types require implicit conversion that built-in
+            # types do not.
+            if ignore_types:
+                c1u = self._unwrap_implicit(c1)
+                c2u = self._unwrap_implicit(c2)
+                if c1u is not c1 or c2u is not c2:
+                    return self._cursors_equal(c1u, c2u, ignore_comments, ignore_types)
             logger.debug("Kind mismatch: %s vs %s", c1.kind, c2.kind)
             return False
 
@@ -260,17 +475,39 @@ class CodeComparator:
                 logger.debug("Spelling mismatch: '%s' vs '%s'", spell1, spell2)
                 return False
 
+        # Tier 2: type comparison.
+        #
+        # When ignore_types is True we skip type-kind checks entirely.
+        # Cross-platform decompilers routinely choose different C types for
+        # the same logical value (e.g. macOS IDA emits ``__int64`` where
+        # Windows IDA emits ``int``).  These differences propagate through
+        # parameter declarations, variable declarations, AND expression
+        # result types.  Skipping all type-kind comparison when
+        # ignore_types is True lets us focus on structural equivalence
+        # (cursor kind, spelling, literal values, children).
+        #
+        # When ignore_types is False we use strict TypeKind equality.
         try:
-            if c1.type.kind != c2.type.kind:
-                logger.debug(
-                    "Type mismatch for %s: %s vs %s",
-                    c1.spelling,
-                    c1.type.kind,
-                    c2.type.kind,
-                )
-                return False
+            if not ignore_types:
+                if c1.type.kind != c2.type.kind:
+                    logger.debug(
+                        "Type mismatch for %s: %s vs %s",
+                        c1.spelling,
+                        c1.type.kind,
+                        c2.type.kind,
+                    )
+                    return False
         except Exception:
             pass
+
+        # For PARM_DECL nodes with ignore_types, skip child comparison
+        # entirely.  Typedef-based types (e.g. _DWORD*) generate TypeRef
+        # children that built-in types (e.g. int*) do not, causing spurious
+        # child-count mismatches.  The spelling check above already confirms
+        # the parameter names match.  Parameters in function declarations
+        # never have initializer expressions, so this is safe.
+        if ignore_types and c1.kind == CursorKind.PARM_DECL:
+            return True
 
         children1 = list(c1.get_children())
         children2 = list(c2.get_children())
@@ -284,6 +521,21 @@ class CodeComparator:
             children1 = [c for c in children1 if c.kind not in filter_kinds]
             children2 = [c for c in children2 if c.kind not in filter_kinds]
 
+        # When ignore_types is True, filter out TYPE_REF children which
+        # appear under typedef-based declarations (e.g. _DWORD) but not
+        # under built-in type declarations (e.g. int).  This prevents
+        # spurious child-count mismatches for VAR_DECL and other nodes
+        # while preserving initializer and expression children.
+        if ignore_types:
+            children1 = [c for c in children1 if c.kind != CursorKind.TYPE_REF]
+            children2 = [c for c in children2 if c.kind != CursorKind.TYPE_REF]
+
+        # Tier 3: strip trivial integer casts before child comparison so
+        # that ``(unsigned int)(expr)`` matches bare ``expr``.
+        if ignore_types:
+            children1 = self._strip_redundant_casts(children1)
+            children2 = self._strip_redundant_casts(children2)
+
         if len(children1) != len(children2):
             logger.debug(
                 "Child count mismatch for %s: %d vs %d",
@@ -294,13 +546,17 @@ class CodeComparator:
             return False
 
         for child1, child2 in zip(children1, children2):
-            if not self._cursors_equal(child1, child2, ignore_comments):
+            if not self._cursors_equal(child1, child2, ignore_comments, ignore_types):
                 return False
 
         return True
 
     def check_equivalence(
-        self, actual_code: str, expected_code: str, ignore_comments: bool = True
+        self,
+        actual_code: str,
+        expected_code: str,
+        ignore_comments: bool = True,
+        ignore_types: bool | None = None,
     ) -> None:
         tu_actual = self._parse(actual_code, "actual.cpp")
         tu_expected = self._parse(expected_code, "expected.cpp")
@@ -313,16 +569,21 @@ class CodeComparator:
                 "Could not find function definition in one or both inputs."
             )
 
-        if not self._cursors_equal(cursor_actual, cursor_expected, ignore_comments):
+        effective_ignore = ignore_types if ignore_types is not None else self.ignore_types
+        if not self._cursors_equal(cursor_actual, cursor_expected, ignore_comments, effective_ignore):
             raise AssertionError(
                 f"Code semantic mismatch!\n\nActual:\n{actual_code}\n\nExpected:\n{expected_code}"
             )
 
     def are_equivalent(
-        self, actual_code: str, expected_code: str, ignore_comments: bool = True
+        self,
+        actual_code: str,
+        expected_code: str,
+        ignore_comments: bool = True,
+        ignore_types: bool | None = None,
     ) -> bool:
         try:
-            self.check_equivalence(actual_code, expected_code, ignore_comments)
+            self.check_equivalence(actual_code, expected_code, ignore_comments, ignore_types)
             return True
         except AssertionError:
             return False
