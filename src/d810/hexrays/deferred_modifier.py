@@ -812,6 +812,14 @@ class DeferredGraphModifier:
                 verify=False,
             )
 
+            # Ensure all instructions in the new block have safe EAs within
+            # the function range to prevent INTERR 50863.
+            safe_ea = mba.entry_ea
+            cur = new_block.head
+            while cur is not None:
+                cur.ea = safe_ea
+                cur = cur.next
+
             # Redirect source block to the new block
             if not change_1way_block_successor(source_blk, new_block.serial, verify=False):
                 logger.warning(
@@ -1153,6 +1161,14 @@ class ImmediateGraphModifier:
                 is_0_way=actual_is_0_way,
                 verify=False,
             )
+
+            # Ensure all instructions in the new block have safe EAs within
+            # the function range to prevent INTERR 50863.
+            safe_ea = mba.entry_ea
+            cur = new_block.head
+            while cur is not None:
+                cur.ea = safe_ea
+                cur = cur.next
 
             # Redirect source block to the new block
             if not change_1way_block_successor(source_blk, new_block.serial, verify=False):
