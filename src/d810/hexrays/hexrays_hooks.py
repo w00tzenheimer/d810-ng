@@ -33,6 +33,7 @@ try:
         from d810.optimizers.microcode.flow.egraph import block_optimizer  # noqa: F401
 except ImportError:
     EGGLOG_AVAILABLE = False
+from d810.hexrays.ctree_hooks import CtreeOptimizerManager
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizationRule,
@@ -394,9 +395,14 @@ class DecompilationEvent(enum.Enum):
 
 
 class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
-    def __init__(self, callback: typing.Callable):
+    def __init__(
+        self,
+        callback: typing.Callable,
+        ctree_optimizer_manager: CtreeOptimizerManager | None = None,
+    ):
         super().__init__()
         self.callback = callback
+        self.ctree_optimizer_manager = ctree_optimizer_manager
 
     def prolog(self, mba: ida_hexrays.mbl_array_t, fc, reachable_blocks, decomp_flags) -> "int":
         main_logger.info("Starting decompilation of function at %s", hex(mba.entry_ea))
@@ -406,16 +412,11 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         # self.manager.block_optimizer.reset_rule_usage_statistic()
         return 0
 
-    # def maturity(self, cfunc: "cfunc_t", new_maturity: int) -> int:
-    #     """Ctree maturity level is being changed."""
-    #     # main_logger.info(
-    #     #     "Maturity changed for %s @ %s to %s (ctree maturity: %d)",
-    #     #     cfunc.print_dcl(),
-    #     #     hex(cfunc.entry_ea),
-    #     #     maturity_to_string(cfunc.mba.maturity),
-    #     #     new_maturity,
-    #     # )
-    #     return 0
+    def maturity(self, cfunc, new_maturity: int) -> int:
+        """Ctree maturity level is being changed."""
+        if self.ctree_optimizer_manager is not None:
+            self.ctree_optimizer_manager.on_maturity(cfunc, new_maturity)
+        return 0
 
     def glbopt(self, mba: ida_hexrays.mbl_array_t) -> "int":
         main_logger.info("glbopt finished for function at %s", hex(mba.entry_ea))
