@@ -653,6 +653,91 @@ def _update_jtbl_case_targets(
     return updated
 
 
+def convert_jtbl_to_goto(
+    blk: "ida_hexrays.mblock_t",
+    new_target_serial: int,
+    mba: "ida_hexrays.mba_t",
+) -> bool:
+    """Convert an m_jtbl tail instruction to a direct m_goto.
+
+    Ported from copycat deflatten.cpp:2063-2126. Safely converts a
+    switch-dispatch block to a single-target goto by:
+    1. Collecting old case targets for predset cleanup
+    2. Changing opcode m_jtbl -> m_goto
+    3. Rewiring succset/predset
+    4. Setting block type to BLT_1WAY
+
+    Args:
+        blk: Block whose tail is m_jtbl.
+        new_target_serial: Serial of the single successor block.
+        mba: The containing MBA for block access.
+
+    Returns:
+        True if conversion succeeded, False if tail is not m_jtbl.
+    """
+    tail = blk.tail
+    if tail is None or tail.opcode != ida_hexrays.m_jtbl:
+        return False
+
+    # 1. Collect old case targets from mcases_t for predset cleanup
+    old_targets = set()
+    if tail.r is not None and tail.r.t == ida_hexrays.mop_c:
+        cases = tail.r.c
+        if cases is not None:
+            targets = cases.targets  # intvec_t of block serials
+            n = targets.size()
+            for j in range(n):
+                old_targets.add(targets[j])
+
+    # 2. Change opcode
+    tail.opcode = ida_hexrays.m_goto
+
+    # 3. Set l operand to block reference, clear r and d
+    tail.l.make_blkref(new_target_serial)
+    tail.r.erase()
+    tail.d.erase()
+
+    # 4. Use safe EA (INTERR 50863 prevention)
+    tail.ea = mba.entry_ea
+
+    # 5. Update succset: remove all old successors, add new target
+    blk_serial = blk.serial
+    old_succ_serials = [x for x in blk.succset]
+    for old_serial in old_succ_serials:
+        blk.succset._del(old_serial)
+    blk.succset.push_back(new_target_serial)
+
+    # 6. Remove blk from old targets' predsets
+    for old_tgt in old_targets:
+        if old_tgt == new_target_serial:
+            continue  # Will be handled in step 7
+        if 0 <= old_tgt < mba.qty:
+            old_blk = mba.get_mblock(old_tgt)
+            old_blk.predset._del(blk_serial)
+            old_blk.mark_lists_dirty()
+
+    # 7. Ensure blk is in new target's predset
+    if 0 <= new_target_serial < mba.qty:
+        dst = mba.get_mblock(new_target_serial)
+        if not _serial_in_predset(dst, blk_serial):
+            dst.predset.push_back(blk_serial)
+        dst.mark_lists_dirty()
+
+    # 8. Set block type to 1-way
+    blk.type = ida_hexrays.BLT_1WAY
+    blk.mark_lists_dirty()
+
+    return True
+
+
+def _serial_in_predset(blk: "ida_hexrays.mblock_t", serial: int) -> bool:
+    """Check if *serial* is already present in *blk*'s predset."""
+    for i in range(blk.predset.size()):
+        if blk.predset[i] == serial:
+            return True
+    return False
+
+
 def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
     mba = blk.mba
     # Append the new block at the end of the MBA (before the dummy last block)
