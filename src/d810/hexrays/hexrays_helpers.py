@@ -1738,7 +1738,15 @@ def create_instruction(
     right: Optional[MicroOperand] = None,
     destination: Optional[MicroOperand] = None,
 ) -> MicroInstruction:
-    """Create a microinstruction with the given operands using readable names."""
+    """Create a microinstruction with the given operands using readable names.
+
+    .. warning::
+
+        The default ``ea=0`` is only valid for offline analysis / pattern
+        matching.  When inserting an instruction into an MBA, callers **must**
+        pass ``mba.entry_ea`` (or another address within the decompiled
+        function) to avoid INTERR 50863.
+    """
     minsn = ida_hexrays.minsn_t(ea)
     minsn.opcode = opcode.value
 

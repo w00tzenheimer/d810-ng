@@ -158,10 +158,14 @@ def safe_verify(
 def insert_goto_instruction(
     blk: ida_hexrays.mblock_t, goto_blk_serial: int, nop_previous_instruction=False
 ):
+    # Use mba.entry_ea for synthesized goto instructions to guarantee the EA
+    # is within the decompiled function's address range (prevents INTERR 50863).
+    safe_ea = blk.mba.entry_ea
     if blk.tail is not None:
         goto_ins = ida_hexrays.minsn_t(blk.tail)
     else:
-        goto_ins = ida_hexrays.minsn_t(blk.start)
+        goto_ins = ida_hexrays.minsn_t(safe_ea)
+    goto_ins.ea = safe_ea
 
     if nop_previous_instruction:
         blk.make_nop(blk.tail)
@@ -432,9 +436,11 @@ def create_block(
 ) -> ida_hexrays.mblock_t:
     mba = blk.mba
     new_blk = insert_nop_blk(blk)
+    # Use mba.entry_ea for synthesized instruction EAs (prevents INTERR 50863).
+    safe_ea = mba.entry_ea
     for ins in blk_ins:
         tmp_ins = ida_hexrays.minsn_t(ins)
-        tmp_ins.setaddr(new_blk.tail.ea)
+        tmp_ins.setaddr(safe_ea)
         new_blk.insert_into_block(tmp_ins, new_blk.tail)
 
     if is_0_way:
@@ -510,11 +516,15 @@ def create_standalone_block(
     for prev_serial in prev_predecessor_serials:
         new_blk.predset._del(prev_serial)
 
+    # Use mba.entry_ea for all synthesized instruction EAs to guarantee the
+    # address is within the decompiled function's range (prevents INTERR 50863).
+    safe_ea = mba.entry_ea
+
     # 4. NOP all inherited instructions
     cur_ins = new_blk.head
     if cur_ins is None:
         # Empty block -- insert a NOP placeholder so we have a valid tail.ea
-        nop_ins = ida_hexrays.minsn_t(ref_blk.start)
+        nop_ins = ida_hexrays.minsn_t(safe_ea)
         nop_ins.opcode = ida_hexrays.m_nop
         new_blk.insert_into_block(nop_ins, new_blk.head)
     else:
@@ -525,7 +535,7 @@ def create_standalone_block(
     # 5. Copy the desired instructions into the block
     for ins in blk_ins:
         tmp_ins = ida_hexrays.minsn_t(ins)
-        tmp_ins.setaddr(new_blk.tail.ea)
+        tmp_ins.setaddr(safe_ea)
         new_blk.insert_into_block(tmp_ins, new_blk.tail)
 
     # 6. Set block type and wire edges
@@ -597,9 +607,12 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
     # stale serial references and segfaults in later passes.
     original_successor_serial = blk.nextb.serial
     nop_block = mba.copy_block(blk, mba.qty - 1)
+    # Use mba.entry_ea for synthesized NOP instructions to guarantee the EA
+    # is within the decompiled function's range (prevents INTERR 50863).
+    safe_ea = mba.entry_ea
     cur_ins = nop_block.head
     if cur_ins == None:
-        cur_inst = ida_hexrays.minsn_t(blk.start)
+        cur_inst = ida_hexrays.minsn_t(safe_ea)
         cur_inst.opcode = ida_hexrays.m_nop
         nop_block.insert_into_block(cur_inst, nop_block.head)
     else:
