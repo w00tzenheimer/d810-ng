@@ -22,6 +22,7 @@ from d810.core.registry import EventEmitter
 from d810.core.singleton import SingletonMeta
 from d810.core.stats import OptimizationStatistics
 from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
+from d810.hexrays.ctree_hooks import CtreeOptimizerManager, CtreeOptimizationRule
 from d810.hexrays.hexrays_hooks import (
     BlockOptimizerManager,
     DecompilationEvent,
@@ -80,6 +81,8 @@ class D810Manager:
     instruction_optimizer_config: dict = dataclasses.field(default_factory=dict)
     block_optimizer_rules: list = dataclasses.field(default_factory=list)
     block_optimizer_config: dict = dataclasses.field(default_factory=dict)
+    ctree_optimizer_rules: list = dataclasses.field(default_factory=list)
+    ctree_optimizer_config: dict = dataclasses.field(default_factory=dict)
     config: dict = dataclasses.field(default_factory=dict)
     event_emitter: EventEmitter = dataclasses.field(default_factory=EventEmitter)
     profiler: typing.Any = dataclasses.field(
@@ -90,6 +93,7 @@ class D810Manager:
     )
     instruction_optimizer: InstructionOptimizerManager = dataclasses.field(init=False)
     block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
+    ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
     hx_decompiler_hook: HexraysDecompilationHook = dataclasses.field(init=False)
     _started: bool = dataclasses.field(default=False, init=False)
     _profiling_enabled: bool = dataclasses.field(default=False, init=False)
@@ -145,6 +149,7 @@ class D810Manager:
         self.instruction_optimizer.configure(**self.instruction_optimizer_config)
         self.block_optimizer = BlockOptimizerManager(self.stats, self.log_dir)
         self.block_optimizer.configure(**self.block_optimizer_config)
+        self.ctree_optimizer = CtreeOptimizerManager(self.stats)
 
         for rule in self.instruction_optimizer_rules:
             rule.log_dir = self.log_dir
@@ -154,7 +159,14 @@ class D810Manager:
             cfg_rule.log_dir = self.log_dir
             self.block_optimizer.add_rule(cfg_rule)
 
-        self.hx_decompiler_hook = HexraysDecompilationHook(self.event_emitter.emit)
+        for ctree_rule in self.ctree_optimizer_rules:
+            ctree_rule.log_dir = self.log_dir
+            self.ctree_optimizer.add_rule(ctree_rule)
+
+        self.hx_decompiler_hook = HexraysDecompilationHook(
+            self.event_emitter.emit,
+            ctree_optimizer_manager=self.ctree_optimizer,
+        )
         self._install_hooks()
         self._started = True
 
@@ -204,6 +216,10 @@ class D810Manager:
     def configure_block_optimizer(self, rules, **kwargs):
         self.block_optimizer_rules = [rule for rule in rules]
         self.block_optimizer_config = kwargs
+
+    def configure_ctree_optimizer(self, rules, **kwargs):
+        self.ctree_optimizer_rules = [rule for rule in rules]
+        self.ctree_optimizer_config = kwargs
 
     def stop(self):
         if not self._started:
