@@ -16,17 +16,12 @@ from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# Ensure the worktree's src/ takes priority over any editable install of d810
-# that may point at the main repo.  This must happen before d810 is imported.
+# Ensure the project src/ is on sys.path (conftest.py normally handles this,
+# but we guard against edge cases like direct invocation).
 # ---------------------------------------------------------------------------
-_WORKTREE_SRC = str(pathlib.Path(__file__).resolve().parents[2] / "src")
-if _WORKTREE_SRC not in sys.path:
-    sys.path.insert(0, _WORKTREE_SRC)
-# Evict any previously-cached d810 packages so Python re-discovers them
-# from the worktree path.
-for _mod_name in sorted(sys.modules, reverse=True):
-    if _mod_name == "d810" or _mod_name.startswith("d810."):
-        del sys.modules[_mod_name]
+_PROJECT_SRC = str(pathlib.Path(__file__).resolve().parents[2] / "src")
+if _PROJECT_SRC not in sys.path:
+    sys.path.insert(0, _PROJECT_SRC)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +96,13 @@ def _build_ida_hexrays_mock() -> MagicMock:
 
 @pytest.fixture(scope="module", autouse=True)
 def _mock_ida_modules():
-    """Inject mock IDA modules so we can import BlockMerger without IDA."""
+    """Inject mock IDA modules so we can import BlockMerger without IDA.
+
+    On teardown we restore **all** modules (IDA stubs *and* any d810 modules)
+    to the exact state they were in before the fixture ran.  This prevents
+    contamination of other test modules that may have already imported d810
+    packages with the real (``None``) IDA stubs.
+    """
     mock_ida_hexrays = _build_ida_hexrays_mock()
 
     # Other IDA modules that d810 may import transitively
@@ -111,7 +112,6 @@ def _mock_ida_modules():
     mock_ida_diskio = MagicMock()
     mock_ida_diskio.get_user_idadir.return_value = "/tmp/mock_idadir"
 
-    saved: dict[str, types.ModuleType | None] = {}
     modules_to_mock = {
         "ida_hexrays": mock_ida_hexrays,
         "idc": mock_idc,
@@ -120,13 +120,31 @@ def _mock_ida_modules():
         "ida_diskio": mock_ida_diskio,
     }
 
+    # Snapshot the complete set of IDA + d810 modules before we touch anything.
+    saved: dict[str, types.ModuleType | None] = {}
+    for name in list(sys.modules):
+        if name in modules_to_mock or name == "d810" or name.startswith("d810."):
+            saved[name] = sys.modules.get(name)
+
+    # Inject mocks
     for name, mock_mod in modules_to_mock.items():
-        saved[name] = sys.modules.get(name)
         sys.modules[name] = mock_mod
+
+    # Evict cached d810 modules so they re-import with the mocked IDA stubs.
+    for mod_name in sorted(sys.modules, reverse=True):
+        if mod_name == "d810" or mod_name.startswith("d810."):
+            del sys.modules[mod_name]
 
     yield mock_ida_hexrays
 
-    # Restore originals
+    # --- Teardown: restore the pre-fixture module state exactly. ---
+
+    # 1. Remove any d810 modules that were (re-)imported during the tests.
+    for mod_name in sorted(sys.modules, reverse=True):
+        if mod_name == "d810" or mod_name.startswith("d810."):
+            del sys.modules[mod_name]
+
+    # 2. Restore every saved entry (IDA stubs + d810 modules).
     for name, orig in saved.items():
         if orig is not None:
             sys.modules[name] = orig
@@ -543,15 +561,22 @@ class TestMethodCallVerification:
 
 
 class TestLogging:
-    """Verify that the merge action is logged with correct block serials."""
+    """Verify that the merge action is logged with correct block serials.
+
+    We patch the module-level ``logger`` object directly rather than
+    relying on ``caplog`` because :func:`d810.core.getLogger` returns a
+    custom :class:`D810Logger` that replaces the stdlib logger in the
+    manager dict, which can desynchronise from the handler ``caplog``
+    installs.
+    """
 
     def _make_merger(self):
         from d810.optimizers.microcode.flow.block_merge import BlockMerger
         return BlockMerger()
 
-    def test_merge_logs_block_serials(self, _mock_ida_modules, caplog):
+    def test_merge_logs_block_serials(self, _mock_ida_modules):
         """A successful merge must log both block serials at INFO level."""
-        import logging
+        import d810.optimizers.microcode.flow.block_merge as bm_mod
 
         mock_hex = _mock_ida_modules
         merger = self._make_merger()
@@ -563,36 +588,33 @@ class TestLogging:
         tail = _make_tail(mock_hex.m_goto, dest_mop=dest_mop)
         blk = _make_block(serial=3, succ_list=[7], tail=tail, mba=mba)
 
-        with caplog.at_level(logging.INFO, logger="D810.optimizer"):
+        with patch.object(bm_mod.logger, "info") as mock_info:
             result = merger.optimize(blk)
 
         assert result == 1
-        # Verify log contains both the source and destination serials
-        assert any(
-            "3" in record.message and "7" in record.message
-            for record in caplog.records
-        ), f"Expected log with serials 3 and 7, got: {[r.message for r in caplog.records]}"
+        mock_info.assert_called_once()
+        msg = mock_info.call_args[0][0] % mock_info.call_args[0][1:]
+        assert "3" in msg and "7" in msg, (
+            f"Expected log with serials 3 and 7, got: {msg!r}"
+        )
 
-    def test_no_log_when_not_mergeable(self, _mock_ida_modules, caplog):
+    def test_no_log_when_not_mergeable(self, _mock_ida_modules):
         """When merge conditions are not met, no merge log should be emitted."""
-        import logging
+        import d810.optimizers.microcode.flow.block_merge as bm_mod
 
         merger = self._make_merger()
 
         blk = _make_block(serial=0, succ_list=[1], tail=None)
 
-        with caplog.at_level(logging.INFO, logger="D810.optimizer"):
+        with patch.object(bm_mod.logger, "info") as mock_info:
             result = merger.optimize(blk)
 
         assert result == 0
-        assert not any(
-            "BlockMerger" in record.message and "NOPing" in record.message
-            for record in caplog.records
-        ), f"Unexpected merge log found: {[r.message for r in caplog.records]}"
+        mock_info.assert_not_called()
 
-    def test_log_contains_block_merger_prefix(self, _mock_ida_modules, caplog):
+    def test_log_contains_block_merger_prefix(self, _mock_ida_modules):
         """The log message should contain 'BlockMerger' for traceability."""
-        import logging
+        import d810.optimizers.microcode.flow.block_merge as bm_mod
 
         mock_hex = _mock_ida_modules
         merger = self._make_merger()
@@ -604,13 +626,14 @@ class TestLogging:
         tail = _make_tail(mock_hex.m_goto, dest_mop=dest_mop)
         blk = _make_block(serial=0, succ_list=[2], tail=tail, mba=mba)
 
-        with caplog.at_level(logging.INFO, logger="D810.optimizer"):
+        with patch.object(bm_mod.logger, "info") as mock_info:
             merger.optimize(blk)
 
-        assert any(
-            "BlockMerger" in record.message
-            for record in caplog.records
-        ), f"Expected 'BlockMerger' in log, got: {[r.message for r in caplog.records]}"
+        mock_info.assert_called_once()
+        msg = mock_info.call_args[0][0] % mock_info.call_args[0][1:]
+        assert "BlockMerger" in msg, (
+            f"Expected 'BlockMerger' in log, got: {msg!r}"
+        )
 
 
 class TestChainScenarios:
