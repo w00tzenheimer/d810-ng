@@ -14,13 +14,14 @@ Usage:
     pytest tests/system/optimizers/microcode/flow/flattening/test_services_integration.py -v
 
     # Override with specific binary
-    D810_TEST_BINARY=libobfuscated.dylib pytest tests/system/.../test_services_integration.py -v
+    D810_TEST_BINARY=libobfuscated.dll pytest tests/system/.../test_services_integration.py -v
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import platform
 from typing import TYPE_CHECKING
 
 import pytest
@@ -56,7 +57,7 @@ def _get_default_binary() -> str:
     if override:
         return override
     # Default: platform-appropriate binary
-    return "libobfuscated.dylib"
+    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
 
 
 def make_test_context(mba: "mba_t") -> OptimizationContext:
