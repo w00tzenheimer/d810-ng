@@ -144,7 +144,7 @@ class D810Plugin(
             reloadable.reload_package(
                 d810,
                 skip=[
-                    f"{self.base_package_name}.registry",
+                    f"{self.base_package_name}.core.registry",
                     f"{self.base_package_name}._vendor",
                 ],
                 suppress_errors=self.suppress_reload_errors,
