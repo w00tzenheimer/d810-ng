@@ -5,8 +5,10 @@ from typing import TYPE_CHECKING
 
 import ida_hexrays
 
+import idaapi
+
 from d810.core import getLogger
-from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
+from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter, fetch_idb_value
 from d810.hexrays.cfg_utils import (
     change_1way_block_successor,
     change_2way_block_conditional_successor,
@@ -18,11 +20,13 @@ from d810.hexrays.hexrays_formatters import (
     mop_type_to_string,
 )
 from d810.hexrays.hexrays_helpers import (
+    AND_TABLE,
     append_mop_if_not_in_list,
     equal_mops_ignore_size,
     get_blk_index,
     get_mop_index,
 )
+from d810.hexrays.ida_utils import is_never_written_var
 
 if TYPE_CHECKING:
     from typing import Union
@@ -736,11 +740,61 @@ class MopTracker(object):
         ):
             return True
 
+        # If there are still memory-unresolved mops, we are not resolved
+        if len(self._memory_unresolved_mops) > 0:
+            return False
+
         for x in self._unresolved_mops:
             x_index = get_mop_index(x, [y[0] for y in self.constant_mops])
             if x_index == -1:
                 return False
         return True
+
+    def try_resolve_memory_mops(self) -> None:
+        """Try to resolve ``mop_v`` operands in ``_memory_unresolved_mops``.
+
+        For each unresolved memory operand, check whether the address is in a
+        read-only segment **or** in a writable segment with no write
+        cross-references (i.e. an opaque constant table).  If so, read the
+        concrete value from the IDA database, add it to ``constant_mops``,
+        and remove the operand from the unresolved list.
+
+        This enables :class:`MopTracker` to resolve state transitions
+        through opaque volatile globals such as::
+
+            state = (g_opaque_table[N] ^ K1) + K2
+        """
+        if not self._memory_unresolved_mops:
+            return
+
+        still_unresolved: list[ida_hexrays.mop_t] = []
+        for mop in self._memory_unresolved_mops:
+            if mop.t != ida_hexrays.mop_v:
+                still_unresolved.append(mop)
+                continue
+
+            addr = mop.g
+            seg = idaapi.getseg(addr)
+            if seg is None:
+                still_unresolved.append(mop)
+                continue
+
+            is_readonly = (seg.perm & idaapi.SEGPERM_WRITE) == 0
+            if is_readonly or is_never_written_var(addr):
+                value = fetch_idb_value(addr, mop.size)
+                if value is not None:
+                    value &= AND_TABLE[mop.size]
+                    # Add directly to constant_mops since mop_v is not
+                    # supported by MicroCodeEnvironment.define().
+                    self.constant_mops.append((mop, value))
+                    logger.debug(
+                        "Resolved memory mop at 0x%X (size=%d) to 0x%X",
+                        addr, mop.size, value,
+                    )
+                    continue
+            still_unresolved.append(mop)
+
+        self._memory_unresolved_mops = still_unresolved
 
     def _build_ml_list(self, blk: ida_hexrays.mblock_t) -> Union[None, ida_hexrays.mlist_t]:
         ml = ida_hexrays.mlist_t()

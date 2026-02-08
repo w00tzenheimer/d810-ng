@@ -242,17 +242,17 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             is_never = all(v <= compared_value for v in pred_comparison_values)
             return is_always, is_never
 
+        if opcode == ida_hexrays.m_jbe:
+            is_always = all(v <= compared_value for v in pred_comparison_values)
+            is_never = all(v > compared_value for v in pred_comparison_values)
+            return is_always, is_never
+
         # Signed comparisons - convert values once
         def to_signed(v):
             return unsigned_to_signed(v, compared_value_size)
 
         signed_compared = to_signed(compared_value)
         signed_values = [to_signed(v) for v in pred_comparison_values]
-
-        if opcode == ida_hexrays.m_jbe:
-            is_always = all(sv > signed_compared for sv in signed_values)
-            is_never = all(sv <= signed_compared for sv in signed_values)
-            return is_always, is_never
 
         if opcode == ida_hexrays.m_jg:
             is_always = all(sv > signed_compared for sv in signed_values)
@@ -308,6 +308,15 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         pred_histories = cmp_variable_tracker.search_backward(
             pred_blk, pred_blk.tail
         )
+
+        # P0: Resolve opaque table globals (mop_v operands in writable
+        # segments with no write xrefs).  try_resolve_memory_mops() reads
+        # concrete values from the IDB so that is_resolved() returns True.
+        # The emulator's eval() handles mop_v natively via
+        # is_never_written_var() + fetch_idb_value(), so no manual
+        # add_mop_initial_value propagation is needed (and would crash
+        # with EmulationException since define() rejects mop_v).
+        cmp_variable_tracker.try_resolve_memory_mops()
 
         pred_values = get_all_possibles_values(pred_histories, [op_compared])
         values = [x[0] for x in pred_values]
