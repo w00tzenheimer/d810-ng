@@ -40,35 +40,35 @@ class CstSimplificationRule1(VerifiableRule):
     REFERENCE = "Constant folding"
 
 
-# class CstSimplificationRule2(VerifiableRule):
-#     """Simplify: ((x ^ c_1_1) & c_2_1) | ((x ^ c_1_2) & c_2_2) => x ^ c_res
-#
-#     where c_2_1 == ~c_2_2 (bitwise NOT) and
-#     c_res = ((c_1_1 ^ c_1_2) & c_2_1) ^ c_1_2
-#
-#     This simplifies OR of AND-XOR expressions with complementary masks.
-#
-#     The constraints ensure c_2_1 and c_2_2 are bitwise complements, which
-#     together with the computed c_res makes this identity provably correct.
-#     Z3-verified.
-#     """
-#
-#     c_1_1 = Const("c_1_1")
-#     c_1_2 = Const("c_1_2")
-#     c_2_1 = Const("c_2_1")
-#     c_2_2 = Const("c_2_2")
-#     c_res = Const("c_res")  # Computed from matched constants
-#
-#     PATTERN = ((x ^ c_1_1) & c_2_1) | ((x ^ c_1_2) & c_2_2)
-#     REPLACEMENT = x ^ c_res
-#
-#     CONSTRAINTS = [
-#         c_2_1 == ~c_2_2,  # Checking constraint (was when.is_bnot)
-#         c_res == (((c_1_1 ^ c_1_2) & c_2_1) ^ c_1_2)  # Defining constraint
-#     ]
-#
-#     DESCRIPTION = "Simplify OR of masked XOR expressions with complementary masks"
-#     REFERENCE = "Constant folding with bitwise NOT constraint"
+class CstSimplificationRule2(VerifiableRule):
+    """Simplify: ((x ^ c_1_1) & c_2_1) | ((x ^ c_1_2) & c_2_2) => x ^ c_res
+
+    where c_2_1 == ~c_2_2 (bitwise NOT, i.e., c_2_1 | c_2_2 == MAX_VAL) and
+    c_res = ((c_1_1 ^ c_1_2) & c_2_1) ^ c_1_2
+
+    This simplifies OR of AND-XOR expressions with complementary masks.
+
+    The constraints ensure c_2_1 and c_2_2 are bitwise complements, which
+    together with the computed c_res makes this identity provably correct.
+    Z3-verified.
+    """
+
+    c_1_1 = Const("c_1_1")
+    c_1_2 = Const("c_1_2")
+    c_2_1 = Const("c_2_1")
+    c_2_2 = Const("c_2_2")
+    c_res = Const("c_res")  # Computed from matched constants
+
+    PATTERN = ((x ^ c_1_1) & c_2_1) | ((x ^ c_1_2) & c_2_2)
+    REPLACEMENT = x ^ c_res
+
+    CONSTRAINTS = [
+        c_2_1 == ~c_2_2,  # Checking constraint: masks are complements (c_2_1 | c_2_2 == MAX_VAL)
+        c_res == (((c_1_1 ^ c_1_2) & c_2_1) ^ c_1_2)  # Defining constraint
+    ]
+
+    DESCRIPTION = "Simplify OR of masked XOR expressions with complementary masks"
+    REFERENCE = "Constant folding with bitwise NOT constraint"
 
 
 class CstSimplificationRule3(VerifiableRule):
@@ -648,10 +648,10 @@ Rule breakdown:
 - De Morgan's laws: 3 rules
 - OLLVM patterns: 3 rules (with complex multi-constraint validation)
 
-Previously marked invalid:
+Previously marked invalid (now re-enabled):
 - CstSimplificationRule2: Was marked KNOWN_INCORRECT but Z3 proves it correct
   with constraints c_2_1 == ~c_2_2 and c_res == (((c_1_1 ^ c_1_2) & c_2_1) ^ c_1_2).
-  The complementary mask constraint makes the identity valid.
+  The complementary mask constraint makes the identity valid. Re-enabled.
 
 All 22 migrated rules are Z3-verified ✓
 
