@@ -679,10 +679,10 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
     return nop_block
 
 
-def ensure_last_block_is_goto(mba: ida_hexrays.mbl_array_t) -> int:
+def ensure_last_block_is_goto(mba: ida_hexrays.mbl_array_t, verify: bool = True) -> int:
     last_blk = mba.get_mblock(mba.qty - 2)
     if last_blk.nsucc() == 1:
-        change_1way_block_successor(last_blk, last_blk.succset[0])
+        change_1way_block_successor(last_blk, last_blk.succset[0], verify=verify)
         return 1
     elif last_blk.nsucc() == 0:
         return 0
@@ -782,7 +782,7 @@ def get_block_serials_by_address_range(mba: ida_hexrays.mbl_array_t, address: in
     return blk_serial_list
 
 
-def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t) -> int:
+def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t, verify: bool = True) -> int:
     last_block_index = mba.qty - 1
     nb_change = 0
     for goto_blk_serial in range(last_block_index):
@@ -793,7 +793,7 @@ def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t) -> int:
             for father_serial in goto_blk_preset:
                 father_blk: ida_hexrays.mblock_t = mba.get_mblock(father_serial)
                 nb_change += update_blk_successor(
-                    father_blk, goto_blk_serial, goto_blk_dst_serial
+                    father_blk, goto_blk_serial, goto_blk_dst_serial, verify=verify
                 )
     return nb_change
 
@@ -820,7 +820,7 @@ def mba_deep_cleaning(mba: ida_hexrays.mba_t, call_mba_combine_block=True) -> in
 
 
 def ensure_child_has_an_unconditional_father(
-    father_block: ida_hexrays.mblock_t, child_block: ida_hexrays.mblock_t
+    father_block: ida_hexrays.mblock_t, child_block: ida_hexrays.mblock_t, verify: bool = True
 ) -> int:
     if father_block is None:
         return 0
@@ -835,8 +835,8 @@ def ensure_child_has_an_unconditional_father(
             )
         )
         new_father_block = insert_nop_blk(mba.get_mblock(mba.qty - 2))
-        change_1way_block_successor(new_father_block, child_block.serial)
-        change_2way_block_conditional_successor(father_block, new_father_block.serial)
+        change_1way_block_successor(new_father_block, child_block.serial, verify=verify)
+        change_2way_block_conditional_successor(father_block, new_father_block.serial, verify=verify)
     else:
         helper_logger.info(
             "Father {0} is a conditional jump to child {1} (default child), creating a new father".format(
@@ -844,5 +844,5 @@ def ensure_child_has_an_unconditional_father(
             )
         )
         new_father_block = insert_nop_blk(father_block)
-        change_1way_block_successor(new_father_block, child_block.serial)
+        change_1way_block_successor(new_father_block, child_block.serial, verify=verify)
     return 1
