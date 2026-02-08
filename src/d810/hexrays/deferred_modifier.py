@@ -710,7 +710,7 @@ class DeferredGraphModifier:
             )
             return False
 
-        return change_1way_block_successor(blk, new_target)
+        return change_1way_block_successor(blk, new_target, verify=False)
 
     def _apply_target_change(self, blk: ida_hexrays.mblock_t, new_target: int) -> bool:
         """Change a conditional jump's target."""
@@ -731,11 +731,11 @@ class DeferredGraphModifier:
             )
             return False
 
-        return change_2way_block_conditional_successor(blk, new_target)
+        return change_2way_block_conditional_successor(blk, new_target, verify=False)
 
     def _apply_convert_to_goto(self, blk: ida_hexrays.mblock_t, goto_target: int) -> bool:
         """Convert a 2-way block to a 1-way goto."""
-        return make_2way_block_goto(blk, goto_target)
+        return make_2way_block_goto(blk, goto_target, verify=False)
 
     def _apply_insn_remove(self, blk: ida_hexrays.mblock_t, insn_ea: int) -> bool:
         """Remove an instruction by its EA."""
@@ -809,10 +809,11 @@ class DeferredGraphModifier:
                 instructions_to_copy,
                 target_serial=None if actual_is_0_way else final_target,
                 is_0_way=actual_is_0_way,
+                verify=False,
             )
 
             # Redirect source block to the new block
-            if not change_1way_block_successor(source_blk, new_block.serial):
+            if not change_1way_block_successor(source_blk, new_block.serial, verify=False):
                 logger.warning(
                     "Failed to redirect block %d to new block %d",
                     source_blk.serial, new_block.serial
@@ -1051,7 +1052,7 @@ class ImmediateGraphModifier:
             )
             return False
 
-        return change_1way_block_successor(blk, new_target)
+        return change_1way_block_successor(blk, new_target, verify=False)
 
     def _apply_target_change(self, blk: ida_hexrays.mblock_t, new_target: int) -> bool:
         """Change a conditional jump's target."""
@@ -1072,11 +1073,11 @@ class ImmediateGraphModifier:
             )
             return False
 
-        return change_2way_block_conditional_successor(blk, new_target)
+        return change_2way_block_conditional_successor(blk, new_target, verify=False)
 
     def _apply_convert_to_goto(self, blk: ida_hexrays.mblock_t, goto_target: int) -> bool:
         """Convert a 2-way block to a 1-way goto."""
-        return make_2way_block_goto(blk, goto_target)
+        return make_2way_block_goto(blk, goto_target, verify=False)
 
     def _apply_insn_remove(self, blk: ida_hexrays.mblock_t, insn_ea: int) -> bool:
         """Remove an instruction by its EA."""
@@ -1150,10 +1151,11 @@ class ImmediateGraphModifier:
                 instructions_to_copy,
                 target_serial=None if actual_is_0_way else final_target,
                 is_0_way=actual_is_0_way,
+                verify=False,
             )
 
             # Redirect source block to the new block
-            if not change_1way_block_successor(source_blk, new_block.serial):
+            if not change_1way_block_successor(source_blk, new_block.serial, verify=False):
                 logger.warning(
                     "Failed to redirect block %d to new block %d",
                     source_blk.serial, new_block.serial

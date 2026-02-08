@@ -175,7 +175,7 @@ def insert_goto_instruction(
 
 
 def change_1way_call_block_successor(
-    call_blk: ida_hexrays.mblock_t, call_blk_successor_serial: int
+    call_blk: ida_hexrays.mblock_t, call_blk_successor_serial: int, verify: bool = True
 ) -> bool:
     if call_blk.nsucc() != 1:
         return False
@@ -189,11 +189,13 @@ def change_1way_call_block_successor(
     insert_goto_instruction(
         nop_blk, call_blk_successor_serial, nop_previous_instruction=True
     )
-    is_ok = change_1way_block_successor(nop_blk, call_blk_successor_serial)
+    is_ok = change_1way_block_successor(nop_blk, call_blk_successor_serial, verify=verify)
     if not is_ok:
         return False
 
     mba.mark_chains_dirty()
+    if not verify:
+        return True
     try:
         mba.verify(True)
         return True
@@ -204,7 +206,7 @@ def change_1way_call_block_successor(
         raise e
 
 
-def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial: int) -> bool:
+def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True) -> bool:
     if blk.nsucc() != 1 or blk.serial == 0:
         return False
 
@@ -228,7 +230,7 @@ def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
     elif blk.tail.opcode == ida_hexrays.m_call:
         #  Before maturity MMAT_CALLS, we can't add a goto after a call instruction
         if mba.maturity < ida_hexrays.MMAT_CALLS:
-            return change_1way_call_block_successor(blk, blk_successor_serial)
+            return change_1way_call_block_successor(blk, blk_successor_serial, verify=verify)
         else:
             insert_goto_instruction(
                 blk, blk_successor_serial, nop_previous_instruction=False
@@ -259,6 +261,8 @@ def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
         new_blk_successor.mark_lists_dirty()
 
     mba.mark_chains_dirty()
+    if not verify:
+        return True
     try:
         mba.verify(True)
         return True
@@ -270,7 +274,7 @@ def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
         raise e
 
 
-def change_0way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial: int) -> bool:
+def change_0way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True) -> bool:
     if blk.nsucc() != 0:
         return False
     mba = blk.mba
@@ -300,6 +304,8 @@ def change_0way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
         new_blk_successor.mark_lists_dirty()
 
     mba.mark_chains_dirty()
+    if not verify:
+        return True
     try:
         mba.verify(True)
         return True
@@ -311,7 +317,7 @@ def change_0way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
 
 
 def change_2way_block_conditional_successor(
-    blk: ida_hexrays.mblock_t, blk_successor_serial: int
+    blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True
 ) -> bool:
     if blk.nsucc() != 2:
         return False
@@ -341,6 +347,8 @@ def change_2way_block_conditional_successor(
 
     # Step4: Final stuff and checks
     mba.mark_chains_dirty()
+    if not verify:
+        return True
     try:
         mba.verify(True)
 
@@ -355,10 +363,10 @@ def change_2way_block_conditional_successor(
 
 
 def update_blk_successor(
-    blk: ida_hexrays.mblock_t, old_successor_serial: int, new_successor_serial: int
+    blk: ida_hexrays.mblock_t, old_successor_serial: int, new_successor_serial: int, verify: bool = True
 ) -> int:
     if blk.nsucc() == 1:
-        change_1way_block_successor(blk, new_successor_serial)
+        change_1way_block_successor(blk, new_successor_serial, verify=verify)
     elif blk.nsucc() == 2:
         if old_successor_serial == blk.nextb.serial:
             helper_logger.info(
@@ -368,14 +376,14 @@ def update_blk_successor(
             )
             return 0
         else:
-            change_2way_block_conditional_successor(blk, new_successor_serial)
+            change_2way_block_conditional_successor(blk, new_successor_serial, verify=verify)
     else:
         helper_logger.info("Can't update block successor: {0} ".format(blk.serial))
         return 0
     return 1
 
 
-def make_2way_block_goto(blk: ida_hexrays.mblock_t, blk_successor_serial: int) -> bool:
+def make_2way_block_goto(blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True) -> bool:
     if blk.nsucc() != 2:
         return False
     mba = blk.mba
@@ -407,6 +415,8 @@ def make_2way_block_goto(blk: ida_hexrays.mblock_t, blk_successor_serial: int) -
         new_blk_successor.mark_lists_dirty()
 
     mba.mark_chains_dirty()
+    if not verify:
+        return True
     try:
         mba.verify(True)
         return True
@@ -418,7 +428,7 @@ def make_2way_block_goto(blk: ida_hexrays.mblock_t, blk_successor_serial: int) -
 
 
 def create_block(
-    blk: ida_hexrays.mblock_t, blk_ins: list[ida_hexrays.minsn_t], is_0_way: bool = False
+    blk: ida_hexrays.mblock_t, blk_ins: list[ida_hexrays.minsn_t], is_0_way: bool = False, verify: bool = True
 ) -> ida_hexrays.mblock_t:
     mba = blk.mba
     new_blk = insert_nop_blk(blk)
@@ -444,6 +454,8 @@ def create_block(
 
     new_blk.mark_lists_dirty()
     mba.mark_chains_dirty()
+    if not verify:
+        return new_blk
     try:
         mba.verify(True)
         return new_blk
@@ -458,6 +470,7 @@ def create_standalone_block(
     blk_ins: list[ida_hexrays.minsn_t],
     target_serial: int | None = None,
     is_0_way: bool = False,
+    verify: bool = True,
 ) -> ida_hexrays.mblock_t:
     """Create a standalone block without modifying ref_blk's CFG edges.
 
@@ -534,6 +547,8 @@ def create_standalone_block(
 
     new_blk.mark_lists_dirty()
     mba.mark_chains_dirty()
+    if not verify:
+        return new_blk
     try:
         mba.verify(True)
         return new_blk
@@ -677,9 +692,17 @@ def ensure_last_block_is_goto(mba: ida_hexrays.mbl_array_t) -> int:
         )
 
 
-def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t) -> tuple[ida_hexrays.mblock_t, ida_hexrays.mblock_t | None]:
+def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t, verify: bool = True) -> tuple[ida_hexrays.mblock_t, ida_hexrays.mblock_t | None]:
     mba = block_to_duplicate.mba
     duplicated_blk = mba.copy_block(block_to_duplicate, mba.qty - 1)
+
+    # Clean inherited predecessor set -- copy_block clones predecessors
+    # from block_to_duplicate, but those predecessors point to the
+    # original, not the duplicate.
+    prev_pred_serials = [x for x in duplicated_blk.predset]
+    for prev_serial in prev_pred_serials:
+        duplicated_blk.predset._del(prev_serial)
+
     helper_logger.debug(
         "  Duplicated {0} -> {1}".format(
             block_to_duplicate.serial, duplicated_blk.serial
@@ -694,7 +717,7 @@ def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t) -> tuple[ida_hexra
         )
         duplicated_blk_default = insert_nop_blk(duplicated_blk)
         change_1way_block_successor(
-            duplicated_blk_default, block_to_duplicate.nextb.serial
+            duplicated_blk_default, block_to_duplicate.nextb.serial, verify=verify
         )
         helper_logger.debug(
             "  {0} is conditional, so created a default child {1} for {2} which goto {3}".format(
@@ -710,7 +733,7 @@ def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t) -> tuple[ida_hexra
                 duplicated_blk.serial, block_to_duplicate.succset[0]
             )
         )
-        change_1way_block_successor(duplicated_blk, block_to_duplicate.succset[0])
+        change_1way_block_successor(duplicated_blk, block_to_duplicate.succset[0], verify=verify)
     elif duplicated_blk.nsucc() == 0:
         helper_logger.debug(
             "  Duplicated block {0} has no successor => Nothing to do".format(
