@@ -162,6 +162,8 @@ MANUALLY_OBFUSCATED_CASES = [
                 return (unsigned int)(a4[1] + *a4);
             }
         """,
+        # Flexible patterns for type variations (int vs __int64 params across platforms)
+        acceptable_patterns=["a2 ^ a1", "(a2 - 3) ^ (a3 * a1)", "a4[1] + *a4"],
         deobfuscated_contains=["^"],  # Should simplify to XOR
         must_change=True,
         # From results.toml: PatternOptimizer (2), Xor_HackersDelightRule_3 (2)
@@ -181,6 +183,8 @@ MANUALLY_OBFUSCATED_CASES = [
                 return (unsigned int)(a4[2] + a4[1] + *a4);
             }
         """,
+        # Flexible patterns for type variations (int vs __int64 params across platforms)
+        acceptable_patterns=["a2 | a1", "a3 | a2", "(a2 - 2) | (a1 + 1)", "a4[2] + a4[1] + *a4"],
         deobfuscated_contains=["|"],
         must_change=True,
         # From results.toml: PatternOptimizer (3), Or_MbaRule_1 (3)
@@ -200,6 +204,8 @@ MANUALLY_OBFUSCATED_CASES = [
                 return (unsigned int)(a4[2] + a4[1] + *a4);
             }
         """,
+        # Flexible patterns for type variations (int vs __int64 params across platforms)
+        acceptable_patterns=["a2 & a1", "a3 & a2", "(a3 + a2) & (2 * a1)", "a4[2] + a4[1] + *a4"],
         deobfuscated_contains=["&"],
         must_change=True,
         # From results.toml: PatternOptimizer (3), And_HackersDelightRule_4 (3)
