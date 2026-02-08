@@ -576,10 +576,10 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
 
         try:
             # Duplicate the conditional block
-            new_jmp_block, _ = duplicate_block(cond_blk)
+            new_jmp_block, _ = duplicate_block(cond_blk, verify=False)
 
             # Convert 2-way block to 1-way goto pointing to target
-            if not make_2way_block_goto(new_jmp_block, mod.target_serial):
+            if not make_2way_block_goto(new_jmp_block, mod.target_serial, verify=False):
                 unflat_logger.warning(
                     "Failed to convert block %d to goto %d",
                     new_jmp_block.serial, mod.target_serial
@@ -587,7 +587,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                 return False
 
             # Update predecessor to point to new block instead of original conditional block
-            if not update_blk_successor(pred_blk, mod.cond_block_serial, new_jmp_block.serial):
+            if not update_blk_successor(pred_blk, mod.cond_block_serial, new_jmp_block.serial, verify=False):
                 unflat_logger.warning(
                     "Failed to update predecessor %d: %d -> %d",
                     mod.pred_serial, mod.cond_block_serial, new_jmp_block.serial

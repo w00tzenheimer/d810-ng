@@ -311,7 +311,8 @@ class CFGPatcher:
     def redirect_edge(
         context: OptimizationContext,
         from_block: ida_hexrays.mblock_t,
-        to_block: ida_hexrays.mblock_t
+        to_block: ida_hexrays.mblock_t,
+        verify: bool = True
     ) -> int:
         """Redirect a block's outgoing edge to a new target.
 
@@ -352,13 +353,13 @@ class CFGPatcher:
         if nsucc == 0:
             # Block has no successors (e.g., ends with indirect jump or return)
             # We can still redirect by adding a goto
-            success = change_0way_block_successor(from_block, to_block.serial)
+            success = change_0way_block_successor(from_block, to_block.serial, verify=verify)
         elif nsucc == 1:
             # Single successor - most common case
-            success = change_1way_block_successor(from_block, to_block.serial)
+            success = change_1way_block_successor(from_block, to_block.serial, verify=verify)
         elif nsucc == 2:
             # Conditional block - convert to unconditional goto
-            success = make_2way_block_goto(from_block, to_block.serial)
+            success = make_2way_block_goto(from_block, to_block.serial, verify=verify)
         else:
             context.logger.warning(
                 "Cannot redirect block %s with %d successors",
@@ -374,7 +375,8 @@ class CFGPatcher:
         context: OptimizationContext,
         before_block: ida_hexrays.mblock_t,
         after_block: ida_hexrays.mblock_t,
-        instructions: List[ida_hexrays.minsn_t]
+        instructions: List[ida_hexrays.minsn_t],
+        verify: bool = True
     ) -> ida_hexrays.mblock_t | None:
         """Insert a new block between two existing blocks.
 
@@ -414,7 +416,7 @@ class CFGPatcher:
 
         # Create a new block with the instructions
         # The new block will initially point to the next block after before_block
-        new_block = create_block(before_block, instructions, is_0_way=False)
+        new_block = create_block(before_block, instructions, is_0_way=False, verify=verify)
 
         if new_block is None:
             context.logger.error(
@@ -425,7 +427,7 @@ class CFGPatcher:
             return None
 
         # Redirect the new block to point to after_block
-        success = change_1way_block_successor(new_block, after_block.serial)
+        success = change_1way_block_successor(new_block, after_block.serial, verify=verify)
         if not success:
             context.logger.error(
                 "Failed to redirect new block %s to %s",
@@ -447,7 +449,8 @@ class CFGPatcher:
     def ensure_unconditional_predecessor(
         context: OptimizationContext,
         father_block: ida_hexrays.mblock_t,
-        child_block: ida_hexrays.mblock_t
+        child_block: ida_hexrays.mblock_t,
+        verify: bool = True
     ) -> int:
         """Ensure a predecessor block has an unconditional jump to child.
 
@@ -484,12 +487,13 @@ class CFGPatcher:
             child_block.serial
         )
 
-        return ensure_child_has_an_unconditional_father(father_block, child_block)
+        return ensure_child_has_an_unconditional_father(father_block, child_block, verify=verify)
 
     @staticmethod
     def duplicate_block(
         context: OptimizationContext,
-        block: ida_hexrays.mblock_t
+        block: ida_hexrays.mblock_t,
+        verify: bool = True
     ) -> Tuple[ida_hexrays.mblock_t, ida_hexrays.mblock_t | None]:
         """Duplicate a block in the CFG.
 
@@ -516,7 +520,7 @@ class CFGPatcher:
 
         context.logger.debug("Duplicating block %s", block.serial)
 
-        dup_block, dup_default = duplicate_block(block)
+        dup_block, dup_default = duplicate_block(block, verify=verify)
 
         context.logger.debug(
             "Duplicated block %s -> %s (default: %s)",

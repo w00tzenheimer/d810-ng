@@ -191,7 +191,7 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
                 self.log_dir,
                 f"{self.cur_maturity_pass}_after_fake_jump",
             )
-        return change_1way_block_successor(pred, dst_serial)
+        return change_1way_block_successor(pred, dst_serial, verify=False)
 
     def optimize(self, blk: ida_hexrays.mblock_t) -> int:
         self.mba = blk.mba

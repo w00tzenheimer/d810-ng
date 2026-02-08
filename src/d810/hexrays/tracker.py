@@ -878,7 +878,7 @@ def try_to_duplicate_one_block(var_histories: list[MopHistory]) -> tuple[int, in
             )
             pred_block = mba.get_mblock(pred_serial)
             duplicated_blk_jmp, duplicated_blk_default = duplicate_block(
-                block_to_duplicate
+                block_to_duplicate, verify=False
             )
             nb_duplication += 1 if duplicated_blk_jmp is not None else 0
             nb_duplication += 1 if duplicated_blk_default is not None else 0
@@ -890,12 +890,12 @@ def try_to_duplicate_one_block(var_histories: list[MopHistory]) -> tuple[int, in
             if (pred_block.tail is None) or (
                 not ida_hexrays.is_mcode_jcond(pred_block.tail.opcode)
             ):
-                change_1way_block_successor(pred_block, duplicated_blk_jmp.serial)
+                change_1way_block_successor(pred_block, duplicated_blk_jmp.serial, verify=False)
                 nb_change += 1
             else:
                 if block_to_duplicate.serial == pred_block.tail.d.b:
                     change_2way_block_conditional_successor(
-                        pred_block, duplicated_blk_jmp.serial
+                        pred_block, duplicated_blk_jmp.serial, verify=False
                     )
                     nb_change += 1
                 else:
@@ -903,6 +903,7 @@ def try_to_duplicate_one_block(var_histories: list[MopHistory]) -> tuple[int, in
                     change_1way_block_successor(
                         pred_block.nextb,
                         duplicated_blk_jmp.serial,
+                        verify=False,
                     )
                     nb_change += 1
 
