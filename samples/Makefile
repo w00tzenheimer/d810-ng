@@ -239,7 +239,7 @@ endif
 # ----------------------------- Sources & Objects -----------------------------
 # Exclude mba_hard.c from the default build - it has its own binary (libmba_hard)
 # and contains symbols that duplicate those in manually_obfuscated.c
-SRCS := $(filter-out src/c/mba_hard.c,$(wildcard src/c/*.c))
+SRCS := $(filter-out src/c/mba_hard.c src/c/sub_7FFC1EB47830.c,$(wildcard src/c/*.c))
 OBJS := $(SRCS:.c=.o)
 
 # ----------------------------- Rules -----------------------------

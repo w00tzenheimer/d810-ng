@@ -704,6 +704,36 @@ WHILE_SWITCH_CASES = [
 
 
 # =============================================================================
+# hardened_ollvm_cond_chain.c - Hardened OLLVM conditional chain patterns
+# =============================================================================
+
+HARDENED_OLLVM_COND_CHAIN_CASES = [
+    DeobfuscationCase(
+        function="hardened_cond_chain_simple",
+        description="Hardened OLLVM conditional chain (6 states, binary search dispatch)",
+        project="example_libobfuscated.json",
+        # Obfuscated code should reference the opaque constant table
+        obfuscated_contains=["g_opaque_table"],
+        # After deobfuscation, table references should be resolved away
+        deobfuscated_not_contains=["g_opaque_table"],
+        # The underlying computation is: result = input * 3 + 7
+        acceptable_patterns=["* 3", "+ 7", "3 *"],
+        must_change=True,
+        # Uses FixPredecessorOfConditionalJumpBlock from example_libobfuscated.json
+        required_rules=["FixPredecessorOfConditionalJumpBlock"],
+    ),
+    DeobfuscationCase(
+        function="sub_7FFC1EB47830",
+        description="Real hardened OLLVM conditional chain from malware sample (14 states, nested dispatch, opaque table)",
+        project="example_libobfuscated.json",
+        obfuscated_contains=["dword_7FFC1ECAEC"],  # opaque table refs in obfuscated code
+        must_change=True,
+        required_rules=["FixPredecessorOfConditionalJumpBlock"],
+    ),
+]
+
+
+# =============================================================================
 # Combined lists for different test scenarios
 # =============================================================================
 
@@ -722,6 +752,7 @@ ALL_CASES = (
     + TIGRESS_CASES
     + UNWRAP_LOOPS_CASES
     + WHILE_SWITCH_CASES
+    + HARDENED_OLLVM_COND_CHAIN_CASES
 )
 
 # Core cases that must work (no exceptions/edge cases)
@@ -731,6 +762,7 @@ CORE_CASES = (
     + OLLVM_CASES
     + HODUR_CASES
     + WHILE_SWITCH_CASES
+    + HARDENED_OLLVM_COND_CHAIN_CASES
 )
 
 # Quick smoke test (fastest)
@@ -754,6 +786,7 @@ UNFLATTENING_CASES = (
     + NESTED_DISPATCHER_CASES
     + OLLVM_CASES
     + TIGRESS_CASES
+    + HARDENED_OLLVM_COND_CHAIN_CASES
 )
 
 # Cases that test instruction-level rules (MBA, constants)
