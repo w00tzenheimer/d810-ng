@@ -173,6 +173,56 @@ docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
 | `idapro-tests` | `idapro-linux:idapro-tests` | 3.10 | Legacy test container |
 | `idapro-tests-9.2` | `idapro-linux:idapro-tests-9.2-py312` | 3.12 | Primary test container (recommended) |
 
+## Building with Cython Speedups
+
+d810 includes optional Cython extensions for performance-critical paths. Every Cython module has a pure Python fallback, so speedups are strictly optional.
+
+### Prerequisites
+
+```bash
+pip install "Cython>=3.0.0"
+```
+
+### Local Build (macOS/Linux)
+
+```bash
+# SDK auto-downloads from GitHub if not present
+D810_BUILD_SPEEDUPS=1 pip install -e ".[speedups]" --no-build-isolation
+```
+
+To specify a local IDA SDK path:
+
+```bash
+IDA_SDK=/path/to/ida-sdk D810_BUILD_SPEEDUPS=1 pip install -e ".[speedups]" --no-build-isolation
+```
+
+To build extensions in-place only (no install):
+
+```bash
+D810_BUILD_SPEEDUPS=1 python setup.py build_ext --inplace
+```
+
+### Inside Docker (recommended)
+
+Building inside an IDA container ensures SDK headers and symbols are available:
+
+```bash
+apt-get update && apt-get install -y g++
+pip install setuptools wheel "Cython>=3.0.0"
+D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e ".[dev]"
+```
+
+### Environment Variables
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `D810_BUILD_SPEEDUPS` | Set to `1` to compile `.pyx` files | `0` (disabled) |
+| `IDA_SDK` | Path to IDA SDK directory | Auto-downloads to `.ida-sdk/` |
+| `DEBUG` | Set to `1` for debug builds with profiling/tracing | `0` |
+| `D810_NO_CYTHON` | Set to `1` to disable Cython at runtime | Not set (enabled) |
+
+> **Note:** `--no-build-isolation` is important so pip uses your already-installed Cython rather than creating an isolated build environment.
+
 ## Warnings
 
 This plugin is still in early stage of development, so issues ~~may~~ will happen.
