@@ -11,7 +11,7 @@ Single Iteration Loop Pattern:
 Key Property: INIT == CHECK and UPDATE != CHECK
 Result: Loop runs exactly once, can be inlined/simplified
 
-Test Functions (from libobfuscated.dylib or libobfuscated.dll):
+Test Functions (from libobfuscated.dylib):
 These functions are defined in samples/src/c/single_iteration_loops.c:
 
 - single_iteration_simple: Classic single-iteration pattern
@@ -29,7 +29,6 @@ These functions are defined in samples/src/c/single_iteration_loops.c:
 from __future__ import annotations
 
 import os
-import platform
 from typing import TYPE_CHECKING
 
 import pytest
@@ -51,7 +50,7 @@ def _get_default_binary() -> str:
     if override:
         return override
     # Default: platform-appropriate binary
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return "libobfuscated.dylib"
 
 
 def get_func_ea(name: str) -> int:

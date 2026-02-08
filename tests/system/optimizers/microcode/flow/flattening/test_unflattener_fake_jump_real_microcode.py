@@ -31,7 +31,6 @@ These real-microcode tests verify:
 from __future__ import annotations
 
 import os
-import platform
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -55,7 +54,7 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "fake_jumps.dylib" if platform.system() == "Darwin" else "fake_jumps.dll"
+    return "fake_jumps.dylib"
 
 
 def get_func_ea(name: str) -> int:

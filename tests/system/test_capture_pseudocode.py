@@ -6,7 +6,6 @@ Run with:
 
 import json
 import pathlib
-import platform
 import sqlite3
 
 import pytest
@@ -83,7 +82,7 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return "libobfuscated.dylib"
 
 
 @pytest.fixture(scope="module")
