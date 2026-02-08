@@ -598,6 +598,61 @@ def update_block_successors(blk: ida_hexrays.mblock_t, blk_succ_serial_list: lis
     blk.mark_lists_dirty()
 
 
+def _update_jtbl_case_targets(
+    mba: ida_hexrays.mba_t,
+    old_target: int,
+    new_target: int,
+) -> int:
+    """Scan all blocks for m_jtbl instructions and update stale case targets.
+
+    When a NOP block is inserted between two blocks, any m_jtbl instruction
+    whose ``mcases_t.targets[]`` references *old_target* must be patched to
+    reference *new_target*.  Without this, the jump-table operand holds a stale
+    block serial that may point to a NOP sled or, after further CFG surgery,
+    to freed memory -- causing a segfault in later Hex-Rays passes.
+
+    Args:
+        mba: The microcode block array.
+        old_target: Block serial that may appear in mcases_t.targets.
+        new_target: Replacement block serial.
+
+    Returns:
+        Number of individual case-target entries that were updated.
+    """
+    if old_target == new_target:
+        return 0
+
+    updated = 0
+    for i in range(mba.qty):
+        blk = mba.get_mblock(i)
+        if blk.tail is None:
+            continue
+        if blk.tail.opcode != ida_hexrays.m_jtbl:
+            continue
+        # m_jtbl: ins.r is mop_c (cases operand), ins.r.c is mcases_t
+        if blk.tail.r is None or blk.tail.r.t != ida_hexrays.mop_c:
+            continue
+        cases = blk.tail.r.c
+        if cases is None:
+            continue
+        targets = cases.targets  # intvec_t of block serials
+        n = targets.size()
+        for j in range(n):
+            if targets[j] == old_target:
+                targets[j] = new_target
+                updated += 1
+                helper_logger.debug(
+                    "Updated m_jtbl case target in block %d: %d -> %d (index %d)",
+                    blk.serial, old_target, new_target, j,
+                )
+    if updated:
+        helper_logger.info(
+            "Updated %d m_jtbl case target(s): %d -> %d",
+            updated, old_target, new_target,
+        )
+    return updated
+
+
 def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
     mba = blk.mba
     # Append the new block at the end of the MBA (before the dummy last block)
@@ -686,6 +741,32 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
         original_successor_blk.predset.push_back(nop_block.serial)
         if original_successor_blk.serial != mba.qty - 1:
             original_successor_blk.mark_lists_dirty()
+
+    # Update any m_jtbl case targets across the entire MBA that reference
+    # the original successor.  When the NOP block is spliced between blk and
+    # original_successor, any switch-table operand (mcases_t.targets[]) that
+    # still references original_successor_serial on *blk* itself must be
+    # patched to go through the NOP block.  We limit the scan to blk's own
+    # tail instruction because other blocks' jtbl targets referencing
+    # original_successor are intentional (those paths don't go through blk).
+    if (
+        blk.tail is not None
+        and blk.tail.opcode == ida_hexrays.m_jtbl
+        and blk.tail.r is not None
+        and blk.tail.r.t == ida_hexrays.mop_c
+        and blk.tail.r.c is not None
+    ):
+        cases = blk.tail.r.c
+        targets = cases.targets
+        n = targets.size()
+        for j in range(n):
+            if targets[j] == original_successor_serial:
+                targets[j] = nop_block.serial
+                helper_logger.debug(
+                    "insert_nop_blk: Updated m_jtbl case target in block %d: "
+                    "%d -> %d (index %d)",
+                    blk.serial, original_successor_serial, nop_block.serial, j,
+                )
 
     nop_block.mark_lists_dirty()
     mba.mark_chains_dirty()
