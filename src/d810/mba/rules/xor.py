@@ -7,7 +7,7 @@ and identities from Hacker's Delight.
 All rules are verified using Z3 SMT solver.
 """
 
-from d810.core.bits import SUB_TABLE
+from d810.core.bits import AND_TABLE, SUB_TABLE
 from d810.mba.dsl import Var, Const, when
 from d810.mba.rules._base import VerifiableRule
 
@@ -444,13 +444,17 @@ class Xor_Rule_4_WithXdu(VerifiableRule):
             if x0.mop.d.opcode != ida_hexrays.m_xdu:
                 return False
 
-            from d810.hexrays.hexrays_helpers import equal_bnot_cst
-
-            return equal_bnot_cst(
-                candidate["c_1"].mop,
-                candidate["bnot_c_1"].mop,
-                mop_size=x0.mop.d.l.size,
-            )
+            # HACK: inlined from hexrays_helpers to avoid import boundary
+            # violation (rules must not import d810.hexrays for unit-testability).
+            # Proper fix: runtime validator attachment framework.
+            lo = candidate["c_1"].mop
+            ro = candidate["bnot_c_1"].mop
+            mop_size = x0.mop.d.l.size
+            if (lo.t != ida_hexrays.mop_n) or (ro.t != ida_hexrays.mop_n):
+                return False
+            if lo.size != ro.size:
+                return False
+            return lo.nnn.value ^ ro.nnn.value == AND_TABLE[mop_size]
         except (KeyError, AttributeError):
             return False
 
