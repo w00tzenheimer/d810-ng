@@ -18,7 +18,12 @@ from typing import Any, Callable, Optional
 
 import idaapi
 import idc
-import pytest
+
+try:
+    import pytest
+    _HAS_PYTEST = True
+except ImportError:
+    _HAS_PYTEST = False
 
 from .assertions import (
     assert_code_changed,
@@ -87,6 +92,12 @@ def run_deobfuscation_test(
         pytest.skip: If the test should be skipped.
         AssertionError: If any assertion fails.
     """
+    if not _HAS_PYTEST:
+        raise RuntimeError(
+            "pytest is required for the d810 test runner. "
+            "Install it with: pip install pytest"
+        )
+
     # Apply binary-specific overrides
     binary_suffix = get_binary_suffix()
     effective_case = case.get_effective_config(binary_suffix)
@@ -255,6 +266,12 @@ def create_parametrized_test(
         def test_deobfuscation(case, d810_state, ...):
             run_deobfuscation_test(case, d810_state, ...)
     """
+    if not _HAS_PYTEST:
+        raise RuntimeError(
+            "pytest is required for the d810 test runner. "
+            "Install it with: pip install pytest"
+        )
+
     return pytest.mark.parametrize(
         "case",
         cases,
