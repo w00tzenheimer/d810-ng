@@ -405,10 +405,54 @@ class Xor_NestedStuff(VerifiableRule):
     REFERENCE = "Real-world obfuscation pattern"
 
 
-# Note: Xor_Rule_4_WithXdu requires complex MOP type checking
-# This cannot be easily expressed in the current DSL and would need
-# special support for checking microcode operand types (mop_d, m_xdu, etc.)
-# For now, this rule remains in the original implementation.
+class Xor_Rule_4_WithXdu(VerifiableRule):
+    """Simplify: (x & ~c) | (~x & c) => x ^ c (with XDU + bnot_cst verification)
+
+    Same logical pattern as Xor_Rule_4, but specialized for the case where x_0
+    is the result of an m_xdu (unsigned extension) instruction. The bitwise NOT
+    relationship between the two constants is checked against the *inner* operand
+    size (before extension), not the full operand size.
+
+    Requires runtime check:
+      - x_0.mop is mop_d (result of sub-instruction)
+      - x_0.mop.d.opcode is m_xdu (unsigned extend)
+      - c_1 and bnot_c_1 are bitwise complements at the inner operand size
+
+    This rule cannot be fully verified by Z3 because the constraint depends
+    on microcode operand types that only exist at runtime.
+    """
+
+    c_1 = Const("c_1")
+    bnot_c_1 = Const("bnot_c_1")
+
+    PATTERN = (x & bnot_c_1) | (~x & c_1)
+    REPLACEMENT = x ^ c_1
+
+    SKIP_VERIFICATION = True  # Requires IDA runtime MOP type checks
+
+    DESCRIPTION = "Simplify (xdu(z) & ~c) | (~xdu(z) & c) to xdu(z) ^ c"
+    REFERENCE = "XOR pattern with XDU and constant complement"
+
+    def check_candidate(self, candidate) -> bool:
+        """Check MOP types: x_0 must be mop_d with m_xdu opcode, constants must be bnot."""
+        try:
+            import ida_hexrays
+
+            x0 = candidate["x_0"]
+            if x0.mop.t != ida_hexrays.mop_d:
+                return False
+            if x0.mop.d.opcode != ida_hexrays.m_xdu:
+                return False
+
+            from d810.hexrays.hexrays_helpers import equal_bnot_cst
+
+            return equal_bnot_cst(
+                candidate["c_1"].mop,
+                candidate["bnot_c_1"].mop,
+                mop_size=x0.mop.d.l.size,
+            )
+        except (KeyError, AttributeError):
+            return False
 
 
 """
@@ -417,25 +461,20 @@ XOR Rules Migration Complete!
 
 Original file: rewrite_xor.py
 - Total rules: 21
-- Migrated: 20 (95.2%)
-- Not migrated: 1 (Xor_Rule_4_WithXdu - requires MOP type checking)
+- Migrated: 21 (100%)
 
 Rule breakdown:
 - Simple rules: 14
-- Constrained rules: 6
+- Constrained rules: 7
   - when.is_bnot: 3 rules (double bnot verification)
   - Lambda SUB_TABLE check: 1 rule
   - DynamicConst: 2 rules
-
-Not migrated:
-- Xor_Rule_4_WithXdu: Requires checking microcode operand types
-  (candidate["x_0"].mop.t != mop_d, opcode checks, etc.)
-  This needs DSL extension for MOP type predicates.
+  - MOP type check (XDU): 1 rule
 
 Code metrics:
 - Original: ~495 lines with imperative patterns
-- Refactored: ~360 lines with full documentation
+- Refactored: ~410 lines with full documentation
 - Pattern clarity: Dramatically improved with mathematical proofs
 
-All 20 migrated rules are Z3-verified ✓
+All 21 rules migrated, 20 Z3-verified, 1 runtime-only (Xor_Rule_4_WithXdu)
 """
