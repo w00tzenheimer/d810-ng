@@ -181,9 +181,10 @@ def change_1way_call_block_successor(
         return False
 
     mba = call_blk.mba
-    previous_call_blk_successor_serial = call_blk.succset[0]
-    previous_call_blk_successor = mba.get_mblock(previous_call_blk_successor_serial)
 
+    # insert_nop_blk fully wires the NOP block between call_blk and its
+    # original successor (succset/predset bookkeeping included), so we only
+    # need to redirect the NOP block to the desired target afterward.
     nop_blk = insert_nop_blk(call_blk)
     insert_goto_instruction(
         nop_blk, call_blk_successor_serial, nop_previous_instruction=True
@@ -192,21 +193,12 @@ def change_1way_call_block_successor(
     if not is_ok:
         return False
 
-    # Bookkeeping
-    call_blk.succset._del(previous_call_blk_successor_serial)
-    call_blk.succset.push_back(nop_blk.serial)
-    call_blk.mark_lists_dirty()
-
-    previous_call_blk_successor.predset._del(call_blk.serial)
-    if previous_call_blk_successor.serial != mba.qty - 1:
-        previous_call_blk_successor.mark_lists_dirty()
-
     mba.mark_chains_dirty()
     try:
         mba.verify(True)
         return True
     except RuntimeError as e:
-        helper_logger.error("Error in change_1way_block_successor: {0}".format(e))
+        helper_logger.error("Error in change_1way_call_block_successor: {0}".format(e))
         log_block_info(call_blk, helper_logger.error)
         log_block_info(nop_blk, helper_logger.error)
         raise e
@@ -507,10 +499,8 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
 
     nop_block.type = ida_hexrays.BLT_1WAY
 
-    # We might have clone a block with multiple or no successor, thus we need to clean all
+    # We might have cloned a block with multiple or no successors, thus we need to clean all
     prev_successor_serials = [x for x in nop_block.succset]
-
-    # Bookkeeping
     for prev_successor_serial in prev_successor_serials:
         nop_block.succset._del(prev_successor_serial)
         prev_succ = mba.get_mblock(prev_successor_serial)
@@ -518,24 +508,65 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
         if prev_succ.serial != mba.qty - 1:
             prev_succ.mark_lists_dirty()
 
+    # Also clean inherited predecessor set from copy_block -- the copied
+    # predecessors point to blk, not to nop_block, so they are stale.
+    prev_predecessor_serials = [x for x in nop_block.predset]
+    for prev_predecessor_serial in prev_predecessor_serials:
+        nop_block.predset._del(prev_predecessor_serial)
+
+    # Add a goto instruction to the NOP block targeting the original successor,
+    # since the NOP block is appended at the end and cannot fall through.
+    insert_goto_instruction(nop_block, original_successor_serial, nop_previous_instruction=False)
+    nop_block.flags |= ida_hexrays.MBL_GOTO
+
     # Point the NOP block's successor to the original next block of blk,
     # preserving the same logical relationship as the old mid-insertion approach.
     nop_block.succset.push_back(original_successor_serial)
+
+    original_successor_blk = mba.get_mblock(original_successor_serial)
+
+    # Wire the NOP block into the CFG between blk and its original successor.
+    # With the old mid-insertion approach, the NOP block was physically adjacent
+    # to blk (fallthrough), so this wiring happened implicitly.  Now that we
+    # append at the end, we must do it explicitly.
+    #
+    # For 1-way blocks (and 0-way), we can fully rewire blk -> nop_block.
+    # For 2-way (conditional) blocks, the fallthrough successor must remain
+    # blk.nextb.serial (a physical property we cannot change by moving
+    # succset entries).  In that case we leave blk's wiring untouched and
+    # let the caller finish the graph update (e.g. via
+    # change_2way_block_conditional_successor).
+
+    if blk.nsucc() <= 1:
+        # 1. blk now points to nop_block instead of original_successor
+        blk.succset._del(original_successor_serial)
+        blk.succset.push_back(nop_block.serial)
+        # Update blk's tail instruction if it is a goto pointing to the old successor
+        if blk.tail is not None and blk.tail.opcode == ida_hexrays.m_goto:
+            if blk.tail.l.t == ida_hexrays.mop_b and blk.tail.l.b == original_successor_serial:
+                blk.tail.l.make_blkref(nop_block.serial)
+        blk.mark_lists_dirty()
+
+        # 2. original_successor now comes from nop_block, not blk
+        original_successor_blk.predset._del(blk.serial)
+        original_successor_blk.predset.push_back(nop_block.serial)
+        if original_successor_blk.serial != mba.qty - 1:
+            original_successor_blk.mark_lists_dirty()
+
+        # 3. nop_block gets blk as predecessor
+        nop_block.predset.push_back(blk.serial)
+    else:
+        # For multi-way blocks we still wire nop_block -> original_successor
+        # (already done above via succset.push_back).  The original_successor
+        # gains nop_block as an additional predecessor; blk remains in its
+        # predset as well (the caller will clean this up).
+        original_successor_blk.predset.push_back(nop_block.serial)
+        if original_successor_blk.serial != mba.qty - 1:
+            original_successor_blk.mark_lists_dirty()
+
     nop_block.mark_lists_dirty()
-
-    new_blk_successor = mba.get_mblock(original_successor_serial)
-    new_blk_successor.predset.push_back(nop_block.serial)
-    if new_blk_successor.serial != mba.qty - 1:
-        new_blk_successor.mark_lists_dirty()
-
     mba.mark_chains_dirty()
-    try:
-        mba.verify(True)
-        return nop_block
-    except RuntimeError as e:
-        helper_logger.error("Error in insert_nop_blk: {0}".format(e))
-        log_block_info(nop_block, helper_logger.error)
-        raise e
+    return nop_block
 
 
 def ensure_last_block_is_goto(mba: ida_hexrays.mbl_array_t) -> int:

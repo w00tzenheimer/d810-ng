@@ -39,6 +39,8 @@ def create_mock_block(serial=0, tail_opcode=None, reginsn_qty=1, predset=None):
     """Helper to create a mock mblock_t."""
     block = MagicMock()
     block.serial = serial
+    block.nextb = MagicMock()
+    block.nextb.serial = serial + 1  # default: next block in sequence
     block.get_reginsn_qty.return_value = reginsn_qty
     block.predset = predset if predset is not None else []
 
