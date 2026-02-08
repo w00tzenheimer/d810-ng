@@ -163,11 +163,11 @@ class TestIndirectCallResolverAttributes:
         assert "indirect call" in IndirectCallResolver.DESCRIPTION.lower()
 
     @pytest.mark.ida_required
-    def test_uses_deferred_cfg_is_false(self, libobfuscated_setup):
+    def test_uses_deferred_cfg_is_true(self, libobfuscated_setup):
         from d810.optimizers.microcode.flow.indirect_call import (
             IndirectCallResolver,
         )
-        assert IndirectCallResolver.USES_DEFERRED_CFG is False
+        assert IndirectCallResolver.USES_DEFERRED_CFG is True
 
     @pytest.mark.ida_required
     def test_max_table_entries(self, libobfuscated_setup):

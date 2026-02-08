@@ -106,7 +106,7 @@ else:
     import abc
 
     class _DummyBase(abc.ABC):  # type: ignore[no-redef]
-        USES_DEFERRED_CFG = False
+        USES_DEFERRED_CFG = True
         SAFE_MATURITIES: list[int] | None = None
 
         def __init__(self) -> None:
@@ -139,12 +139,11 @@ class IndirectCallResolver(_BASE_CLASS):
 
     NAME = "indirect_call_resolver"
     DESCRIPTION = "Resolves obfuscated indirect calls by analysing encoded call tables"
-    USES_DEFERRED_CFG = False
-    SAFE_MATURITIES = (
-        [ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1]
-        if _IDA_AVAILABLE
-        else []
-    )
+    # IndirectCallResolver only modifies instruction content (opcodes and
+    # operands) -- it never adds/removes CFG edges or blocks.  Therefore it
+    # is safe at any maturity and does not need DeferredGraphModifier.
+    USES_DEFERRED_CFG = True
+    SAFE_MATURITIES = None  # Safe at any maturity (no CFG edge modifications)
 
     # Config
     MAX_TABLE_ENTRIES = MAX_TABLE_ENTRIES

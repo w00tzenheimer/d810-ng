@@ -63,6 +63,7 @@ if _IDA_AVAILABLE:
     from d810.hexrays.cfg_utils import (
         change_0way_block_successor,
         change_1way_block_successor,
+        safe_verify,
     )
     from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
@@ -100,7 +101,7 @@ else:
     import abc
 
     class _DummyBase(abc.ABC):  # type: ignore[no-redef]
-        USES_DEFERRED_CFG = False
+        USES_DEFERRED_CFG = True
         SAFE_MATURITIES: list[int] | None = None
 
         def __init__(self) -> None:
@@ -133,8 +134,8 @@ class IndirectBranchResolver(_BASE_CLASS):
 
     NAME = "indirect_branch_resolver"
     DESCRIPTION = "Resolves obfuscated indirect jumps by analysing encoded jump tables"
-    USES_DEFERRED_CFG = False  # Direct CFG modification
-    SAFE_MATURITIES = [ida_hexrays.MMAT_LOCOPT] if _IDA_AVAILABLE else []
+    USES_DEFERRED_CFG = True  # Uses DeferredGraphModifier for CFG changes
+    SAFE_MATURITIES = None  # Safe at any maturity via deferred modification
 
     def __init__(self) -> None:
         super().__init__()
@@ -371,33 +372,53 @@ class IndirectBranchResolver(_BASE_CLASS):
     def _convert_to_goto(self, blk: "mblock_t", target_blk_idx: int) -> int:
         """Convert ``m_ijmp`` to ``m_goto`` targeting *target_blk_idx*.
 
-        Uses the existing ``change_1way_block_successor`` /
-        ``change_0way_block_successor`` helpers from ``d810.hexrays.cfg_utils``
-        which handle all succset / predset bookkeeping, ``mark_lists_dirty()``,
-        and ``mba.verify()``.
+        Uses a deferred pattern: captures only the block serial and target
+        serial during analysis, then re-fetches fresh block pointers before
+        applying the CFG modification.  The underlying ``cfg_utils`` helpers
+        (``change_0way_block_successor`` / ``change_1way_block_successor``)
+        handle all ``m_ijmp`` -> ``m_goto`` conversion, succset/predset
+        bookkeeping, and ``mark_lists_dirty()`` calls.
 
         Returns 1 on success, 0 on failure.
         """
+        # --- Analysis phase: capture only serials, not live pointers ---
+        block_serial = blk.serial
+        mba = blk.mba
+
         logger.info(
             "IndirectBranchResolver: converting block %d m_ijmp -> m_goto(blk %d)",
-            blk.serial, target_blk_idx,
+            block_serial, target_blk_idx,
         )
 
-        # cfg_utils.change_1way_block_successor already handles the case
-        # where blk.tail.opcode == m_ijmp: it inserts a goto instruction
-        # (nop-ing the ijmp first) and performs all edge bookkeeping.
-        #
-        # If the block currently has 0 successors (m_ijmp to unknown),
-        # fall back to change_0way_block_successor.
+        # --- Apply phase: re-fetch fresh pointer and modify ---
         try:
-            if blk.nsucc() == 0:
-                ok = change_0way_block_successor(blk, target_blk_idx)
+            fresh_blk = mba.get_mblock(block_serial)
+            if fresh_blk is None:
+                logger.warning(
+                    "IndirectBranchResolver: block %d no longer exists",
+                    block_serial,
+                )
+                return 0
+
+            if fresh_blk.nsucc() == 0:
+                ok = change_0way_block_successor(
+                    fresh_blk, target_blk_idx, verify=False,
+                )
             else:
-                ok = change_1way_block_successor(blk, target_blk_idx)
+                ok = change_1way_block_successor(
+                    fresh_blk, target_blk_idx, verify=False,
+                )
+
+            if ok:
+                safe_verify(
+                    mba,
+                    f"after IndirectBranchResolver block {block_serial} -> {target_blk_idx}",
+                    logger_func=logger.error,
+                )
         except RuntimeError:
             logger.error(
                 "IndirectBranchResolver: CFG modification failed for block %d",
-                blk.serial,
+                block_serial,
                 exc_info=True,
             )
             return 0
@@ -405,13 +426,13 @@ class IndirectBranchResolver(_BASE_CLASS):
         if ok:
             logger.info(
                 "IndirectBranchResolver: block %d successfully converted to goto blk %d",
-                blk.serial, target_blk_idx,
+                block_serial, target_blk_idx,
             )
             return 1
 
         logger.warning(
             "IndirectBranchResolver: change_block_successor returned False for block %d",
-            blk.serial,
+            block_serial,
         )
         return 0
 
