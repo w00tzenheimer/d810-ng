@@ -157,7 +157,11 @@ def get_ext_modules():
     sdk_path = pathlib.Path(sdk_env) if sdk_env else DEFAULT_SDK_DIR
     IDA_SDK = ensure_ida_sdk(sdk_path)
 
-    include_dirs = [str(IDA_SDK / "src" / "include"), str(pathlib.Path(__file__).parent / "src" / "include")]
+    include_dirs = [
+        str(IDA_SDK / "src" / "include"),
+        str(pathlib.Path(__file__).parent / "src" / "include"),
+        str(pathlib.Path(__file__).parent / "src" / "d810" / "speedups" / "include"),
+    ]
     library_dirs = [str(IDA_SDK / "src" / "lib")]
 
     # Platform-specific library paths (GitHub SDK has lib under src/)
