@@ -233,7 +233,7 @@ class ConditionalStateResolver:
                 "ABC in-place: block %d -> same target %d",
                 block.serial, target0.serial
             )
-            change_1way_block_successor(block, target0.serial)
+            change_1way_block_successor(block, target0.serial, verify=False)
             return 1
 
         logger.info(

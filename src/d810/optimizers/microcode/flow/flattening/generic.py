@@ -776,7 +776,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             ]
             for dispatcher_father in dispatcher_father_list:
                 nb_change += ensure_child_has_an_unconditional_father(
-                    dispatcher_father, dispatcher_info.entry_block.blk
+                    dispatcher_father, dispatcher_info.entry_block.blk, verify=False
                 )
         return nb_change
 
@@ -789,7 +789,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         ]
         for dispatcher_father in dispatcher_father_list:
             nb_change += ensure_child_has_an_unconditional_father(
-                dispatcher_father, dispatcher_info.entry_block.blk
+                dispatcher_father, dispatcher_info.entry_block.blk, verify=False
             )
         return nb_change
 
@@ -1371,16 +1371,16 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         block_to_copy = self.mba.get_mblock(tail_serial)
                         tail_serial -= 1
                     dispatcher_side_effect_blk = create_block(
-                        block_to_copy, ins_to_copy, is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY)
+                        block_to_copy, ins_to_copy, is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY), verify=False
                     )
                     change_1way_block_successor(
-                        dispatcher_father, dispatcher_side_effect_blk.serial
+                        dispatcher_father, dispatcher_side_effect_blk.serial, verify=False
                     )
                     change_1way_block_successor(
-                        dispatcher_side_effect_blk, target_blk.serial
+                        dispatcher_side_effect_blk, target_blk.serial, verify=False
                     )
                 else:
-                    change_1way_block_successor(dispatcher_father, target_blk.serial)
+                    change_1way_block_successor(dispatcher_father, target_blk.serial, verify=False)
             return 2
 
         raise NotResolvableFatherException(
@@ -1441,7 +1441,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
     def remove_flattening(self) -> int:
         total_nb_change = 0
-        self.non_significant_changes = ensure_last_block_is_goto(self.mba)
+        self.non_significant_changes = ensure_last_block_is_goto(self.mba, verify=False)
         self.non_significant_changes += self.ensure_all_dispatcher_fathers_are_direct()
 
         # Reset tracking for this optimization pass

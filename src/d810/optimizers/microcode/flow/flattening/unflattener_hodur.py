@@ -899,9 +899,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Apply patches: jump never taken (fall through)
         for pred_blk, check_blk, fall_through in patches_fall_through:
             try:
-                new_jmp_block, new_default_block = duplicate_block(check_blk)
-                make_2way_block_goto(new_jmp_block, fall_through)
-                update_blk_successor(pred_blk, check_blk.serial, new_jmp_block.serial)
+                new_jmp_block, new_default_block = duplicate_block(check_blk, verify=False)
+                make_2way_block_goto(new_jmp_block, fall_through, verify=False)
+                update_blk_successor(pred_blk, check_blk.serial, new_jmp_block.serial, verify=False)
                 nb_changes += 1
                 unflat_logger.debug(
                     "Applied fall-through patch: pred %d -> new block %d -> %d",
@@ -916,9 +916,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Apply patches: jump always taken
         for pred_blk, check_blk, jump_target in patches_jump_taken:
             try:
-                new_jmp_block, new_default_block = duplicate_block(check_blk)
-                make_2way_block_goto(new_jmp_block, jump_target)
-                update_blk_successor(pred_blk, check_blk.serial, new_jmp_block.serial)
+                new_jmp_block, new_default_block = duplicate_block(check_blk, verify=False)
+                make_2way_block_goto(new_jmp_block, jump_target, verify=False)
+                update_blk_successor(pred_blk, check_blk.serial, new_jmp_block.serial, verify=False)
                 nb_changes += 1
                 unflat_logger.debug(
                     "Applied jump-taken patch: pred %d -> new block %d -> %d",
