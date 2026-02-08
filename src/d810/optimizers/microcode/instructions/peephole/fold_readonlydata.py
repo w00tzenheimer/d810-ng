@@ -77,9 +77,7 @@ import idaapi
 import d810.core.typing as typing
 from d810.core import getLogger
 from d810.hexrays.hexrays_helpers import extract_literal_from_mop
-from d810.optimizers.microcode.instructions.early.mem_read import (
-    is_never_written_var,
-)
+from d810.hexrays.ida_utils import is_never_written_var
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )

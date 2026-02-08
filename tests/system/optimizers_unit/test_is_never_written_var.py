@@ -1,4 +1,4 @@
-"""Unit tests for is_never_written_var in d810.optimizers.microcode.instructions.early.mem_read.
+"""Unit tests for is_never_written_var in d810.hexrays.ida_utils.
 
 is_never_written_var checks whether a variable at a given address is never
 written to by any code. It returns True only when:
@@ -166,9 +166,7 @@ class TestIsNeverWrittenVarNoXrefs:
         mock_ida_modules.is_loaded.return_value = False
         mock_ida_modules.xrefblk_t = _make_xrefblk_class([])
 
-        from d810.optimizers.microcode.instructions.early.mem_read import (
-            is_never_written_var,
-        )
+        from d810.hexrays.ida_utils import is_never_written_var
 
         assert is_never_written_var(0x401000) is True
 
@@ -181,9 +179,7 @@ class TestIsNeverWrittenVarWithWriteXref:
         mock_ida_modules.is_loaded.return_value = False
         mock_ida_modules.xrefblk_t = _make_xrefblk_class([DR_W])
 
-        from d810.optimizers.microcode.instructions.early.mem_read import (
-            is_never_written_var,
-        )
+        from d810.hexrays.ida_utils import is_never_written_var
 
         assert is_never_written_var(0x401000) is False
 
@@ -194,9 +190,7 @@ class TestIsNeverWrittenVarWithWriteXref:
         mock_ida_modules.is_loaded.return_value = False
         mock_ida_modules.xrefblk_t = _make_xrefblk_class([DR_R, DR_R, DR_W, DR_R])
 
-        from d810.optimizers.microcode.instructions.early.mem_read import (
-            is_never_written_var,
-        )
+        from d810.hexrays.ida_utils import is_never_written_var
 
         assert is_never_written_var(0x401000) is False
 
@@ -210,9 +204,7 @@ class TestIsNeverWrittenVarReadOnly:
         mock_ida_modules.is_loaded.return_value = False
         mock_ida_modules.xrefblk_t = _make_xrefblk_class([DR_R, DR_O, DR_R])
 
-        from d810.optimizers.microcode.instructions.early.mem_read import (
-            is_never_written_var,
-        )
+        from d810.hexrays.ida_utils import is_never_written_var
 
         assert is_never_written_var(0x401000) is True
 
@@ -225,9 +217,7 @@ class TestIsNeverWrittenVarIsLoaded:
         # Even with no write xrefs, is_loaded makes it return False
         mock_ida_modules.xrefblk_t = _make_xrefblk_class([])
 
-        from d810.optimizers.microcode.instructions.early.mem_read import (
-            is_never_written_var,
-        )
+        from d810.hexrays.ida_utils import is_never_written_var
 
         assert is_never_written_var(0x401000) is False
 
@@ -242,8 +232,6 @@ class TestIsNeverWrittenVarIsLoaded:
 
         mock_ida_modules.xrefblk_t = FailXrefblk
 
-        from d810.optimizers.microcode.instructions.early.mem_read import (
-            is_never_written_var,
-        )
+        from d810.hexrays.ida_utils import is_never_written_var
 
         assert is_never_written_var(0x401000) is False
