@@ -1,9 +1,13 @@
-"""Unit tests for the GlobalConstantInliner flow optimization rule.
+"""System tests for the GlobalConstantInliner flow optimization rule.
 
 These tests run without IDA Pro by mocking the required IDA modules.
 They verify the pure-logic helpers (_is_constant_global, _read_constant_value,
 _looks_like_pointer, _replace_with_immediate) as well as the class attributes
 and initialization of GlobalConstantInliner.
+
+All IDA module stubs are injected via a module-scoped pytest fixture
+(``_ida_stubs``) that properly saves and restores ``sys.modules``
+so that stubs do not leak into other test modules.
 """
 
 from __future__ import annotations
@@ -12,157 +16,238 @@ import sys
 import types
 from typing import Optional
 from unittest import mock
+from unittest.mock import MagicMock
 
 import pytest
 
+
 # ---------------------------------------------------------------------------
-# Mock IDA modules before importing the module under test.
+# Stub helpers
 # ---------------------------------------------------------------------------
-# The module under test and its transitive dependencies import many IDA
-# modules at module level.  We install stub modules with explicit attributes.
-#
-# IMPORTANT: We use plain ``types.ModuleType`` (NOT a custom ``__getattr__``
-# subclass) so that ``hasattr()`` behaves normally.  A catch-all
-# ``__getattr__`` that never raises ``AttributeError`` poisons ``hasattr``
-# for every downstream test file, preventing them from setting their own
-# stub values.
 
+class _AutoIntModule(types.ModuleType):
+    """Module stub that auto-generates attributes on access.
 
-def _make_stub_class(name: str) -> type:
-    """Create a trivial class usable as a base (e.g. ``class Foo(mod.bar_t)``)."""
-    return type(name, (), {"__init__": lambda self, *a, **kw: None})
-
-
-def _ensure_ida_stubs() -> list[str]:
-    """Install plain-module IDA stubs into ``sys.modules``.
-
-    Only touches modules that are not already present.  Returns names of
-    modules that were newly created so callers can track them.
+    * Names ending in ``_t`` (class names like ``vd_printer_t``,
+      ``mop_t``) get a proper class so subclassing / ``@register`` works.
+    * Integer-looking names (``m_*``, ``mop_*``, ``BLT_*``, ``MMAT_*``,
+      ``MBL_*``, ``MFL_*``) get a unique negative integer.
+    * Everything else gets a ``MagicMock`` so attribute access chains
+      silently succeed.
     """
-    needed = [
-        "ida_bytes",
-        "ida_hexrays",
-        "ida_segment",
-        "ida_xref",
-        "idaapi",
-        "idc",
-        "ida_diskio",
-    ]
-    installed: list[str] = []
-    for name in needed:
-        if name not in sys.modules:
-            sys.modules[name] = types.ModuleType(name)
-            installed.append(name)
-    return installed
+
+    _COUNTER = -2000  # separate range from test_indirect_branch
+
+    _INT_PREFIXES = ("m_", "mop_", "BLT_", "MMAT_", "MBL_", "MFL_")
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        # Class-like names -> produce an empty base class
+        if name.endswith("_t"):
+            cls = type(name, (), {})
+            setattr(self, name, cls)
+            return cls
+
+        # Opcode / constant names -> unique integer
+        if any(name.startswith(pfx) for pfx in self._INT_PREFIXES):
+            _AutoIntModule._COUNTER -= 1
+            val = _AutoIntModule._COUNTER
+            setattr(self, name, val)
+            return val
+
+        # Fallback: MagicMock (allows arbitrary chaining)
+        val = MagicMock()
+        setattr(self, name, val)
+        return val
 
 
-_INSTALLED_MOCKS = _ensure_ida_stubs()
-
-# --- ida_hexrays attributes ------------------------------------------------
-# All attributes use ``if not hasattr`` guards to avoid overwriting values
-# that earlier-loaded test modules may have already set.  The exact numeric
-# values are arbitrary stubs; consistency within this file is ensured because
-# every test reads from the same ``_ida_hexrays`` reference.
-_ida_hexrays = sys.modules["ida_hexrays"]
-
-# Default values for all attributes needed by the module under test and its
-# transitive imports.  The dict maps attribute name -> fallback value.
-_IDA_HEXRAYS_DEFAULTS: dict[str, object] = {
-    # Maturity constants
-    "MMAT_ZERO": 0, "MMAT_GENERATED": 1, "MMAT_PREOPTIMIZED": 2,
-    "MMAT_LOCOPT": 3, "MMAT_CALLS": 4, "MMAT_GLBOPT1": 5,
-    "MMAT_GLBOPT2": 6, "MMAT_GLBOPT3": 0, "MMAT_LVARS": 7,
-    "CMAT_FINAL": 8,
-    # Operand types
-    "mop_z": 0, "mop_n": 1, "mop_r": 2, "mop_v": 6,
-    "mop_a": 0, "mop_b": 0, "mop_c": 0, "mop_d": 0,
-    "mop_S": 5, "mop_l": 7, "mop_f": 0, "mop_fn": 0,
-    "mop_h": 0, "mop_p": 0, "mop_sc": 0, "mop_str": 0,
-    # Opcodes that matter for this module
-    "m_mov": 0x10, "m_ldx": 0x11, "m_ldc": 0x12,
-    # Opcodes accessed by transitive imports.  Every opcode MUST have a
-    # unique value -- if two opcodes share the same value (e.g. both 0),
-    # downstream tests that rely on opcode identity will break.  The values
-    # below are sequential starting at 0x100, well above the real IDA range,
-    # so they cannot collide with each other or with test_table_utils stubs.
-    "m_nop": 0x100, "m_stx": 0x101, "m_and": 0x102, "m_or": 0x103,
-    "m_xor": 0x104, "m_add": 0x105, "m_sub": 0x106, "m_mul": 0x107,
-    "m_udiv": 0x108, "m_sdiv": 0x109, "m_umod": 0x10A, "m_smod": 0x10B,
-    "m_neg": 0x10C, "m_bnot": 0x10D, "m_lnot": 0x10E,
-    "m_shl": 0x10F, "m_shr": 0x110, "m_sar": 0x111, "m_ext": 0x112,
-    "m_low": 0x113, "m_high": 0x114, "m_xds": 0x115, "m_xdu": 0x116,
-    "m_und": 0x117, "m_push": 0x118, "m_pop": 0x119, "m_ret": 0x11A,
-    "m_goto": 0x11B, "m_jz": 0x11C, "m_jnz": 0x11D, "m_jcnd": 0x11E,
-    "m_jae": 0x11F, "m_jbe": 0x120, "m_ja": 0x121, "m_jb": 0x122,
-    "m_jg": 0x123, "m_jge": 0x124, "m_jl": 0x125, "m_jle": 0x126,
-    "m_jtbl": 0x127, "m_ijmp": 0x128, "m_call": 0x129, "m_icall": 0x12A,
-    "m_setz": 0x12B, "m_setnz": 0x12C, "m_seto": 0x12D, "m_setp": 0x12E,
-    "m_sets": 0x12F, "m_seta": 0x130, "m_setae": 0x131, "m_setb": 0x132,
-    "m_setbe": 0x133, "m_setg": 0x134, "m_setge": 0x135, "m_setl": 0x136,
-    "m_setle": 0x137, "m_cfshl": 0x138, "m_cfshr": 0x139,
-    "m_cfadd": 0x13A, "m_ofadd": 0x13B,
-    "m_f2i": 0x13C, "m_f2u": 0x13D, "m_i2f": 0x13E, "m_u2f": 0x13F,
-    "m_f2f": 0x140, "m_fneg": 0x141, "m_fadd": 0x142, "m_fsub": 0x143,
-    "m_fmul": 0x144, "m_fdiv": 0x145,
-}
-for _attr, _val in _IDA_HEXRAYS_DEFAULTS.items():
-    if not hasattr(_ida_hexrays, _attr):
-        setattr(_ida_hexrays, _attr, _val)
-
-# Stub type used as a base class by transitive imports
-if not hasattr(_ida_hexrays, "vd_printer_t"):
-    _ida_hexrays.vd_printer_t = _make_stub_class("vd_printer_t")
-
-# --- idaapi attributes -----------------------------------------------------
-_idaapi = sys.modules["idaapi"]
-_IDAAPI_DEFAULTS: dict[str, object] = {
-    "BADADDR": 0xFFFFFFFFFFFFFFFF,
-    "SEGPERM_WRITE": 0x2,
-    "SEGPERM_READ": 0x4,
-    "SEGPERM_EXEC": 0x1,
-    "get_byte": lambda ea: 0,
-    "get_word": lambda ea: 0,
-    "get_dword": lambda ea: 0,
-    "get_qword": lambda ea: 0,
-}
-for _attr, _val in _IDAAPI_DEFAULTS.items():
-    if not hasattr(_idaapi, _attr):
-        setattr(_idaapi, _attr, _val)
-
-# --- ida_segment attributes ------------------------------------------------
-_ida_segment = sys.modules["ida_segment"]
-if not hasattr(_ida_segment, "getseg"):
-    _ida_segment.getseg = lambda ea: None
-if not hasattr(_ida_segment, "get_segm_name"):
-    _ida_segment.get_segm_name = lambda seg: ""
-
-# --- ida_bytes attributes --------------------------------------------------
-_ida_bytes_mod = sys.modules["ida_bytes"]
-if not hasattr(_ida_bytes_mod, "get_bytes"):
-    _ida_bytes_mod.get_bytes = lambda ea, size: None
-if not hasattr(_ida_bytes_mod, "get_flags"):
-    _ida_bytes_mod.get_flags = lambda ea: 0
-if not hasattr(_ida_bytes_mod, "is_code"):
-    _ida_bytes_mod.is_code = lambda flags: False
-
-# --- ida_xref attributes ---------------------------------------------------
-_ida_xref = sys.modules["ida_xref"]
-if not hasattr(_ida_xref, "XREF_ALL"):
-    _ida_xref.XREF_ALL = 0
-if not hasattr(_ida_xref, "dr_W"):
-    _ida_xref.dr_W = 2
-if not hasattr(_ida_xref, "xrefblk_t"):
-    _ida_xref.xrefblk_t = _make_stub_class("xrefblk_t")
+# IDA module names that this test file needs to mock.
+IDA_MODULES = [
+    "ida_bytes",
+    "ida_hexrays",
+    "ida_segment",
+    "ida_xref",
+    "idaapi",
+    "idc",
+    "ida_diskio",
+]
 
 
-# Now it is safe to import the module under test.
-from d810.optimizers.microcode.flow.global_const_inline import (  # noqa: E402
-    GlobalConstantInliner,
-    _is_constant_global,
-    _looks_like_pointer,
-    _read_constant_value,
-    _replace_with_immediate,
-)
+def _create_ida_stubs() -> dict[str, types.ModuleType]:
+    """Create fresh IDA module stubs (does NOT inject into sys.modules)."""
+    stubs: dict[str, types.ModuleType] = {}
+
+    # --- ida_hexrays (auto-stub with explicit overrides) ---
+    ida_hexrays = _AutoIntModule("ida_hexrays")
+    # Maturity constants (exact values used by test assertions)
+    ida_hexrays.MMAT_ZERO = 0
+    ida_hexrays.MMAT_GENERATED = 1
+    ida_hexrays.MMAT_PREOPTIMIZED = 2
+    ida_hexrays.MMAT_LOCOPT = 3
+    ida_hexrays.MMAT_CALLS = 4
+    ida_hexrays.MMAT_GLBOPT1 = 5
+    ida_hexrays.MMAT_GLBOPT2 = 6
+    ida_hexrays.MMAT_GLBOPT3 = 0
+    ida_hexrays.MMAT_LVARS = 7
+    ida_hexrays.CMAT_FINAL = 8
+    # Operand types (exact values used by test assertions)
+    ida_hexrays.mop_z = 0
+    ida_hexrays.mop_n = 1
+    ida_hexrays.mop_r = 2
+    ida_hexrays.mop_v = 6
+    ida_hexrays.mop_S = 5
+    ida_hexrays.mop_l = 7
+    # Opcodes that matter for this module (unique values)
+    ida_hexrays.m_mov = 0x10
+    ida_hexrays.m_ldx = 0x11
+    ida_hexrays.m_ldc = 0x12
+    # Type stubs used as base classes or with @register
+    ida_hexrays.minsn_t = MagicMock
+    ida_hexrays.mop_t = MagicMock
+    ida_hexrays.mblock_t = MagicMock
+    ida_hexrays.mba_t = MagicMock
+    ida_hexrays.mbl_array_t = MagicMock
+    ida_hexrays.get_mreg_name = MagicMock(return_value="reg")
+    ida_hexrays.is_mcode_jcond = MagicMock(return_value=False)
+    stubs["ida_hexrays"] = ida_hexrays
+
+    # --- idaapi (auto-stub with explicit overrides) ---
+    idaapi_mod = _AutoIntModule("idaapi")
+    idaapi_mod.BADADDR = 0xFFFFFFFFFFFFFFFF
+    idaapi_mod.SEGPERM_WRITE = 0x2
+    idaapi_mod.SEGPERM_READ = 0x4
+    idaapi_mod.SEGPERM_EXEC = 0x1
+    idaapi_mod.XREF_DATA = 0x1F
+    idaapi_mod.dr_W = 2
+    idaapi_mod.IDA_SDK_VERSION = 900
+    idaapi_mod.get_byte = lambda ea: 0
+    idaapi_mod.get_word = lambda ea: 0
+    idaapi_mod.get_dword = lambda ea: 0
+    idaapi_mod.get_qword = lambda ea: 0
+    idaapi_mod.getseg = lambda ea: None
+    idaapi_mod.is_loaded = lambda ea: False
+    idaapi_mod.set_cmt = MagicMock()
+    stubs["idaapi"] = idaapi_mod
+
+    # --- ida_segment ---
+    ida_segment = types.ModuleType("ida_segment")
+    ida_segment.getseg = lambda ea: None
+    ida_segment.get_segm_name = lambda seg: ""
+    stubs["ida_segment"] = ida_segment
+
+    # --- ida_bytes ---
+    ida_bytes = types.ModuleType("ida_bytes")
+    ida_bytes.get_bytes = lambda ea, size: None
+    ida_bytes.get_flags = lambda ea: 0
+    ida_bytes.is_code = lambda flags: False
+    stubs["ida_bytes"] = ida_bytes
+
+    # --- ida_xref ---
+    ida_xref = types.ModuleType("ida_xref")
+    ida_xref.XREF_ALL = 0
+    ida_xref.dr_W = 2
+    ida_xref.xrefblk_t = type("xrefblk_t", (), {"__init__": lambda self, *a, **kw: None})
+    stubs["ida_xref"] = ida_xref
+
+    # --- idc ---
+    idc = types.ModuleType("idc")
+    idc.get_func_name = MagicMock(return_value="mock_func")
+    stubs["idc"] = idc
+
+    # --- ida_diskio ---
+    ida_diskio = types.ModuleType("ida_diskio")
+    ida_diskio.get_user_idadir = MagicMock(return_value="/tmp")
+    stubs["ida_diskio"] = ida_diskio
+
+    return stubs
+
+
+# ---------------------------------------------------------------------------
+# Module-scoped fixture: inject stubs, yield, then restore sys.modules.
+# Follows the same pattern as test_indirect_branch.py / test_indirect_call.py.
+# ---------------------------------------------------------------------------
+
+# Module-level references populated by the fixture.
+_ida_hexrays = None
+_idaapi = None
+_ida_segment = None
+_ida_bytes_mod = None
+_ida_xref = None
+GlobalConstantInliner = None
+_is_constant_global = None
+_looks_like_pointer = None
+_read_constant_value = None
+_replace_with_immediate = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _ida_stubs():
+    """Inject IDA stubs into sys.modules for the duration of this module's tests."""
+    global _ida_hexrays, _idaapi, _ida_segment, _ida_bytes_mod, _ida_xref
+    global GlobalConstantInliner, _is_constant_global, _looks_like_pointer
+    global _read_constant_value, _replace_with_immediate
+
+    stubs = _create_ida_stubs()
+
+    # Snapshot the complete set of IDA + d810 modules before we touch anything.
+    saved: dict[str, types.ModuleType | None] = {}
+    for name in list(sys.modules):
+        if (
+            name in stubs
+            or name == "d810" or name.startswith("d810.")
+        ):
+            saved[name] = sys.modules.get(name)
+
+    # Inject mock IDA modules.
+    for name, mod in stubs.items():
+        sys.modules[name] = mod
+
+    # Evict cached d810 modules so they re-import with the mocked IDA stubs.
+    for mod_name in sorted(sys.modules, reverse=True):
+        if mod_name == "d810" or mod_name.startswith("d810."):
+            del sys.modules[mod_name]
+
+    # Now safe to import d810 modules under the stubs.
+    from d810.optimizers.microcode.flow.global_const_inline import (
+        GlobalConstantInliner as _GlobalConstantInliner,
+        _is_constant_global as _is_constant_global_fn,
+        _looks_like_pointer as _looks_like_pointer_fn,
+        _read_constant_value as _read_constant_value_fn,
+        _replace_with_immediate as _replace_with_immediate_fn,
+    )
+
+    # Publish to module globals so test code can reference them.
+    _ida_hexrays = stubs["ida_hexrays"]
+    _idaapi = stubs["idaapi"]
+    _ida_segment = stubs["ida_segment"]
+    _ida_bytes_mod = stubs["ida_bytes"]
+    _ida_xref = stubs["ida_xref"]
+    GlobalConstantInliner = _GlobalConstantInliner
+    _is_constant_global = _is_constant_global_fn
+    _looks_like_pointer = _looks_like_pointer_fn
+    _read_constant_value = _read_constant_value_fn
+    _replace_with_immediate = _replace_with_immediate_fn
+
+    yield stubs
+
+    # --- Teardown: restore the pre-fixture module state exactly. ---
+
+    # 1. Remove any d810/IDA modules that were (re-)imported during the tests.
+    for mod_name in list(sys.modules):
+        if (
+            mod_name == "d810" or mod_name.startswith("d810.")
+            or mod_name in stubs
+        ):
+            sys.modules.pop(mod_name, None)
+
+    # 2. Restore every saved entry.
+    for name, orig in saved.items():
+        if orig is not None:
+            sys.modules[name] = orig
+        else:
+            sys.modules.pop(name, None)
 
 
 # ---------------------------------------------------------------------------
