@@ -344,6 +344,9 @@ class TestFindStateAssignment(unittest.TestCase):
         except ImportError:
             self.skipTest("IDA not available")
 
+        # Import the module to directly set IDA_AVAILABLE
+        import d810.optimizers.microcode.flow.flattening.conditional_exit as ce_mod
+
         # Create mock state mop
         state_mop = self._create_mock_mop(ida_hexrays.mop_r)
 
@@ -359,13 +362,27 @@ class TestFindStateAssignment(unittest.TestCase):
         mock_blk = Mock()
         mock_blk.tail = mock_ins
 
-        # Mock equal_mops_ignore_size to return True when comparing state mops
-        from unittest.mock import patch
-        with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.equal_mops_ignore_size') as mock_equal:
-            mock_equal.return_value = True
-            result = find_state_assignment_in_block(mock_blk, state_mop)
+        # Create mock equal_mops_ignore_size function
+        def mock_equal(a, b):
+            return a == state_mop
 
-        self.assertEqual(result, 0xABCD1234)
+        # Directly set module attributes
+        original_ida_available = ce_mod.IDA_AVAILABLE
+
+        from unittest.mock import patch
+
+        try:
+            ce_mod.IDA_AVAILABLE = True
+
+            # Patch the actual import target, not sys.modules
+            # When the function does "from d810.hexrays.hexrays_helpers import equal_mops_ignore_size",
+            # we need to mock d810.hexrays.hexrays_helpers.equal_mops_ignore_size
+            with patch('d810.hexrays.hexrays_helpers.equal_mops_ignore_size', mock_equal):
+                result = find_state_assignment_in_block(mock_blk, state_mop)
+                self.assertEqual(result, 0xABCD1234)
+        finally:
+            # Restore original values
+            ce_mod.IDA_AVAILABLE = original_ida_available
 
     def test_find_state_assignment_no_assignment(self):
         """Test block without state assignment returns None."""
@@ -373,6 +390,9 @@ class TestFindStateAssignment(unittest.TestCase):
             import ida_hexrays
         except ImportError:
             self.skipTest("IDA not available")
+
+        # Import the module to directly set IDA_AVAILABLE
+        import d810.optimizers.microcode.flow.flattening.conditional_exit as ce_mod
 
         state_mop = self._create_mock_mop(ida_hexrays.mop_r)
 
@@ -386,12 +406,24 @@ class TestFindStateAssignment(unittest.TestCase):
         mock_blk = Mock()
         mock_blk.tail = mock_ins
 
-        from unittest.mock import patch
-        with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.equal_mops_ignore_size') as mock_equal:
-            mock_equal.return_value = False  # Destination doesn't match state_mop
-            result = find_state_assignment_in_block(mock_blk, state_mop)
+        # Create mock equal_mops_ignore_size function that returns False
+        def mock_equal(a, b):
+            return False
 
-        self.assertIsNone(result)
+        # Directly set module attributes
+        original_ida_available = ce_mod.IDA_AVAILABLE
+
+        from unittest.mock import patch
+
+        try:
+            ce_mod.IDA_AVAILABLE = True
+
+            # Patch the actual import target
+            with patch('d810.hexrays.hexrays_helpers.equal_mops_ignore_size', mock_equal):
+                result = find_state_assignment_in_block(mock_blk, state_mop)
+                self.assertIsNone(result)
+        finally:
+            ce_mod.IDA_AVAILABLE = original_ida_available
 
     def test_find_state_assignment_non_constant(self):
         """Test that computed (non-constant) assignment returns None."""
@@ -399,6 +431,9 @@ class TestFindStateAssignment(unittest.TestCase):
             import ida_hexrays
         except ImportError:
             self.skipTest("IDA not available")
+
+        # Import the module to directly set IDA_AVAILABLE
+        import d810.optimizers.microcode.flow.flattening.conditional_exit as ce_mod
 
         state_mop = self._create_mock_mop(ida_hexrays.mop_r)
 
@@ -413,13 +448,25 @@ class TestFindStateAssignment(unittest.TestCase):
         mock_blk = Mock()
         mock_blk.tail = mock_ins
 
-        from unittest.mock import patch
-        with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.equal_mops_ignore_size') as mock_equal:
-            mock_equal.return_value = True
-            result = find_state_assignment_in_block(mock_blk, state_mop)
+        # Create mock equal_mops_ignore_size function that returns True
+        def mock_equal(a, b):
+            return a == state_mop
 
-        # Should return None because source is not a constant
-        self.assertIsNone(result)
+        # Directly set module attributes
+        original_ida_available = ce_mod.IDA_AVAILABLE
+
+        from unittest.mock import patch
+
+        try:
+            ce_mod.IDA_AVAILABLE = True
+
+            # Patch the actual import target
+            with patch('d810.hexrays.hexrays_helpers.equal_mops_ignore_size', mock_equal):
+                result = find_state_assignment_in_block(mock_blk, state_mop)
+                # Should return None because source is not a constant
+                self.assertIsNone(result)
+        finally:
+            ce_mod.IDA_AVAILABLE = original_ida_available
 
     def test_find_state_assignment_none_state_mop(self):
         """Test that None state_mop returns None."""
@@ -433,6 +480,9 @@ class TestFindStateAssignment(unittest.TestCase):
             import ida_hexrays
         except ImportError:
             self.skipTest("IDA not available")
+
+        # Import the module to directly set IDA_AVAILABLE
+        import d810.optimizers.microcode.flow.flattening.conditional_exit as ce_mod
 
         state_mop = self._create_mock_mop(ida_hexrays.mop_r)
         const_mop = self._create_mock_mop(ida_hexrays.mop_n, 0x1234)
@@ -460,15 +510,24 @@ class TestFindStateAssignment(unittest.TestCase):
         mock_blk = Mock()
         mock_blk.tail = tail_ins
 
-        from unittest.mock import patch
-        with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.equal_mops_ignore_size') as mock_equal:
-            # Return True only when we reach head_ins
-            def side_effect(a, b):
-                return a == state_mop
-            mock_equal.side_effect = side_effect
-            result = find_state_assignment_in_block(mock_blk, state_mop)
+        # Create mock equal_mops_ignore_size function
+        def mock_equal(a, b):
+            return a == state_mop
 
-        self.assertEqual(result, 0x1234)
+        # Directly set module attributes
+        original_ida_available = ce_mod.IDA_AVAILABLE
+
+        from unittest.mock import patch
+
+        try:
+            ce_mod.IDA_AVAILABLE = True
+
+            # Patch the actual import target
+            with patch('d810.hexrays.hexrays_helpers.equal_mops_ignore_size', mock_equal):
+                result = find_state_assignment_in_block(mock_blk, state_mop)
+                self.assertEqual(result, 0x1234)
+        finally:
+            ce_mod.IDA_AVAILABLE = original_ida_available
 
 
 class TestResolveLoopbackTarget(unittest.TestCase):
@@ -503,11 +562,12 @@ class TestResolveLoopbackTarget(unittest.TestCase):
         state_mop = Mock()
 
         from unittest.mock import patch
-        with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.find_state_assignment_in_block') as mock_find:
-            mock_find.return_value = 0xABCD1234
-            result = resolve_loopback_target(
-                mock_exit_blk, 2, mock_dispatcher_info, state_mop
-            )
+        with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.IDA_AVAILABLE', True):
+            with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.find_state_assignment_in_block') as mock_find:
+                mock_find.return_value = 0xABCD1234
+                result = resolve_loopback_target(
+                    mock_exit_blk, 2, mock_dispatcher_info, state_mop
+                )
 
         self.assertEqual(result, (5, 0xABCD1234))
 
@@ -537,11 +597,12 @@ class TestResolveLoopbackTarget(unittest.TestCase):
         state_mop = Mock()
 
         from unittest.mock import patch
-        with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.find_state_assignment_in_block') as mock_find:
-            mock_find.return_value = 0xABCD1234  # Different from dispatcher's 0x5678
-            result = resolve_loopback_target(
-                mock_exit_blk, 2, mock_dispatcher_info, state_mop
-            )
+        with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.IDA_AVAILABLE', True):
+            with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.find_state_assignment_in_block') as mock_find:
+                mock_find.return_value = 0xABCD1234  # Different from dispatcher's 0x5678
+                result = resolve_loopback_target(
+                    mock_exit_blk, 2, mock_dispatcher_info, state_mop
+                )
 
         self.assertIsNone(result)
 
@@ -563,11 +624,12 @@ class TestResolveLoopbackTarget(unittest.TestCase):
         state_mop = Mock()
 
         from unittest.mock import patch
-        with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.find_state_assignment_in_block') as mock_find:
-            mock_find.return_value = None  # No constant assignment
-            result = resolve_loopback_target(
-                mock_exit_blk, 2, mock_dispatcher_info, state_mop
-            )
+        with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.IDA_AVAILABLE', True):
+            with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.find_state_assignment_in_block') as mock_find:
+                mock_find.return_value = None  # No constant assignment
+                result = resolve_loopback_target(
+                    mock_exit_blk, 2, mock_dispatcher_info, state_mop
+                )
 
         self.assertIsNone(result)
 
@@ -588,9 +650,11 @@ class TestResolveLoopbackTarget(unittest.TestCase):
         mock_dispatcher_info = Mock()
         state_mop = Mock()
 
-        result = resolve_loopback_target(
-            mock_exit_blk, 999, mock_dispatcher_info, state_mop
-        )
+        from unittest.mock import patch
+        with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.IDA_AVAILABLE', True):
+            result = resolve_loopback_target(
+                mock_exit_blk, 999, mock_dispatcher_info, state_mop
+            )
 
         self.assertIsNone(result)
 
@@ -628,11 +692,12 @@ class TestResolveLoopbackTarget(unittest.TestCase):
         state_mop = Mock()
 
         from unittest.mock import patch
-        with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.find_state_assignment_in_block') as mock_find:
-            mock_find.return_value = 0xABCD1234  # Matches mock_exit_2
-            result = resolve_loopback_target(
-                mock_exit_blk, 2, mock_dispatcher_info, state_mop
-            )
+        with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.IDA_AVAILABLE', True):
+            with patch('d810.optimizers.microcode.flow.flattening.conditional_exit.find_state_assignment_in_block') as mock_find:
+                mock_find.return_value = 0xABCD1234  # Matches mock_exit_2
+                result = resolve_loopback_target(
+                    mock_exit_blk, 2, mock_dispatcher_info, state_mop
+                )
 
         # Should find the matching exit block (serial 20)
         self.assertEqual(result, (20, 0xABCD1234))
