@@ -733,6 +733,9 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self.non_significant_changes = 0
         # Track processed (source_block, target) pairs to prevent duplicates
         self._processed_dispatcher_fathers: set[tuple[int, int]] = set()
+        # Set when deferred modifier verify fails -- prevents further
+        # processing on a corrupted MBA that would cause IDA hangs.
+        self._verify_failed: bool = False
 
     @property
     @abc.abstractmethod
@@ -741,6 +744,11 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         raise NotImplementedError
 
     def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:
+        if self._verify_failed:
+            unflat_logger.debug(
+                "Skipping rule -- MBA verify previously failed"
+            )
+            return False
         if not super().check_if_rule_should_be_used(blk):
             return False
         if (self.cur_maturity_pass >= 1) and (self.last_pass_nb_patch_done == 0):
@@ -1521,6 +1529,19 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             )
             deferred_modifier.apply(run_optimize_local=False, run_deep_cleaning=False)
 
+            if deferred_modifier.verify_failed:
+                self._verify_failed = True
+                unflat_logger.warning(
+                    "MBA verify failed after %d deferred modifications in "
+                    "remove_flattening -- aborting this pass to prevent "
+                    "IDA from continuing with a corrupted MBA",
+                    len(deferred_modifier.modifications),
+                )
+                # Return what we have so IDA knows the MBA was modified,
+                # but skip further processing that would compound corruption.
+                total_nb_change += nb_flattened_branches
+                return total_nb_change
+
         # Scan for residual single-iteration loops and record for cleanup
         loops_found = self.scan_for_single_iteration_loops()
         if loops_found > 0:
@@ -1602,6 +1623,19 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             self.cur_maturity_pass,
             self.last_pass_nb_patch_done,
         )
+
+        # If deferred modifier verify failed, the MBA is in a suspect state.
+        # Skip deep cleaning / optimize_local / safe_verify which would either
+        # fail or compound the corruption, causing IDA to hang at later
+        # maturity levels.  Return the patch count so IDA knows the MBA was
+        # touched and doesn't silently reuse the bad state.
+        if self._verify_failed:
+            unflat_logger.warning(
+                "Skipping post-unflattening cleanup because MBA verify "
+                "failed during deferred modifications"
+            )
+            return self.last_pass_nb_patch_done
+
         nb_clean = mba_deep_cleaning(self.mba, False)
         if self.dump_intermediate_microcode:
             dump_microcode_for_debug(

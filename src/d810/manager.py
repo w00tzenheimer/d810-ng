@@ -190,6 +190,8 @@ class D810Manager:
             self.stats.reset,
             MOP_CONSTANT_CACHE.clear,
             MOP_TO_AST_CACHE.clear,
+            self.instruction_optimizer.reset_cycle_detection,
+            self.block_optimizer.reset_pass_counter,
             self._start_timer,
         ):
             self.event_emitter.on(DecompilationEvent.STARTED, _subscriber)

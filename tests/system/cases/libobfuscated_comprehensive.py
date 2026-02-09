@@ -417,7 +417,6 @@ CONSTANT_FOLDING_CASES = [
         description="Anti-debugging exception handler with constant folding",
         project="example_libobfuscated.json",
         must_change=False,
-        skip="AntiDebug_ExceptionFilter hangs during decompilation (infinite loop in d810 microcode callbacks) - needs investigation",
     ),
 ]
 
