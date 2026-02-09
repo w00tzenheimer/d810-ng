@@ -163,7 +163,6 @@ def get_ext_modules():
     include_dirs = [
         str(IDA_SDK / "src" / "include"),
         str(pathlib.Path(__file__).parent / "src" / "include"),
-        str(pathlib.Path(__file__).parent / "src" / "d810" / "speedups" / "include"),
     ]
     library_dirs = [str(IDA_SDK / "src" / "lib")]
 
