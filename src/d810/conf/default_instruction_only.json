@@ -897,6 +897,11 @@
     ],
     "blk_rules": [
         {
+            "name": "GlobalConstantInliner",
+            "is_activated": true,
+            "config": {}
+        },
+        {
             "name": "JumpFixer",
             "is_activated": true,
             "config": {

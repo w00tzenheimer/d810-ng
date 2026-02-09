@@ -210,27 +210,32 @@ class TestIsNeverWrittenVarReadOnly:
 
 
 class TestIsNeverWrittenVarIsLoaded:
-    """If is_loaded returns True, the function should return False immediately."""
+    """is_never_written_var intentionally ignores is_loaded.
+
+    ``idaapi.is_loaded`` returns True whenever bytes are present in the IDB,
+    which is the normal case for global variables in ``.data``.  Rejecting
+    loaded addresses would make the function always return False for the
+    exact opaque-constant-table variables we need to resolve.
+
+    The ``is_loaded`` guard lives in the stricter ``is_read_only_inited_var``
+    instead.
+    """
 
     def test_is_loaded_returns_false(self, mock_ida_modules):
+        """Even when is_loaded is True, result depends only on write xrefs."""
         mock_ida_modules.is_loaded.return_value = True
-        # Even with no write xrefs, is_loaded makes it return False
+        # No write xrefs -> never written, regardless of is_loaded
         mock_ida_modules.xrefblk_t = _make_xrefblk_class([])
 
         from d810.hexrays.ida_utils import is_never_written_var
 
-        assert is_never_written_var(0x401000) is False
+        assert is_never_written_var(0x401000) is True
 
     def test_is_loaded_skips_xref_check(self, mock_ida_modules):
-        """When is_loaded is True, xrefblk_t should never be instantiated."""
+        """is_loaded has no effect; a write xref still returns False."""
         mock_ida_modules.is_loaded.return_value = True
-
-        # Use a sentinel class that would fail if instantiated
-        class FailXrefblk:
-            def __init__(self):
-                raise AssertionError("xrefblk_t should not be created when is_loaded is True")
-
-        mock_ida_modules.xrefblk_t = FailXrefblk
+        DR_W = 2
+        mock_ida_modules.xrefblk_t = _make_xrefblk_class([DR_W])
 
         from d810.hexrays.ida_utils import is_never_written_var
 
