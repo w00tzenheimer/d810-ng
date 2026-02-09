@@ -405,13 +405,26 @@ class SearchContext:
     1. Track visited (block, state) pairs to avoid redundant exploration
     2. Cache results for memoization
     3. Track statistics for debugging
+    4. Enforce a wall-clock time budget to prevent hangs
 
     The key insight is that path explosion happens when the same (block, unresolved_mops)
     state is explored via multiple paths. By caching these, we avoid the 113x amplification.
     """
-    __slots__ = ('visited_states', 'result_cache', 'stats_hits', 'stats_misses', 'stats_skipped')
+    __slots__ = (
+        'visited_states', 'result_cache',
+        'stats_hits', 'stats_misses', 'stats_skipped',
+        'deadline', '_check_counter',
+    )
 
-    def __init__(self):
+    # How many search_backward calls between wall-clock checks (amortise
+    # the cost of time.monotonic()).
+    _DEADLINE_CHECK_INTERVAL = 64
+
+    # Default maximum seconds for a single search_backward top-level call.
+    DEFAULT_MAX_SECONDS = 15.0
+
+    def __init__(self, max_seconds: float | None = None):
+        import time as _time
         # Set of (block_serial, unresolved_state_hash) that have been visited
         self.visited_states: set[tuple[int, int]] = set()
         # Cache: (block_serial, unresolved_state_hash) -> list of histories
@@ -420,6 +433,23 @@ class SearchContext:
         self.stats_hits = 0
         self.stats_misses = 0
         self.stats_skipped = 0
+        # Time budget
+        budget = max_seconds if max_seconds is not None else self.DEFAULT_MAX_SECONDS
+        self.deadline: float = _time.monotonic() + budget
+        self._check_counter: int = 0
+
+    def is_expired(self) -> bool:
+        """Return True if the time budget has been exceeded.
+
+        Only performs the (relatively expensive) monotonic clock read once
+        every ``_DEADLINE_CHECK_INTERVAL`` calls for performance.
+        """
+        self._check_counter += 1
+        if self._check_counter < self._DEADLINE_CHECK_INTERVAL:
+            return False
+        self._check_counter = 0
+        import time as _time
+        return _time.monotonic() > self.deadline
 
     def make_state_hash(self, unresolved_mops: list, memory_unresolved_mops: list) -> int:
         """Create a hashable representation of the unresolved state.
@@ -567,6 +597,16 @@ class MopTracker(object):
         if is_top_level:
             self._search_context = SearchContext()
             _current_search_context = self._search_context
+
+        # Check time budget (amortised via SearchContext counter)
+        if self._search_context.is_expired():
+            logger.warning(
+                "search_backward: time budget exceeded at block %d, "
+                "returning partial results",
+                blk.serial,
+            )
+            self.history.unresolved_mop_list = [x for x in self._unresolved_mops]
+            return [self.history]
 
         if logger.debug_on:
             logger.debug(
@@ -944,22 +984,20 @@ def try_to_duplicate_one_block(var_histories: list[MopHistory]) -> tuple[int, in
             if (pred_block.tail is None) or (
                 not ida_hexrays.is_mcode_jcond(pred_block.tail.opcode)
             ):
-                change_1way_block_successor(pred_block, duplicated_blk_jmp.serial, verify=False)
-                nb_change += 1
+                if change_1way_block_successor(pred_block, duplicated_blk_jmp.serial, verify=False):
+                    nb_change += 1
             else:
                 if block_to_duplicate.serial == pred_block.tail.d.b:
-                    change_2way_block_conditional_successor(
+                    if change_2way_block_conditional_successor(
                         pred_block, duplicated_blk_jmp.serial, verify=False
-                    )
-                    nb_change += 1
+                    ):
+                        nb_change += 1
                 else:
-                    logger.warning(" not sure this is suppose to happen")
-                    change_1way_block_successor(
-                        pred_block.nextb,
-                        duplicated_blk_jmp.serial,
-                        verify=False,
+                    logger.warning(
+                        "pred %d is jcond but target %d is fallthrough (not cond target %d), "
+                        "skipping redirect",
+                        pred_block.serial, block_to_duplicate.serial, pred_block.tail.d.b,
                     )
-                    nb_change += 1
 
             block_to_duplicate_default_successor = mba.get_mblock(
                 block_to_duplicate.nextb.serial
@@ -1001,15 +1039,26 @@ def try_to_duplicate_one_block(var_histories: list[MopHistory]) -> tuple[int, in
 
 
 def duplicate_histories(
-    var_histories: list[MopHistory], max_nb_pass: int = 10
+    var_histories: list[MopHistory], max_nb_pass: int = 10,
+    max_seconds: float = 10.0,
 ) -> tuple[int, int]:
+    import time
     cur_pass = 0
     total_nb_duplication = 0
     total_nb_change = 0
-    logger.info("Trying to fix new var_history...")
+    logger.info("Trying to fix new var_history (%d histories)...", len(var_histories))
     for i, var_history in enumerate(var_histories):
         logger.info(" start.{0}: {1}".format(i, var_history.block_serial_path))
+    start_time = time.monotonic()
     while cur_pass < max_nb_pass:
+        elapsed = time.monotonic() - start_time
+        if elapsed > max_seconds:
+            logger.warning(
+                "duplicate_histories: time budget exceeded (%.1fs > %.1fs) "
+                "after %d passes, %d duplications",
+                elapsed, max_seconds, cur_pass, total_nb_duplication,
+            )
+            break
         logger.debug("Current path {0}".format(cur_pass))
         nb_duplication, nb_change = try_to_duplicate_one_block(var_histories)
         if nb_change == 0 and nb_duplication == 0:

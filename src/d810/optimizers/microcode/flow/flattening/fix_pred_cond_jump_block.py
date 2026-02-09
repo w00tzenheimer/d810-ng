@@ -187,6 +187,9 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         self._state_var_repr_cache: dict[int, str] = {}  # blk_serial -> repr
         self._pending_modifications: list[PredecessorModification] = []
         self._modifier: Optional[DeferredGraphModifier] = None
+        # Set when safe_verify fails -- prevents further processing on a
+        # corrupted MBA that would cause IDA hangs.
+        self._verify_failed: bool = False
 
     def _get_state_var_repr(self, blk: ida_hexrays.mblock_t) -> str:
         """Get cached string representation of the state variable being compared."""
@@ -584,16 +587,51 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             )
 
         try:
-            # Duplicate the conditional block
-            new_jmp_block, _ = duplicate_block(cond_blk, verify=False)
+            # Duplicate the conditional block.
+            # For conditional blocks, duplicate_block creates a NOP fallthrough
+            # block (orphaned_nop) that serves as the default successor of the
+            # duplicate.  Since we immediately convert the duplicate to a 1-way
+            # goto, the NOP block becomes orphaned and must be cleaned up.
+            new_jmp_block, orphaned_nop = duplicate_block(cond_blk, verify=False)
 
-            # Convert 2-way block to 1-way goto pointing to target
+            # Convert 2-way block to 1-way goto pointing to target.
+            # make_2way_block_goto removes new_jmp_block.serial from all its
+            # old successors' predsets (including orphaned_nop), but does NOT
+            # remove orphaned_nop.serial from ITS successor's predset.
             if not make_2way_block_goto(new_jmp_block, mod.target_serial, verify=False):
                 unflat_logger.warning(
                     "Failed to convert block %d to goto %d",
                     new_jmp_block.serial, mod.target_serial
                 )
                 return False
+
+            # Clean up the orphaned NOP block: remove stale edges so it does
+            # not corrupt successor predsets in later passes.
+            if orphaned_nop is not None:
+                mba = self.mba
+                # Remove orphaned_nop from each of its successors' predsets
+                for succ_serial in list(orphaned_nop.succset):
+                    succ_blk = mba.get_mblock(succ_serial)
+                    succ_blk.predset._del(orphaned_nop.serial)
+                    if succ_blk.serial != mba.qty - 1:
+                        succ_blk.mark_lists_dirty()
+                    orphaned_nop.succset._del(succ_serial)
+                # Clear any remaining predset entries
+                for pred_serial in list(orphaned_nop.predset):
+                    orphaned_nop.predset._del(pred_serial)
+                # Convert to a dead empty block with no successors
+                orphaned_nop.type = ida_hexrays.BLT_0WAY
+                if orphaned_nop.tail is not None:
+                    orphaned_nop.make_nop(orphaned_nop.tail)
+                orphaned_nop.flags &= ~ida_hexrays.MBL_GOTO
+                orphaned_nop.mark_lists_dirty()
+
+                if unflat_logger.isEnabledFor(10):  # DEBUG level
+                    unflat_logger.debug(
+                        "Cleaned up orphaned NOP block %d after converting "
+                        "duplicate %d to goto",
+                        orphaned_nop.serial, new_jmp_block.serial
+                    )
 
             # Update predecessor to point to new block instead of original conditional block
             if not update_blk_successor(pred_blk, mod.cond_block_serial, new_jmp_block.serial, verify=False):
@@ -655,20 +693,36 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
 
             self.mba.mark_chains_dirty()
             self.mba.optimize_local(0)
-            safe_verify(
-                self.mba,
-                "optimizing FixPredecessorOfConditionalJumpBlock",
-                logger_func=unflat_logger.error
-            )
+            try:
+                safe_verify(
+                    self.mba,
+                    "optimizing FixPredecessorOfConditionalJumpBlock",
+                    logger_func=unflat_logger.error
+                )
+            except RuntimeError:
+                self._verify_failed = True
+                unflat_logger.warning(
+                    "MBA verify failed in FixPredecessorOfConditionalJumpBlock "
+                    "-- disabling rule to prevent further corruption"
+                )
+                # Return patch count so caller knows MBA was modified
+                return self.last_pass_nb_patch_done
 
         return self.last_pass_nb_patch_done
 
     def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:
         """Check if this rule should be applied to the given block."""
+        if self._verify_failed:
+            unflat_logger.debug(
+                "Skipping rule -- MBA verify previously failed"
+            )
+            return False
+
         if self.cur_maturity != self.mba.maturity:
             self.cur_maturity = self.mba.maturity
             self.cur_maturity_pass = 0
             self._state_var_repr_cache.clear()  # Clear cache on maturity change
+            self._verify_failed = False  # Reset on maturity change
 
         if self.cur_maturity not in self.maturities:
             return False

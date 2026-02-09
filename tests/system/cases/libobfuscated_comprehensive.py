@@ -737,6 +737,42 @@ HARDENED_OLLVM_COND_CHAIN_CASES = [
 
 
 # =============================================================================
+# sub_7FFC1E9D3BB0.c - Buffer resize with OLLVM CFF and opaque constants
+# =============================================================================
+
+RESIZE_BUFFER_CFF_CASES = [
+    DeobfuscationCase(
+        function="sub_7FFC1E9D3BB0_resize",
+        description=(
+            "Buffer resize function with OLLVM CFF. Uses opaque constant table "
+            "with complex MBA expressions for state transitions. Tests "
+            "FoldReadonlyDataRule with fold_writable_constants, "
+            "FixPredecessorOfConditionalJumpBlock, and Unflattener."
+        ),
+        project="flatfold.json",
+        obfuscated_contains=["g_resize_opaque_table"],
+        deobfuscated_not_contains=[
+            "g_resize_opaque_table",
+            "n0x3C837EFA",
+            "n0x7BE4032F",
+            "0x41698846",
+            "0x3E118C46",
+        ],
+        acceptable_patterns=[
+            "a2 + 16",
+            "a2 + 0x10",
+            "a2 + 8",
+            "= 0",
+        ],
+        must_change=True,
+        check_stats=True,
+        required_rules=["FixPredecessorOfConditionalJumpBlock"],
+        expected_rules=["FixPredecessorOfConditionalJumpBlock", "FoldReadonlyDataRule"],
+    ),
+]
+
+
+# =============================================================================
 # Combined lists for different test scenarios
 # =============================================================================
 
@@ -756,6 +792,7 @@ ALL_CASES = (
     + UNWRAP_LOOPS_CASES
     + WHILE_SWITCH_CASES
     + HARDENED_OLLVM_COND_CHAIN_CASES
+    + RESIZE_BUFFER_CFF_CASES
 )
 
 # Core cases that must work (no exceptions/edge cases)
@@ -766,6 +803,7 @@ CORE_CASES = (
     + HODUR_CASES
     + WHILE_SWITCH_CASES
     + HARDENED_OLLVM_COND_CHAIN_CASES
+    + RESIZE_BUFFER_CFF_CASES
 )
 
 # Quick smoke test (fastest)

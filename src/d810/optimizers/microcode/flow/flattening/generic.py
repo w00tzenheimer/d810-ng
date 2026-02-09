@@ -767,8 +767,20 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             self.max_duplication_passes = self.config["max_duplication_passes"]
         self.dispatcher_collector.configure(kwargs)
 
+    # Maximum blocks for which retrieve_all_dispatchers will attempt
+    # full exploration.  Beyond this, the dispatcher search is skipped
+    # to prevent quadratic/exponential blowup in subsequent analysis.
+    MAX_BLOCKS_FOR_DISPATCHER_SEARCH = 400
+
     def retrieve_all_dispatchers(self):
         self.dispatcher_list = []
+        if self.mba.qty > self.MAX_BLOCKS_FOR_DISPATCHER_SEARCH:
+            unflat_logger.warning(
+                "Skipping dispatcher search: MBA has %d blocks (limit %d)",
+                self.mba.qty,
+                self.MAX_BLOCKS_FOR_DISPATCHER_SEARCH,
+            )
+            return
         self.dispatcher_collector.reset()
         self.mba.for_all_topinsns(self.dispatcher_collector)
         self.dispatcher_list = [
@@ -830,15 +842,41 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     def check_if_histories_are_resolved(self, mop_histories: list[MopHistory]) -> bool:
         return all([mop_history.is_resolved() for mop_history in mop_histories])
 
+    # Maximum number of histories allowed per dispatcher father before
+    # we skip duplication.  Beyond this threshold duplicate_histories()
+    # becomes prohibitively expensive (exponential block creation).
+    MAX_HISTORIES_PER_FATHER = 100
+
+    def _is_past_deadline(self) -> bool:
+        """Check if the current optimize() call has exceeded its time budget."""
+        import time as _time
+        deadline = getattr(self, '_optimize_deadline', None)
+        return deadline is not None and _time.monotonic() > deadline
+
     def ensure_dispatcher_father_is_resolvable(
         self,
         dispatcher_father: ida_hexrays.mblock_t,
         dispatcher_entry_block: GenericDispatcherBlockInfo,
         dispatcher_info: GenericDispatcherInfo,
     ) -> int:
+        if self._is_past_deadline():
+            unflat_logger.warning(
+                "ensure_dispatcher_father_is_resolvable: time budget exceeded, skipping"
+            )
+            return 0
+
         father_histories = self.get_dispatcher_father_histories(
             dispatcher_father, dispatcher_entry_block, dispatcher_info
         )
+
+        if len(father_histories) > self.MAX_HISTORIES_PER_FATHER:
+            unflat_logger.warning(
+                "Skipping father blk %d: %d histories exceed limit %d",
+                dispatcher_father.serial,
+                len(father_histories),
+                self.MAX_HISTORIES_PER_FATHER,
+            )
+            return 0
 
         father_histories_cst = get_all_possibles_values(
             father_histories,
@@ -1415,9 +1453,24 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
         This is the "directed graph" approach that avoids IDA internal state corruption.
         """
+        if self._is_past_deadline():
+            unflat_logger.warning(
+                "fix_fathers_from_mop_history: time budget exceeded, skipping"
+            )
+            return 0
+
         father_histories = self.get_dispatcher_father_histories(
             dispatcher_father, dispatcher_entry_block, dispatcher_info
         )
+
+        if len(father_histories) > self.MAX_HISTORIES_PER_FATHER:
+            unflat_logger.warning(
+                "fix_fathers: skipping father blk %d: %d histories exceed limit %d",
+                dispatcher_father.serial,
+                len(father_histories),
+                self.MAX_HISTORIES_PER_FATHER,
+            )
+            return 0
 
         # Use ConditionalStateResolver for direct target resolution (no new blocks)
         handler = ConditionalStateResolver(self.mba, dispatcher_info)
@@ -1447,6 +1500,10 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         ):
                             unflat_logger.info("whoo found it!!!")
 
+    # Maximum cumulative blocks that may be created by duplicate_histories()
+    # across all dispatcher fathers in a single remove_flattening() pass.
+    MAX_CUMULATIVE_DUPLICATIONS = 500
+
     def remove_flattening(self) -> int:
         total_nb_change = 0
         self.non_significant_changes = ensure_last_block_is_goto(self.mba, verify=False)
@@ -1458,7 +1515,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         # Create deferred modifier for all resolve_dispatcher_father operations
         deferred_modifier = DeferredGraphModifier(self.mba)
 
+        total_duplications = 0
+        duplication_budget_exceeded = False
+
         for dispatcher_info in self.dispatcher_list:
+            if duplication_budget_exceeded:
+                break
             if self.dump_intermediate_microcode:
                 dump_microcode_for_debug(
                     self.mba,
@@ -1482,6 +1544,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             dispatcher_father_list = [
                 self.mba.get_mblock(x) for x in dispatcher_info.entry_block.blk.predset
             ]
+            previous_block_count = self.mba.qty
             for dispatcher_father in dispatcher_father_list:
 
                 try:
@@ -1491,6 +1554,20 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 except NotDuplicableFatherException as e:
                     unflat_logger.warning(e)
                     pass
+
+                # Track cumulative block creation and enforce budget
+                current_block_count = self.mba.qty
+                total_duplications += max(0, current_block_count - previous_block_count)
+                previous_block_count = current_block_count
+                if total_duplications > self.MAX_CUMULATIVE_DUPLICATIONS:
+                    unflat_logger.warning(
+                        "Cumulative duplication budget exceeded (%d blocks created, "
+                        "limit %d), stopping further duplication",
+                        total_duplications,
+                        self.MAX_CUMULATIVE_DUPLICATIONS,
+                    )
+                    duplication_budget_exceeded = True
+                    break
             if self.dump_intermediate_microcode:
                 dump_microcode_for_debug(
                     self.mba,
@@ -1553,10 +1630,16 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         total_nb_change += nb_flattened_branches
         return total_nb_change
 
+    # Maximum wall-clock seconds for a single optimize() call.
+    MAX_OPTIMIZE_SECONDS = 30.0
+
     def optimize(self, blk: ida_hexrays.mblock_t) -> int:
+        import time as _time
         self.mba = blk.mba
         if not self.check_if_rule_should_be_used(blk):
             return 0
+
+        self._optimize_deadline = _time.monotonic() + self.MAX_OPTIMIZE_SECONDS
 
         # Apply any modifications scheduled for this maturity level
         scheduled_changes = self._apply_scheduled_modifications()
@@ -1604,6 +1687,11 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         ),
                     )
                 for dispatcher_father in dispatcher_father_list:
+                    if self._is_past_deadline():
+                        unflat_logger.warning(
+                            "fix_fathers: time budget exceeded, skipping remaining fathers"
+                        )
+                        break
                     try:
                         total_fixed_father_block += self.fix_fathers_from_mop_history(
                             dispatcher_father,
