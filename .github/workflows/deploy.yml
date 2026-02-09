@@ -1,10 +1,14 @@
 name: Build and upload to PyPI
 
 on:
+    workflow_dispatch:
     release:
         types:
             - published
-    workflow_dispatch:
+    workflow_run:
+        workflows: ["Release"]
+        types:
+            - completed
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
@@ -109,7 +113,10 @@ jobs:
 
             - uses: pypa/gh-action-pypi-publish@release/v1
               if: >-
-                  github.repository_owner == 'w00tzenheimer' ||
-                  github.repository_owner == 'mahmoudimus'
+                  (github.repository_owner == 'w00tzenheimer' ||
+                  github.repository_owner == 'mahmoudimus') && (
+                  (github.event_name == 'release' && github.event.action == 'published') ||
+                  (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+                  github.event_name == 'workflow_dispatch')
               with:
                   skip-existing: true
