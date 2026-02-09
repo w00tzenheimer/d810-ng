@@ -520,17 +520,30 @@ def create_standalone_block(
     # address is within the decompiled function's range (prevents INTERR 50863).
     safe_ea = mba.entry_ea
 
-    # 4. NOP all inherited instructions
+    # 4. Remove all inherited instructions to prevent NOP accumulation.
+    #    When create_standalone_block is called sequentially (e.g., 376 times
+    #    for BLOCK_CREATE_WITH_REDIRECT operations), the new block becomes the
+    #    tail and may be used as ref_blk for the next copy_block call.  If we
+    #    only NOP the inherited instructions (without removing them), each
+    #    successive copy inherits all previous NOPs, causing O(n**2) growth.
+    #    Block 1121 would end up with 1125 NOPs, triggering hangs.
+    #
+    #    Fix: collect inherited instructions, then remove them all, leaving the
+    #    block empty.  A single NOP placeholder is inserted afterwards so the
+    #    block has a valid tail.ea for subsequent insert_into_block calls.
+    inherited_insns = []
     cur_ins = new_blk.head
-    if cur_ins is None:
-        # Empty block -- insert a NOP placeholder so we have a valid tail.ea
-        nop_ins = ida_hexrays.minsn_t(safe_ea)
-        nop_ins.opcode = ida_hexrays.m_nop
-        new_blk.insert_into_block(nop_ins, new_blk.head)
-    else:
-        while cur_ins is not None:
-            new_blk.make_nop(cur_ins)
-            cur_ins = cur_ins.next
+    while cur_ins is not None:
+        inherited_insns.append(cur_ins)
+        cur_ins = cur_ins.next
+    for insn in inherited_insns:
+        new_blk.make_nop(insn)
+        new_blk.remove_from_block(insn)
+
+    # Ensure the block has at least one NOP so tail.ea is valid.
+    nop_ins = ida_hexrays.minsn_t(safe_ea)
+    nop_ins.opcode = ida_hexrays.m_nop
+    new_blk.insert_into_block(nop_ins, new_blk.head)
 
     # 5. Copy the desired instructions into the block
     for ins in blk_ins:

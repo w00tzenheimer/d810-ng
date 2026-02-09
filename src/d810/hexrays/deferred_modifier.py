@@ -340,6 +340,7 @@ class DeferredGraphModifier:
     mba: ida_hexrays.mba_t
     modifications: list[GraphModification] = field(default_factory=list)
     _applied: bool = False
+    verify_failed: bool = False
 
     def reset(self) -> None:
         """Clear all queued modifications."""
@@ -660,11 +661,24 @@ class DeferredGraphModifier:
             elif run_optimize_local:
                 self.mba.optimize_local(0)
 
-            safe_verify(
-                self.mba,
-                "after deferred modifications",
-                logger_func=logger.error,
-            )
+            try:
+                safe_verify(
+                    self.mba,
+                    "after deferred modifications",
+                    logger_func=logger.error,
+                )
+            except RuntimeError:
+                # The modifications are already applied in-place and cannot
+                # be rolled back.  Setting verify_failed lets callers know
+                # the MBA is in a suspect state so they can stop further
+                # processing instead of letting IDA continue with a
+                # corrupted MBA (which causes hangs at later maturity levels).
+                self.verify_failed = True
+                logger.warning(
+                    "MBA verify failed after applying %d deferred modifications "
+                    "-- marking verify_failed so callers can abort gracefully",
+                    successful,
+                )
 
         self._applied = True
         return successful
@@ -895,6 +909,7 @@ class ImmediateGraphModifier:
     mba: ida_hexrays.mba_t
     modifications_applied: int = 0
     _applied: bool = False
+    verify_failed: bool = False
 
     def reset(self) -> None:
         """Reset the modifier state."""
@@ -1040,11 +1055,19 @@ class ImmediateGraphModifier:
             elif run_optimize_local:
                 self.mba.optimize_local(0)
 
-            safe_verify(
-                self.mba,
-                "after immediate modifications",
-                logger_func=logger.error,
-            )
+            try:
+                safe_verify(
+                    self.mba,
+                    "after immediate modifications",
+                    logger_func=logger.error,
+                )
+            except RuntimeError:
+                self.verify_failed = True
+                logger.warning(
+                    "MBA verify failed after applying %d immediate modifications "
+                    "-- marking verify_failed so callers can abort gracefully",
+                    self.modifications_applied,
+                )
 
         self._applied = True
         return self.modifications_applied
