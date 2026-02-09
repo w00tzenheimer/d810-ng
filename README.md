@@ -28,6 +28,16 @@ It is recommended to install Z3 to be able to use several features of D-810:
 pip3 install z3-solver
 ```
 
+### Install from source
+
+To install D-810 ng as an editable package (useful for development or staying up to date with the repo):
+
+```bash
+pip install -e .
+```
+
+This installs the package in development mode so that changes to the source are immediately reflected.
+
 ## Using D-810 ng
 
 * Load the plugin by using the `Ctrl-Shift-D` shortcut, you should see this configuration GUI
@@ -183,7 +193,17 @@ d810 includes optional Cython extensions for performance-critical paths. Every C
 pip install "Cython>=3.0.0"
 ```
 
-### Local Build (macOS/Linux)
+### Local Build
+
+**Without speedups (pure Python, all platforms):**
+
+```bash
+pip install -e .
+```
+
+This works on every platform and requires no compiler or IDA SDK. All Cython modules have pure-Python fallbacks.
+
+**macOS / Linux:**
 
 ```bash
 # SDK auto-downloads from GitHub if not present
@@ -196,7 +216,13 @@ To specify a local IDA SDK path:
 IDA_SDK=/path/to/ida-sdk D810_BUILD_SPEEDUPS=1 pip install -e ".[speedups]" --no-build-isolation
 ```
 
-To build extensions in-place only (no install):
+**Windows (PowerShell):**
+
+```powershell
+$env:D810_BUILD_SPEEDUPS=1; $env:IDA_SDK="C:\IDA\9\sdk"; python -m pip install -e ".[speedups]" --no-build-isolation
+```
+
+**Build extensions in-place only (no install):**
 
 ```bash
 D810_BUILD_SPEEDUPS=1 python setup.py build_ext --inplace

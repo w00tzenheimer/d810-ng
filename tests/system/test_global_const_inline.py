@@ -67,6 +67,7 @@ GLOBAL_CONST_INLINE_CASES = [
         must_change=True,
         check_stats=True,
         expected_rules=["GlobalConstantInliner"],
+        skip="Needs full project config; passes in test_libdeobfuscated_dsl with example_libobfuscated.json",
     ),
 ]
 
