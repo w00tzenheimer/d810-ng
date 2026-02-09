@@ -26,6 +26,9 @@ class OptimizationEvent(Enum):
     # CFG-level events
     CFG_RULE_PATCHES = auto()  # A CFG rule produced patches
 
+    # Cycle detection events
+    CYCLE_DETECTED = auto()  # A rewrite cycle was detected and broken
+
     # Session events
     SESSION_START = auto()  # Optimization session started
     SESSION_END = auto()  # Optimization session ended
@@ -85,6 +88,12 @@ class OptimizationStatistics:
     # NEW: Ordered list of rule firings for sequence analysis
     rule_execution_log: List[RuleExecution] = dataclasses.field(default_factory=list)
 
+    # NEW: Cycle detection tracking
+    cycles_detected: Dict[str, int] = dataclasses.field(
+        default_factory=lambda: defaultdict(int)
+    )
+    total_cycles_detected: int = 0
+
     # NEW: EventEmitter for pub/sub instrumentation
     events: EventEmitter[OptimizationEvent] = dataclasses.field(
         default_factory=lambda: EventEmitter[OptimizationEvent]()
@@ -96,6 +105,8 @@ class OptimizationStatistics:
         self.cfg_rule_usages.clear()
         self.rule_executions.clear()
         self.rule_execution_log.clear()
+        self.cycles_detected.clear()
+        self.total_cycles_detected = 0
         # Don't clear event handlers - they persist across sessions
 
     # -------------------------------------------------------------------------
@@ -146,6 +157,19 @@ class OptimizationStatistics:
     def record_cfg_rule_patches(self, rule_name: str, nb_patches: int) -> None:
         self.cfg_rule_usages[rule_name].append(nb_patches)
         self.events.emit(OptimizationEvent.CFG_RULE_PATCHES, rule_name, nb_patches)
+
+    def record_cycle_detected(self, optimizer_name: str, instruction_info: str = "") -> None:
+        """Record that a rewrite cycle was detected and broken.
+
+        Args:
+            optimizer_name: Name of the optimizer that produced the cyclic rewrite.
+            instruction_info: Optional description of the instruction (address, repr).
+        """
+        self.cycles_detected[optimizer_name] += 1
+        self.total_cycles_detected += 1
+        self.events.emit(
+            OptimizationEvent.CYCLE_DETECTED, optimizer_name, instruction_info
+        )
 
     # -------------------------------------------------------------------------
     # Query APIs (enhanced for test assertions)
@@ -299,6 +323,19 @@ class OptimizationStatistics:
                     sum(patch_list),
                 )
 
+        # Cycle detection
+        if self.total_cycles_detected > 0:
+            logger.warning(
+                "Rewrite cycle detection: %d cycle(s) broken",
+                self.total_cycles_detected,
+            )
+            for optimizer_name, count in self.cycles_detected.items():
+                logger.warning(
+                    "  Optimizer '%s' caused %d cycle(s)",
+                    optimizer_name,
+                    count,
+                )
+
     def summary(self) -> Dict[str, Any]:
         """Get a summary dict for programmatic access."""
         return {
@@ -311,6 +348,8 @@ class OptimizationStatistics:
                 for name, patches in self.cfg_rule_usages.items()
             },
             "total_rule_firings": len(self.rule_execution_log),
+            "cycles_detected": dict(self.cycles_detected),
+            "total_cycles_detected": self.total_cycles_detected,
         }
 
     # -------------------------------------------------------------------------
@@ -336,6 +375,8 @@ class OptimizationStatistics:
                 name: list(patches) for name, patches in self.cfg_rule_usages.items()
             },
             "total_rule_firings": len(self.rule_execution_log),
+            "cycles_detected": dict(self.cycles_detected),
+            "total_cycles_detected": self.total_cycles_detected,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -358,6 +399,8 @@ class OptimizationStatistics:
             )
         for name, patches in data.get("cfg_rule_usages", {}).items():
             stats.cfg_rule_usages[name] = list(patches)
+        stats.cycles_detected.update(data.get("cycles_detected", {}))
+        stats.total_cycles_detected = data.get("total_cycles_detected", 0)
         return stats
 
     @classmethod
