@@ -38,11 +38,17 @@
 
 **Added.** Ported chernobog's `convert_jtbl_to_goto()` (deflatten.cpp:2063-2126) as a reusable helper in `cfg_utils.py`. Safely converts an `m_jtbl` tail to `m_goto` by collecting old case targets from `mcases_t.targets`, rewiring succset/predset using codebase conventions (`_del`/`push_back`), and setting `BLT_1WAY`. Includes `_serial_in_predset()` helper for duplicate-safe predset insertion.
 
+### hardened_cond_chain_simple / sub_7FFC1EB47830 (v0.3.4)
+
+**Fixed.** Both tests pass after opaque table global resolution fix in MopTracker (`try_resolve_memory_mops()`) and m_jbe unsigned semantics correction in `FixPredecessorOfConditionalJumpBlock`. The backward tracker now evaluates compound expressions with concrete global values, enabling the conditional chain rule to fire correctly.
+
 ## Open Items
 
 - Wire `OptimizationRule` Protocol as primary dispatch path in `hexrays_hooks.py`
 - Make `UnflattenerRule` coordinator the primary unflattening path (currently parallel to legacy)
 - Evaluate whether `FoldPureConstantRule` should be re-enabled behind a feature flag
 - Clean up `canonicalizer.py` (dead code with useful AST normalization utils)
-- Investigate 2 known test failures: `hardened_cond_chain_simple`, `sub_7FFC1EB47830` (`FixPredecessorOfConditionalJumpBlock` does not fire)
 - Add config schema validation at `rule.configure()` boundary to reject arch-structured dicts (prevent silent `resolve_arch_config` bypass)
+- Investigate `test_function_ollvm_fla_bcf_sub` — unflattener produces CFG that fails decompilation (test skipped in `test_block_merge.py`)
+- Investigate `tigress_minmaxarray` — BlockMerger does not produce visible changes on Tigress patterns (test skipped in `test_block_merge.py`)
+- Investigate `constant_folding_test2` — needs full project config to produce changes; passes in DSL test with `example_libobfuscated.json` but not with `default_instruction_only.json` (test skipped in `test_global_const_inline.py`)
