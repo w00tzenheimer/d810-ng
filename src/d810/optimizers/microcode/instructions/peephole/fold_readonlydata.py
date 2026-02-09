@@ -6,10 +6,13 @@ import typing
 
 A peephole rule that replaces loads from a *provably read-only* table (typically
 located in `.rdata` / `.rodata`) with an immediate load (`ldc`).
-It works for for only one microcode pattern Hex-Rays emits:
+It handles two microcode patterns Hex-Rays emits:
 
-1. Direct displacement load
+1. Direct displacement load (array access)
    ldx  &($sym).8, #off        ──▶  ldc  #value
+
+2. Direct global variable load (OLLVM opaque table reads)
+   mov  $dword_XXXX.4, tmp.4   ──▶  ldc  #value
 
 By eliminating the table look-up, we unlock many more constant-folding
 opportunities in later optimisation stages.
@@ -193,7 +196,15 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
 
         # Attempt the **direct displacement** form first ------------------ #
         ea = self._ea_from_direct_load(ins)
-        folded_from_mov = False
+        if ea is None:
+            # ------------------------------------------------------------ #
+            # Handle direct global variable loads:                          #
+            #   mov  $dword_XXXX.4, tmp.4                                  #
+            # where l.t == mop_v (direct global reference).  These appear  #
+            # in OLLVM opaque table reads.                                  #
+            # ------------------------------------------------------------ #
+            ea = self._ea_from_simple_mov_load(ins)
+
         if ea is None:
             # Try folding readonly globals used as plain values inside
             # expression trees (e.g., nested under mop_d). Do NOT fold top-level
@@ -434,10 +445,18 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
 
         size = op.size if getattr(op, "size", 0) else 0
 
-        # Do NOT fold plain symbolic addresses (mop_v/mop_S) into immediates.
-        # Those represent address values, not memory contents. Actual memory
-        # reads go through mop_b (handled above via xdu/xds) or ldx paths.
-        if op.t in (ida_hexrays.mop_v, ida_hexrays.mop_S):
+        # mop_v used as a source operand (r-value) IS a memory read from a
+        # global address. If it's foldable, replace it with an immediate.
+        if op.t == ida_hexrays.mop_v:
+            ea = op.g
+            if size in (1, 2, 4, 8) and self._is_foldable_address(ea):
+                value = self._fetch_constant(ea, size)
+                if value is not None:
+                    op.make_number(value, size)
+                    return True
+            return False
+        # Stack variables (mop_S) are NOT memory reads from global addresses.
+        if op.t == ida_hexrays.mop_S:
             return False
 
         return False

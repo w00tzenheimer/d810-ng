@@ -43,6 +43,7 @@ from tests.system.cases.libobfuscated_comprehensive import (
     TIGRESS_CASES,
     UNWRAP_LOOPS_CASES,
     WHILE_SWITCH_CASES,
+    RESIZE_BUFFER_CFF_CASES,
     TOTAL_FUNCTION_COUNT,
 )
 
@@ -431,6 +432,40 @@ class TestExceptionPaths:
         load_expected_stats,
     ):
         """Exception path handling."""
+        run_deobfuscation_test(
+            case=case,
+            d810_state=d810_state,
+            pseudocode_to_string=pseudocode_to_string,
+            code_comparator=code_comparator,
+            capture_stats=capture_stats,
+            load_expected_stats=load_expected_stats,
+        )
+
+
+class TestResizeBufferCFF:
+    """Tests for buffer resize with OLLVM CFF and opaque constant folding.
+
+    Tests patterns from sub_7FFC1E9D3BB0.c:
+    - OLLVM Control-Flow Flattening (CFF) with nested while(1) loops
+    - Opaque constant table with MBA expressions
+    - FoldReadonlyDataRule with fold_writable_constants
+    - FixPredecessorOfConditionalJumpBlock for conditional chain dispatch
+    """
+
+    binary_name = _get_default_binary()
+
+    @pytest.mark.parametrize("case", RESIZE_BUFFER_CFF_CASES, ids=lambda c: c.test_id)
+    def test_resize_buffer_cff(
+        self,
+        case,
+        libobfuscated_setup,
+        d810_state,
+        pseudocode_to_string,
+        code_comparator,
+        capture_stats,
+        load_expected_stats,
+    ):
+        """Buffer resize with OLLVM CFF patterns."""
         run_deobfuscation_test(
             case=case,
             d810_state=d810_state,

@@ -210,6 +210,7 @@ class DispatcherCache:
         self.func_ea = mba.entry_ea
         self._analysis: DispatcherAnalysis | None = None
         self._last_maturity: int = -1
+        self._previous_type: DispatcherType | None = None
 
         # Statistics for performance tuning
         self.blocks_analyzed = 0
@@ -225,6 +226,8 @@ class DispatcherCache:
             cache.mba = mba  # Update mba reference
             # Check if maturity changed (need re-analysis)
             if cache._last_maturity != mba.maturity:
+                if cache._analysis is not None:
+                    cache._previous_type = cache._analysis.dispatcher_type
                 cache._analysis = None  # Invalidate
             return cache
 
@@ -814,6 +817,17 @@ class DispatcherCache:
                 self.mba.maturity
             )
             # Find initial state for conditional chain dispatchers
+            self._find_initial_state(analysis)
+        elif self._previous_type == DispatcherType.CONDITIONAL_CHAIN:
+            # Lock-in: inherit previous classification when score degrades due to
+            # FixPredecessorOfConditionalJumpBlock removing comparison blocks
+            analysis.dispatcher_type = DispatcherType.CONDITIONAL_CHAIN
+            logger.info(
+                "Locked-in CONDITIONAL_CHAIN from previous maturity (score=%d, threshold=%d, maturity=%d)",
+                conditional_chain_score,
+                min_score,
+                self.mba.maturity
+            )
             self._find_initial_state(analysis)
         elif has_jtbl:
             analysis.dispatcher_type = DispatcherType.SWITCH_TABLE
