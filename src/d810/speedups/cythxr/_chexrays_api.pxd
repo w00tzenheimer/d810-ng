@@ -20,4 +20,5 @@ cdef uint64 _hash_mop_ptr(const mop_t* op,
                             ea_t func_ea,
                             unordered_map[uintptr_t, uint64]* insn_memo,
                             int depth) noexcept nogil
+cpdef uint64 hash_minsn(object py_ins, uint64 func_entry_ea=?)
 cdef qstring stack_var_name(mop_t* op)

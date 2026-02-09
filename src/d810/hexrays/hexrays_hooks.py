@@ -3,10 +3,12 @@ from __future__ import annotations
 import enum
 import pathlib
 import typing
+from collections import defaultdict
 
 import ida_hexrays
 
 from d810.core import getLogger
+from d810.core.cymode import CythonMode
 from d810.errors import D810Exception
 from d810.expr.z3_utils import log_z3_instructions
 from d810.hexrays.cfg_utils import safe_verify
@@ -16,6 +18,47 @@ from d810.hexrays.hexrays_formatters import (
     maturity_to_string,
 )
 from d810.hexrays.hexrays_helpers import check_ins_mop_size_are_ok
+
+# ---------------------------------------------------------------------------
+# hash_minsn: Cython fast path with pure-Python fallback
+# ---------------------------------------------------------------------------
+# The Cython version (in speedups/cythxr/_chexrays_api.pyx) hashes the opcode
+# and all three operands (l, r, d) at the C level for speed.  When Cython is
+# unavailable we fall back to hashing the printed representation of the
+# instruction, which is slower but always available.
+#
+# The OptimizationCache class (in d810.optimizers.caching) was considered for
+# seen-hash storage but rejected: it is SQLite-backed, function-level, and
+# designed for cross-session persistence -- far too heavy for per-instruction,
+# per-decompilation cycle detection.  A lightweight
+# ``dict[int, set[int]]`` (instruction EA -> set of post-rewrite hashes) is
+# used instead.
+# ---------------------------------------------------------------------------
+_cy_hash_minsn = None
+if CythonMode().is_enabled():
+    try:
+        from d810.speedups.cythxr._chexrays_api import hash_minsn as _cy_hash_minsn
+    except ImportError:
+        pass
+
+
+def _hash_minsn_fallback(ins: ida_hexrays.minsn_t, func_entry_ea: int = 0) -> int:
+    """Pure-Python fallback for hashing an minsn_t.
+
+    Uses the printed representation of the instruction as a proxy for its
+    structural content.  Slower than Cython but always available.
+    """
+    return hash((ins.opcode, ins._print(), func_entry_ea))
+
+
+def hash_minsn(ins: ida_hexrays.minsn_t, func_entry_ea: int = 0) -> int:
+    """Return a structural hash for an minsn_t, using Cython when available."""
+    if _cy_hash_minsn is not None:
+        try:
+            return int(_cy_hash_minsn(ins, func_entry_ea))
+        except Exception:
+            pass
+    return _hash_minsn_fallback(ins, func_entry_ea)
 # Note: VerifiableRule and adapt_rules are loaded/filtered in manager.py
 # Rules are added to PatternOptimizer via add_rule() based on project config
 
@@ -97,6 +140,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self.current_blk_serial = None
         self.generate_z3_code = False
         self.dump_intermediate_microcode = False
+
+        # Cycle detection: maps instruction EA -> set of post-rewrite hashes.
+        # If a rewrite produces an instruction whose hash was already seen for
+        # that EA, we have a cycle (Rule A: X->Y, Rule B: Y->X) and break it.
+        self._rewrite_seen: dict[int, set[int]] = defaultdict(set)
 
         self.instruction_optimizers = []
         # usage tracking moved to centralized statistics object
@@ -204,6 +252,14 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             ins_optimizer.add_rule(rule)
         self.analyzer.add_rule(rule)
 
+    def reset_cycle_detection(self) -> None:
+        """Clear the rewrite-cycle seen set.
+
+        Called on decompilation start (via DecompilationEvent.STARTED in the
+        manager) and on maturity change (in log_info_on_input).
+        """
+        self._rewrite_seen.clear()
+
     def func(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
         self.log_info_on_input(blk, ins)
         try:
@@ -251,6 +307,10 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 )
             self.analyzer.set_maturity(self.current_maturity)
             self.current_blk_serial = None
+            # Reset cycle detection on maturity change -- instructions are
+            # renumbered / restructured between maturity levels so old hashes
+            # are no longer meaningful.
+            self.reset_cycle_detection()
 
             for ins_optimizer in self.instruction_optimizers:
                 ins_optimizer.cur_maturity = self.current_maturity
@@ -294,7 +354,40 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             format_minsn_t(ins),
                         )
                 else:
+                    # --- cycle detection guard ---
+                    # Compute structural hash of the NEW instruction
+                    # (after swap, `ins` holds the new content).
                     ins.swap(new_ins)
+
+                    try:
+                        func_ea = blk.mba.entry_ea if blk and blk.mba else 0
+                    except Exception:
+                        func_ea = 0
+                    post_hash = hash_minsn(ins, func_ea)
+                    ins_key = ins.ea
+
+                    seen = self._rewrite_seen[ins_key]
+                    if post_hash in seen:
+                        # Cycle detected: this instruction was already
+                        # rewritten to this exact form.  Undo the swap and
+                        # refuse the rewrite to break the cycle.
+                        ins.swap(new_ins)  # undo
+                        optimizer_logger.warning(
+                            "Cycle detected for instruction at %s by %s -- "
+                            "breaking rewrite loop",
+                            hex(ins_key),
+                            ins_optimizer.name,
+                        )
+                        if self.stats is not None:
+                            self.stats.record_cycle_detected(
+                                ins_optimizer.name,
+                                hex(ins_key),
+                            )
+                        return False
+
+                    seen.add(post_hash)
+                    # --- end cycle detection guard ---
+
                     if self.stats is not None:
                         self.stats.record_optimizer_match(ins_optimizer.name)
 
@@ -320,6 +413,11 @@ class InstructionVisitorManager(ida_hexrays.minsn_visitor_t):
 
 
 class BlockOptimizerManager(ida_hexrays.optblock_t):
+    # Maximum number of block-optimizer passes allowed at a single maturity
+    # level before we bail out.  This is a safety net against infinite loops
+    # where the optimizer keeps matching but never converges.
+    _MAX_PASSES_PER_MATURITY = 500
+
     def __init__(self, stats: OptimizationStatistics, log_dir: pathlib.Path):
         optimizer_logger.debug("Initializing {0}...".format(self.__class__.__name__))
         super().__init__()
@@ -328,12 +426,48 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self.cfg_rules = set()
 
         self.current_maturity = None
+        self._pass_count = 0
         # usage tracking moved to centralized statistics object
+
+    def reset_pass_counter(self) -> None:
+        """Reset the per-maturity pass counter.
+
+        Called when maturity changes so the guard does not carry over.
+        """
+        self._pass_count = 0
 
     def func(self, blk: ida_hexrays.mblock_t):
         self.log_info_on_input(blk)
-        nb_patch = self.optimize(blk)
-        return nb_patch
+
+        # Bug 3 fix: pass guard -- if the block optimizer has been called too
+        # many times at the same maturity without a maturity change, bail out
+        # to prevent infinite-loop hangs.
+        self._pass_count += 1
+        if self._pass_count > self._MAX_PASSES_PER_MATURITY:
+            if self._pass_count == self._MAX_PASSES_PER_MATURITY + 1:
+                optimizer_logger.warning(
+                    "BlockOptimizer exceeded %d passes at maturity %s; "
+                    "suppressing further optimizations until maturity changes",
+                    self._MAX_PASSES_PER_MATURITY,
+                    maturity_to_string(self.current_maturity),
+                )
+            return 0
+
+        # Bug 2 fix: catch exceptions so they don't escape to IDA's callback
+        # handler, which would continue with a corrupted MBA and hang at the
+        # next maturity level.  Mirrors InstructionOptimizerManager.func().
+        try:
+            nb_patch = self.optimize(blk)
+            return nb_patch
+        except RuntimeError as e:
+            optimizer_logger.warning(
+                "RuntimeError in block optimizer on blk %d: %s", blk.serial, e
+            )
+        except D810Exception as e:
+            optimizer_logger.warning(
+                "D810Exception in block optimizer on blk %d: %s", blk.serial, e
+            )
+        return 0
 
     def log_info_on_input(self, blk: ida_hexrays.mblock_t):
         mba: ida_hexrays.mbl_array_t = blk.mba
@@ -346,6 +480,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 )
 
             self.current_maturity = mba.maturity
+            self.reset_pass_counter()
 
     # statistics are managed centrally via the stats object
 

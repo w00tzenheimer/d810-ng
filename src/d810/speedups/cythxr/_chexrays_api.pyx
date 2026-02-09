@@ -131,6 +131,27 @@ cpdef uint64 hash_mop(object py_mop, uint64 func_entry_ea=0):
     return _hash_mop_ptr(op, <ea_t>func_entry_ea, &memo, 0)
 
 
+cpdef uint64 hash_minsn(object py_ins, uint64 func_entry_ea=0):
+    """Return a stable structural hash for a Hex-Rays minsn_t.
+
+    Hashes the opcode and all three operands (l, r, d) to produce a
+    fingerprint of the instruction's structure. Used for cycle detection
+    in the rewrite engine.
+
+    The hash is salted with the function entry EA to distinguish stack/local
+    references across functions. If unknown, pass 0.
+    """
+    cdef const minsn_t* ins = <const minsn_t*> _swig_ptr(py_ins)
+    cdef unordered_map[uintptr_t, uint64] memo
+    cdef uint64 h
+
+    h = _mix64(0x1234567812345678ULL, <uint64>ins.opcode)
+    h = _mix64(h, _hash_mop_ptr(&ins.l, <ea_t>func_entry_ea, &memo, 0))
+    h = _mix64(h, _hash_mop_ptr(&ins.r, <ea_t>func_entry_ea, &memo, 0))
+    h = _mix64(h, _hash_mop_ptr(&ins.d, <ea_t>func_entry_ea, &memo, 0))
+    return h
+
+
 cdef qstring stack_var_name(mop_t* op):
     cdef:
         qstring name
