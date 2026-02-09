@@ -140,7 +140,10 @@ def get_link_args():
 
 def get_ext_modules():
     """Build Cython extensions if D810_BUILD_SPEEDUPS=1, else return empty list."""
-    if not BUILD_SPEEDUPS:
+    # Re-check at call time (not just module-load time) so subprocess
+    # invocations by pip/setuptools always see the current env.
+    want_speedups = os.environ.get("D810_BUILD_SPEEDUPS", "0") == "1"
+    if not want_speedups:
         return []
 
     try:

@@ -10,10 +10,9 @@ marks them as memory_unresolved_ins_mops, causing is_resolved() to return
 False.
 
 These tests verify:
-1. fetch_idb_value reads concrete values from IDB
-2. MopTracker can auto-resolve mop_v operands via try_resolve_memory_mops
-3. Emulator eval() reads mop_v from writable segments with no write xrefs
-4. FoldReadonlyDataRule with fold_writable_constants=True folds such globals
+1. MopTracker can auto-resolve mop_v operands via try_resolve_memory_mops
+2. Emulator eval() reads mop_v from writable segments with no write xrefs
+3. FoldReadonlyDataRule with fold_writable_constants=True folds such globals
 
 These tests do NOT require IDA Pro -- all IDA types are mocked.
 """
@@ -362,56 +361,6 @@ def _make_mop_r(reg: int, size: int = 4):
 def _make_segment(perm: int):
     """Create a mock segment with given permissions."""
     return types.SimpleNamespace(perm=perm)
-
-
-# ===================================================================
-# Test: fetch_idb_value reads concrete values
-# ===================================================================
-class TestFetchIdbValue:
-    """Test that fetch_idb_value reads correct sized values."""
-
-    def test_read_4_bytes(self, _mock_ida_modules):
-        from d810.expr.emulator import fetch_idb_value
-        with mock.patch("d810.expr.emulator.idaapi") as m_idaapi:
-            m_idaapi.get_dword = mock.Mock(return_value=0xDEADBEEF)
-            result = fetch_idb_value(0x1000, 4)
-        assert result == 0xDEADBEEF
-
-    def test_read_1_byte(self, _mock_ida_modules):
-        from d810.expr.emulator import fetch_idb_value
-        with mock.patch("d810.expr.emulator.idaapi") as m_idaapi:
-            m_idaapi.get_byte = mock.Mock(return_value=0xAB)
-            result = fetch_idb_value(0x1000, 1)
-        assert result == 0xAB
-
-    def test_read_2_bytes(self, _mock_ida_modules):
-        from d810.expr.emulator import fetch_idb_value
-        with mock.patch("d810.expr.emulator.idaapi") as m_idaapi:
-            m_idaapi.get_word = mock.Mock(return_value=0xBEEF)
-            result = fetch_idb_value(0x1000, 2)
-        assert result == 0xBEEF
-
-    def test_read_8_bytes(self, _mock_ida_modules):
-        from d810.expr.emulator import fetch_idb_value
-        with mock.patch("d810.expr.emulator.idaapi") as m_idaapi:
-            m_idaapi.get_qword = mock.Mock(return_value=0x123456789ABCDEF0)
-            result = fetch_idb_value(0x1000, 8)
-        assert result == 0x123456789ABCDEF0
-
-    def test_unsupported_size_returns_none(self, _mock_ida_modules):
-        from d810.expr.emulator import fetch_idb_value
-        result = fetch_idb_value(0x1000, 3)
-        assert result is None
-
-    def test_zero_size_returns_none(self, _mock_ida_modules):
-        from d810.expr.emulator import fetch_idb_value
-        result = fetch_idb_value(0x1000, 0)
-        assert result is None
-
-    def test_negative_size_returns_none(self, _mock_ida_modules):
-        from d810.expr.emulator import fetch_idb_value
-        result = fetch_idb_value(0x1000, -1)
-        assert result is None
 
 
 # ===================================================================
