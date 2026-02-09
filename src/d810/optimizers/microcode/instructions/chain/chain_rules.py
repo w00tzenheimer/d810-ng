@@ -347,6 +347,10 @@ class ArithmeticChainSimplification(object):
         return final_add_list, final_sub_list, final_add_cst_mop
 
     def check_bnot_mop(self, add_non_cst_mop_list, sub_non_cst_mop_list):
+        if len(add_non_cst_mop_list) == 0 and len(sub_non_cst_mop_list) == 0:
+            zero = ida_hexrays.mop_t()
+            zero.make_number(0, 1)
+            return add_non_cst_mop_list, sub_non_cst_mop_list, zero
         add_index_removed = []
         sub_index_removed = []
         cst_value = 0

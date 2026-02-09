@@ -102,7 +102,7 @@ else:
 
     class _DummyBase(abc.ABC):  # type: ignore[no-redef]
         USES_DEFERRED_CFG = True
-        SAFE_MATURITIES: list[int] | None = None
+        SAFE_MATURITIES: list[int] = []
 
         def __init__(self) -> None:
             self.maturities: list[int] = []
@@ -135,7 +135,7 @@ class IndirectBranchResolver(_BASE_CLASS):
     NAME = "indirect_branch_resolver"
     DESCRIPTION = "Resolves obfuscated indirect jumps by analysing encoded jump tables"
     USES_DEFERRED_CFG = True  # Uses DeferredGraphModifier for CFG changes
-    SAFE_MATURITIES = None  # Safe at any maturity via deferred modification
+    SAFE_MATURITIES: list[int] = []  # Populated after class definition when IDA is available
 
     def __init__(self) -> None:
         super().__init__()
@@ -461,3 +461,8 @@ class IndirectBranchResolver(_BASE_CLASS):
         )
 
     # TODO(phase5): Add frameless continuation fallback (see stack_tracker.cpp)
+
+
+# Populate SAFE_MATURITIES now that the class is defined and ida_hexrays is in scope.
+if _IDA_AVAILABLE:
+    IndirectBranchResolver.SAFE_MATURITIES = [ida_hexrays.MMAT_LOCOPT]

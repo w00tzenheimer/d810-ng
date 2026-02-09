@@ -50,7 +50,7 @@ BLOCK_MERGE_CASES = [
             "OLLVM FLA+BCF+SUB function produces many small blocks after "
             "unflattening.  BlockMerger should fire to clean up goto chains."
         ),
-        project="default.json",
+        project="default_unflattening_ollvm.json",
         must_change=True,
         check_stats=True,
         expected_rules=["BlockMerger"],
@@ -62,7 +62,7 @@ BLOCK_MERGE_CASES = [
             "Tigress-flattened function.  After unflattening, redundant "
             "goto blocks should be merged by BlockMerger."
         ),
-        project="default.json",
+        project="default_unflattening_ollvm.json",
         must_change=True,
         check_stats=True,
         expected_rules=["BlockMerger"],

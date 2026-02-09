@@ -107,7 +107,7 @@ else:
 
     class _DummyBase(abc.ABC):  # type: ignore[no-redef]
         USES_DEFERRED_CFG = True
-        SAFE_MATURITIES: list[int] | None = None
+        SAFE_MATURITIES: list[int] = []
 
         def __init__(self) -> None:
             self.maturities: list[int] = []
@@ -143,7 +143,7 @@ class IndirectCallResolver(_BASE_CLASS):
     # operands) -- it never adds/removes CFG edges or blocks.  Therefore it
     # is safe at any maturity and does not need DeferredGraphModifier.
     USES_DEFERRED_CFG = True
-    SAFE_MATURITIES = None  # Safe at any maturity (no CFG edge modifications)
+    SAFE_MATURITIES: list[int] = []  # Populated after class definition when IDA is available
 
     # Config
     MAX_TABLE_ENTRIES = MAX_TABLE_ENTRIES
@@ -763,3 +763,11 @@ class IndirectCallResolver(_BASE_CLASS):
     # TODO(phase6): frameless continuation fallback
     # TODO(phase6): x86-64 binary pattern scanner (scan_binary_for_pattern)
     # TODO(phase6): pre-computed XOR index brute force
+
+
+# Populate SAFE_MATURITIES now that the class is defined and ida_hexrays is in scope.
+if _IDA_AVAILABLE:
+    IndirectCallResolver.SAFE_MATURITIES = [
+        ida_hexrays.MMAT_CALLS,
+        ida_hexrays.MMAT_GLBOPT1,
+    ]
