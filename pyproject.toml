@@ -3,7 +3,7 @@ requires = ["setuptools>=77.0.1", "wheel", "Cython>=3.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "d810"
+name = "d810-ng"
 requires-python = ">= 3.10"
 dynamic = ["version"]
 authors = [
