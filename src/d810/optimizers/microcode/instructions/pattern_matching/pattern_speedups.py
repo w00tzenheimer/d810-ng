@@ -368,12 +368,13 @@ def _check_binding_equalities(bindings: MatchBindings) -> bool:
     for binding in bindings.bindings:
         if binding.name in seen:
             prev_mop = seen[binding.name]
-            # Use equal_mops_ignore_size if available
+            # Use equal_mops_ignore_size if available for proper mop
+            # comparison that ignores size differences.
             try:
                 from d810.hexrays.hexrays_helpers import equal_mops_ignore_size
                 if not equal_mops_ignore_size(prev_mop, binding.mop):
                     return False
-            except ImportError:
+            except (ImportError, ModuleNotFoundError):
                 # Fallback: identity check
                 if prev_mop is not binding.mop:
                     return False
