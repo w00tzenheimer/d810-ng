@@ -455,10 +455,14 @@ DISPATCHER_PATTERN_CASES = [
     ),
     DeobfuscationCase(
         function="mixed_dispatcher_pattern",
-        description="Combination of multiple dispatcher strategies",
+        description="Mixed CFF pattern: while(1) dispatcher with large state constants, "
+                    "conditional branch, and loop-back. Deobfuscates to do-while loop "
+                    "with if/else and arithmetic chain.",
         project="example_libobfuscated.json",
+        obfuscated_contains=["0xABCD1234", "while"],
+        deobfuscated_not_contains=["0xABCD1234", "0x12345678", "0x9ABCDEF0"],
+        deobfuscated_contains=["0xDEAD"],
         must_change=True,
-        skip="Causes timeout/infinite loop - needs investigation",
     ),
     DeobfuscationCase(
         function="predecessor_uniformity_pattern",
