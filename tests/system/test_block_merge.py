@@ -130,7 +130,8 @@ class TestBlockMergerAttributes:
     @pytest.mark.ida_required
     def test_name(self, libobfuscated_setup):
         from d810.optimizers.microcode.flow.block_merge import BlockMerger
-        assert BlockMerger.NAME == "block_merger"
+        # NAME is not overridden; .name property returns __class__.__name__
+        assert BlockMerger().name == "BlockMerger"
 
     @pytest.mark.ida_required
     def test_description_mentions_merge_or_split(self, libobfuscated_setup):

@@ -46,7 +46,6 @@ class BlockMerger(FlowOptimizationRule):
     listed maturities.
     """
 
-    NAME = "block_merger"
     DESCRIPTION = (
         "Merges artificially split basic blocks by removing "
         "redundant goto instructions"

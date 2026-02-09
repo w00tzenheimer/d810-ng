@@ -2,6 +2,13 @@
     "description": "Default configuration of D-810 with only instruction level optimization",
     "ins_rules": [
         {
+            "name": "FoldReadonlyDataRule",
+            "is_activated": true,
+            "config": {
+                "fold_writable_constants": true
+            }
+        },
+        {
             "name": "AddXor_Rule_1",
             "is_activated": true,
             "config": {}
