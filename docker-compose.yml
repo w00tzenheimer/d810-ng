@@ -13,7 +13,6 @@ services:
             - LD_LIBRARY_PATH=/app/ida
             - PYTHONPATH=/app/ida/python:/work
             - PYTHONWARNINGS=ignore
-            - D810_BUILD_SPEEDUPS=1
         volumes:
             - ./src/:/root/.idapro/plugins:ro # the plugin
             - ./:/work # the test suite to operate on
@@ -32,7 +31,6 @@ services:
             - LD_LIBRARY_PATH=/app/ida
             - PYTHONPATH=/app/ida/python:/work
             - PYTHONWARNINGS=ignore
-            - D810_BUILD_SPEEDUPS=1
         volumes:
             - ./src/:/root/.idapro/plugins:ro # the plugin
             - ./:/work # the test suite to operate on
