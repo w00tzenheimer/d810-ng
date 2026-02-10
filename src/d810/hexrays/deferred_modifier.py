@@ -200,6 +200,8 @@ from d810.hexrays.cfg_utils import (
     change_2way_block_conditional_successor,
     create_block,
     create_standalone_block,
+    duplicate_block,
+    insert_nop_blk,
     make_2way_block_goto,
     mba_deep_cleaning,
     safe_verify,
@@ -266,6 +268,7 @@ class ModificationType(Enum):
     INSN_REMOVE = auto()              # Remove a specific instruction
     INSN_NOP = auto()                 # NOP a specific instruction
     BLOCK_CREATE_WITH_REDIRECT = auto()  # Create intermediate block and redirect
+    BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT = auto()  # Create conditional 2-way block with redirect
 
 
 @dataclass
@@ -289,6 +292,10 @@ class GraphModification:
     is_0_way: bool = False
     # Rule priority for conflict resolution (higher = wins conflicts)
     rule_priority: int = 0
+    # For BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: conditional jump target
+    conditional_target: int | None = None
+    # For BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: fallthrough target
+    fallthrough_target: int | None = None
 
 
 @dataclass
@@ -477,6 +484,53 @@ class DeferredGraphModifier:
         logger.debug(
             "Queued create_and_redirect: %d -> (new) -> %d with %d instructions",
             source_block_serial, final_target_serial, len(instructions_to_copy)
+        )
+
+    def queue_create_conditional_redirect(
+        self,
+        source_blk_serial: int,
+        ref_blk_serial: int,
+        conditional_target_serial: int,
+        fallthrough_target_serial: int,
+        description: str = "",
+    ) -> None:
+        """
+        Queue creation of a conditional 2-way block with two wired successors.
+
+        This creates a new conditional block by duplicating the reference block,
+        then wires it with:
+        - Conditional jump target (jcc taken)
+        - Fallthrough target (via NOP-goto block for physical adjacency)
+
+        Uses the proven pattern from fix_pred_cond_jump_block.py:
+        1. Duplicate the conditional block (preserving tail instruction)
+        2. Create a NOP-goto block as fallthrough (IDA requires physical adjacency)
+        3. Wire conditional target directly
+        4. Redirect source block to the new conditional block
+
+        Args:
+            source_blk_serial: Block whose successor will be changed to new block
+            ref_blk_serial: Block to copy instructions from (should be conditional)
+            conditional_target_serial: Target for jcc taken branch
+            fallthrough_target_serial: Target for fallthrough (via NOP-goto)
+            description: Optional description for logging
+        """
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT,
+            block_serial=source_blk_serial,
+            new_target=ref_blk_serial,  # Reference block to copy from
+            conditional_target=conditional_target_serial,
+            fallthrough_target=fallthrough_target_serial,
+            priority=5,  # Very high priority - create blocks before other changes
+            description=description or (
+                f"create conditional block after {source_blk_serial} "
+                f"-> jcc:{conditional_target_serial} / fallthrough:{fallthrough_target_serial}"
+            ),
+        ))
+        logger.debug(
+            "Queued create_conditional_redirect: %d -> (new conditional) "
+            "-> jcc:%d / fallthrough:%d",
+            source_blk_serial, conditional_target_serial, fallthrough_target_serial
         )
 
     def has_modifications(self) -> bool:
@@ -710,6 +764,11 @@ class DeferredGraphModifier:
                 blk, mod.final_target, mod.instructions_to_copy, mod.is_0_way
             )
 
+        elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT:
+            return self._apply_create_conditional_redirect(
+                blk, mod.new_target, mod.conditional_target, mod.fallthrough_target
+            )
+
         else:
             logger.warning("Unknown modification type: %s", mod.mod_type)
             return False
@@ -853,6 +912,134 @@ class DeferredGraphModifier:
                 "Exception in create_and_redirect for block %d: %s",
                 source_blk.serial, e
             )
+            return False
+
+    def _apply_create_conditional_redirect(
+        self,
+        source_blk: ida_hexrays.mblock_t,
+        ref_blk_serial: int,
+        conditional_target_serial: int,
+        fallthrough_target_serial: int,
+    ) -> bool:
+        """
+        Create a conditional 2-way block with two wired successors.
+
+        Uses the proven pattern from fix_pred_cond_jump_block.py:
+        1. Duplicate the reference conditional block (preserving tail instruction)
+        2. Create a NOP-goto block as the fallthrough successor (IDA requires
+           physical adjacency for BLT_2WAY fallthrough)
+        3. Wire the conditional target directly
+        4. Redirect source block to the new conditional block
+
+        Creates:
+            source_blk -> new_conditional_blk -> conditional_target (jcc taken)
+                                                -> nop_blk -> fallthrough_target
+
+        Args:
+            source_blk: Block whose successor will be changed to the new block
+            ref_blk_serial: Reference block to duplicate (should be conditional)
+            conditional_target_serial: Target for conditional jump (jcc taken)
+            fallthrough_target_serial: Target for fallthrough (via NOP-goto)
+
+        Returns:
+            True on success, False on failure
+        """
+        mba = self.mba
+
+        # Get reference block to duplicate
+        ref_blk = mba.get_mblock(ref_blk_serial)
+        if ref_blk is None:
+            logger.warning(
+                "Reference block %d not found for conditional redirect",
+                ref_blk_serial
+            )
+            return False
+
+        # Verify reference block is conditional
+        if ref_blk.tail is None or not ida_hexrays.is_mcode_jcond(ref_blk.tail.opcode):
+            logger.warning(
+                "Reference block %d is not conditional (opcode=%s)",
+                ref_blk_serial,
+                ref_blk.tail.opcode if ref_blk.tail else "none"
+            )
+            return False
+
+        try:
+            # Step 1: Duplicate the conditional block
+            # This creates a copy with the same instructions including the
+            # conditional tail instruction.
+            # For conditional blocks, duplicate_block also creates a NOP
+            # fallthrough block automatically (nop_blk).
+            new_cond_blk, nop_blk = duplicate_block(ref_blk, verify=False)
+
+            if nop_blk is None:
+                logger.warning(
+                    "duplicate_block did not create NOP fallthrough for block %d",
+                    new_cond_blk.serial
+                )
+                return False
+
+            logger.debug(
+                "Duplicated conditional block %d -> %d (with NOP fallthrough %d)",
+                ref_blk_serial, new_cond_blk.serial, nop_blk.serial
+            )
+
+            # Step 2: Wire the conditional target (jcc taken branch)
+            # Change the conditional jump's target operand to point to the
+            # desired conditional_target_serial
+            if not change_2way_block_conditional_successor(
+                new_cond_blk, conditional_target_serial, verify=False
+            ):
+                logger.warning(
+                    "Failed to wire conditional target %d -> %d",
+                    new_cond_blk.serial, conditional_target_serial
+                )
+                return False
+
+            logger.debug(
+                "Wired conditional target: %d -> %d (jcc taken)",
+                new_cond_blk.serial, conditional_target_serial
+            )
+
+            # Step 3: Wire the NOP-goto block to the fallthrough target
+            # The NOP block was already created by duplicate_block and is
+            # adjacent to new_cond_blk (satisfies BLT_2WAY fallthrough requirement).
+            # Now we just redirect its goto to the actual fallthrough_target_serial.
+            if not change_1way_block_successor(nop_blk, fallthrough_target_serial, verify=False):
+                logger.warning(
+                    "Failed to wire NOP fallthrough %d -> %d",
+                    nop_blk.serial, fallthrough_target_serial
+                )
+                return False
+
+            logger.debug(
+                "Wired NOP fallthrough: %d -> %d",
+                nop_blk.serial, fallthrough_target_serial
+            )
+
+            # Step 4: Redirect source block to the new conditional block
+            if not change_1way_block_successor(source_blk, new_cond_blk.serial, verify=False):
+                logger.warning(
+                    "Failed to redirect source %d -> new conditional %d",
+                    source_blk.serial, new_cond_blk.serial
+                )
+                return False
+
+            logger.debug(
+                "Created conditional redirect: %d -> %d (cond) -> jcc:%d / ft:%d (via NOP %d)",
+                source_blk.serial, new_cond_blk.serial,
+                conditional_target_serial, fallthrough_target_serial, nop_blk.serial
+            )
+
+            return True
+
+        except Exception as e:
+            logger.error(
+                "Exception in create_conditional_redirect for block %d: %s",
+                source_blk.serial, e
+            )
+            import traceback
+            logger.error("Traceback: %s", traceback.format_exc())
             return False
 
 
