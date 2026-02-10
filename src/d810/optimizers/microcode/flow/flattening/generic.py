@@ -69,6 +69,13 @@ from d810.optimizers.microcode.flow.flattening.abc_block_splitter import (
     ABCBlockSplitter,
     ConditionalStateResolver,
 )
+from d810.optimizers.microcode.flow.flattening.conditional_exit import (
+    classify_exit_block,
+    ExitBlockType,
+    get_loopback_successor,
+    get_exit_successor,
+    resolve_loopback_target,
+)
 from d810.optimizers.microcode.flow.flattening.loop_prover import (
     SingleIterationLoopTracker,
     prove_single_iteration,
@@ -1372,6 +1379,59 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 for ins in disp_ins
                 if ((ins is not None) and (ins.opcode not in CONTROL_FLOW_OPCODES))
             ]
+
+            # Check if this is a conditional exit block that needs special handling
+            dispatcher_blk_serials_set = {
+                blk_info.serial for blk_info in dispatcher_info.dispatcher_internal_blocks
+            }
+            exit_type = classify_exit_block(dispatcher_father, dispatcher_blk_serials_set)
+
+            # Handle conditional exit blocks (one path loops back, one exits)
+            if exit_type == ExitBlockType.CONDITIONAL_EXIT_WITH_LOOPBACK and deferred_modifier is not None:
+                loopback_serial = get_loopback_successor(dispatcher_father, dispatcher_blk_serials_set)
+                exit_serial = get_exit_successor(dispatcher_father, dispatcher_blk_serials_set)
+
+                if loopback_serial is not None and exit_serial is not None:
+                    # Try to resolve where the loopback path actually leads
+                    loopback_result = resolve_loopback_target(
+                        dispatcher_father,
+                        loopback_serial,
+                        dispatcher_info,
+                        dispatcher_info.mop_compared
+                    )
+
+                    if loopback_result is not None:
+                        resolved_target, state_value = loopback_result
+
+                        # Successfully resolved both paths - use conditional redirect
+                        unflat_logger.info(
+                            "Detected conditional exit block %d: loopback->blk%d (state=0x%x), exit->blk%d",
+                            dispatcher_father.serial,
+                            resolved_target,
+                            state_value,
+                            exit_serial
+                        )
+
+                        deferred_modifier.queue_create_conditional_redirect(
+                            source_blk_serial=dispatcher_father.serial,
+                            ref_blk_serial=dispatcher_father.serial,
+                            conditional_target_serial=resolved_target,
+                            fallthrough_target_serial=exit_serial,
+                            description=f"Conditional exit: loopback->blk{resolved_target} (state=0x{state_value:x}), exit->blk{exit_serial}"
+                        )
+
+                        # Skip the normal 1-way redirect logic below
+                        return 2
+                    else:
+                        unflat_logger.debug(
+                            "Conditional exit block %d: could not resolve loopback target, falling back to 1-way redirect",
+                            dispatcher_father.serial
+                        )
+                else:
+                    unflat_logger.debug(
+                        "Conditional exit block %d: missing loopback or exit successor, falling back to 1-way redirect",
+                        dispatcher_father.serial
+                    )
 
             if deferred_modifier is not None:
                 # Use deferred CFG modifications

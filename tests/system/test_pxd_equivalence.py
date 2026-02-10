@@ -11,6 +11,7 @@ import idapro
 import ida_hexrays
 
 
+@pytest.mark.xfail(reason="segfault in idapro.open_database - tracked in d81-kpem", run=False)
 def test_mop_t_field_equivalence():
     """Test that mop_t fields are accessible and match expected layout."""
     # Open a test binary
@@ -112,6 +113,7 @@ def test_mop_t_field_equivalence():
     print("\n✅ All mop_t and minsn_t fields accessible!")
 
 
+@pytest.mark.xfail(reason="segfault in idapro.open_database - tracked in d81-kpem", run=False)
 def test_minsn_methods():
     """Test that minsn_t methods work correctly."""
     idapro.open_database(
