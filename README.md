@@ -16,6 +16,17 @@ It was designed with the following goals in mind:
   * Our goal is to be transparent for the reverse engineer
   * But we don't care if the decompilation of a function takes 1 more second if the resulting code is much simpler.
 
+## D-810? What's that?
+
+The name **D-810** is a wordplay on "deobfuscation", as illustrated by the mapping below:
+
+```text
+D E O B F U S C A T I O N
+▲ ▲             ▲ ▲     ▲
+│ │             │ │     │
+D └───── 8 ─────┘ └─10──┘
+```
+
 ## Installation
 
 **Only IDA v9 or later is supported with Python 3.10 and higher** (since we need the microcode Python API)
@@ -40,15 +51,21 @@ This installs the package in development mode so that changes to the source are 
 
 ## Using D-810 ng
 
-* Load the plugin by using the `Ctrl-Shift-D` shortcut, you should see this configuration GUI
+Load the plugin by using the `Ctrl-Shift-D` shortcut, you should see this configuration GUI
 
 !["Configuration Gui"](./docs/source/images/gui_plugin_configuration.png "Configuration GUI")
+
+Click on a rule to see more information about it:
+
+!["Rule View Gui"](./docs/source/images/gui_plugin_configuration_v2.png "Rule View")
 
 * Choose or create your project configuration
   * If you are not sure what to do here, leave *default_instruction_only.json*.
 * Click on the `Start` button to enable deobfuscation
 * Decompile an obfuscated function, the code should be simplified (hopefully)
-* When you want to disable deobfuscation, just click on the `Stop` button.
+* When you want to disable deobfuscation, just click on the `Stop` button or use the context menus:
+  * !["Disassembly context menu"](./docs/source/images/disasmview_context_menu.png "Disassembly context menu")
+  * !["Pseudocode context menu"](./docs/source/images/pseudocode_context_menu.png "Pseudocode context menu")
 
 ### Test Runner
 
@@ -137,8 +154,8 @@ D-810 ng has a comprehensive test suite that runs inside IDA Pro's headless mode
 
 ### Prerequisites
 
-- Docker and Docker Compose
-- Access to the `ghcr.io/w00tzenheimer/idapro-linux` container images
+* Docker and Docker Compose
+* Access to the `ghcr.io/w00tzenheimer/idapro-linux` container images
 
 ### Quick Start
 

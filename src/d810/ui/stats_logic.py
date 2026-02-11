@@ -13,14 +13,14 @@ if TYPE_CHECKING:
     from d810.core.persistence import FunctionRuleConfig
 
 
-def get_fired_rule_names(stats: dict) -> list[str]:
+def get_fired_rule_names(stats: dict | None) -> list[str]:
     """Extract the names of all rules that fired from the stats dict.
 
     Collects from optimizer_matches, rule_matches, and cfg_patches keys.
     Returns sorted list of unique rule names.
 
     Args:
-        stats: Statistics dict from get_deobfuscation_stats()
+        stats: Statistics dict from get_deobfuscation_stats(), or None
 
     Returns:
         Sorted list of unique rule names that have non-zero counts
