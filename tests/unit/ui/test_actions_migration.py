@@ -5,10 +5,6 @@ and registered in the D810ActionHandler registry.
 """
 from __future__ import annotations
 
-import typing
-
-import pytest
-
 from d810.ui.actions import D810ActionHandler
 
 

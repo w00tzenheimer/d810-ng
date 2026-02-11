@@ -38,13 +38,11 @@ except ImportError:
 # ---------------------------------------------------------------------------
 try:
     from d810.qt_shim import (
-        QtCore,
         QtWidgets,
         QDialog,
         QVBoxLayout,
         QHBoxLayout,
         QLabel,
-        QComboBox,
         QCheckBox,
         QPushButton,
         QLineEdit,

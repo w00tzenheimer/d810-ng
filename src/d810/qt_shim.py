@@ -206,7 +206,12 @@ if not _QT_AVAILABLE:
         class QButtonGroup(QtCore.QObject): ...
 
         class QLayout(QtCore.QObject):
-            def addWidget(self, widget: Any, stretch: int = ...) -> None: ...
+            def addWidget(
+                self,
+                widget: Any,
+                stretch: int = ...,
+                alignment: Any = ...,
+            ) -> None: ...
             def setContentsMargins(
                 self, left: int, top: int, right: int, bottom: int
             ) -> None: ...
@@ -303,7 +308,7 @@ if not _QT_AVAILABLE:
 
         class QMenu(QWidget):
             def __init__(self, parent: Any = ...) -> None: ...
-            def addAction(self, text: str) -> Any: ...
+            def addAction(self, *args: Any, **kwargs: Any) -> Any: ...
             def addSeparator(self) -> Any: ...
             def exec_(self, pos: Any) -> Any: ...
 
@@ -669,6 +674,8 @@ def _setup_compatibility() -> None:
         QMessageBox.exec_ = QMessageBox.exec  # type: ignore[method-assign]
     if not hasattr(QMenu, "exec_"):
         QMenu.exec_ = QMenu.exec  # type: ignore[method-assign]
+    if not hasattr(QDialog, "exec_"):
+        QDialog.exec_ = QDialog.exec  # type: ignore[method-assign]
 
     # PySide6 uses Signal/Slot, but PyQt5 uses pyqtSignal/pyqtSlot
     # Create aliases for backward compatibility

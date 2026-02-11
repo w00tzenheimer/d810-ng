@@ -478,11 +478,6 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
         """Build right-click context menu (stub for future expansion)."""
         pass
 
-    def __del__(self):
-        """Safety net for garbage collection."""
-        self._closed = True
-
-
 # Stub classes when IDA is not available (for unit test imports)
 if not IDA_AVAILABLE:
 

@@ -33,6 +33,7 @@ def _is_dark_theme() -> bool:
             # Luminance formula: dark if < 128
             return (bg.red() * 299 + bg.green() * 587 + bg.blue() * 114) / 1000 < 128
     except Exception:
+        # Theme probing is best-effort; fall back to dark palette defaults.
         pass
     return True  # Default to dark (IDA Pro 9 default)
 

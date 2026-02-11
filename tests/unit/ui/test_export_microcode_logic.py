@@ -4,8 +4,6 @@ These tests verify the pure Python logic without requiring IDA Pro.
 """
 from __future__ import annotations
 
-import pytest
-
 from d810.ui.actions.export_microcode_logic import (
     MATURITY_CHOICES,
     MicrocodeExportSettings,

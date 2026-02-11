@@ -7,8 +7,6 @@ from __future__ import annotations
 import typing
 from unittest.mock import MagicMock
 
-import pytest
-
 from d810.ui.actions import D810ActionHandler
 
 

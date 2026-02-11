@@ -73,6 +73,8 @@ class TestD810ActionHandlerRegistry:
         assert len(D810ActionHandler.registry) == initial_count + 2
         assert "action1" in D810ActionHandler.registry
         assert "action2" in D810ActionHandler.registry
+        assert D810ActionHandler.registry["action1"] is Action1
+        assert D810ActionHandler.registry["action2"] is Action2
 
 
 class TestD810ActionHandlerAttributes:
@@ -223,7 +225,7 @@ class TestD810ActionHandlerExecution:
 
         # Should raise TypeError because execute is abstract
         with pytest.raises(TypeError, match="abstract method.*execute"):
-            _action = MyAction(mock_state)  # Intentionally unused - just testing it raises
+            MyAction(mock_state)
 
     def test_execute_returns_int(self):
         """Execute should return int (1 for success, 0 for failure)."""

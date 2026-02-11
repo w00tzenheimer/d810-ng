@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import typing
 
-from d810.qt_shim import QtCore, QtGui, QtWidgets, qt_flag_or, QColor, QBrush
+from d810.qt_shim import QtCore, QtWidgets, qt_flag_or, QColor, QBrush
 
 if typing.TYPE_CHECKING:
     from d810.optimizers.microcode.handler import OptimizationRule

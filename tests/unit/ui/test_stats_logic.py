@@ -1,9 +1,6 @@
 """Tests for stats_logic module (pure Python, no IDA dependencies)."""
 from __future__ import annotations
 
-import pytest
-
-from d810.core.persistence import FunctionRuleConfig
 from d810.ui.stats_logic import (
     get_fired_rule_names,
     save_fired_rules_for_function,

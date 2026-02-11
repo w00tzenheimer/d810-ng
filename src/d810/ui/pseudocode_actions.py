@@ -50,6 +50,20 @@ DISASM_ACTIONS: list[typing.Any] = [
     DecompileFunction,
 ]
 
+__all__ = [
+    "DecompileFunction",
+    "DeobfuscateThisFunction",
+    "DeobfuscationStats",
+    "FunctionRules",
+    "MarkDeobfuscated",
+    "check_plugin_state",
+    "format_stats_for_display",
+    "get_deobfuscation_stats",
+    "ALL_ACTIONS",
+    "DISASM_ACTIONS",
+    "_D810Action",
+]
+
 # Legacy _D810Action class (for compatibility)
 # This is now just a stub, as all actions inherit from D810ActionHandler
 if typing.TYPE_CHECKING:

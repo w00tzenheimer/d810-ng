@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from d810.ui.actions_logic import (
     check_plugin_state,
     format_stats_for_display,
