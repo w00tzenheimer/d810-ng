@@ -13,6 +13,8 @@ optimizer_logger = getLogger("D810.optimizer")
 
 
 class InstructionAnalysisRule(InstructionOptimizationRule):
+    CATEGORY = "Analysis"
+
     @abc.abstractmethod
     def analyze_instruction(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t):
         """Analyze the instruction and return a replacement instruction if the rule matches, otherwise None."""

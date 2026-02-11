@@ -1,26 +1,25 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import json
 import logging
-import os
 import pathlib
 import typing
 
 import ida_kernwin
 import idaapi
 
-from d810.qt_shim import QtCore, QtWidgets, qt_flag_or
+from d810.qt_shim import QFrame, QGroupBox, QMenu, QToolButton, QtCore, QtGui, QtWidgets
 
 if typing.TYPE_CHECKING:
     from d810.manager import D810State
 
 from d810.core.config import ProjectConfiguration, RuleConfiguration
 from d810.core.logging import LoggerConfigurator, getLogger
+from d810.ui.rule_detail import RuleDetailPanel
+from d810.ui.rule_tree import RuleTreeWidget
 from d810.ui.testbed import TestRunnerForm
 
 logger = getLogger("D810.ui")
-cast = typing.cast
 
 
 class LoggingConfigDialog(QtWidgets.QDialog):
@@ -47,26 +46,65 @@ class LoggingConfigDialog(QtWidgets.QDialog):
         "CRITICAL",
     ]
 
+    # Color map for level visualization
+    LEVEL_COLORS: typing.Final[dict[str, str]] = {
+        "DEBUG": "#64B5F6",    # blue
+        "INFO": "",             # default
+        "WARNING": "#FFA726",   # orange
+        "ERROR": "#EF5350",     # red
+        "CRITICAL": "#EF5350",  # red
+    }
+
     def __init__(self, module_prefix: str, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle(f"Logging for {module_prefix}…")
-        self.resize(500, 400)
+        self.setMinimumSize(700, 500)
+        self.resize(800, 500)
 
         self.module_prefix = module_prefix
         self._logger_mgr = LoggerConfigurator
 
         # UI setup ---------------------------------------------------------
         vbox = QtWidgets.QVBoxLayout(self)
+        vbox.setContentsMargins(8, 8, 8, 8)
+        vbox.setSpacing(6)
 
-        self.tree = QtWidgets.QTreeWidget()
-        self.tree.setColumnCount(2)
-        self.tree.setHeaderLabels(["Logger", "Level"])
-        self.tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
-        self.tree.header().setSectionResizeMode(
-            1, QtWidgets.QHeaderView.ResizeToContents
-        )
-        vbox.addWidget(self.tree)
+        # Top row: Filter bar + Set All button
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setSpacing(6)
 
+        self._filter_edit = QtWidgets.QLineEdit()
+        self._filter_edit.setPlaceholderText("Filter loggers...")
+        self._filter_edit.setClearButtonEnabled(True)
+        self._filter_edit.textChanged.connect(self._apply_filter)
+        top_row.addWidget(self._filter_edit, stretch=1)
+
+        self._set_all_btn = QtWidgets.QPushButton("Set All ▼")
+        self._set_all_btn.setToolTip("Set all visible loggers to the same level")
+        self._set_all_menu = QMenu(self._set_all_btn)
+        for level_name in self.LOG_LEVELS:
+            action = self._set_all_menu.addAction(level_name)
+            action.triggered.connect(lambda checked=False, lvl=level_name: self._set_all_levels(lvl))
+        self._set_all_btn.setMenu(self._set_all_menu)
+        top_row.addWidget(self._set_all_btn)
+
+        vbox.addLayout(top_row)
+
+        # Tree widget
+        self._tree = QtWidgets.QTreeWidget()
+        self._tree.setColumnCount(2)
+        self._tree.setHeaderLabels(["Logger", "Level"])
+
+        # Configure column resize modes for better proportions
+        header = self._tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
+        self._tree.setColumnWidth(1, 120)  # Fixed 120px for Level column
+
+        vbox.addWidget(self._tree)
+
+        # Button box
         btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
         btn_box.rejected.connect(self.reject)
         vbox.addWidget(btn_box, alignment=QtCore.Qt.AlignRight)
@@ -77,41 +115,163 @@ class LoggingConfigDialog(QtWidgets.QDialog):
     # Internal helpers
     # ---------------------------------------------------------------------
     def _populate(self) -> None:
-        """Fill the tree with one row per logger under *module_prefix*."""
-        self.tree.clear()
-        for name in self._logger_mgr.available_loggers(
-            self.module_prefix, case_insensitive=True
-        ):
+        """Build hierarchical tree from logger names under *module_prefix*."""
+        self._tree.clear()
+
+        # Collect all logger names and their current levels
+        logger_names = sorted(
+            self._logger_mgr.available_loggers(
+                self.module_prefix, case_insensitive=True
+            )
+        )
+
+        loggers: list[tuple[str, str]] = []
+        for name in logger_names:
             lvl_num = getLogger(name).getEffectiveLevel()
             lvl_name = logging.getLevelName(lvl_num)
+            loggers.append((name, lvl_name))
 
-            item = QtWidgets.QTreeWidgetItem([name, ""])
-            self.tree.addTopLevelItem(item)
+        # Build the hierarchical tree
+        self._build_tree(loggers)
 
-            combo = QtWidgets.QComboBox(self.tree)
+        # Expand first 2 levels by default
+        self._tree.expandToDepth(2)
+
+    def _build_tree(self, loggers: list[tuple[str, str]]) -> None:
+        """Build hierarchical tree from logger names.
+
+        Args:
+            loggers: List of (full_logger_name, current_level) tuples
+        """
+        # Track nodes by path for hierarchy building
+        nodes: dict[str, QtWidgets.QTreeWidgetItem] = {}
+        # Track which paths are actual loggers (vs just intermediate nodes)
+        logger_paths: dict[str, str] = {}
+
+        for full_name, level in loggers:
+            # Strip d810. prefix for display
+            display_name = full_name
+            for prefix in ["d810.", "D810."]:
+                if display_name.startswith(prefix):
+                    display_name = display_name[len(prefix):]
+                    break
+
+            parts = display_name.split(".")
+
+            # Build/find parent nodes
+            for i in range(len(parts)):
+                path = ".".join(parts[:i+1])
+                if path not in nodes:
+                    parent_path = ".".join(parts[:i]) if i > 0 else None
+                    parent = nodes[parent_path] if parent_path else None
+
+                    item = QtWidgets.QTreeWidgetItem()
+                    item.setText(0, parts[i])  # Just this segment
+
+                    if parent:
+                        parent.addChild(item)
+                    else:
+                        self._tree.addTopLevelItem(item)
+
+                    nodes[path] = item
+
+            # Mark this path as an actual logger and store its level
+            logger_paths[display_name] = level
+            leaf_item = nodes[display_name]
+            leaf_item.setToolTip(0, full_name)  # Full name on hover
+
+        # Now add combo boxes to all nodes that are actual loggers
+        # (Some intermediate nodes may also be loggers themselves)
+        for full_name, level in loggers:
+            # Strip d810. prefix for display
+            display_name = full_name
+            for prefix in ["d810.", "D810."]:
+                if display_name.startswith(prefix):
+                    display_name = display_name[len(prefix):]
+                    break
+
+            item = nodes[display_name]
+
+            # Add combo box for level
+            combo = QtWidgets.QComboBox(self._tree)
             combo.addItems(self.LOG_LEVELS)
-            combo.setCurrentText(lvl_name)
+            combo.setCurrentText(level)
+            # Apply color styling
+            self._update_combo_color(combo, level)
             combo.currentTextChanged.connect(
-                lambda new_level, n=name: self._on_level_changed(n, new_level)
+                lambda new_level, name=full_name, cb=combo: self._on_level_changed(name, new_level, cb)
             )
-            self.tree.setItemWidget(item, 1, combo)
+            self._tree.setItemWidget(item, 1, combo)
+
+    def _update_combo_color(self, combo: QtWidgets.QComboBox, level: str) -> None:
+        """Update combo box text color based on log level."""
+        color = self.LEVEL_COLORS.get(level, "")
+        if color:
+            combo.setStyleSheet(f"QComboBox {{ color: {color}; }}")
+        else:
+            combo.setStyleSheet("")
+
+    def _apply_filter(self, text: str) -> None:
+        """Filter tree nodes based on logger name, showing matching nodes and their ancestors."""
+        text = text.lower()
+        if not text:
+            # Show all
+            self._set_all_visible(self._tree.invisibleRootItem(), True)
+            return
+        # Hide all, then show matches and their ancestors
+        self._set_all_visible(self._tree.invisibleRootItem(), False)
+        self._show_matching(self._tree.invisibleRootItem(), text)
+
+    def _set_all_visible(self, parent: QtWidgets.QTreeWidgetItem, visible: bool) -> None:
+        """Recursively set visibility for all items under parent."""
+        for i in range(parent.childCount()):
+            child = parent.child(i)
+            child.setHidden(not visible)
+            self._set_all_visible(child, visible)
+
+    def _show_matching(self, parent: QtWidgets.QTreeWidgetItem, text: str) -> bool:
+        """Recursively show nodes matching filter and their ancestors.
+
+        Returns:
+            True if any descendant matches, False otherwise
+        """
+        any_visible = False
+        for i in range(parent.childCount()):
+            child = parent.child(i)
+            child_matches = text in child.text(0).lower()
+            descendant_matches = self._show_matching(child, text)
+            if child_matches or descendant_matches:
+                child.setHidden(False)
+                any_visible = True
+        return any_visible
+
+    def _set_all_levels(self, level: str) -> None:
+        """Set all visible loggers to the specified level."""
+        self._set_all_levels_recursive(self._tree.invisibleRootItem(), level)
+
+    def _set_all_levels_recursive(self, parent: QtWidgets.QTreeWidgetItem, level: str) -> None:
+        """Recursively set level for all visible items with combo boxes."""
+        for i in range(parent.childCount()):
+            item = parent.child(i)
+            if not item.isHidden():
+                combo = self._tree.itemWidget(item, 1)
+                if isinstance(combo, QtWidgets.QComboBox):
+                    combo.setCurrentText(level)
+                # Recurse to children
+                self._set_all_levels_recursive(item, level)
 
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
-    def _on_level_changed(self, logger_name: str, new_level: str) -> None:
+    def _on_level_changed(self, logger_name: str, new_level: str, combo: QtWidgets.QComboBox) -> None:
         """Slot triggered when the user selects a new level from the drop-down."""
         try:
             self._logger_mgr.set_level(logger_name, new_level)
+            # Update combo color to reflect new level
+            self._update_combo_color(combo, new_level)
         except ValueError as exc:
             QtWidgets.QMessageBox.critical(self, "Error", str(exc))
             return
-
-        QtWidgets.QMessageBox.information(
-            self,
-            "Logging Level Updated",
-            f"{logger_name} → {new_level}",
-        )
 
 
 class PluginConfigurationFileForm_t(QtWidgets.QDialog):
@@ -128,49 +288,66 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
             "dump_intermediate_microcode"
         )
 
-        self.resize(1000, 500)
         self.setWindowTitle("Plugin Configuration")
 
-        # Main layout
+        # Main layout with tight spacing and top alignment
         self.config_layout = QtWidgets.QVBoxLayout(self)
+        self.config_layout.setContentsMargins(12, 12, 12, 12)
+        self.config_layout.setSpacing(8)
+        self.config_layout.setAlignment(QtCore.Qt.AlignTop)
 
+        # Settings group box
+        settings_group = QGroupBox("Settings")
+        settings_layout = QtWidgets.QVBoxLayout()
+        settings_layout.setSpacing(8)
+
+        # Log directory row
         self.layout_log_dir = QtWidgets.QHBoxLayout()
         self.lbl_log_dir_info = QtWidgets.QLabel(self)
-        self.lbl_log_dir_info.setText("Current log directory path: ")
+        self.lbl_log_dir_info.setText("Log directory:")
         self.layout_log_dir.addWidget(self.lbl_log_dir_info)
         self.lbl_log_dir = QtWidgets.QLabel(self)
         self.lbl_log_dir.setText(self.log_dir)
-        self.layout_log_dir.addWidget(self.lbl_log_dir)
+        self.lbl_log_dir.setWordWrap(True)
+        self.layout_log_dir.addWidget(self.lbl_log_dir, 1)
         self.button_change_log_dir = QtWidgets.QPushButton(self)
-        self.button_change_log_dir.setText("Change log directory")
+        self.button_change_log_dir.setText("Change")
         self.button_change_log_dir.clicked.connect(self.choose_log_dir)
         self.layout_log_dir.addWidget(self.button_change_log_dir)
 
-        self.config_layout.addLayout(self.layout_log_dir)
+        settings_layout.addLayout(self.layout_log_dir)
 
+        # Checkboxes
         self.checkbox_generate_z3_code = QtWidgets.QCheckBox(
             "Generate Z3 code for simplification performed", self
         )
         self.checkbox_generate_z3_code.setChecked(
-            self.state.d810_config.get("generate_z3_code")
+            bool(self.state.d810_config.get("generate_z3_code", False))
         )
-        self.config_layout.addWidget(self.checkbox_generate_z3_code)
+        settings_layout.addWidget(self.checkbox_generate_z3_code)
+
         self.checkbox_dump_intermediate_microcode = QtWidgets.QCheckBox(
             "Dump functions microcode at each maturity", self
         )
         self.checkbox_dump_intermediate_microcode.setChecked(
-            self.state.d810_config.get("dump_intermediate_microcode")
+            bool(self.state.d810_config.get("dump_intermediate_microcode", False))
         )
-        self.config_layout.addWidget(self.checkbox_dump_intermediate_microcode)
+        settings_layout.addWidget(self.checkbox_dump_intermediate_microcode)
+
         self.checkbox_erase_logs_on_reload = QtWidgets.QCheckBox(
             "Erase log directory content when plugin is reloaded", self
         )
         self.checkbox_erase_logs_on_reload.setChecked(
-            self.state.d810_config.get("erase_logs_on_reload")
+            bool(self.state.d810_config.get("erase_logs_on_reload", False))
         )
-        self.config_layout.addWidget(self.checkbox_erase_logs_on_reload)
+        settings_layout.addWidget(self.checkbox_erase_logs_on_reload)
 
+        settings_group.setLayout(settings_layout)
+        self.config_layout.addWidget(settings_group)
+
+        # Button row (right-aligned)
         self.layout_button = QtWidgets.QHBoxLayout()
+        self.layout_button.addStretch(1)
         self.button_save = QtWidgets.QPushButton(self)
         self.button_save.setText("Save")
         self.button_save.clicked.connect(self.save_config)
@@ -182,6 +359,10 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         self.config_layout.addLayout(self.layout_button)
 
         self.setLayout(self.config_layout)
+
+        # Resize to fit content
+        self.adjustSize()
+        self.setMinimumWidth(600)
 
     def choose_log_dir(self):
         logger.debug("Calling save_rule_configuration")
@@ -214,315 +395,6 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         self.accept()
 
 
-class EditConfigurationFileForm_t(QtWidgets.QDialog):
-    def __init__(self, parent, state):
-        logger.debug("Initializing EditConfigurationFileForm_t")
-        super().__init__(parent)
-        self.state = state
-        self.resize(1000, 500)
-        self.setWindowTitle("Rule Configuration Editor")
-
-        # Main layout
-        self.config_layout = QtWidgets.QVBoxLayout(self)
-
-        # Configuration Name Selection Layout
-        self.layout_cfg_name = (
-            QtWidgets.QVBoxLayout()
-        )  # Changed to QVBoxLayout to stack vertically
-        self.layout_rule_name = QtWidgets.QHBoxLayout()
-        self.lbl_cfg_name = QtWidgets.QLabel(self)
-        self.lbl_cfg_name.setText("Rule Name")
-        self.layout_rule_name.addWidget(self.lbl_cfg_name)
-        self.in_cfg_name = QtWidgets.QLineEdit(self)
-        self.layout_rule_name.addWidget(self.in_cfg_name)
-        self.layout_cfg_name.addLayout(self.layout_rule_name)
-
-        self.layout_description = QtWidgets.QHBoxLayout()
-        self.lbl_description = QtWidgets.QLabel(self)
-        self.lbl_description.setText("Description")
-        self.layout_description.addWidget(self.lbl_description)
-        self.in_description = QtWidgets.QLineEdit(self)
-        self.layout_description.addWidget(self.in_description)
-        self.layout_cfg_name.addLayout(self.layout_description)
-
-        self.config_layout.addLayout(self.layout_cfg_name)
-
-        # Instructions rule Selection Layout
-        self.table_ins_rule_selection = QtWidgets.QTableWidget(self)
-        # self.table_ins_rule_selection.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.table_ins_rule_selection.setRowCount(2)
-        self.table_ins_rule_selection.setColumnCount(4)
-        item = QtWidgets.QTableWidgetItem()
-        item.setText("Is activated")
-        self.table_ins_rule_selection.setHorizontalHeaderItem(0, item)
-        item = QtWidgets.QTableWidgetItem()
-        item.setText("Rule Name")
-        self.table_ins_rule_selection.setHorizontalHeaderItem(1, item)
-        item = QtWidgets.QTableWidgetItem()
-        item.setText("Rule Description")
-        self.table_ins_rule_selection.setHorizontalHeaderItem(2, item)
-        item = QtWidgets.QTableWidgetItem()
-        item.setText("Rule Configuration")
-        self.table_ins_rule_selection.setHorizontalHeaderItem(3, item)
-        self.table_ins_rule_selection.horizontalHeader().setStretchLastSection(True)
-        self.table_ins_rule_selection.verticalHeader().setVisible(False)
-        self.table_ins_rule_selection.setSortingEnabled(True)
-        # self.table_ins_rule_selection.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustToContents)
-        self.config_layout.addWidget(self.table_ins_rule_selection)
-
-        # Block rule Selection Layout
-        self.table_blk_rule_selection = QtWidgets.QTableWidget(self)
-        # self.table_blk_rule_selection.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.table_blk_rule_selection.setRowCount(2)
-        self.table_blk_rule_selection.setColumnCount(4)
-        item = QtWidgets.QTableWidgetItem()
-        item.setText("Is activated")
-        self.table_blk_rule_selection.setHorizontalHeaderItem(0, item)
-        item = QtWidgets.QTableWidgetItem()
-        item.setText("Rule Name")
-        self.table_blk_rule_selection.setHorizontalHeaderItem(1, item)
-        item = QtWidgets.QTableWidgetItem()
-        item.setText("Rule Description")
-        self.table_blk_rule_selection.setHorizontalHeaderItem(2, item)
-        item = QtWidgets.QTableWidgetItem()
-        item.setText("Rule Configuration")
-        self.table_blk_rule_selection.setHorizontalHeaderItem(3, item)
-        self.table_blk_rule_selection.horizontalHeader().setStretchLastSection(True)
-        self.table_blk_rule_selection.verticalHeader().setVisible(False)
-        self.table_blk_rule_selection.setSortingEnabled(True)
-        # self.table_blk_rule_selection.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustToContents)
-        self.config_layout.addWidget(self.table_blk_rule_selection)
-
-        self.layout_button = QtWidgets.QHBoxLayout()
-        self.button_save = QtWidgets.QPushButton(self)
-        self.button_save.setText("Save")
-        self.button_save.clicked.connect(self.save_rule_configuration)
-        self.layout_button.addWidget(self.button_save)
-        self.button_cancel = QtWidgets.QPushButton(self)
-        self.button_cancel.setText("Cancel")
-        self.button_cancel.clicked.connect(self.reject)
-        self.layout_button.addWidget(self.button_cancel)
-        self.config_layout.addLayout(self.layout_button)
-
-        self.setLayout(self.config_layout)
-
-        self.config_path = None
-        self.config_description = None
-        self.config_rules = []
-        self.update_table_rule_selection()
-
-        # Enable right-click copy on description column
-        self.table_ins_rule_selection.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.table_ins_rule_selection.customContextMenuRequested.connect(
-            lambda pos, table=self.table_ins_rule_selection: self._show_copy_context_menu(
-                table, pos
-            )
-        )
-        self.table_blk_rule_selection.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.table_blk_rule_selection.customContextMenuRequested.connect(
-            lambda pos, table=self.table_blk_rule_selection: self._show_copy_context_menu(
-                table, pos
-            )
-        )
-
-        # Enable live filtering of rules when the user types in the Rule Name box
-        self.in_cfg_name.textChanged.connect(self._on_rule_filter_changed)
-
-    def update_form(
-        self,
-        config_description: str,
-        activated_ins_rule_config_list: list[RuleConfiguration],
-        activated_blk_rule_config_list: list[RuleConfiguration],
-        config_path: pathlib.Path,
-    ):
-        logger.debug("Calling update_form")
-        if config_description:
-            self.in_description.setText(config_description)
-        if (
-            activated_ins_rule_config_list is not None
-            or activated_blk_rule_config_list is not None
-        ):
-            self.update_table_rule_selection(
-                activated_ins_rule_config_list, activated_blk_rule_config_list
-            )
-        if config_path is not None:
-            self.config_path = config_path
-
-    def update_table_rule_selection(
-        self, activated_ins_rule_config_list=None, activated_blk_rule_config_list=None
-    ):
-        logger.debug("Calling update_table_rule_selection")
-        self.update_table_ins_rule_selection(activated_ins_rule_config_list)
-        self.update_table_blk_rule_selection(activated_blk_rule_config_list)
-
-    def _get_rule_config(self, rule_name, rule_config_list):
-        logger.debug("Calling _get_rule_config")
-        try:
-            rule_name_list = [rule_conf.name for rule_conf in rule_config_list]
-            rule_index = rule_name_list.index(rule_name)
-            return rule_config_list[rule_index]
-        except ValueError:
-            return None
-
-    def _on_rule_filter_changed(self, _txt):
-        """Refresh rule tables when the filter text changes."""
-        self.update_table_rule_selection()
-
-    def _get_filter_text(self) -> str:
-        """Return the current lowercase filter text."""
-        return self.in_cfg_name.text().lower().strip()
-
-    def update_table_ins_rule_selection(self, activated_ins_rule_config_list=None):
-        logger.debug("Calling update_table_ins_rule_selection")
-        if activated_ins_rule_config_list is None:
-            activated_ins_rule_config_list = []
-        filter_text = self._get_filter_text()
-        self.table_ins_rule_selection.setRowCount(len(self.state.known_ins_rules))
-        for i, rule in enumerate(self.state.known_ins_rules):
-            rule_config = self._get_rule_config(
-                rule.name, activated_ins_rule_config_list
-            )
-            item = QtWidgets.QTableWidgetItem()
-            item.setTextAlignment(QtCore.Qt.AlignCenter)
-            if rule_config is not None and rule_config.is_activated:
-                item.setCheckState(QtCore.Qt.Checked)
-            else:
-                item.setCheckState(QtCore.Qt.Unchecked)
-            self.table_ins_rule_selection.setItem(i, 0, item)
-            item = QtWidgets.QTableWidgetItem()
-            item.setText(rule.name)
-            item.setFlags(QtCore.Qt.ItemIsEnabled)
-            self.table_ins_rule_selection.setItem(i, 1, item)
-            item = QtWidgets.QTableWidgetItem()
-            item.setText(rule.description)
-            item.setFlags(QtCore.Qt.ItemIsEnabled)
-            self.table_ins_rule_selection.setItem(i, 2, item)
-            item = QtWidgets.QTableWidgetItem()
-            if rule_config is not None:
-                item.setText(json.dumps(rule_config.config))
-            else:
-                item.setText("{}")
-            self.table_ins_rule_selection.setItem(i, 3, item)
-            # Hide rows that don't match the filter
-            should_show = (not filter_text) or (filter_text in rule.name.lower())
-            self.table_ins_rule_selection.setRowHidden(i, not should_show)
-        self.table_ins_rule_selection.resizeColumnsToContents()
-
-    def update_table_blk_rule_selection(self, activated_blk_rule_config_list=None):
-        logger.debug("Calling update_table_blk_rule_selection")
-        if activated_blk_rule_config_list is None:
-            activated_blk_rule_config_list = []
-        filter_text = self._get_filter_text()
-        self.table_blk_rule_selection.setRowCount(len(self.state.known_blk_rules))
-        for i, rule in enumerate(self.state.known_blk_rules):
-            rule_config = self._get_rule_config(
-                rule.name, activated_blk_rule_config_list
-            )
-            item = QtWidgets.QTableWidgetItem()
-            item.setTextAlignment(QtCore.Qt.AlignCenter)
-            if rule_config is not None and rule_config.is_activated:
-                item.setCheckState(QtCore.Qt.Checked)
-            else:
-                item.setCheckState(QtCore.Qt.Unchecked)
-            self.table_blk_rule_selection.setItem(i, 0, item)
-            item = QtWidgets.QTableWidgetItem()
-            item.setText(rule.name)
-            item.setFlags(QtCore.Qt.ItemIsEnabled)
-            self.table_blk_rule_selection.setItem(i, 1, item)
-            item = QtWidgets.QTableWidgetItem()
-            item.setText(rule.description)
-            item.setFlags(QtCore.Qt.ItemIsEnabled)
-            self.table_blk_rule_selection.setItem(i, 2, item)
-            item = QtWidgets.QTableWidgetItem()
-            if rule_config is not None:
-                item.setText(json.dumps(rule_config.config))
-            else:
-                item.setText("{}")
-            self.table_blk_rule_selection.setItem(i, 3, item)
-            # Hide rows that don't match the filter
-            should_show = (not filter_text) or (filter_text in rule.name.lower())
-            self.table_blk_rule_selection.setRowHidden(i, not should_show)
-        self.table_blk_rule_selection.resizeColumnsToContents()
-
-    def save_rule_configuration(self):
-        logger.debug("Calling save_rule_configuration")
-        fname, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save file", str(self.config_path), "Project configuration (*.json)"
-        )
-        if fname:
-            self.config_path = pathlib.Path(fname)
-            self.config_description = self.in_cfg_name.text()
-            self.config_ins_rules = self.get_ins_rules()
-            self.config_blk_rules = self.get_blk_rules()
-            self.accept()
-
-    def get_ins_rules(self):
-        logger.debug("Calling get_ins_rules")
-        activated_rule_names = []
-        nb_rules = self.table_ins_rule_selection.rowCount()
-        for i in range(nb_rules):
-            if self.table_ins_rule_selection.item(i, 0).checkState():
-                rule_conf = RuleConfiguration(
-                    name=self.table_ins_rule_selection.item(i, 1).text(),
-                    is_activated=self.table_ins_rule_selection.item(i, 0).checkState()
-                    == QtCore.Qt.Checked,
-                    config=json.loads(self.table_ins_rule_selection.item(i, 3).text()),
-                )
-                activated_rule_names.append(rule_conf)
-                # activated_rule_names.append(self.table_ins_rule_selection.item(i, 1).text())
-        return activated_rule_names
-
-    def get_blk_rules(self):
-        logger.debug("Calling get_blk_rules")
-        activated_rule_names = []
-        nb_rules = self.table_blk_rule_selection.rowCount()
-        for i in range(nb_rules):
-            if self.table_blk_rule_selection.item(i, 0).checkState():
-                rule_conf = RuleConfiguration(
-                    name=self.table_blk_rule_selection.item(i, 1).text(),
-                    is_activated=self.table_blk_rule_selection.item(i, 0).checkState()
-                    == QtCore.Qt.Checked,
-                    config=json.loads(self.table_blk_rule_selection.item(i, 3).text()),
-                )
-                activated_rule_names.append(rule_conf)
-                # activated_rule_names.append(self.table_blk_rule_selection.item(i, 1).text())
-        return activated_rule_names
-
-    def _show_copy_context_menu(self, table, pos):
-        """
-        Show a context menu to copy selected cells or the cell under the mouse.
-        Copies all selected cells, grouping by row with tab separation, or the single cell under the mouse if none are selected.
-        """
-        # Gather all selected indexes
-        selected = table.selectionModel().selectedIndexes()
-        if selected:
-            # Group selected cells by row
-            rows = {}
-            for idx in selected:
-                r, c = idx.row(), idx.column()
-                rows.setdefault(r, []).append(c)
-            # Build lines of text per row, with cells separated by tabs
-            lines = []
-            for r in sorted(rows):
-                cols = sorted(rows[r])
-                texts = [table.item(r, c).text() for c in cols]
-                lines.append("\t".join(texts))
-            text = "\n".join(lines)
-        else:
-            # No selection: copy the cell under the mouse cursor
-            index = table.indexAt(pos)
-            if not index.isValid():
-                return
-            text = table.item(index.row(), index.column()).text()
-
-        # Create and display the context menu
-        menu = QtWidgets.QMenu(table)
-        copy_action = menu.addAction("Copy")
-        action = menu.exec_(table.viewport().mapToGlobal(pos))
-        if action == copy_action:
-            QtWidgets.QApplication.clipboard().setText(text)
-
-
 class D810ConfigForm_t(ida_kernwin.PluginForm):
     def __init__(self, state: "D810State"):
         super().__init__()
@@ -532,12 +404,91 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.parent = None
         self.test_runner: TestRunnerForm | None = None
 
+        # Edit state machine attributes
+        self._edit_mode: str | None = None  # "new", "duplicate", or "edit"
+        self._edit_path: pathlib.Path | None = None
+        self._edit_old_conf: ProjectConfiguration | None = None
+
+        # Initialize all widget attributes to None (defensive pattern)
+        # These are created in OnCreate() but may be accessed before OnCreate() runs
+        self._project_group = None
+        self._status_indicator = None
+        self.curlabel = None
+        self.cfg_select = None
+        self.btn_new_cfg = None
+        self.btn_duplicate_cfg = None
+        self.btn_edit_cfg = None
+        self.btn_delele_cfg = None
+        self.cfg_description = None
+        self._rules_group = None
+        self._rules_content = None
+        self._edit_header = None
+        self._edit_name_input = None
+        self._edit_desc_input = None
+        self._splitter = None
+        self._rule_tree = None
+        self._rule_detail = None
+        self._rule_configs = None
+        self._btn_save_rules = None
+        self._btn_cancel_rules = None
+        self._engine_group = None
+        self.btn_start = None
+        self.btn_stop = None
+        self.btn_config = None
+        self.btn_logger_cfg = None
+        self.btn_start_profiling = None
+        self.btn_test_runner = None
+
     def OnClose(self, form):
+        """Called when IDA destroys the form. Clean up to prevent shutdown crash."""
         logger.debug("Calling OnClose")
         self.shown = False
+
+        # Disconnect all signals to prevent PySide6 crash during Python finalization
+        try:
+            if hasattr(self, "cfg_select") and self.cfg_select is not None:
+                self.cfg_select.currentIndexChanged.disconnect()
+
+            if hasattr(self, "_rule_tree") and self._rule_tree is not None:
+                self._rule_tree.rule_selected.disconnect()
+                self._rule_tree.rule_toggled.disconnect()
+
+            if hasattr(self, "_rule_detail") and self._rule_detail is not None:
+                self._rule_detail.config_changed.disconnect()
+
+            # Disconnect all button signals
+            for btn_attr in [
+                "btn_new_cfg",
+                "btn_duplicate_cfg",
+                "btn_edit_cfg",
+                "btn_delele_cfg",
+                "btn_start",
+                "btn_stop",
+                "btn_config",
+                "btn_logger_cfg",
+                "btn_start_profiling",
+                "btn_test_runner",
+                "_btn_save_rules",
+                "_btn_cancel_rules",
+            ]:
+                btn = getattr(self, btn_attr, None)
+                if btn is not None:
+                    try:
+                        btn.clicked.disconnect()
+                    except (TypeError, RuntimeError):
+                        pass
+
+        except (TypeError, RuntimeError) as e:
+            logger.debug("Signal disconnect error (expected during shutdown): %s", e)
+
+        # Clear widget references
+        self._rule_tree = None
+        self._rule_detail = None
+        self.cfg_select = None
+
         if self.test_runner is not None:
             self.test_runner.Close(ida_kernwin.PluginForm.WCLS_SAVE)
-        # self.parent.close()
+            self.test_runner = None
 
     def Show(self):
         logger.debug("Calling Show")
@@ -562,201 +513,259 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
         # Get parent widget
         self.parent = self.FormToPyQtWidget(form)
-        layout = QtWidgets.QGridLayout(self.parent)
+        main_layout = QtWidgets.QVBoxLayout(self.parent)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setSpacing(6)
 
-        # ----------- Config options -----------------------
-        # Horizontal splitter for config boxes
-        cfg_split = QtWidgets.QSplitter(self.parent)
-        layout.addWidget(cfg_split, 0, 0)
-        # Config name label
-        self.curlabel = QtWidgets.QLabel("Current file loaded:")
-        cfg_split.addWidget(self.curlabel)
+        # =====================================================================
+        # Project Group (always visible, compact)
+        # =====================================================================
+        self._project_group = QGroupBox("Project", self.parent)
+        main_layout.addWidget(self._project_group)
+
+        # Use VBoxLayout to stack config row and description
+        project_vbox = QtWidgets.QVBoxLayout(self._project_group)
+
+        # Config row with status indicator
+        config_row = QtWidgets.QHBoxLayout()
+        project_vbox.addLayout(config_row)
+
+        # Status indicator (colored circle)
+        self._status_indicator = QtWidgets.QLabel()
+        self._status_indicator.setTextFormat(QtCore.Qt.RichText)
+        self._status_indicator.setText('<span style="color: #D32F2F; font-size: 20px;">●</span>')
+        self._status_indicator.setToolTip("D810 is stopped")
+        config_row.addWidget(self._status_indicator)
+
+        # Config selector
+        self.curlabel = QtWidgets.QLabel("Config:")
+        config_row.addWidget(self.curlabel)
 
         self.cfg_select = QtWidgets.QComboBox(self.parent)
-        cfg_split.addWidget(self.cfg_select)
+        config_row.addWidget(self.cfg_select, stretch=1)
 
-        self.btn_new_cfg = QtWidgets.QPushButton("New")
+        # Project buttons (icon-only toolbuttons)
+        self.btn_new_cfg = QToolButton()
+        self.btn_new_cfg.setText("+")
+        self.btn_new_cfg.setToolTip("Create new configuration")
+        self.btn_new_cfg.setFixedSize(32, 32)
+        font = self.btn_new_cfg.font()
+        font.setPointSize(16)
+        self.btn_new_cfg.setFont(font)
         self.btn_new_cfg.clicked.connect(self._create_config)
-        cfg_split.addWidget(self.btn_new_cfg)
+        config_row.addWidget(self.btn_new_cfg)
 
-        self.btn_duplicate_cfg = QtWidgets.QPushButton("Duplicate")
+        self.btn_duplicate_cfg = QToolButton()
+        self.btn_duplicate_cfg.setText("⧉")
+        self.btn_duplicate_cfg.setToolTip("Duplicate current configuration")
+        self.btn_duplicate_cfg.setFixedSize(32, 32)
+        font = self.btn_duplicate_cfg.font()
+        font.setPointSize(16)
+        self.btn_duplicate_cfg.setFont(font)
         self.btn_duplicate_cfg.clicked.connect(self._duplicate_config)
-        cfg_split.addWidget(self.btn_duplicate_cfg)
+        config_row.addWidget(self.btn_duplicate_cfg)
 
-        self.btn_edit_cfg = QtWidgets.QPushButton("Edit")
+        self.btn_edit_cfg = QToolButton()
+        self.btn_edit_cfg.setText("✎")
+        self.btn_edit_cfg.setToolTip("Edit current configuration")
+        self.btn_edit_cfg.setFixedSize(32, 32)
+        font = self.btn_edit_cfg.font()
+        font.setPointSize(16)
+        self.btn_edit_cfg.setFont(font)
         self.btn_edit_cfg.clicked.connect(self._edit_config)
-        cfg_split.addWidget(self.btn_edit_cfg)
+        config_row.addWidget(self.btn_edit_cfg)
 
-        self.btn_delele_cfg = QtWidgets.QPushButton("Delete")
+        self.btn_delele_cfg = QToolButton()
+        self.btn_delele_cfg.setText("🗑")
+        self.btn_delele_cfg.setToolTip("Delete current configuration")
+        self.btn_delele_cfg.setFixedSize(32, 32)
+        font = self.btn_delele_cfg.font()
+        font.setPointSize(16)
+        self.btn_delele_cfg.setFont(font)
         self.btn_delele_cfg.clicked.connect(self._delete_config)
-        cfg_split.addWidget(self.btn_delele_cfg)
+        config_row.addWidget(self.btn_delele_cfg)
 
-        # leave space for comboboxes in cfg_split, rather than between widgets
-        cfg_split.setStretchFactor(0, 0)
-        cfg_split.setStretchFactor(1, 1)
-        cfg_split.setStretchFactor(2, 0)
-
-        description_split = QtWidgets.QSplitter(self.parent)
-        layout.addWidget(description_split, 1, 0)
-        self.cfg_description_layout = QtWidgets.QHBoxLayout(description_split)
-        self.cfg_description_label = QtWidgets.QLabel("Description")
-        description_split.addWidget(self.cfg_description_label)
-        self.cfg_description = QtWidgets.QLabel("No description")
-        description_split.addWidget(self.cfg_description)
-        description_split.setStretchFactor(0, 0)
-        description_split.setStretchFactor(1, 1)
-
-        self.cfg_ins_preview = QtWidgets.QTableWidget(self.parent)
-        layout.addWidget(self.cfg_ins_preview, 2, 0)
-        # Enable right-click copy on description column of preview tables
-        self.cfg_ins_preview.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.cfg_ins_preview.customContextMenuRequested.connect(
-            lambda pos, table=self.cfg_ins_preview: self._show_copy_context_menu_preview(
-                table, pos
-            )
+        # Description text box (read-only, scrollable, below config row)
+        self.cfg_description = QtWidgets.QTextEdit()
+        self.cfg_description.setReadOnly(True)
+        self.cfg_description.setStyleSheet(
+            "QTextEdit { background-color: palette(window); color: palette(text); }"
         )
+        self.cfg_description.setFixedHeight(60)
+        self.cfg_description.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.cfg_description.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.cfg_description.setWordWrapMode(QtGui.QTextOption.WordWrap)
+        self.cfg_description.setPlainText("No description")
+        project_vbox.addWidget(self.cfg_description)
 
-        self.cfg_blk_preview = QtWidgets.QTableWidget(self.parent)
-        layout.addWidget(self.cfg_blk_preview, 3, 0)
-        self.cfg_blk_preview.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.cfg_blk_preview.customContextMenuRequested.connect(
-            lambda pos, table=self.cfg_blk_preview: self._show_copy_context_menu_preview(
-                table, pos
-            )
-        )
-        self.update_cfg_preview()
+        # =====================================================================
+        # Horizontal divider between Project and Rules
+        # =====================================================================
+        divider = QFrame()
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFrameShadow(QFrame.Sunken)
+        main_layout.addWidget(divider)
 
-        # ----------- Analysis buttons -----------------------
-        # Horizontal splitter for buttons
-        btn_split = QtWidgets.QSplitter(self.parent)
-        layout.addWidget(btn_split, 4, 0)
+        # =====================================================================
+        # Rules Group (always visible, read-only by default)
+        # =====================================================================
+        self._rules_group = QGroupBox("Rules", self.parent)
+        main_layout.addWidget(self._rules_group, stretch=1)
 
-        self.btn_config = QtWidgets.QPushButton("Configuration")
-        self.btn_config.clicked.connect(self._configure_plugin)
-        btn_split.addWidget(self.btn_config)
+        rules_outer_layout = QtWidgets.QVBoxLayout(self._rules_group)
 
-        # Logger configuration button
-        self.btn_logger_cfg = QtWidgets.QPushButton("Loggers…")
-        self.btn_logger_cfg.setToolTip("Adjust log-levels at runtime")
-        self.btn_logger_cfg.clicked.connect(self._configure_logging)
-        btn_split.addWidget(self.btn_logger_cfg)
+        # _rules_content is now always visible
+        self._rules_content = QtWidgets.QWidget()
+        rules_outer_layout.addWidget(self._rules_content)
+
+        rules_content_layout = QtWidgets.QVBoxLayout(self._rules_content)
+        rules_content_layout.setContentsMargins(0, 0, 0, 0)
+        rules_content_layout.setSpacing(6)
+
+        # Edit header (name + description) — shown only for new/duplicate
+        self._edit_header = QtWidgets.QWidget()
+        rules_content_layout.addWidget(self._edit_header)
+
+        edit_header_layout = QtWidgets.QHBoxLayout(self._edit_header)
+        edit_header_layout.setContentsMargins(0, 0, 0, 0)
+
+        lbl_name = QtWidgets.QLabel("Name:")
+        edit_header_layout.addWidget(lbl_name)
+        self._edit_name_input = QtWidgets.QLineEdit()
+        edit_header_layout.addWidget(self._edit_name_input)
+
+        lbl_desc = QtWidgets.QLabel("Desc:")
+        edit_header_layout.addWidget(lbl_desc)
+        self._edit_desc_input = QtWidgets.QLineEdit()
+        edit_header_layout.addWidget(self._edit_desc_input)
+
+        self._edit_header.setVisible(False)  # Hidden until new/duplicate
+
+        # Splitter: RuleTreeWidget + RuleDetailPanel
+        self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal, self._rules_content)
+        rules_content_layout.addWidget(self._splitter, stretch=1)
+
+        self._rule_tree = RuleTreeWidget(self._splitter)
+        self._splitter.addWidget(self._rule_tree)
+
+        self._rule_detail = RuleDetailPanel(self._splitter)
+        self._splitter.addWidget(self._rule_detail)
+
+        self._splitter.setSizes([450, 750])
+
+        # Wire signals
+        self._rule_tree.rule_selected.connect(self._on_rule_selected)
+        self._rule_tree.rule_toggled.connect(self._on_rule_toggled)
+        self._rule_detail.config_changed.connect(self._on_config_changed)
+
+        # Populate tree with all known rules (initially in read-only mode)
+        all_rules = list(self.state.known_ins_rules) + list(self.state.known_blk_rules)
+        self._rule_tree.set_rules(all_rules)
+        self._rule_tree.set_read_only(True)
+        self._rule_detail.set_read_only(True)
+
+        # State for storing per-rule config overrides during editing
+        self._rule_configs: dict[str, dict] = {}
+
+        # Save/Cancel buttons (right-aligned, hidden initially)
+        button_layout = QtWidgets.QHBoxLayout()
+        rules_content_layout.addLayout(button_layout)
+        button_layout.addStretch()
+
+        self._btn_save_rules = QtWidgets.QPushButton("Save")
+        self._btn_save_rules.clicked.connect(self._save_rules)
+        self._btn_save_rules.setVisible(False)
+        button_layout.addWidget(self._btn_save_rules)
+
+        self._btn_cancel_rules = QtWidgets.QPushButton("Cancel")
+        self._btn_cancel_rules.clicked.connect(self._cancel_rules)
+        self._btn_cancel_rules.setVisible(False)
+        button_layout.addWidget(self._btn_cancel_rules)
+
+        # =====================================================================
+        # Engine Group (always visible, compact)
+        # =====================================================================
+        self._engine_group = QGroupBox("Engine", self.parent)
+        main_layout.addWidget(self._engine_group)
+
+        engine_layout = QtWidgets.QHBoxLayout(self._engine_group)
 
         self.btn_start = QtWidgets.QPushButton("Start")
         self.btn_start.clicked.connect(self._start_d810)
-        btn_split.addWidget(self.btn_start)
+        engine_layout.addWidget(self.btn_start)
 
         self.btn_stop = QtWidgets.QPushButton("Stop")
         self.btn_stop.clicked.connect(self._stop_d810)
-        btn_split.addWidget(self.btn_stop)
+        engine_layout.addWidget(self.btn_stop)
 
-        # --- Profiling buttons ---
-        self.btn_start_profiling = QtWidgets.QPushButton("Start Profiling")
+        self.btn_config = QtWidgets.QPushButton("Config")
+        self.btn_config.clicked.connect(self._configure_plugin)
+        engine_layout.addWidget(self.btn_config)
+
+        self.btn_logger_cfg = QtWidgets.QPushButton("Loggers")
+        self.btn_logger_cfg.setToolTip("Adjust log-levels at runtime")
+        self.btn_logger_cfg.clicked.connect(self._configure_logging)
+        engine_layout.addWidget(self.btn_logger_cfg)
+
+        self.btn_start_profiling = QtWidgets.QPushButton("Profile")
         self.btn_start_profiling.clicked.connect(self._start_profiling)
-        btn_split.addWidget(self.btn_start_profiling)
-
-        self.btn_stop_profiling = QtWidgets.QPushButton("Stop Profiling")
-        self.btn_stop_profiling.clicked.connect(self._stop_profiling)
-        btn_split.addWidget(self.btn_stop_profiling)
+        engine_layout.addWidget(self.btn_start_profiling)
 
         if TestRunnerForm is not None:
-            self.btn_test_runner = QtWidgets.QPushButton("Test Runner")
+            self.btn_test_runner = QtWidgets.QPushButton("TestRunner")
             self.btn_test_runner.clicked.connect(self._show_test_runner)
-            btn_split.addWidget(self.btn_test_runner)
+            engine_layout.addWidget(self.btn_test_runner)
 
-        self.plugin_status = QtWidgets.QLabel()
-        self.plugin_status.setText(
-            '<span style=" font-size:8pt; font-weight:600; color:#ff0000;" >Not Loaded</span>'
-        )
-        description_split.addWidget(self.plugin_status)
-        btn_split.addWidget(self.plugin_status)
+        # Status is now shown via the circle indicator in the Project group
+        self._update_status(loaded=False)
 
+        # =====================================================================
+        # Final initialization
+        # =====================================================================
         self.update_cfg_select()
         self.cfg_select.setCurrentIndex(self.state.current_project_index)
         self.cfg_select.currentIndexChanged.connect(self._load_config)
 
-    def update_cfg_preview(self):
-        logger.debug("Calling update_cfg_preview")
-        self.update_cfg_ins_preview()
-        self.update_cfg_blk_preview()
+        # Load the current config to populate the Rules tree immediately
+        self._load_config(self.state.current_project_index)
 
-    def update_cfg_ins_preview(self):
-        # return
-        logger.debug("Calling update_cfg_ins_preview")
-        self.cfg_ins_preview.setRowCount(len(self.state.current_ins_rules))
-        self.cfg_ins_preview.setColumnCount(3)
-        self.cfg_ins_preview.setHorizontalHeaderLabels(
-            ("Name", "Description", "Configuration")
-        )
-        self.cfg_ins_preview.horizontalHeader().setStretchLastSection(True)
-        self.cfg_ins_preview.setSortingEnabled(True)
-        # self.cfg_ins_preview.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustToContents)
-        i = 0
-        for rule in self.state.current_ins_rules:
-            cell_file_path = QtWidgets.QTableWidgetItem(rule.name)
-            cell_file_path.setFlags(
-                cast(
-                    "QtCore.Qt.ItemFlag",
-                    qt_flag_or(QtCore.Qt.ItemIsSelectable, QtCore.Qt.ItemIsEnabled),
-                )
-            )
-            cell_rule_description = QtWidgets.QTableWidgetItem(rule.description)
-            cell_rule_description.setFlags(
-                cast(
-                    "QtCore.Qt.ItemFlag",
-                    qt_flag_or(QtCore.Qt.ItemIsSelectable, QtCore.Qt.ItemIsEnabled),
-                )
-            )
-            cell_rule_config = QtWidgets.QTableWidgetItem(json.dumps(rule.config))
-            cell_rule_config.setFlags(
-                cast(
-                    "QtCore.Qt.ItemFlag",
-                    qt_flag_or(QtCore.Qt.ItemIsSelectable, QtCore.Qt.ItemIsEnabled),
-                )
-            )
-            self.cfg_ins_preview.setItem(i, 0, cell_file_path)
-            self.cfg_ins_preview.setItem(i, 1, cell_rule_description)
-            self.cfg_ins_preview.setItem(i, 2, cell_rule_config)
-            i += 1
-        self.cfg_ins_preview.resizeColumnsToContents()
+    def _update_status(self, loaded: bool) -> None:
+        """Update the status indicator circle."""
+        if self._status_indicator is None:
+            logger.debug("Cannot update status indicator: widget not created yet")
+            return
+        if loaded:
+            self._status_indicator.setText('<span style="color: #4CAF50; font-size: 20px;">●</span>')
+            self._status_indicator.setToolTip("D810 is running")
+        else:
+            self._status_indicator.setText('<span style="color: #D32F2F; font-size: 20px;">●</span>')
+            self._status_indicator.setToolTip("D810 is stopped")
 
-    def update_cfg_blk_preview(self):
-        logger.debug("Calling update_cfg_blk_preview")
-        self.cfg_blk_preview.setRowCount(len(self.state.current_blk_rules))
-        self.cfg_blk_preview.setColumnCount(3)
-        self.cfg_blk_preview.setHorizontalHeaderLabels(
-            ("Name", "Description", "Configuration")
-        )
-        self.cfg_blk_preview.horizontalHeader().setStretchLastSection(True)
-        self.cfg_blk_preview.setSortingEnabled(True)
-        # self.cfg_blk_preview.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustToContents)
-        i = 0
-        for rule in self.state.current_blk_rules:
-            cell_file_path = QtWidgets.QTableWidgetItem(rule.name)
-            cell_file_path.setFlags(
-                cast(
-                    "QtCore.Qt.ItemFlag",
-                    qt_flag_or(QtCore.Qt.ItemIsSelectable, QtCore.Qt.ItemIsEnabled),
-                )
-            )
-            cell_rule_description = QtWidgets.QTableWidgetItem(rule.description)
-            cell_rule_description.setFlags(
-                cast(
-                    "QtCore.Qt.ItemFlag",
-                    qt_flag_or(QtCore.Qt.ItemIsSelectable, QtCore.Qt.ItemIsEnabled),
-                )
-            )
-            cell_rule_config = QtWidgets.QTableWidgetItem(json.dumps(rule.config))
-            cell_rule_config.setFlags(
-                cast(
-                    "QtCore.Qt.ItemFlag",
-                    qt_flag_or(QtCore.Qt.ItemIsSelectable, QtCore.Qt.ItemIsEnabled),
-                )
-            )
-            self.cfg_blk_preview.setItem(i, 0, cell_file_path)
-            self.cfg_blk_preview.setItem(i, 1, cell_rule_description)
-            self.cfg_blk_preview.setItem(i, 2, cell_rule_config)
-            i += 1
-        self.cfg_blk_preview.resizeColumnsToContents()
+    def _on_rule_selected(self, rule) -> None:
+        """Show the selected rule's detail panel."""
+        if rule is not None:
+            # Inject any stored config overrides into the rule's config dict
+            # so the detail panel shows current values.
+            stored = self._rule_configs.get(rule.name)
+            if stored:
+                rule.config.update(stored)
+        self._rule_detail.set_rule(rule)
+
+    def _on_rule_toggled(self, rule, is_enabled: bool) -> None:
+        """Track rule enable/disable state (already handled by the tree)."""
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Rule toggled: %s -> %s", rule.name, is_enabled)
+
+    def _on_config_changed(self, param_name: str, value) -> None:
+        """Store config changes for the currently-selected rule."""
+        rule = self._rule_detail._current_rule
+        if rule is None:
+            return
+        cfg = self._rule_configs.setdefault(rule.name, {})
+        cfg[param_name] = value
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Config stored: %s.%s = %s", rule.name, param_name, value)
+
 
     def update_cfg_select(self):
         logger.debug("Calling update_cfg_select")
@@ -766,57 +775,209 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.cfg_select.addItems(self.state.project_manager.project_names())
         self.cfg_select.setCurrentIndex(tmp)
 
+    # =========================================================================
+    # Edit state machine
+    # =========================================================================
+
+    def _enter_edit_mode(
+        self,
+        mode: str,
+        description: str,
+        ins_rules: list[RuleConfiguration],
+        blk_rules: list[RuleConfiguration],
+        path: pathlib.Path | None,
+        old_conf: ProjectConfiguration | None,
+    ) -> None:
+        """Enter edit mode (new, duplicate, or edit).
+
+        Args:
+            mode: One of "new", "duplicate", or "edit"
+            description: Project description
+            ins_rules: Instruction-level rules
+            blk_rules: Block-level rules
+            path: Path to save (None for new/duplicate)
+            old_conf: Old configuration (for edit mode)
+        """
+        logger.debug("Entering edit mode: %s", mode)
+
+        self._edit_mode = mode
+        self._edit_path = path
+        self._edit_old_conf = old_conf
+
+        # Build enabled set and per-rule config dict from RuleConfiguration lists
+        enabled_names: set[str] = set()
+        self._rule_configs.clear()
+
+        for rc in ins_rules:
+            if rc.is_activated:
+                enabled_names.add(rc.name)
+            if rc.config:
+                self._rule_configs[rc.name] = dict(rc.config)
+
+        for rc in blk_rules:
+            if rc.is_activated:
+                enabled_names.add(rc.name)
+            if rc.config:
+                self._rule_configs[rc.name] = dict(rc.config)
+
+        # Update tree to show enabled rules
+        self._rule_tree.set_enabled_rules(enabled_names)
+
+        # Make tree and detail panel editable
+        self._rule_tree.set_read_only(False)
+        self._rule_detail.set_read_only(False)
+
+        # Show edit header only for new/duplicate
+        if mode in ("new", "duplicate"):
+            self._edit_header.setVisible(True)
+            self._edit_name_input.setText("")
+            self._edit_desc_input.setText(description)
+        else:
+            self._edit_header.setVisible(False)
+
+        # Update title and show Save/Cancel buttons
+        self._rules_group.setTitle("Rules (editing)")
+        self._btn_save_rules.setVisible(True)
+        self._btn_cancel_rules.setVisible(True)
+
+        # Disable Project and Engine groups
+        self._project_group.setEnabled(False)
+        self._engine_group.setEnabled(False)
+
+    def _exit_edit_mode(self) -> None:
+        """Exit edit mode and return to view mode."""
+        logger.debug("Exiting edit mode")
+
+        # Update title and hide Save/Cancel buttons
+        self._rules_group.setTitle("Rules")
+        self._btn_save_rules.setVisible(False)
+        self._btn_cancel_rules.setVisible(False)
+
+        # Hide edit header
+        self._edit_header.setVisible(False)
+
+        # Make tree and detail panel read-only
+        self._rule_tree.set_read_only(True)
+        self._rule_detail.set_read_only(True)
+
+        # Re-enable Project and Engine groups
+        self._project_group.setEnabled(True)
+        self._engine_group.setEnabled(True)
+
+        # Clear edit state
+        self._edit_mode = None
+        self._edit_path = None
+        self._edit_old_conf = None
+        self._rule_configs.clear()
+
+    def _save_rules(self) -> None:
+        """Save the current rule configuration."""
+        logger.debug("Saving rules (mode: %s)", self._edit_mode)
+
+        # Determine save path
+        if self._edit_mode in ("new", "duplicate"):
+            # Open file dialog
+            fname, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self.parent,
+                "Save configuration",
+                str(self.state.d810_config.config_dir),
+                "Project configuration (*.json)",
+            )
+            if not fname:
+                return  # User cancelled
+            save_path = pathlib.Path(fname)
+            description = self._edit_desc_input.text()
+        elif self._edit_mode == "edit":
+            # Save in-place
+            save_path = self._edit_path
+            description = self.state.current_project.description
+        else:
+            logger.error("Invalid edit mode: %s", self._edit_mode)
+            return
+
+        # Build RuleConfiguration lists from tree state
+        enabled = self._rule_tree.get_enabled_rule_names()
+        ins_rules = []
+        for rule in self.state.known_ins_rules:
+            if rule.name in enabled:
+                ins_rules.append(
+                    RuleConfiguration(
+                        name=rule.name,
+                        is_activated=True,
+                        config=self._rule_configs.get(rule.name, {}),
+                    )
+                )
+
+        blk_rules = []
+        for rule in self.state.known_blk_rules:
+            if rule.name in enabled:
+                blk_rules.append(
+                    RuleConfiguration(
+                        name=rule.name,
+                        is_activated=True,
+                        config=self._rule_configs.get(rule.name, {}),
+                    )
+                )
+
+        # Create and save ProjectConfiguration
+        new_config = ProjectConfiguration(
+            path=save_path,
+            description=description,
+            ins_rules=ins_rules,
+            blk_rules=blk_rules,
+        )
+        new_config.save()
+
+        # Update state
+        if self._edit_mode in ("new", "duplicate"):
+            self.state.add_project(new_config)
+        else:  # edit
+            self.state.update_project(self._edit_old_conf, new_config)
+
+        # Update UI
+        self.update_cfg_select()
+
+        # Find the index of the newly saved config
+        for i, proj in enumerate(self.state.project_manager.projects()):
+            if proj.path == save_path:
+                self.cfg_select.setCurrentIndex(i)
+                break
+
+        # Exit edit mode
+        self._exit_edit_mode()
+
+    def _cancel_rules(self) -> None:
+        """Cancel editing and return to view mode."""
+        logger.debug("Cancelling rule edit")
+        self._exit_edit_mode()
+
     def _create_config(self):
         logger.debug("Calling _create_config")
-        self._internal_config_creation("", [], [], self.state.d810_config.config_dir)
+        self._enter_edit_mode("new", "", [], [], None, None)
 
     def _duplicate_config(self):
         logger.debug("Calling _duplicate_config")
         cur_cfg = self.state.current_project
-        self._internal_config_creation(
+        self._enter_edit_mode(
+            "duplicate",
             "Duplicate of " + cur_cfg.description,
             cur_cfg.ins_rules,
             cur_cfg.blk_rules,
-            self.state.d810_config.config_dir,
+            None,
+            None,
         )
 
     def _edit_config(self):
         logger.debug("Calling _edit_config")
         cur_cfg = self.state.current_project
-        self._internal_config_creation(
+        self._enter_edit_mode(
+            "edit",
             cur_cfg.description,
             cur_cfg.ins_rules,
             cur_cfg.blk_rules,
             cur_cfg.path,
             cur_cfg,
         )
-
-    def _internal_config_creation(
-        self,
-        description: str,
-        start_ins_rules: list[RuleConfiguration],
-        start_blk_rules: list[RuleConfiguration],
-        path: pathlib.Path,
-        old_conf=None,
-    ):
-        logger.debug("Calling _internal_config_creation")
-        editdlg = EditConfigurationFileForm_t(self.parent, self.state)
-        editdlg.update_form(description, start_ins_rules, start_blk_rules, path)
-        if editdlg.exec_() == QtWidgets.QDialog.Accepted:
-            new_config = ProjectConfiguration(
-                path=editdlg.config_path or path,
-                description=editdlg.config_description or description,
-                ins_rules=editdlg.config_ins_rules,
-                blk_rules=editdlg.config_blk_rules,
-            )
-            new_config.save()
-            if old_conf is None:
-                self.state.add_project(new_config)
-            else:
-                self.state.update_project(old_conf, new_config)
-            self.update_cfg_select()
-            return new_config
-        return None
 
     # callback when the "Delete" button is clicked
     def _delete_config(self):
@@ -836,8 +997,18 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 projects[self.state.current_project_index].path.name,
             )
         project = self.state.load_project(index)
-        self.cfg_description.setText(project.description)
-        self.update_cfg_preview()
+        self.cfg_description.setPlainText(project.description)
+
+        # Populate rules tree with the current config's rules (read-only mode)
+        enabled_names: set[str] = set()
+        for rc in project.ins_rules:
+            if rc.is_activated:
+                enabled_names.add(rc.name)
+        for rc in project.blk_rules:
+            if rc.is_activated:
+                enabled_names.add(rc.name)
+
+        self._rule_tree.set_enabled_rules(enabled_names)
         return
 
     def _configure_plugin(self):
@@ -862,19 +1033,13 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
     def _start_d810(self):
         logger.debug("Calling _start_d810")
         self.state.start_d810()
-        # self.plugin_status.clear()
-        self.plugin_status.setText(
-            '<span style=" font-size:8pt; font-weight:600; color:#00FF00;" >Loaded</span>'
-        )
+        self._update_status(loaded=True)
         return
 
     def _stop_d810(self):
         logger.debug("Calling _stop_d810")
         self.state.stop_d810()
-        # self.plugin_status.clear()
-        self.plugin_status.setText(
-            '<span style=" font-size:8pt; font-weight:600; color:#FF0000;" >Not Loaded</span>'
-        )
+        self._update_status(loaded=False)
         return
 
     def _start_profiling(self):
@@ -912,40 +1077,6 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             ),
         )
 
-    def _show_copy_context_menu_preview(self, table, pos):
-        """
-        Show a context menu to copy selected cells or the cell under the mouse.
-        Copies all selected cells, grouping by row with tab separation, or the single cell under the mouse if none are selected.
-        """
-        selected = table.selectionModel().selectedIndexes()
-        if selected:
-            # Group selected cells by row
-            rows = {}
-            for idx in selected:
-                r, c = idx.row(), idx.column()
-                rows.setdefault(r, []).append(c)
-            # Build lines of text per row, with cells separated by tabs
-            lines = []
-            for r in sorted(rows):
-                cols = sorted(rows[r])
-                texts = [table.item(r, c).text() for c in cols]
-                lines.append("\t".join(texts))
-            text = "\n".join(lines)
-        else:
-            # No selection: copy the cell under the mouse cursor
-            index = table.indexAt(pos)
-            if not index.isValid():
-                return
-            text = table.item(index.row(), index.column()).text()
-
-        # Create and display the context menu
-        menu = QtWidgets.QMenu(table)
-        copy_action = menu.addAction("Copy")
-        action = menu.exec_(table.viewport().mapToGlobal(pos))
-        if action == copy_action:
-            QtWidgets.QApplication.clipboard().setText(text)
-
-
 class D810GUI(object):
     def __init__(self, state: "D810State"):
         """
@@ -954,6 +1085,12 @@ class D810GUI(object):
         logger.debug("Initializing D810GUI")
         self.state = state
         self.d810_config_form: D810ConfigForm_t | None = D810ConfigForm_t(self.state)
+
+        # -- Context menu for pseudocode right-click -----------------------
+        from d810.ui.context_menu import D810ContextMenu
+
+        self.context_menu = D810ContextMenu()
+        self.context_menu.install(self.state)
 
         # TODO(w00tzenheimer): fix (what?)
         idaapi.set_dock_pos("D-810", "IDA View-A", idaapi.DP_TAB)
@@ -969,3 +1106,6 @@ class D810GUI(object):
         if self.d810_config_form is not None:
             self.d810_config_form.Close(ida_kernwin.PluginForm.WCLS_SAVE)
         self.d810_config_form = None
+        if hasattr(self, "context_menu") and self.context_menu is not None:
+            self.context_menu.uninstall()
+            self.context_menu = None

@@ -236,6 +236,40 @@ class D810Manager:
             self.stop_profiling()
 
 
+@contextlib.contextmanager
+def d810_hooks_suppressed(manager: D810Manager):
+    """Temporarily suppress d810ng optimization hooks for clean decompilation.
+
+    Used to get pre-deobfuscation microcode snapshots by decompiling
+    with d810ng hooks temporarily removed.
+
+    Args:
+        manager: The D810Manager instance whose hooks should be temporarily removed.
+
+    Yields:
+        None
+
+    Example:
+        >>> with d810_hooks_suppressed(state.manager):
+        ...     # Decompile with hooks disabled to get pre-deobfuscation state
+        ...     mba = gen_microcode(func_ea, maturity)
+    """
+    if not manager.started:
+        # If manager not started, hooks aren't installed anyway
+        yield
+        return
+
+    # Remove optimizer hooks
+    manager.instruction_optimizer.remove()
+    manager.block_optimizer.remove()
+    try:
+        yield
+    finally:
+        # Restore optimizer hooks
+        manager.instruction_optimizer.install()
+        manager.block_optimizer.install()
+
+
 class D810State(metaclass=SingletonMeta):
     """
     State class representing the runtime state of the D810 plugin.
@@ -254,6 +288,7 @@ class D810State(metaclass=SingletonMeta):
     current_project: ProjectConfiguration
 
     def __init__(self):
+        self.gui = None  # Set by load(gui=True)
         self.reset()
 
     def is_loaded(self):
@@ -278,6 +313,7 @@ class D810State(metaclass=SingletonMeta):
         self.known_ins_rules: typing.List = []
         self.known_blk_rules: typing.List = []
         self._is_loaded: bool = False
+        self.gui = None  # Reset gui reference
         # Perform logger setup based on current config
         self.log_dir = self.d810_config.log_dir / D810_LOG_DIR_NAME
         if self.d810_config.get("erase_logs_on_reload"):
@@ -342,7 +378,6 @@ class D810State(metaclass=SingletonMeta):
         return self.current_project
 
     def start_d810(self):
-        print("D-810 ready to deobfuscate...")
         self.manager.configure_instruction_optimizer(
             [rule for rule in self.current_ins_rules],
             generate_z3_code=self.d810_config.get("generate_z3_code"),
@@ -356,6 +391,7 @@ class D810State(metaclass=SingletonMeta):
             **self.current_project.additional_configuration,
         )
         self.manager.start()
+        print("D-810 ready to deobfuscate...")
         self.d810_config.set("last_project_index", self.current_project_index)
         self.d810_config.save()
 

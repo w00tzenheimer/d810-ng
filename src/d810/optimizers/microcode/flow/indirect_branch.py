@@ -59,6 +59,8 @@ from d810.hexrays.table_utils import (
     validate_code_target,
 )
 
+from d810.optimizers.microcode.handler import ConfigParam
+
 if _IDA_AVAILABLE:
     from d810.hexrays.cfg_utils import (
         change_0way_block_successor,
@@ -134,6 +136,7 @@ class IndirectBranchResolver(_BASE_CLASS):
 
     NAME = "indirect_branch_resolver"
     DESCRIPTION = "Resolves obfuscated indirect jumps by analysing encoded jump tables"
+    CATEGORY = "Indirect Jumps"
     USES_DEFERRED_CFG = True  # Uses DeferredGraphModifier for CFG changes
     SAFE_MATURITIES: list[int] = []  # Populated after class definition when IDA is available
 
@@ -463,6 +466,9 @@ class IndirectBranchResolver(_BASE_CLASS):
     # TODO(phase5): Add frameless continuation fallback (see stack_tracker.cpp)
 
 
-# Populate SAFE_MATURITIES now that the class is defined and ida_hexrays is in scope.
+# Populate SAFE_MATURITIES and CONFIG_SCHEMA now that the class is defined.
 if _IDA_AVAILABLE:
     IndirectBranchResolver.SAFE_MATURITIES = [ida_hexrays.MMAT_LOCOPT]
+    IndirectBranchResolver.CONFIG_SCHEMA = FlowOptimizationRule.CONFIG_SCHEMA + (
+        ConfigParam("table_entry_size", int, 8, "Jump table entry size in bytes"),
+    )
