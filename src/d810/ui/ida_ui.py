@@ -476,6 +476,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                     try:
                         btn.clicked.disconnect()
                     except (TypeError, RuntimeError):
+                        # Signal may already be disconnected or widget already deleted
+                        # during IDA shutdown/finalization; safe to ignore.
                         pass
 
         except (TypeError, RuntimeError) as e:
