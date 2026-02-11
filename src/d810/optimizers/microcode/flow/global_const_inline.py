@@ -69,6 +69,7 @@ class GlobalConstantInliner(FlowOptimizationRule):
     pointer), the load is replaced with an immediate operand.
     """
 
+    CATEGORY = "Constant Folding"
     DESCRIPTION = "Inlines known constant values from read-only global addresses"
 
     # This rule does *not* modify the CFG; it only rewrites operands.

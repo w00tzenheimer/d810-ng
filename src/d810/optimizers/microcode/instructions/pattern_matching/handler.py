@@ -23,6 +23,7 @@ if typing.TYPE_CHECKING:
 
 
 class PatternMatchingRule(GenericPatternRule):
+    CATEGORY = "Pattern Matching"
     FUZZ_PATTERN: bool = True
 
     def __init__(self):

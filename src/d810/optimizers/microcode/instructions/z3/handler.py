@@ -18,6 +18,8 @@ class Z3Rule(GenericPatternRule):
     context for backward tracking of register/stack variable definitions.
     """
 
+    CATEGORY = "Z3 Simplification"
+
     def __init__(self):
         super().__init__()
         # Context for backward tracking (set during check_and_replace)

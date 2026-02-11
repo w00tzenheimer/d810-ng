@@ -567,6 +567,9 @@ class DeferredGraphModifier:
             # since multiple redirects to different targets would conflict
             if mod.mod_type == ModificationType.BLOCK_CREATE_WITH_REDIRECT:
                 key = (mod.mod_type, mod.block_serial, mod.new_target)
+            elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT:
+                key = (mod.mod_type, mod.block_serial, mod.new_target,
+                       mod.conditional_target, mod.fallthrough_target)
             else:
                 key = (mod.mod_type, mod.block_serial, mod.new_target)
 

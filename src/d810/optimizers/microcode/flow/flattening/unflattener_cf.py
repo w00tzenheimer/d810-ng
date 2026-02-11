@@ -16,6 +16,7 @@ from d810.core.logging import getLogger
 from d810.hexrays.cfg_utils import safe_verify
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.hexrays.hexrays_helpers import MicrocodeHelper, MicroInstruction, MicroOperand
+from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
 logger = getLogger("D810.unflattener_cf")
@@ -2048,6 +2049,12 @@ class UnflattenControlFlowRule(FlowOptimizationRule):
     Ported from pyhrdeobv2 (Eidolon).
     """
 
+    CATEGORY = "OLLVM Unflattening"
+    CONFIG_SCHEMA = FlowOptimizationRule.CONFIG_SCHEMA + (
+        ConfigParam("FORCE_UNFLATTEN", bool, False, "Force reset maturity for re-optimization"),
+        ConfigParam("SAFE_MODE", bool, False, "Enable safe mode to avoid aggressive transforms"),
+        ConfigParam("RUN_MLTPL_DISPATCHERS", bool, True, "Handle multiple dispatchers in one function"),
+    )
     DESCRIPTION = "CFG unflattening / dispatcher removal"
 
     def __init__(self):

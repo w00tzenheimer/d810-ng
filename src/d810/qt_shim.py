@@ -119,7 +119,19 @@ if not _QT_AVAILABLE:
 
         # Signal/Slot compatibility (will be set up by _setup_compatibility)
         @staticmethod
-        def pyqtSignal(*args, **kwargs): ...  # type: ignore[misc]
+        def pyqtSignal(*args, **kwargs):  # type: ignore[misc]
+            """Stub for pyqtSignal in non-GUI environments.
+
+            Returns a callable that acts as a no-op signal descriptor.
+            This allows class-level signal definitions to work without errors
+            in headless/test environments.
+            """
+            class _StubSignal:
+                """Stub signal that can be assigned and called without errors."""
+                def emit(self, *args, **kwargs): pass
+                def connect(self, *args, **kwargs): pass
+                def disconnect(self, *args, **kwargs): pass
+            return _StubSignal()
 
     class QtGui(ProxyNamespace):
         class QColor(ProxyClass):
@@ -164,6 +176,18 @@ if not _QT_AVAILABLE:
 
         class QActionGroup(QtCore.QObject): ...
 
+        class QStandardItemModel(QtCore.QObject):
+            def appendRow(self, item: Any) -> None: ...
+            def item(self, row: int, column: int = ...) -> Any: ...
+            def itemChanged(self): ...  # Signal
+
+        class QStandardItem:
+            def __init__(self, text: str = ...) -> None: ...
+            def setCheckable(self, checkable: bool) -> None: ...
+            def setCheckState(self, state: int) -> None: ...
+            def checkState(self) -> int: ...
+            def text(self) -> str: ...
+
     class QtWidgets(ProxyNamespace):
         class QApplication(QtCore.QObject):
             @staticmethod
@@ -182,7 +206,12 @@ if not _QT_AVAILABLE:
         class QButtonGroup(QtCore.QObject): ...
 
         class QLayout(QtCore.QObject):
-            def addWidget(self, widget: Any, stretch: int = ...) -> None: ...
+            def addWidget(
+                self,
+                widget: Any,
+                stretch: int = ...,
+                alignment: Any = ...,
+            ) -> None: ...
             def setContentsMargins(
                 self, left: int, top: int, right: int, bottom: int
             ) -> None: ...
@@ -228,6 +257,28 @@ if not _QT_AVAILABLE:
 
         class QStyleFactory(ProxyClass): ...
 
+        class QScrollArea(QWidget):
+            def __init__(self, parent: Any = ...) -> None: ...
+            def setWidgetResizable(self, resizable: bool) -> None: ...
+            def setWidget(self, widget: Any) -> None: ...
+            def setFrameShape(self, shape: int) -> None: ...
+            def widget(self) -> Any: ...
+
+        class QSpinBox(QWidget):
+            def __init__(self, parent: Any = ...) -> None: ...
+            def setRange(self, minimum: int, maximum: int) -> None: ...
+            def setValue(self, val: int) -> None: ...
+            def value(self) -> int: ...
+            def valueChanged(self): ...  # Signal
+
+        class QDoubleSpinBox(QWidget):
+            def __init__(self, parent: Any = ...) -> None: ...
+            def setRange(self, minimum: float, maximum: float) -> None: ...
+            def setDecimals(self, prec: int) -> None: ...
+            def setValue(self, val: float) -> None: ...
+            def value(self) -> float: ...
+            def valueChanged(self): ...  # Signal
+
         class QTabWidget(QWidget): ...
 
         class QTextEdit(QWidget): ...
@@ -243,8 +294,10 @@ if not _QT_AVAILABLE:
 
         class QToolButton(QWidget):
             def __init__(self, parent: Any = ...) -> None: ...
+            def setText(self, text: str) -> None: ...
             def setIcon(self, icon: Any) -> None: ...
             def setToolTip(self, tip: str) -> None: ...
+            def setFixedSize(self, w: int, h: int) -> None: ...
             def setContentsMargins(
                 self, left: int, top: int, right: int, bottom: int
             ) -> None: ...
@@ -255,7 +308,7 @@ if not _QT_AVAILABLE:
 
         class QMenu(QWidget):
             def __init__(self, parent: Any = ...) -> None: ...
-            def addAction(self, text: str) -> Any: ...
+            def addAction(self, *args: Any, **kwargs: Any) -> Any: ...
             def addSeparator(self) -> Any: ...
             def exec_(self, pos: Any) -> Any: ...
 
@@ -278,6 +331,11 @@ if not _QT_AVAILABLE:
             def setFont(self, font: Any) -> None: ...
             def setReadOnly(self, readonly: bool) -> None: ...
             def setOpenLinks(self, open: bool) -> None: ...
+            def setFrameShape(self, shape: int) -> None: ...
+            def setMaximumHeight(self, h: int) -> None: ...
+            def setVerticalScrollBarPolicy(self, policy: int) -> None: ...
+            def setHorizontalScrollBarPolicy(self, policy: int) -> None: ...
+            def setHtml(self, html: str) -> None: ...
             def moveCursor(self, operation: int, mode: int = ...) -> None: ...
             def setTextColor(self, color: Any) -> None: ...
             def insertPlainText(self, text: str) -> None: ...
@@ -288,6 +346,35 @@ if not _QT_AVAILABLE:
             def setText(self, text: str) -> None: ...
             def setTextInteractionFlags(self, flags: int) -> None: ...
             def repaint(self) -> None: ...
+
+        class QTableWidget(QWidget):
+            def __init__(self, parent: Any = ...) -> None: ...
+            def setColumnCount(self, columns: int) -> None: ...
+            def setRowCount(self, rows: int) -> None: ...
+            def rowCount(self) -> int: ...
+            def setHorizontalHeaderLabels(self, labels: list[str]) -> None: ...
+            def horizontalHeader(self) -> Any: ...
+            def setItem(self, row: int, column: int, item: Any) -> None: ...
+            def item(self, row: int, column: int) -> Any: ...
+            def setSortingEnabled(self, enable: bool) -> None: ...
+            def setSelectionBehavior(self, behavior: int) -> None: ...
+            def setEditTriggers(self, triggers: int) -> None: ...
+            def setRowHidden(self, row: int, hide: bool) -> None: ...
+            def isRowHidden(self, row: int) -> bool: ...
+            def setContextMenuPolicy(self, policy: int) -> None: ...
+            def customContextMenuRequested(self): ...  # Signal
+            def viewport(self) -> Any: ...
+            def indexAt(self, pos: Any) -> Any: ...
+            def selectionModel(self) -> Any: ...
+
+        class QTableWidgetItem:
+            def __init__(self, text: str = ...) -> None: ...
+            def setText(self, text: str) -> None: ...
+            def text(self) -> str: ...
+            def setFlags(self, flags: int) -> None: ...
+            def setTextAlignment(self, alignment: int) -> None: ...
+            def font(self) -> Any: ...
+            def setFont(self, font: Any) -> None: ...
 
         class QTreeWidget(QWidget):
             def __init__(self, parent: Any = ...) -> None: ...
@@ -335,11 +422,15 @@ if not _QT_AVAILABLE:
             def addWidget(self, widget: Any) -> None: ...
             def setSizes(self, sizes: list[int]) -> None: ...
 
+        class QGroupBox(QWidget):
+            def __init__(self, title: str = ..., parent: Any = ...) -> None: ...
+
         class QFrame(QWidget):
             def __init__(self, parent: Any = ...) -> None: ...
             def setFrameShape(self, shape: int) -> None: ...
             def setFrameShadow(self, shadow: int) -> None: ...
 
+            HLine: int = ...  # type: ignore[assignment]
             VLine: int = ...  # type: ignore[assignment]
             Sunken: int = ...  # type: ignore[assignment]
 
@@ -373,6 +464,8 @@ if not _QT_AVAILABLE:
     QPalette = QtGui.QPalette
     QPixmap = QtGui.QPixmap
     QShortcut = QtGui.QShortcut
+    QStandardItem = QtGui.QStandardItem
+    QStandardItemModel = QtGui.QStandardItemModel
     QTextCursor = QtGui.QTextCursor
     QAbstractItemView = QtWidgets.QAbstractItemView
     QApplication = QtWidgets.QApplication
@@ -389,12 +482,18 @@ if not _QT_AVAILABLE:
     QMenu = QtWidgets.QMenu
     QMessageBox = QtWidgets.QMessageBox
     QPushButton = QtWidgets.QPushButton
+    QScrollArea = QtWidgets.QScrollArea
     QSizePolicy = QtWidgets.QSizePolicy
+    QSpinBox = QtWidgets.QSpinBox
+    QDoubleSpinBox = QtWidgets.QDoubleSpinBox
     QSplitter = QtWidgets.QSplitter
+    QGroupBox = QtWidgets.QGroupBox
     QStatusBar = QtWidgets.QStatusBar
     QStyle = QtWidgets.QStyle
     QStyleFactory = QtWidgets.QStyleFactory
     QTabWidget = QtWidgets.QTabWidget
+    QTableWidget = QtWidgets.QTableWidget
+    QTableWidgetItem = QtWidgets.QTableWidgetItem
     QTextBrowser = QtWidgets.QTextBrowser
     QTextEdit = QtWidgets.QTextEdit
     QToolButton = QtWidgets.QToolButton
@@ -403,12 +502,17 @@ if not _QT_AVAILABLE:
     QVBoxLayout = QtWidgets.QVBoxLayout
     QWidget = QtWidgets.QWidget
     _QT_MODULE = None
+
+    # Pre-combined TextInteractionFlag constant for headless mode
+    TEXT_SELECTABLE = 0
+
 # Try PySide6 first (IDA 9.2+, Qt6)
 else:
     try:
         from PySide6 import QtCore, QtGui, QtWidgets
         from PySide6.QtCore import QEvent, QObject, Qt, QTimer
         from PySide6.QtGui import (
+            QBrush,
             QColor,
             QCursor,
             QFont,
@@ -418,6 +522,8 @@ else:
             QPalette,
             QPixmap,
             QShortcut,
+            QStandardItem,
+            QStandardItemModel,
             QTextCursor,
         )
         from PySide6.QtWidgets import (
@@ -426,7 +532,10 @@ else:
             QCheckBox,
             QComboBox,
             QDialog,
+            QDoubleSpinBox,
             QFileDialog,
+            QFrame,
+            QGroupBox,
             QHBoxLayout,
             QHeaderView,
             QLabel,
@@ -435,12 +544,18 @@ else:
             QMenu,
             QMessageBox,
             QPushButton,
+            QScrollArea,
             QSizePolicy,
+            QSpinBox,
             QSplitter,
             QStatusBar,
             QStyleFactory,
             QTabWidget,
+            QTableWidget,
+            QTableWidgetItem,
+            QTextBrowser,
             QTextEdit,
+            QToolButton,
             QTreeWidget,
             QTreeWidgetItem,
             QVBoxLayout,
@@ -452,12 +567,18 @@ else:
         QT5 = False
         QT6 = True
         _QT_MODULE = "PySide6"
+
+        # Pre-combined TextInteractionFlag for text selection (PySide6)
+        TEXT_SELECTABLE = QtCore.Qt.TextInteractionFlag(
+            QtCore.Qt.TextSelectableByMouse.value | QtCore.Qt.TextSelectableByKeyboard.value
+        )
     except ImportError:
         # Fall back to PyQt5 (IDA 9.1, Qt5)
         try:
             from PyQt5 import QtCore, QtGui, QtWidgets, sip
             from PyQt5.QtCore import QEvent, QObject, Qt, QTimer
             from PyQt5.QtGui import (
+                QBrush,
                 QColor,
                 QCursor,
                 QFont,
@@ -465,6 +586,8 @@ else:
                 QKeyEvent,
                 QKeySequence,
                 QPalette,
+                QStandardItem,
+                QStandardItemModel,
                 QTextCursor,
             )
             from PyQt5.QtWidgets import (
@@ -473,7 +596,10 @@ else:
                 QCheckBox,
                 QComboBox,
                 QDialog,
+                QDoubleSpinBox,
                 QFileDialog,
+                QFrame,
+                QGroupBox,
                 QHBoxLayout,
                 QHeaderView,
                 QLabel,
@@ -483,13 +609,19 @@ else:
                 QMessageBox,
                 QPixmap,
                 QPushButton,
+                QScrollArea,
                 QShortcut,
                 QSizePolicy,
+                QSpinBox,
                 QSplitter,
                 QStatusBar,
                 QStyleFactory,
                 QTabWidget,
+                QTableWidget,
+                QTableWidgetItem,
+                QTextBrowser,
                 QTextEdit,
+                QToolButton,
                 QTreeWidget,
                 QTreeWidgetItem,
                 QVBoxLayout,
@@ -501,6 +633,9 @@ else:
             QT5 = True
             QT6 = False
             _QT_MODULE = "PyQt5"
+
+            # Pre-combined TextInteractionFlag for text selection (PyQt5)
+            TEXT_SELECTABLE = QtCore.Qt.TextSelectableByMouse | QtCore.Qt.TextSelectableByKeyboard
         except ImportError:
             raise ImportError(
                 "Neither PySide6 nor PyQt5 could be imported. "
@@ -539,6 +674,8 @@ def _setup_compatibility() -> None:
         QMessageBox.exec_ = QMessageBox.exec  # type: ignore[method-assign]
     if not hasattr(QMenu, "exec_"):
         QMenu.exec_ = QMenu.exec  # type: ignore[method-assign]
+    if not hasattr(QDialog, "exec_"):
+        QDialog.exec_ = QDialog.exec  # type: ignore[method-assign]
 
     # PySide6 uses Signal/Slot, but PyQt5 uses pyqtSignal/pyqtSlot
     # Create aliases for backward compatibility
@@ -734,6 +871,8 @@ __all__ = [
     "QPixmap",
     "QColor",
     "QIcon",
+    "QStandardItem",
+    "QStandardItemModel",
     "QTextCursor",
     # Qt Widgets
     "QAbstractItemView",
@@ -743,6 +882,7 @@ __all__ = [
     "QDialog",
     "QFileDialog",
     "QFrame",
+    "QGroupBox",
     "QHBoxLayout",
     "QHeaderView",
     "QLabel",
@@ -751,12 +891,18 @@ __all__ = [
     "QMenu",
     "QMessageBox",
     "QPushButton",
+    "QScrollArea",
     "QShortcut",
+    "QSizePolicy",
+    "QSpinBox",
+    "QDoubleSpinBox",
     "QSplitter",
     "QStatusBar",
     "QStyle",
     "QStyleFactory",
     "QTabWidget",
+    "QTableWidget",
+    "QTableWidgetItem",
     "QTextBrowser",
     "QTextEdit",
     "QToolButton",
@@ -770,4 +916,6 @@ __all__ = [
     "get_text_margins_as_tuple",
     "qt_flag_or",
     "wrapinstance",
+    # Constants
+    "TEXT_SELECTABLE",
 ]

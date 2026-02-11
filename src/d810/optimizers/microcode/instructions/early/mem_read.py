@@ -8,10 +8,16 @@ from d810.hexrays.ida_utils import (
     is_read_only_inited_var,
     segment_is_read_only,
 )
+from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.instructions.early.handler import EarlyRule
 
 
 class SetGlobalVariablesToZero(EarlyRule):
+    CATEGORY = "Early Transforms"
+    CONFIG_SCHEMA = EarlyRule.CONFIG_SCHEMA + (
+        ConfigParam("ro_dword_min_ea", str, "", "Minimum address for RO data range (hex)"),
+        ConfigParam("ro_dword_max_ea", str, "", "Maximum address for RO data range (hex)"),
+    )
     DESCRIPTION = "This rule can be used to patch memory read"
 
     @property
