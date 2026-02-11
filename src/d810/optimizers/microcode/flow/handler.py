@@ -6,7 +6,7 @@ import idc
 
 from d810.core import getLogger, Registrant
 from d810.hexrays.hexrays_formatters import maturity_to_string
-from d810.optimizers.microcode.handler import DEFAULT_FLOW_MATURITIES, OptimizationRule
+from d810.optimizers.microcode.handler import ConfigParam, DEFAULT_FLOW_MATURITIES, OptimizationRule
 
 logger = getLogger("D810.optimizer")
 
@@ -38,6 +38,12 @@ class FlowOptimizationRule(OptimizationRule, Registrant, abc.ABC):
     If a rule is configured to run at maturities outside SAFE_MATURITIES, a warning
     is emitted at initialization time.
     """
+
+    CATEGORY = "Control Flow"
+    CONFIG_SCHEMA = OptimizationRule.CONFIG_SCHEMA + (
+        ConfigParam("whitelisted_functions", list, [], "Function EAs to process (hex strings)"),
+        ConfigParam("blacklisted_functions", list, [], "Function EAs to skip (hex strings)"),
+    )
 
     # CFG modification safety markers - subclasses should override
     USES_DEFERRED_CFG: bool = True  # Assume safe by default
@@ -122,7 +128,7 @@ class FlowOptimizationRule(OptimizationRule, Registrant, abc.ABC):
             )
         if "blacklisted_functions" in self.config:
             self.use_blacklist = True
-            for func_ea in self.config["whitelisted_functions"]:
+            for func_ea in self.config["blacklisted_functions"]:
                 self.blacklisted_function_ea_list.append(int(func_ea, 16))
             func_name_list = [
                 idc.get_func_name(ea) for ea in self.blacklisted_function_ea_list

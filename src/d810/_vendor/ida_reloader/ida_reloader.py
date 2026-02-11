@@ -350,11 +350,15 @@ class DependencyGraph:
         for mod, deps in self._module_dependencies.items():
             dset = set(deps)
             # Add implicit parent packages (pkg.sub → pkg)
+            # Skip if parent already has explicit forward dependency on child (re-export pattern)
             parts = mod.split(".")
             for i in range(1, len(parts)):
                 parent = ".".join(parts[:i])
                 if parent.startswith(self._pkg_prefix):
-                    dset.add(parent)
+                    # Check if parent explicitly depends on this module (re-export case)
+                    parent_deps = self._module_dependencies.get(parent, set())
+                    if mod not in parent_deps:
+                        dset.add(parent)
             adj[mod] = dset
         return adj
 

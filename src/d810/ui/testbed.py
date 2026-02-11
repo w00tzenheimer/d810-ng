@@ -24,6 +24,51 @@ from d810.qt_shim import QtCore, QtGui, QtWidgets, get_text_margins_as_tuple
 LOGGER = getLogger(__name__)
 
 
+def _is_dark_theme() -> bool:
+    """Detect if the current Qt theme uses a dark background."""
+    try:
+        app = QtWidgets.QApplication.instance()
+        if app:
+            bg = app.palette().color(app.palette().Window)
+            # Luminance formula: dark if < 128
+            return (bg.red() * 299 + bg.green() * 587 + bg.blue() * 114) / 1000 < 128
+    except Exception:
+        # Theme probing is best-effort; fall back to dark palette defaults.
+        pass
+    return True  # Default to dark (IDA Pro 9 default)
+
+
+# --- Theme-Adaptive Colors ---
+if _is_dark_theme():
+    # Dark mode - bright colors
+    COLORS = {
+        "default": "#CCCCCC",
+        "running": "#42A5F5",   # bright cyan
+        "pass": "#66BB6A",      # bright green
+        "fail": "#EF5350",      # bright red
+        "error": "#FF7043",     # orange-red
+        "skip": "#9E9E9E",      # gray
+        "info_log": "#B0B0B0",
+        "success_log": "#66BB6A",
+        "error_log": "#EF5350",
+        "warning_log": "#FFA726",
+    }
+else:
+    # Light mode - darker colors
+    COLORS = {
+        "default": "#333333",
+        "running": "#1565C0",   # dark blue
+        "pass": "#2E7D32",      # dark green
+        "fail": "#C62828",      # dark red
+        "error": "#BF360C",     # dark orange
+        "skip": "#757575",      # dark gray
+        "info_log": "#616161",
+        "success_log": "#2E7D32",
+        "error_log": "#C62828",
+        "warning_log": "#E65100",
+    }
+
+
 # --- Test Results ---
 TEST_RESULT_NONE = 0
 TEST_RESULT_RUNNING = 1
@@ -46,12 +91,12 @@ ITEM_CATEGORY_MODULE = 2
 ITEM_CATEGORY_SUITE = 3
 ITEM_CATEGORY_TEST = 4
 
-# --- UI Log Colors ---
-LOG_COLOR_INFORMATION = QtGui.QColor(200, 200, 200)
-LOG_COLOR_ERROR = QtGui.QColor(234, 52, 95)
-LOG_COLOR_FAILED = QtGui.QColor(234, 52, 95)
-LOG_COLOR_WARNING = QtGui.QColor(220, 206, 135)
-LOG_COLOR_SUCCESS = QtGui.QColor(138, 211, 11)
+# --- UI Log Colors (theme-adaptive) ---
+LOG_COLOR_INFORMATION = QtGui.QColor(COLORS["info_log"])
+LOG_COLOR_ERROR = QtGui.QColor(COLORS["error_log"])
+LOG_COLOR_FAILED = QtGui.QColor(COLORS["fail"])
+LOG_COLOR_WARNING = QtGui.QColor(COLORS["warning_log"])
+LOG_COLOR_SUCCESS = QtGui.QColor(COLORS["success_log"])
 
 
 def make_main_layout(host_widget=None):
@@ -774,15 +819,15 @@ class StatusLabel(QtWidgets.QLabel):
         ]
         if run_info.failed_count:
             msgs.append(
-                f'<font color="{LOG_COLOR_FAILED.name()}">{run_info.failed_count} failed</font>'
+                f'<font color="{COLORS["fail"]}">{run_info.failed_count} failed</font>'
             )
         if run_info.error_count:
             msgs.append(
-                f'<font color="{LOG_COLOR_ERROR.name()}">{run_info.error_count} errors</font>'
+                f'<font color="{COLORS["error"]}">{run_info.error_count} errors</font>'
             )
         if run_info.skip_count:
             msgs.append(
-                f'<font color="{LOG_COLOR_WARNING.name()}">{run_info.skip_count} skipped</font>'
+                f'<font color="{COLORS["warning_log"]}">{run_info.skip_count} skipped</font>'
             )
         self.setText(", ".join(msgs))
 
@@ -819,6 +864,7 @@ class UnitTestTreeView(QtWidgets.QTreeWidget):
         self._all_items_id_map = {}
         self._test_cases = []
         self._root_test_item: QtWidgets.QTreeWidgetItem
+        self._filter_text = ""
 
     def set_test_manager(self, manager):
         self._test_manager = manager
@@ -841,7 +887,11 @@ class UnitTestTreeView(QtWidgets.QTreeWidget):
             )
             return 0
 
-        self._root_test_item = QtWidgets.QTreeWidgetItem(self, [start_dir])
+        # Show only last 2 path components in the tree, full path as tooltip
+        path_obj = Path(start_dir)
+        display_name = "/".join(path_obj.parts[-2:]) if len(path_obj.parts) >= 2 else start_dir
+        self._root_test_item = QtWidgets.QTreeWidgetItem(self, [display_name])
+        self._root_test_item.setToolTip(0, start_dir)  # Full path as tooltip
         self._root_test_item.setData(
             0, QtCore.Qt.UserRole, (ITEM_CATEGORY_ALL, start_dir)
         )
@@ -851,6 +901,9 @@ class UnitTestTreeView(QtWidgets.QTreeWidget):
 
         test_count = 0
         for test_id in self._test_manager.iter_all_test_ids():
+            # Skip unittest discovery failures
+            if "_FailedTest" in test_id:
+                continue
             test_count += 1
             self._add_test_to_tree(test_id)
 
@@ -884,15 +937,16 @@ class UnitTestTreeView(QtWidgets.QTreeWidget):
         self._test_cases.append(test_item)
 
     def _set_item_icon_state(self, item, state):
+        # Theme-adaptive colors
         colors = {
-            TEST_RESULT_NONE: QtGui.QColor("black"),
-            TEST_RESULT_RUNNING: QtGui.QColor("blue"),
-            TEST_RESULT_PASS: QtGui.QColor("darkGreen"),
-            TEST_RESULT_FAIL: QtGui.QColor("red"),
-            TEST_RESULT_ERROR: QtGui.QColor("darkRed"),
-            TEST_RESULT_SKIP: QtGui.QColor("gray"),
+            TEST_RESULT_NONE: QtGui.QColor(COLORS["default"]),
+            TEST_RESULT_RUNNING: QtGui.QColor(COLORS["running"]),
+            TEST_RESULT_PASS: QtGui.QColor(COLORS["pass"]),
+            TEST_RESULT_FAIL: QtGui.QColor(COLORS["fail"]),
+            TEST_RESULT_ERROR: QtGui.QColor(COLORS["error"]),
+            TEST_RESULT_SKIP: QtGui.QColor(COLORS["skip"]),
         }
-        color = colors.get(state, QtGui.QColor("black"))
+        color = colors.get(state, QtGui.QColor(COLORS["default"]))
         item.setForeground(0, QtGui.QBrush(color))
         item.setData(0, QtCore.Qt.UserRole + 1, state)
 
@@ -935,6 +989,34 @@ class UnitTestTreeView(QtWidgets.QTreeWidget):
 
     def on_all_tests_finished(self):
         pass
+
+    def apply_filter(self, text: str) -> None:
+        """Filter tree items based on search text."""
+        self._filter_text = text.lower()
+        if not self._filter_text:
+            self._set_all_visible(self._root_test_item, True)
+            return
+        self._set_all_visible(self._root_test_item, False)
+        self._show_matching(self._root_test_item, self._filter_text)
+
+    def _set_all_visible(self, parent, visible):
+        """Recursively set visibility of all items."""
+        for i in range(parent.childCount()):
+            child = parent.child(i)
+            child.setHidden(not visible)
+            self._set_all_visible(child, visible)
+
+    def _show_matching(self, parent, text):
+        """Recursively show matching items and their ancestors."""
+        any_visible = False
+        for i in range(parent.childCount()):
+            child = parent.child(i)
+            child_matches = text in child.text(0).lower()
+            descendant_matches = self._show_matching(child, text)
+            if child_matches or descendant_matches:
+                child.setHidden(False)
+                any_visible = True
+        return any_visible
 
     def _make_context_menu(self, pos):
         item = self.itemAt(pos)
@@ -1047,6 +1129,16 @@ class TestRunnerForm(ida_kernwin.PluginForm):
         dir_layout.addWidget(self._stop_on_error_cb)
         main_lay.addLayout(dir_layout)
 
+        # Add filter bar
+        filter_layout = make_minor_horizontal_layout()
+        filter_label = QtWidgets.QLabel("Filter:")
+        filter_layout.addWidget(filter_label)
+        self._filter_edit = QtWidgets.QLineEdit(self.parent_widget)
+        self._filter_edit.setPlaceholderText("Filter tests...")
+        self._filter_edit.setClearButtonEnabled(True)
+        filter_layout.addWidget(self._filter_edit, 1)
+        main_lay.addLayout(filter_layout)
+
         splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical, self.parent_widget)
         main_lay.addWidget(splitter, 1)
 
@@ -1070,6 +1162,7 @@ class TestRunnerForm(ida_kernwin.PluginForm):
 
         self._status_lbl = StatusLabel(self.parent_widget)
         self._status_lbl.set_test_manager(self._test_manager)
+        self._status_lbl.setContentsMargins(0, 2, 0, 2)  # Compact status bar
         main_lay.addWidget(self._status_lbl)
 
         btn_layout = make_minor_horizontal_layout()
@@ -1090,6 +1183,9 @@ class TestRunnerForm(ida_kernwin.PluginForm):
         self._view.run_tests.connect(self._run_tests)
         self._view.run_setup_only.connect(self._run_test_setup_only)
         self._view.run_without_tear_down.connect(self._run_test_without_tear_down)
+
+        # Connect filter text changed signal
+        self._filter_edit.textChanged.connect(self._view.apply_filter)
 
         UiStream.set_ui(self)
 

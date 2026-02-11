@@ -10,7 +10,7 @@
 //   - Portable trailing-zero-count (d810_tzcnt32)
 //
 // Runtime CPUID + XGETBV detection adapted from ida-sigmaker's
-// simd_support.hpp (https://github.com/ajkhoury/ida-sigmaker).
+// simd_support.hpp (https://github.com/mahmoudimus/ida-sigmaker).
 #ifndef D810_SIMD_H
 #define D810_SIMD_H
 

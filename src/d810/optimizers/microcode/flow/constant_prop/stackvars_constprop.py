@@ -25,6 +25,7 @@ from d810.hexrays.cfg_utils import (
 )
 from d810.hexrays.hexrays_formatters import maturity_to_string
 from d810.hexrays.hexrays_helpers import AND_TABLE
+from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
 logger = getLogger(__name__)
@@ -34,6 +35,11 @@ ConstMap = dict[str, tuple[int, int]]  # var  -> (value, size)
 
 class StackVariableConstantPropagationRule(FlowOptimizationRule):
     """Forward constant propagation for stack variables (whole function)."""
+
+    CATEGORY = "Constant Propagation"
+    CONFIG_SCHEMA = FlowOptimizationRule.CONFIG_SCHEMA + (
+        ConfigParam("cython_enabled", bool, False, "Use Cython fast path for propagation"),
+    )
 
     DESCRIPTION = "Fold stack variables that are assigned constant values across the whole function"
 

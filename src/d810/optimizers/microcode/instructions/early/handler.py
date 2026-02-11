@@ -8,6 +8,9 @@ from d810.optimizers.microcode.instructions.handler import (
 
 
 class EarlyRule(GenericPatternRule):
+
+    CATEGORY = "Early Transforms"
+
     @property
     @abc.abstractmethod
     def PATTERN(self) -> AstNode:

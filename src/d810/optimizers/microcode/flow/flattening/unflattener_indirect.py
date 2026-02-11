@@ -4,6 +4,7 @@ import ida_hexrays
 from d810.core import getLogger
 from d810.hexrays.hexrays_helpers import AND_TABLE, append_mop_if_not_in_list
 from d810.hexrays.tracker import MopHistory, MopTracker
+from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.flattening.generic import (
     GenericDispatcherBlockInfo,
     GenericDispatcherCollector,
@@ -81,6 +82,9 @@ class LabelTableInfo(object):
 
 class UnflattenerTigressIndirect(GenericDispatcherUnflatteningRule):
     DESCRIPTION = ""
+    CONFIG_SCHEMA = GenericDispatcherUnflatteningRule.CONFIG_SCHEMA + (
+        ConfigParam("goto_table_info", dict, {}, "Goto table info mapping (hex EA -> table config)"),
+    )
     DEFAULT_UNFLATTENING_MATURITIES = [ida_hexrays.MMAT_LOCOPT]
     DEFAULT_MAX_DUPLICATION_PASSES = 20
     DEFAULT_MAX_PASSES = 1

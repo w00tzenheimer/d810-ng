@@ -81,6 +81,7 @@ import d810.core.typing as typing
 from d810.core import getLogger
 from d810.hexrays.hexrays_helpers import extract_literal_from_mop
 from d810.hexrays.ida_utils import is_never_written_var
+from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
@@ -90,6 +91,12 @@ peephole_logger = getLogger(__name__)
 
 class FoldReadonlyDataRule(PeepholeSimplificationRule):
     """Replace constant table look-ups by immediates."""
+
+    CATEGORY = "Constant Folding"
+    CONFIG_SCHEMA = PeepholeSimplificationRule.CONFIG_SCHEMA + (
+        ConfigParam("fold_writable_constants", bool, False, "Fold from writable segments with no write xrefs"),
+        ConfigParam("allow_executable_readonly", bool, False, "Allow folding from R+X segments"),
+    )
 
     DESCRIPTION = (
         "Fold constant loads from .rodata array. "

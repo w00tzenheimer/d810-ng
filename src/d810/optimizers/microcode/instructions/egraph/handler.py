@@ -356,6 +356,8 @@ class CanonicalPatternRule(GenericPatternRule):
     instruction.
     """
 
+    CATEGORY = "MBA Patterns"
+
     FUZZ_PATTERN: bool = (
         False  # Fuzzy pattern generation is unused with canonical matching
     )

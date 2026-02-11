@@ -1,6 +1,23 @@
+from dataclasses import dataclass
+from typing import Any
+
 import ida_hexrays
 
 from d810.hexrays.hexrays_formatters import string_to_maturity
+
+
+@dataclass(frozen=True)
+class ConfigParam:
+    """Typed metadata for a single configuration parameter.
+
+    Used by the UI to auto-generate proper editors for rule configuration.
+    """
+
+    name: str
+    type: type  # bool, int, str, list, float, dict
+    default: Any
+    description: str
+    choices: tuple | None = None  # for enum-like params
 
 # Practical maturities - MMAT_GLBOPT3 is rarely/never called by Hex-Rays
 # MMAT_GLBOPT2 is the latest practical maturity level for most operations
@@ -17,6 +34,26 @@ DEFAULT_FLOW_MATURITIES = [ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1]
 class OptimizationRule:
     NAME = None
     DESCRIPTION = None
+    CATEGORY: str = "General"
+    CONFIG_SCHEMA: tuple[ConfigParam, ...] = (
+        ConfigParam(
+            "maturities",
+            list,
+            [],
+            "Microcode maturity levels to run at",
+            choices=(
+                "MMAT_GENERATED",
+                "MMAT_PREOPTIMIZED",
+                "MMAT_LOCOPT",
+                "MMAT_CALLS",
+                "MMAT_GLBOPT1",
+                "MMAT_GLBOPT2",
+                "MMAT_GLBOPT3",
+                "MMAT_LVARS",
+            ),
+        ),
+        ConfigParam("dump_intermediate_microcode", bool, False, "Dump microcode for debugging"),
+    )
 
     def __init__(self):
         self.maturities = []

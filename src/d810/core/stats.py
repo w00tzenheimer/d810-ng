@@ -99,6 +99,9 @@ class OptimizationStatistics:
         default_factory=lambda: EventEmitter[OptimizationEvent]()
     )
 
+    # Snapshot of last reported stats (preserved across reset())
+    _last_report: Dict[str, Any] = dataclasses.field(default_factory=dict)
+
     def reset(self) -> None:
         self.instruction_optimizer_usage.clear()
         self.instruction_rule_usage.clear()
@@ -284,6 +287,9 @@ class OptimizationStatistics:
     # -------------------------------------------------------------------------
 
     def report(self) -> None:
+        # Save snapshot before logging (so last_report() returns the last run's data)
+        self._last_report = self.summary()
+
         # Optimizers
         for optimizer_name, nb_match in self.instruction_optimizer_usage.items():
             if nb_match > 0:
@@ -351,6 +357,19 @@ class OptimizationStatistics:
             "cycles_detected": dict(self.cycles_detected),
             "total_cycles_detected": self.total_cycles_detected,
         }
+
+    def last_report(self) -> Dict[str, Any]:
+        """Get the last reported statistics snapshot.
+
+        This returns the statistics from the last time report() was called,
+        which is preserved even after reset() is called. This allows UI actions
+        to display stats from the most recent deobfuscation run.
+
+        Returns:
+            Dictionary with the last reported statistics, or empty dict if
+            report() has never been called.
+        """
+        return dict(self._last_report)
 
     # -------------------------------------------------------------------------
     # JSON Serialization APIs

@@ -25,6 +25,8 @@ class InstructionOptimizationRule(OptimizationRule, Registrant, abc.ABC):
     collecting concrete rules for presentation in the GUI.
     """
 
+    CATEGORY = "Instruction"
+
     def __init__(self):
         super().__init__()
         self.maturities = []

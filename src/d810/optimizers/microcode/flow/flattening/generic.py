@@ -80,6 +80,7 @@ from d810.optimizers.microcode.flow.flattening.loop_prover import (
     SingleIterationLoopTracker,
     prove_single_iteration,
 )
+from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
 
@@ -503,6 +504,8 @@ class GenericDispatcherCollector(ida_hexrays.minsn_visitor_t):
 
 class GenericUnflatteningRule(FlowOptimizationRule):
 
+    CATEGORY = "OLLVM Unflattening"
+
     # Practical maturities - MMAT_GLBOPT3 is rarely/never called by Hex-Rays
     # MMAT_GLBOPT2 is the latest practical maturity level
     DEFAULT_UNFLATTENING_MATURITIES = [
@@ -725,6 +728,14 @@ class GenericUnflatteningRule(FlowOptimizationRule):
 
 
 class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
+
+    CONFIG_SCHEMA = GenericUnflatteningRule.CONFIG_SCHEMA + (
+        ConfigParam("max_passes", int, 5, "Maximum optimization passes"),
+        ConfigParam("max_duplication_passes", int, 20, "Maximum duplication passes"),
+        ConfigParam("min_dispatcher_internal_block", int, 2, "Minimum internal blocks for dispatcher detection"),
+        ConfigParam("min_dispatcher_exit_block", int, 2, "Minimum exit blocks for dispatcher detection"),
+        ConfigParam("min_dispatcher_comparison_value", int, 2, "Minimum comparison values for dispatcher"),
+    )
 
     MOP_TRACKER_MAX_NB_BLOCK = 100
     MOP_TRACKER_MAX_NB_PATH = 100

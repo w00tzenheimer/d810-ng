@@ -73,6 +73,8 @@ from d810.hexrays.table_utils import (
     validate_code_target,
 )
 
+from d810.optimizers.microcode.handler import ConfigParam
+
 if _IDA_AVAILABLE:
     from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
@@ -139,6 +141,7 @@ class IndirectCallResolver(_BASE_CLASS):
 
     NAME = "indirect_call_resolver"
     DESCRIPTION = "Resolves obfuscated indirect calls by analysing encoded call tables"
+    CATEGORY = "Indirect Calls"
     # IndirectCallResolver only modifies instruction content (opcodes and
     # operands) -- it never adds/removes CFG edges or blocks.  Therefore it
     # is safe at any maturity and does not need DeferredGraphModifier.
@@ -765,9 +768,12 @@ class IndirectCallResolver(_BASE_CLASS):
     # TODO(phase6): pre-computed XOR index brute force
 
 
-# Populate SAFE_MATURITIES now that the class is defined and ida_hexrays is in scope.
+# Populate SAFE_MATURITIES and CONFIG_SCHEMA now that the class is defined.
 if _IDA_AVAILABLE:
     IndirectCallResolver.SAFE_MATURITIES = [
         ida_hexrays.MMAT_CALLS,
         ida_hexrays.MMAT_GLBOPT1,
     ]
+    IndirectCallResolver.CONFIG_SCHEMA = FlowOptimizationRule.CONFIG_SCHEMA + (
+        ConfigParam("table_entry_size", int, 8, "Call table entry size in bytes"),
+    )
