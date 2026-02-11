@@ -27,13 +27,114 @@ D E O B F U S C A T I O N
 D └───── 8 ─────┘ └─10──┘
 ```
 
+## Using D-810 ng
+
+Load the plugin by using the `Ctrl-Shift-D` shortcut, you should see this configuration GUI
+
+!["Configuration Gui"](./docs/source/images/gui_plugin_configuration.png "Configuration GUI")
+
+Click on a rule to see more information about it:
+
+!["Rule View Gui"](./docs/source/images/gui_plugin_configuration_v2.png "Rule View")
+
+## Features Overview
+
+### Instruction-Level Optimizations
+
+D-810 operates on IDA Hex-Rays microcode at multiple maturity levels. Instruction rules simplify obfuscated expressions before and during decompilation.
+
+| Category | Rules | Description |
+|----------|-------|-------------|
+| **MBA (Mixed Boolean-Arithmetic)** | `Add`, `Sub`, `Mul`, `And`, `Or`, `Xor`, `Bnot`, `Neg`, `Mov` | Simplifies MBA-obfuscated expressions (e.g. `(a+b)-2*(a&b) => a^b`). Z3-verified DSL rules in `d810/mba/rules/`. |
+| **Hacker's Delight** | `Add_HackersDelight*`, `And_HackersDelight*`, etc. | Bit-twiddling equivalences from Hacker's Delight. |
+| **O-LLVM patterns** | `Add_OllvmRule_*`, `And_OllvmRule_*`, `Or_OllvmRule_1` | Obfuscator-LLVM-specific MBA patterns. |
+| **Constant folding** | `CstSimplificationRule1–22` | Arithmetic and logical constant simplifications. |
+| **Predicate simplifications** | `Pred0Rule*`, `PredFFRule*`, `PredSetzRule*`, `PredSetnzRule*` | Opaque predicate removal, setz/setnz/lnot/smod simplification. |
+| **Factor rules** | `AndBnot_FactorRule_*`, `Xor_FactorRule_*`, etc. | Algebraic factorization and rewriting. |
+| **Chain rules** | `AndChain`, `OrChain`, `XorChain`, `ArithmeticChain` | Simplifies chains of the same operation. |
+| **Z3 rules** | `Z3ConstantOptimization`, `Z3setzRuleGeneric`, `Z3SmodRuleGeneric`, etc. | SMT-based simplification when template matching fails. |
+| **Peephole** | `FoldReadonlyDataRule`, `LocalizedConstantPropagationRule` | Folds reads from readonly data, constant propagation. |
+| **Hodur-specific** | `Xor_Hodur_1`, `Bnot_Hodur_1`, `Or_Hodur_1`, `Or_Hodur_2` | MBA patterns seen in Hodur (PlugX) malware. |
+
+### Control-Flow Unflatteners
+
+Flow optimizers restore natural control flow from flattened dispatchers. Rule order matters; unflatteners run in sequence.
+
+| Unflattener | Target | Description |
+|-------------|--------|-------------|
+| **Unflattener** | O-LLVM | Removes O-LLVM-style control-flow flattening: switch/if-chain dispatcher with state variable. |
+| **UnflattenerSwitchCase** | Tigress | Tigress with switch-case dispatcher (`m_jtbl`). |
+| **UnflattenerTigressIndirect** | Tigress | Tigress with indirect jump (`m_ijmp`), requires `goto_table_info` config. |
+| **HodurUnflattener** | Hodur (PlugX) | Nested `while(1)` state machines with `jnz state, #CONST`; no switch dispatcher. |
+| **BadWhileLoop** | Approov | Approov-style `while(v8 != C)` with state constants in 0xF6000–0xF6FFF. |
+| **UnflattenerFakeJump** | Generic | Removes conditional jumps that are always/never taken per predecessor. |
+| **SingleIterationLoopUnflattener** | Residual | Cleans single-iteration loops: `INIT == CHECK` and `UPDATE != CHECK`. |
+| **UnflattenControlFlowRule** (experimental) | Generic | Alternative CFG-based unflattener using path emulation. |
+
+### Flow Optimizations (non-unflattening)
+
+| Rule | Description |
+|------|-------------|
+| **BlockMerger** | Merges sequential blocks when safe. |
+| **JumpFixer** | Resolves opaque/constant-condition jumps (``JnzRule*``, ``JbRule1``, ``JaeRule1``, ``CompareConstantRule*``, ``JmpRuleZ3Const``). |
+| **GlobalConstantInliner** | Inlines global constants used as immediates. |
+| **indirect_call_resolver** | Resolves `m_icall` via function-pointer table analysis. |
+| **indirect_branch_resolver** | Resolves indirect branches via jump-table analysis. |
+| **FixPredecessorOfConditionalJumpBlock** | Fixes predecessor edges when jump direction is known. |
+
+### Supported Obfuscators / Patterns
+
+| Obfuscator | Config | Unflattener(s) | Notes |
+|------------|--------|----------------|-------|
+| O-LLVM (obfuscator-llvm) | `default_unflattening_ollvm.json` | `Unflattener` | FLA + BCF + MBA. |
+| Tigress | `default_unflattening_approov.json` | `UnflattenerSwitchCase`, `BadWhileLoop` | Switch-case and Approov-like patterns. |
+| Approov | `default_unflattening_approov.json` | `UnflattenerSwitchCase`, `BadWhileLoop` | While-loop state constants in magic range. |
+| Hodur (PlugX) | `hodur_deobfuscation.json`, `example_hodur.json` | `HodurUnflattener`, `Unflattener` | Hodur MBA + Hodur while-loop unflattening. |
+| Tigress indirect | `example_libobfuscated.json` | `UnflattenerTigressIndirect` | Needs `goto_table_info` mapping. |
+
+### DSL and Rule Verification
+
+Adding new MBA rules is straightforward: define a pattern and replacement in pure symbolic form. No manual proofs, no IDA coupling at definition time. Rules are backend-agnostic; the same DSL tree is converted to Z3 for proving and to IDA AstNode for matching. The abstraction stays clean: `d810.mba.dsl` and `d810.mba.verifier` have no IDA or Z3 imports at the rule-definition level.
+
+**Adding a rule:** subclass `VerifiableRule`, set `PATTERN` and `REPLACEMENT`. Registration and verification are automatic.
+
+```python
+from d810.mba.dsl import Var
+from d810.mba.rules import VerifiableRule
+
+x, y = Var("x_0"), Var("x_1")
+
+class Xor_HackersDelightRule_1(VerifiableRule):
+    PATTERN = (x | y) - (x & y)
+    REPLACEMENT = x ^ y
+    DESCRIPTION = "Simplify (x | y) - (x & y) to x ^ y"
+```
+
+**Correctness by construction:** `verify_rule()` proves `PATTERN` and `REPLACEMENT` equivalent via the Z3 backend. If verification fails, Z3 returns a counterexample. Tests parametrize over all registered rules, so new rules are verified automatically.
+
+**Extensible constraints:** Constraints are declarative and backend-agnostic. The `VerificationEngine` protocol supports pluggable backends (Z3 and egglog today). Constraint forms include:
+
+* Declarative `ConstraintExpr` (e.g. `bnot_x == ~x`, `c_minus_2 == Const("-2", -2)`)
+* Runtime predicates (`when.equal_mops`, `when.is_bnot`) for IDA-specific checks; optionally attach additional backends for verification.
+* Per-backend overrides via `get_constraints()` when a rule needs solver-specific logic.
+
+Rules marked `SKIP_VERIFICATION = True` (e.g. microcode-type checks or very slow Z3 cases) are exempt but must be documented.
+
 ## Installation
 
 **Only IDA v9 or later is supported with Python 3.10 and higher** (since we need the microcode Python API)
 
 Copy the contents of this repository to `.idapro/plugins` or `%appdata%\Hex-Rays\IDA pro\plugins`.
 
-It is recommended to install Z3 to be able to use several features of D-810:
+To active [Cython](https://cython.org) speedups, there are pre-built wheels conveniently for many operating systems that `IDA Pro` runs on that can be installed via PyPI by doing:
+
+`pip3 install d810-ng[speedups]`
+
+Speedups are generously provided by [Mahmoud Abdelkader](https://mahmoudimus.com) who writes about how Cython ["super-charging the work-horse of reverse engineering"](https://mahmoudimus.com/blog/2025/08/ida-pro-and-cython-super-charging-the-work-horse-of-reverse-engineering/) gives C++ level performance with the same productivity of Python.
+
+### Z3
+
+Z3 is automatically installed when doing `pip3 install d810-ng[speedups]`, but if you do not want to use Cython, D-180 will automatically fallback to pure Python mode. If you want to use the SAT solver rules and several features of D-180, however, you must install `Z3` independently:
 
 ```bash
 pip3 install z3-solver
@@ -47,25 +148,86 @@ To install D-810 ng as an editable package (useful for development or staying up
 pip install -e .
 ```
 
-This installs the package in development mode so that changes to the source are immediately reflected.
+#### Building with Cython Speedups
 
-## Using D-810 ng
+d810 includes optional Cython extensions for performance-critical paths. Every Cython module has a pure Python fallback, so speedups are strictly optional.
 
-Load the plugin by using the `Ctrl-Shift-D` shortcut, you should see this configuration GUI
+#### Prerequisites
 
-!["Configuration Gui"](./docs/source/images/gui_plugin_configuration.png "Configuration GUI")
+```bash
+pip install "Cython>=3.0.0"
+```
 
-Click on a rule to see more information about it:
+#### Local Build
 
-!["Rule View Gui"](./docs/source/images/gui_plugin_configuration_v2.png "Rule View")
+**Without speedups (pure Python, all platforms):**
 
-* Choose or create your project configuration
-  * If you are not sure what to do here, leave *default_instruction_only.json*.
-* Click on the `Start` button to enable deobfuscation
-* Decompile an obfuscated function, the code should be simplified (hopefully)
-* When you want to disable deobfuscation, just click on the `Stop` button or use the context menus:
-  * !["Disassembly context menu"](./docs/source/images/disasmview_context_menu.png "Disassembly context menu")
-  * !["Pseudocode context menu"](./docs/source/images/pseudocode_context_menu.png "Pseudocode context menu")
+```bash
+pip install -e .
+```
+
+This installs the package in development mode so that changes to the source are immediately reflected and works on every platform and requires no compiler or IDA SDK. All Cython modules have pure-Python fallbacks.
+
+**macOS / Linux:**
+
+```bash
+# SDK auto-downloads from GitHub if not present
+D810_BUILD_SPEEDUPS=1 pip install -e ".[speedups]" --no-build-isolation
+```
+
+To specify a local IDA SDK path:
+
+```bash
+IDA_SDK=/path/to/ida-sdk D810_BUILD_SPEEDUPS=1 pip install -e ".[speedups]" --no-build-isolation
+```
+
+**Windows (PowerShell):**
+
+```powershell
+$env:D810_BUILD_SPEEDUPS=1; $env:IDA_SDK="C:\IDA\9\sdk"; python -m pip install -e ".[speedups]" --no-build-isolation
+```
+
+**Build extensions in-place only (no install):**
+
+```bash
+D810_BUILD_SPEEDUPS=1 python setup.py build_ext --inplace
+```
+
+### Inside Docker (recommended)
+
+Building inside an IDA container ensures SDK headers and symbols are available:
+
+```bash
+apt-get update && apt-get install -y g++
+pip install setuptools wheel "Cython>=3.0.0"
+D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e ".[dev]"
+```
+
+### Environment Variables
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `D810_BUILD_SPEEDUPS` | Set to `1` to compile `.pyx` files | `0` (disabled) |
+| `IDA_SDK` | Path to IDA SDK directory | Auto-downloads to `.ida-sdk/` |
+| `DEBUG` | Set to `1` for debug builds with profiling/tracing | `0` |
+| `D810_NO_CYTHON` | Set to `1` to disable Cython at runtime | Not set (enabled) |
+
+> **Note:** `--no-build-isolation` is important so pip uses your already-installed Cython rather than creating an isolated build environment.
+
+## How to use D810
+
+1. Choose or create your project configuration. If you are not sure what to do here, leave *default_instruction_only.json*.
+2. Click on the `Start` button to enable deobfuscation
+3. Decompile an obfuscated function, the code should be simplified (hopefully)
+
+When you want to disable deobfuscation, just click on the `Stop` button or use the context menus:
+
+!["Disassembly context menu"](./docs/source/images/disasmview_context_menu.png "Disassembly context menu")
+!["Pseudocode context menu"](./docs/source/images/pseudocode_context_menu.png "Pseudocode context menu")
+
+## Adding New Obfuscation Examples
+
+In `samples/src`, there are various `C` programs compiled using the `samples/src/Makefile` into a shared library, without optimizations (`-O0`). On Windows, that shared library is a `.dll`, on Darwin(Mac)/Linux, it is a `.so`. Included is an example compiled dll, `libobfuscated.dll`, that can serve as a testing ground for seeing the plugin in action. Please make a pull request with more obfuscation `C` examples to build a repository of obfuscated sample code for further research.
 
 ### Test Runner
 
@@ -78,10 +240,6 @@ The test runner is self-explanatory:
 Test reloading exists without needing to restart `IDA Pro` and you can execute different part of the tests via the testing context menu:
 
 !["Test Runner Context Menu"](./docs/source/images/test_runner_example-ctx-menu.png "Test Runner Context Menu")
-
-## Examples
-
-In `samples/src`, there are various `C` programs compiled using the `samples/src/Makefile` into a shared library, without optimizations (`-O0`). On Windows, that shared library is a `.dll`, on Darwin(Mac)/Linux, it is a `.so`. Included is an example compiled dll, `libobfuscated.dll`, that can serve as a testing ground for seeing the plugin in action. Please make a pull request with more obfuscation `C` examples to build a repository of obfuscated sample code for further research.
 
 ### How to build
 
@@ -152,7 +310,7 @@ make clean
 
 D-810 ng has a comprehensive test suite that runs inside IDA Pro's headless mode (`idalib`). Tests are executed in Docker containers that bundle IDA Pro with the required Python environment.
 
-### Prerequisites
+**Prerequisites:**
 
 * Docker and Docker Compose
 * Access to the `ghcr.io/w00tzenheimer/idapro-linux` container images
@@ -199,72 +357,6 @@ docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
 |---------|-------|--------|-------------|
 | `idapro-tests` | `idapro-linux:idapro-tests` | 3.10 | Legacy test container |
 | `idapro-tests-9.2` | `idapro-linux:idapro-tests-9.2-py312` | 3.12 | Primary test container (recommended) |
-
-## Building with Cython Speedups
-
-d810 includes optional Cython extensions for performance-critical paths. Every Cython module has a pure Python fallback, so speedups are strictly optional.
-
-### Prerequisites
-
-```bash
-pip install "Cython>=3.0.0"
-```
-
-### Local Build
-
-**Without speedups (pure Python, all platforms):**
-
-```bash
-pip install -e .
-```
-
-This works on every platform and requires no compiler or IDA SDK. All Cython modules have pure-Python fallbacks.
-
-**macOS / Linux:**
-
-```bash
-# SDK auto-downloads from GitHub if not present
-D810_BUILD_SPEEDUPS=1 pip install -e ".[speedups]" --no-build-isolation
-```
-
-To specify a local IDA SDK path:
-
-```bash
-IDA_SDK=/path/to/ida-sdk D810_BUILD_SPEEDUPS=1 pip install -e ".[speedups]" --no-build-isolation
-```
-
-**Windows (PowerShell):**
-
-```powershell
-$env:D810_BUILD_SPEEDUPS=1; $env:IDA_SDK="C:\IDA\9\sdk"; python -m pip install -e ".[speedups]" --no-build-isolation
-```
-
-**Build extensions in-place only (no install):**
-
-```bash
-D810_BUILD_SPEEDUPS=1 python setup.py build_ext --inplace
-```
-
-### Inside Docker (recommended)
-
-Building inside an IDA container ensures SDK headers and symbols are available:
-
-```bash
-apt-get update && apt-get install -y g++
-pip install setuptools wheel "Cython>=3.0.0"
-D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e ".[dev]"
-```
-
-### Environment Variables
-
-| Variable | Purpose | Default |
-|---|---|---|
-| `D810_BUILD_SPEEDUPS` | Set to `1` to compile `.pyx` files | `0` (disabled) |
-| `IDA_SDK` | Path to IDA SDK directory | Auto-downloads to `.ida-sdk/` |
-| `DEBUG` | Set to `1` for debug builds with profiling/tracing | `0` |
-| `D810_NO_CYTHON` | Set to `1` to disable Cython at runtime | Not set (enabled) |
-
-> **Note:** `--no-build-isolation` is important so pip uses your already-installed Cython rather than creating an isolated build environment.
 
 ## Warnings
 
