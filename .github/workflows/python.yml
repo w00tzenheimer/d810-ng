@@ -12,6 +12,23 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
+    ast-grep:
+        name: "ast-grep"
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "20"
+            - name: Install ast-grep
+              run: |
+                  npm install -g @ast-grep/cli
+            - name: Run ast-grep rules
+              run: |
+                  sg scan --config sgconfig.yml
+
     unit-tests:
         name: "unit-tests (py${{ matrix.python-version }})"
         runs-on: ubuntu-24.04
