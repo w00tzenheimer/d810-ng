@@ -18,11 +18,26 @@ def _reload_engine():
     mod_name = "d810.optimizers.microcode.instructions.pattern_matching.engine"
     if mod_name in sys.modules:
         del sys.modules[mod_name]
-    # Also clear cached CythonMode singleton state
+
+    # Clear cached CythonMode singleton state
+    # CythonMode uses both SingletonMeta and @survives_reload(), so we must:
+    # 1. Clear SingletonMeta._instances (where the singleton is cached)
+    # 2. Delete the cymode module so @survives_reload() re-reads env vars
+    # 3. Clear any modules that import and cache CythonMode
     cymode_mod = "d810.core.cymode"
     if cymode_mod in sys.modules:
+        from d810.core.singleton import SingletonMeta
         from d810.core.cymode import CythonMode
-        CythonMode._instances = {}
+        # Clear singleton cache (correct location is SingletonMeta._instances)
+        SingletonMeta._instances.pop(CythonMode, None)
+        # Delete cymode module to force re-read of D810_NO_CYTHON env var
+        del sys.modules[cymode_mod]
+
+    # Also clear singleton module in case it was imported
+    singleton_mod = "d810.core.singleton"
+    if singleton_mod in sys.modules:
+        del sys.modules[singleton_mod]
+
     return importlib.import_module(mod_name)
 
 
