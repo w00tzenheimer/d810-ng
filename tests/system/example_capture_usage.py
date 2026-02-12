@@ -10,7 +10,7 @@ from pathlib import Path
 import tempfile
 
 # Manual usage example
-from tests.system.test_capture import TestResultCapture, TestResultQuery
+from tests.system.runtime.test_capture import TestResultCapture, TestResultQuery
 
 
 def _get_default_binary() -> str:

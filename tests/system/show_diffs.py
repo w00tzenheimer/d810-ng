@@ -89,7 +89,7 @@ def show_function_diff(func_name: str, compact: bool = False):
     """Show diff for a specific function."""
     if not DB_PATH.exists():
         print("ERROR: No capture database found. Run capture test first:")
-        print("  pytest tests/stateless/test_capture_pseudocode.py -v")
+        print("  pytest tests/system/e2e/test_capture_pseudocode.py -v")
         return
 
     conn = sqlite3.connect(str(DB_PATH))
@@ -156,7 +156,7 @@ def show_all_diffs(compact: bool = False):
     """Show diffs for all captured functions."""
     if not DB_PATH.exists():
         print("ERROR: No capture database found. Run capture test first:")
-        print("  pytest tests/stateless/test_capture_pseudocode.py -v")
+        print("  pytest tests/system/e2e/test_capture_pseudocode.py -v")
         return
 
     conn = sqlite3.connect(str(DB_PATH))

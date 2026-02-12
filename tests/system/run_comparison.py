@@ -52,7 +52,7 @@ def run_comparison_tests():
     func_filter = " or ".join(TEST_FUNCTIONS)
     cmd = [
         sys.executable, "-m", "pytest",
-        "tests/stateless/test_libdeobfuscated_dsl.py",
+        "tests/system/e2e/test_libdeobfuscated_dsl.py",
         "--capture-to-db",
         "-v",
         "--tb=short",
@@ -80,7 +80,7 @@ def capture_single_function(func_name: str, binary_path: str):
     import idc
 
     from d810.manager import D810Manager
-    from tests.system.test_capture import TestResultCapture
+    from tests.system.runtime.test_capture import TestResultCapture
 
     # Open database
     idapro.open_database(binary_path, run_auto_analysis=True)
@@ -135,7 +135,7 @@ def capture_single_function(func_name: str, binary_path: str):
 
 def display_results():
     """Display test results from the database."""
-    from tests.system.test_capture import TestResultQuery, DB_PATH
+    from tests.system.runtime.test_capture import TestResultQuery, DB_PATH
 
     if not DB_PATH.exists():
         print("ERROR: No test results database found.")
