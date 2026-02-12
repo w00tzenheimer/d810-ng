@@ -43,7 +43,7 @@ from d810.core.persistence import (
     CachedResult,
     FunctionFingerprint,
     FunctionRuleConfig,
-    OptimizationStorage,
+    create_optimization_storage,
 )
 
 logger = getLogger("D810.caching")
@@ -57,7 +57,7 @@ logger = getLogger("D810.caching")
 class OptimizationCache:
     """IDA-aware cache for optimization results.
 
-    This class wraps `OptimizationStorage` and adds IDA-specific functionality:
+    This class wraps a persistence backend (sqlite/netnode) and adds IDA-specific functionality:
     - Computing function fingerprints from mba_t
     - Validating cache using IDA's microcode representation
 
@@ -74,19 +74,42 @@ class OptimizationCache:
         ...     cache.save_optimization_result(func_addr, mba, maturity, changes, patches)
     """
 
-    def __init__(self, db_path: str | Path):
+    def __init__(
+        self,
+        db_path: str | Path | None,
+        *,
+        storage_backend: str = "sqlite",
+        **storage_kwargs: Any,
+    ):
         """Initialize the cache.
 
         Args:
-            db_path: Path to SQLite database file.
+            db_path:
+                - sqlite backend: path to SQLite database file.
+                - netnode backend: optional node name (or None for default).
+            storage_backend: ``sqlite`` (default) or ``netnode``.
+            storage_kwargs: backend-specific options.
         """
-        self._storage = OptimizationStorage(db_path)
-        logger.info(f"Optimization cache initialized: {db_path}")
+        self._storage = create_optimization_storage(
+            db_path,
+            backend=storage_backend,
+            **storage_kwargs,
+        )
+        logger.info(
+            "Optimization cache initialized: backend=%s target=%s",
+            storage_backend,
+            db_path,
+        )
 
     @property
     def db_path(self) -> Path:
         """Get the database path."""
-        return self._storage.db_path
+        path = getattr(self._storage, "db_path", None)
+        if isinstance(path, Path):
+            return path
+        # Netnode backend (or custom backend) may not expose a filesystem path.
+        target = getattr(self._storage, "node_name", "in-memory")
+        return Path(f"netnode:{target}")
 
     def compute_function_fingerprint(
         self, mba: ida_hexrays.mba_t, function_addr: Optional[int] = None
