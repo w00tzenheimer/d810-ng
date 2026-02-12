@@ -327,11 +327,9 @@ class AstNode(AstBase):
         self.leafs = self.get_leaf_list()
         all_leafs_found = True
         for leaf in self.leafs:
-            if other is not None and leaf.name in other.leafs_by_name:
-                leaf.mop = other.leafs_by_name[leaf.name].mop
-            elif other2 is not None and leaf.name in other2.leafs_by_name:
-                leaf.mop = other2.leafs_by_name[leaf.name].mop
-            else:
+            # Delegate to leaf-specific update so AstConstant can copy
+            # expected_value/expected_size for computed constants.
+            if not leaf.update_leafs_mop(other, other2):
                 all_leafs_found = False
         return all_leafs_found
 
