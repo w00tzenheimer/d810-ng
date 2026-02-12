@@ -36,6 +36,7 @@ from d810.hexrays.hexrays_helpers import (
     equal_mops_ignore_size,
     is_rotate_helper_call,
 )
+from d810.hexrays.mop_snapshot import MopSnapshot
 from d810.core import NOT_GIVEN, NotGiven
 
 logger = getLogger(__name__)
@@ -81,7 +82,7 @@ class AstInfo:
 class AstBase:
 
     sub_ast_info_by_index: dict[int, AstInfo] = {}
-    mop: ida_hexrays.mop_t | None = None
+    mop: ida_hexrays.mop_t | MopSnapshot | None = None
     dest_size: int | None = None
     ea: int | None = None
     ast_index: int | None = None
@@ -181,6 +182,10 @@ class AstNode(AstBase):
 
     @property
     def size(self):
+        if self.mop is None:
+            return 0
+        if isinstance(self.mop, MopSnapshot):
+            return self.mop.size
         return self.mop.d.d.size if self.mop else 0
 
     def compute_sub_ast(self):
@@ -213,17 +218,19 @@ class AstNode(AstBase):
         self.compute_sub_ast()
 
         for _, ast_info in self.sub_ast_info_by_index.items():
-            if (ast_info.ast.mop is not None) and (
-                ast_info.ast.mop.t != ida_hexrays.mop_z
-            ):
-                if ast_info.ast.is_leaf():
-                    if ast_info.ast.is_constant():
-                        cst_list.append(ast_info.ast.mop.nnn.value)
+            mop = ast_info.ast.mop
+            if mop is not None:
+                mop_t = mop.t if isinstance(mop, MopSnapshot) else (mop.t if hasattr(mop, 't') else ida_hexrays.mop_z)
+                if mop_t != ida_hexrays.mop_z:
+                    if ast_info.ast.is_leaf():
+                        if ast_info.ast.is_constant():
+                            value = mop.value if isinstance(mop, MopSnapshot) else mop.nnn.value
+                            cst_list.append(value)
+                        else:
+                            leaf_info_list.append(ast_info)
                     else:
-                        leaf_info_list.append(ast_info)
-                else:
-                    ast_node = typing.cast(AstNode, ast_info.ast)
-                    opcode_list += [ast_node.opcode] * ast_info.number_of_use
+                        ast_node = typing.cast(AstNode, ast_info.ast)
+                        opcode_list += [ast_node.opcode] * ast_info.number_of_use
 
         return leaf_info_list, cst_list, opcode_list
 
@@ -811,6 +818,8 @@ class AstLeaf(AstBase):
     def is_constant(self):
         if self.mop is None:
             return False
+        if isinstance(self.mop, MopSnapshot):
+            return self.mop.is_constant
         return self.mop.t == ida_hexrays.mop_n
 
     @typing.override
@@ -843,7 +852,11 @@ class AstLeaf(AstBase):
 
     @property
     def size(self):
-        return self.mop.size if self.mop else 0
+        if self.mop is None:
+            return 0
+        if isinstance(self.mop, MopSnapshot):
+            return self.mop.size
+        return self.mop.size
 
     @property
     def dst_mop(self):
@@ -856,6 +869,8 @@ class AstLeaf(AstBase):
     @property
     def value(self):
         if self.is_constant() and self.mop is not None:
+            if isinstance(self.mop, MopSnapshot):
+                return self.mop.value
             return self.mop.nnn.value
         else:
             return None
@@ -905,10 +920,15 @@ class AstLeaf(AstBase):
                 f"{repr(self)}'s mop is None in create_mop for {hex(ea)}"
             )
 
-        # 2. Otherwise, we need to create a new mop
-        new_mop = ida_hexrays.mop_t()
-        new_mop.assign(self.mop)
-        return new_mop  # duplicates the C++ object
+        # 2. Handle both MopSnapshot and raw mop_t
+        if isinstance(self.mop, MopSnapshot):
+            # Reconstruct from snapshot
+            return self.mop.to_mop()
+        else:
+            # Legacy path: clone the mop_t
+            new_mop = ida_hexrays.mop_t()
+            new_mop.assign(self.mop)
+            return new_mop  # duplicates the C++ object
 
     def update_leafs_mop(self, other: AstNode, other2: AstNode | None = None):
         source_leaf = None
@@ -975,6 +995,8 @@ class AstLeaf(AstBase):
 
     def get_pattern(self):
         if self.is_constant() and self.mop is not None:
+            if isinstance(self.mop, MopSnapshot):
+                return "AstConstant('{0}', {0})".format(self.mop.value)
             return "AstConstant('{0}', {0})".format(self.mop.nnn.value)
         if self.ast_index is not None:
             return "AstLeaf('x_{0}')".format(self.ast_index)
@@ -991,6 +1013,8 @@ class AstLeaf(AstBase):
 
     def evaluate(self, dict_index_to_value):
         if self.is_constant() and self.mop is not None:
+            if isinstance(self.mop, MopSnapshot):
+                return self.mop.value
             return self.mop.nnn.value
         assert self.ast_index is not None
         return dict_index_to_value.get(self.ast_index)
@@ -1014,12 +1038,17 @@ class AstLeaf(AstBase):
     def __str__(self):
         try:
             if self.is_constant() and self.mop is not None:
+                if isinstance(self.mop, MopSnapshot):
+                    return "{0}".format(hex(self.mop.value))
                 return "{0}".format(hex(self.mop.nnn.value))
             if self.z3_var_name is not NOT_GIVEN:
                 return self.z3_var_name
             if self.ast_index is not None:
                 return "x_{0}".format(self.ast_index)
             if self.mop is not None:
+                if isinstance(self.mop, MopSnapshot):
+                    # Format snapshot - use a simple representation
+                    return f"mop_snapshot_{self.mop.t}"
                 return format_mop_t(self.mop)
             return self.name
         except RuntimeError as e:
@@ -1038,8 +1067,11 @@ class AstConstant(AstLeaf):
 
     @property
     def value(self):
-        if self.mop is not None and self.mop.t == ida_hexrays.mop_n:
-            return self.mop.nnn.value
+        if self.mop is not None:
+            if isinstance(self.mop, MopSnapshot):
+                return self.mop.value if self.mop.is_constant else self.expected_value
+            if self.mop.t == ida_hexrays.mop_n:
+                return self.mop.nnn.value
         # Fall back to expected_value for computed constants (e.g., c_res from constraints)
         return self.expected_value
 
@@ -1049,33 +1081,44 @@ class AstConstant(AstLeaf):
         return True
 
     def _copy_mops_from_ast(self, other, read_only: bool = False):
-        if other.mop is not None and other.mop.t != ida_hexrays.mop_n:
-            if logger.debug_on:
-                logger.debug(
-                    "AstConstant._copy_mops_from_ast: other.mop is not a constant: %r",
-                    other.mop,
-                )
-            return False
+        if other.mop is not None:
+            is_const = isinstance(other.mop, MopSnapshot) and other.mop.is_constant or \
+                       (not isinstance(other.mop, MopSnapshot) and other.mop.t == ida_hexrays.mop_n)
+            if not is_const:
+                if logger.debug_on:
+                    logger.debug(
+                        "AstConstant._copy_mops_from_ast: other.mop is not a constant: %r",
+                        other.mop,
+                    )
+                return False
 
         if logger.debug_on:
             logger.debug(
                 "AstConstant._copy_mops_from_ast: other %r's mop %s is a constant",
                 other,
-                format_mop_t(other.mop),
+                format_mop_t(other.mop) if not isinstance(other.mop, MopSnapshot) else f"MopSnapshot({other.mop.value})",
             )
         if not read_only:
             self.mop = other.mop
         if self.expected_value is None:
             if not read_only:
-                self.expected_value = other.mop.nnn.value
-                self.expected_size = other.mop.size
+                if isinstance(other.mop, MopSnapshot):
+                    self.expected_value = other.mop.value
+                    self.expected_size = other.mop.size
+                else:
+                    self.expected_value = other.mop.nnn.value
+                    self.expected_size = other.mop.size
             else:
                 return True
-        return self.expected_value == other.mop.nnn.value
+        other_value = other.mop.value if isinstance(other.mop, MopSnapshot) else other.mop.nnn.value
+        return self.expected_value == other_value
 
     def evaluate(self, dict_index_to_value=None):
-        if self.mop is not None and self.mop.t == ida_hexrays.mop_n:
-            return self.mop.nnn.value
+        if self.mop is not None:
+            if isinstance(self.mop, MopSnapshot):
+                return self.mop.value if self.mop.is_constant else self.expected_value
+            if self.mop.t == ida_hexrays.mop_n:
+                return self.mop.nnn.value
         return self.expected_value
 
     def get_depth_signature(self, depth):
@@ -1097,8 +1140,11 @@ class AstConstant(AstLeaf):
     @typing.override
     def __str__(self):
         try:
-            if self.mop is not None and self.mop.t == ida_hexrays.mop_n:
-                return "0x{0:x}".format(self.mop.nnn.value)
+            if self.mop is not None:
+                if isinstance(self.mop, MopSnapshot) and self.mop.is_constant:
+                    return "0x{0:x}".format(self.mop.value)
+                elif not isinstance(self.mop, MopSnapshot) and self.mop.t == ida_hexrays.mop_n:
+                    return "0x{0:x}".format(self.mop.nnn.value)
             if getattr(self, "expected_value", None) is not None:
                 return "0x{0:x}".format(self.expected_value)
             return self.name
@@ -1125,7 +1171,10 @@ class AstConstant(AstLeaf):
         if source_leaf.mop is not None:
             self.mop = source_leaf.mop
             # Also update expected_value from the mop
-            if source_leaf.mop.t == ida_hexrays.mop_n:
+            if isinstance(source_leaf.mop, MopSnapshot) and source_leaf.mop.is_constant:
+                self.expected_value = source_leaf.mop.value
+                self.expected_size = source_leaf.mop.size
+            elif not isinstance(source_leaf.mop, MopSnapshot) and source_leaf.mop.t == ida_hexrays.mop_n:
                 self.expected_value = source_leaf.mop.nnn.value
                 self.expected_size = source_leaf.mop.size
             return True
@@ -1380,7 +1429,10 @@ def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
     key = (t, mop.size) if t != ida_hexrays.mop_n else (t, mop.size, mop.valnum)
     match t:
         case ida_hexrays.mop_n:
-            return key + (mop.nnn.value,)
+            nnn = mop.nnn
+            if nnn is None:
+                return key + (0,)
+            return key + (nnn.value,)
         case ida_hexrays.mop_r:
             return key + (mop.r,)
         case ida_hexrays.mop_d:
@@ -1509,7 +1561,7 @@ def mop_to_ast_internal(
             else:
                 tree.dest_size = None
 
-            tree.mop = mop
+            tree.mop = MopSnapshot.from_mop(mop)
             tree.ea = sanitize_ea(mop.d.ea)
 
             if logger.debug_on:
@@ -1594,14 +1646,14 @@ def mop_to_ast_internal(
                 )
             tree.dest_size = mop.size
 
-        # For non-constant leaves we deliberately *do not* keep a reference
-        # to the original mop_t object, because Hex-Rays may free or reuse
-        # it after micro-optimisations, leading to use-after-free crashes.
-        # Only constant leaves benefit from holding the numeric mop to
-        # speed up further evaluations.
+        # Store MopSnapshot instead of borrowed mop_t to prevent use-after-free.
+        # For constants, we've already stored a cached mop_t from get_constant_mop().
+        # For non-constants, store a snapshot that create_mop() can reconstruct.
         if tree.is_constant():
-            tree.mop = getattr(tree, "mop", None) or mop
+            # Preserve previously assigned cached constant mop (from get_constant_mop)
+            tree.mop = getattr(tree, "mop", None) or get_constant_mop(tree.value, mop.size)
         else:
+            # Non-constant leaf: store snapshot instead of borrowed reference
             tree = AstLeaf(format_mop_t(mop))
             if logger.debug_on:
                 logger.debug(
@@ -1610,13 +1662,7 @@ def mop_to_ast_internal(
                     str(mop.dstr()) if hasattr(mop, "dstr") else str(mop),
                 )
             tree.dest_size = mop.size
-
-        # Preserve previously assigned mop (e.g., inner numeric mop) unless
-        # it is still unset.  This prevents clobbering the constant `mop_n`
-        # we stored above with the wrapper operand, which would break
-        # constant detection later in the pipeline.
-        if getattr(tree, "mop", None) is None:
-            tree.mop = mop
+            tree.mop = MopSnapshot.from_mop(mop)
         dest_size = (
             mop.size
             if mop.t != ida_hexrays.mop_d
