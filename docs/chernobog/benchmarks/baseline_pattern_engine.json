@@ -1,0 +1,31 @@
+{
+  "hot_path": {
+    "instruction_count": 100,
+    "throughput_insns_per_sec": 5056890.207837415,
+    "us_per_instruction": 0.1977499923668802
+  },
+  "lookup_hit": {
+    "candidate_count": 10,
+    "legacy_us_per_lookup": 4.424625018145889,
+    "new_us_per_lookup": 6.334582983981818,
+    "speedup": 0.698487182081975
+  },
+  "lookup_miss": {
+    "candidate_count": 10,
+    "legacy_us_per_lookup": 1.6758329584263263,
+    "new_us_per_lookup": 1.0972910095006227,
+    "speedup": 1.527245684067892
+  },
+  "match": {
+    "clone_us_per_match": 8.505979494657367,
+    "nomut_us_per_match": 5.472771008498967,
+    "pattern_count": 20,
+    "speedup": 1.5542363240574044
+  },
+  "registration": {
+    "legacy_time_ms": 1.9151250016875565,
+    "new_time_ms": 2.303624991327524,
+    "pattern_count": 37,
+    "speedup": 0.8313527631005234
+  }
+}
