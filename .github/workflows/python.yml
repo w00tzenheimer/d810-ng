@@ -40,6 +40,28 @@ jobs:
               run: |
                   pytest tests/unit/ -v --tb=short
 
+    contracts-tests:
+        name: "contracts-tests (py3.12)"
+        runs-on: ubuntu-24.04
+        env:
+            PYTHONPATH: ${{ github.workspace }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
+                  cache: pip
+            - name: Install dependencies
+              run: |
+                  pip install --upgrade pip setuptools wheel uv
+                  uv pip install --system -e .
+                  uv pip install --system pytest pytest-cov
+            - name: Run pytest
+              run: |
+                  pytest tests/contracts/ -v --tb=short
+
     build-speedups:
         name: "speedups (py${{ matrix.python-version }}, ${{ matrix.os }})"
         runs-on: ${{ matrix.os }}

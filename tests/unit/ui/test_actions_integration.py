@@ -157,7 +157,7 @@ class TestActionFrameworkIntegration:
 
     def test_backward_compatibility_with_old_actions(self):
         """Test that the framework doesn't break existing pseudocode_actions.py."""
-        # Import the old actions module
+        # Import the compatibility re-export module.
         from d810.ui.pseudocode_actions import ALL_ACTIONS, DISASM_ACTIONS
 
         # Verify old actions still exist

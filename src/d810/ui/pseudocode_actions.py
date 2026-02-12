@@ -1,15 +1,11 @@
 """Pseudocode context-menu action handlers for D810ng.
 
-DEPRECATED: This module is maintained for backward compatibility only.
-New code should import directly from d810.ui.actions.
-
-The action classes have been migrated to individual modules in d810.ui.actions/.
-This file now re-exports them for backward compatibility.
+This module is maintained as a compatibility re-export layer.
+The action classes are implemented in d810.ui.actions.
 """
 from __future__ import annotations
 
 import typing
-import warnings
 
 from d810.core.logging import getLogger
 
@@ -28,14 +24,6 @@ from d810.ui.actions_logic import (
 )
 
 logger = getLogger("D810.ui")
-
-# Emit deprecation warning when this module is imported
-warnings.warn(
-    "d810.ui.pseudocode_actions is deprecated. "
-    "Import action classes from d810.ui.actions.* instead.",
-    DeprecationWarning,
-    stacklevel=2,
-)
 
 # Backward compatibility: Legacy action lists
 # These are maintained for any code that still references them
