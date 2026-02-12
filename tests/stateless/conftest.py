@@ -35,5 +35,7 @@ db_capture = _system.db_capture
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Mark all tests in this subtree as stateless IDA-runtime tests."""
     for item in items:
-        item.add_marker(pytest.mark.ida_stateless)
-        item.add_marker(pytest.mark.ida_required)
+        # Only mark items from the stateless subtree
+        if "tests/stateless" in str(item.fspath):
+            item.add_marker(pytest.mark.ida_stateless)
+            item.add_marker(pytest.mark.ida_required)
