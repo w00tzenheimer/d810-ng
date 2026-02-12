@@ -55,3 +55,8 @@ _indexable
 .ida-sdk/
 
 \.*db
+
+# docs
+docs/**/
+!docs/source/
+!docs/source/**
