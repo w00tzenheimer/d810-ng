@@ -161,13 +161,10 @@ def insert_goto_instruction(
     # Use mba.entry_ea for synthesized goto instructions to guarantee the EA
     # is within the decompiled function's address range (prevents INTERR 50863).
     safe_ea = blk.mba.entry_ea
-    if blk.tail is not None:
-        goto_ins = ida_hexrays.minsn_t(blk.tail)
-    else:
-        goto_ins = ida_hexrays.minsn_t(safe_ea)
+    goto_ins = ida_hexrays.minsn_t(safe_ea)
     goto_ins.ea = safe_ea
 
-    if nop_previous_instruction:
+    if nop_previous_instruction and blk.tail is not None:
         blk.make_nop(blk.tail)
     blk.insert_into_block(goto_ins, blk.tail)
 
@@ -176,6 +173,11 @@ def insert_goto_instruction(
     goto_ins.opcode = ida_hexrays.m_goto
     goto_ins.l = ida_hexrays.mop_t()
     goto_ins.l.make_blkref(goto_blk_serial)
+    # A valid m_goto must not carry stale right/destination operands.
+    goto_ins.r = ida_hexrays.mop_t()
+    goto_ins.r.erase()
+    goto_ins.d = ida_hexrays.mop_t()
+    goto_ins.d.erase()
 
 
 def change_1way_call_block_successor(
