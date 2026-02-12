@@ -20,7 +20,7 @@ import platform
 
 import pytest
 
-from d810.testing.cases import DeobfuscationCase
+from d810.testing.cases import BinaryOverride, DeobfuscationCase
 from d810.testing.runner import run_deobfuscation_test
 
 
@@ -68,6 +68,23 @@ GLOBAL_CONST_INLINE_CASES = [
         check_stats=True,
         expected_rules=["GlobalConstantInliner"],
         skip="Needs full project config; passes in test_libdeobfuscated_dsl with example_libobfuscated.json",
+    ),
+    DeobfuscationCase(
+        function="constant_folding_test1",
+        description=(
+            "Regression: GlobalConstantInliner must not inline RVA-like values "
+            "into raw MEMORY[0x...] call expressions."
+        ),
+        project="default_instruction_only.json",
+        must_change=True,
+        check_stats=True,
+        expected_rules=["GlobalConstantInliner"],
+        dll_override=BinaryOverride(
+            deobfuscated_not_contains=["MEMORY[0x"],
+        ),
+        dylib_override=BinaryOverride(
+            skip="PE/RVA-specific regression case; not applicable to dylib binaries.",
+        ),
     ),
 ]
 

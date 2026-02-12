@@ -220,6 +220,8 @@ def _looks_like_pointer(value: int, size: int) -> bool:
     * Values smaller than 4 bytes cannot be pointers.
     * Zero is ambiguous (NULL) but also a common constant -- keep it.
     * If the value falls inside any known segment, treat it as a pointer.
+    * If ``imagebase + value`` falls inside any known segment, treat it as a
+      rebased RVA-style pointer (common in PE binaries).
     * Common 64-bit ASLR ranges are also flagged.
     """
     if size < 4:
@@ -230,6 +232,18 @@ def _looks_like_pointer(value: int, size: int) -> bool:
     # Falls inside a known segment?
     if ida_segment.getseg(value) is not None:
         return True
+
+    # PE binaries often store RVAs (imagebase-relative offsets) instead of
+    # absolute addresses.  If rebasing the value lands in a loaded segment, it
+    # is very likely address-like and should not be folded into an integer.
+    try:
+        imagebase = idaapi.get_imagebase()
+    except Exception:
+        imagebase = idaapi.BADADDR
+    if imagebase not in (0, idaapi.BADADDR):
+        rebased = imagebase + value
+        if ida_segment.getseg(rebased) is not None:
+            return True
 
     # 64-bit heuristics for common user-space ranges.
     if size == 8:

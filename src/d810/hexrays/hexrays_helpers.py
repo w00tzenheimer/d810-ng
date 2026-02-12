@@ -570,7 +570,9 @@ def check_ins_mop_size_are_ok(ins: ida_hexrays.minsn_t) -> bool:
 
     In practice we can safely trust Hex-Rays here, therefore any *call*
     instruction is now considered size-OK and short-circuits the rest of the
-    checks.
+    checks.  Likewise for control-flow instructions: the destination operand is
+    a branch target (block label), not a typed result value, so strict
+    destination-size matching does not apply.
 
     Usage: This function can be used to check if a created instruction has consistent mop size
     Use it to avoid Hex-Rays decompilation errors when replacing instructions
@@ -578,6 +580,15 @@ def check_ins_mop_size_are_ok(ins: ida_hexrays.minsn_t) -> bool:
     # Calls / indirect calls: argument sizes may legitimately differ from the
     # destination size – skip the strict size checks for them.
     if ins.opcode in (ida_hexrays.m_call, ida_hexrays.m_icall, ida_hexrays.m_ret):
+        return True
+
+    # Control-flow opcodes carry jump targets in `d`; its size is unrelated to
+    # condition operand widths. Only recurse into embedded micro-instructions.
+    if ins.opcode in CONTROL_FLOW_OPCODES:
+        if ins.l.t == ida_hexrays.mop_d and (not check_ins_mop_size_are_ok(ins.l.d)):
+            return False
+        if ins.r.t == ida_hexrays.mop_d and (not check_ins_mop_size_are_ok(ins.r.d)):
+            return False
         return True
 
     ins_dest_size = ins.d.size
