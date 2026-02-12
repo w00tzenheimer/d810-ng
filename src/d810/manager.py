@@ -280,6 +280,7 @@ class D810Manager:
             MOP_TO_AST_CACHE.clear,
             self.instruction_optimizer.reset_cycle_detection,
             self.block_optimizer.reset_pass_counter,
+            self.block_optimizer.reset_perf_counters,
             self._start_timer,
         ):
             self.event_emitter.on(DecompilationEvent.STARTED, _subscriber)
@@ -291,6 +292,7 @@ class D810Manager:
                 "MOP_CONSTANT_CACHE stats: %s", MOP_CONSTANT_CACHE.stats
             ),
             lambda: logger.info("MOP_TO_AST_CACHE stats: %s", MOP_TO_AST_CACHE.stats),
+            self.block_optimizer.report_perf_counters,
             self._stop_timer,
         ):
             self.event_emitter.on(DecompilationEvent.FINISHED, _subscriber)

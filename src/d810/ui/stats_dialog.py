@@ -428,17 +428,14 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
             func_name=self._func_name or f"sub_{self._func_ea:X}",
         )
 
-        # Persist to storage
-        storage = None
-        if hasattr(self._state, "manager") and hasattr(self._state.manager, "storage"):
-            storage = self._state.manager.storage
-            if storage is not None:
-                storage.set_function_rules(
-                    function_addr=self._func_ea,
-                    enabled_rules=func_rule_config.enabled_rules,
-                    disabled_rules=func_rule_config.disabled_rules,
-                    notes=func_rule_config.notes,
-                )
+        # Persist to storage and emit function-level cache invalidation
+        if hasattr(self._state, "manager") and hasattr(self._state.manager, "set_function_rule_override"):
+            self._state.manager.set_function_rule_override(
+                function_addr=self._func_ea,
+                enabled_rules=func_rule_config.enabled_rules,
+                disabled_rules=func_rule_config.disabled_rules,
+                notes=func_rule_config.notes,
+            )
 
         # Show confirmation
         func_name = self._func_name or f"sub_{self._func_ea:X}"
