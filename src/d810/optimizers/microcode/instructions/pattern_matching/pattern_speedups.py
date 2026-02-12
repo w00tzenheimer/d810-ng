@@ -77,15 +77,16 @@ class PatternFingerprint:
         """Check if a candidate fingerprint could match this pattern.
 
         Quick rejection: if structural counts differ, no match is possible.
-        The opcode_hash check is not done here because patterns with
-        wildcards (leaf variables) will have different hashes.
 
         For pattern matching, we require:
+        - Same opcode_hash (sub-tree opcode structure must match)
         - Same depth
         - Same node_count (structural shape must match)
         - candidate leaf+const count >= pattern leaf+const count
           (pattern variables can match any operand type)
         """
+        if self.opcode_hash != candidate.opcode_hash:
+            return False
         if self.depth != candidate.depth:
             return False
         if self.node_count != candidate.node_count:
@@ -95,6 +96,10 @@ class PatternFingerprint:
         if (self.leaf_count + self.const_count) != (
             candidate.leaf_count + candidate.const_count
         ):
+            return False
+        # A pattern with constants at specific positions can only match
+        # candidates that have at least as many constants (directional constraint).
+        if self.const_count > candidate.const_count:
             return False
         return True
 
@@ -172,13 +177,19 @@ def compute_fingerprint(ast: AstBase) -> PatternFingerprint:
 
 
 class MatchBinding:
-    """A single variable binding from a pattern match."""
+    """A single variable binding from a pattern match.
+
+    LIFETIME CONSTRAINT: The `mop` field stores a borrowed reference from IDA's
+    internal trees. It is valid ONLY during the pattern matching callback and
+    MUST NOT be cached or stored beyond `match_pattern_nomut()` return.
+    Bindings are consumed immediately via `to_dict()` within the same callback.
+    """
 
     __slots__ = ("name", "mop", "dest_size", "ea")
 
     def __init__(self, name: str, mop: object = None, dest_size: object = None, ea: object = None):
         self.name = name
-        self.mop = mop
+        self.mop = mop  # BorrowedMop - valid only during pattern match callback
         self.dest_size = dest_size
         self.ea = ea
 

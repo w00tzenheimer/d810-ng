@@ -984,8 +984,14 @@ class MicroCodeInterpreter(object):
 
 
 class MopMapping(typing.MutableMapping[ida_hexrays.mop_t, int]):
+    """Map mop_t operands to their emulated integer values.
+
+    LIFETIME CONSTRAINT: Stores borrowed mop_t references from visitor callbacks.
+    Valid only during a single `search_backward()` or emulation pass. Do not
+    cache MopMapping instances across multiple optimizer invocations.
+    """
     def __init__(self):
-        self.mops = []
+        self.mops = []  # List of BorrowedMop - valid only during current emulation pass
         self.mops_values = []
 
     def __setitem__(self, mop: ida_hexrays.mop_t, mop_value: int):
@@ -994,7 +1000,7 @@ class MopMapping(typing.MutableMapping[ida_hexrays.mop_t, int]):
         if mop_index != -1:
             self.mops_values[mop_index] = mop_value
             return
-        self.mops.append(mop)
+        self.mops.append(mop)  # BorrowedMop - valid only during current callback
         self.mops_values.append(mop_value)
 
     def __getitem__(self, mop: ida_hexrays.mop_t) -> int:

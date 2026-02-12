@@ -4,14 +4,18 @@ IDA's mop_t wraps a C++ pointer that Hex-Rays may recycle after
 micro-optimisations.  Accessing a recycled mop_t causes SIGSEGV.
 MopSnapshot extracts all needed fields into pure Python, making it
 safe to cache, hash, and compare without risk of use-after-free.
+
+This module uses Cython acceleration when available, falling back to
+pure Python implementation otherwise.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import NewType
+from typing import NewType, TYPE_CHECKING
 
-import ida_hexrays
+if TYPE_CHECKING:
+    import ida_hexrays
 
 logger = logging.getLogger(__name__)
 
@@ -19,30 +23,51 @@ logger = logging.getLogger(__name__)
 # OwnedMop: a mop_t created by our code (via mop_t(), make_number, dup_mop).
 # BorrowedMop: a mop_t obtained from IDA's internal trees (blk.tail.l, etc.).
 #   BorrowedMop MUST NOT be stored beyond the current callback scope.
-OwnedMop = NewType("OwnedMop", ida_hexrays.mop_t)
-BorrowedMop = NewType("BorrowedMop", ida_hexrays.mop_t)
+try:
+    import ida_hexrays
+    OwnedMop = NewType("OwnedMop", ida_hexrays.mop_t)
+    BorrowedMop = NewType("BorrowedMop", ida_hexrays.mop_t)
+except ImportError:
+    # For unit tests or non-IDA environments
+    OwnedMop = NewType("OwnedMop", object)  # type: ignore
+    BorrowedMop = NewType("BorrowedMop", object)  # type: ignore
 
+from d810.core.cymode import CythonMode
 
-@dataclass(frozen=True, slots=True)
-class MopSnapshot:
-    """Immutable, pure-Python snapshot of an ida_hexrays.mop_t.
+# Flag to track whether Cython speedups are available
+_CYTHON_AVAILABLE = False
 
-    Use ``MopSnapshot.from_mop(mop)`` to capture values from a live
-    (possibly borrowed) mop_t.  The snapshot holds no C++ pointers and
-    is safe to cache indefinitely.
+# Try to import Cython speedups if CythonMode is enabled
+if CythonMode().is_enabled():
+    try:
+        from d810.speedups.cythxr.mop_snapshot import MopSnapshot
+        _CYTHON_AVAILABLE = True
+    except ImportError:
+        pass
 
-    >>> snap = MopSnapshot.from_mop(some_mop)
-    >>> snap.t        # operand type (mop_n, mop_r, etc.)
-    >>> snap.value    # numeric value if mop_n, else None
-    """
+if not _CYTHON_AVAILABLE:
+    # Cython speedups not available, use pure Python implementation
 
-    t: int
-    size: int
-    valnum: int = 0
-    # Type-specific fields — only the relevant one is set per type.
-    value: int | None = None        # mop_n: nnn.value
-    reg: int | None = None          # mop_r: r
-    stkoff: int | None = None       # mop_S: s.off (if s is not None)
+    @dataclass(frozen=True, slots=True)
+    class MopSnapshot:
+        """Immutable, pure-Python snapshot of an ida_hexrays.mop_t.
+
+        Use ``MopSnapshot.from_mop(mop)`` to capture values from a live
+        (possibly borrowed) mop_t.  The snapshot holds no C++ pointers and
+        is safe to cache indefinitely.
+
+        >>> snap = MopSnapshot.from_mop(some_mop)
+        >>> snap.t        # operand type (mop_n, mop_r, etc.)
+        >>> snap.value    # numeric value if mop_n, else None
+        """
+
+        t: int
+        size: int
+        valnum: int = 0
+        # Type-specific fields — only the relevant one is set per type.
+        value: int | None = None        # mop_n: nnn.value
+        reg: int | None = None          # mop_r: r
+        stkoff: int | None = None       # mop_S: s.off (if s is not None)
     gaddr: int | None = None        # mop_v: g
     lvar_idx: int | None = None     # mop_l: l.idx
     lvar_off: int | None = None     # mop_l: l.off

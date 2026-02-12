@@ -182,7 +182,13 @@ class _LeafWrapper:
     def __init__(self, leaf: AstLeaf):
         self.leafs_by_name = {leaf.name: leaf} if leaf.name else {}
         self.ea = leaf.ea
-        self.dst_mop = leaf.mop
+        # Handle both MopSnapshot (from Phase 2) and raw mop_t
+        # Phase 2 changed AstLeaf.mop to store MopSnapshot for safety
+        from d810.hexrays.mop_snapshot import MopSnapshot
+        if isinstance(leaf.mop, MopSnapshot):
+            self.dst_mop = leaf.mop.to_mop()  # Reconstruct owned mop_t
+        else:
+            self.dst_mop = leaf.mop  # Already a mop_t (legacy path)
 
 
 class IDANodeVisitor:
