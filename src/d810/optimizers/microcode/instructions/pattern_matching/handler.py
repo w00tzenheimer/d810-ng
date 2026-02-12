@@ -14,6 +14,14 @@ from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
 )
 
+# Pattern engine dispatcher (PR1) — normalized Cython/Python gate
+from d810.optimizers.microcode.instructions.pattern_matching.engine import (
+    OpcodeIndexedStorage as _IndexedStorage,
+    match_pattern_nomut as _match_nomut,
+    get_engine_info,
+    _USING_CYTHON as _ENGINE_CYTHON,
+)
+
 optimizer_logger = getLogger("D810.optimizer")
 pattern_search_logger = getLogger("D810.pattern_search")
 
@@ -281,6 +289,11 @@ class PatternOptimizer(InstructionOptimizer):
                 self._add_rule_internal(rule)
             optimizer_logger.debug(f"PatternOptimizer initialized with {len(self.rules)} rules")
             optimizer_logger.debug(f"Allowed root opcodes: {self._allowed_root_opcodes}")
+
+    @property
+    def engine_info(self) -> dict:
+        """Return diagnostic info about the active pattern engine."""
+        return get_engine_info()
 
     def _add_rule_internal(self, rule) -> bool:
         """Add a rule to this optimizer (internal helper).

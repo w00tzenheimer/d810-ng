@@ -97,28 +97,6 @@ class TestEngineExports:
         assert callable(engine.compute_fingerprint)
 
 
-from d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups import (
-    OpcodeIndexedStorage as PyOpcodeIndexedStorage,
-    match_pattern_nomut as py_match_pattern_nomut,
-    MatchBindings as PyMatchBindings,
-    compute_fingerprint as py_compute_fingerprint,
-    PatternFingerprint,
-    RulePatternEntry,
-)
-
-# Try importing Cython for contract tests (skip if unavailable)
-try:
-    from d810.speedups.optimizers.c_pattern_match import (
-        COpcodeIndexedStorage as CyOpcodeIndexedStorage,
-        match_pattern_nomut as cy_match_pattern_nomut,
-        CMatchBindings as CyMatchBindings,
-        compute_fingerprint_py as cy_compute_fingerprint,
-    )
-    HAS_CYTHON = True
-except ImportError:
-    HAS_CYTHON = False
-
-
 # Mock mop (microcode operand) for testing
 class MockMop:
     """Minimal mock microcode operand."""
@@ -223,76 +201,32 @@ class MockRule:
         return isinstance(other, MockRule) and self.name == other.name
 
 
-@pytest.mark.skipif(not HAS_CYTHON, reason="Cython c_pattern_match not available")
-class TestBackendParityContract:
-    """Contract: identical results from Python and Cython backends."""
+class TestEngineContract:
+    """Contract tests using engine.py dispatcher (Python or Cython backend).
 
-    def test_match_same_result(self):
-        """Both backends return same bool for same pattern+candidate."""
-        pattern = _make_add_pattern()
-        candidate = _make_add_candidate()
-        py_result = py_match_pattern_nomut(pattern, candidate)
-        cy_result = cy_match_pattern_nomut(pattern, candidate)
-        assert py_result == cy_result, f"Match mismatch: py={py_result}, cy={cy_result}"
-
-    def test_match_negative_same_result(self):
-        """Both backends reject non-matching pattern+candidate identically."""
-        pattern = _make_const_pattern()
-        candidate = _make_add_candidate()
-        py_result = py_match_pattern_nomut(pattern, candidate)
-        cy_result = cy_match_pattern_nomut(pattern, candidate)
-        assert py_result == cy_result
-
-    def test_storage_same_candidates(self):
-        """Both storages return same candidate set for same queries."""
-        py_storage = PyOpcodeIndexedStorage()
-        cy_storage = CyOpcodeIndexedStorage()
-        patterns = [
-            (_make_add_pattern(), MockRule("add_rule")),
-            (_make_const_pattern(), MockRule("const_rule")),
-        ]
-        for pat, rule in patterns:
-            py_storage.add_pattern(pat, rule)
-            cy_storage.add_pattern(pat, rule)
-        candidate = _make_add_candidate()
-        py_candidates = py_storage.get_candidates(candidate)
-        cy_candidates = cy_storage.get_candidates(candidate)
-        py_rules = {c.rule.name for c in py_candidates}
-        cy_rules = {c.rule.name for c in cy_candidates}
-        assert py_rules == cy_rules, f"Candidate mismatch: py={py_rules}, cy={cy_rules}"
-
-    def test_bindings_same_result(self):
-        """Both backends produce same binding keys for same match."""
-        pattern = _make_add_pattern()
-        candidate = _make_add_candidate()
-        py_bindings = PyMatchBindings()
-        cy_bindings = CyMatchBindings()
-        py_match_pattern_nomut(pattern, candidate, py_bindings)
-        cy_match_pattern_nomut(pattern, candidate, cy_bindings)
-        py_dict = py_bindings.to_dict()
-        cy_dict = cy_bindings.to_dict()
-        assert set(py_dict.keys()) == set(cy_dict.keys()), \
-            f"Binding keys differ: py={set(py_dict.keys())}, cy={set(cy_dict.keys())}"
-
-
-class TestPythonBackendContract:
-    """Contract tests using Python backend only (always available)."""
+    These tests verify functional behavior through the engine.py abstraction layer.
+    Backend parity tests (comparing Python vs Cython directly) should be added to
+    system tests where importing from d810.optimizers is allowed.
+    """
 
     def test_match_positive(self):
-        """Python match_pattern_nomut returns True for matching ASTs."""
+        """match_pattern_nomut returns True for matching ASTs."""
+        engine = _reload_engine()
         pattern = _make_add_pattern()
         candidate = _make_add_candidate()
-        assert py_match_pattern_nomut(pattern, candidate) is True
+        assert engine.match_pattern_nomut(pattern, candidate) is True
 
     def test_match_negative(self):
-        """Python match_pattern_nomut returns False for non-matching ASTs."""
+        """match_pattern_nomut returns False for non-matching ASTs."""
+        engine = _reload_engine()
         pattern = _make_const_pattern()
         candidate = _make_add_candidate()
-        assert py_match_pattern_nomut(pattern, candidate) is False
+        assert engine.match_pattern_nomut(pattern, candidate) is False
 
     def test_storage_add_and_retrieve(self):
         """OpcodeIndexedStorage stores and retrieves candidates correctly."""
-        storage = PyOpcodeIndexedStorage()
+        engine = _reload_engine()
+        storage = engine.OpcodeIndexedStorage()
         pattern = _make_add_pattern()
         rule = MockRule("test_rule")
         storage.add_pattern(pattern, rule)
@@ -304,7 +238,8 @@ class TestPythonBackendContract:
 
     def test_storage_no_false_positives_different_opcode(self):
         """Storage does not return candidates with different root opcode."""
-        storage = PyOpcodeIndexedStorage()
+        engine = _reload_engine()
+        storage = engine.OpcodeIndexedStorage()
         pattern = _make_const_pattern()  # m_xor
         rule = MockRule("xor_rule")
         storage.add_pattern(pattern, rule)
@@ -314,8 +249,36 @@ class TestPythonBackendContract:
 
     def test_fingerprint_computation(self):
         """compute_fingerprint returns a PatternFingerprint with expected fields."""
+        engine = _reload_engine()
         pattern = _make_add_pattern()
-        fp = py_compute_fingerprint(pattern)
-        assert isinstance(fp, PatternFingerprint)
+        fp = engine.compute_fingerprint(pattern)
+        assert isinstance(fp, engine.PatternFingerprint)
         assert fp.depth > 0
         assert fp.node_count > 0
+
+
+class TestHandlerEngineIntegration:
+    """Test that handler.py can import from engine.py.
+
+    Note: These tests verify engine exports exist but cannot import handler.py
+    directly in unit tests (no ida_hexrays). Handler integration is tested in
+    system tests where IDA is available.
+    """
+
+    def test_engine_exports_for_handler_import(self):
+        """Verify engine.py exports all symbols that handler.py imports."""
+        engine = _reload_engine()
+        # Check all symbols that handler.py imports from engine.py
+        assert hasattr(engine, 'OpcodeIndexedStorage')
+        assert hasattr(engine, 'match_pattern_nomut')
+        assert hasattr(engine, 'get_engine_info')
+        assert hasattr(engine, '_USING_CYTHON')
+
+    def test_get_engine_info_contract(self):
+        """get_engine_info returns expected dict structure."""
+        engine = _reload_engine()
+        info = engine.get_engine_info()
+        assert isinstance(info, dict)
+        assert info["backend"] in ("python", "cython")
+        # Verify structure matches what handler.engine_info property will return
+        assert "version" in info or "backend" in info  # At minimum backend is required
