@@ -11,18 +11,10 @@ from d810.ui.actions.base import D810ActionHandler
 
 logger = getLogger("D810.ui")
 
-# ---------------------------------------------------------------------------
-# IDA imports -- optional so unit tests can import without IDA present.
-# ---------------------------------------------------------------------------
 try:
-    import ida_kernwin
     from d810.qt_shim import QTimer
-
-    IDA_AVAILABLE = True
 except ImportError:
-    ida_kernwin = None  # type: ignore[assignment]
     QTimer = None  # type: ignore[assignment]
-    IDA_AVAILABLE = False
 
 
 class StartD810ng(D810ActionHandler):
@@ -48,7 +40,8 @@ class StartD810ng(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
-        if ida_kernwin is None or QTimer is None:
+        ida_kernwin_mod = self.ida_module("ida_kernwin")
+        if ida_kernwin_mod is None or QTimer is None:
             return 0
 
         def _deferred_start():
@@ -58,10 +51,10 @@ class StartD810ng(D810ActionHandler):
                 self._state.start_d810()
                 # Update UI status indicator to show "Loaded"
                 self._update_ui_after_start()
-                ida_kernwin.info("d810-ng started successfully")
+                ida_kernwin_mod.info("d810-ng started successfully")
                 logger.info("d810-ng started via context menu action")
             except Exception as e:
-                ida_kernwin.warning(f"Failed to start d810-ng: {e}")
+                ida_kernwin_mod.warning(f"Failed to start d810-ng: {e}")
                 logger.error("Failed to start d810-ng: %s", e, exc_info=True)
 
         try:
@@ -71,7 +64,7 @@ class StartD810ng(D810ActionHandler):
             QTimer.singleShot(0, _deferred_start)
             return 1
         except Exception as e:
-            ida_kernwin.warning(f"Failed to schedule start: {e}")
+            ida_kernwin_mod.warning(f"Failed to schedule start: {e}")
             logger.error("Failed to schedule start: %s", e, exc_info=True)
             return 0
 

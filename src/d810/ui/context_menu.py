@@ -17,9 +17,8 @@ from __future__ import annotations
 import typing
 
 from d810.core.logging import getLogger
+from d810.ui.action_loader import ActionLoader
 
-# Import action framework for registry-based discovery
-from d810.ui.actions import D810ActionHandler
 from d810.ui.actions.ida_handler import make_ida_handler
 
 logger = getLogger("D810.ui")
@@ -139,6 +138,7 @@ class D810ContextMenu:
     def __init__(self) -> None:
         self._installed = False
         self._action_instances: list[typing.Any] = []
+        self._action_loader = ActionLoader()
         self._popup_hook: D810PopupHook | None = None
         self._disasm_popup_hook: D810DisasmPopupHook | None = None
 
@@ -151,7 +151,8 @@ class D810ContextMenu:
 
         Safe to call multiple times -- subsequent calls are no-ops.
 
-        Uses registry-based auto-discovery to find all D810ActionHandler subclasses.
+        Uses module discovery to find and instantiate all D810ActionHandler
+        subclasses under ``d810.ui.actions``.
 
         Args:
             state: The D810State instance to inject into action handlers.
@@ -161,15 +162,18 @@ class D810ContextMenu:
 
         action_count = 0
 
-        # Use registry-based discovery
-        registry_actions = list(D810ActionHandler.registry.values())
+        self._action_instances = self._action_loader.load_actions(
+            state,
+            ida_modules=self._collect_ida_modules(),
+        )
         logger.debug(
-            "Using registry-based action discovery (%d actions)", len(registry_actions)
+            "Using module-based action discovery (%d actions)",
+            len(self._action_instances),
         )
 
-        for action_cls in registry_actions:
-            instance = action_cls(state)
-            ida_handler = make_ida_handler(instance)
+        for instance in self._action_instances:
+            action_cls = type(instance)
+            ida_handler = make_ida_handler(instance, ida_kernwin_module=ida_kernwin)
             desc = ida_kernwin.action_desc_t(
                 action_cls.ACTION_ID,
                 action_cls.ACTION_TEXT,
@@ -184,8 +188,6 @@ class D810ContextMenu:
                 action_count += 1
             else:
                 logger.warning("Failed to register action %s", action_cls.ACTION_ID)
-            self._action_instances.append(instance)
-
         # Install the pseudocode popup hook
         self._popup_hook = D810PopupHook(self)
         self._popup_hook.hook()
@@ -211,12 +213,14 @@ class D810ContextMenu:
             self._disasm_popup_hook.unhook()
             self._disasm_popup_hook = None
 
-        # Unregister all actions from registry
-        registry_actions = list(D810ActionHandler.registry.values())
-        for action_cls in registry_actions:
+        # Unregister actions that were loaded during install
+        for instance in self._action_instances:
+            action_cls = type(instance)
             ida_kernwin.unregister_action(action_cls.ACTION_ID)
             logger.debug("Unregistered action %s", action_cls.ACTION_ID)
 
+        unloaded_count = self._action_loader.unload_actions()
+        logger.debug("Action loader unloaded %d actions", unloaded_count)
         self._action_instances.clear()
         self._installed = False
         logger.info("D810ContextMenu uninstalled")
@@ -245,22 +249,21 @@ class D810ContextMenu:
             return
 
         # Filter and sort by MENU_ORDER
-        registry_actions = list(D810ActionHandler.registry.values())
         pseudocode_actions = [
-            cls for cls in registry_actions if "pseudocode" in cls.SUPPORTED_VIEWS
+            action for action in self._action_instances if "pseudocode" in action.SUPPORTED_VIEWS
         ]
-        pseudocode_actions.sort(key=lambda cls: cls.MENU_ORDER)
+        pseudocode_actions.sort(key=lambda action: action.MENU_ORDER)
 
-        for action_cls in pseudocode_actions:
+        for action in pseudocode_actions:
             # Determine submenu path
             submenu_path = self.SUBMENU_PATH
-            if action_cls.SUBMENU:
-                submenu_path = f"{self.SUBMENU_PATH}{action_cls.SUBMENU}/"
+            if action.SUBMENU:
+                submenu_path = f"{self.SUBMENU_PATH}{action.SUBMENU}/"
 
             ida_kernwin.attach_action_to_popup(
                 widget,
                 popup,
-                action_cls.ACTION_ID,
+                action.ACTION_ID,
                 submenu_path,
             )
 
@@ -285,25 +288,42 @@ class D810ContextMenu:
             return
 
         # Filter and sort by MENU_ORDER
-        registry_actions = list(D810ActionHandler.registry.values())
         disasm_actions = [
-            cls for cls in registry_actions if "disasm" in cls.SUPPORTED_VIEWS
+            action for action in self._action_instances if "disasm" in action.SUPPORTED_VIEWS
         ]
-        disasm_actions.sort(key=lambda cls: cls.MENU_ORDER)
+        disasm_actions.sort(key=lambda action: action.MENU_ORDER)
 
-        for action_cls in disasm_actions:
+        for action in disasm_actions:
             # Determine submenu path
             submenu_path = self.SUBMENU_PATH
-            if action_cls.SUBMENU:
-                submenu_path = f"{self.SUBMENU_PATH}{action_cls.SUBMENU}/"
+            if action.SUBMENU:
+                submenu_path = f"{self.SUBMENU_PATH}{action.SUBMENU}/"
 
             ida_kernwin.attach_action_to_popup(
                 widget,
                 popup,
-                action_cls.ACTION_ID,
+                action.ACTION_ID,
                 submenu_path,
             )
 
     @property
     def is_installed(self) -> bool:
         return self._installed
+
+    @staticmethod
+    def _collect_ida_modules() -> dict[str, typing.Any]:
+        modules: dict[str, typing.Any] = {}
+        for module_name in (
+            "idaapi",
+            "ida_kernwin",
+            "ida_hexrays",
+            "ida_loader",
+            "ida_funcs",
+            "ida_fpro",
+            "idc",
+        ):
+            try:
+                modules[module_name] = __import__(module_name)
+            except ImportError:
+                continue
+        return modules

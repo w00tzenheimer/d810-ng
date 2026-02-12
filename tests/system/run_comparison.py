@@ -52,7 +52,7 @@ def run_comparison_tests():
     func_filter = " or ".join(TEST_FUNCTIONS)
     cmd = [
         sys.executable, "-m", "pytest",
-        "tests/system/test_libdeobfuscated_dsl.py",
+        "tests/stateless/test_libdeobfuscated_dsl.py",
         "--capture-to-db",
         "-v",
         "--tb=short",

@@ -9,27 +9,19 @@ import typing
 
 from d810.core.logging import getLogger
 from d810.ui.actions.base import D810ActionHandler
+from d810.ui.actions.export_disasm_logic import (
+    DisasmExportSettings,
+    to_ida_flags_with_loader,
+    to_ida_format_int_with_loader,
+)
 
 logger = getLogger("D810.ui")
 
-# ---------------------------------------------------------------------------
-# IDA imports -- optional so unit tests can import without IDA present.
-# ---------------------------------------------------------------------------
-try:
-    import ida_funcs
-    import ida_kernwin
-    import ida_loader
-    import ida_fpro
-    import idaapi
-
-    IDA_AVAILABLE = True
-except ImportError:
-    ida_funcs = None  # type: ignore[assignment]
-    ida_kernwin = None  # type: ignore[assignment]
-    ida_loader = None  # type: ignore[assignment]
-    ida_fpro = None  # type: ignore[assignment]
-    idaapi = None  # type: ignore[assignment]
-    IDA_AVAILABLE = False
+ida_funcs = None
+ida_kernwin = None
+ida_loader = None
+ida_fpro = None
+idaapi = None
 
 # ---------------------------------------------------------------------------
 # Qt imports -- optional, will fail gracefully if not in GUI mode
@@ -54,7 +46,12 @@ except ImportError:
 class ExportDisassemblyDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc]
     """Dialog for configuring disassembly export options."""
 
-    def __init__(self, func_name: str, parent=None):
+    def __init__(
+        self,
+        func_name: str,
+        parent=None,
+        ida_kernwin_module: typing.Any | None = None,
+    ):
         """Initialize the export disassembly dialog.
 
         Args:
@@ -63,6 +60,7 @@ class ExportDisassemblyDialog(QDialog if QT_AVAILABLE else object):  # type: ign
         """
         super().__init__(parent)
         self.func_name = func_name
+        self._ida_kernwin = ida_kernwin_module
         self.setWindowTitle("Export Disassembly")
         self.setup_ui()
 
@@ -109,10 +107,10 @@ class ExportDisassemblyDialog(QDialog if QT_AVAILABLE else object):  # type: ign
 
     def browse_file(self):
         """Show file browser dialog."""
-        if ida_kernwin is None:
+        if self._ida_kernwin is None:
             return
 
-        file_path = ida_kernwin.ask_file(1, self.file_edit.text(), "Save disassembly as...")
+        file_path = self._ida_kernwin.ask_file(1, self.file_edit.text(), "Save disassembly as...")
         if file_path:
             self.file_edit.setText(file_path)
 
@@ -149,59 +147,70 @@ class ExportDisassembly(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
-        if not IDA_AVAILABLE or not QT_AVAILABLE:
+        ida_kernwin_mod = self.ida_module("ida_kernwin", ida_kernwin)
+        ida_funcs_mod = self.ida_module("ida_funcs", ida_funcs)
+        ida_loader_mod = self.ida_module("ida_loader", ida_loader)
+        ida_fpro_mod = self.ida_module("ida_fpro", ida_fpro)
+
+        if (
+            not QT_AVAILABLE
+            or ida_kernwin_mod is None
+            or ida_funcs_mod is None
+            or ida_loader_mod is None
+            or ida_fpro_mod is None
+        ):
             return 0
 
         # Get current function EA
-        ea = ida_kernwin.get_screen_ea()
-        func = ida_funcs.get_func(ea)
+        ea = ida_kernwin_mod.get_screen_ea()
+        func = ida_funcs_mod.get_func(ea)
         if func is None:
             logger.warning("ExportDisassembly: no function at cursor")
-            ida_kernwin.warning("No function at cursor")
+            ida_kernwin_mod.warning("No function at cursor")
             return 0
 
-        func_name = ida_funcs.get_func_name(func.start_ea)
+        func_name = ida_funcs_mod.get_func_name(func.start_ea)
         if not func_name:
             func_name = f"sub_{func.start_ea:X}"
 
         # Show dialog
-        dialog = ExportDisassemblyDialog(func_name)
+        dialog = ExportDisassemblyDialog(
+            func_name,
+            ida_kernwin_module=ida_kernwin_mod,
+        )
         if dialog.exec() != QDialog.Accepted:
             logger.info("Export disassembly cancelled by user")
             return 0
 
         settings = dialog.get_settings()
 
-        # Map format string to ida_loader constants
-        format_map = {
-            "ASM": ida_loader.OFILE_ASM,
-            "LST": ida_loader.OFILE_LST,
-            "MAP": ida_loader.OFILE_MAP,
-            "IDC": ida_loader.OFILE_IDC,
-        }
-        format_type = format_map.get(settings["format"], ida_loader.OFILE_ASM)
-
-        # Build flags
-        flags = 0
-        if settings["include_headers"]:
-            flags |= ida_loader.GENFLG_ASMTYPE  # type: ignore[attr-defined]
+        logic_settings = DisasmExportSettings(
+            format=settings["format"],
+            include_headers=settings["include_headers"],
+            include_segments=False,  # Dialog currently exposes header toggle only
+            output_path=settings["output_path"],
+        )
+        format_type = to_ida_format_int_with_loader(
+            logic_settings.format, loader=ida_loader_mod
+        )
+        flags = to_ida_flags_with_loader(logic_settings, loader=ida_loader_mod)
 
         output_path = settings["output_path"]
         if not output_path:
-            ida_kernwin.warning("No output file specified")
+            ida_kernwin_mod.warning("No output file specified")
             return 0
 
         try:
             # Open qfile_t on the output path
-            qf = ida_fpro.qfile_t()
+            qf = ida_fpro_mod.qfile_t()
             if not qf.open(output_path, "w"):
                 logger.error("Failed to open output file: %s", output_path)
-                ida_kernwin.warning(f"Failed to open output file:\n{output_path}")
+                ida_kernwin_mod.warning(f"Failed to open output file:\n{output_path}")
                 return 0
 
             # Use ida_loader.gen_file to export
             # We need to export a range from function start to end
-            success = ida_loader.gen_file(
+            success = ida_loader_mod.gen_file(
                 format_type,
                 qf,
                 func.start_ea,
@@ -212,16 +221,16 @@ class ExportDisassembly(D810ActionHandler):
 
             if success:
                 logger.info("Exported disassembly to %s", output_path)
-                ida_kernwin.info(f"Disassembly exported to:\n{output_path}")
+                ida_kernwin_mod.info(f"Disassembly exported to:\n{output_path}")
                 return 1
             else:
                 logger.error("Failed to export disassembly")
-                ida_kernwin.warning("Failed to export disassembly")
+                ida_kernwin_mod.warning("Failed to export disassembly")
                 return 0
 
         except Exception as exc:
             logger.error("Failed to export disassembly: %s", exc)
-            ida_kernwin.warning(f"Failed to export disassembly:\n{exc}")
+            ida_kernwin_mod.warning(f"Failed to export disassembly:\n{exc}")
             return 0
 
     def is_available(self, ctx: typing.Any) -> bool:
@@ -233,15 +242,19 @@ class ExportDisassembly(D810ActionHandler):
         Returns:
             True if in disassembly view with a function at cursor
         """
-        if not IDA_AVAILABLE or idaapi is None or ida_kernwin is None or ida_funcs is None:
+        idaapi_mod = self.ida_module("idaapi", idaapi)
+        ida_kernwin_mod = self.ida_module("ida_kernwin", ida_kernwin)
+        ida_funcs_mod = self.ida_module("ida_funcs", ida_funcs)
+
+        if idaapi_mod is None or ida_kernwin_mod is None or ida_funcs_mod is None:
             return False
 
         # Check if we're in disassembly view
-        widget_type = idaapi.get_widget_type(ctx.widget)
-        if widget_type != idaapi.BWN_DISASM:
+        widget_type = idaapi_mod.get_widget_type(ctx.widget)
+        if widget_type != idaapi_mod.BWN_DISASM:
             return False
 
         # Check if there's a function at cursor
-        ea = ida_kernwin.get_screen_ea()
-        func = ida_funcs.get_func(ea)
+        ea = ida_kernwin_mod.get_screen_ea()
+        func = ida_funcs_mod.get_func(ea)
         return func is not None

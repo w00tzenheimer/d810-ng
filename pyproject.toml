@@ -45,6 +45,8 @@ addopts = ["-m", "not profile"]
 markers = [
     "pure_python: Tests that run without IDA Pro (fast, no external dependencies)",
     "requires_ida: Tests that require IDA Pro to run",
+    "ida_stateless: Tests that require a live IDA runtime but stay state-isolated",
+    "contracts: Tests that validate IDA-facing contracts with mocks/stubs",
     "slow: Slow tests (>10s) - typically Z3 verification or complex deobfuscation",
     "profile: marks tests as performance profiling (deselect with '-m \"not profile\"')",
 ]

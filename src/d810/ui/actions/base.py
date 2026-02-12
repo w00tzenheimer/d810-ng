@@ -84,14 +84,25 @@ class D810ActionHandler(Registrant):
     SHORTCUT: str | None = None
     SUBMENU: str | None = None
 
-    def __init__(self, state: "D810State") -> None:
+    def __init__(
+        self,
+        state: "D810State",
+        ida_modules: dict[str, typing.Any] | None = None,
+    ) -> None:
         """Initialize action handler with dependency injection.
 
         Args:
             state: The D810State instance providing access to plugin state,
                 manager, configuration, etc.
+            ida_modules: Optional injected IDA module map (e.g., idaapi,
+                ida_kernwin, ida_loader) for runtime-specific behavior.
         """
         self._state = state
+        self._ida_modules = dict(ida_modules or {})
+
+    def ida_module(self, name: str, default: typing.Any = None) -> typing.Any:
+        """Fetch an injected IDA module by name, falling back to default."""
+        return self._ida_modules.get(name, default)
 
     @abstractmethod
     def execute(self, ctx: typing.Any) -> int:

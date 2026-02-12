@@ -11,10 +11,10 @@ The function performs buffer resize/realloc operations with zero-fill,
 obscured behind a complex state machine dispatcher.
 
 To run:
-    pytest tests/system/test_resize_buffer_cff.py -v
+    pytest tests/stateless/test_resize_buffer_cff.py -v
 
 Incremental config isolation test:
-    pytest tests/system/test_resize_buffer_cff.py::TestResizeBufferCFFIncremental -v -s
+    pytest tests/stateless/test_resize_buffer_cff.py::TestResizeBufferCFFIncremental -v -s
 """
 
 import os
@@ -97,7 +97,7 @@ class TestResizeBufferCFFIncremental:
       3. flatfold.json (everything including block rules + Unflattener)
 
     Run with:
-        pytest tests/system/test_resize_buffer_cff.py::TestResizeBufferCFFIncremental -v -s
+        pytest tests/stateless/test_resize_buffer_cff.py::TestResizeBufferCFFIncremental -v -s
     """
 
     binary_name = _get_default_binary()

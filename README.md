@@ -231,7 +231,7 @@ In `samples/src`, there are various `C` programs compiled using the `samples/src
 
 ### Test Runner
 
-D-810 ng comes with a built-in test runner that automatically loads system tests from the tests folder, under `tests/system`. This GUI is a simple test runner that allows a developer to run tests *inside* of IDA Pro, accessing the hexrays decompiler API and utilizing specific samples under `samples/bins` to test transformations.
+D-810 ng comes with a built-in test runner that loads IDA runtime tests from the tests folder (primarily under `tests/stateless`). This GUI is a simple test runner that allows a developer to run tests *inside* of IDA Pro, accessing the hexrays decompiler API and utilizing specific samples under `samples/bins` to test transformations.
 
 The test runner is self-explanatory:
 
@@ -318,9 +318,9 @@ D-810 ng has a comprehensive test suite that runs inside IDA Pro's headless mode
 ### Quick Start
 
 ```bash
-# Run all system tests (excludes profiling tests by default)
+# Run all stateless IDA runtime tests (excludes profiling tests by default)
 docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
-  "pip install -e .[dev] -q && pytest tests/system/ -v --tb=short"
+  "pip install -e .[dev] -q && pytest tests/stateless/ -v --tb=short"
 ```
 
 ### Test Categories
@@ -328,6 +328,7 @@ docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
 | Marker | Description | Default |
 |--------|-------------|---------|
 | `pure_python` | Tests that run without IDA Pro (fast, no external dependencies) | Included |
+| `contracts` | IDA-facing contract tests using mocks/stubs (no live IDA DB) | Included |
 | `requires_ida` | Tests that require IDA Pro to run | Included |
 | `slow` | Slow tests (>10s) — typically Z3 verification or complex deobfuscation | Included |
 | `profile` | Performance profiling tests (decompiles functions repeatedly) | **Excluded** |
@@ -338,18 +339,27 @@ docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
 # Run only unit tests (no IDA required)
 pytest tests/unit/ -v
 
+# Run contract tests (IDA-facing behavior via mocks/stubs, no live IDA DB)
+pytest tests/contracts/ -v
+
+# Run stateless IDA runtime tests
+docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
+  "pip install -e .[dev] -q && pytest tests/stateless/ -v --tb=short"
+
 # Run a specific test class
 docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
-  "pip install -e .[dev] -q && pytest tests/system/test_libdeobfuscated_dsl.py::TestOLLVMPatterns -v --tb=short"
+  "pip install -e .[dev] -q && pytest tests/stateless/test_libdeobfuscated_dsl.py::TestOLLVMPatterns -v --tb=short"
 
 # Run profiling tests (excluded by default, opt-in only)
 docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
-  "pip install -e .[dev] -q && pytest tests/system/test_profile_libobfuscated.py -m profile -v -s"
+  "pip install -e .[dev] -q && pytest tests/stateless/test_profile_libobfuscated.py -m profile -v -s"
 
 # Override default marker filter to run everything
 docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
-  "pip install -e .[dev] -q && pytest tests/system/ -o 'addopts=' -v"
+  "pip install -e .[dev] -q && pytest tests/stateless/ tests/system/ -o 'addopts=' -v"
 ```
+
+See `tests/TEST_CLASSIFICATION.md` for strict test placement rules and lane definitions.
 
 ### Docker Services
 

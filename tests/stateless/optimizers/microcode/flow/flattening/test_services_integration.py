@@ -11,10 +11,10 @@ Test Functions (from libobfuscated binary):
 
 Usage:
     # Default platform-appropriate binary
-    pytest tests/system/optimizers/microcode/flow/flattening/test_services_integration.py -v
+    pytest tests/stateless/optimizers/microcode/flow/flattening/test_services_integration.py -v
 
     # Override with specific binary
-    D810_TEST_BINARY=libobfuscated.dll pytest tests/system/.../test_services_integration.py -v
+    D810_TEST_BINARY=libobfuscated.dll pytest tests/stateless/.../test_services_integration.py -v
 """
 
 from __future__ import annotations

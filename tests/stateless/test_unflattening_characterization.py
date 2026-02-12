@@ -11,10 +11,10 @@ Test Categories:
 3. Exception Path Tests - Edge cases and exception handling paths
 
 Running these tests:
-    pytest tests/system/test_unflattening_characterization.py -v
+    pytest tests/stateless/test_unflattening_characterization.py -v
 
 Capturing expectations (run once to establish baseline):
-    pytest tests/system/test_unflattening_characterization.py --capture-stats
+    pytest tests/stateless/test_unflattening_characterization.py --capture-stats
 """
 
 import os

@@ -11,20 +11,6 @@ from d810.ui.actions.base import D810ActionHandler
 
 logger = getLogger("D810.ui")
 
-# ---------------------------------------------------------------------------
-# IDA imports -- optional so unit tests can import without IDA present.
-# ---------------------------------------------------------------------------
-try:
-    import ida_hexrays
-    import ida_kernwin
-
-    IDA_AVAILABLE = True
-except ImportError:
-    ida_hexrays = None  # type: ignore[assignment]
-    ida_kernwin = None  # type: ignore[assignment]
-    IDA_AVAILABLE = False
-
-
 class MarkDeobfuscated(D810ActionHandler):
     """Mark the current function as deobfuscated (stub)."""
 
@@ -43,10 +29,11 @@ class MarkDeobfuscated(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
-        if ida_kernwin is None:
+        ida_kernwin_mod = self.ida_module("ida_kernwin")
+        if ida_kernwin_mod is None:
             return 0
 
-        ida_kernwin.info("Not yet implemented: Mark as deobfuscated")
+        ida_kernwin_mod.info("Not yet implemented: Mark as deobfuscated")
         return 1
 
     def is_available(self, ctx: typing.Any) -> bool:
@@ -58,7 +45,8 @@ class MarkDeobfuscated(D810ActionHandler):
         Returns:
             True if in pseudocode view, False otherwise
         """
-        if ida_hexrays is None:
+        ida_hexrays_mod = self.ida_module("ida_hexrays")
+        if ida_hexrays_mod is None:
             return False
 
-        return ida_hexrays.get_widget_vdui(ctx.widget) is not None
+        return ida_hexrays_mod.get_widget_vdui(ctx.widget) is not None
