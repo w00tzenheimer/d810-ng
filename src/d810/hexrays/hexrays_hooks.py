@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import enum
 import pathlib
+import time
 import typing
 from collections import defaultdict
 
@@ -9,6 +10,7 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.core.cymode import CythonMode
+from d810.core.rule_scope import PIPELINE_FLOW
 from d810.errors import D810Exception
 from d810.expr.z3_utils import log_z3_instructions
 from d810.hexrays.cfg_utils import safe_verify
@@ -423,7 +425,18 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         super().__init__()
         self.log_dir = log_dir
         self.stats = stats
-        self.cfg_rules = set()
+        self.cfg_rules: list[FlowOptimizationRule] = []
+        self._rule_scope_service = None
+        self._rule_scope_project_name = ""
+        self._rule_scope_idb_key = ""
+        self._perf_compare_rule_scope = False
+        self._perf_counters = {
+            "scoped_calls": 0,
+            "legacy_calls": 0,
+            "scoped_candidates_total": 0,
+            "legacy_candidates_total": 0,
+            "scoped_lookup_ns": 0,
+        }
 
         self.current_maturity = None
         self._pass_count = 0
@@ -435,6 +448,34 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         Called when maturity changes so the guard does not carry over.
         """
         self._pass_count = 0
+
+    def reset_perf_counters(self) -> None:
+        for key in self._perf_counters:
+            self._perf_counters[key] = 0
+
+    def report_perf_counters(self) -> None:
+        scoped_calls = int(self._perf_counters["scoped_calls"])
+        legacy_calls = int(self._perf_counters["legacy_calls"])
+        scoped_candidates = int(self._perf_counters["scoped_candidates_total"])
+        legacy_candidates = int(self._perf_counters["legacy_candidates_total"])
+        scoped_lookup_ns = int(self._perf_counters["scoped_lookup_ns"])
+
+        if scoped_calls == 0 and legacy_calls == 0:
+            return
+        scoped_avg = (scoped_candidates / scoped_calls) if scoped_calls else 0.0
+        legacy_avg = (legacy_candidates / legacy_calls) if legacy_calls else 0.0
+        lookup_us = (scoped_lookup_ns / scoped_calls / 1000.0) if scoped_calls else 0.0
+        optimizer_logger.info(
+            "Rule iteration perf: scoped_calls=%d legacy_calls=%d "
+            "scoped_avg_candidates=%.2f legacy_avg_candidates=%.2f "
+            "scoped_lookup_avg_us=%.2f compare=%s",
+            scoped_calls,
+            legacy_calls,
+            scoped_avg,
+            legacy_avg,
+            lookup_us,
+            self._perf_compare_rule_scope,
+        )
 
     def func(self, blk: ida_hexrays.mblock_t):
         self.log_info_on_input(blk)
@@ -489,13 +530,57 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
 
     # statistics are managed centrally via the stats object
 
-    def optimize(self, blk: ida_hexrays.mblock_t):
+    def _resolve_active_rules(
+        self, blk: ida_hexrays.mblock_t
+    ) -> tuple[FlowOptimizationRule, ...] | None:
+        if self._rule_scope_service is None:
+            return None
+        if blk.mba is None or blk.mba.entry_ea is None:
+            return tuple()
+        if self.current_maturity is None:
+            return tuple()
+        t0_ns = time.perf_counter_ns()
+        rules = self._rule_scope_service.get_active_rules(
+            project_name=self._rule_scope_project_name,
+            idb_key=self._rule_scope_idb_key,
+            func_ea=int(blk.mba.entry_ea),
+            pipeline=PIPELINE_FLOW,
+            maturity=int(self.current_maturity),
+        )
+        self._perf_counters["scoped_lookup_ns"] += time.perf_counter_ns() - t0_ns
+        return rules
+
+    def _legacy_candidate_count(self, func_entry_ea: int) -> int:
+        count = 0
         for cfg_rule in self.cfg_rules:
+            if self.check_if_rule_is_activated_for_address(cfg_rule, func_entry_ea):
+                count += 1
+        return count
+
+    def optimize(self, blk: ida_hexrays.mblock_t):
+        active_rules = self._resolve_active_rules(blk)
+        rules = active_rules if active_rules is not None else tuple(self.cfg_rules)
+        func_ea = int(blk.mba.entry_ea) if (blk.mba is not None and blk.mba.entry_ea is not None) else 0
+
+        if active_rules is not None:
+            self._perf_counters["scoped_calls"] += 1
+            self._perf_counters["scoped_candidates_total"] += len(rules)
+            if self._perf_compare_rule_scope and func_ea != 0:
+                self._perf_counters["legacy_candidates_total"] += self._legacy_candidate_count(func_ea)
+        else:
+            self._perf_counters["legacy_calls"] += 1
+            if func_ea != 0:
+                self._perf_counters["legacy_candidates_total"] += self._legacy_candidate_count(func_ea)
+            else:
+                self._perf_counters["legacy_candidates_total"] += len(rules)
+
+        for cfg_rule in rules:
             cfg_rule.current_maturity = self.current_maturity
             guard = blk.mba is not None and blk.mba.entry_ea is not None
-            guard &= self.check_if_rule_is_activated_for_address(
-                cfg_rule, blk.mba.entry_ea
-            )
+            if active_rules is None:
+                guard &= self.check_if_rule_is_activated_for_address(
+                    cfg_rule, blk.mba.entry_ea
+                )
             if guard:
                 nb_patch = cfg_rule.optimize(blk)
                 if nb_patch > 0:
@@ -510,10 +595,20 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
 
     def add_rule(self, cfg_rule: FlowOptimizationRule):
         optimizer_logger.info("Adding cfg rule {0}".format(cfg_rule))
-        self.cfg_rules.add(cfg_rule)
+        if cfg_rule not in self.cfg_rules:
+            self.cfg_rules.append(cfg_rule)
 
     def configure(self, **kwargs):
-        pass
+        self._rule_scope_service = kwargs.get("rule_scope_service", self._rule_scope_service)
+        self._rule_scope_project_name = str(
+            kwargs.get("rule_scope_project_name", self._rule_scope_project_name)
+        )
+        self._rule_scope_idb_key = str(
+            kwargs.get("rule_scope_idb_key", self._rule_scope_idb_key)
+        )
+        self._perf_compare_rule_scope = bool(
+            kwargs.get("rule_scope_perf_compare", self._perf_compare_rule_scope)
+        )
 
     def check_if_rule_is_activated_for_address(
         self, cfg_rule: FlowOptimizationRule, func_entry_ea: int
