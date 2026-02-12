@@ -242,3 +242,94 @@ def test_overlay_cache_is_refreshed_by_function_override_invalidation():
         maturity=1,
     )
     assert tuple(rule.name for rule in second) == ("RuleB",)
+
+
+def test_overlay_precedence_over_project_config():
+    svc = RuleScopeService()
+    rule_a = _DummyRule(
+        name="RuleA",
+        maturities=[1],
+        use_whitelist=True,
+        whitelisted_function_ea_list=["0x3000"],
+    )
+    rule_b = _DummyRule(
+        name="RuleB",
+        maturities=[1],
+        use_whitelist=True,
+        whitelisted_function_ea_list=["0x3000"],
+    )
+    svc.compile_base_rules(
+        project_name="proj",
+        instruction_rules=(rule_a, rule_b),
+        flow_rules=(),
+        ctree_rules=(),
+    )
+
+    baseline = svc.get_active_rules(
+        project_name="proj",
+        idb_key="idb",
+        func_ea=0x3000,
+        pipeline=PIPELINE_INSTRUCTION,
+        maturity=1,
+    )
+    assert tuple(rule.name for rule in baseline) == ("RuleA", "RuleB")
+
+    svc.set_overlay_provider(
+        lambda ea: FunctionRuleOverlay(enabled_rules=frozenset({"RuleB"}))
+        if ea == 0x3000
+        else None
+    )
+    svc.invalidate(
+        RuleScopeInvalidation(
+            reason=RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
+            func_eas=frozenset({0x3000}),
+        )
+    )
+    overridden = svc.get_active_rules(
+        project_name="proj",
+        idb_key="idb",
+        func_ea=0x3000,
+        pipeline=PIPELINE_INSTRUCTION,
+        maturity=1,
+    )
+    assert tuple(rule.name for rule in overridden) == ("RuleB",)
+
+
+def test_event_emitter_partial_invalidation_on_function_override():
+    svc = RuleScopeService()
+    emitter: EventEmitter = EventEmitter()
+    svc.attach(emitter)
+
+    rule = _DummyRule(name="RuleA", maturities=[1])
+    svc.compile_base_rules(
+        project_name="proj",
+        instruction_rules=(rule,),
+        flow_rules=(),
+        ctree_rules=(),
+    )
+    svc.get_active_rules(
+        project_name="proj",
+        idb_key="idb",
+        func_ea=0x1111,
+        pipeline=PIPELINE_INSTRUCTION,
+        maturity=1,
+    )
+    svc.get_active_rules(
+        project_name="proj",
+        idb_key="idb",
+        func_ea=0x2222,
+        pipeline=PIPELINE_INSTRUCTION,
+        maturity=1,
+    )
+    assert svc.active_cache_size == 2
+    generation_before = svc.generation
+
+    emitter.emit(
+        RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
+        RuleScopeInvalidation(
+            reason=RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
+            func_eas=frozenset({0x1111}),
+        ),
+    )
+    assert svc.generation == generation_before + 1
+    assert svc.active_cache_size == 1
