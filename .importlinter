@@ -12,6 +12,8 @@ source_modules =
     tests.unit
 forbidden_modules =
     d810.hexrays
+ignore_imports =
+    tests.unit.test_mop_snapshot_guard -> d810.hexrays.mop_snapshot
 
 [importlinter:contract:unit-tests-no-ui]
 name = Unit tests must not import ui modules

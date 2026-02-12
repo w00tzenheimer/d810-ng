@@ -227,11 +227,14 @@ class TestPatternFingerprint:
         assert fp1.compatible_with(fp2) is False
 
     @pytest.mark.ida_required
-    def test_fingerprint_compatible_leaf_const_swap_accepts(self, libobfuscated_setup):
-        """Swapping leaf and const counts (same total) should accept."""
-        fp1 = PatternFingerprint(depth=3, node_count=2, leaf_count=2, const_count=2)
-        fp2 = PatternFingerprint(depth=3, node_count=2, leaf_count=3, const_count=1)
-        assert fp1.compatible_with(fp2) is True
+    def test_fingerprint_compatible_leaf_const_swap_directional(self, libobfuscated_setup):
+        """Const_count directional: pattern cannot demand more constants than candidate."""
+        fp_more_const = PatternFingerprint(depth=3, node_count=2, leaf_count=2, const_count=2)
+        fp_less_const = PatternFingerprint(depth=3, node_count=2, leaf_count=3, const_count=1)
+        # Pattern with fewer constants CAN match candidate with more
+        assert fp_less_const.compatible_with(fp_more_const) is True
+        # Pattern with more constants CANNOT match candidate with fewer
+        assert fp_more_const.compatible_with(fp_less_const) is False
 
     @pytest.mark.ida_required
     def test_fingerprint_compatible_different_total_operands_rejects(self, libobfuscated_setup):
