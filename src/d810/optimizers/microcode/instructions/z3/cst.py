@@ -5,7 +5,7 @@ import ida_hexrays
 from d810.core import typing
 from d810.core import getLogger
 from d810.errors import AstEvaluationException
-from d810.expr.ast import AstConstant, AstNode, minsn_to_ast
+from d810.expr.ast import AstConstant, AstNode, AstProxy, minsn_to_ast
 from d810.expr.z3_utils import z3_check_mop_equality
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.z3.handler import Z3Rule
@@ -83,7 +83,10 @@ class Z3ConstantOptimization(Z3Rule):
                 tmp.add_constant_leaf("c_res", val_0, tmp.mop.size)
                 # TODO(w00tzenheimer): should we recompute caches so that leafs_by_name contains the new constant leaf?
                 # tmp.compute_sub_ast()
-                new_instruction = self.get_replacement(typing.cast(AstNode, tmp))
+                candidate_ast = tmp._target if isinstance(tmp, AstProxy) else tmp
+                new_instruction = self.get_replacement(
+                    typing.cast(AstNode, candidate_ast)
+                )
                 return new_instruction
         except ZeroDivisionError:
             logger.error("ZeroDivisionError while evaluating %s", tmp, exc_info=True)

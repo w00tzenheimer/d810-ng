@@ -46,3 +46,19 @@ class TestCheckInsnMopSize:
         """Regular arithmetic instructions still require strict size agreement."""
         ins = _make_binary_ins(ida_hexrays.m_add, left_size=4, right_size=4, dest_size=1)
         assert check_ins_mop_size_are_ok(ins) is False
+
+    def test_jnz_ignores_branch_target_dest_size(self):
+        """Conditional jumps should not enforce arithmetic dest-size matching."""
+        ins = _make_binary_ins(ida_hexrays.m_jnz, left_size=4, right_size=4, dest_size=0)
+        assert check_ins_mop_size_are_ok(ins) is True
+
+    def test_jnz_still_validates_nested_operands(self):
+        """Jump conditions embedding invalid expressions should still fail."""
+        bad_expr = _make_binary_ins(ida_hexrays.m_add, left_size=4, right_size=4, dest_size=1)
+        ins = _FakeInsn(
+            opcode=ida_hexrays.m_jnz,
+            l=_FakeMop(size=4, t=ida_hexrays.mop_d, d=bad_expr),
+            r=_FakeMop(size=4),
+            d=_FakeMop(size=0),
+        )
+        assert check_ins_mop_size_are_ok(ins) is False

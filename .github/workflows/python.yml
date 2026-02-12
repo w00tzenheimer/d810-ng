@@ -143,7 +143,7 @@ jobs:
                   pytest tests/unit/ -v --tb=short
 
     system-tests:
-        name: "system-tests (idapro-9.2, pure-python)"
+        name: "system+stateless-tests (idapro-9.2, pure-python)"
         runs-on: ubuntu-24.04
         env:
             PYTHONPATH: ${{ github.workspace }}
@@ -175,13 +175,13 @@ jobs:
                   echo "Loading Docker image from cache..."
                   docker load -i /tmp/docker-cache/idapro-tests-9.2.tar || echo "No cached image to load."
 
-            - name: Run system tests
+            - name: Run system and stateless tests
               run: |
                   set -e
                   docker compose run --rm --entrypoint bash idapro-tests-9.2 -c "
                       set -e
                       pip install -e .[dev] -q
-                      pytest tests/system/ -v --tb=short --forked
+                      pytest tests/system/ tests/stateless/ -v --tb=short --forked
                   "
 
             - name: Save Docker image to cache
@@ -193,7 +193,7 @@ jobs:
                   docker save "$IMAGE_ID" -o /tmp/docker-cache/idapro-tests-9.2.tar || echo "Failed to save image."
 
     system-tests-speedups:
-        name: "system-tests (idapro-9.2, speedups)"
+        name: "system+stateless-tests (idapro-9.2, speedups)"
         runs-on: ubuntu-24.04
         env:
             PYTHONPATH: ${{ github.workspace }}
@@ -225,7 +225,7 @@ jobs:
                   echo "Loading Docker image from cache..."
                   docker load -i /tmp/docker-cache/idapro-tests-9.2.tar || echo "No cached image to load."
 
-            - name: Build speedups and run system tests
+            - name: Build speedups and run system and stateless tests
               run: |
                   set -e
                   docker compose run --rm --entrypoint bash idapro-tests-9.2 -c "
@@ -235,7 +235,7 @@ jobs:
                       D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e '.[dev]' -q
                       echo 'Speedups .so files built:'
                       find /work/src/d810/speedups -name '*.so' -type f
-                      pytest tests/system/ -v --tb=short --forked
+                      pytest tests/system/ tests/stateless/ -v --tb=short --forked
                   "
 
             - name: Save Docker image to cache
