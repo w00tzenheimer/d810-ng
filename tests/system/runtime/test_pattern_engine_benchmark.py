@@ -495,3 +495,88 @@ class TestLookupBenchmark:
         per_lookup = (elapsed / 100 / len(miss_asts)) * 1_000_000
 
         print(f"\n  Lookup (miss, new):   {per_lookup:.2f} us/lookup")
+
+
+# =========================================================================
+# Test: Match Benchmark
+# =========================================================================
+
+
+class TestMatchBenchmark:
+    """Benchmark pattern matching performance."""
+
+    binary_name = _get_default_binary()
+
+    @pytest.fixture(scope="class")
+    def match_fixtures(self, real_asts):
+        """Prepare patterns and candidates for match benchmarks."""
+        candidates = []
+        for ast, _ in real_asts:
+            if ast.is_node():
+                left = getattr(ast, "left", None)
+                right = getattr(ast, "right", None)
+                if left is not None and right is not None:
+                    candidates.append(ast)
+                    if len(candidates) >= 20:
+                        break
+
+        if len(candidates) < 5:
+            pytest.skip("Not enough candidate ASTs for match benchmark")
+
+        patterns = []
+        for candidate in candidates:
+            pattern = AstNode(candidate.opcode, AstLeaf("x_0"), AstLeaf("y_0"))
+            pattern.freeze()
+            patterns.append(pattern)
+
+        return patterns, candidates
+
+    @pytest.mark.ida_required
+    def test_match_clone_based(self, match_fixtures):
+        """Benchmark check_pattern_and_copy_mops (clone-based match)."""
+        patterns, candidates = match_fixtures
+
+        def match_all():
+            for pattern, candidate in zip(patterns, candidates):
+                pattern_clone = pattern.clone()
+                _ = pattern_clone.check_pattern_and_copy_mops(candidate)
+
+        elapsed = timed_run(match_all, iterations=100, warmup=10)
+        per_match = (elapsed / 100 / len(patterns)) * 1_000_000
+
+        print(f"\n  Match (clone-based): {per_match:.2f} us/match")
+
+    @pytest.mark.ida_required
+    def test_match_nomut(self, match_fixtures):
+        """Benchmark match_pattern_nomut (non-mutating match)."""
+        patterns, candidates = match_fixtures
+
+        bindings = MatchBindings()
+
+        def match_all():
+            for pattern, candidate in zip(patterns, candidates):
+                _ = match_pattern_nomut(pattern, candidate, bindings)
+
+        elapsed = timed_run(match_all, iterations=100, warmup=10)
+        per_match = (elapsed / 100 / len(patterns)) * 1_000_000
+
+        print(f"\n  Match (nomut):       {per_match:.2f} us/match")
+
+    @pytest.mark.skipif(not HAS_CYTHON, reason="Cython extensions not built")
+    @pytest.mark.ida_required
+    def test_match_cython_nomut(self, match_fixtures):
+        """Benchmark Cython match_pattern_nomut."""
+        patterns, candidates = match_fixtures
+
+        from d810.speedups.optimizers.c_pattern_match import CMatchBindings
+
+        bindings = CMatchBindings()
+
+        def match_all():
+            for pattern, candidate in zip(patterns, candidates):
+                _ = cython_match_pattern_nomut(pattern, candidate, bindings)
+
+        elapsed = timed_run(match_all, iterations=100, warmup=10)
+        per_match = (elapsed / 100 / len(patterns)) * 1_000_000
+
+        print(f"\n  Match (Cython):      {per_match:.2f} us/match")
