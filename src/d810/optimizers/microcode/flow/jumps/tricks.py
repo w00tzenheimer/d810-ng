@@ -107,7 +107,6 @@ class CompareConstantRule4(JumpOptimizationRule):
     REPLACEMENT_RIGHT_PATTERN = AstLeaf("c_1")
 
     def check_candidate(self, opcode, left_candidate, right_candidate):
-        print("dflighdrth")
         if not equal_mops_bypass_xdu(
             left_candidate["xdu_x_0"].mop, left_candidate["x_0"].mop
         ):

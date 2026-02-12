@@ -214,6 +214,14 @@ BIT_OPERATIONS_OPCODES: list[int] = [
     ida_hexrays.m_high,
 ]
 CHECK_OPCODES: list[int] = [
+    # Flag-producing instructions: destination is a 1-byte flag while
+    # operands are typically full-width integers (e.g., 4/8 bytes).
+    # Treat them as check-like opcodes so size validation does not
+    # incorrectly require d.size == l.size == r.size.
+    ida_hexrays.m_cfadd,
+    ida_hexrays.m_ofadd,
+    ida_hexrays.m_cfshl,
+    ida_hexrays.m_cfshr,
     ida_hexrays.m_sets,
     ida_hexrays.m_seto,
     ida_hexrays.m_setp,
