@@ -52,16 +52,24 @@ cdef inline bint fingerprint_compatible(const PatternFingerprint* pattern, const
     """Check if candidate could match pattern (quick rejection).
 
     Requires:
+    - Same opcode_hash (sub-tree opcode structure)
     - Same depth
     - Same node_count (structural shape)
     - Same total operand count (leaf + const)
+    - Pattern const_count <= candidate const_count (directional constraint)
     """
+    if pattern.opcode_hash != candidate.opcode_hash:
+        return False
     if pattern.depth != candidate.depth:
         return False
     if pattern.node_count != candidate.node_count:
         return False
     # Total operand count must match
     if (pattern.leaf_count + pattern.const_count) != (candidate.leaf_count + candidate.const_count):
+        return False
+    # A pattern with constants at specific positions can only match
+    # candidates that have at least as many constants (directional constraint).
+    if pattern.const_count > candidate.const_count:
         return False
     return True
 
