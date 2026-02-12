@@ -580,3 +580,55 @@ class TestMatchBenchmark:
         per_match = (elapsed / 100 / len(patterns)) * 1_000_000
 
         print(f"\n  Match (Cython):      {per_match:.2f} us/match")
+
+
+# =========================================================================
+# Test: Hot Path Benchmark
+# =========================================================================
+
+
+class TestHotPathBenchmark:
+    """Benchmark the full pattern matching hot path (end-to-end)."""
+
+    binary_name = _get_default_binary()
+
+    @pytest.mark.ida_required
+    def test_full_optimization_pass(self, real_asts, libobfuscated_setup):
+        """Benchmark full get_optimized_instruction() across all test instructions."""
+        from d810.optimizers.microcode.instructions.pattern_matching.handler import PatternOptimizer
+        from d810.core import OptimizationStatistics
+
+        stats = OptimizationStatistics()
+        optimizer = PatternOptimizer(
+            maturities=[ida_hexrays.MMAT_PREOPTIMIZED, ida_hexrays.MMAT_LOCOPT],
+            stats=stats,
+        )
+
+        instructions = [ins for _, ins in real_asts if ins is not None]
+
+        if len(instructions) < 10:
+            pytest.skip("Not enough instructions for hot path benchmark")
+
+        class MockBlock:
+            def __init__(self):
+                class MockMBA:
+                    maturity = ida_hexrays.MMAT_PREOPTIMIZED
+                self.mba = MockMBA()
+
+        mock_blk = MockBlock()
+
+        def run_optimization_pass():
+            matched = 0
+            for ins in instructions:
+                result = optimizer.get_optimized_instruction(mock_blk, ins)
+                if result is not None:
+                    matched += 1
+            return matched
+
+        elapsed = timed_run(run_optimization_pass, iterations=10, warmup=2)
+        per_instruction = (elapsed / 10 / len(instructions)) * 1_000_000
+
+        print(f"\n  Hot path (no rules):")
+        print(f"    Total instructions: {len(instructions)}")
+        print(f"    Time per instruction: {per_instruction:.2f} us")
+        print(f"    Throughput: {len(instructions) / (elapsed / 10):.0f} insns/sec")
