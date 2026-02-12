@@ -28,6 +28,9 @@ from d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups im
     MatchBindings,
 )
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
 from bench_utils import timed_run, save_baseline
 
 
@@ -144,7 +147,7 @@ class TestStorageParity:
         unique_patterns = []
         seen_sigs = set()
 
-        for ast, _ in real_asts[:100]:
+        for ast, _ in real_asts:
             if ast.is_node():
                 sig = ast.get_pattern()
                 if sig not in seen_sigs:
