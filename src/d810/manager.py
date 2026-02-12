@@ -16,12 +16,12 @@ from typing import TYPE_CHECKING
 
 from d810.core.config import D810Configuration, ProjectConfiguration
 from d810.core.logging import clear_logs, configure_loggers, getLogger
+from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.core.platform import resolve_arch_config
 from d810.core.project import ProjectContext, ProjectManager
 from d810.core.registry import EventEmitter
 from d810.core.singleton import SingletonMeta
 from d810.core.stats import OptimizationStatistics
-from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.hexrays.ctree_hooks import CtreeOptimizerManager, CtreeOptimizationRule
 from d810.hexrays.hexrays_hooks import (
     BlockOptimizerManager,
