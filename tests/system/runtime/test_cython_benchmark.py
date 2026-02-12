@@ -8,13 +8,13 @@ Usage:
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass
 from typing import Callable
 
 import pytest
 
 import ida_hexrays
+
+from tests.system.runtime.bench_utils import BenchResult, timed_run
 
 # Import both implementations directly for comparison
 try:
@@ -24,40 +24,6 @@ except ImportError:
     CYTHON_AVAILABLE = False
 
 from d810.expr import p_ast as python_ast
-
-
-@dataclass
-class BenchResult:
-    name: str
-    cython_time: float
-    python_time: float
-    iterations: int
-
-    @property
-    def speedup(self) -> float:
-        if self.cython_time == 0:
-            return float('inf')
-        return self.python_time / self.cython_time
-
-    def report(self) -> str:
-        return (
-            f"\n{self.name}:\n"
-            f"  Cython:      {self.cython_time * 1000:.2f} ms ({self.iterations} iterations)\n"
-            f"  Pure Python: {self.python_time * 1000:.2f} ms ({self.iterations} iterations)\n"
-            f"  Speedup:     {self.speedup:.2f}x"
-        )
-
-
-def timed_run(func: Callable[[], None], iterations: int) -> float:
-    """Run function multiple times and return total elapsed time."""
-    # Warmup
-    for _ in range(min(5, iterations // 10)):
-        func()
-
-    start = time.perf_counter()
-    for _ in range(iterations):
-        func()
-    return time.perf_counter() - start
 
 
 @pytest.mark.skipif(not CYTHON_AVAILABLE, reason="Cython extensions not built")
