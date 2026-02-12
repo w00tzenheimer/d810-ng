@@ -247,7 +247,7 @@ class AstNode(AstBase):
 
     def add_leaf(self, leaf_name: str, leaf_mop: ida_hexrays.mop_t):
         leaf = AstLeaf(leaf_name)
-        leaf.mop = leaf_mop
+        leaf.mop = MopSnapshot.from_mop(leaf_mop)
         self.leafs.append(leaf)
         self.leafs_by_name[leaf_name] = leaf
 
@@ -864,7 +864,7 @@ class AstLeaf(AstBase):
 
     @dst_mop.setter
     def dst_mop(self, mop):
-        self.mop = mop
+        self.mop = MopSnapshot.from_mop(mop) if mop is not None else None
 
     @property
     def value(self):
@@ -1362,7 +1362,7 @@ class AstProxy(AstBase):
     @mop.setter
     def mop(self, value):  # noqa: ANN001
         self._ensure_mutable()
-        self._target.mop = value
+        self._target.mop = MopSnapshot.from_mop(value) if value is not None else None
 
     # Convenience setters for a few commonly mutated fields
     @property

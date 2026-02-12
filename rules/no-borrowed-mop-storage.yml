@@ -1,0 +1,75 @@
+# Detect storing borrowed mop_t references that may become dangling pointers
+# Phase 4 of MopSnapshot safety work - prevent regressions
+#
+# DANGER:  self.mop = mop  (borrowed reference - use-after-free risk!)
+# SAFE:    self.mop = MopSnapshot.from_mop(mop)
+# SAFE:    self.mop = get_constant_mop(value, size)
+# SAFE:    self.mop = None
+#
+# See: MopSnapshot documentation in d810/hexrays/mop_snapshot.py
+# See: Phase 2 fixes in p_ast.py (lines 1564, 1665)
+
+id: no-borrowed-mop-storage
+language: python
+severity: error
+message: |
+  Direct assignment of mop_t parameter to .mop attribute detected.
+  This stores a borrowed reference that may become invalid.
+
+  Use MopSnapshot.from_mop(mop) to capture a safe copy instead.
+
+rule:
+  pattern: $OBJ.mop = $MOP
+  not:
+    any:
+      # Allow: MopSnapshot.from_mop(...) - all variants
+      - pattern: $OBJ.mop = MopSnapshot.from_mop($$$)
+      # Allow: ternary with MopSnapshot.from_mop or None
+      - pattern: $OBJ.mop = MopSnapshot.from_mop($$$) if $$$ else $$$
+      - pattern: $OBJ.mop = $$$ if $$$ else None
+      # Allow: get_constant_mop(...)
+      - pattern: $OBJ.mop = get_constant_mop($$$)
+      # Allow: expressions containing "or get_constant_mop" (safe fallback)
+      - pattern: $OBJ.mop = $$$ or get_constant_mop($$$)
+      # Allow: None (clearing reference)
+      - pattern: $OBJ.mop = None
+      # Allow: assignments from other .mop attributes (already safe snapshots)
+      - pattern: $OBJ.mop = $SRC.mop
+      # Allow: .to_mop() reconstruction from MopSnapshot
+      - pattern: $OBJ.mop = $SNAP.to_mop()
+      # Allow: ida_hexrays.mop_t() constructor (creates new owned object)
+      - pattern: $OBJ.mop = ida_hexrays.mop_t()
+      # Allow: cloned mop_t (explicit clone operation)
+      - pattern: $OBJ.mop = cloned_mop
+      - pattern: $OBJ.mop = new_mop
+      - pattern: $OBJ.mop = cached_mop
+      - pattern: $OBJ.mop = cst_mop
+      - pattern: $OBJ.mop = ins_mop
+
+note: |
+  IDA's mop_t objects are transient and may be invalidated when:
+  - The microcode optimizer runs
+  - The basic block is modified
+  - The instruction is deleted
+
+  Storing a raw mop_t parameter creates a dangling pointer risk.
+
+  CORRECT PATTERNS:
+
+  1. For non-constant operands:
+     tree.mop = MopSnapshot.from_mop(mop)
+
+  2. For constant operands (reuse cache):
+     tree.mop = get_constant_mop(value, size)
+
+  3. Clearing reference:
+     tree.mop = None
+
+  4. Copying from existing snapshot:
+     self.mop = other.mop  # other.mop is already a MopSnapshot
+
+  DOCUMENTED EXCEPTIONS:
+  - pattern_speedups.py:MatchBinding stores borrowed mop_t with explicit
+    lifetime documentation (valid only during pattern match callback)
+
+  See src/d810/hexrays/mop_snapshot.py for MopSnapshot API.

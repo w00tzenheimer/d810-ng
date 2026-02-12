@@ -26,6 +26,7 @@ from d810.expr.ast import (
     AstNode,
     minsn_to_ast,
 )
+from d810.hexrays.mop_snapshot import MopSnapshot
 from d810.mba.dsl import SymbolicExpression, SymbolicExpressionProtocol
 from d810.mba.constraints import (
     ComparisonConstraintProtocol,
@@ -642,7 +643,7 @@ class IDAPatternAdapter:
             if source_leaf is not None:
                 source_mop = getattr(source_leaf, "mop", None)
                 if source_mop is not None and source_mop.t == ida_hexrays.mop_n:
-                    leaf.mop = source_mop
+                    leaf.mop = MopSnapshot.from_mop(source_mop)
                     if hasattr(leaf, "expected_value"):
                         leaf.expected_value = source_mop.nnn.value
                     if hasattr(leaf, "expected_size"):
