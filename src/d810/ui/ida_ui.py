@@ -890,8 +890,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             save_path = pathlib.Path(fname)
             description = self._edit_desc_input.text()
         elif self._edit_mode == "edit":
-            # Save in-place
-            save_path = self._edit_path
+            # Save to user cfg dir (same as _resolve_config_path user path)
+            save_path = self.state.d810_config.config_dir / self._edit_path.name
             description = self.state.current_project.description
         else:
             logger.error("Invalid edit mode: %s", self._edit_mode)
