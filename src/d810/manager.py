@@ -115,6 +115,24 @@ class D810Manager:
     def configure(self, **kwargs):
         self.config = kwargs
 
+    def emit_rule_scope_invalidation(
+        self,
+        reason: RuleScopeEvent,
+        *,
+        project_name: str | None = None,
+        func_eas: frozenset[int] | None = None,
+        changed_rules: frozenset[str] | None = None,
+    ) -> None:
+        self.event_emitter.emit(
+            reason,
+            RuleScopeInvalidation(
+                reason=reason,
+                project_name=project_name,
+                func_eas=func_eas,
+                changed_rules=changed_rules,
+            ),
+        )
+
     def start_profiling(self):
         if not self._profiling_enabled:
             return
@@ -191,6 +209,7 @@ class D810Manager:
         self._started = True
 
     def _init_storage(self) -> None:
+        old_storage = self.storage
         backend = str(self.config.get("function_rules_backend", "sqlite")).strip().lower()
         target = self.config.get("function_rules_storage")
         if target is None:
@@ -199,15 +218,28 @@ class D810Manager:
             else:
                 target = "$ d810.optimization_storage"
         try:
+            if old_storage is not None:
+                try:
+                    old_storage.close()
+                except Exception:
+                    pass
             self.storage = create_optimization_storage(target, backend=backend)
             logger.info(
                 "Function-rules storage configured: backend=%s target=%s",
                 backend,
                 target,
             )
+            self.emit_rule_scope_invalidation(
+                RuleScopeEvent.IDB_OVERLAY_RELOADED,
+                project_name=str(self.config.get("project_name", "")),
+            )
         except Exception as exc:
             self.storage = None
             logger.warning("Failed to initialize function-rules storage: %s", exc)
+            self.emit_rule_scope_invalidation(
+                RuleScopeEvent.IDB_OVERLAY_RELOADED,
+                project_name=str(self.config.get("project_name", "")),
+            )
 
     def _get_rule_overlay(self, function_ea: int) -> FunctionRuleOverlay | None:
         storage = self.storage
@@ -220,6 +252,13 @@ class D810Manager:
             enabled_rules=frozenset(config.enabled_rules),
             disabled_rules=frozenset(config.disabled_rules),
         )
+
+    def get_function_rule_override(self, function_addr: int):
+        if self.storage is None:
+            self._init_storage()
+        if self.storage is None:
+            return None
+        return self.storage.get_function_rules(function_addr)
 
     def set_function_rule_override(
         self,
@@ -240,14 +279,11 @@ class D810Manager:
             disabled_rules=disabled_rules,
             notes=notes,
         )
-        self.event_emitter.emit(
+        self.emit_rule_scope_invalidation(
             RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
-            RuleScopeInvalidation(
-                reason=RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
-                project_name=str(self.config.get("project_name", "")),
-                func_eas=frozenset({int(function_addr)}),
-                changed_rules=frozenset((enabled_rules or set()) | (disabled_rules or set())),
-            ),
+            project_name=str(self.config.get("project_name", "")),
+            func_eas=frozenset({int(function_addr)}),
+            changed_rules=frozenset((enabled_rules or set()) | (disabled_rules or set())),
         )
 
     def _compile_rule_scope(self) -> None:
@@ -467,6 +503,10 @@ class D810State(metaclass=SingletonMeta):
         cfg = dict(self.current_project.additional_configuration)
         cfg.setdefault("project_name", self.current_project.path.name)
         self.manager.configure(**cfg)
+        self.manager.emit_rule_scope_invalidation(
+            RuleScopeEvent.PROJECT_RULES_RELOADED,
+            project_name=self.current_project.path.name,
+        )
         if self.manager.started:
             self.manager.block_optimizer.configure(
                 rule_scope_service=self.manager.rule_scope_service,
