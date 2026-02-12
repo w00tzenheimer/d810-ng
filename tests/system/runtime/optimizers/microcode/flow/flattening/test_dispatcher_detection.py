@@ -723,18 +723,12 @@ class TestPredecessorTrackingWithDispatcherInfo:
         This test validates the integration by checking the source code.
         Note: Cannot import the module directly as it requires idaapi.
         """
-        import os
+        from pathlib import Path
 
         # Read the source file and verify the integration
-        src_path = os.path.join(
-            os.path.dirname(__file__),
-            '..', '..', '..', '..', '..', '..',
-            'src', 'd810', 'optimizers', 'microcode', 'flow', 'flattening',
-            'fix_pred_cond_jump_block.py'
-        )
-        src_path = os.path.normpath(src_path)
+        src_path = Path(__file__).parents[7] / 'src' / 'd810' / 'optimizers' / 'microcode' / 'flow' / 'flattening' / 'fix_pred_cond_jump_block.py'
 
-        with open(src_path, 'r') as f:
+        with src_path.open() as f:
             source = f.read()
 
         # Verify DispatcherCache and DispatcherType are imported
