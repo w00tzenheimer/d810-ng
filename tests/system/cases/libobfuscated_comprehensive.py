@@ -3,7 +3,7 @@
 This module defines ALL deobfuscation test cases from samples/src/c/ as data
 using the DeobfuscationCase DSL. Organized by source file for easy reference.
 
-To run: pytest tests/stateless/test_libdeobfuscated_dsl.py -v
+To run: pytest tests/system/e2e/test_libdeobfuscated_dsl.py -v
 """
 
 import base64

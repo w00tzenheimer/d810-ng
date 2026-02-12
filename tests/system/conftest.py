@@ -1057,7 +1057,7 @@ def capture_stats(request):
     """Fixture for capturing and optionally saving deobfuscation statistics.
 
     Supports binary-specific expectations:
-    - Saves to: expectations/<test_name>.<binary_basename>.json
+    - Saves to: e2e/expectations/<test_name>.<binary_basename>.json
     - Example: test_ollvm.libobfuscated.json (for libobfuscated.dll or libobfuscated.dylib)
 
     Usage:
@@ -1072,7 +1072,7 @@ def capture_stats(request):
     To generate expectation files, run pytest with --capture-stats:
         pytest tests/system/test_libdeobfuscated.py --capture-stats
 
-    The captured stats will be saved to tests/system/expectations/<test_name>.<binary>.json
+    The captured stats will be saved to tests/system/e2e/expectations/<test_name>.<binary>.json
     """
     import json
 
@@ -1088,8 +1088,8 @@ def capture_stats(request):
 
         if capture_mode:
             # Save to expectations file (binary-specific if binary_name is set)
-            expectations_dir = pathlib.Path(__file__).parent / "expectations"
-            expectations_dir.mkdir(exist_ok=True)
+            expectations_dir = pathlib.Path(__file__).parent / "e2e" / "expectations"
+            expectations_dir.mkdir(exist_ok=True, parents=True)
 
             if binary_basename:
                 expectation_file = expectations_dir / f"{test_name}.{binary_basename}.json"
@@ -1111,12 +1111,12 @@ def load_expected_stats(request):
     """Fixture for loading expected statistics from JSON files.
 
     Supports binary-specific expectations:
-    - First tries: expectations/<test_name>.<binary_basename>.json
-    - Falls back to: expectations/<test_name>.json
+    - First tries: e2e/expectations/<test_name>.<binary_basename>.json
+    - Falls back to: e2e/expectations/<test_name>.json
 
     Usage:
         def test_something(self, d810_state, load_expected_stats):
-            expected = load_expected_stats()  # Loads from expectations/<test_name>.json
+            expected = load_expected_stats()  # Loads from e2e/expectations/<test_name>.json
             with d810_state() as state:
                 state.start_d810()
                 decompiled = idaapi.decompile(func_ea)
@@ -1134,7 +1134,7 @@ def load_expected_stats(request):
 
         Tries binary-specific file first, then falls back to generic.
         """
-        expectations_dir = pathlib.Path(__file__).parent / "expectations"
+        expectations_dir = pathlib.Path(__file__).parent / "e2e" / "expectations"
 
         if filename is None:
             # Try binary-specific expectations first
@@ -1179,7 +1179,7 @@ def pytest_configure(config):
     """Configure pytest plugins."""
     # Register the test capture plugin if --capture-to-db is enabled
     if config.getoption("--capture-to-db"):
-        from tests.system.test_capture import CapturePlugin
+        from tests.system.runtime.test_capture import CapturePlugin
         config.pluginmanager.register(CapturePlugin(config), "capture_plugin")
 
 

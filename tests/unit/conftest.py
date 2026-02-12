@@ -3,7 +3,7 @@
 Unit tests verify rule correctness using Z3 and do not require IDA Pro.
 
 RULE: No IDA mocking in unit tests.
-IDA-dependent tests belong in tests/stateless/ or tests/system/.
+IDA-dependent tests belong in tests/system/runtime/ or tests/system/e2e/.
 """
 import sys
 import pytest
@@ -27,7 +27,7 @@ def _enforce_no_ida_mocks():
         if mod is not None and isinstance(mod, (MagicMock, Mock)):
             pytest.fail(
                 f"Unit test injected mock for '{mod_name}' into sys.modules. "
-                f"IDA-dependent tests belong in tests/stateless/ or tests/system/, not tests/unit/."
+                f"IDA-dependent tests belong in tests/system/runtime/ or tests/system/, not tests/unit/."
             )
     yield
     # Also check after test runs (catches mocks injected during test)
@@ -36,7 +36,7 @@ def _enforce_no_ida_mocks():
         if mod is not None and isinstance(mod, (MagicMock, Mock)):
             pytest.fail(
                 f"Unit test left mock '{mod_name}' in sys.modules. "
-                f"IDA-dependent tests belong in tests/stateless/ or tests/system/, not tests/unit/."
+                f"IDA-dependent tests belong in tests/system/runtime/ or tests/system/, not tests/unit/."
             )
             # Clean it up to prevent cascade
             del sys.modules[mod_name]
