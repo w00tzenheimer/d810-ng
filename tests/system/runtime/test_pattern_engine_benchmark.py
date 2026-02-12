@@ -28,6 +28,8 @@ from d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups im
     MatchBindings,
 )
 
+from bench_utils import timed_run, save_baseline
+
 
 # =========================================================================
 # Helpers (reused from test_pattern_speedups.py)
@@ -315,3 +317,61 @@ class TestCythonPythonParity:
             )
 
         print(f"\n  Storage parity verified for {len(patterns)} patterns")
+
+
+# =========================================================================
+# Test: Registration Benchmark
+# =========================================================================
+
+
+class TestRegistrationBenchmark:
+    """Benchmark pattern storage registration performance."""
+
+    binary_name = _get_default_binary()
+
+    @pytest.mark.ida_required
+    def test_registration_performance(self, real_asts):
+        """Benchmark populating storage from patterns."""
+        unique_patterns = []
+        seen_sigs = set()
+
+        for ast, _ in real_asts[:200]:
+            if ast.is_node():
+                sig = ast.get_pattern()
+                if sig not in seen_sigs:
+                    seen_sigs.add(sig)
+                    unique_patterns.append(ast)
+                    if len(unique_patterns) >= 100:
+                        break
+
+        if len(unique_patterns) < 20:
+            pytest.skip("Not enough unique patterns for benchmarking")
+
+        rules = []
+        for i in range(len(unique_patterns)):
+            class MockRule:
+                pass
+            rule = MockRule()
+            rule.name = f"rule_{i}"
+            rules.append(rule)
+
+        def populate_legacy():
+            storage = PatternStorage(depth=1)
+            for pattern, rule in zip(unique_patterns, rules):
+                storage.add_pattern_for_rule(pattern, rule)
+            return storage
+
+        legacy_time = timed_run(populate_legacy, iterations=10, warmup=2)
+
+        def populate_new():
+            storage = OpcodeIndexedStorage()
+            for pattern, rule in zip(unique_patterns, rules):
+                storage.add_pattern(pattern, rule)
+            return storage
+
+        new_time = timed_run(populate_new, iterations=10, warmup=2)
+
+        print(f"\n  Registration ({len(unique_patterns)} patterns):")
+        print(f"    Legacy: {legacy_time * 1000:.2f} ms")
+        print(f"    New:    {new_time * 1000:.2f} ms")
+        print(f"    Speedup: {legacy_time / new_time:.2f}x")
