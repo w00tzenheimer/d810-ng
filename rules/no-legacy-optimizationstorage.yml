@@ -1,0 +1,20 @@
+id: no-legacy-optimizationstorage
+language: python
+severity: error
+message: |
+  OptimizationStorage was removed. Use SQLiteOptimizationStorage or
+  create_optimization_storage(..., backend=...) instead.
+
+files:
+  - src/**/*.py
+  - tests/**/*.py
+
+rule:
+  any:
+    - pattern: from d810.core.persistence import OptimizationStorage
+    - pattern: from d810.core import OptimizationStorage
+    - pattern: OptimizationStorage($$$ARGS)
+
+note: |
+  Keep persistence backend selection explicit and avoid reintroducing the
+  removed backward-compatibility symbol.

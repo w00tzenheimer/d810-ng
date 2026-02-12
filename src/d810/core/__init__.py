@@ -74,7 +74,11 @@ from .project import ProjectManager, ProjectContext
 
 # Persistence (SQLite storage)
 from .persistence import (
-    OptimizationStorage,
+    SQLiteOptimizationStorage,
+    NetnodeOptimizationStorage,
+    Netnode,
+    NetnodeCorruptError,
+    create_optimization_storage,
     FunctionFingerprint,
     CachedResult,
     FunctionRuleConfig,
@@ -232,7 +236,11 @@ __all__ = [
     "ProjectManager",
     "ProjectContext",
     # persistence
-    "OptimizationStorage",
+    "SQLiteOptimizationStorage",
+    "NetnodeOptimizationStorage",
+    "Netnode",
+    "NetnodeCorruptError",
+    "create_optimization_storage",
     "FunctionFingerprint",
     "CachedResult",
     "FunctionRuleConfig",

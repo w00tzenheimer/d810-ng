@@ -1,0 +1,17 @@
+id: no-ui-direct-function-rule-storage
+language: python
+severity: error
+message: |
+  Do not write function rule overrides directly from UI code.
+  Route writes through D810Manager.set_function_rule_override(...) so
+  FUNCTION_OVERRIDE_UPDATED invalidation is emitted.
+
+files:
+  - src/d810/ui/**/*.py
+
+rule:
+  pattern: $STORE.set_function_rules($$$ARGS)
+
+note: |
+  Direct storage writes bypass RuleScopeEvent emission and can leave stale
+  function-scoped rule caches active.

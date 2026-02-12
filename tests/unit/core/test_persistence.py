@@ -1,14 +1,16 @@
-"""Tests for OptimizationStorage (IDA-independent persistence layer)."""
+"""Tests for sqlite/netnode persistence backends."""
 
+import importlib.util
 import tempfile
 import pytest
 from pathlib import Path
 
 from d810.core.persistence import (
-    OptimizationStorage,
+    SQLiteOptimizationStorage,
     FunctionFingerprint,
     CachedResult,
     FunctionRuleConfig,
+    create_optimization_storage,
 )
 
 
@@ -26,7 +28,7 @@ def temp_db():
 @pytest.fixture
 def storage(temp_db):
     """Create a storage instance with temporary database."""
-    s = OptimizationStorage(temp_db)
+    s = SQLiteOptimizationStorage(temp_db)
     yield s
     s.close()
 
@@ -51,12 +53,12 @@ class TestFunctionFingerprint:
         assert fp.instruction_count == 50
 
 
-class TestOptimizationStorage:
-    """Tests for OptimizationStorage class."""
+class TestSQLiteOptimizationStorage:
+    """Tests for SQLiteOptimizationStorage class."""
 
     def test_init_creates_database(self, temp_db):
         """Test that initialization creates the database file."""
-        storage = OptimizationStorage(temp_db)
+        storage = SQLiteOptimizationStorage(temp_db)
         assert temp_db.exists()
         storage.close()
 
@@ -227,7 +229,7 @@ class TestOptimizationStorage:
 
     def test_context_manager(self, temp_db):
         """Test context manager support."""
-        with OptimizationStorage(temp_db) as storage:
+        with SQLiteOptimizationStorage(temp_db) as storage:
             fingerprint = FunctionFingerprint(
                 address=0x401000,
                 size=100,
@@ -297,3 +299,22 @@ class TestOptimizationStorage:
         assert result.changes_made == 20
         assert len(result.patches) == 2
         assert result.patches[0]["type"] == "new1"
+
+
+class TestStorageBackends:
+    def test_factory_returns_sqlite_backend(self, temp_db):
+        storage = create_optimization_storage(temp_db, backend="sqlite")
+        try:
+            assert isinstance(storage, SQLiteOptimizationStorage)
+        finally:
+            storage.close()
+
+    def test_factory_rejects_unknown_backend(self, temp_db):
+        with pytest.raises(ValueError, match="Unknown persistence backend"):
+            create_optimization_storage(temp_db, backend="unknown")
+
+    def test_netnode_backend_requires_ida_runtime_when_unavailable(self):
+        if importlib.util.find_spec("ida_netnode") is not None:
+            pytest.skip("ida_netnode is available in this environment")
+        with pytest.raises(RuntimeError, match="ida_netnode"):
+            create_optimization_storage(None, backend="netnode")
