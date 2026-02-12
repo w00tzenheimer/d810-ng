@@ -17,9 +17,16 @@ from typing import TYPE_CHECKING
 from d810.core.config import D810Configuration, ProjectConfiguration
 from d810.core.logging import clear_logs, configure_loggers, getLogger
 from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
+from d810.core.persistence import create_optimization_storage
 from d810.core.platform import resolve_arch_config
 from d810.core.project import ProjectContext, ProjectManager
 from d810.core.registry import EventEmitter
+from d810.core.rule_scope import (
+    FunctionRuleOverlay,
+    RuleScopeEvent,
+    RuleScopeInvalidation,
+    RuleScopeService,
+)
 from d810.core.singleton import SingletonMeta
 from d810.core.stats import OptimizationStatistics
 from d810.hexrays.ctree_hooks import CtreeOptimizerManager, CtreeOptimizationRule
@@ -85,6 +92,8 @@ class D810Manager:
     ctree_optimizer_config: dict = dataclasses.field(default_factory=dict)
     config: dict = dataclasses.field(default_factory=dict)
     event_emitter: EventEmitter = dataclasses.field(default_factory=EventEmitter)
+    rule_scope_service: RuleScopeService = dataclasses.field(default_factory=RuleScopeService)
+    storage: typing.Any = None
     profiler: typing.Any = dataclasses.field(
         default_factory=lambda: pyinstrument.Profiler() if pyinstrument else None
     )
@@ -143,12 +152,22 @@ class D810Manager:
         if self._started:
             self.stop()
         logger.debug("Starting manager...")
+        self.rule_scope_service.attach(self.event_emitter)
+        self._init_storage()
+        self.rule_scope_service.set_overlay_provider(self._get_rule_overlay)
 
         # Instantiate core manager classes from registry
         self.instruction_optimizer = InstructionOptimizerManager(self.stats, self.log_dir)
         self.instruction_optimizer.configure(**self.instruction_optimizer_config)
         self.block_optimizer = BlockOptimizerManager(self.stats, self.log_dir)
-        self.block_optimizer.configure(**self.block_optimizer_config)
+        project_name = str(self.config.get("project_name", ""))
+        idb_key = str(self.config.get("idb_key", project_name))
+        self.block_optimizer.configure(
+            **self.block_optimizer_config,
+            rule_scope_service=self.rule_scope_service,
+            rule_scope_project_name=project_name,
+            rule_scope_idb_key=idb_key,
+        )
         self.ctree_optimizer = CtreeOptimizerManager(self.stats)
 
         for rule in self.instruction_optimizer_rules:
@@ -167,8 +186,77 @@ class D810Manager:
             self.event_emitter.emit,
             ctree_optimizer_manager=self.ctree_optimizer,
         )
+        self._compile_rule_scope()
         self._install_hooks()
         self._started = True
+
+    def _init_storage(self) -> None:
+        backend = str(self.config.get("function_rules_backend", "sqlite")).strip().lower()
+        target = self.config.get("function_rules_storage")
+        if target is None:
+            if backend == "sqlite":
+                target = self.log_dir / "d810_function_rules.db"
+            else:
+                target = "$ d810.optimization_storage"
+        try:
+            self.storage = create_optimization_storage(target, backend=backend)
+            logger.info(
+                "Function-rules storage configured: backend=%s target=%s",
+                backend,
+                target,
+            )
+        except Exception as exc:
+            self.storage = None
+            logger.warning("Failed to initialize function-rules storage: %s", exc)
+
+    def _get_rule_overlay(self, function_ea: int) -> FunctionRuleOverlay | None:
+        storage = self.storage
+        if storage is None:
+            return None
+        config = storage.get_function_rules(function_ea)
+        if config is None:
+            return None
+        return FunctionRuleOverlay(
+            enabled_rules=frozenset(config.enabled_rules),
+            disabled_rules=frozenset(config.disabled_rules),
+        )
+
+    def set_function_rule_override(
+        self,
+        *,
+        function_addr: int,
+        enabled_rules: typing.Optional[typing.Set[str]] = None,
+        disabled_rules: typing.Optional[typing.Set[str]] = None,
+        notes: str = "",
+    ) -> None:
+        if self.storage is None:
+            self._init_storage()
+        if self.storage is None:
+            logger.warning("Function-rules storage unavailable; override not persisted")
+            return
+        self.storage.set_function_rules(
+            function_addr=function_addr,
+            enabled_rules=enabled_rules,
+            disabled_rules=disabled_rules,
+            notes=notes,
+        )
+        self.event_emitter.emit(
+            RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
+            RuleScopeInvalidation(
+                reason=RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
+                project_name=str(self.config.get("project_name", "")),
+                func_eas=frozenset({int(function_addr)}),
+                changed_rules=frozenset((enabled_rules or set()) | (disabled_rules or set())),
+            ),
+        )
+
+    def _compile_rule_scope(self) -> None:
+        self.rule_scope_service.compile_base_rules(
+            project_name=str(self.config.get("project_name", "")),
+            instruction_rules=self.instruction_optimizer_rules,
+            flow_rules=self.block_optimizer_rules,
+            ctree_rules=self.ctree_optimizer_rules,
+        )
 
     def _start_timer(self):
         self._start_ts = time.perf_counter()
@@ -234,6 +322,12 @@ class D810Manager:
         self.event_emitter.clear()
         if self.profiler or self.cprofiler:
             self.stop_profiling()
+        if self.storage is not None:
+            try:
+                self.storage.close()
+            except Exception:
+                pass
+            self.storage = None
 
 
 @contextlib.contextmanager
@@ -368,7 +462,16 @@ class D810State(metaclass=SingletonMeta):
                     blk_rule.set_log_dir(self.log_dir)
                     self.current_blk_rules.append(blk_rule)
         logger.debug("Block rules configured")
-        self.manager.configure(**self.current_project.additional_configuration)
+        cfg = dict(self.current_project.additional_configuration)
+        cfg.setdefault("project_name", self.current_project.path.name)
+        self.manager.configure(**cfg)
+        if self.manager.started:
+            self.manager.block_optimizer.configure(
+                rule_scope_service=self.manager.rule_scope_service,
+                rule_scope_project_name=self.current_project.path.name,
+                rule_scope_idb_key=str(cfg.get("idb_key", self.current_project.path.name)),
+            )
+            self.manager._compile_rule_scope()
         logger.debug(
             "Loaded project %s (%s) from %s",
             self.current_project.path.name,
