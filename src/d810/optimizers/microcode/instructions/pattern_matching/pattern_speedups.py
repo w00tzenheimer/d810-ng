@@ -189,7 +189,7 @@ class MatchBinding:
 
     def __init__(self, name: str, mop: object = None, dest_size: object = None, ea: object = None):
         self.name = name
-        self.mop = mop  # BorrowedMop - valid only during pattern match callback
+        self.mop = mop  # BorrowedMop - valid only during pattern match callback  # noqa: no-borrowed-mop-storage
         self.dest_size = dest_size
         self.ea = ea
 
