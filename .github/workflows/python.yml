@@ -56,14 +56,7 @@ jobs:
             - name: Check borrowed mop_t patterns
               run: |
                   pip install ast-grep-cli
-                  # Allow 1 documented exception (pattern_speedups.py:192)
-                  ERROR_COUNT=$(sg scan --rule rules/no-borrowed-mop-storage.yml src/d810/ 2>&1 | grep -c "^error\[" || true)
-                  if [ "$ERROR_COUNT" -gt 1 ]; then
-                    echo "Found $ERROR_COUNT borrowed mop_t violations (expected: 1 documented exception)"
-                    sg scan --rule rules/no-borrowed-mop-storage.yml src/d810/
-                    exit 1
-                  fi
-                  echo "✓ No new borrowed mop_t violations (1 documented exception allowed)"
+                  sg scan --rule rules/no-borrowed-mop-storage.yml
             - name: Run pytest
               run: |
                   pytest tests/unit/ -v --tb=short
