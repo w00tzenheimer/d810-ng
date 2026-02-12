@@ -620,6 +620,59 @@ class DeferredGraphModifier:
                                 if loser in unique_modifications:
                                     unique_modifications.remove(loser)
 
+        # Resolve mixed-type terminal rewrites for the same source block.
+        # A single block should not receive multiple competing edge rewrites
+        # (e.g., CREATE_WITH_REDIRECT + GOTO_CHANGE), because that can strand
+        # newly-created blocks and poison MBA verify.
+        terminal_mod_types = {
+            ModificationType.BLOCK_GOTO_CHANGE,
+            ModificationType.BLOCK_TARGET_CHANGE,
+            ModificationType.BLOCK_CONVERT_TO_GOTO,
+            ModificationType.BLOCK_CREATE_WITH_REDIRECT,
+            ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT,
+        }
+        terminal_type_rank = {
+            ModificationType.BLOCK_GOTO_CHANGE: 1,
+            ModificationType.BLOCK_TARGET_CHANGE: 2,
+            ModificationType.BLOCK_CONVERT_TO_GOTO: 3,
+            ModificationType.BLOCK_CREATE_WITH_REDIRECT: 4,
+            ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: 5,
+        }
+
+        remaining_by_block: dict[int, list[GraphModification]] = {}
+        for mod in unique_modifications:
+            remaining_by_block.setdefault(mod.block_serial, []).append(mod)
+
+        for block_serial, mods in remaining_by_block.items():
+            terminal_mods = [m for m in mods if m.mod_type in terminal_mod_types]
+            if len(terminal_mods) <= 1:
+                continue
+
+            winner = max(
+                terminal_mods,
+                key=lambda m: (
+                    m.rule_priority,
+                    terminal_type_rank.get(m.mod_type, 0),
+                    -m.priority,
+                ),
+            )
+            losers = [m for m in terminal_mods if m != winner]
+            logger.warning(
+                "TERMINAL CONFLICT RESOLVED: Block %d - keeping %s "
+                "(rule_priority=%d target=%s), discarding %s",
+                block_serial,
+                winner.mod_type.name,
+                winner.rule_priority,
+                winner.new_target,
+                [
+                    (m.mod_type.name, m.rule_priority, m.new_target)
+                    for m in losers
+                ],
+            )
+            for loser in losers:
+                if loser in unique_modifications:
+                    unique_modifications.remove(loser)
+
         removed_count = original_count - len(unique_modifications)
         if removed_count > 0:
             logger.info(
@@ -698,11 +751,20 @@ class DeferredGraphModifier:
                 else:
                     failed += 1
                     logger.warning("    RESULT: FAILED")
+                    logger.warning(
+                        "Aborting deferred apply after first failed modification "
+                        "to avoid compounding CFG corruption"
+                    )
+                    break
             except Exception as e:
                 failed += 1
                 logger.error("    RESULT: EXCEPTION: %s", e)
                 import traceback
                 logger.error("    TRACEBACK: %s", traceback.format_exc())
+                logger.warning(
+                    "Aborting deferred apply after exception in modification"
+                )
+                break
 
         logger.info(
             "Applied %d/%d modifications (%d failed)",
@@ -717,6 +779,10 @@ class DeferredGraphModifier:
                 mba_deep_cleaning(self.mba, call_mba_combine_block=True)
             elif run_optimize_local:
                 self.mba.optimize_local(0)
+            else:
+                # Caller requested no optimize_local. Still run conservative
+                # cleanup so deferred CFG rewrites don't leave transient orphans.
+                mba_deep_cleaning(self.mba, call_mba_combine_block=False)
 
             try:
                 safe_verify(
@@ -736,6 +802,22 @@ class DeferredGraphModifier:
                     "-- marking verify_failed so callers can abort gracefully",
                     successful,
                 )
+                # Best-effort recovery: conservative cleanup + one re-verify
+                # attempt. If this succeeds, callers can safely continue.
+                try:
+                    mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                    safe_verify(
+                        self.mba,
+                        "after deferred modifications (recovery)",
+                        logger_func=logger.error,
+                    )
+                    self.verify_failed = False
+                    logger.warning(
+                        "Recovered MBA after deferred-apply verify failure via "
+                        "conservative cleanup"
+                    )
+                except RuntimeError:
+                    pass
 
         self._applied = True
         return successful
@@ -865,6 +947,17 @@ class DeferredGraphModifier:
             )
             return False
 
+        # Precondition: this helper rewires a single outgoing edge. If the
+        # source is not 1-way, creating the new block first can leave orphans
+        # when the final redirect fails.
+        if source_blk.nsucc() != 1:
+            logger.warning(
+                "create_and_redirect requires 1-way source block; block %d has nsucc=%d",
+                source_blk.serial,
+                source_blk.nsucc(),
+            )
+            return False
+
         mba = self.mba
 
         # Find reference block for copy_block template (tail block, avoiding XTRN/STOP)
@@ -902,6 +995,11 @@ class DeferredGraphModifier:
                     "Failed to redirect block %d to new block %d",
                     source_blk.serial, new_block.serial
                 )
+                # Best-effort cleanup for the partially-created orphan block.
+                try:
+                    mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                except Exception:
+                    pass
                 return False
 
             logger.debug(
@@ -948,6 +1046,14 @@ class DeferredGraphModifier:
             True on success, False on failure
         """
         mba = self.mba
+
+        if source_blk.nsucc() != 1:
+            logger.warning(
+                "create_conditional_redirect requires 1-way source block; block %d has nsucc=%d",
+                source_blk.serial,
+                source_blk.nsucc(),
+            )
+            return False
 
         # Get reference block to duplicate
         ref_blk = mba.get_mblock(ref_blk_serial)
@@ -1026,6 +1132,10 @@ class DeferredGraphModifier:
                     "Failed to redirect source %d -> new conditional %d",
                     source_blk.serial, new_cond_blk.serial
                 )
+                try:
+                    mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                except Exception:
+                    pass
                 return False
 
             logger.debug(

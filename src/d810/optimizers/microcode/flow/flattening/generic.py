@@ -1445,33 +1445,77 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     )
 
             if deferred_modifier is not None:
+                queued_change = False
+                source_nsucc = dispatcher_father.nsucc()
+                tail_opcode = dispatcher_father.tail.opcode if dispatcher_father.tail else None
+
                 # Use deferred CFG modifications
                 if len(ins_to_copy) > 0:
-                    unflat_logger.info(
-                        "Queuing create_and_redirect: %s instructions from block %s -> %s",
-                        len(ins_to_copy),
-                        dispatcher_father.serial,
-                        target_blk.serial,
-                    )
-                    deferred_modifier.queue_create_and_redirect(
-                        source_block_serial=dispatcher_father.serial,
-                        final_target_serial=target_blk.serial,
-                        instructions_to_copy=ins_to_copy,
-                        is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY),
-                        description=f"resolve_dispatcher_father {dispatcher_father.serial} -> {target_blk.serial}",
-                    )
+                    if source_nsucc != 1:
+                        # create_and_redirect rewires a single outgoing edge.
+                        # Skip non-1way sources to avoid queuing invalid edits
+                        # that fail deferred apply and poison the pass.
+                        unflat_logger.warning(
+                            "Skipping create_and_redirect for non-1way father blk %d "
+                            "(nsucc=%d) toward blk %d",
+                            dispatcher_father.serial,
+                            source_nsucc,
+                            target_blk.serial,
+                        )
+                    else:
+                        unflat_logger.info(
+                            "Queuing create_and_redirect: %s instructions from block %s -> %s",
+                            len(ins_to_copy),
+                            dispatcher_father.serial,
+                            target_blk.serial,
+                        )
+                        deferred_modifier.queue_create_and_redirect(
+                            source_block_serial=dispatcher_father.serial,
+                            final_target_serial=target_blk.serial,
+                            instructions_to_copy=ins_to_copy,
+                            is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY),
+                            description=f"resolve_dispatcher_father {dispatcher_father.serial} -> {target_blk.serial}",
+                        )
+                        queued_change = True
                 else:
-                    unflat_logger.info(
-                        "Queuing goto change: block %s -> %s",
-                        dispatcher_father.serial,
-                        target_blk.serial,
-                    )
-                    deferred_modifier.queue_goto_change(
-                        block_serial=dispatcher_father.serial,
-                        new_target=target_blk.serial,
-                        description=f"resolve_dispatcher_father {dispatcher_father.serial} -> {target_blk.serial}",
-                        rule_priority=100,  # High priority - proven constant analysis
-                    )
+                    if source_nsucc == 1:
+                        unflat_logger.info(
+                            "Queuing goto change: block %s -> %s",
+                            dispatcher_father.serial,
+                            target_blk.serial,
+                        )
+                        deferred_modifier.queue_goto_change(
+                            block_serial=dispatcher_father.serial,
+                            new_target=target_blk.serial,
+                            description=f"resolve_dispatcher_father {dispatcher_father.serial} -> {target_blk.serial}",
+                            rule_priority=100,  # High priority - proven constant analysis
+                        )
+                        queued_change = True
+                    elif source_nsucc == 2 and tail_opcode in CONDITIONAL_JUMP_OPCODES:
+                        unflat_logger.info(
+                            "Queuing convert_to_goto for conditional father: block %s -> %s",
+                            dispatcher_father.serial,
+                            target_blk.serial,
+                        )
+                        deferred_modifier.queue_convert_to_goto(
+                            block_serial=dispatcher_father.serial,
+                            goto_target=target_blk.serial,
+                            description=(
+                                "resolve_dispatcher_father(convert) "
+                                f"{dispatcher_father.serial} -> {target_blk.serial}"
+                            ),
+                        )
+                        queued_change = True
+                    else:
+                        unflat_logger.warning(
+                            "Skipping father rewrite for blk %d: nsucc=%d opcode=%s target=%d",
+                            dispatcher_father.serial,
+                            source_nsucc,
+                            tail_opcode,
+                            target_blk.serial,
+                        )
+                if not queued_change:
+                    return 0
             else:
                 # Legacy direct CFG modifications
                 if len(ins_to_copy) > 0:
@@ -1490,6 +1534,13 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     dispatcher_side_effect_blk = create_block(
                         block_to_copy, ins_to_copy, is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY), verify=False
                     )
+                    if dispatcher_father.nsucc() != 1:
+                        unflat_logger.warning(
+                            "Skipping legacy create_and_redirect for non-1way father blk %d (nsucc=%d)",
+                            dispatcher_father.serial,
+                            dispatcher_father.nsucc(),
+                        )
+                        return 0
                     change_1way_block_successor(
                         dispatcher_father, dispatcher_side_effect_blk.serial, verify=False
                     )
@@ -1497,7 +1548,15 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         dispatcher_side_effect_blk, target_blk.serial, verify=False
                     )
                 else:
-                    change_1way_block_successor(dispatcher_father, target_blk.serial, verify=False)
+                    if dispatcher_father.nsucc() == 1:
+                        change_1way_block_successor(dispatcher_father, target_blk.serial, verify=False)
+                    else:
+                        unflat_logger.warning(
+                            "Skipping legacy rewrite for non-1way father blk %d (nsucc=%d)",
+                            dispatcher_father.serial,
+                            dispatcher_father.nsucc(),
+                        )
+                        return 0
             return 2
 
         raise NotResolvableFatherException(

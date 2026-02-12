@@ -463,10 +463,15 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             optimizer_logger.warning(
                 "RuntimeError in block optimizer on blk %d: %s", blk.serial, e
             )
+            # Disable remaining passes for this maturity after a runtime failure.
+            # Continuing to call block rules in the same maturity after an
+            # unknown IDA exception often re-enters with stale state.
+            self._pass_count = self._MAX_PASSES_PER_MATURITY + 1
         except D810Exception as e:
             optimizer_logger.warning(
                 "D810Exception in block optimizer on blk %d: %s", blk.serial, e
             )
+            self._pass_count = self._MAX_PASSES_PER_MATURITY + 1
         return 0
 
     def log_info_on_input(self, blk: ida_hexrays.mblock_t):
