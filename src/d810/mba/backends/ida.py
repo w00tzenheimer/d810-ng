@@ -17,7 +17,15 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import ida_hexrays
 
 from d810.core import getLogger
-from d810.expr.ast import AstNode, AstLeaf, AstConstant, AstLeafProtocol, minsn_to_ast
+from d810.errors import AstEvaluationException
+from d810.expr.ast import (
+    AstConstant,
+    AstConstantProtocol,
+    AstLeaf,
+    AstLeafProtocol,
+    AstNode,
+    minsn_to_ast,
+)
 from d810.mba.dsl import SymbolicExpression, SymbolicExpressionProtocol
 from d810.mba.constraints import (
     ComparisonConstraintProtocol,
@@ -586,8 +594,80 @@ class IDAPatternAdapter:
             logger.debug(f"No EA for candidate in rule {self.name}")
             return None
 
-        new_ins = repl_pat.create_minsn(candidate.ea, candidate.dst_mop)
+        if not self._materialize_replacement_constants(repl_pat, candidate):
+            logger.debug(
+                "Failed to materialize replacement constants for rule %s",
+                self.name,
+            )
+            return None
+
+        try:
+            new_ins = repl_pat.create_minsn(candidate.ea, candidate.dst_mop)
+        except AstEvaluationException as exc:
+            logger.debug(
+                "Replacement creation failed for rule %s at 0x%x: %s",
+                self.name,
+                candidate.ea,
+                exc,
+            )
+            return None
         return new_ins
+
+    def _materialize_replacement_constants(self, repl_pat, candidate) -> bool:
+        """Ensure computed AstConstant leaves have concrete mops before emission."""
+        try:
+            leafs = repl_pat.get_leaf_list()
+        except Exception:
+            return True
+
+        candidate_leafs = getattr(candidate, "leafs_by_name", {}) or {}
+        dst_mop = getattr(candidate, "dst_mop", None)
+
+        for leaf in leafs:
+            if not isinstance(leaf, AstConstantProtocol):
+                continue
+            if getattr(leaf, "mop", None) is not None:
+                continue
+
+            value = getattr(leaf, "value", None)
+            size = getattr(leaf, "expected_size", None)
+
+            source_leaf = candidate_leafs.get(getattr(leaf, "name", None))
+            if source_leaf is not None:
+                source_mop = getattr(source_leaf, "mop", None)
+                if source_mop is not None and source_mop.t == ida_hexrays.mop_n:
+                    leaf.mop = source_mop
+                    if hasattr(leaf, "expected_value"):
+                        leaf.expected_value = source_mop.nnn.value
+                    if hasattr(leaf, "expected_size"):
+                        leaf.expected_size = source_mop.size
+                    continue
+                if value is None:
+                    value = getattr(source_leaf, "value", None)
+                if value is None:
+                    value = getattr(source_leaf, "expected_value", None)
+                if size is None:
+                    size = getattr(source_leaf, "expected_size", None)
+
+            if value is None:
+                return False
+
+            if size is None:
+                size = getattr(leaf, "dest_size", None)
+            if size is None and dst_mop is not None:
+                size = getattr(dst_mop, "size", None)
+            if size is None or int(size) <= 0:
+                size = 1
+
+            cst_mop = ida_hexrays.mop_t()
+            cst_mop.make_number(int(value), int(size))
+            leaf.mop = cst_mop
+            if hasattr(leaf, "expected_value"):
+                leaf.expected_value = int(value)
+            if hasattr(leaf, "expected_size"):
+                leaf.expected_size = int(size)
+
+        return True
 
     def check_and_replace(self, blk, instruction) -> Optional[Any]:
         """Check if this rule matches and return a replacement instruction.
