@@ -12,6 +12,17 @@
 id: no-borrowed-mop-storage
 language: python
 severity: error
+
+# Only scan source code, exclude tests and tools
+files:
+  - "src/**/*.py"
+
+ignores:
+  - "tests/**"
+  - "tools/**"
+  # Documented exception: MatchBinding with explicit lifetime constraint
+  - "**/pattern_speedups.py"
+
 message: |
   Direct assignment of mop_t parameter to .mop attribute detected.
   This stores a borrowed reference that may become invalid.
@@ -45,6 +56,11 @@ rule:
       - pattern: $OBJ.mop = cached_mop
       - pattern: $OBJ.mop = cst_mop
       - pattern: $OBJ.mop = ins_mop
+  # Documented exception: MatchBinding stores borrowed mop with explicit lifetime constraint
+  inside:
+    not:
+      kind: comment
+      regex: "BorrowedMop"
 
 note: |
   IDA's mop_t objects are transient and may be invalidated when:

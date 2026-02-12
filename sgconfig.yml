@@ -1,5 +1,10 @@
 # ast-grep configuration for d810-ng
-# Run: sg scan --rule rules/
+# Run: sg scan --config sgconfig.yml
 
 ruleDirs:
   - rules
+
+# Exclude test directories from scanning
+ignore:
+  - tests/
+  - tools/scripts/
