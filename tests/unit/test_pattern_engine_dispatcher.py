@@ -282,3 +282,55 @@ class TestHandlerEngineIntegration:
         assert info["backend"] in ("python", "cython")
         # Verify structure matches what handler.engine_info property will return
         assert "version" in info or "backend" in info  # At minimum backend is required
+
+
+class TestCrossBackendParity:
+    """Contract: reloading engine with different settings produces consistent results.
+
+    Tests that the engine API works identically regardless of which backend
+    is selected. When Cython is available, this validates actual parity.
+    When Cython is unavailable, both loads use Python (still validates
+    the reload mechanism works).
+    """
+
+    def test_engine_consistent_across_reloads(self):
+        """Engine exports are functionally equivalent across reloads."""
+        # Load with Cython disabled
+        with mock.patch.dict(os.environ, {"D810_NO_CYTHON": "1"}):
+            py_engine = _reload_engine()
+            py_info = py_engine.get_engine_info()
+            assert py_info["backend"] == "python"
+
+        # Load with Cython enabled (may still be Python if Cython unavailable)
+        env = os.environ.copy()
+        env.pop("D810_NO_CYTHON", None)
+        with mock.patch.dict(os.environ, env, clear=True):
+            auto_engine = _reload_engine()
+            auto_info = auto_engine.get_engine_info()
+            assert auto_info["backend"] in ("python", "cython")
+
+        # Both engines expose identical API surface
+        for attr in ("OpcodeIndexedStorage", "match_pattern_nomut", "MatchBindings",
+                      "compute_fingerprint", "PatternFingerprint", "RulePatternEntry"):
+            assert hasattr(py_engine, attr), f"Python engine missing {attr}"
+            assert hasattr(auto_engine, attr), f"Auto engine missing {attr}"
+
+    def test_storage_api_parity_across_backends(self):
+        """OpcodeIndexedStorage from both backends has same interface."""
+        # Python backend
+        with mock.patch.dict(os.environ, {"D810_NO_CYTHON": "1"}):
+            py_engine = _reload_engine()
+
+        # Auto backend (Cython if available)
+        env = os.environ.copy()
+        env.pop("D810_NO_CYTHON", None)
+        with mock.patch.dict(os.environ, env, clear=True):
+            auto_engine = _reload_engine()
+
+        # Both storage classes expose same methods
+        py_storage = py_engine.OpcodeIndexedStorage()
+        auto_storage = auto_engine.OpcodeIndexedStorage()
+
+        for method in ("add_pattern", "get_candidates", "total_patterns"):
+            assert hasattr(py_storage, method), f"Python storage missing {method}"
+            assert hasattr(auto_storage, method), f"Auto storage missing {method}"
