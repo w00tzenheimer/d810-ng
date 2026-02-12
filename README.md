@@ -31,11 +31,11 @@ D └───── 8 ─────┘ └─10──┘
 
 Load the plugin by using the `Ctrl-Shift-D` shortcut, you should see this configuration GUI
 
-!["Configuration Gui"](./docs/source/images/gui_plugin_configuration.png "Configuration GUI")
+!["Configuration Gui"](./resources/assets/gui_plugin_configuration.png "Configuration GUI")
 
 Click on a rule to see more information about it:
 
-!["Rule View Gui"](./docs/source/images/gui_plugin_configuration_v2.png "Rule View")
+!["Rule View Gui"](./resources/assets/gui_plugin_configuration_v2.png "Rule View")
 
 ## Features Overview
 
@@ -222,8 +222,8 @@ D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e ".[dev]"
 
 When you want to disable deobfuscation, just click on the `Stop` button or use the context menus:
 
-!["Disassembly context menu"](./docs/source/images/disasmview_context_menu.png "Disassembly context menu")
-!["Pseudocode context menu"](./docs/source/images/pseudocode_context_menu.png "Pseudocode context menu")
+!["Disassembly context menu"](./resources/assets/disasmview_context_menu.png "Disassembly context menu")
+!["Pseudocode context menu"](./resources/assets/pseudocode_context_menu.png "Pseudocode context menu")
 
 ## Adding New Obfuscation Examples
 
@@ -235,11 +235,11 @@ D-810 ng comes with a built-in test runner that loads IDA runtime tests from the
 
 The test runner is self-explanatory:
 
-!["Test Runner Example"](./docs/source/images/test_runner_example-01.png "Test Runner Example")
+!["Test Runner Example"](./resources/assets/test_runner_example-01.png "Test Runner Example")
 
 Test reloading exists without needing to restart `IDA Pro` and you can execute different part of the tests via the testing context menu:
 
-!["Test Runner Context Menu"](./docs/source/images/test_runner_example-ctx-menu.png "Test Runner Context Menu")
+!["Test Runner Context Menu"](./resources/assets/test_runner_example-ctx-menu.png "Test Runner Context Menu")
 
 ### How to build
 
@@ -296,15 +296,15 @@ make clean
 
 ### Test Constant Simplifications
 
-**Before**: !["Before"](./docs/source/images/test_cst_simplification_before.png "Before Plugin")
+**Before**: !["Before"](./resources/assets/test_cst_simplification_before.png "Before Plugin")
 
-**After**: !["After"](./docs/source/images/test_cst_simplification_after.png "After Plugin")
+**After**: !["After"](./resources/assets/test_cst_simplification_after.png "After Plugin")
 
 ### Test XOR Simplifications
 
-**Before**: !["Before"](./docs/source/images/test_xor_before.png "Before Plugin")
+**Before**: !["Before"](./resources/assets/test_xor_before.png "Before Plugin")
 
-**After**: !["After"](./docs/source/images/test_xor_after.png "After Plugin")
+**After**: !["After"](./resources/assets/test_xor_after.png "After Plugin")
 
 ## Running Tests
 
