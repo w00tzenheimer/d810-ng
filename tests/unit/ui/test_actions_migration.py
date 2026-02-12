@@ -5,7 +5,9 @@ and registered in the D810ActionHandler registry.
 """
 from __future__ import annotations
 
-from d810.ui.actions import D810ActionHandler
+from d810.ui.actions import D810ActionHandler, load_builtin_actions
+
+load_builtin_actions()
 
 
 class TestActionMigration:

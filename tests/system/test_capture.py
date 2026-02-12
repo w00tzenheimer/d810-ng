@@ -8,7 +8,7 @@ This module provides:
 Usage:
     # Run tests and capture results
     pytest tests/system/test_libdeobfuscated.py --capture-to-db
-    pytest tests/system/test_libdeobfuscated_dsl.py --capture-to-db
+    pytest tests/stateless/test_libdeobfuscated_dsl.py --capture-to-db
 
     # Query and compare results
     python -m tests.system.test_capture list-functions

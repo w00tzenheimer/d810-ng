@@ -166,4 +166,6 @@ def env() -> EnvWrapper:
 def pytest_configure(config: pytest.Config) -> None:
     """Configure pytest with custom markers."""
     config.addinivalue_line("markers", "ida_required: mark test as requiring IDA Pro")
+    config.addinivalue_line("markers", "ida_stateless: mark test as state-isolated IDA runtime test")
+    config.addinivalue_line("markers", "contracts: mark test as mock/stub contract test")
     config.addinivalue_line("markers", "integration: mark test as integration test")

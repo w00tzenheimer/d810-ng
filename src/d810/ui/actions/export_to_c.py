@@ -14,24 +14,11 @@ from d810.ui.actions_logic import get_deobfuscation_stats
 
 logger = getLogger("D810.ui")
 
-# ---------------------------------------------------------------------------
-# IDA imports -- optional so unit tests can import without IDA present.
-# ---------------------------------------------------------------------------
-try:
-    import ida_funcs
-    import ida_hexrays
-    import ida_kernwin
-    import ida_lines
-    import idaapi
-
-    IDA_AVAILABLE = True
-except ImportError:
-    ida_funcs = None  # type: ignore[assignment]
-    ida_hexrays = None  # type: ignore[assignment]
-    ida_kernwin = None  # type: ignore[assignment]
-    ida_lines = None  # type: ignore[assignment]
-    idaapi = None  # type: ignore[assignment]
-    IDA_AVAILABLE = False
+ida_funcs = None
+ida_hexrays = None
+ida_kernwin = None
+ida_lines = None
+idaapi = None
 
 # ---------------------------------------------------------------------------
 # Qt imports -- optional, will fail gracefully if not in GUI mode
@@ -54,7 +41,12 @@ except ImportError:
     QT_AVAILABLE = False
 
 
-def _get_current_func_ea(ctx: typing.Any) -> int | None:
+def _get_current_func_ea(
+    ctx: typing.Any,
+    ida_hexrays_mod: typing.Any,
+    ida_kernwin_mod: typing.Any,
+    ida_funcs_mod: typing.Any,
+) -> int | None:
     """Extract the entry-point EA of the function from the context.
 
     Works in both pseudocode and disassembly views.
@@ -65,24 +57,26 @@ def _get_current_func_ea(ctx: typing.Any) -> int | None:
     Returns:
         Function entry EA, or None if not in a function
     """
-    if ida_hexrays is None or ida_kernwin is None or ida_funcs is None:
-        return None
-
     # Try pseudocode view first
-    vdui = ida_hexrays.get_widget_vdui(ctx.widget)
+    vdui = ida_hexrays_mod.get_widget_vdui(ctx.widget)
     if vdui is not None:
         return vdui.cfunc.entry_ea
 
     # Fall back to disassembly view
-    ea = ida_kernwin.get_screen_ea()
-    func = ida_funcs.get_func(ea)
+    ea = ida_kernwin_mod.get_screen_ea()
+    func = ida_funcs_mod.get_func(ea)
     if func is not None:
         return func.start_ea
 
     return None
 
 
-def _decompile_function(func_ea: int) -> tuple[str, list[str]] | None:
+def _decompile_function(
+    func_ea: int,
+    ida_hexrays_mod: typing.Any,
+    ida_funcs_mod: typing.Any,
+    ida_lines_mod: typing.Any,
+) -> tuple[str, list[str]] | None:
     """Decompile a function and return its pseudocode.
 
     Args:
@@ -91,29 +85,26 @@ def _decompile_function(func_ea: int) -> tuple[str, list[str]] | None:
     Returns:
         Tuple of (function_name, pseudocode_lines), or None on failure
     """
-    if ida_hexrays is None or ida_funcs is None or ida_lines is None:
-        return None
-
     try:
         # Initialize decompiler if needed
-        if not ida_hexrays.init_hexrays_plugin():
+        if not ida_hexrays_mod.init_hexrays_plugin():
             logger.error("Hex-Rays decompiler is not available")
             return None
 
         # Decompile the function
-        cfunc = ida_hexrays.decompile(func_ea)
+        cfunc = ida_hexrays_mod.decompile(func_ea)
         if cfunc is None:
             logger.error("Failed to decompile function at %s", hex(func_ea))
             return None
 
         # Get function name
-        func_name = ida_funcs.get_func_name(func_ea)
+        func_name = ida_funcs_mod.get_func_name(func_ea)
         if not func_name:
             func_name = f"sub_{func_ea:X}"
 
         # Get pseudocode as text and clean IDA color tags
         pseudocode = str(cfunc)
-        clean_code = ida_lines.tag_remove(pseudocode)
+        clean_code = ida_lines_mod.tag_remove(pseudocode)
         lines = clean_code.splitlines()
 
         return func_name, lines
@@ -123,41 +114,15 @@ def _decompile_function(func_ea: int) -> tuple[str, list[str]] | None:
         return None
 
 
-def _save_c_file(content: str, suggested_name: str) -> bool:
-    """Prompt user for file location and save C source.
-
-    Args:
-        content: The C source content to save
-        suggested_name: Suggested filename
-
-    Returns:
-        True if saved successfully, False otherwise
-    """
-    if ida_kernwin is None:
-        return False
-
-    # Ask user for save location
-    file_path = ida_kernwin.ask_file(1, suggested_name, "Save C source as...")
-    if not file_path:
-        logger.info("Export to C cancelled by user")
-        return False
-
-    try:
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        logger.info("Exported C source to %s", file_path)
-        ida_kernwin.info(f"Function exported to:\n{file_path}")
-        return True
-    except Exception as exc:
-        logger.error("Failed to write C file: %s", exc)
-        ida_kernwin.warning(f"Failed to save file:\n{exc}")
-        return False
-
-
 class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc]
     """Dialog for configuring C export options."""
 
-    def __init__(self, func_name: str, parent=None):
+    def __init__(
+        self,
+        func_name: str,
+        parent=None,
+        ida_kernwin_module: typing.Any | None = None,
+    ):
         """Initialize the export to C dialog.
 
         Args:
@@ -166,6 +131,7 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
         """
         super().__init__(parent)
         self.func_name = func_name
+        self._ida_kernwin = ida_kernwin_module
         self.setWindowTitle("Export to C")
         self.setup_ui()
 
@@ -224,10 +190,10 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
 
     def browse_file(self):
         """Show file browser dialog."""
-        if ida_kernwin is None:
+        if self._ida_kernwin is None:
             return
 
-        file_path = ida_kernwin.ask_file(1, self.file_edit.text(), "Save C source as...")
+        file_path = self._ida_kernwin.ask_file(1, self.file_edit.text(), "Save C source as...")
         if file_path:
             self.file_edit.setText(file_path)
 
@@ -265,27 +231,36 @@ class ExportFunctionToC(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
-        if not IDA_AVAILABLE or ida_kernwin is None:
+        ida_hexrays_mod = self.ida_module("ida_hexrays", ida_hexrays)
+        ida_kernwin_mod = self.ida_module("ida_kernwin", ida_kernwin)
+        ida_funcs_mod = self.ida_module("ida_funcs", ida_funcs)
+        ida_lines_mod = self.ida_module("ida_lines", ida_lines)
+        if (
+            ida_hexrays_mod is None
+            or ida_kernwin_mod is None
+            or ida_funcs_mod is None
+            or ida_lines_mod is None
+        ):
             return 0
 
         # Get current function EA
-        func_ea = _get_current_func_ea(ctx)
+        func_ea = _get_current_func_ea(ctx, ida_hexrays_mod, ida_kernwin_mod, ida_funcs_mod)
         if func_ea is None:
             logger.warning("ExportFunctionToC: could not determine function EA")
-            ida_kernwin.warning("No function at cursor")
+            ida_kernwin_mod.warning("No function at cursor")
             return 0
 
         # Decompile the function
-        result = _decompile_function(func_ea)
+        result = _decompile_function(func_ea, ida_hexrays_mod, ida_funcs_mod, ida_lines_mod)
         if result is None:
-            ida_kernwin.warning("Failed to decompile function")
+            ida_kernwin_mod.warning("Failed to decompile function")
             return 0
 
         func_name, pseudocode_lines = result
 
         # Show dialog if Qt available, otherwise use simple file dialog
         if QT_AVAILABLE:
-            dialog = ExportToCDialog(func_name)
+            dialog = ExportToCDialog(func_name, ida_kernwin_module=ida_kernwin_mod)
             if dialog.exec() != QDialog.Accepted:
                 logger.info("Export to C cancelled by user")
                 return 0
@@ -301,7 +276,7 @@ class ExportFunctionToC(D810ActionHandler):
 
         output_path = settings.get("output_path")
         if not output_path:
-            ida_kernwin.warning("No output file specified")
+            ida_kernwin_mod.warning("No output file specified")
             return 0
 
         # Get d810ng deobfuscation stats if available
@@ -359,11 +334,11 @@ class ExportFunctionToC(D810ActionHandler):
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(c_source)
             logger.info("Exported C source to %s", output_path)
-            ida_kernwin.info(f"Function exported to:\n{output_path}")
+            ida_kernwin_mod.info(f"Function exported to:\n{output_path}")
             return 1
         except Exception as exc:
             logger.error("Failed to write C file: %s", exc)
-            ida_kernwin.warning(f"Failed to save file:\n{exc}")
+            ida_kernwin_mod.warning(f"Failed to save file:\n{exc}")
             return 0
 
     def is_available(self, ctx: typing.Any) -> bool:
@@ -375,24 +350,28 @@ class ExportFunctionToC(D810ActionHandler):
         Returns:
             True if in a supported view with a function at cursor
         """
+        ida_hexrays_mod = self.ida_module("ida_hexrays", ida_hexrays)
+        ida_kernwin_mod = self.ida_module("ida_kernwin", ida_kernwin)
+        ida_funcs_mod = self.ida_module("ida_funcs", ida_funcs)
+        idaapi_mod = self.ida_module("idaapi", idaapi)
         if (
-            ida_hexrays is None
-            or ida_kernwin is None
-            or ida_funcs is None
-            or idaapi is None
+            ida_hexrays_mod is None
+            or ida_kernwin_mod is None
+            or ida_funcs_mod is None
+            or idaapi_mod is None
         ):
             return False
 
         # Check if we're in pseudocode view
-        vdui = ida_hexrays.get_widget_vdui(ctx.widget)
+        vdui = ida_hexrays_mod.get_widget_vdui(ctx.widget)
         if vdui is not None:
             return True
 
         # Check if we're in disassembly view with a function at cursor
-        widget_type = idaapi.get_widget_type(ctx.widget)
-        if widget_type == idaapi.BWN_DISASM:
-            ea = ida_kernwin.get_screen_ea()
-            func = ida_funcs.get_func(ea)
+        widget_type = idaapi_mod.get_widget_type(ctx.widget)
+        if widget_type == idaapi_mod.BWN_DISASM:
+            ea = ida_kernwin_mod.get_screen_ea()
+            func = ida_funcs_mod.get_func(ea)
             return func is not None
 
         return False

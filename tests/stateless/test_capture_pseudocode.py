@@ -1,7 +1,7 @@
 """Test that captures before/after pseudocode for comparison.
 
 Run with:
-    pytest tests/system/test_capture_pseudocode.py -v -s
+    pytest tests/stateless/test_capture_pseudocode.py -v -s
 """
 
 import json

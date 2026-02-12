@@ -7,21 +7,11 @@ from __future__ import annotations
 
 import typing
 
-# ---------------------------------------------------------------------------
-# IDA imports -- optional so unit tests can import without IDA present.
-# ---------------------------------------------------------------------------
-try:
-    import ida_hexrays
-    import idaapi
 
-    IDA_AVAILABLE = True
-except ImportError:
-    ida_hexrays = None  # type: ignore[assignment]
-    idaapi = None  # type: ignore[assignment]
-    IDA_AVAILABLE = False
-
-
-def is_pseudocode_widget(widget: typing.Any) -> bool:
+def is_pseudocode_widget(
+    widget: typing.Any,
+    ida_hexrays_module: typing.Any | None = None,
+) -> bool:
     """Check if a widget is a pseudocode (Hex-Rays decompiler) view.
 
     Args:
@@ -30,15 +20,18 @@ def is_pseudocode_widget(widget: typing.Any) -> bool:
     Returns:
         True if widget is a pseudocode view, False otherwise
     """
-    if not IDA_AVAILABLE or ida_hexrays is None:
+    if ida_hexrays_module is None:
         return False
 
     # Check if we can get a vdui_t from this widget
-    vdui = ida_hexrays.get_widget_vdui(widget)
+    vdui = ida_hexrays_module.get_widget_vdui(widget)
     return vdui is not None
 
 
-def is_disassembly_widget(widget: typing.Any) -> bool:
+def is_disassembly_widget(
+    widget: typing.Any,
+    idaapi_module: typing.Any | None = None,
+) -> bool:
     """Check if a widget is a disassembly view.
 
     Args:
@@ -47,9 +40,9 @@ def is_disassembly_widget(widget: typing.Any) -> bool:
     Returns:
         True if widget is a disassembly view, False otherwise
     """
-    if not IDA_AVAILABLE or idaapi is None:
+    if idaapi_module is None:
         return False
 
     # Check widget type
-    widget_type = idaapi.get_widget_type(widget)
-    return widget_type == idaapi.BWN_DISASM
+    widget_type = idaapi_module.get_widget_type(widget)
+    return widget_type == idaapi_module.BWN_DISASM

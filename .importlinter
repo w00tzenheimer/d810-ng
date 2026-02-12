@@ -2,7 +2,7 @@
 root_packages =
     d810
     tests
-include_external_packages = False
+include_external_packages = True
 exclude_type_checking_imports = True
 
 [importlinter:contract:unit-tests-no-hexrays]
@@ -28,3 +28,21 @@ source_modules =
     tests.unit
 forbidden_modules =
     d810.optimizers
+
+[importlinter:contract:actions-no-direct-ida-imports]
+name = Actions modules must not directly import IDA packages
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    d810.ui.actions
+forbidden_modules =
+    idaapi
+    ida_kernwin
+    ida_hexrays
+    ida_loader
+    ida_funcs
+    ida_fpro
+    ida_lines
+    idc
+    idautils
+    idapro

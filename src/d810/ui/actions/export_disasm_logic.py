@@ -8,6 +8,7 @@ All functions in this module can be imported and tested without IDA Pro.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -63,17 +64,31 @@ def to_ida_format_int(fmt: str) -> int:
         >>> to_ida_format_int("IDC")
         2
     """
-    format_map = {
+    return to_ida_format_int_with_loader(fmt, loader=None)
+
+
+def to_ida_format_int_with_loader(fmt: str, loader: Any | None = None) -> int:
+    """Map format string to IDA loader format constant using injected loader."""
+    fallback_map = {
         "ASM": 4,  # OFILE_ASM
         "LST": 3,  # OFILE_LST
         "MAP": 0,  # OFILE_MAP
         "IDC": 2,  # OFILE_IDC
     }
 
-    if fmt not in format_map:
-        raise ValueError(f"Unknown format: {fmt}. Expected one of: {list(format_map.keys())}")
+    if fmt not in fallback_map:
+        raise ValueError(f"Unknown format: {fmt}. Expected one of: {list(fallback_map.keys())}")
 
-    return format_map[fmt]
+    if loader is None:
+        return fallback_map[fmt]
+
+    attr_map = {
+        "ASM": "OFILE_ASM",
+        "LST": "OFILE_LST",
+        "MAP": "OFILE_MAP",
+        "IDC": "OFILE_IDC",
+    }
+    return int(getattr(loader, attr_map[fmt], fallback_map[fmt]))
 
 
 def to_ida_flags(settings: DisasmExportSettings) -> int:
@@ -106,16 +121,39 @@ def to_ida_flags(settings: DisasmExportSettings) -> int:
         >>> to_ida_flags(s)
         0
     """
+    return to_ida_flags_with_loader(settings, loader=None)
+
+
+def to_ida_flags_with_loader(settings: DisasmExportSettings, loader: Any | None = None) -> int:
+    """Build IDA loader flags from settings using injected loader."""
     flags = 0
 
-    # GENFLG_ASMTYPE = 0x0002 - use assembler-specific formatting
-    if settings.include_headers:
-        flags |= 0x0002
+    asmtype = 0x0002 if loader is None else int(getattr(loader, "GENFLG_ASMTYPE", 0x0002))
 
-    # For MAP output with segments, include all MAP flags
+    if settings.include_headers:
+        flags |= asmtype
+
     if settings.include_segments:
-        # GENFLG_MAPDMNG | GENFLG_MAPNAME | GENFLG_MAPADR | GENFLG_MAPATTRS | GENFLG_MAPDEM
-        flags |= 0x007C  # 0x04 | 0x08 | 0x10 | 0x20 | 0x40
+        if loader is None:
+            flags |= 0x007C
+        else:
+            segment_flag_names = (
+                "GENFLG_MAPSEG",
+                "GENFLG_MAPNAME",
+                "GENFLG_MAPDMNG",
+                "GENFLG_MAPLOC",
+                # Older SDK names kept for compatibility
+                "GENFLG_MAPADR",
+                "GENFLG_MAPATTRS",
+                "GENFLG_MAPDEM",
+            )
+            segment_flags = 0
+            for flag_name in segment_flag_names:
+                if hasattr(loader, flag_name):
+                    segment_flags |= int(getattr(loader, flag_name))
+
+            # If no map flags are available, preserve deterministic fallback behavior.
+            flags |= segment_flags if segment_flags else 0x007C
 
     return flags
 

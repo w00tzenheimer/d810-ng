@@ -1,7 +1,7 @@
 """Profile d810 deobfuscation performance on libobfuscated binary.
 
 Run with:
-    pytest tests/system/test_profile_libobfuscated.py -v -s
+    pytest tests/stateless/test_profile_libobfuscated.py -v -s
 
 This generates an HTML profile report in the test output.
 

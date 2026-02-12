@@ -11,24 +11,6 @@ from d810.ui.actions.base import D810ActionHandler
 
 logger = getLogger("D810.ui")
 
-# ---------------------------------------------------------------------------
-# IDA imports -- optional so unit tests can import without IDA present.
-# ---------------------------------------------------------------------------
-try:
-    import ida_funcs
-    import ida_hexrays
-    import ida_kernwin
-    import idaapi
-
-    IDA_AVAILABLE = True
-except ImportError:
-    ida_funcs = None  # type: ignore[assignment]
-    ida_hexrays = None  # type: ignore[assignment]
-    ida_kernwin = None  # type: ignore[assignment]
-    idaapi = None  # type: ignore[assignment]
-    IDA_AVAILABLE = False
-
-
 class DecompileFunction(D810ActionHandler):
     """Decompile the current function with d810-ng active (from disassembly view)."""
 
@@ -48,14 +30,17 @@ class DecompileFunction(D810ActionHandler):
             1 on success, 0 on failure
         """
         # Get the current function from the disassembly cursor
-        if ida_kernwin is None or ida_funcs is None or ida_hexrays is None:
+        ida_kernwin_mod = self.ida_module("ida_kernwin")
+        ida_funcs_mod = self.ida_module("ida_funcs")
+        ida_hexrays_mod = self.ida_module("ida_hexrays")
+        if ida_kernwin_mod is None or ida_funcs_mod is None or ida_hexrays_mod is None:
             return 0
 
-        ea = ida_kernwin.get_screen_ea()
-        func = ida_funcs.get_func(ea)
+        ea = ida_kernwin_mod.get_screen_ea()
+        func = ida_funcs_mod.get_func(ea)
         if func is None:
             logger.warning("DecompileFunction: no function at cursor (%s)", hex(ea))
-            ida_kernwin.warning("No function at cursor")
+            ida_kernwin_mod.warning("No function at cursor")
             return 0
 
         func_ea = func.start_ea
@@ -64,12 +49,12 @@ class DecompileFunction(D810ActionHandler):
 
         # Trigger decompilation (D810ng hooks will run automatically)
         try:
-            ida_hexrays.decompile(func_ea)
+            ida_hexrays_mod.decompile(func_ea)
             # Open the pseudocode window
-            ida_hexrays.open_pseudocode(func_ea, 0)
+            ida_hexrays_mod.open_pseudocode(func_ea, 0)
         except Exception as exc:
             logger.error("Failed to decompile function: %s", exc)
-            ida_kernwin.warning(f"Failed to decompile function:\n{exc}")
+            ida_kernwin_mod.warning(f"Failed to decompile function:\n{exc}")
             return 0
 
         return 1
@@ -83,17 +68,20 @@ class DecompileFunction(D810ActionHandler):
         Returns:
             True if in disassembly view and cursor is in a function
         """
-        if ida_kernwin is None or ida_funcs is None or idaapi is None:
+        ida_kernwin_mod = self.ida_module("ida_kernwin")
+        ida_funcs_mod = self.ida_module("ida_funcs")
+        idaapi_mod = self.ida_module("idaapi")
+        if ida_kernwin_mod is None or ida_funcs_mod is None or idaapi_mod is None:
             return False
 
         # Check if we're in a disassembly view
-        widget_type = idaapi.get_widget_type(ctx.widget)
-        if widget_type != idaapi.BWN_DISASM:
+        widget_type = idaapi_mod.get_widget_type(ctx.widget)
+        if widget_type != idaapi_mod.BWN_DISASM:
             return False
 
         # Check if cursor is in a function
-        ea = ida_kernwin.get_screen_ea()
-        func = ida_funcs.get_func(ea)
+        ea = ida_kernwin_mod.get_screen_ea()
+        func = ida_funcs_mod.get_func(ea)
         if func is None:
             return False
 

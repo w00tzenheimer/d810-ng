@@ -13,7 +13,7 @@ Test Organization:
 - TestSmoke: Quick smoke tests for CI
 
 Override binary via environment variable:
-    D810_TEST_BINARY=libobfuscated.dll pytest tests/system/test_libdeobfuscated_dsl.py
+    D810_TEST_BINARY=libobfuscated.dll pytest tests/stateless/test_libdeobfuscated_dsl.py
 """
 
 import os
@@ -512,7 +512,7 @@ class TestAllCases:
     Total cases: {TOTAL_FUNCTION_COUNT}
 
     Use this for full coverage testing:
-        pytest tests/system/test_libdeobfuscated_dsl.py::TestAllCases -v --cov=src/d810/optimizers/microcode
+        pytest tests/stateless/test_libdeobfuscated_dsl.py::TestAllCases -v --cov=src/d810/optimizers/microcode
     """
 
     binary_name = _get_default_binary()
