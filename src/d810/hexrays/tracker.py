@@ -49,11 +49,16 @@ logger = getLogger(__name__, logging.WARNING)
 
 
 class InstructionDefUseCollector(ida_hexrays.mop_visitor_t):
+    """Visitor that collects definition and use mops from an instruction.
+
+    LIFETIME CONSTRAINT: Lists store borrowed mop_t references from visitor callbacks.
+    Valid only during a single `search_backward()` call. Do not cache instances.
+    """
     def __init__(self):
         super().__init__()
-        self.unresolved_ins_mops = []
-        self.memory_unresolved_ins_mops = []
-        self.target_mops = []
+        self.unresolved_ins_mops = []  # BorrowedMop list - valid only during current search
+        self.memory_unresolved_ins_mops = []  # BorrowedMop list
+        self.target_mops = []  # BorrowedMop list
 
     def visit_mop(self, op: ida_hexrays.mop_t, op_type: int, is_target: bool):
         # Skip mops with invalid sizes (e.g., function references with size=-1)
@@ -533,6 +538,12 @@ def get_search_statistics() -> dict[str, int]:
 
 
 class MopTracker(object):
+    """Tracks data flow backwards through microcode to find definitions.
+
+    LIFETIME CONSTRAINT: _unresolved_mops and _memory_unresolved_mops store borrowed
+    mop_t references from IDA's internal trees. Valid only during the search_backward()
+    traversal. Do not cache MopTracker instances across optimizer invocations.
+    """
     def __init__(
         self,
         searched_mop_list: list[ida_hexrays.mop_t],
@@ -542,8 +553,8 @@ class MopTracker(object):
         _search_context: SearchContext | None = None,
     ):
         self.mba: ida_hexrays.mba_t
-        self._unresolved_mops = []
-        self._memory_unresolved_mops = []
+        self._unresolved_mops = []  # BorrowedMop list - valid only during search
+        self._memory_unresolved_mops = []  # BorrowedMop list
         for searched_mop in searched_mop_list:
             a, b = get_standard_and_memory_mop_lists(searched_mop)
             self._unresolved_mops += a
