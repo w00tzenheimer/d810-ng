@@ -632,3 +632,200 @@ class TestHotPathBenchmark:
         print(f"    Total instructions: {len(instructions)}")
         print(f"    Time per instruction: {per_instruction:.2f} us")
         print(f"    Throughput: {len(instructions) / (elapsed / 10):.0f} insns/sec")
+
+
+# =========================================================================
+# Test: Capture Baseline
+# =========================================================================
+
+
+class TestCaptureBaseline:
+    """Capture all benchmark results and save as baseline."""
+
+    binary_name = _get_default_binary()
+
+    @pytest.mark.ida_required
+    def test_capture_baseline(self, real_asts, libobfuscated_setup):
+        """Run all benchmarks and save baseline results."""
+        from pathlib import Path
+
+        results = {}
+
+        # Registration benchmark
+        unique_patterns = []
+        seen_sigs = set()
+        for ast, _ in real_asts[:200]:
+            if ast.is_node():
+                sig = ast.get_pattern()
+                if sig not in seen_sigs:
+                    seen_sigs.add(sig)
+                    unique_patterns.append(ast)
+                    if len(unique_patterns) >= 100:
+                        break
+
+        if len(unique_patterns) >= 20:
+            rules = []
+            for i in range(len(unique_patterns)):
+                class MockRule:
+                    pass
+                rule = MockRule()
+                rule.name = f"rule_{i}"
+                rules.append(rule)
+
+            def populate_legacy():
+                storage = PatternStorage(depth=1)
+                for pattern, rule in zip(unique_patterns, rules):
+                    storage.add_pattern_for_rule(pattern, rule)
+                return storage
+
+            def populate_new():
+                storage = OpcodeIndexedStorage()
+                for pattern, rule in zip(unique_patterns, rules):
+                    storage.add_pattern(pattern, rule)
+                return storage
+
+            legacy_reg_time = timed_run(populate_legacy, iterations=10, warmup=2)
+            new_reg_time = timed_run(populate_new, iterations=10, warmup=2)
+
+            results["registration"] = {
+                "pattern_count": len(unique_patterns),
+                "legacy_time_ms": legacy_reg_time * 1000,
+                "new_time_ms": new_reg_time * 1000,
+                "speedup": legacy_reg_time / new_reg_time if new_reg_time > 0 else 0,
+            }
+
+        # Lookup benchmarks
+        if len(unique_patterns) >= 10:
+            legacy_storage = PatternStorage(depth=1)
+            new_storage = OpcodeIndexedStorage()
+
+            for i, pattern in enumerate(unique_patterns[:50]):
+                class MockRule:
+                    pass
+                rule = MockRule()
+                rule.name = f"rule_{i}"
+                legacy_storage.add_pattern_for_rule(pattern, rule)
+                new_storage.add_pattern(pattern, rule)
+
+            hit_asts = unique_patterns[:10]
+            pattern_opcodes = {p.opcode for p in unique_patterns if p.is_node()}
+            miss_asts = [ast for ast, _ in real_asts if ast.is_node() and ast.opcode not in pattern_opcodes][:10]
+
+            if hit_asts:
+                def lookup_hit_legacy():
+                    for ast in hit_asts:
+                        _ = legacy_storage.get_matching_rule_pattern_info(ast)
+
+                def lookup_hit_new():
+                    for ast in hit_asts:
+                        _ = new_storage.get_candidates(ast)
+
+                legacy_hit_time = timed_run(lookup_hit_legacy, iterations=100, warmup=10)
+                new_hit_time = timed_run(lookup_hit_new, iterations=100, warmup=10)
+
+                results["lookup_hit"] = {
+                    "candidate_count": len(hit_asts),
+                    "legacy_us_per_lookup": (legacy_hit_time / 100 / len(hit_asts)) * 1_000_000,
+                    "new_us_per_lookup": (new_hit_time / 100 / len(hit_asts)) * 1_000_000,
+                    "speedup": legacy_hit_time / new_hit_time if new_hit_time > 0 else 0,
+                }
+
+            if miss_asts:
+                def lookup_miss_legacy():
+                    for ast in miss_asts:
+                        _ = legacy_storage.get_matching_rule_pattern_info(ast)
+
+                def lookup_miss_new():
+                    for ast in miss_asts:
+                        _ = new_storage.get_candidates(ast)
+
+                legacy_miss_time = timed_run(lookup_miss_legacy, iterations=100, warmup=10)
+                new_miss_time = timed_run(lookup_miss_new, iterations=100, warmup=10)
+
+                results["lookup_miss"] = {
+                    "candidate_count": len(miss_asts),
+                    "legacy_us_per_lookup": (legacy_miss_time / 100 / len(miss_asts)) * 1_000_000,
+                    "new_us_per_lookup": (new_miss_time / 100 / len(miss_asts)) * 1_000_000,
+                    "speedup": legacy_miss_time / new_miss_time if new_miss_time > 0 else 0,
+                }
+
+        # Match benchmarks
+        candidates = []
+        for ast, _ in real_asts:
+            if ast.is_node():
+                left = getattr(ast, "left", None)
+                right = getattr(ast, "right", None)
+                if left is not None and right is not None:
+                    candidates.append(ast)
+                    if len(candidates) >= 20:
+                        break
+
+        if len(candidates) >= 5:
+            patterns = []
+            for candidate in candidates:
+                pattern = AstNode(candidate.opcode, AstLeaf("x_0"), AstLeaf("y_0"))
+                pattern.freeze()
+                patterns.append(pattern)
+
+            def match_clone():
+                for pattern, candidate in zip(patterns, candidates):
+                    pattern_clone = pattern.clone()
+                    _ = pattern_clone.check_pattern_and_copy_mops(candidate)
+
+            def match_nomut():
+                bindings = MatchBindings()
+                for pattern, candidate in zip(patterns, candidates):
+                    _ = match_pattern_nomut(pattern, candidate, bindings)
+
+            clone_time = timed_run(match_clone, iterations=100, warmup=10)
+            nomut_time = timed_run(match_nomut, iterations=100, warmup=10)
+
+            results["match"] = {
+                "pattern_count": len(patterns),
+                "clone_us_per_match": (clone_time / 100 / len(patterns)) * 1_000_000,
+                "nomut_us_per_match": (nomut_time / 100 / len(patterns)) * 1_000_000,
+                "speedup": clone_time / nomut_time if nomut_time > 0 else 0,
+            }
+
+        # Hot path benchmark
+        from d810.optimizers.microcode.instructions.pattern_matching.handler import PatternOptimizer
+        from d810.core import OptimizationStatistics
+
+        stats = OptimizationStatistics()
+        optimizer = PatternOptimizer(
+            maturities=[ida_hexrays.MMAT_PREOPTIMIZED, ida_hexrays.MMAT_LOCOPT],
+            stats=stats,
+        )
+
+        instructions = [ins for _, ins in real_asts if ins is not None][:100]
+
+        if len(instructions) >= 10:
+            class MockBlock:
+                def __init__(self):
+                    class MockMBA:
+                        maturity = ida_hexrays.MMAT_PREOPTIMIZED
+                    self.mba = MockMBA()
+
+            mock_blk = MockBlock()
+
+            def run_optimization_pass():
+                for ins in instructions:
+                    _ = optimizer.get_optimized_instruction(mock_blk, ins)
+
+            hot_path_time = timed_run(run_optimization_pass, iterations=10, warmup=2)
+
+            results["hot_path"] = {
+                "instruction_count": len(instructions),
+                "us_per_instruction": (hot_path_time / 10 / len(instructions)) * 1_000_000,
+                "throughput_insns_per_sec": len(instructions) / (hot_path_time / 10),
+            }
+
+        # Save results
+        baseline_path = Path(__file__).resolve().parents[3] / "docs" / "copycat" / "benchmarks" / "baseline_pattern_engine.json"
+        save_baseline(results, baseline_path, "Pattern Engine Baseline (PR0)")
+
+        print(f"\n  Baseline saved to: {baseline_path}")
+        print(f"  Summary saved to: {baseline_path.with_suffix('.md')}")
+
+        assert baseline_path.exists(), "JSON baseline file not created"
+        assert baseline_path.with_suffix('.md').exists(), "Markdown summary not created"
