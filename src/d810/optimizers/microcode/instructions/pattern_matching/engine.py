@@ -69,6 +69,10 @@ def get_engine_info() -> dict:
     }
 
 
+# A/B validation mode (D810_PATTERN_ENGINE_VALIDATE) is implemented in PR2
+# when the hot-path switchover happens in handler.py. PR1 only provides
+# the dispatcher; handler.py continues using legacy PatternStorage.
+
 __all__ = [
     "OpcodeIndexedStorage",
     "match_pattern_nomut",
