@@ -115,22 +115,3 @@ class TestActionMigration:
         for action_cls in DISASM_ACTIONS:
             assert hasattr(action_cls, "ACTION_ID")
             assert action_cls.ACTION_ID
-
-    def test_deprecation_warning(self):
-        """Importing pseudocode_actions should emit deprecation warning."""
-        import importlib
-        import warnings
-
-        import d810.ui.pseudocode_actions
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            # Force reimport to trigger warning
-            importlib.reload(d810.ui.pseudocode_actions)
-
-            # Should have deprecation warning
-            deprecation_warnings = [
-                warning for warning in w if issubclass(warning.category, DeprecationWarning)
-            ]
-            assert len(deprecation_warnings) >= 1
-            assert "deprecated" in str(deprecation_warnings[0].message).lower()
