@@ -20,8 +20,6 @@ files:
 ignores:
   - "tests/**"
   - "tools/**"
-  # Documented exception: MatchBinding with explicit lifetime constraint
-  - "**/pattern_speedups.py"
 
 message: |
   Direct assignment of mop_t parameter to .mop attribute detected.
@@ -83,9 +81,5 @@ note: |
 
   4. Copying from existing snapshot:
      self.mop = other.mop  # other.mop is already a MopSnapshot
-
-  DOCUMENTED EXCEPTIONS:
-  - pattern_speedups.py:MatchBinding stores borrowed mop_t with explicit
-    lifetime documentation (valid only during pattern match callback)
 
   See src/d810/hexrays/mop_snapshot.py for MopSnapshot API.

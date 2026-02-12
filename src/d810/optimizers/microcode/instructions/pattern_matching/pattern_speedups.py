@@ -17,6 +17,8 @@ import typing
 if typing.TYPE_CHECKING:
     from d810.expr.p_ast import AstBase, AstConstant, AstLeaf, AstNode
 
+from d810.hexrays.mop_snapshot import MopSnapshot
+
 
 # =========================================================================
 # Priority 3: Pattern Fingerprints
@@ -179,17 +181,17 @@ def compute_fingerprint(ast: AstBase) -> PatternFingerprint:
 class MatchBinding:
     """A single variable binding from a pattern match.
 
-    LIFETIME CONSTRAINT: The `mop` field stores a borrowed reference from IDA's
-    internal trees. It is valid ONLY during the pattern matching callback and
-    MUST NOT be cached or stored beyond `match_pattern_nomut()` return.
-    Bindings are consumed immediately via `to_dict()` within the same callback.
+    The `mop` field stores a MopSnapshot (safe copy) of the matched operand.
+    This allows safe caching and comparison without risk of use-after-free.
+
+    Note: This class requires IDA to be available (pattern matching runs in IDA context).
     """
 
     __slots__ = ("name", "mop", "dest_size", "ea")
 
     def __init__(self, name: str, mop: object = None, dest_size: object = None, ea: object = None):
         self.name = name
-        self.mop = mop  # BorrowedMop - valid only during pattern match callback  # noqa: no-borrowed-mop-storage
+        self.mop = MopSnapshot.from_mop(mop) if mop is not None else None
         self.dest_size = dest_size
         self.ea = ea
 
@@ -231,7 +233,10 @@ class MatchBindings:
         return True
 
     def to_dict(self) -> dict[str, object]:
-        """Convert bindings to a {name: mop} dictionary."""
+        """Convert bindings to a {name: mop} dictionary.
+
+        Returns MopSnapshot objects (not raw mop_t), which are safe to cache.
+        """
         return {b.name: b.mop for b in self.bindings}
 
     def get_leafs_by_name(self) -> dict[str, MatchBinding]:
@@ -374,21 +379,46 @@ def _check_binding_equalities(bindings: MatchBindings) -> bool:
     This implements the implicit equality constraint: if a pattern
     uses the same variable name twice (e.g., x_0 XOR x_0), both
     occurrences must bind to the same operand.
+
+    Since bindings now store MopSnapshot objects, we compare them
+    using their cache keys (structural equality).
     """
-    seen: dict[str, object] = {}
+    seen: dict[str, MopSnapshot] = {}
     for binding in bindings.bindings:
         if binding.name in seen:
-            prev_mop = seen[binding.name]
-            # Use equal_mops_ignore_size if available for proper mop
-            # comparison that ignores size differences.
-            try:
-                from d810.hexrays.hexrays_helpers import equal_mops_ignore_size
-                if not equal_mops_ignore_size(prev_mop, binding.mop):
+            prev_snap = seen[binding.name]
+            curr_snap = binding.mop
+
+            # Compare MopSnapshot objects using structural equality.
+            # We compare cache keys which include all relevant fields
+            # except size (matching equal_mops_ignore_size semantics).
+            if prev_snap is None or curr_snap is None:
+                if prev_snap is not curr_snap:
                     return False
-            except (ImportError, ModuleNotFoundError):
-                # Fallback: identity check
-                if prev_mop is not binding.mop:
+            else:
+                # Compare type and value fields, ignoring size
+                if prev_snap.t != curr_snap.t:
                     return False
+                # Type-specific comparison
+                if prev_snap.t == 0:  # mop_n
+                    try:
+                        import ida_hexrays
+                        if prev_snap.t == ida_hexrays.mop_n and prev_snap.value != curr_snap.value:
+                            return False
+                    except ImportError:
+                        pass
+                else:
+                    # For other types, compare the full cache key (minus size)
+                    prev_key = (prev_snap.t, prev_snap.valnum, prev_snap.value,
+                               prev_snap.reg, prev_snap.stkoff, prev_snap.gaddr,
+                               prev_snap.lvar_idx, prev_snap.lvar_off, prev_snap.block_num,
+                               prev_snap.helper_name, prev_snap.const_str)
+                    curr_key = (curr_snap.t, curr_snap.valnum, curr_snap.value,
+                               curr_snap.reg, curr_snap.stkoff, curr_snap.gaddr,
+                               curr_snap.lvar_idx, curr_snap.lvar_off, curr_snap.block_num,
+                               curr_snap.helper_name, curr_snap.const_str)
+                    if prev_key != curr_key:
+                        return False
         else:
             seen[binding.name] = binding.mop
     return True
