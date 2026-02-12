@@ -127,3 +127,40 @@ class MopSnapshot:
             self.lvar_idx, self.lvar_off, self.block_num,
             self.helper_name, self.const_str,
         )
+
+    def to_mop(self) -> ida_hexrays.mop_t:
+        """Reconstruct a fresh (owned) mop_t from this snapshot.
+
+        Used by AstLeaf.create_mop() to materialize a writeable operand
+        from a cached snapshot.  The returned mop_t is owned by the caller
+        and safe to pass to assign() or other IDA APIs.
+        """
+        m = ida_hexrays.mop_t()
+        if self.t == ida_hexrays.mop_n and self.value is not None:
+            m.make_number(self.value, self.size)
+        elif self.t == ida_hexrays.mop_r and self.reg is not None:
+            m.make_reg(self.reg, self.size)
+        elif self.t == ida_hexrays.mop_S and self.stkoff is not None:
+            m.make_stkvar(self.stkoff, self.size)
+        elif self.t == ida_hexrays.mop_v and self.gaddr is not None:
+            m.make_global(self.gaddr, self.size)
+        elif self.t == ida_hexrays.mop_l and self.lvar_idx is not None:
+            # Local variable: requires lvar_t, which we can't fully reconstruct
+            # without the parent mba_t. Log warning and return empty mop.
+            logger.warning(
+                "to_mop: Cannot reconstruct mop_l (local var idx=%s) without mba_t",
+                self.lvar_idx,
+            )
+            return m  # Empty mop_t
+        elif self.t == ida_hexrays.mop_b and self.block_num is not None:
+            m.make_blkref(self.block_num)
+        elif self.t == ida_hexrays.mop_h and self.helper_name is not None:
+            m.make_helper(self.helper_name)
+        else:
+            # For complex types (mop_d, mop_f, mop_a, mop_p, mop_str, mop_c, mop_z)
+            # we cannot safely reconstruct without the original IDA structures.
+            logger.warning(
+                "to_mop: Cannot reconstruct complex mop type %s, returning empty mop",
+                self.t,
+            )
+        return m
