@@ -375,3 +375,123 @@ class TestRegistrationBenchmark:
         print(f"    Legacy: {legacy_time * 1000:.2f} ms")
         print(f"    New:    {new_time * 1000:.2f} ms")
         print(f"    Speedup: {legacy_time / new_time:.2f}x")
+
+
+# =========================================================================
+# Test: Lookup Benchmarks (Hit + Miss)
+# =========================================================================
+
+
+class TestLookupBenchmark:
+    """Benchmark pattern lookup performance (hit and miss cases)."""
+
+    binary_name = _get_default_binary()
+
+    @pytest.fixture(scope="class")
+    def lookup_fixtures(self, real_asts):
+        """Prepare storages and test ASTs for lookup benchmarks."""
+        unique_patterns = []
+        seen_sigs = set()
+
+        for ast, _ in real_asts[:200]:
+            if ast.is_node():
+                sig = ast.get_pattern()
+                if sig not in seen_sigs:
+                    seen_sigs.add(sig)
+                    unique_patterns.append(ast)
+                    if len(unique_patterns) >= 50:
+                        break
+
+        if len(unique_patterns) < 10:
+            pytest.skip("Not enough patterns for lookup benchmark")
+
+        legacy_storage = PatternStorage(depth=1)
+        new_storage = OpcodeIndexedStorage()
+
+        for i, pattern in enumerate(unique_patterns):
+            class MockRule:
+                pass
+            rule = MockRule()
+            rule.name = f"rule_{i}"
+            legacy_storage.add_pattern_for_rule(pattern, rule)
+            new_storage.add_pattern(pattern, rule)
+
+        hit_asts = unique_patterns[:10]
+
+        pattern_opcodes = {p.opcode for p in unique_patterns if p.is_node()}
+        miss_asts = []
+        for ast, _ in real_asts:
+            if ast.is_node() and ast.opcode not in pattern_opcodes:
+                miss_asts.append(ast)
+                if len(miss_asts) >= 10:
+                    break
+
+        return legacy_storage, new_storage, hit_asts, miss_asts
+
+    @pytest.mark.ida_required
+    def test_lookup_hit_legacy(self, lookup_fixtures):
+        """Benchmark PatternStorage lookups for matching ASTs."""
+        legacy_storage, _, hit_asts, _ = lookup_fixtures
+
+        if not hit_asts:
+            pytest.skip("No hit ASTs available")
+
+        def lookup_all():
+            for ast in hit_asts:
+                _ = legacy_storage.get_matching_rule_pattern_info(ast)
+
+        elapsed = timed_run(lookup_all, iterations=100, warmup=10)
+        per_lookup = (elapsed / 100 / len(hit_asts)) * 1_000_000
+
+        print(f"\n  Lookup (hit, legacy): {per_lookup:.2f} us/lookup")
+
+    @pytest.mark.ida_required
+    def test_lookup_miss_legacy(self, lookup_fixtures):
+        """Benchmark PatternStorage lookups for non-matching ASTs."""
+        legacy_storage, _, _, miss_asts = lookup_fixtures
+
+        if not miss_asts:
+            pytest.skip("No miss ASTs available")
+
+        def lookup_all():
+            for ast in miss_asts:
+                _ = legacy_storage.get_matching_rule_pattern_info(ast)
+
+        elapsed = timed_run(lookup_all, iterations=100, warmup=10)
+        per_lookup = (elapsed / 100 / len(miss_asts)) * 1_000_000
+
+        print(f"\n  Lookup (miss, legacy): {per_lookup:.2f} us/lookup")
+
+    @pytest.mark.ida_required
+    def test_lookup_hit_new(self, lookup_fixtures):
+        """Benchmark OpcodeIndexedStorage lookups for matching ASTs."""
+        _, new_storage, hit_asts, _ = lookup_fixtures
+
+        if not hit_asts:
+            pytest.skip("No hit ASTs available")
+
+        def lookup_all():
+            for ast in hit_asts:
+                _ = new_storage.get_candidates(ast)
+
+        elapsed = timed_run(lookup_all, iterations=100, warmup=10)
+        per_lookup = (elapsed / 100 / len(hit_asts)) * 1_000_000
+
+        print(f"\n  Lookup (hit, new):    {per_lookup:.2f} us/lookup")
+
+    @pytest.mark.ida_required
+    def test_lookup_miss_new(self, lookup_fixtures):
+        """Benchmark OpcodeIndexedStorage lookups for non-matching ASTs."""
+        _, new_storage, _, miss_asts = lookup_fixtures
+
+        if not miss_asts:
+            pytest.skip("No miss ASTs available")
+
+        def lookup_all():
+            for ast in miss_asts:
+                _ = new_storage.get_candidates(ast)
+
+        elapsed = timed_run(lookup_all, iterations=100, warmup=10)
+        per_lookup = (elapsed / 100 / len(miss_asts)) * 1_000_000
+
+        print(f"\n  Lookup (miss, new):   {per_lookup:.2f} us/lookup")
