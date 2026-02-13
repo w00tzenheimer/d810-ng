@@ -57,6 +57,4 @@ _indexable
 \.*db
 
 # docs
-docs/**/
-!docs/source/
-!docs/source/**
+docs/
