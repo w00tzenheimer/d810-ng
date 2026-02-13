@@ -833,6 +833,11 @@ class AstLeaf(AstBase):
         new_leaf.mop = self.mop
         new_leaf.dest_size = self.dest_size
         new_leaf.ea = self.ea
+        # AstConstant carries extra matching state not present on AstLeaf.
+        if hasattr(self, "expected_value"):
+            new_leaf.expected_value = self.expected_value
+        if hasattr(self, "expected_size"):
+            new_leaf.expected_size = self.expected_size
 
         # Initialize transient state
         new_leaf.z3_var = None
