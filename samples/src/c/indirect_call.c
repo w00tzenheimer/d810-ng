@@ -17,7 +17,7 @@
  * Compiled with: -O0 -g -fno-inline -fno-builtin
  */
 
-#include "export.h"
+#include "platform.h"
 #include <stdint.h>
 
 /* Prevent dead-code elimination */

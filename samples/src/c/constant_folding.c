@@ -432,6 +432,7 @@ __int64 __fastcall sub_180001000(
 */
 
 #include "polyfill.h"
+#include "platform.h"
 
 const unsigned __int8 g_encDataRandomTable[700] = {
     0x0C, 0x05, 0x09, 0x03, 0x0B, 0x08, 0x0D, 0x00, 0x0E, 0x0A, 0x06, 0x02, 0x0F, 0x04, 0x07, 0x01,
@@ -486,7 +487,7 @@ const unsigned __int32 dword_1802D2DBC = 0xF4C84FC4;
 
 void _InterlockedExchangeW(int a1, int a2, int a3, int a4, int a5) { (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; }
 
-unsigned __int64 constant_folding_test1()
+EXPORT unsigned __int64 constant_folding_test1()
 {
     bool b = 0;
     unsigned __int64 v46 = __ROL8__(
@@ -520,7 +521,7 @@ unsigned __int64 constant_folding_test1()
     return b;
 }
 
-unsigned __int64 constant_folding_test2()
+EXPORT unsigned __int64 constant_folding_test2()
 {
 
     unsigned __int64 v45 = __ROL4__(
@@ -546,20 +547,20 @@ unsigned __int64 constant_folding_test2()
 }
 
 // outlined function 1
-__int64 outlined_helper_1(__int64 a1, __int64 a2, __int64 a3, unsigned int *a4)
+EXPORT __int64 outlined_helper_1(__int64 a1, __int64 a2, __int64 a3, unsigned int *a4)
 {
     return *a4;
 }
 
 // outlined function 2
-__int64 outlined_helper_2(_DWORD *a1)
+EXPORT __int64 outlined_helper_2(_DWORD *a1)
 {
     __int64 result = (unsigned int)(__ROL4__(__ROL4__(*a1, 0x1E) + 0x709572C9, 9) + 0x6B177BA5);
     *a1 = result;
     return result;
 }
 
-__int64 AntiDebug_ExceptionFilter(
+EXPORT __int64 AntiDebug_ExceptionFilter(
     int unused1,
     int unused2,
     int unused3,

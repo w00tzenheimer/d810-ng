@@ -19,7 +19,7 @@
  * Requires: GCC/Clang labels-as-values extension (&&label)
  */
 
-#include "export.h"
+#include "platform.h"
 #include <stdint.h>
 
 /* Prevent dead-code elimination */

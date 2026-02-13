@@ -29,13 +29,17 @@ if %ERRORLEVEL% equ 0 (
 )
 where make.exe >nul 2>&1
 if %ERRORLEVEL% equ 0 (
-    set "MAKE=make.exe"
+    set "MAKE="
+    for /d %%d in ("%HOMEDRIVE%%HOMEPATH%\scoop\apps\make\*") do (
+        if /I not "%%~nxd"=="current" if exist "%%d\bin\make.exe" set "MAKE=%%d\bin\make.exe"
+    )
+    if not defined MAKE set "MAKE=make.exe"
 ) else (
     echo ERROR: make.exe not found on PATH
     echo   Install via: scoop install make  or  choco install make
     exit /b 1
 )
-echo   make: found
+echo   make: %MAKE%
 echo   Done.
 
 REM Step 3: Build
@@ -45,11 +49,15 @@ cd /d %~dp0
 
 REM Find real sh.exe from Git for Windows (not a shim)
 set "REAL_SH="
-for /f "usebackq tokens=*" %%i in (`where git.exe 2^>nul`) do (
-    for %%d in ("%%~dpi..") do set "GIT_ROOT=%%~fd"
+for /d %%d in ("%HOMEDRIVE%%HOMEPATH%\scoop\apps\git\*") do (
+    if /I not "%%~nxd"=="current" if exist "%%d\usr\bin\sh.exe" set "REAL_SH=%%d\usr\bin\sh.exe"
 )
-if defined GIT_ROOT (
-    if exist "%GIT_ROOT%\usr\bin\sh.exe" set "REAL_SH=%GIT_ROOT%\usr\bin\sh.exe"
+if not defined REAL_SH (
+    for /f "usebackq tokens=*" %%i in (`where git.exe 2^>nul`) do (
+        for %%d in ("%%~dpi..") do (
+            if exist "%%~fd\usr\bin\sh.exe" set "REAL_SH=%%~fd\usr\bin\sh.exe"
+        )
+    )
 )
 
 REM Clean everything including .d files (Windows paths in .d break make)
@@ -65,6 +73,11 @@ if defined REAL_SH (
     "%MAKE%" TARGET_OS=windows BINARY_NAME=libobfuscated USING_CLANG_CL=1 CC_BASE=clang-cl.exe SHELL="%REAL_SH%"
 ) else (
     "%MAKE%" TARGET_OS=windows BINARY_NAME=libobfuscated USING_CLANG_CL=1 CC_BASE=clang-cl.exe
+)
+if %ERRORLEVEL% neq 0 (
+    echo.
+    echo ERROR: Build failed (make returned %ERRORLEVEL%)
+    exit /b %ERRORLEVEL%
 )
 if not exist "bins\libobfuscated.dll" (
     echo.

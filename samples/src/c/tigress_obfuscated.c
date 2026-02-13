@@ -1,4 +1,4 @@
-#include "export.h"
+#include "platform.h"
 
 // https://github.com/Neutrino6/thesis_project/blob/main/C_files_analysis/C_obfuscated/minmaxarray_tigress.c
 /** Original code:

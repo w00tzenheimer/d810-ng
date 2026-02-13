@@ -1,4 +1,5 @@
 #include "polyfill.h"
+#include "platform.h"
 
 RTL_CRITICAL_SECTION g_mutex = {0};
 
@@ -62,7 +63,7 @@ void bogus_loops(int n0x59, int n0xA, int n0x48, unsigned int *a4)
     *a4 = v5 ^ (0x20 * v5);
 }
 
-__int64 unwrap_loops()
+EXPORT __int64 unwrap_loops()
 {
     int i;
     int v2;
@@ -97,7 +98,7 @@ __int64 unwrap_loops()
     return result;
 }
 
-__int64 unwrap_loops_2(unsigned int n8, __int64 a2, int n0x4E, int n0x5F)
+EXPORT __int64 unwrap_loops_2(unsigned int n8, __int64 a2, int n0x4E, int n0x5F)
 {
     int i;
     int v9;
@@ -136,7 +137,7 @@ __int64 unwrap_loops_2(unsigned int n8, __int64 a2, int n0x4E, int n0x5F)
 }
 
 // Hidden C++ exception states: #wind=1
-__int64 unwrap_loops_3(int n0x5C, unsigned int a2, int n0x53, int n9, __int64 a5)
+EXPORT __int64 unwrap_loops_3(int n0x5C, unsigned int a2, int n0x53, int n9, __int64 a5)
 {
     int v5;
     int v10;

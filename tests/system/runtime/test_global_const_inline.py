@@ -40,8 +40,9 @@ def _get_default_binary() -> str:
 # prerequisite for further constant folding and MBA simplification.
 #
 # The constant_folding_test functions in libobfuscated use lookup tables
-# stored in read-only data segments.  After inlining, the decompiler
-# can fold the constants and produce simpler output.
+# stored in read-only data segments.  A dedicated global_const_rva_guard
+# function exercises the PE/RVA regression path. After inlining, the
+# decompiler can fold constants and produce simpler output.
 # ---------------------------------------------------------------------------
 
 GLOBAL_CONST_INLINE_CASES = [
@@ -72,15 +73,15 @@ GLOBAL_CONST_INLINE_CASES = [
         skip="Needs full project config; passes in test_libdeobfuscated_dsl with example_libobfuscated.json",
     ),
     DeobfuscationCase(
-        function="constant_folding_test1",
+        function="global_const_rva_guard",
         description=(
-            "Regression: GlobalConstantInliner must not inline RVA-like values "
-            "into raw MEMORY[0x...] call expressions."
+            "Regression: GlobalConstantInliner should inline normal constants "
+            "but must not inline RVA-like values into raw MEMORY[0x...] expressions."
         ),
         project="default_instruction_only.json",
         must_change=True,
         check_stats=True,
-        expected_rules=["GlobalConstantInliner"],
+        required_rules=["FoldReadonlyDataRule"],
         dll_override=BinaryOverride(
             deobfuscated_not_contains=["MEMORY[0x"],
         ),

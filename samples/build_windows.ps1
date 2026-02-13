@@ -62,8 +62,21 @@ Write-Host "  Done."
 # Step 2: Verify toolchain
 Write-Step 2 $TotalSteps "Verifying toolchain"
 
-# Find make.exe
-$MakeExe = (Get-Command make.exe -ErrorAction SilentlyContinue).Source
+# Find make.exe (prefer non-shim binary when available)
+$MakeCandidates = @(Get-Command make.exe -All -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
+$MakeExe = $MakeCandidates | Where-Object { $_ -notmatch '\\shims\\' } | Select-Object -First 1
+if (-not $MakeExe) {
+    $MakeExe = $MakeCandidates | Select-Object -First 1
+}
+if (-not $MakeExe) {
+    $ScoopCandidates = @(
+        Get-ChildItem -Path "$Env:HOMEDRIVE$Env:HOMEPATH\scoop\apps\make\*" -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne "current" } |
+            ForEach-Object { Join-Path $_.FullName "bin\make.exe" } |
+            Where-Object { Test-Path $_ }
+    )
+    $MakeExe = $ScoopCandidates | Select-Object -Last 1
+}
 if (-not $MakeExe) {
     Write-Host "ERROR: make.exe not found on PATH" -ForegroundColor Red
     Write-Host "  Install via: scoop install make  or  choco install make" -ForegroundColor Yellow
@@ -83,12 +96,37 @@ Write-Host "  Done."
 Write-Step 3 $TotalSteps "Building libobfuscated.dll via Makefile"
 Set-Location $ScriptDir
 
+# Prefer a real Git bash shell path for GNU make recipes.
+$RealSh = $null
+$GitShCandidates = @(
+    Get-ChildItem -Path "$Env:HOMEDRIVE$Env:HOMEPATH\scoop\apps\git\*" -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne "current" } |
+        ForEach-Object { Join-Path $_.FullName "usr\bin\sh.exe" } |
+        Where-Object { Test-Path $_ }
+)
+if ($GitShCandidates.Count -gt 0) {
+    $RealSh = $GitShCandidates[-1]
+}
+
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-& $MakeExe clean 2>&1 | Out-Null
+if ($RealSh) {
+    & $MakeExe clean "SHELL=$RealSh" 2>&1 | Out-Null
+} else {
+    & $MakeExe clean 2>&1 | Out-Null
+}
 # Pass USING_CLANG_CL=1 and CC_BASE explicitly because make's sh.exe can't run 'where'
-& $MakeExe TARGET_OS=windows BINARY_NAME=libobfuscated USING_CLANG_CL=1 "CC_BASE=clang-cl.exe" 2>&1
+$makeArgs = @("TARGET_OS=windows", "BINARY_NAME=libobfuscated", "USING_CLANG_CL=1", "CC_BASE=clang-cl.exe")
+if ($RealSh) {
+    $makeArgs += "SHELL=$RealSh"
+}
+& $MakeExe @makeArgs 2>&1
 $ErrorActionPreference = $prevEAP
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Build failed (make exited with code $LASTEXITCODE)" -ForegroundColor Red
+    exit $LASTEXITCODE
+}
 
 $DllPath = Join-Path $ScriptDir "bins\libobfuscated.dll"
 $PdbPath = Join-Path $ScriptDir "bins\libobfuscated.pdb"

@@ -1,4 +1,5 @@
 #include "ida_types.h"
+#include "platform.h"
 
 int x, y;
 
@@ -15,7 +16,7 @@ extern int memcpy(void *dest, const void *src, size_t n);
 extern void *memset(void *dest, int c, size_t n);
 
 
-void test_function_ollvm_fla_bcf_sub(unsigned int *input, unsigned int *output)
+EXPORT void test_function_ollvm_fla_bcf_sub(unsigned int *input, unsigned int *output)
 {
   int v2; // esi
   int v3; // eax

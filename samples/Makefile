@@ -15,7 +15,7 @@
 #   make TARGET_OS=linux                 # → Linux .so for host arch
 #   make TARGET_OS=darwin BUILD_ARCH=x86_64   # → pure Intel macOS dylib
 #   make TARGET_OS=darwin BUILD_ARCH=arm64    # → Apple Silicon dylib
-#   make BUILD_ARCH=x86                  # → 32-bit Windows DLL
+#   make BUILD_ARCH=x86                  # → maps to x86_64 (32-bit builds unsupported)
 #   make BINARY_NAME=myplugin            # → bins/myplugin.dll (no host/arch suffix)
 #   make clean
 #   make test-all-platforms              # → Build and test all 4 platforms (Windows/Linux/macOS x86_64/macOS arm64)
@@ -44,15 +44,21 @@ endif
 # ----------------------------- User configurable options -----------------------------
 # windows | darwin | linux | native
 TARGET_OS    ?= windows
-# x86_64 | x86 | arm64 | aarch64 | -m32 | -arch arm64 | etc.
+# x86_64 | x86 (mapped to x86_64) | arm64 | aarch64 | -m64 | -arch arm64 | etc.
 BUILD_ARCH   ?= x86_64
 # libobfuscated by default
 BINARY_NAME  ?= libobfuscated
 
-# ----------------------------- Normalize native -----------------------------
-ifeq ($(TARGET_OS),native)
-    TARGET_OS := $(HOST_OS)
+# ----------------------------- Normalize target OS -----------------------------
+RAW_TARGET_OS := $(strip $(TARGET_OS))
+ifeq ($(RAW_TARGET_OS),native)
+    TARGET_OS_NORMALIZED := $(HOST_OS)
+else
+    TARGET_OS_NORMALIZED := $(RAW_TARGET_OS)
 endif
+# Command-line variables override regular assignments in make; use override so
+# TARGET_OS=native is always normalized to the detected host OS.
+override TARGET_OS := $(TARGET_OS_NORMALIZED)
 
 # ----------------------------- Super-friendly architecture handling -----------------------------
 RAW_ARCH := $(or $(BUILD_ARCH),x86_64)
@@ -61,12 +67,10 @@ RAW_ARCH := $(or $(BUILD_ARCH),x86_64)
 NORM_ARCH := $(strip \
     $(if $(findstring arm64,$(RAW_ARCH)),arm64,\
     $(if $(findstring aarch64,$(RAW_ARCH)),arm64,\
-    $(if $(findstring 64,$(RAW_ARCH)),x86_64,\
-    $(if $(findstring 32,$(RAW_ARCH)),x86,\
-    $(if $(findstring x86,$(RAW_ARCH)),x86,x86_64))))))
+    x86_64)))
 
 # Convert to real compiler flags Clang understands, per target OS
-# If the user gave explicit flags (e.g. "-m32" or "-arch arm64"), trust them.
+# If the user gave explicit flags (e.g. "-m64" or "-arch arm64"), trust them.
 ARCH_FLAGS :=
 ifneq ($(filter -%,$(RAW_ARCH)),)
     ARCH_FLAGS := $(RAW_ARCH)
@@ -74,16 +78,14 @@ else
     # Plain architecture name → choose flags based on TARGET_OS
     ifeq ($(TARGET_OS),darwin)
         NORM_FLAG_x86_64 := -arch x86_64
-        NORM_FLAG_x86    := -arch i386
         NORM_FLAG_arm64  := -arch arm64
         ARCH_FLAGS := $(NORM_FLAG_$(NORM_ARCH))
     else ifeq ($(TARGET_OS),linux)
         NORM_FLAG_x86_64 := -m64
-        NORM_FLAG_x86    := -m32
         ARCH_FLAGS := $(NORM_FLAG_$(NORM_ARCH))
     else ifeq ($(TARGET_OS),windows)
         # For MinGW cross, the architecture is encoded in the triple
-        # (i686-w64-mingw32 vs x86_64-w64-mingw32), so we leave ARCH_FLAGS empty.
+        # (aarch64-w64-mingw32 vs x86_64-w64-mingw32), so we leave ARCH_FLAGS empty.
         ARCH_FLAGS :=
     endif
 endif
@@ -102,8 +104,13 @@ ifeq ($(HOST_OS),windows)
     endif
 endif
 
-# Check if we should use Docker for Windows builds
+# Check if we should use Docker for cross-builds
 USE_DOCKER := 0
+USE_DOCKER_WINDOWS := 0
+USE_DOCKER_LINUX := 0
+IN_LINUX_DOCKER ?= 0
+LINUX_DOCKER_PLATFORM := $(if $(filter arm64,$(NORM_ARCH)),linux/arm64,linux/amd64)
+LINUX_BUILD_IMAGE := linux-build-$(NORM_ARCH)
 ifeq ($(TARGET_OS),windows)
     ifneq ($(USING_CLANG_CL),1)
         MINGW_SYSROOT ?=
@@ -111,7 +118,16 @@ ifeq ($(TARGET_OS),windows)
             # Check if docker is available
             ifneq ($(shell command -v docker 2>/dev/null),)
                 USE_DOCKER := 1
+                USE_DOCKER_WINDOWS := 1
             endif
+        endif
+    endif
+else ifeq ($(TARGET_OS),linux)
+    ifneq ($(HOST_OS),linux)
+        # On non-Linux hosts, prefer Docker so TARGET_OS=linux yields real ELF output.
+        ifneq ($(shell command -v docker 2>/dev/null),)
+            USE_DOCKER := 1
+            USE_DOCKER_LINUX := 1
         endif
     endif
 endif
@@ -120,8 +136,8 @@ endif
 ifeq ($(TARGET_OS),windows)
     ifneq ($(USING_CLANG_CL),1)
         # Cross-compiling to Windows → MinGW target + lld
-        ifeq ($(NORM_ARCH),x86)
-            TRIPLE := i686-w64-mingw32
+        ifeq ($(NORM_ARCH),arm64)
+            TRIPLE := aarch64-w64-mingw32
         else
             TRIPLE := x86_64-w64-mingw32
         endif
@@ -172,8 +188,28 @@ else ifeq ($(TARGET_OS),darwin)
     LD  := $(CC_BASE)
     OUTPUT_EXT := dylib
 else
-    CC  := $(CC_BASE)
-    LD  := $(CC_BASE)
+    ifeq ($(IN_LINUX_DOCKER),1)
+        # Docker flow pins container CPU architecture via --platform, so native
+        # clang in-container emits the requested ELF architecture.
+        CC  := $(CC_BASE)
+        LD  := $(CC_BASE)
+    else ifeq ($(NORM_ARCH),arm64)
+        TRIPLE := aarch64-linux-gnu
+        CC  := $(CC_BASE) --target=$(TRIPLE)
+        LD  := $(CC_BASE) --target=$(TRIPLE)
+        LINUX_SYSROOT ?= /usr/aarch64-linux-gnu
+        ifneq ($(USE_DOCKER_LINUX),1)
+            ifeq ($(wildcard $(LINUX_SYSROOT)),)
+                $(error [Makefile] Linux arm64 build requires sysroot at $(LINUX_SYSROOT). Set LINUX_SYSROOT explicitly, or use Docker TARGET_OS=linux with BUILD_ARCH=arm64)
+            else
+                CC := $(CC) --sysroot=$(LINUX_SYSROOT)
+                LD := $(LD) --sysroot=$(LINUX_SYSROOT)
+            endif
+        endif
+    else
+        CC  := $(CC_BASE)
+        LD  := $(CC_BASE)
+    endif
     OUTPUT_EXT := so
 endif
 
@@ -198,11 +234,13 @@ CFLAGS_BASE := -Wall -Wextra \
 ifeq ($(TARGET_OS),windows)
     ifeq ($(USING_CLANG_CL),1)
         # Native Windows with clang-cl (MSVC mode)
-        CFLAGS  := $(CFLAGS_BASE) /MDd
-        LDFLAGS := /DLL /DEBUG:FULL /FORCE:UNRESOLVED
+        CFLAGS  := /W3 /Od /Z7 /Iinclude /MDd /DD810_DLL_EXPORT=1
+        # These samples are analysis artifacts and may intentionally keep
+        # unresolved externals; /NOENTRY avoids requiring DllMain/CRT entry.
+        LDFLAGS := /DLL /DEBUG:FULL /FORCE:UNRESOLVED /NOENTRY
     else
         # Cross-compile with Clang → MinGW
-        CFLAGS  := $(CFLAGS_BASE)
+        CFLAGS  := $(CFLAGS_BASE) -DD810_DLL_EXPORT=1
         ifneq ($(MINGW_INCLUDEDIR),)
             CFLAGS  += -I$(MINGW_INCLUDEDIR)
         endif
@@ -225,7 +263,13 @@ else
 endif
 
 # Keep debug symbols in the final binary everywhere
-LDFLAGS += -g
+ifeq ($(TARGET_OS),windows)
+    ifneq ($(USING_CLANG_CL),1)
+        LDFLAGS += -g
+    endif
+else
+    LDFLAGS += -g
+endif
 
 # Platform-specific debug symbol file generation
 ifeq ($(TARGET_OS),windows)
@@ -240,16 +284,25 @@ endif
 # Exclude mba_hard.c from the default build - it has its own binary (libmba_hard)
 # and contains symbols that duplicate those in manually_obfuscated.c
 SRCS := $(filter-out src/c/mba_hard.c src/c/sub_7FFC1EB47830.c,$(wildcard src/c/*.c))
+ifeq ($(USING_CLANG_CL),1)
+OBJS := $(SRCS:.c=.obj)
+AUTO_EXPORTS_RSP := bins/auto_exports.rsp
+else
 OBJS := $(SRCS:.c=.o)
+endif
 
 # ----------------------------- Rules -----------------------------
-.PHONY: all clean docker-windows-dockerfile docker-windows-setup docker-windows-build test-all-platforms
+.PHONY: all clean docker-windows-dockerfile docker-windows-setup docker-linux-dockerfile docker-linux-setup docker-windows-build test-all-platforms
 
-# If using Docker, intercept and run in container
-ifeq ($(USE_DOCKER),1)
+# If using Docker, intercept and run in container.
+ifeq ($(USE_DOCKER_WINDOWS),1)
 all: docker-windows-setup
 	@echo "[Makefile] Using Docker for Windows cross-compilation..."
-	@docker run --rm -v "$$PWD":/work win-build sh -c "make clean && make TARGET_OS=windows BUILD_ARCH=$(BUILD_ARCH) BINARY_NAME=$(BINARY_NAME) NIX_DEBUG_SYMBOLS=$(NIX_DEBUG_SYMBOLS)"
+	@docker run --rm -v "$$PWD":/work win-build sh -c "make USE_DOCKER=1 clean && make TARGET_OS=windows BUILD_ARCH=$(BUILD_ARCH) BINARY_NAME=$(BINARY_NAME) NIX_DEBUG_SYMBOLS=$(NIX_DEBUG_SYMBOLS)"
+else ifeq ($(USE_DOCKER_LINUX),1)
+all: docker-linux-setup
+	@echo "[Makefile] Using Docker for Linux cross-compilation..."
+	@docker run --rm --platform $(LINUX_DOCKER_PLATFORM) -v "$$PWD":/work $(LINUX_BUILD_IMAGE) sh -c "make USE_DOCKER=1 clean && make TARGET_OS=linux BUILD_ARCH=$(BUILD_ARCH) BINARY_NAME=$(BINARY_NAME) NIX_DEBUG_SYMBOLS=$(NIX_DEBUG_SYMBOLS) IN_LINUX_DOCKER=1"
 else
 all: bins $(TARGET_LIB)
 endif
@@ -257,8 +310,21 @@ endif
 bins:
 	@$(MKDIR) bins >/dev/null 2>&1 || $(MKDIR) bins
 
-# Build target - different for MSVC vs GCC/Clang
-ifeq ($(CC),cl)
+# Build target - MSVC/clang-cl vs GCC/Clang
+ifeq ($(USING_CLANG_CL),1)
+$(AUTO_EXPORTS_RSP): $(OBJS) | bins
+	@echo "Generating auto-export list ($@)"
+	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate_auto_exports.ps1 \
+		-OutFile "$@" \
+		-Objects "$(OBJS)"
+
+$(TARGET_LIB): $(OBJS) $(AUTO_EXPORTS_RSP)
+	@echo "Linking $(TARGET_LIB)"
+	link.exe /nologo /OUT:$@ $(OBJS) $(LDFLAGS) @$(AUTO_EXPORTS_RSP)
+
+%.obj: %.c
+	$(CC) /nologo $(CFLAGS) /c /Fo:$@ $<
+else ifeq ($(CC),cl)
 $(TARGET_LIB): $(OBJS)
 	$(CC) $(LDFLAGS) /Fe:$@ $^
 
@@ -295,14 +361,18 @@ $(TARGET_LIB): $(OBJS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 endif
 
+ifneq ($(USING_CLANG_CL),1)
+ifneq ($(USE_DOCKER),1)
 # Dependency generation (optional but nice)
 $(SRCS:.c=.d): %.d: %.c
 	$(CC) $(CFLAGS) -MM -MT $(@:.d=.o) $< > $@
 
 -include $(SRCS:.c=.d)
+endif
+endif
 
 clean:
-	-$(RM) $(TARGET_LIB) $(OBJS) $(SRCS:.c=.d) 2>/dev/null || true
+	-$(RM) $(TARGET_LIB) $(OBJS) $(SRCS:.c=.d) $(AUTO_EXPORTS_RSP) 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Optional helper: generate a simple Dockerfile for Windows cross-builds
@@ -327,11 +397,48 @@ docker-windows-dockerfile:
 docker-windows-setup: docker-windows-dockerfile
 	@if ! docker images -q win-build 2>/dev/null | grep -q .; then \
 		echo "[Makefile] Building Docker image 'win-build' (this may take a few minutes on first run)..."; \
-		docker build -t win-build -f Dockerfile.windows . > /dev/null 2>&1 || \
-		(echo "[Makefile] Error: Failed to build Docker image. Check Dockerfile.windows and try again." && exit 1); \
-		echo "[Makefile] ✓ Docker image 'win-build' ready."; \
+		if docker build -t win-build -f Dockerfile.windows . > /dev/null 2>&1; then \
+			echo "[Makefile] ✓ Docker image 'win-build' ready."; \
+		else \
+			echo "[Makefile] Error: Failed to build Docker image. Check Dockerfile.windows and try again."; \
+			exit 1; \
+		fi; \
 	else \
 		echo "[Makefile] ✓ Docker image 'win-build' already exists."; \
+	fi
+
+# ---------------------------------------------------------------------------
+# Optional helper: generate a simple Dockerfile for Linux cross-builds
+# ---------------------------------------------------------------------------
+docker-linux-dockerfile:
+	@echo "Writing Dockerfile.linux (Alpine + clang + lld + make for ELF builds)..."
+	@{ \
+		echo "FROM alpine:3.20"; \
+		echo "RUN apk add --no-cache clang lld make musl-dev gcc binutils file"; \
+		echo "WORKDIR /work"; \
+		echo "CMD [\"make\", \"TARGET_OS=linux\"]"; \
+	} > Dockerfile.linux
+	@echo "Created Dockerfile.linux."
+	@echo "Build the image with:"
+	@echo "  docker build --platform linux/amd64 -t linux-build-x86_64 -f Dockerfile.linux ."
+	@echo "  docker build --platform linux/arm64 -t linux-build-arm64 -f Dockerfile.linux ."
+	@echo "Then run your Linux build with:"
+	@echo "  docker run --rm --platform linux/amd64 -v \"$$PWD\":/work linux-build-x86_64"
+
+# ---------------------------------------------------------------------------
+# Auto-setup Docker for Linux builds
+# ---------------------------------------------------------------------------
+docker-linux-setup: docker-linux-dockerfile
+	@if ! docker images -q $(LINUX_BUILD_IMAGE) 2>/dev/null | grep -q .; then \
+		echo "[Makefile] Building Docker image '$(LINUX_BUILD_IMAGE)' (this may take a few minutes on first run)..."; \
+		if docker build --platform $(LINUX_DOCKER_PLATFORM) -t $(LINUX_BUILD_IMAGE) -f Dockerfile.linux . > /dev/null 2>&1; then \
+			echo "[Makefile] ✓ Docker image '$(LINUX_BUILD_IMAGE)' ready."; \
+		else \
+			echo "[Makefile] Error: Failed to build Docker image. Check Dockerfile.linux and try again."; \
+			exit 1; \
+		fi; \
+	else \
+		echo "[Makefile] ✓ Docker image '$(LINUX_BUILD_IMAGE)' already exists."; \
 	fi
 
 # ---------------------------------------------------------------------------
