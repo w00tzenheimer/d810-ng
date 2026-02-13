@@ -7,6 +7,7 @@ These tests run with mocked IDA modules and focus on crash-prone CFG helpers:
 
 from __future__ import annotations
 
+import json
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -27,14 +28,20 @@ class _FakeMBA:
     def __init__(self, qty: int = 12):
         self.qty = qty
         self.entry_ea = 0x1000
+        self.maturity = 0
         self.blocks: dict[int, _FakeBlock] = {}
         self.marked_dirty = 0
+        self.verify_error: RuntimeError | None = None
 
     def get_mblock(self, serial: int):
         return self.blocks[serial]
 
     def mark_chains_dirty(self):
         self.marked_dirty += 1
+
+    def verify(self, _always: bool):
+        if self.verify_error is not None:
+            raise self.verify_error
 
 
 class _FakeBlock:
@@ -277,3 +284,47 @@ def test_create_block_0way_clears_goto_and_edges(monkeypatch):
     assert prev_succ.marked_dirty == 1
     assert new_blk.marked_dirty == 1
     assert mba.marked_dirty == 1
+
+
+def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch):
+    """safe_verify should emit a JSON artifact with focused block capture."""
+    from d810.hexrays import cfg_utils
+
+    mba = _FakeMBA(qty=6)
+    _FakeBlock(0, mba, succs=[1], preds=[])
+    _FakeBlock(
+        1,
+        mba,
+        succs=[2],
+        preds=[0],
+        tail=SimpleNamespace(
+            ea=0x1234,
+            opcode=0x37,
+            l=SimpleNamespace(t=0, b=2),
+            d=SimpleNamespace(t=0, b=3),
+        ),
+    )
+    _FakeBlock(2, mba, succs=[3], preds=[1])
+    mba.verify_error = RuntimeError("Unknown exception")
+
+    monkeypatch.setenv("D810_VERIFY_CAPTURE", "1")
+    monkeypatch.setenv("D810_VERIFY_CAPTURE_DIR", str(tmp_path))
+
+    with pytest.raises(RuntimeError):
+        cfg_utils.safe_verify(
+            mba,
+            "unit-test verify failure",
+            capture_blocks=[1],
+            capture_metadata={"rule": "unit_test_rule", "mod_index": 7},
+        )
+
+    artifacts = list(tmp_path.glob("verify_fail_*.json"))
+    assert len(artifacts) == 1
+
+    payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
+    assert payload["context"] == "verify failure after unit-test verify failure"
+    assert payload["error_type"] == "RuntimeError"
+    assert payload["metadata"]["rule"] == "unit_test_rule"
+    assert 1 in payload["focus_blocks"]
+    captured_serials = {blk["serial"] for blk in payload["captured_blocks"]}
+    assert 1 in captured_serials
