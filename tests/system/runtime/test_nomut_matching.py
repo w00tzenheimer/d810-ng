@@ -91,7 +91,8 @@ class TestNomutMatchingHotPath:
         assert hasattr(optimizer, "_match_bindings")
         assert optimizer._match_bindings is not None
         # Should be reusable (reset between attempts)
-        assert optimizer._match_bindings.count == 0
+        # Use to_dict() to verify it's empty (count is private in Cython)
+        assert len(optimizer._match_bindings.to_dict()) == 0
 
     def test_legacy_path_active_when_nomut_disabled(self, monkeypatch):
         """Verify legacy path is active when nomut is disabled."""
