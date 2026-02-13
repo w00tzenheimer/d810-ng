@@ -19,6 +19,12 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
     DEFAULT_UNFLATTENING_MATURITIES = [ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1]
     DEFAULT_MAX_PASSES = None
 
+    def __init__(self):
+        super().__init__()
+        # Set when safe_verify fails -- prevents further processing on a
+        # corrupted MBA that would cause IDA hangs.
+        self._verify_failed: bool = False
+
     def analyze_blk(self, blk: ida_hexrays.mblock_t) -> int:
         if (blk.tail is None) or blk.tail.opcode not in FAKE_LOOP_OPCODES:
             return 0
@@ -193,6 +199,14 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
             )
         return change_1way_block_successor(pred, dst_serial, verify=False)
 
+    def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:
+        if self._verify_failed:
+            unflat_logger.debug(
+                "Skipping UnflattenerFakeJump -- MBA verify previously failed"
+            )
+            return False
+        return super().check_if_rule_should_be_used(blk)
+
     def optimize(self, blk: ida_hexrays.mblock_t) -> int:
         self.mba = blk.mba
         if not self.check_if_rule_should_be_used(blk):
@@ -201,9 +215,19 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
         if self.last_pass_nb_patch_done > 0:
             self.mba.mark_chains_dirty()
             self.mba.optimize_local(0)
-            safe_verify(
-                self.mba,
-                "optimizing UnflattenerFakeJump",
-                logger_func=unflat_logger.error,
-            )
+            try:
+                safe_verify(
+                    self.mba,
+                    "optimizing UnflattenerFakeJump",
+                    logger_func=unflat_logger.error,
+                )
+            except RuntimeError:
+                self._verify_failed = True
+                unflat_logger.warning(
+                    "MBA verify failed after UnflattenerFakeJump modifications -- "
+                    "aborting future passes to prevent IDA from continuing with "
+                    "a corrupted MBA"
+                )
+                # Return patch count so IDA knows the MBA was touched
+                return self.last_pass_nb_patch_done
         return self.last_pass_nb_patch_done
