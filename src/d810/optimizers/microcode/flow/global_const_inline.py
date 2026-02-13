@@ -229,8 +229,31 @@ def _looks_like_pointer(value: int, size: int) -> bool:
     if value == 0:
         return False
 
+    # IDA's ida_segment.getseg() expects an ea_t-sized integer. Some rebased
+    # values can overflow ea_t (or be non-int-like from SWIG wrappers), which
+    # raises TypeError in callbacks. Coerce defensively and treat invalid EAs
+    # as "not a pointer-like segment hit".
+    try:
+        ea_mask = int(idaapi.BADADDR)
+    except Exception:
+        ea_mask = 0xFFFFFFFFFFFFFFFF
+
+    def _safe_getseg(addr: int):
+        try:
+            ea = int(addr)
+        except Exception:
+            return None
+        if ea < 0:
+            return None
+        if ea_mask > 0:
+            ea &= ea_mask
+        try:
+            return ida_segment.getseg(ea)
+        except (TypeError, OverflowError, ValueError):
+            return None
+
     # Falls inside a known segment?
-    if ida_segment.getseg(value) is not None:
+    if _safe_getseg(value) is not None:
         return True
 
     # PE binaries often store RVAs (imagebase-relative offsets) instead of
@@ -242,7 +265,7 @@ def _looks_like_pointer(value: int, size: int) -> bool:
         imagebase = idaapi.BADADDR
     if imagebase not in (0, idaapi.BADADDR):
         rebased = imagebase + value
-        if ida_segment.getseg(rebased) is not None:
+        if _safe_getseg(rebased) is not None:
             return True
 
     # 64-bit heuristics for common user-space ranges.
