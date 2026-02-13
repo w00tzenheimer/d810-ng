@@ -94,6 +94,7 @@ class FunctionRuleConfig:
     function_addr: int
     enabled_rules: Set[str]
     disabled_rules: Set[str]
+    tags: Set[str] = field(default_factory=set)
     notes: str = ""
 
 
@@ -119,6 +120,8 @@ class SupportsOptimizationStorage(Protocol):
         notes: str = "",
     ) -> None: ...
     def get_function_rules(self, function_addr: int) -> Optional[FunctionRuleConfig]: ...
+    def set_function_tags(self, function_addr: int, tags: Set[str]) -> None: ...
+    def get_function_tags(self, function_addr: int) -> Set[str]: ...
     def should_run_rule(self, function_addr: int, rule_name: str) -> bool: ...
     def invalidate_function(self, function_addr: int) -> None: ...
     def get_statistics(self) -> Dict[str, Any]: ...
@@ -561,9 +564,12 @@ class NetnodeOptimizationStorage:
         disabled_rules: Optional[Set[str]] = None,
         notes: str = "",
     ) -> None:
-        self._state["function_rules"][self._func_key(function_addr)] = {
+        fkey = self._func_key(function_addr)
+        existing = self._state["function_rules"].get(fkey, {})
+        self._state["function_rules"][fkey] = {
             "enabled_rules": sorted(enabled_rules or []),
             "disabled_rules": sorted(disabled_rules or []),
+            "tags": sorted(existing.get("tags", [])),
             "notes": notes,
             "updated_at": time.time(),
         }
@@ -578,8 +584,28 @@ class NetnodeOptimizationStorage:
             function_addr=int(function_addr),
             enabled_rules=set(row.get("enabled_rules", [])),
             disabled_rules=set(row.get("disabled_rules", [])),
+            tags=set(row.get("tags", [])),
             notes=str(row.get("notes", "")),
         )
+
+    def set_function_tags(self, function_addr: int, tags: Set[str]) -> None:
+        fkey = self._func_key(function_addr)
+        existing = self._state["function_rules"].get(fkey, {})
+        self._state["function_rules"][fkey] = {
+            "enabled_rules": sorted(existing.get("enabled_rules", [])),
+            "disabled_rules": sorted(existing.get("disabled_rules", [])),
+            "tags": sorted(str(tag).strip() for tag in tags if str(tag).strip()),
+            "notes": str(existing.get("notes", "")),
+            "updated_at": time.time(),
+        }
+        self._flush_state()
+        logger.info("Updated function tags for %x", function_addr)
+
+    def get_function_tags(self, function_addr: int) -> Set[str]:
+        row = self._state["function_rules"].get(self._func_key(function_addr))
+        if not row:
+            return set()
+        return set(row.get("tags", []))
 
     def should_run_rule(self, function_addr: int, rule_name: str) -> bool:
         config = self.get_function_rules(function_addr)
@@ -745,11 +771,19 @@ class SQLiteOptimizationStorage:
                 function_addr INTEGER PRIMARY KEY,
                 enabled_rules TEXT,   -- JSON array of rule names
                 disabled_rules TEXT,  -- JSON array of rule names
+                tags TEXT,            -- JSON array of function tags
                 notes TEXT,
                 updated_at REAL NOT NULL,
                 FOREIGN KEY (function_addr) REFERENCES functions(address)
             )
         """)
+
+        cursor.execute("PRAGMA table_info(function_rules)")
+        rule_columns = {str(row["name"]) for row in cursor.fetchall()}
+        if "tags" not in rule_columns:
+            cursor.execute(
+                "ALTER TABLE function_rules ADD COLUMN tags TEXT DEFAULT '[]'"
+            )
 
         # Results table: cached optimization results
         cursor.execute("""
@@ -998,15 +1032,18 @@ class SQLiteOptimizationStorage:
         if not self.conn:
             return
 
+        existing = self.get_function_rules(function_addr)
+        tags = set(existing.tags) if existing is not None else set()
         cursor = self.conn.cursor()
         cursor.execute("""
             INSERT OR REPLACE INTO function_rules
-            (function_addr, enabled_rules, disabled_rules, notes, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            (function_addr, enabled_rules, disabled_rules, tags, notes, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
         """, (
             function_addr,
             json.dumps(list(enabled_rules or [])),
             json.dumps(list(disabled_rules or [])),
+            json.dumps(list(tags)),
             notes,
             time.time()
         ))
@@ -1028,7 +1065,7 @@ class SQLiteOptimizationStorage:
 
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT enabled_rules, disabled_rules, notes
+            SELECT enabled_rules, disabled_rules, tags, notes
             FROM function_rules
             WHERE function_addr = ?
         """, (function_addr,))
@@ -1037,12 +1074,49 @@ class SQLiteOptimizationStorage:
         if not row:
             return None
 
+        enabled_rules = set(json.loads(row['enabled_rules'] or "[]"))
+        disabled_rules = set(json.loads(row['disabled_rules'] or "[]"))
+        tags = set(json.loads(row['tags'] or "[]"))
         return FunctionRuleConfig(
             function_addr=function_addr,
-            enabled_rules=set(json.loads(row['enabled_rules'])),
-            disabled_rules=set(json.loads(row['disabled_rules'])),
-            notes=row['notes']
+            enabled_rules=enabled_rules,
+            disabled_rules=disabled_rules,
+            tags=tags,
+            notes=row['notes'] or "",
         )
+
+    def set_function_tags(self, function_addr: int, tags: Set[str]) -> None:
+        if not self.conn:
+            return
+        existing = self.get_function_rules(function_addr)
+        enabled_rules = set(existing.enabled_rules) if existing is not None else set()
+        disabled_rules = set(existing.disabled_rules) if existing is not None else set()
+        notes = str(existing.notes) if existing is not None else ""
+        normalized_tags = {
+            str(tag).strip() for tag in tags if str(tag).strip()
+        }
+
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO function_rules
+            (function_addr, enabled_rules, disabled_rules, tags, notes, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            function_addr,
+            json.dumps(list(enabled_rules)),
+            json.dumps(list(disabled_rules)),
+            json.dumps(list(normalized_tags)),
+            notes,
+            time.time()
+        ))
+        self.conn.commit()
+        logger.info(f"Updated function tags for {function_addr:x}")
+
+    def get_function_tags(self, function_addr: int) -> Set[str]:
+        config = self.get_function_rules(function_addr)
+        if config is None:
+            return set()
+        return set(config.tags)
 
     def should_run_rule(self, function_addr: int, rule_name: str) -> bool:
         """Check if a rule should run on a function.

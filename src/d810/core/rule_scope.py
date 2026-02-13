@@ -78,6 +78,18 @@ class RuleScopeCaches:
 class FunctionRuleOverlay:
     enabled_rules: frozenset[str] = frozenset()
     disabled_rules: frozenset[str] = frozenset()
+    function_tags: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class RuleRecipeOverlay:
+    name: str
+    enabled_rules: frozenset[str] = frozenset()
+    disabled_rules: frozenset[str] = frozenset()
+    target_func_eas: frozenset[int] = frozenset()
+    target_tags_any: frozenset[str] = frozenset()
+    target_tags_all: frozenset[str] = frozenset()
+    notes: str = ""
 
 
 class FunctionRuleOverlayProvider(Protocol):
@@ -99,6 +111,7 @@ class RuleScopeService:
         self._attached = False
         self._overlay_provider: FunctionRuleOverlayProvider | None = None
         self._overlay_cache: dict[int, FunctionRuleOverlay | None] = {}
+        self._active_recipe: RuleRecipeOverlay | None = None
 
     @property
     def generation(self) -> int:
@@ -163,6 +176,9 @@ class RuleScopeService:
     ) -> None:
         self._overlay_provider = provider
         self._overlay_cache.clear()
+
+    def set_active_recipe(self, recipe: RuleRecipeOverlay | None) -> None:
+        self._active_recipe = recipe
 
     def compile_base_rules(
         self,
@@ -250,8 +266,11 @@ class RuleScopeService:
             if cached is not None:
                 return cached
 
-        tags = function_tags or frozenset()
+        tags = set(function_tags or frozenset())
         overlay = self._get_overlay(func_ea)
+        if overlay is not None:
+            tags.update(overlay.function_tags)
+        effective_tags = frozenset(tags)
         rules_by_name = compiled.by_pipeline_rule_name.get(pipeline, {})
         names = list(compiled.by_pipeline_maturity.get(pipeline, {}).get(maturity, tuple()))
         names.extend(compiled.by_pipeline_any_maturity.get(pipeline, tuple()))
@@ -265,10 +284,18 @@ class RuleScopeService:
                 continue
             if not self._overlay_allows(overlay, rule_name):
                 continue
-            if self._selector_allows(selector, func_ea=func_ea, tags=tags):
-                rule = rules_by_name.get(rule_name)
-                if rule is not None:
-                    active_for_maturity.append(rule)
+            if not self._recipe_allows(
+                recipe=self._active_recipe,
+                rule_name=rule_name,
+                func_ea=func_ea,
+                tags=effective_tags,
+            ):
+                continue
+            if not self._selector_allows(selector, func_ea=func_ea, tags=effective_tags):
+                continue
+            rule = rules_by_name.get(rule_name)
+            if rule is not None:
+                active_for_maturity.append(rule)
 
         active_tuple = tuple(active_for_maturity)
         if bundle is not None and bundle.generation == self._generation:
@@ -314,11 +341,16 @@ class RuleScopeService:
                 getattr(rule, "blacklisted_function_ea_list", [])
             )
 
+        tags_any = RuleScopeService._normalize_tag_list(getattr(rule, "tags_any", []))
+        tags_all = RuleScopeService._normalize_tag_list(getattr(rule, "tags_all", []))
+
         return RuleSelectorCompiled(
             rule_name=rule_name,
             maturities=maturities,
             allow_eas=allow_eas,
             deny_eas=deny_eas,
+            tags_any=tags_any,
+            tags_all=tags_all,
             enabled=True,
         )
 
@@ -360,5 +392,51 @@ class RuleScopeService:
         if overlay.enabled_rules and rule_name not in overlay.enabled_rules:
             return False
         if rule_name in overlay.disabled_rules:
+            return False
+        return True
+
+    @staticmethod
+    def _normalize_tag_list(values: Iterable[Any]) -> frozenset[str]:
+        normalized: set[str] = set()
+        for value in values:
+            tag = str(value).strip()
+            if tag:
+                normalized.add(tag)
+        return frozenset(normalized)
+
+    @staticmethod
+    def _recipe_targets_function(
+        recipe: RuleRecipeOverlay,
+        *,
+        func_ea: int,
+        tags: frozenset[str],
+    ) -> bool:
+        if recipe.target_func_eas and func_ea not in recipe.target_func_eas:
+            return False
+        if recipe.target_tags_any and recipe.target_tags_any.isdisjoint(tags):
+            return False
+        if recipe.target_tags_all and not recipe.target_tags_all.issubset(tags):
+            return False
+        return True
+
+    @staticmethod
+    def _recipe_allows(
+        *,
+        recipe: RuleRecipeOverlay | None,
+        rule_name: str,
+        func_ea: int,
+        tags: frozenset[str],
+    ) -> bool:
+        if recipe is None:
+            return True
+        if not RuleScopeService._recipe_targets_function(
+            recipe,
+            func_ea=func_ea,
+            tags=tags,
+        ):
+            return True
+        if recipe.enabled_rules and rule_name not in recipe.enabled_rules:
+            return False
+        if rule_name in recipe.disabled_rules:
             return False
         return True

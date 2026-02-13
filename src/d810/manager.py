@@ -23,6 +23,7 @@ from d810.core.project import ProjectContext, ProjectManager
 from d810.core.registry import EventEmitter
 from d810.core.rule_scope import (
     FunctionRuleOverlay,
+    RuleRecipeOverlay,
     RuleScopeEvent,
     RuleScopeInvalidation,
     RuleScopeService,
@@ -94,6 +95,7 @@ class D810Manager:
     event_emitter: EventEmitter = dataclasses.field(default_factory=EventEmitter)
     rule_scope_service: RuleScopeService = dataclasses.field(default_factory=RuleScopeService)
     storage: typing.Any = None
+    _active_rule_recipe: RuleRecipeOverlay | None = dataclasses.field(default=None, init=False)
     profiler: typing.Any = dataclasses.field(
         default_factory=lambda: pyinstrument.Profiler() if pyinstrument else None
     )
@@ -173,6 +175,7 @@ class D810Manager:
         self.rule_scope_service.attach(self.event_emitter)
         self._init_storage()
         self.rule_scope_service.set_overlay_provider(self._get_rule_overlay)
+        self.rule_scope_service.set_active_recipe(self._active_rule_recipe)
 
         # Instantiate core manager classes from registry
         self.instruction_optimizer = InstructionOptimizerManager(self.stats, self.log_dir)
@@ -256,6 +259,7 @@ class D810Manager:
         return FunctionRuleOverlay(
             enabled_rules=frozenset(config.enabled_rules),
             disabled_rules=frozenset(config.disabled_rules),
+            function_tags=frozenset(config.tags),
         )
 
     def get_function_rule_override(self, function_addr: int):
@@ -290,6 +294,80 @@ class D810Manager:
             func_eas=frozenset({int(function_addr)}),
             changed_rules=frozenset((enabled_rules or set()) | (disabled_rules or set())),
         )
+
+    def get_function_tags(self, function_addr: int) -> set[str]:
+        if self.storage is None:
+            self._init_storage()
+        if self.storage is None:
+            return set()
+        if not hasattr(self.storage, "get_function_tags"):
+            return set()
+        return set(self.storage.get_function_tags(function_addr))
+
+    def set_function_tags(
+        self,
+        *,
+        function_addr: int,
+        tags: typing.Optional[typing.Set[str]] = None,
+    ) -> None:
+        if self.storage is None:
+            self._init_storage()
+        if self.storage is None:
+            logger.warning("Function-rules storage unavailable; tags not persisted")
+            return
+        if not hasattr(self.storage, "set_function_tags"):
+            logger.warning("Function-rules storage does not support function tags")
+            return
+        normalized_tags = {str(tag).strip() for tag in (tags or set()) if str(tag).strip()}
+        self.storage.set_function_tags(function_addr, normalized_tags)
+        self.emit_rule_scope_invalidation(
+            RuleScopeEvent.FUNCTION_TAGS_UPDATED,
+            project_name=str(self.config.get("project_name", "")),
+            func_eas=frozenset({int(function_addr)}),
+        )
+
+    def set_active_rule_recipe(
+        self,
+        *,
+        recipe_name: str,
+        enabled_rules: typing.Optional[typing.Set[str]] = None,
+        disabled_rules: typing.Optional[typing.Set[str]] = None,
+        target_func_eas: typing.Optional[typing.Set[int]] = None,
+        target_tags_any: typing.Optional[typing.Set[str]] = None,
+        target_tags_all: typing.Optional[typing.Set[str]] = None,
+        notes: str = "",
+    ) -> None:
+        recipe = RuleRecipeOverlay(
+            name=str(recipe_name).strip() or "unnamed_recipe",
+            enabled_rules=frozenset(enabled_rules or set()),
+            disabled_rules=frozenset(disabled_rules or set()),
+            target_func_eas=frozenset(int(ea) for ea in (target_func_eas or set())),
+            target_tags_any=frozenset(
+                str(tag).strip() for tag in (target_tags_any or set()) if str(tag).strip()
+            ),
+            target_tags_all=frozenset(
+                str(tag).strip() for tag in (target_tags_all or set()) if str(tag).strip()
+            ),
+            notes=notes,
+        )
+        self._active_rule_recipe = recipe
+        self.rule_scope_service.set_active_recipe(recipe)
+        self.emit_rule_scope_invalidation(
+            RuleScopeEvent.RECIPE_APPLIED,
+            project_name=str(self.config.get("project_name", "")),
+            changed_rules=frozenset((enabled_rules or set()) | (disabled_rules or set())),
+        )
+
+    def clear_active_rule_recipe(self) -> None:
+        self._active_rule_recipe = None
+        self.rule_scope_service.set_active_recipe(None)
+        self.emit_rule_scope_invalidation(
+            RuleScopeEvent.RECIPE_CLEARED,
+            project_name=str(self.config.get("project_name", "")),
+        )
+
+    def get_active_rule_recipe(self) -> RuleRecipeOverlay | None:
+        return self._active_rule_recipe
 
     def _compile_rule_scope(self) -> None:
         self.rule_scope_service.compile_base_rules(
