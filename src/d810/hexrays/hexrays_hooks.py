@@ -359,6 +359,10 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         if new_scope != old_scope:
             self._rule_scope_func_ea = -1
             self._active_instruction_rule_names_by_maturity.clear()
+            # Invalidate compiled rule views on scope change (PR3)
+            for optimizer in self.instruction_optimizers:
+                if hasattr(optimizer, 'invalidate'):
+                    optimizer.invalidate()
 
     @staticmethod
     def _rule_name(rule: object) -> str:
