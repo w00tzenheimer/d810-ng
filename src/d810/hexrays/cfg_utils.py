@@ -755,13 +755,20 @@ def _serial_in_predset(blk: "ida_hexrays.mblock_t", serial: int) -> bool:
 
 def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
     mba = blk.mba
-    # Append the new block at the end of the MBA (before the dummy last block)
-    # instead of inserting in the middle.  Inserting in the middle shifts all
-    # block serials >= the insertion point by +1 but does NOT update operand
-    # references (m_goto .l.b, jcond .d.b, m_jtbl case targets), leading to
-    # stale serial references and segfaults in later passes.
     original_successor_serial = blk.nextb.serial
-    nop_block = mba.copy_block(blk, mba.qty - 1)
+    # For 2-way/multi-way blocks, fallthrough correctness depends on physical
+    # adjacency (blk.nextb). Insert directly after blk so the new NOP block can
+    # be the direct successor without creating detached helper blocks.
+    #
+    # For 0/1-way blocks, keep append-at-end behavior to avoid broad serial
+    # shifts in the middle of the MBA.
+    insert_after_blk = blk.nsucc() > 1
+    if insert_after_blk:
+        nop_block = mba.copy_block(blk, blk.serial)
+    else:
+        # Append the new block at the end of the MBA (before the dummy last
+        # block) to avoid serial shifts for generic rewrites.
+        nop_block = mba.copy_block(blk, mba.qty - 1)
     # Use mba.entry_ea for synthesized NOP instructions to guarantee the EA
     # is within the decompiled function's range (prevents INTERR 50863).
     safe_ea = mba.entry_ea
@@ -834,13 +841,20 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
         # 3. nop_block gets blk as predecessor
         nop_block.predset.push_back(blk.serial)
     else:
-        # For multi-way blocks we still wire nop_block -> original_successor
-        # (already done above via succset.push_back).  The original_successor
-        # gains nop_block as an additional predecessor; blk remains in its
-        # predset as well (the caller will clean this up).
+        # For multi-way blocks, re-home the direct successor edge
+        # blk -> original_successor as blk -> nop_block -> original_successor.
+        # This keeps succ/pred bidirectional consistency and avoids detached
+        # NOP blocks (preds=[]), which trigger INTERR 50856/50858.
+        blk.succset._del(original_successor_serial)
+        blk.succset.push_back(nop_block.serial)
+        blk.mark_lists_dirty()
+
+        original_successor_blk.predset._del(blk.serial)
         original_successor_blk.predset.push_back(nop_block.serial)
         if original_successor_blk.serial != mba.qty - 1:
             original_successor_blk.mark_lists_dirty()
+
+        nop_block.predset.push_back(blk.serial)
 
     # Update any m_jtbl case targets across the entire MBA that reference
     # the original successor.  When the NOP block is spliced between blk and
