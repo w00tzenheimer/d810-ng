@@ -89,6 +89,7 @@ from d810.hexrays.hexrays_formatters import (
     opcode_to_string,
 )
 from d810.hexrays.hexrays_helpers import get_mop_index, structural_mop_hash
+from d810.hexrays.mop_snapshot import MopSnapshot
 
 logger = getLogger(__name__)
 z3_file_logger = getLogger("D810.z3_test")
@@ -344,6 +345,11 @@ def z3_check_mop_equality(
 ) -> bool:
     if mop1 is None or mop2 is None:
         return False
+    # Convert MopSnapshot to mop_t at boundary
+    if isinstance(mop1, MopSnapshot):
+        mop1 = mop1.to_mop()
+    if isinstance(mop2, MopSnapshot):
+        mop2 = mop2.to_mop()
     # Validate SWIG objects before accessing their attributes
     # Invalid/freed SWIG objects will not have essential attributes
     if not hasattr(mop1, 't') or not hasattr(mop1, 'size'):
@@ -386,8 +392,8 @@ def z3_check_mop_equality(
         k1 = (int(mop1.t), int(mop1.size), structural_mop_hash(mop1, 0))
         k2 = (int(mop2.t), int(mop2.size), structural_mop_hash(mop2, 0))
     except Exception:
-        k1 = (int(mop1.t), int(mop1.size), mop1.dstr())
-        k2 = (int(mop2.t), int(mop2.size), mop2.dstr())
+        k1 = (int(mop1.t), int(mop1.size), mop1.dstr() if hasattr(mop1, 'dstr') else repr(mop1))
+        k2 = (int(mop2.t), int(mop2.size), mop2.dstr() if hasattr(mop2, 'dstr') else repr(mop2))
     if k2 < k1:
         k1, k2 = k2, k1
     cache_key = (k1, k2)
@@ -421,6 +427,11 @@ def z3_check_mop_inequality(
 ) -> bool:
     if mop1 is None or mop2 is None:
         return True
+    # Convert MopSnapshot to mop_t at boundary
+    if isinstance(mop1, MopSnapshot):
+        mop1 = mop1.to_mop()
+    if isinstance(mop2, MopSnapshot):
+        mop2 = mop2.to_mop()
     # Validate SWIG objects before accessing their attributes
     # Invalid/freed SWIG objects will not have essential attributes
     if not hasattr(mop1, 't') or not hasattr(mop1, 'size'):
@@ -462,8 +473,8 @@ def z3_check_mop_inequality(
         k1 = (int(mop1.t), int(mop1.size), structural_mop_hash(mop1, 0))
         k2 = (int(mop2.t), int(mop2.size), structural_mop_hash(mop2, 0))
     except Exception:
-        k1 = (int(mop1.t), int(mop1.size), mop1.dstr())
-        k2 = (int(mop2.t), int(mop2.size), mop2.dstr())
+        k1 = (int(mop1.t), int(mop1.size), mop1.dstr() if hasattr(mop1, 'dstr') else repr(mop1))
+        k2 = (int(mop2.t), int(mop2.size), mop2.dstr() if hasattr(mop2, 'dstr') else repr(mop2))
     if k2 < k1:
         k1, k2 = k2, k1
     if k2 < k1:
@@ -764,6 +775,9 @@ def z3_check_always_zero(
     """
     if mop is None:
         return False
+    # Convert MopSnapshot to mop_t at boundary
+    if isinstance(mop, MopSnapshot):
+        mop = mop.to_mop()
     # Validate SWIG object
     if not hasattr(mop, 't') or not hasattr(mop, 'size'):
         logger.warning("z3_check_always_zero: mop is invalid or freed SWIG object")
@@ -773,7 +787,7 @@ def z3_check_always_zero(
     try:
         cache_key = (int(mop.t), int(mop.size), structural_mop_hash(mop, 0))
     except Exception:
-        cache_key = (int(mop.t), int(mop.size), mop.dstr())
+        cache_key = (int(mop.t), int(mop.size), mop.dstr() if hasattr(mop, 'dstr') else repr(mop))
 
     cached = _Z3_ALWAYS_ZERO_CACHE.get(cache_key)
     if cached is not None:
@@ -866,6 +880,9 @@ def z3_check_always_nonzero(
     """
     if mop is None:
         return False
+    # Convert MopSnapshot to mop_t at boundary
+    if isinstance(mop, MopSnapshot):
+        mop = mop.to_mop()
     # Validate SWIG object
     if not hasattr(mop, 't') or not hasattr(mop, 'size'):
         logger.warning("z3_check_always_nonzero: mop is invalid or freed SWIG object")
@@ -875,7 +892,7 @@ def z3_check_always_nonzero(
     try:
         cache_key = (int(mop.t), int(mop.size), structural_mop_hash(mop, 0))
     except Exception:
-        cache_key = (int(mop.t), int(mop.size), mop.dstr())
+        cache_key = (int(mop.t), int(mop.size), mop.dstr() if hasattr(mop, 'dstr') else repr(mop))
 
     cached = _Z3_ALWAYS_NONZERO_CACHE.get(cache_key)
     if cached is not None:
