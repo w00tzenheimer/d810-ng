@@ -281,6 +281,20 @@ class PatternOptimizer(InstructionOptimizer):
         # incompatible instructions.
         self._allowed_root_opcodes: set[int] = set()
 
+        # PR2: Opcode-indexed storage (new storage backend)
+        self._indexed_storage = _IndexedStorage()
+
+        # PR2: Feature flag for rollback to legacy PatternStorage
+        # Default is to use the new indexed storage; users can set
+        # D810_LEGACY_STORAGE=1 to rollback if issues arise.
+        import os
+        self._use_legacy_storage = os.environ.get("D810_LEGACY_STORAGE", "0") == "1"
+
+        if self._use_legacy_storage:
+            optimizer_logger.debug("PatternOptimizer: using legacy PatternStorage (D810_LEGACY_STORAGE=1)")
+        else:
+            optimizer_logger.debug("PatternOptimizer: using OpcodeIndexedStorage")
+
         # Register verifiable rules passed at construction time.
         # These rules (from RULE_REGISTRY) implement check_pattern_and_replace
         # and pattern_candidates, bypassing the normal RULE_CLASSES check.
@@ -323,7 +337,10 @@ class PatternOptimizer(InstructionOptimizer):
                     "[PatternOptimizer] Adding pattern: %s",
                     str(pattern),
                 )
+            # PR2: Register to both storages during migration
             self.pattern_storage.add_pattern_for_rule(pattern, rule)
+            self._indexed_storage.add_pattern(pattern, rule)
+
             # Collect root opcode for quick opcode pre-filtering
             try:
                 # Use Protocol for hot-reload safety
@@ -359,7 +376,10 @@ class PatternOptimizer(InstructionOptimizer):
                     "[PatternOptimizer.add_rule] Adding pattern: %s",
                     str(pattern),
                 )
+            # PR2: Register to both storages during migration
             self.pattern_storage.add_pattern_for_rule(pattern, rule)
+            self._indexed_storage.add_pattern(pattern, rule)
+
             try:
                 # Use Protocol for hot-reload safety
                 if isinstance(pattern, AstNodeProtocol) and pattern.opcode is not None:
@@ -413,7 +433,12 @@ class PatternOptimizer(InstructionOptimizer):
         # in multiple forms (via ast_generator or equivalent) to match different
         # but mathematically equivalent input structures.
 
-        all_matches = self.pattern_storage.get_matching_rule_pattern_info(tmp)
+        # PR2: Storage backend selection based on feature flag
+        if self._use_legacy_storage:
+            all_matches = self.pattern_storage.get_matching_rule_pattern_info(tmp)
+        else:
+            all_matches = self._indexed_storage.get_candidates(tmp)
+
         match_len = len(all_matches)
         for i, rule_pattern_info in enumerate(all_matches):
             if (
