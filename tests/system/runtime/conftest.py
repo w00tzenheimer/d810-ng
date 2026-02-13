@@ -88,9 +88,9 @@ def collect_real_asts_from_mba(mba) -> list:
 # =========================================================================
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="class")
 def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_funcs):
-    """Session-scoped setup fixture for libobfuscated tests.
+    """Class-scoped setup fixture for libobfuscated tests.
 
     This fixture is shared across all runtime tests that need the libobfuscated binary.
     """
@@ -101,9 +101,9 @@ def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_fun
     return ida_database
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="class")
 def real_asts(libobfuscated_setup):
-    """Session-scoped fixture providing real AST trees from microcode.
+    """Class-scoped fixture providing real AST trees from microcode.
 
     Generates microcode from a known function in the test binary and
     converts all instructions to AST trees via minsn_to_ast().
@@ -144,7 +144,7 @@ def real_asts(libobfuscated_setup):
     pytest.skip("Could not collect enough ASTs from any test function")
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="class")
 def populated_storages(real_asts):
     """Create OpcodeIndexedStorage with patterns from real ASTs.
 
