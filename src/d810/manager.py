@@ -176,10 +176,15 @@ class D810Manager:
 
         # Instantiate core manager classes from registry
         self.instruction_optimizer = InstructionOptimizerManager(self.stats, self.log_dir)
-        self.instruction_optimizer.configure(**self.instruction_optimizer_config)
-        self.block_optimizer = BlockOptimizerManager(self.stats, self.log_dir)
         project_name = str(self.config.get("project_name", ""))
         idb_key = str(self.config.get("idb_key", project_name))
+        self.instruction_optimizer.configure(
+            **self.instruction_optimizer_config,
+            rule_scope_service=self.rule_scope_service,
+            rule_scope_project_name=project_name,
+            rule_scope_idb_key=idb_key,
+        )
+        self.block_optimizer = BlockOptimizerManager(self.stats, self.log_dir)
         self.block_optimizer.configure(
             **self.block_optimizer_config,
             rule_scope_service=self.rule_scope_service,
@@ -508,6 +513,12 @@ class D810State(metaclass=SingletonMeta):
             project_name=self.current_project.path.name,
         )
         if self.manager.started:
+            self.manager.instruction_optimizer.configure(
+                **self.manager.instruction_optimizer_config,
+                rule_scope_service=self.manager.rule_scope_service,
+                rule_scope_project_name=self.current_project.path.name,
+                rule_scope_idb_key=str(cfg.get("idb_key", self.current_project.path.name)),
+            )
             self.manager.block_optimizer.configure(
                 rule_scope_service=self.manager.rule_scope_service,
                 rule_scope_project_name=self.current_project.path.name,

@@ -10,7 +10,7 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.core.cymode import CythonMode
-from d810.core.rule_scope import PIPELINE_FLOW
+from d810.core.rule_scope import PIPELINE_FLOW, PIPELINE_INSTRUCTION
 from d810.errors import D810Exception
 from d810.expr.z3_utils import log_z3_instructions
 from d810.hexrays.cfg_utils import safe_verify
@@ -142,6 +142,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self.current_blk_serial = None
         self.generate_z3_code = False
         self.dump_intermediate_microcode = False
+        self._rule_scope_service = None
+        self._rule_scope_project_name = ""
+        self._rule_scope_idb_key = ""
+        self._rule_scope_func_ea = -1
+        self._active_instruction_rule_names_by_maturity: dict[int, frozenset[str]] = {}
 
         # Cycle detection: maps instruction EA -> set of post-rewrite hashes.
         # If a rewrite produces an instruction whose hash was already seen for
@@ -313,6 +318,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             # renumbered / restructured between maturity levels so old hashes
             # are no longer meaningful.
             self.reset_cycle_detection()
+            self._active_instruction_rule_names_by_maturity.clear()
 
             for ins_optimizer in self.instruction_optimizers:
                 ins_optimizer.cur_maturity = self.current_maturity
@@ -328,14 +334,80 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
     def configure(
         self, generate_z3_code=False, dump_intermediate_microcode=False, **kwargs
     ):
+        old_scope = (
+            self._rule_scope_service,
+            self._rule_scope_project_name,
+            self._rule_scope_idb_key,
+        )
         self.generate_z3_code = generate_z3_code
         self.dump_intermediate_microcode = dump_intermediate_microcode
+        self._rule_scope_service = kwargs.get(
+            "rule_scope_service",
+            self._rule_scope_service,
+        )
+        self._rule_scope_project_name = str(
+            kwargs.get("rule_scope_project_name", self._rule_scope_project_name)
+        )
+        self._rule_scope_idb_key = str(
+            kwargs.get("rule_scope_idb_key", self._rule_scope_idb_key)
+        )
+        new_scope = (
+            self._rule_scope_service,
+            self._rule_scope_project_name,
+            self._rule_scope_idb_key,
+        )
+        if new_scope != old_scope:
+            self._rule_scope_func_ea = -1
+            self._active_instruction_rule_names_by_maturity.clear()
+
+    @staticmethod
+    def _rule_name(rule: object) -> str:
+        return str(getattr(rule, "name", rule.__class__.__name__))
+
+    def _resolve_active_instruction_rule_names(
+        self,
+        blk: ida_hexrays.mblock_t,
+    ) -> frozenset[str] | None:
+        if self._rule_scope_service is None:
+            return None
+        if blk is None or blk.mba is None or blk.mba.entry_ea is None:
+            return frozenset()
+        if self.current_maturity is None:
+            return frozenset()
+        func_ea = int(blk.mba.entry_ea)
+        maturity = int(self.current_maturity)
+        if func_ea != self._rule_scope_func_ea:
+            self._rule_scope_func_ea = func_ea
+            self._active_instruction_rule_names_by_maturity.clear()
+        cached = self._active_instruction_rule_names_by_maturity.get(maturity)
+        if cached is not None:
+            return cached
+        active_rules = self._rule_scope_service.get_active_rules(
+            project_name=self._rule_scope_project_name,
+            idb_key=self._rule_scope_idb_key,
+            func_ea=func_ea,
+            pipeline=PIPELINE_INSTRUCTION,
+            maturity=maturity,
+        )
+        names = frozenset(self._rule_name(rule) for rule in active_rules)
+        self._active_instruction_rule_names_by_maturity[maturity] = names
+        return names
 
     def optimize(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
         # optimizer_log.info("Trying to optimize {0}".format(format_minsn_t(ins)))
+        allowed_rule_names = self._resolve_active_instruction_rule_names(blk)
         for ins_optimizer in self.instruction_optimizers:
             self._last_optimizer_tried = ins_optimizer
-            new_ins = ins_optimizer.get_optimized_instruction(blk, ins)
+            try:
+                new_ins = ins_optimizer.get_optimized_instruction(
+                    blk,
+                    ins,
+                    allowed_rule_names=allowed_rule_names,
+                )
+            except TypeError as exc:
+                if "allowed_rule_names" not in str(exc):
+                    raise
+                new_ins = ins_optimizer.get_optimized_instruction(blk, ins)
 
             if new_ins is not None:
                 if not check_ins_mop_size_are_ok(new_ins):
