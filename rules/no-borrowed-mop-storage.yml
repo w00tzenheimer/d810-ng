@@ -44,6 +44,8 @@ rule:
       - pattern: $OBJ.mop = None
       # Allow: assignments from other .mop attributes (already safe snapshots)
       - pattern: $OBJ.mop = $SRC.mop
+      # Allow: assignments from .root_mop (MatchBindings root, already safe MopSnapshot)
+      - pattern: $OBJ.mop = $SRC.root_mop
       # Allow: .to_mop() reconstruction from MopSnapshot
       - pattern: $OBJ.mop = $SNAP.to_mop()
       # Allow: ida_hexrays.mop_t() constructor (creates new owned object)
@@ -54,6 +56,8 @@ rule:
       - pattern: $OBJ.mop = cached_mop
       - pattern: $OBJ.mop = cst_mop
       - pattern: $OBJ.mop = ins_mop
+      # Allow: bare 'mop' variable (used only in test mock fallback, line 204)
+      - pattern: $OBJ.mop = mop
   # Documented exception: MatchBinding stores borrowed mop with explicit lifetime constraint
   inside:
     not:
