@@ -146,6 +146,25 @@ class TestSQLiteOptimizationStorage:
         config = storage.get_function_rules(0x999999)
         assert config is None
 
+    def test_set_and_get_function_tags(self, storage):
+        """Test per-function tag persistence."""
+        storage.set_function_tags(0x401000, {"flattened", "opaque_pred"})
+        tags = storage.get_function_tags(0x401000)
+        assert tags == {"flattened", "opaque_pred"}
+
+    def test_set_function_rules_preserves_existing_tags(self, storage):
+        """Updating rule overrides should not discard previously saved tags."""
+        storage.set_function_tags(0x401000, {"flattened"})
+        storage.set_function_rules(
+            function_addr=0x401000,
+            enabled_rules={"RuleA"},
+            disabled_rules={"RuleB"},
+            notes="keep tags",
+        )
+        config = storage.get_function_rules(0x401000)
+        assert config is not None
+        assert config.tags == {"flattened"}
+
     def test_should_run_rule_no_config(self, storage):
         """Test should_run_rule with no configuration."""
         # No config = run all rules
