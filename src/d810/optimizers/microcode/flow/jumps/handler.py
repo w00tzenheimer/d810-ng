@@ -14,7 +14,7 @@ from d810.hexrays.hexrays_formatters import (
     opcode_to_string,
     string_to_maturity,
 )
-from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
+from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRulePriority
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (
     ast_generator,
 )
@@ -202,6 +202,8 @@ class JumpOptimizationRule(Registrant):
 
 
 class JumpFixer(FlowOptimizationRule):
+    PRIORITY = FlowRulePriority.CLEANUP_JUMPS
+
     def __init__(self):
         super().__init__()
         self.known_rules = []

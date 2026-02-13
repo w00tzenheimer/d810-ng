@@ -78,8 +78,8 @@ Flow optimizers restore natural control flow from flattened dispatchers. Rule or
 | **BlockMerger** | Merges sequential blocks when safe. |
 | **JumpFixer** | Resolves opaque/constant-condition jumps (``JnzRule*``, ``JbRule1``, ``JaeRule1``, ``CompareConstantRule*``, ``JmpRuleZ3Const``). |
 | **GlobalConstantInliner** | Inlines global constants used as immediates. |
-| **indirect_call_resolver** | Resolves `m_icall` via function-pointer table analysis. |
-| **indirect_branch_resolver** | Resolves indirect branches via jump-table analysis. |
+| **IndirectCallResolver** | Resolves `m_icall` via function-pointer table analysis. |
+| **IndirectBranchResolver** | Resolves indirect branches via jump-table analysis. |
 | **FixPredecessorOfConditionalJumpBlock** | Fixes predecessor edges when jump direction is known. |
 
 ### Supported Obfuscators / Patterns

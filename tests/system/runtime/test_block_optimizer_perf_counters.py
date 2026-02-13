@@ -15,11 +15,13 @@ class _DummyRule:
         name: str,
         *,
         patches: int = 0,
+        priority: int = 100,
         whitelist: list[int] | None = None,
         blacklist: list[int] | None = None,
     ):
         self.name = name
         self.patches = patches
+        self.priority = priority
         self.current_maturity = None
         self.use_whitelist = whitelist is not None
         self.whitelisted_function_ea_list = list(whitelist or [])
@@ -126,3 +128,33 @@ def test_scoped_compare_mode_records_legacy_baseline_and_can_reset():
         "legacy_candidates_total": 0,
         "scoped_lookup_ns": 0,
     }
+
+
+def test_scoped_rules_are_executed_in_priority_order():
+    manager = BlockOptimizerManager(OptimizationStatistics(), Path("."))
+    manager.current_maturity = 1
+    low = _DummyRule("low", patches=1, priority=10)
+    high = _DummyRule("high", patches=1, priority=90)
+    scope_service = _FakeRuleScopeService((low, high))
+    manager.configure(
+        rule_scope_service=scope_service,
+        rule_scope_project_name="proj",
+        rule_scope_idb_key="idb",
+    )
+
+    assert manager.optimize(_make_block()) == 1
+    assert high.calls == 1
+    assert low.calls == 0
+
+
+def test_legacy_rules_are_executed_in_priority_order():
+    manager = BlockOptimizerManager(OptimizationStatistics(), Path("."))
+    manager.current_maturity = 1
+    low = _DummyRule("legacy_low", patches=1, priority=20)
+    high = _DummyRule("legacy_high", patches=1, priority=80)
+    manager.add_rule(low)
+    manager.add_rule(high)
+
+    assert manager.optimize(_make_block()) == 1
+    assert high.calls == 1
+    assert low.calls == 0

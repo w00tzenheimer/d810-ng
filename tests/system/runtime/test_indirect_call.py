@@ -153,7 +153,7 @@ class TestIndirectCallResolverAttributes:
         from d810.optimizers.microcode.flow.indirect_call import (
             IndirectCallResolver,
         )
-        assert IndirectCallResolver.NAME == "indirect_call_resolver"
+        assert IndirectCallResolver.NAME == "IndirectCallResolver"
 
     @pytest.mark.ida_required
     def test_description_mentions_indirect_call(self, libobfuscated_setup):

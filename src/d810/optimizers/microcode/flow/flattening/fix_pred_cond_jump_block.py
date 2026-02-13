@@ -24,7 +24,6 @@ import ida_hexrays
 from d810.core import getLogger
 from d810.core.bits import unsigned_to_signed
 from d810.hexrays.cfg_utils import (
-    duplicate_block,
     make_2way_block_goto,
     safe_verify,
     update_blk_successor,
@@ -37,6 +36,7 @@ from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
     DispatcherType,
 )
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
+from d810.optimizers.microcode.flow.handler import FlowRulePriority
 from d810.optimizers.microcode.flow.flattening.utils import get_all_possibles_values
 
 unflat_logger = getLogger("D810.unflat")
@@ -175,6 +175,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
     """
 
     DESCRIPTION = "Detect if a predecessor of a conditional block always takes the same path and patch it (works for O-LLVM style control flow flattening)"
+    PRIORITY = FlowRulePriority.PREDICATE_PREDECESSOR_FIX
     DEFAULT_UNFLATTENING_MATURITIES = [
         ida_hexrays.MMAT_CALLS,
         ida_hexrays.MMAT_GLBOPT1,
@@ -204,6 +205,14 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         rep = format_mop_t(blk.tail.l)
         self._state_var_repr_cache[blk.serial] = rep
         return rep
+
+    def _get_dispatcher_analysis(self, blk: ida_hexrays.mblock_t):
+        if self.flow_context is not None:
+            analysis = self.flow_context.ensure_dispatcher_analysis()
+            if analysis is not None:
+                return analysis
+        cache = DispatcherCache.get_or_create(blk.mba)
+        return cache.analyze()
 
     def is_jump_taken(
         self,
@@ -364,8 +373,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         # For SWITCH_TABLE (O-LLVM, Tigress switch mode):
         #   - Could potentially use dispatcher_info to resume tracking
         #   - But None also works fine (just skips the resume optimization)
-        cache = DispatcherCache.get_or_create(blk.mba)
-        analysis = cache.analyze()
+        analysis = self._get_dispatcher_analysis(blk)
 
         if analysis.dispatcher_type == DispatcherType.CONDITIONAL_CHAIN:
             if unflat_logger.isEnabledFor(10):  # DEBUG level
@@ -426,6 +434,17 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         if blk.tail is None or blk.tail.opcode not in JMP_OPCODE_HANDLED:
             return 0
         if blk.tail.r.t != ida_hexrays.mop_n:
+            return 0
+        if blk.npred() < 2:
+            # Single-predecessor conditional blocks are usually structured
+            # control flow (loop/ladder checks), not flattened dispatchers.
+            return 0
+
+        analysis = self._get_dispatcher_analysis(blk)
+        # This rule is meant for predicate chains. On switch-table dispatchers
+        # (jtbl) it tends to misclassify normal structured conditionals and can
+        # create invalid CFG rewrites.
+        if analysis.dispatcher_type == DispatcherType.SWITCH_TABLE:
             return 0
 
         # NOTE: For CONDITIONAL_CHAIN dispatchers (nested jnz/jz comparisons),
@@ -608,6 +627,38 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                 e,
             )
 
+    def _clone_conditional_block(self, cond_blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t | None:
+        """Clone a 2-way conditional block for predecessor redirection.
+
+        We intentionally avoid cfg_utils.duplicate_block() here because its
+        conditional path creates an extra default child via insert_nop_blk(),
+        and that extra structural edit can invalidate block serial/pointer
+        assumptions in this rule's hot path.
+        """
+        if cond_blk.nsucc() != 2:
+            unflat_logger.warning(
+                "Cannot clone non-2way conditional block %d (type=%d, nsucc=%d, succset=%s)",
+                cond_blk.serial,
+                cond_blk.type,
+                cond_blk.nsucc(),
+                [x for x in cond_blk.succset],
+            )
+            return None
+
+        cloned = self.mba.copy_block(cond_blk, self.mba.qty - 1)
+        cloned = self.mba.get_mblock(cloned.serial)
+        if cloned is None:
+            return None
+
+        # copy_block clones predecessor links from cond_blk. Those links do not
+        # exist in predecessor succsets, so they must be cleared for consistency.
+        for pred_serial in list(cloned.predset):
+            cloned.predset._del(pred_serial)
+
+        cloned.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+        return cloned
+
     def _apply_single_modification(
         self,
         mod: PredecessorModification,
@@ -631,6 +682,15 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             )
             return False
 
+        # Re-fetch conditional block too. Prior modifications can stale pointers.
+        cond_blk = self.mba.get_mblock(mod.cond_block_serial)
+        if cond_blk is None:
+            unflat_logger.warning(
+                "Conditional block %d not found for modification %s",
+                mod.cond_block_serial, mod.description
+            )
+            return False
+
         if unflat_logger.isEnabledFor(10):  # DEBUG level
             unflat_logger.debug(
                 "Applying modification: %s (pred %d -> cond %d -> target %d)",
@@ -640,57 +700,33 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
 
         try:
             new_jmp_block = None
-            orphaned_nop = None
-            # Duplicate the conditional block.
-            # For conditional blocks, duplicate_block creates a NOP fallthrough
-            # block (orphaned_nop) that serves as the default successor of the
-            # duplicate.  Since we immediately convert the duplicate to a 1-way
-            # goto, the NOP block becomes orphaned and must be cleaned up.
-            new_jmp_block, orphaned_nop = duplicate_block(cond_blk, verify=False)
+            new_jmp_block = self._clone_conditional_block(cond_blk)
+            if new_jmp_block is None:
+                unflat_logger.warning(
+                    "Failed to clone conditional block %d for modification %s",
+                    mod.cond_block_serial,
+                    mod.description
+                )
+                self._critical_apply_failure = True
+                return False
 
             # Convert 2-way block to 1-way goto pointing to target.
-            # make_2way_block_goto removes new_jmp_block.serial from all its
-            # old successors' predsets (including orphaned_nop), but does NOT
-            # remove orphaned_nop.serial from ITS successor's predset.
             if not make_2way_block_goto(new_jmp_block, mod.target_serial, verify=False):
                 unflat_logger.warning(
-                    "Failed to convert block %d to goto %d",
-                    new_jmp_block.serial, mod.target_serial
+                    "Failed to convert block %d to goto %d "
+                    "(type=%d, nsucc=%d, succset=%s, nextb=%s)",
+                    new_jmp_block.serial,
+                    mod.target_serial,
+                    new_jmp_block.type,
+                    new_jmp_block.nsucc(),
+                    [x for x in new_jmp_block.succset],
+                    new_jmp_block.nextb.serial if new_jmp_block.nextb is not None else None,
                 )
                 self._critical_apply_failure = True
                 # Conversion failed after duplication; aggressively clean up the
                 # newly created blocks to avoid CFG growth across retries.
-                self._orphan_block(orphaned_nop, "make_2way_block_goto failure (orphaned_nop)")
                 self._orphan_block(new_jmp_block, "make_2way_block_goto failure (new_jmp_block)")
                 return False
-
-            # Clean up the orphaned NOP block: remove stale edges so it does
-            # not corrupt successor predsets in later passes.
-            if orphaned_nop is not None:
-                mba = self.mba
-                # Remove orphaned_nop from each of its successors' predsets
-                for succ_serial in list(orphaned_nop.succset):
-                    succ_blk = mba.get_mblock(succ_serial)
-                    succ_blk.predset._del(orphaned_nop.serial)
-                    if succ_blk.serial != mba.qty - 1:
-                        succ_blk.mark_lists_dirty()
-                    orphaned_nop.succset._del(succ_serial)
-                # Clear any remaining predset entries
-                for pred_serial in list(orphaned_nop.predset):
-                    orphaned_nop.predset._del(pred_serial)
-                # Convert to a dead empty block with no successors
-                orphaned_nop.type = ida_hexrays.BLT_0WAY
-                if orphaned_nop.tail is not None:
-                    orphaned_nop.make_nop(orphaned_nop.tail)
-                orphaned_nop.flags &= ~ida_hexrays.MBL_GOTO
-                orphaned_nop.mark_lists_dirty()
-
-                if unflat_logger.isEnabledFor(10):  # DEBUG level
-                    unflat_logger.debug(
-                        "Cleaned up orphaned NOP block %d after converting "
-                        "duplicate %d to goto",
-                        orphaned_nop.serial, new_jmp_block.serial
-                    )
 
             # Update predecessor to point to new block instead of original conditional block
             if not update_blk_successor(pred_blk, mod.cond_block_serial, new_jmp_block.serial, verify=False):
@@ -790,6 +826,16 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
 
         if self.cur_maturity not in self.maturities:
             return False
+
+        if self.flow_context is not None:
+            gate = self.flow_context.evaluate_fix_predecessor_gate()
+            if not gate.allowed:
+                unflat_logger.debug(
+                    "Skipping %s via flow context gate: %s",
+                    self.__class__.__name__,
+                    gate.reason,
+                )
+                return False
 
         if self.DEFAULT_MAX_PASSES is not None and self.cur_maturity_pass >= self.DEFAULT_MAX_PASSES:
             return False
