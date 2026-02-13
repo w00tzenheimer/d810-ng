@@ -20,6 +20,7 @@ try:
     from d810.qt_shim import (
         QDialog,
         QLabel,
+        QLineEdit,
         QPushButton,
         QTextEdit,
         QVBoxLayout,
@@ -89,6 +90,19 @@ def _build_override_sets(
     return selected, set()
 
 
+def _parse_tags_csv(text: str) -> set[str]:
+    tags: set[str] = set()
+    for raw in text.split(","):
+        tag = raw.strip()
+        if tag:
+            tags.add(tag)
+    return tags
+
+
+def _format_tags_csv(tags: typing.Iterable[str]) -> str:
+    return ", ".join(sorted(str(tag).strip() for tag in tags if str(tag).strip()))
+
+
 class FunctionRulesDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc]
     def __init__(
         self,
@@ -97,6 +111,7 @@ class FunctionRulesDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[
         func_ea: int,
         available_rules: list[typing.Any],
         initial_enabled_rule_names: set[str],
+        initial_tags: set[str],
         initial_notes: str,
         parent: typing.Any = None,
     ) -> None:
@@ -122,6 +137,11 @@ class FunctionRulesDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[
         self._rule_tree.set_read_only(False)
         self._rule_tree.rule_toggled.connect(self._on_rule_toggled)
         layout.addWidget(self._rule_tree)
+
+        layout.addWidget(QLabel("Function Tags (comma-separated):"))
+        self._tags_edit = QLineEdit(self)
+        self._tags_edit.setText(_format_tags_csv(initial_tags))
+        layout.addWidget(self._tags_edit)
 
         layout.addWidget(QLabel("Notes:"))
         self._notes_edit = QTextEdit(self)
@@ -152,6 +172,9 @@ class FunctionRulesDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[
 
     def notes_text(self) -> str:
         return str(self._notes_edit.toPlainText()).strip()
+
+    def tags_set(self) -> set[str]:
+        return _parse_tags_csv(str(self._tags_edit.text()))
 
     def _on_enable_all(self) -> None:
         self._rule_tree.set_enabled_rules(set(self._all_rule_names))
@@ -217,6 +240,11 @@ class FunctionRules(D810ActionHandler):
         override = None
         if hasattr(manager, "get_function_rule_override"):
             override = manager.get_function_rule_override(func_ea)
+        initial_tags: set[str] = set()
+        if override is not None:
+            initial_tags = set(getattr(override, "tags", set()))
+        elif hasattr(manager, "get_function_tags"):
+            initial_tags = set(manager.get_function_tags(func_ea))
 
         all_rule_names = {
             str(getattr(rule, "name", "")) for rule in available_rules if getattr(rule, "name", "")
@@ -229,6 +257,7 @@ class FunctionRules(D810ActionHandler):
             func_ea=func_ea,
             available_rules=available_rules,
             initial_enabled_rule_names=initial_enabled,
+            initial_tags=initial_tags,
             initial_notes=initial_notes,
         )
         if dialog.exec() != QDialog.Accepted:
@@ -236,6 +265,7 @@ class FunctionRules(D810ActionHandler):
 
         enabled_names = dialog.selected_rule_names()
         enabled_rules, disabled_rules = _build_override_sets(all_rule_names, enabled_names)
+        tags = dialog.tags_set()
         notes = dialog.notes_text()
 
         def _apply_override() -> None:
@@ -245,6 +275,11 @@ class FunctionRules(D810ActionHandler):
                 disabled_rules=disabled_rules,
                 notes=notes,
             )
+            if hasattr(manager, "set_function_tags"):
+                manager.set_function_tags(
+                    function_addr=func_ea,
+                    tags=tags,
+                )
             if vdui is not None:
                 vdui.refresh_view(True)
             ida_kernwin_mod.msg(
