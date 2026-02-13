@@ -10,7 +10,7 @@ import base64
 import gzip
 import textwrap
 
-from d810.testing import BinaryOverride, DeobfuscationCase
+from d810.testing import DeobfuscationCase
 
 
 def _decode_expected(encoded: str) -> str:
