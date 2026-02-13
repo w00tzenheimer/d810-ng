@@ -767,7 +767,10 @@ def _configure_hexrays():
 def _setup_libobfuscated_function_names():
     """Set up function names for libobfuscated binaries.
 
-    For .dll (Windows PE): Uses hardcoded address map.
+    For .dll (Windows PE): Function names come from PE exports via --export-all-symbols.
+        IDA auto-detects these, so we don't need hardcoded addresses. The hardcoded
+        address map was stale (6+ new C source files added since it was created) and
+        would create phantom functions at wrong addresses.
     For .dylib/.so (macOS/Linux): Function names come from exports, just verify they exist.
     """
     # Check which binary type we have
@@ -775,31 +778,23 @@ def _setup_libobfuscated_function_names():
     is_pe = root_filename.endswith(".dll")
 
     if is_pe:
-        # Windows PE - use hardcoded addresses
-        function_map = {
-            "constant_folding_test1": 0x180001000,
-            "constant_folding_test2": 0x1800015C0,
-            "outlined_helper_1": 0x1800016A0,
-            "outlined_helper_2": 0x1800016D0,
-            "AntiDebug_ExceptionFilter": 0x180001710,
-            "test_chained_add": 0x180006630,
-            "test_cst_simplification": 0x180006680,
-            "test_opaque_predicate": 0x180006780,
-            "test_xor": 0x180006920,
-            "test_mba_guessing": 0x1800069A0,
-            "test_function_ollvm_fla_bcf_sub": 0x180006B40,
-            "tigress_minmaxarray": 0x180009490,
-            "unwrap_loops": 0x180009730,
-            "unwrap_loops_2": 0x1800097E0,
-            "unwrap_loops_3": 0x1800098C0,
-            "while_switch_flattened": 0x1800099F0,
-            "NtCurrentTeb": 0x180009B30,
-        }
-        for name, addr in function_map.items():
-            idc.set_name(addr, name, idc.SN_NOWARN | idc.SN_NOCHECK)
-            if not idc.get_func_attr(addr, idc.FUNCATTR_START):
-                idc.create_insn(addr)
-                idaapi.add_func(addr)
+        # Windows PE - IDA auto-detects function names from PE exports
+        # (MinGW build uses --export-all-symbols)
+        # No hardcoded address map needed - trust IDA's auto-detection
+        expected_functions = [
+            "test_chained_add",
+            "test_cst_simplification",
+            "test_opaque_predicate",
+            "test_xor",
+            "test_mba_guessing",
+            "test_and",
+            "test_or",
+            "test_neg",
+        ]
+        for name in expected_functions:
+            ea = idc.get_name_ea_simple(name)
+            if ea != idaapi.BADADDR:
+                logger.debug(f"Found function {name} at 0x{ea:x}")
     else:
         # macOS dylib / Linux so - IDA auto-detects function names from exports
         # Just verify the expected functions exist
