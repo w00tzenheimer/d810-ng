@@ -571,7 +571,9 @@ inline int64 abs64(int64 x) { return x >= 0 ? x : -x; }
 
 #define _UNKNOWN char
 
-#ifdef _MSC_VER
+// Legacy MSVC (pre-2015) lacked C99 snprintf/vsnprintf. Modern MSVC/UCRT
+// provides these declarations and redefining them causes header conflicts.
+#if defined(_MSC_VER) && (_MSC_VER < 1900)
 #define snprintf _snprintf
 #define vsnprintf _vsnprintf
 #endif

@@ -12,6 +12,7 @@
  */
 
 #include "polyfill.h"
+#include "platform.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -33,7 +34,7 @@ void *resolve_api(const char *func_name)
     return (void *)GetProcAddress(hWinHttp, func_name);
 }
 
-int _hodur_func()
+EXPORT int _hodur_func()
 {
     // State variables for the flattened control flow
     // Using specific constants observed in the "Issue 1/2" images

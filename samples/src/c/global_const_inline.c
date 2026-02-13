@@ -11,13 +11,14 @@
  * - XOR decrypt pattern with const key + const encrypted data
  * - Multi-size const loads (byte, word, dword, qword)
  * - State machine transition table lookups
+ * - RVA-like constant guard (must NOT become MEMORY[0x...])
  *
  * Target optimizer: fold_readonlydata / global constant propagation
  *
  * Compiled with: -O0 -g -fno-inline -fno-builtin
  */
 
-#include "export.h"
+#include "platform.h"
 #include <stdint.h>
 
 /* Prevent dead-code elimination */
@@ -65,6 +66,13 @@ static const int STATE_TABLE[6][2] = {
     { 2, 0 },  /* state 4 */
     { 0, 3 },  /* state 5 (accepting) */
 };
+
+/* RVA-guard constants:
+ * - SAFE_INLINE_CONST should be inlined by GlobalConstantInliner.
+ * - RVA_LIKE_OFFSET must NOT be inlined as a raw address-like immediate. */
+static const uint64_t SAFE_INLINE_CONST = 0x1122334455667788ULL;
+static const uint64_t RVA_LIKE_OFFSET = 0x2000ULL;
+volatile uint8_t g_rva_guard_sink = 0;
 
 /* ============================================================================
  * Function 1: Simple const array lookup
@@ -163,4 +171,28 @@ int global_const_state_table(int initial_state)
 
     g_const_inline_sink = steps;
     return steps;
+}
+
+/* ============================================================================
+ * Function 5: RVA-like value guard
+ *
+ * This function mixes two constant global loads:
+ * - a normal numeric constant (safe to inline)
+ * - an RVA-like offset that can become imagebase-relative
+ *
+ * Regression target:
+ * - GlobalConstantInliner should inline SAFE_INLINE_CONST.
+ * - GlobalConstantInliner should NOT inline RVA_LIKE_OFFSET into
+ *   a raw MEMORY[0x...] expression.
+ * ============================================================================ */
+EXPORT __attribute__((noinline))
+uint64_t global_const_rva_guard(void)
+{
+    uint64_t safe = *(const volatile uint64_t *)&SAFE_INLINE_CONST;
+    uint64_t rva_like = *(const volatile uint64_t *)&RVA_LIKE_OFFSET;
+    uintptr_t target = 0x180000000ULL + (uintptr_t)rva_like;
+    uint8_t loaded = *(const volatile uint8_t *)target;
+
+    g_rva_guard_sink = loaded;
+    return safe ^ (uint64_t)loaded;
 }

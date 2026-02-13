@@ -24,7 +24,7 @@
  */
 
 #include "polyfill.h"
-#include "export.h"
+#include "platform.h"
 
 /* Opaque constant table - volatile to prevent compile-time folding.
  * Values from real binary dword_7FFC1ECA872C..dword_7FFC1ECA874C. */

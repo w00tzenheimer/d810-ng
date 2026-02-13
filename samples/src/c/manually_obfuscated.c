@@ -1,4 +1,4 @@
-#include "export.h"
+#include "platform.h"
 
 EXPORT int test_chained_add(int *a) {
   return (((a[0] + 23) + a[2]) -

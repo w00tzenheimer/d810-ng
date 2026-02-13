@@ -1,0 +1,4 @@
+FROM alpine:3.20
+RUN apk add --no-cache clang lld make musl-dev gcc binutils file
+WORKDIR /work
+CMD ["make", "TARGET_OS=linux"]

@@ -29,28 +29,7 @@ from ._chexrays cimport (
     _swig_ptr,
 )
 
-# Import IDA constants for the Python API
-# Wrapped in try/except to allow unit tests without IDA
-try:
-    import ida_hexrays
-    IDA_AVAILABLE = True
-except ImportError:
-    # For unit tests or non-IDA environments
-    # Define dummy constants so code structure remains valid
-    class _DummyIDA:
-        mop_n = 1
-        mop_r = 2
-        mop_S = 3
-        mop_v = 4
-        mop_l = 5
-        mop_b = 6
-        mop_h = 7
-        mop_str = 8
-        @staticmethod
-        def mop_t():
-            raise RuntimeError("IDA not available")
-    ida_hexrays = _DummyIDA()  # type: ignore
-    IDA_AVAILABLE = False
+import ida_hexrays
 
 
 # === Duck-typing layer: proxy classes for sub-object access ===

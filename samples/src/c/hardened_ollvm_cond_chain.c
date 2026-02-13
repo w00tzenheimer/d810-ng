@@ -20,7 +20,7 @@
  */
 
 #include "polyfill.h"
-#include "export.h"
+#include "platform.h"
 
 /* Opaque constant table - values chosen to produce specific state transitions
  * when plugged into the expressions below. Volatile to prevent compile-time
@@ -249,7 +249,7 @@ LABEL_x47990:
                         }
                         if ( i == 0x5DA0D7Fu ) {
                             va_copy(v5, va);
-                            stub_sub_7FFC1EB17C30(0x40, a1, 0x40, (unsigned int)(unsigned __int64)va, MultiByteStr);
+                            stub_sub_7FFC1EB17C30(0x40, a1, 0x40, (unsigned int)(unsigned __int64)&va, MultiByteStr);
                             _R8 = stub_sub_7FFC1EC16C50((__int64)MultiByteStr);
                             stub_RtlAcquireSRWLockExclusive_w(0x3C, 0x5D, (__int64)&unk_7FFC1ECB1A00);
                             i = (unsigned int)(((dword_7FFC1ECAEC7C ^ 0xB3279F74) - 0x663AEF03) ^ ((dword_7FFC1ECAEC7C ^ 0xB3279F74) - 0x518A1119) ^ dword_7FFC1ECAEC7C ^ (0xBA91B165 - (dword_7FFC1ECAEC7C ^ 0xB3279F74)));

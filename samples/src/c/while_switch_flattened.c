@@ -1,9 +1,10 @@
 #include "polyfill.h"
+#include "platform.h"
 
 const uint64 qword_1802D2C33 = 0x736006A871C63D9ALL;
 
 // Does not fold ok
-uint64 while_switch_flattened(void)
+EXPORT uint64 while_switch_flattened(void)
 {
     int v2 = 0;
     int rval = 0x272BCB9A;
