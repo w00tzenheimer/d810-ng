@@ -368,7 +368,13 @@ class PatternOptimizer(InstructionOptimizer):
                 pass
         return True
 
-    def get_optimized_instruction(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> ida_hexrays.minsn_t | None:
+    def get_optimized_instruction(
+        self,
+        blk: ida_hexrays.mblock_t,
+        ins: ida_hexrays.minsn_t,
+        *,
+        allowed_rule_names: frozenset[str] | None = None,
+    ) -> ida_hexrays.minsn_t | None:
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
         if self.cur_maturity not in self.maturities:
@@ -410,6 +416,11 @@ class PatternOptimizer(InstructionOptimizer):
         all_matches = self.pattern_storage.get_matching_rule_pattern_info(tmp)
         match_len = len(all_matches)
         for i, rule_pattern_info in enumerate(all_matches):
+            if (
+                allowed_rule_names is not None
+                and rule_pattern_info.rule.name not in allowed_rule_names
+            ):
+                continue
             if optimizer_logger.debug_on:
                 optimizer_logger.debug(
                     "[PatternOptimizer.get_optimized_instruction] %s/%s rule_pattern_info: %s",

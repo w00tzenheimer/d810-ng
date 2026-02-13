@@ -185,7 +185,11 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         return True
 
     def get_optimized_instruction(
-        self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t
+        self,
+        blk: ida_hexrays.mblock_t,
+        ins: ida_hexrays.minsn_t,
+        *,
+        allowed_rule_names: frozenset[str] | None = None,
     ) -> ida_hexrays.minsn_t | None:
         # Fast opcode gate for chain rules to avoid work on unrelated instructions
         # Only applies to optimizers whose rules expose a "TARGET_OPCODES" set.
@@ -205,6 +209,8 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         # if self.cur_maturity not in self.maturities:
         #     return None
         for rule in self.rules:
+            if allowed_rule_names is not None and rule.name not in allowed_rule_names:
+                continue
             if self.cur_maturity not in rule.maturities:
                 continue
             try:

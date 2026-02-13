@@ -82,7 +82,17 @@ class Z3Optimizer(InstructionOptimizer):
             pass
         return True
 
-    def get_optimized_instruction(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t):  # type: ignore[override]
+    def get_optimized_instruction(
+        self,
+        blk: ida_hexrays.mblock_t,
+        ins: ida_hexrays.minsn_t,
+        *,
+        allowed_rule_names: frozenset[str] | None = None,
+    ):  # type: ignore[override]
         # The opcode pre-filter is now handled by clearing _allowed_root_opcodes
         # when a patternless rule is added, which also disables the base class filter.
-        return super().get_optimized_instruction(blk, ins)
+        return super().get_optimized_instruction(
+            blk,
+            ins,
+            allowed_rule_names=allowed_rule_names,
+        )

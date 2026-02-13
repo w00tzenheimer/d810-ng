@@ -438,7 +438,13 @@ class PatternOptimizer2(InstructionOptimizer):  # type: ignore[misc]
         self.rules.append(rule)
         return True
 
-    def get_optimized_instruction(self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t) -> ida_hexrays.minsn_t | None:  # type: ignore[override]
+    def get_optimized_instruction(
+        self,
+        blk: ida_hexrays.mblock_t | None,
+        ins: ida_hexrays.minsn_t,
+        *,
+        allowed_rule_names: frozenset[str] | None = None,
+    ) -> ida_hexrays.minsn_t | None:  # type: ignore[override]
         # Respect the current maturity as in the original implementation
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
@@ -463,6 +469,8 @@ class PatternOptimizer2(InstructionOptimizer):  # type: ignore[misc]
         canonical_candidate = canonicalize_ast(tmp_ast)
         # Try each rule in order
         for rule in self.rules:
+            if allowed_rule_names is not None and rule.name not in allowed_rule_names:
+                continue
             canonical_pattern = rule.canonical_pattern
             mapping: dict[str, AstBase] = {}
             # Attempt to match the canonical pattern against the canonical candidate

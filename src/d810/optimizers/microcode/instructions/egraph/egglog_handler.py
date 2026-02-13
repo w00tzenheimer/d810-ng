@@ -138,6 +138,8 @@ class EgglogOptimizer(InstructionOptimizer):
         self,
         blk: ida_hexrays.mblock_t,
         ins: ida_hexrays.minsn_t,
+        *,
+        allowed_rule_names: frozenset[str] | None = None,
     ) -> ida_hexrays.minsn_t | None:
         """Try to optimize an instruction using egglog equality saturation.
 
