@@ -110,6 +110,10 @@ class RuleTreeWidget(QtWidgets.QWidget):
         self._tree.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self._tree)
 
+        # Enable custom context menu
+        self._tree.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._on_context_menu)
+
     # --- Public API ---------------------------------------------------------
 
     def set_rules(
@@ -418,3 +422,61 @@ class RuleTreeWidget(QtWidgets.QWidget):
                 optimizer_parent.setText(0, f"{opt_name} ({opt_enabled}/{opt_total} enabled)")
 
         self.rule_toggled.emit(rule, is_checked)
+
+    def _on_context_menu(self, pos: QtCore.QPoint) -> None:
+        """Show context menu for category items with Select All/Deselect All."""
+        if self._read_only:
+            return  # No context menu in read-only mode
+
+        item = self._tree.itemAt(pos)
+        if item is None:
+            return
+
+        # Check if this is a category/optimizer item (has children but no rule data)
+        is_category = (
+            item.childCount() > 0 and
+            item.data(0, RULE_DATA_ROLE) is None
+        )
+
+        if not is_category:
+            return  # Only show menu for category/optimizer items
+
+        # Create context menu
+        menu = QtWidgets.QMenu(self._tree)
+
+        select_all_action = menu.addAction("Select All")
+        select_all_action.triggered.connect(
+            lambda: self._set_category_check_state(item, QtCore.Qt.CheckState.Checked)
+        )
+
+        deselect_all_action = menu.addAction("Deselect All")
+        deselect_all_action.triggered.connect(
+            lambda: self._set_category_check_state(item, QtCore.Qt.CheckState.Unchecked)
+        )
+
+        # Show menu at global position
+        menu.exec_(self._tree.viewport().mapToGlobal(pos))
+
+    def _set_category_check_state(
+        self,
+        parent_item: QtWidgets.QTreeWidgetItem,
+        state: QtCore.Qt.CheckState,
+    ) -> None:
+        """Recursively set check state for all rule items under a category.
+
+        Parameters
+        ----------
+        parent_item:
+            The category or optimizer item.
+        state:
+            The check state to apply (Checked or Unchecked).
+        """
+        for i in range(parent_item.childCount()):
+            child = parent_item.child(i)
+
+            # If this child has RULE_DATA_ROLE, it's a rule leaf item
+            if child.data(0, RULE_DATA_ROLE) is not None:
+                child.setCheckState(0, state)
+            # If this child has children, it's a subcategory - recurse
+            elif child.childCount() > 0:
+                self._set_category_check_state(child, state)
