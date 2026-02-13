@@ -718,6 +718,20 @@ class IDAPatternAdapter:
         new_instruction = self.get_replacement(candidate_pattern)
         return new_instruction
 
+    def check_candidate(self, candidate) -> bool:
+        """Public interface for nomut matching path constraint checking.
+
+        This method is called by the nomut hot path in handler.py when
+        D810_NOMUT_MATCHING=1. It delegates to _check_candidate().
+
+        Args:
+            candidate: An AstNode or BindingsProxy that matched the pattern
+
+        Returns:
+            True if all constraints are satisfied, False otherwise
+        """
+        return self._check_candidate(candidate)
+
     # ==========================================================================
     # Internal constraint checking (delegates to rule)
     # ==========================================================================
