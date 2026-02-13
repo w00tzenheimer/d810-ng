@@ -2,8 +2,8 @@
 
 IDA's mop_t wraps a C++ pointer that Hex-Rays may recycle after
 micro-optimisations.  Accessing a recycled mop_t causes SIGSEGV.
-MopSnapshot extracts all needed fields into pure Python, making it
-safe to cache, hash, and compare without risk of use-after-free.
+MopSnapshot extracts scalar fields and, for complex operand kinds,
+keeps an owned mop_t clone so reconstruction remains accurate.
 
 This module uses Cython acceleration when available, falling back to
 pure Python implementation otherwise.
@@ -11,7 +11,7 @@ pure Python implementation otherwise.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import NewType, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -53,8 +53,8 @@ if not _CYTHON_AVAILABLE:
         """Immutable, pure-Python snapshot of an ida_hexrays.mop_t.
 
         Use ``MopSnapshot.from_mop(mop)`` to capture values from a live
-        (possibly borrowed) mop_t.  The snapshot holds no C++ pointers and
-        is safe to cache indefinitely.
+        (possibly borrowed) mop_t. For complex operand kinds we retain an
+        owned clone to allow faithful reconstruction.
 
         >>> snap = MopSnapshot.from_mop(some_mop)
         >>> snap.t        # operand type (mop_n, mop_r, etc.)
@@ -76,17 +76,38 @@ if not _CYTHON_AVAILABLE:
         const_str: str | None = None    # mop_str: cstr
         pair_lo_t: int | None = None    # mop_p: pair.lop.t
         pair_hi_t: int | None = None    # mop_p: pair.hop.t
+        # Owned clone for operand types that cannot be rebuilt from scalar fields.
+        # Excluded from dataclass equality/hash to keep structural semantics stable.
+        owned_mop: object | None = field(default=None, compare=False, hash=False, repr=False)
 
         @classmethod
         def from_mop(cls, mop: ida_hexrays.mop_t) -> MopSnapshot:
             """Create a snapshot from a live mop_t.
 
-            Extracts all Python-native values in a single pass, then
-            discards the C++ reference.  Safe to call on both owned
-            and borrowed mops.
+            Extracts scalar Python-native values in a single pass and, for
+            non-scalar operands, keeps an owned mop_t clone. Safe to call on
+            both owned and borrowed mops.
             """
             t = mop.t
             base: dict = dict(t=t, size=mop.size, valnum=getattr(mop, "valnum", 0))
+            needs_owned_clone = t in {
+                ida_hexrays.mop_d,    # nested instruction
+                ida_hexrays.mop_f,    # argument list
+                ida_hexrays.mop_a,    # address operand
+                ida_hexrays.mop_c,    # switch cases
+                ida_hexrays.mop_p,    # pair
+                ida_hexrays.mop_S,    # stack var (requires mba_t to synthesize)
+                ida_hexrays.mop_l,    # local var (requires mba_t to synthesize)
+                ida_hexrays.mop_str,  # string literal
+            }
+            if needs_owned_clone:
+                try:
+                    owned = ida_hexrays.mop_t()
+                    owned.assign(mop)
+                    base["owned_mop"] = owned
+                except Exception:
+                    # Keep scalar snapshot usable even if clone fails.
+                    pass
 
             if t == ida_hexrays.mop_n:
                 nnn = mop.nnn
@@ -161,12 +182,30 @@ if not _CYTHON_AVAILABLE:
             and safe to pass to assign() or other IDA APIs.
             """
             m = ida_hexrays.mop_t()
+            # Prefer the owned clone when available. This preserves complex
+            # operands (e.g., mop_d) and stack/local refs exactly.
+            if self.owned_mop is not None:
+                try:
+                    m.assign(self.owned_mop)
+                    return m
+                except Exception:
+                    logger.warning(
+                        "to_mop: failed to assign owned_mop for type %s, falling back",
+                        self.t,
+                    )
             if self.t == ida_hexrays.mop_n and self.value is not None:
                 m.make_number(self.value, self.size)
             elif self.t == ida_hexrays.mop_r and self.reg is not None:
                 m.make_reg(self.reg, self.size)
             elif self.t == ida_hexrays.mop_S and self.stkoff is not None:
-                m.make_stkvar(self.stkoff, self.size)
+                # Old IDA builds exposed make_stkvar(off, size). Newer builds
+                # require mba_t; without it we cannot synthesize mop_S safely.
+                try:
+                    m.make_stkvar(self.stkoff, self.size)
+                except TypeError:
+                    logger.warning(
+                        "to_mop: Cannot reconstruct mop_S without mba_t, returning empty mop"
+                    )
             elif self.t == ida_hexrays.mop_v and self.gaddr is not None:
                 m.make_global(self.gaddr, self.size)
             elif self.t == ida_hexrays.mop_l and self.lvar_idx is not None:

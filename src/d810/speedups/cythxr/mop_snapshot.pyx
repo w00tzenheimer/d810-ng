@@ -4,6 +4,8 @@
 
 This module provides a Cython implementation of MopSnapshot that reads
 mop_t fields directly from C++ structs, bypassing SWIG overhead.
+For complex operands, it also keeps an owned mop_t clone for faithful
+reconstruction.
 
 Usage:
     from d810.speedups.cythxr.mop_snapshot import MopSnapshot
@@ -58,6 +60,7 @@ cdef class MopSnapshot:
     cdef readonly object const_str    # str | None - mop_str: cstr
     cdef readonly object pair_lo_t    # int | None - mop_p: pair.lop.t
     cdef readonly object pair_hi_t    # int | None - mop_p: pair.hop.t
+    cdef readonly object owned_mop    # ida_hexrays.mop_t | None - owned clone for complex types
 
     # Precomputed hash for fast __hash__ calls
     cdef int _hash_value
@@ -67,7 +70,7 @@ cdef class MopSnapshot:
                  value=None, reg=None, stkoff=None, gaddr=None,
                  lvar_idx=None, lvar_off=None, block_num=None,
                  helper_name=None, const_str=None,
-                 pair_lo_t=None, pair_hi_t=None):
+                 pair_lo_t=None, pair_hi_t=None, owned_mop=None):
         """Initialize a MopSnapshot with field values.
 
         Normally you should use MopSnapshot.from_mop() instead of calling
@@ -87,6 +90,7 @@ cdef class MopSnapshot:
         self.const_str = const_str
         self.pair_lo_t = pair_lo_t
         self.pair_hi_t = pair_hi_t
+        self.owned_mop = owned_mop
         self._hash_computed = False
         self._hash_value = 0
 
@@ -121,6 +125,17 @@ cdef class MopSnapshot:
         cdef object const_str = None
         cdef object pair_lo_t = None
         cdef object pair_hi_t = None
+        cdef object owned_mop = None
+        cdef bint needs_owned_clone = (
+            t == MOPT.DEST_RESULT or   # mop_d
+            t == MOPT.ARGUMENT_LIST or # mop_f
+            t == MOPT.ADDRESS or       # mop_a
+            t == MOPT.CASES or         # mop_c
+            t == MOPT.PAIR or          # mop_p
+            t == MOPT.STACK or         # mop_S
+            t == MOPT.LOCAL or         # mop_l
+            t == MOPT.STRING           # mop_str
+        )
 
         cdef mnumber_t* nnn
         cdef lvar_ref_t* lvar
@@ -167,12 +182,19 @@ cdef class MopSnapshot:
                 pair_hi_t = <int>pair.hop.t
         # For other types (mop_d, mop_f, mop_a, mop_z, mop_c), we don't extract fields
 
+        if needs_owned_clone:
+            try:
+                owned_mop = ida_hexrays.mop_t()
+                owned_mop.assign(py_mop)
+            except Exception:
+                owned_mop = None
+
         return MopSnapshot(
             t=t, size=sz, valnum=vnum,
             value=value, reg=reg, stkoff=stkoff, gaddr=gaddr,
             lvar_idx=lvar_idx, lvar_off=lvar_off, block_num=block_num,
             helper_name=helper_name, const_str=const_str,
-            pair_lo_t=pair_lo_t, pair_hi_t=pair_hi_t,
+            pair_lo_t=pair_lo_t, pair_hi_t=pair_hi_t, owned_mop=owned_mop,
         )
 
     @property
@@ -212,12 +234,21 @@ cdef class MopSnapshot:
             A new ida_hexrays.mop_t object
         """
         m = ida_hexrays.mop_t()
+        if self.owned_mop is not None:
+            try:
+                m.assign(self.owned_mop)
+                return m
+            except Exception:
+                pass
         if self.t == ida_hexrays.mop_n and self.value is not None:
             m.make_number(self.value, self.size)
         elif self.t == ida_hexrays.mop_r and self.reg is not None:
             m.make_reg(self.reg, self.size)
         elif self.t == ida_hexrays.mop_S and self.stkoff is not None:
-            m.make_stkvar(self.stkoff, self.size)
+            try:
+                m.make_stkvar(self.stkoff, self.size)
+            except TypeError:
+                pass
         elif self.t == ida_hexrays.mop_v and self.gaddr is not None:
             m.make_global(self.gaddr, self.size)
         elif self.t == ida_hexrays.mop_l and self.lvar_idx is not None:

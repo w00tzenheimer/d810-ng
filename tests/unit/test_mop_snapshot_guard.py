@@ -3,10 +3,44 @@ from d810.hexrays.mop_snapshot import MopSnapshot
 
 
 def test_mop_snapshot_has_all_fields():
-    """MopSnapshot must have all 14 dataclass fields."""
-    assert len(MopSnapshot.__dataclass_fields__) >= 14, (
-        f"MopSnapshot has only {len(MopSnapshot.__dataclass_fields__)} fields, expected 14. "
-        "Check indentation in mop_snapshot.py — fields may have fallen outside class body."
+    """MopSnapshot must expose expected field surface across backends."""
+    # Compatibility hack:
+    # MopSnapshot is either:
+    # - pure Python @dataclass (has __dataclass_fields__), or
+    # - Cython extension class (no dataclass internals).
+    # Import order can select either backend in a given process.
+    expected_fields = (
+        "t",
+        "size",
+        "valnum",
+        "value",
+        "reg",
+        "stkoff",
+        "gaddr",
+        "lvar_idx",
+        "lvar_off",
+        "block_num",
+        "helper_name",
+        "const_str",
+        "pair_lo_t",
+        "pair_hi_t",
+    )
+
+    dataclass_fields = getattr(MopSnapshot, "__dataclass_fields__", None)
+    if dataclass_fields is not None:
+        # Pure Python backend: keep original indentation-regression guard.
+        assert len(dataclass_fields) >= len(expected_fields), (
+            f"MopSnapshot has only {len(dataclass_fields)} fields, expected >= {len(expected_fields)}. "
+            "Check indentation in mop_snapshot.py — fields may have fallen outside class body."
+        )
+        return
+
+    # Cython backend: validate equivalent public field surface.
+    snap = MopSnapshot(t=0, size=0)
+    missing = [name for name in expected_fields if not hasattr(snap, name)]
+    assert not missing, (
+        f"MopSnapshot (Cython backend) missing fields: {missing}. "
+        "Keep Cython MopSnapshot aligned with pure-Python MopSnapshot fields."
     )
 
 
