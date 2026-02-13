@@ -687,6 +687,9 @@ class DeferredGraphModifier:
         self,
         run_optimize_local: bool = True,
         run_deep_cleaning: bool = False,
+        verify_each_mod: bool = False,
+        rollback_on_verify_failure: bool = False,
+        continue_on_verify_failure: bool = False,
     ) -> int:
         """
         Apply all queued modifications in priority order.
@@ -694,6 +697,14 @@ class DeferredGraphModifier:
         Args:
             run_optimize_local: If True, call mba.optimize_local(0) after changes
             run_deep_cleaning: If True, run mba_deep_cleaning after changes
+            verify_each_mod: If True, run safe_verify() after each successful
+                modification and abort immediately on first verify failure.
+            rollback_on_verify_failure: If True and incremental verify fails,
+                attempt to roll back that single modification (best effort for
+                reversible modification types).
+            continue_on_verify_failure: If True, and rollback succeeds plus
+                verify passes after rollback, skip the bad modification and
+                continue applying later queued modifications.
 
         Returns:
             Number of successful modifications applied.
@@ -733,11 +744,16 @@ class DeferredGraphModifier:
 
         successful = 0
         failed = 0
+        rolled_back = 0
 
         for i, mod in enumerate(sorted_mods):
             blk = self.mba.get_mblock(mod.block_serial)
             logger.info("--- Applying [%d]: %s ---", i, mod.description)
             logger.info("    BEFORE: %s", _format_block_info(blk))
+
+            rollback_plan = None
+            if verify_each_mod and rollback_on_verify_failure:
+                rollback_plan = self._prepare_rollback(mod)
 
             try:
                 result = self._apply_single(mod)
@@ -746,6 +762,71 @@ class DeferredGraphModifier:
                 logger.info("    AFTER:  %s", _format_block_info(blk_after))
 
                 if result:
+                    # Optional incremental verification mode: fail fast on the
+                    # first bad mutation instead of discovering corruption only
+                    # after a large deferred batch is applied.
+                    if verify_each_mod:
+                        try:
+                            safe_verify(
+                                self.mba,
+                                f"after deferred modification [{i}] {mod.description}",
+                                logger_func=logger.error,
+                            )
+                        except RuntimeError:
+                            failed += 1
+                            logger.warning("    RESULT: VERIFY FAILED")
+                            rolled_back_ok = False
+
+                            if rollback_plan is not None:
+                                rb_desc, rb_func = rollback_plan
+                                logger.warning(
+                                    "Attempting rollback for modification [%d]: %s",
+                                    i,
+                                    rb_desc,
+                                )
+                                try:
+                                    if rb_func():
+                                        safe_verify(
+                                            self.mba,
+                                            (
+                                                "after rollback of deferred "
+                                                f"modification [{i}] {mod.description}"
+                                            ),
+                                            logger_func=logger.error,
+                                        )
+                                        rolled_back_ok = True
+                                except RuntimeError:
+                                    rolled_back_ok = False
+                                except Exception as rb_exc:
+                                    logger.error(
+                                        "Rollback raised exception for modification [%d]: %s",
+                                        i,
+                                        rb_exc,
+                                        exc_info=True,
+                                    )
+                                    rolled_back_ok = False
+
+                            if rolled_back_ok:
+                                rolled_back += 1
+                                logger.warning(
+                                    "    RESULT: ROLLED BACK (modification skipped)"
+                                )
+                                if continue_on_verify_failure:
+                                    logger.warning(
+                                        "Continuing after rolled-back deferred "
+                                        "modification [%d]",
+                                        i,
+                                    )
+                                    continue
+
+                            self.verify_failed = True
+                            logger.warning(
+                                "Aborting deferred apply after verify failure at "
+                                "modification [%d]",
+                                i,
+                            )
+                            break
+
                     successful += 1
                     logger.info("    RESULT: SUCCESS")
                 else:
@@ -767,14 +848,23 @@ class DeferredGraphModifier:
                 break
 
         logger.info(
-            "Applied %d/%d modifications (%d failed)",
-            successful, len(sorted_mods), failed
+            "Applied %d/%d modifications (%d failed, %d rolled back)",
+            successful, len(sorted_mods), failed, rolled_back
         )
 
         # Mark chains dirty and run optimizations
         if successful > 0:
             self.mba.mark_chains_dirty()
 
+        if self.verify_failed:
+            logger.warning(
+                "Skipping post-apply cleanup because incremental verify has "
+                "already failed; caller must treat MBA as suspect"
+            )
+            self._applied = True
+            return successful
+
+        if successful > 0:
             if run_deep_cleaning:
                 mba_deep_cleaning(self.mba, call_mba_combine_block=True)
             elif run_optimize_local:
@@ -821,6 +911,51 @@ class DeferredGraphModifier:
 
         self._applied = True
         return successful
+
+    def _prepare_rollback(self, mod: GraphModification) -> tuple[str, callable] | None:
+        """Prepare a best-effort rollback closure for reversible modifications.
+
+        Rollback support is intentionally limited to edge-rewrite operations that
+        can be restored with existing CFG helpers without introducing new blocks.
+        """
+        blk = self.mba.get_mblock(mod.block_serial)
+        if blk is None:
+            return None
+
+        if mod.mod_type == ModificationType.BLOCK_GOTO_CHANGE:
+            if blk.nsucc() != 1:
+                return None
+            old_target = blk.succset[0]
+            block_serial = blk.serial
+
+            def _rollback_goto() -> bool:
+                cur_blk = self.mba.get_mblock(block_serial)
+                if cur_blk is None:
+                    return False
+                return change_1way_block_successor(cur_blk, old_target, verify=False)
+
+            return (f"restore goto {block_serial} -> {old_target}", _rollback_goto)
+
+        if mod.mod_type == ModificationType.BLOCK_TARGET_CHANGE:
+            if blk.tail is None or not hasattr(blk.tail, "d"):
+                return None
+            old_target = blk.tail.d.b
+            block_serial = blk.serial
+
+            def _rollback_target() -> bool:
+                cur_blk = self.mba.get_mblock(block_serial)
+                if cur_blk is None:
+                    return False
+                return change_2way_block_conditional_successor(
+                    cur_blk, old_target, verify=False
+                )
+
+            return (
+                f"restore conditional target {block_serial} -> {old_target}",
+                _rollback_target,
+            )
+
+        return None
 
     def _apply_single(self, mod: GraphModification) -> bool:
         """Apply a single modification. Returns True on success."""

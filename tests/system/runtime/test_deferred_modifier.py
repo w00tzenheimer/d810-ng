@@ -174,3 +174,105 @@ def test_apply_attempts_verify_recovery(monkeypatch):
     assert verify_calls["n"] == 2
     assert mba.cleaned == 1
     assert modifier.verify_failed is False
+
+
+def test_apply_rolls_back_failed_mod_and_continues(monkeypatch):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE,
+            block_serial=0,
+            new_target=1,
+            description="first",
+        ),
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE,
+            block_serial=1,
+            new_target=2,
+            description="second",
+        ),
+    ]
+
+    apply_calls = {"count": 0}
+    rollback_calls = {"count": 0}
+    verify_calls = {"count": 0}
+
+    def _apply_single(_mod):
+        apply_calls["count"] += 1
+        return True
+
+    def _prepare_rollback(mod):
+        if mod.description != "first":
+            return None
+
+        def _rb():
+            rollback_calls["count"] += 1
+            return True
+
+        return ("restore first", _rb)
+
+    def _safe_verify(*_args, **_kwargs):
+        verify_calls["count"] += 1
+        # First verification (after first apply) fails, rollback verify passes,
+        # and second modification verify passes.
+        if verify_calls["count"] == 1:
+            raise RuntimeError("verify failed")
+
+    monkeypatch.setattr(modifier, "_apply_single", _apply_single)
+    monkeypatch.setattr(modifier, "_prepare_rollback", _prepare_rollback)
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "safe_verify", _safe_verify)
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+
+    applied = modifier.apply(
+        run_optimize_local=False,
+        run_deep_cleaning=False,
+        verify_each_mod=True,
+        rollback_on_verify_failure=True,
+        continue_on_verify_failure=True,
+    )
+
+    assert applied == 1
+    assert apply_calls["count"] == 2
+    assert rollback_calls["count"] == 1
+    assert verify_calls["count"] == 4
+    assert modifier.verify_failed is False
+
+
+def test_apply_sets_verify_failed_if_rollback_cannot_recover(monkeypatch):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE,
+            block_serial=0,
+            new_target=1,
+            description="bad",
+        ),
+    ]
+
+    monkeypatch.setattr(modifier, "_apply_single", lambda _mod: True)
+    monkeypatch.setattr(
+        modifier,
+        "_prepare_rollback",
+        lambda _mod: ("restore bad", lambda: False),
+    )
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+
+    def _always_fail_verify(*_args, **_kwargs):
+        raise RuntimeError("verify failed")
+
+    monkeypatch.setattr(dm, "safe_verify", _always_fail_verify)
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+
+    applied = modifier.apply(
+        run_optimize_local=False,
+        run_deep_cleaning=False,
+        verify_each_mod=True,
+        rollback_on_verify_failure=True,
+        continue_on_verify_failure=True,
+    )
+
+    assert applied == 0
+    assert modifier.verify_failed is True

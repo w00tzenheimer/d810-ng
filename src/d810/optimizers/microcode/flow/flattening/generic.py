@@ -506,10 +506,10 @@ class GenericUnflatteningRule(FlowOptimizationRule):
 
     CATEGORY = "OLLVM Unflattening"
 
-    # Practical maturities - MMAT_GLBOPT3 is rarely/never called by Hex-Rays
-    # MMAT_GLBOPT2 is the latest practical maturity level
+    # Practical maturities - MMAT_GLBOPT3 is rarely/never called by Hex-Rays.
+    # Keep unflattening out of MMAT_CALLS by default because large CFG rewrite
+    # batches at that maturity are the most crash-prone in practice.
     DEFAULT_UNFLATTENING_MATURITIES = [
-        ida_hexrays.MMAT_CALLS,
         ida_hexrays.MMAT_GLBOPT1,
         ida_hexrays.MMAT_GLBOPT2,
     ]
@@ -579,7 +579,14 @@ class GenericUnflatteningRule(FlowOptimizationRule):
 
         modifier = DeferredGraphModifier(self.mba)
         modifier.modifications = pending
-        applied = modifier.apply(run_optimize_local=True, run_deep_cleaning=False)
+        is_calls_maturity = self.mba.maturity == ida_hexrays.MMAT_CALLS
+        applied = modifier.apply(
+            run_optimize_local=True,
+            run_deep_cleaning=False,
+            verify_each_mod=is_calls_maturity,
+            rollback_on_verify_failure=is_calls_maturity,
+            continue_on_verify_failure=is_calls_maturity,
+        )
 
         self.events.emit(
             UnflatteningEvent.MODIFICATIONS_APPLIED,
@@ -1734,7 +1741,13 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 "Applying %d deferred CFG modifications from resolve_dispatcher_father",
                 len(deferred_modifier.modifications),
             )
-            deferred_modifier.apply(run_optimize_local=False, run_deep_cleaning=False)
+            deferred_modifier.apply(
+                run_optimize_local=False,
+                run_deep_cleaning=False,
+                verify_each_mod=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
+                rollback_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
+                continue_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
+            )
 
             if deferred_modifier.verify_failed:
                 self._verify_failed = True
