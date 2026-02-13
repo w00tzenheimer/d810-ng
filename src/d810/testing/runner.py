@@ -33,6 +33,41 @@ from .assertions import (
     assert_rules_fired,
 )
 from .cases import DeobfuscationCase
+from d810.core.config import ProjectConfiguration
+
+
+def _resolve_test_project_index(state: Any, project_name: str) -> int:
+    """Resolve project index deterministically for system tests.
+
+    When a project with the same filename exists in ``~/.idapro/cfg/d810``,
+    D810 intentionally lets the user override bundled templates. That is
+    desirable at runtime, but it makes tests non-deterministic across machines.
+
+    For the DSL/system runner, prefer bundled ``src/d810/conf/<project_name>``
+    when available so CI/local use the same rule sets.
+    """
+    bundled_path = Path(__file__).resolve().parents[1] / "conf" / project_name
+    if not bundled_path.exists():
+        return state.project_manager.index(project_name)
+
+    bundled_project = ProjectConfiguration.from_file(bundled_path)
+    try:
+        current_project = state.project_manager.get(project_name)
+    except KeyError:
+        state.project_manager.add(bundled_project)
+        return state.project_manager.index(project_name)
+
+    try:
+        current_path = Path(current_project.path).resolve()
+        bundled_resolved = bundled_path.resolve()
+    except Exception:
+        current_path = Path(current_project.path)
+        bundled_resolved = bundled_path
+
+    if current_path != bundled_resolved:
+        state.project_manager.update(project_name, bundled_project)
+
+    return state.project_manager.index(project_name)
 
 
 def get_func_ea(name: str) -> int:
@@ -121,8 +156,8 @@ def run_deobfuscation_test(
     with d810_state() as state:
         # Configure project if specified
         if effective_case.project:
-            # Load the project by name - get index and load
-            project_index = state.project_manager.index(effective_case.project)
+            # Load the project by name using deterministic test resolution.
+            project_index = _resolve_test_project_index(state, effective_case.project)
             state.load_project(project_index)
 
         # ==========================================
