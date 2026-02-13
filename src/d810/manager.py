@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from d810.core.config import D810Configuration, ProjectConfiguration
 from d810.core.logging import clear_logs, configure_loggers, getLogger
 from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
-from d810.core.persistence import create_optimization_storage
+from d810.core.persistence import ActiveRuleRecipeConfig, create_optimization_storage
 from d810.core.platform import resolve_arch_config
 from d810.core.project import ProjectContext, ProjectManager
 from d810.core.registry import EventEmitter
@@ -237,6 +237,7 @@ class D810Manager:
                 backend,
                 target,
             )
+            self._load_active_recipe_from_storage()
             self.emit_rule_scope_invalidation(
                 RuleScopeEvent.IDB_OVERLAY_RELOADED,
                 project_name=str(self.config.get("project_name", "")),
@@ -248,6 +249,38 @@ class D810Manager:
                 RuleScopeEvent.IDB_OVERLAY_RELOADED,
                 project_name=str(self.config.get("project_name", "")),
             )
+
+    def _load_active_recipe_from_storage(self) -> None:
+        storage = self.storage
+        if storage is None or not hasattr(storage, "get_active_rule_recipe"):
+            self._active_rule_recipe = None
+            self.rule_scope_service.set_active_recipe(None)
+            return
+        persisted = storage.get_active_rule_recipe()
+        if persisted is None:
+            self._active_rule_recipe = None
+            self.rule_scope_service.set_active_recipe(None)
+            return
+        recipe = RuleRecipeOverlay(
+            name=str(persisted.name).strip() or "unnamed_recipe",
+            enabled_rules=frozenset(str(rule) for rule in persisted.enabled_rules),
+            disabled_rules=frozenset(str(rule) for rule in persisted.disabled_rules),
+            target_func_eas=frozenset(int(ea) for ea in persisted.target_func_eas),
+            target_tags_any=frozenset(
+                str(tag).strip() for tag in persisted.target_tags_any if str(tag).strip()
+            ),
+            target_tags_all=frozenset(
+                str(tag).strip() for tag in persisted.target_tags_all if str(tag).strip()
+            ),
+            notes=str(persisted.notes),
+        )
+        self._active_rule_recipe = recipe
+        self.rule_scope_service.set_active_recipe(recipe)
+        self.emit_rule_scope_invalidation(
+            RuleScopeEvent.RECIPE_APPLIED,
+            project_name=str(self.config.get("project_name", "")),
+            changed_rules=frozenset(recipe.enabled_rules | recipe.disabled_rules),
+        )
 
     def _get_rule_overlay(self, function_ea: int) -> FunctionRuleOverlay | None:
         storage = self.storage
@@ -337,6 +370,8 @@ class D810Manager:
         target_tags_all: typing.Optional[typing.Set[str]] = None,
         notes: str = "",
     ) -> None:
+        if self.storage is None:
+            self._init_storage()
         recipe = RuleRecipeOverlay(
             name=str(recipe_name).strip() or "unnamed_recipe",
             enabled_rules=frozenset(enabled_rules or set()),
@@ -352,6 +387,18 @@ class D810Manager:
         )
         self._active_rule_recipe = recipe
         self.rule_scope_service.set_active_recipe(recipe)
+        if self.storage is not None and hasattr(self.storage, "set_active_rule_recipe"):
+            self.storage.set_active_rule_recipe(
+                ActiveRuleRecipeConfig(
+                    name=recipe.name,
+                    enabled_rules=set(recipe.enabled_rules),
+                    disabled_rules=set(recipe.disabled_rules),
+                    target_func_eas=set(recipe.target_func_eas),
+                    target_tags_any=set(recipe.target_tags_any),
+                    target_tags_all=set(recipe.target_tags_all),
+                    notes=recipe.notes,
+                )
+            )
         self.emit_rule_scope_invalidation(
             RuleScopeEvent.RECIPE_APPLIED,
             project_name=str(self.config.get("project_name", "")),
@@ -359,8 +406,12 @@ class D810Manager:
         )
 
     def clear_active_rule_recipe(self) -> None:
+        if self.storage is None:
+            self._init_storage()
         self._active_rule_recipe = None
         self.rule_scope_service.set_active_recipe(None)
+        if self.storage is not None and hasattr(self.storage, "clear_active_rule_recipe"):
+            self.storage.clear_active_rule_recipe()
         self.emit_rule_scope_invalidation(
             RuleScopeEvent.RECIPE_CLEARED,
             project_name=str(self.config.get("project_name", "")),
