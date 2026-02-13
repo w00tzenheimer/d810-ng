@@ -134,7 +134,7 @@ class IndirectBranchResolver(_BASE_CLASS):
         Size of each table entry in bytes (default ``8``).
     """
 
-    NAME = "indirect_branch_resolver"
+    NAME = "IndirectBranchResolver"
     DESCRIPTION = "Resolves obfuscated indirect jumps by analysing encoded jump tables"
     CATEGORY = "Indirect Jumps"
     USES_DEFERRED_CFG = True  # Uses DeferredGraphModifier for CFG changes

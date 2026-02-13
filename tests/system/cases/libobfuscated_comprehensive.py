@@ -473,8 +473,10 @@ DISPATCHER_PATTERN_CASES = [
     DeobfuscationCase(
         function="predecessor_uniformity_pattern",
         description="PREDECESSOR_UNIFORM detection pattern",
-        project="example_libobfuscated.json",
-        must_change=True,
+        project="default_instruction_only.json",
+        # This pattern intentionally compiles to a structured switch/while form;
+        # deobfuscation should stay safe and not force a rewrite.
+        must_change=False,
     ),
     DeobfuscationCase(
         function="test_all_patterns",

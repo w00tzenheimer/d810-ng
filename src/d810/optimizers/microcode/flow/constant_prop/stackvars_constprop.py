@@ -26,7 +26,7 @@ from d810.hexrays.cfg_utils import (
 from d810.hexrays.hexrays_formatters import maturity_to_string
 from d810.hexrays.hexrays_helpers import AND_TABLE
 from d810.optimizers.microcode.handler import ConfigParam
-from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
+from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRulePriority
 
 logger = getLogger(__name__)
 
@@ -37,6 +37,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
     """Forward constant propagation for stack variables (whole function)."""
 
     CATEGORY = "Constant Propagation"
+    PRIORITY = FlowRulePriority.PREPARE_CONSTANTS
     CONFIG_SCHEMA = FlowOptimizationRule.CONFIG_SCHEMA + (
         ConfigParam("cython_enabled", bool, False, "Use Cython fast path for propagation"),
     )

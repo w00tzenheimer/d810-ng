@@ -139,7 +139,7 @@ class IndirectCallResolver(_BASE_CLASS):
         Size of each table entry in bytes (default ``8``).
     """
 
-    NAME = "indirect_call_resolver"
+    NAME = "IndirectCallResolver"
     DESCRIPTION = "Resolves obfuscated indirect calls by analysing encoded call tables"
     CATEGORY = "Indirect Calls"
     # IndirectCallResolver only modifies instruction content (opcodes and

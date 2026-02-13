@@ -81,7 +81,7 @@ from d810.optimizers.microcode.flow.flattening.loop_prover import (
     prove_single_iteration,
 )
 from d810.optimizers.microcode.handler import ConfigParam
-from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
+from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRulePriority
 
 
 class UnflatteningEvent:
@@ -505,6 +505,8 @@ class GenericDispatcherCollector(ida_hexrays.minsn_visitor_t):
 class GenericUnflatteningRule(FlowOptimizationRule):
 
     CATEGORY = "OLLVM Unflattening"
+    PRIORITY = FlowRulePriority.UNFLATTEN
+    REQUIRES_DISPATCHER_ANALYSIS = True
 
     # Practical maturities - MMAT_GLBOPT3 is rarely/never called by Hex-Rays.
     # Keep unflattening out of MMAT_CALLS by default because large CFG rewrite
@@ -726,6 +728,15 @@ class GenericUnflatteningRule(FlowOptimizationRule):
             self.cur_maturity_pass = 0
         if self.cur_maturity not in self.maturities:
             return False
+        if self.flow_context is not None:
+            gate = self.flow_context.evaluate_unflattening_gate()
+            if not gate.allowed:
+                unflat_logger.debug(
+                    "Skipping %s via flow context gate: %s",
+                    self.__class__.__name__,
+                    gate.reason,
+                )
+                return False
         return True
 
     @abc.abstractmethod
@@ -1683,6 +1694,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             ]
             previous_block_count = self.mba.qty
             for dispatcher_father in dispatcher_father_list:
+                if dispatcher_father is None:
+                    continue
 
                 try:
                     total_nb_change += self.ensure_dispatcher_father_is_resolvable(
@@ -1719,6 +1732,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             ]
             nb_flattened_branches = 0
             for dispatcher_father in dispatcher_father_list:
+                if dispatcher_father is None:
+                    continue
                 try:
                     nb_flattened_branches += self.resolve_dispatcher_father(
                         dispatcher_father, dispatcher_info, deferred_modifier

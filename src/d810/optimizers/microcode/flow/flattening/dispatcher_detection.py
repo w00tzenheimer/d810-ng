@@ -34,6 +34,9 @@ from typing import TYPE_CHECKING
 import ida_hexrays
 
 from d810.core import getLogger
+from d810.optimizers.microcode.flow.analysis_stats import (
+    summarize_dispatcher_detection,
+)
 
 # Optional emulation support
 try:
@@ -334,32 +337,12 @@ class DispatcherCache:
         """
         analysis = self.analyze()
 
-        strategies_used: dict[str, int] = {}
-        for strategy in DispatcherStrategy:
-            if strategy == DispatcherStrategy.NONE:
-                continue
-            count = sum(
-                1 for info in analysis.blocks.values()
-                if strategy in info.strategies
-            )
-            if count > 0:
-                strategies_used[strategy.name] = count
-
-        skip_rate = (
-            self.blocks_skipped / self.blocks_analyzed
-            if self.blocks_analyzed > 0 else 0.0
+        return summarize_dispatcher_detection(
+            analysis=analysis,
+            blocks_analyzed=self.blocks_analyzed,
+            blocks_skipped=self.blocks_skipped,
+            strategies=DispatcherStrategy,
         )
-
-        return {
-            "blocks_analyzed": self.blocks_analyzed,
-            "blocks_with_strategies": len(analysis.blocks),
-            "blocks_skipped": self.blocks_skipped,
-            "skip_rate": skip_rate,
-            "dispatchers_found": len(analysis.dispatchers),
-            "strategies_used": strategies_used,
-            "dispatcher_type": analysis.dispatcher_type.name,
-            "state_constants_count": len(analysis.state_constants),
-        }
 
     def validate_with_emulation(
         self,

@@ -150,7 +150,7 @@ class TestIndirectBranchResolverAttributes:
         from d810.optimizers.microcode.flow.indirect_branch import (
             IndirectBranchResolver,
         )
-        assert IndirectBranchResolver.NAME == "indirect_branch_resolver"
+        assert IndirectBranchResolver.NAME == "IndirectBranchResolver"
 
     @pytest.mark.ida_required
     def test_description_mentions_indirect(self, libobfuscated_setup):

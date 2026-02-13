@@ -79,6 +79,7 @@ try:
 except ImportError:
     EGGLOG_AVAILABLE = False
 from d810.hexrays.ctree_hooks import CtreeOptimizerManager
+from d810.optimizers.microcode.flow.context import FlowMaturityContext
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizationRule,
@@ -516,6 +517,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
 
         self.current_maturity = None
         self._pass_count = 0
+        self._flow_context: FlowMaturityContext | None = None
+        self._flow_context_key: tuple[int, int] | None = None
         # usage tracking moved to centralized statistics object
 
     def reset_pass_counter(self) -> None:
@@ -524,6 +527,12 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         Called when maturity changes so the guard does not carry over.
         """
         self._pass_count = 0
+
+    def _invalidate_flow_context(self, reason: str = "") -> None:
+        if self._flow_context is not None and reason:
+            optimizer_logger.debug("Invalidating flow context: %s", reason)
+        self._flow_context = None
+        self._flow_context_key = None
 
     def reset_perf_counters(self) -> None:
         for key in self._perf_counters:
@@ -603,6 +612,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
 
             self.current_maturity = mba.maturity
             self.reset_pass_counter()
+            self._invalidate_flow_context("maturity changed")
 
     # statistics are managed centrally via the stats object
 
@@ -633,9 +643,70 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 count += 1
         return count
 
+    @staticmethod
+    def _rule_priority(cfg_rule: FlowOptimizationRule) -> int:
+        raw_priority = getattr(cfg_rule, "priority", getattr(cfg_rule, "PRIORITY", 100))
+        try:
+            return int(raw_priority)
+        except (TypeError, ValueError):
+            return 100
+
+    def _order_rules_for_execution(
+        self, rules: tuple[FlowOptimizationRule, ...]
+    ) -> tuple[FlowOptimizationRule, ...]:
+        # Higher priority values run first. Name is a deterministic tiebreaker.
+        return tuple(
+            sorted(
+                rules,
+                key=lambda rule: (-self._rule_priority(rule), str(rule.name)),
+            )
+        )
+
+    def _group_rules_by_priority(
+        self, rules: tuple[FlowOptimizationRule, ...]
+    ) -> tuple[tuple[int, tuple[FlowOptimizationRule, ...]], ...]:
+        grouped: dict[int, list[FlowOptimizationRule]] = defaultdict(list)
+        for rule in rules:
+            grouped[self._rule_priority(rule)].append(rule)
+        return tuple(
+            (priority, tuple(grouped[priority]))
+            for priority in sorted(grouped.keys(), reverse=True)
+        )
+
+    def _get_or_create_flow_context(
+        self,
+        blk: ida_hexrays.mblock_t,
+        *,
+        phase_priority: int,
+        phase_index: int,
+        phase_rules: tuple[FlowOptimizationRule, ...],
+    ) -> FlowMaturityContext | None:
+        mba = blk.mba
+        if mba is None or mba.entry_ea is None or self.current_maturity is None:
+            return None
+        key = (int(mba.entry_ea), int(self.current_maturity))
+        if self._flow_context is None or self._flow_context_key != key:
+            self._flow_context = FlowMaturityContext(
+                mba=mba,
+                func_ea=int(mba.entry_ea),
+                maturity=int(self.current_maturity),
+            )
+            self._flow_context_key = key
+        else:
+            self._flow_context.refresh_mba(mba)
+        self._flow_context.set_phase(
+            priority=phase_priority,
+            phase_index=phase_index,
+            active_rule_names=tuple(str(rule.name) for rule in phase_rules),
+        )
+        self._flow_context.prime_for_rules(phase_rules)
+        return self._flow_context
+
     def optimize(self, blk: ida_hexrays.mblock_t):
         active_rules = self._resolve_active_rules(blk)
         rules = active_rules if active_rules is not None else tuple(self.cfg_rules)
+        rules = self._order_rules_for_execution(rules)
+        phases = self._group_rules_by_priority(rules)
         func_ea = int(blk.mba.entry_ea) if (blk.mba is not None and blk.mba.entry_ea is not None) else 0
 
         if active_rules is not None:
@@ -650,23 +721,36 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             else:
                 self._perf_counters["legacy_candidates_total"] += len(rules)
 
-        for cfg_rule in rules:
-            cfg_rule.current_maturity = self.current_maturity
-            guard = blk.mba is not None and blk.mba.entry_ea is not None
-            if active_rules is None:
-                guard &= self.check_if_rule_is_activated_for_address(
-                    cfg_rule, blk.mba.entry_ea
-                )
-            if guard:
-                nb_patch = cfg_rule.optimize(blk)
-                if nb_patch > 0:
-                    optimizer_logger.info(
-                        "Rule {0} matched: {1} patches".format(cfg_rule.name, nb_patch)
+        for phase_index, (phase_priority, phase_rules) in enumerate(phases, start=1):
+            flow_context = self._get_or_create_flow_context(
+                blk,
+                phase_priority=phase_priority,
+                phase_index=phase_index,
+                phase_rules=phase_rules,
+            )
+            for cfg_rule in phase_rules:
+                cfg_rule.current_maturity = self.current_maturity
+                if hasattr(cfg_rule, "set_flow_context"):
+                    cfg_rule.set_flow_context(flow_context)
+                guard = blk.mba is not None and blk.mba.entry_ea is not None
+                if active_rules is None:
+                    guard &= self.check_if_rule_is_activated_for_address(
+                        cfg_rule, blk.mba.entry_ea
                     )
-                    if self.stats is not None:
-                        self.stats.record_cfg_rule_patches(cfg_rule.name, nb_patch)
-
-                    return nb_patch
+                if guard:
+                    nb_patch = cfg_rule.optimize(blk)
+                    if nb_patch > 0:
+                        optimizer_logger.info(
+                            "Rule {0} matched: {1} patches".format(cfg_rule.name, nb_patch)
+                        )
+                        if self.stats is not None:
+                            self.stats.record_cfg_rule_patches(cfg_rule.name, nb_patch)
+                        # Rebuild analysis context after any CFG write so lower
+                        # priorities see fresh facts on the next callback pass.
+                        self._invalidate_flow_context(
+                            f"{cfg_rule.name} applied {nb_patch} patch(es)"
+                        )
+                        return nb_patch
         return 0
 
     def add_rule(self, cfg_rule: FlowOptimizationRule):
