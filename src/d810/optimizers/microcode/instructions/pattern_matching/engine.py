@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Always import Python data containers (no perf benefit from Cython for these)
 from d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups import (
+    BindingsProxy,
     PatternFingerprint,
     RulePatternEntry,
     compute_fingerprint,
@@ -74,6 +75,7 @@ def get_engine_info() -> dict:
 # the dispatcher; handler.py continues using legacy PatternStorage.
 
 __all__ = [
+    "BindingsProxy",
     "OpcodeIndexedStorage",
     "match_pattern_nomut",
     "MatchBindings",
