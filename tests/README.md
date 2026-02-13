@@ -82,3 +82,18 @@ pytest tests/system/runtime/ -v --tb=short --forked
 # E2E tests only
 pytest tests/system/e2e/ -v --tb=short --forked
 ```
+
+## Backend-Aware Guard Note
+
+- `tests/unit/test_mop_snapshot_guard.py` is intentionally backend-aware.
+- `d810.hexrays.mop_snapshot.MopSnapshot` can resolve to either:
+  - pure Python dataclass implementation, or
+  - Cython extension implementation.
+- Import order in a process can affect which implementation is loaded first.
+- The guard test checks dataclass internals when the Python backend is active, and
+  checks equivalent public field surface when the Cython backend is active.
+- If you need deterministic pure-Python behavior for debugging this test:
+
+```bash
+D810_NO_CYTHON=1 PYTHONPATH=src pytest -q tests/unit/test_mop_snapshot_guard.py
+```
