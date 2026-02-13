@@ -6,6 +6,8 @@ from d810.core.persistence import FunctionRuleConfig
 from d810.ui.actions.function_rules import (
     _build_override_sets,
     _collect_available_rules,
+    _format_tags_csv,
+    _parse_tags_csv,
     _resolve_initial_enabled_rule_names,
 )
 
@@ -70,3 +72,9 @@ def test_build_override_sets_prefers_smaller_representation():
     enabled, disabled = _build_override_sets({"A", "B", "C"}, {"A"})
     assert enabled == {"A"}
     assert disabled == set()
+
+
+def test_parse_tags_csv_and_format_roundtrip():
+    parsed = _parse_tags_csv(" flattened,opaque_pred,, dispatcher ")
+    assert parsed == {"flattened", "opaque_pred", "dispatcher"}
+    assert _format_tags_csv(parsed) == "dispatcher, flattened, opaque_pred"
