@@ -151,8 +151,6 @@ jobs:
                   set -e
                   docker compose run --rm --entrypoint bash idapro-tests-9.2 -c "
                       set -e
-                      apt-get update -qq && apt-get install -y -qq clang lld mingw-w64 make >/dev/null
-                      cd /work/samples && make clean && make TARGET_OS=windows BINARY_NAME=libobfuscated MINGW_SYSROOT=/usr
                       cd /work
                       pip install -e .[dev] -q
                       D810_TEST_BINARY=libobfuscated.dll pytest tests/system/ -v --tb=short --forked
@@ -204,8 +202,7 @@ jobs:
                   set -e
                   docker compose run --rm --entrypoint bash idapro-tests-9.2 -c "
                       set -e
-                      apt-get update -qq && apt-get install -y -qq g++ clang lld mingw-w64 make >/dev/null
-                      cd /work/samples && make clean && make TARGET_OS=windows BINARY_NAME=libobfuscated MINGW_SYSROOT=/usr
+                      apt-get update -qq && apt-get install -y -qq g++ >/dev/null
                       cd /work
                       pip install setuptools wheel Cython>=3.0.0 -q
                       D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e '.[dev]' -q
