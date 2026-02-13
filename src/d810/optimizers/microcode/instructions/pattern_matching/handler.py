@@ -323,15 +323,15 @@ class PatternOptimizer(InstructionOptimizer):
         self._compiled_view: CompiledRuleView | None = None
 
         # PR4: Non-mutating matching feature flag and reusable bindings
-        # Default is to use the new non-mutating match; users can set
-        # D810_NOMUT_MATCHING=0 to rollback if issues arise.
-        self._use_nomut_matching = os.environ.get("D810_NOMUT_MATCHING", "1") != "0"
+        # Default is OFF (opt-in) pending parity validation; users can set
+        # D810_NOMUT_MATCHING=1 to enable experimental non-mutating matching.
+        self._use_nomut_matching = os.environ.get("D810_NOMUT_MATCHING", "0") == "1"
         self._match_bindings = MatchBindings()
 
         if self._use_nomut_matching:
-            optimizer_logger.debug("PatternOptimizer: using non-mutating pattern matching (D810_NOMUT_MATCHING=1)")
+            optimizer_logger.debug("PatternOptimizer: using non-mutating pattern matching (D810_NOMUT_MATCHING=1 opt-in)")
         else:
-            optimizer_logger.debug("PatternOptimizer: using legacy mutating pattern matching (D810_NOMUT_MATCHING=0)")
+            optimizer_logger.debug("PatternOptimizer: using legacy mutating pattern matching (default, nomut is opt-in)")
 
         # Register verifiable rules passed at construction time.
         # These rules (from RULE_REGISTRY) implement check_pattern_and_replace

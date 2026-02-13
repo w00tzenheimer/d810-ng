@@ -18,8 +18,8 @@ from d810.optimizers.microcode.instructions.pattern_matching.handler import Patt
 class TestNomutMatchingHotPath:
     """Test suite for nomut matching hot-path switching."""
 
-    def test_nomut_matching_default_enabled(self, monkeypatch):
-        """Verify _use_nomut_matching defaults to True."""
+    def test_nomut_matching_default_disabled(self, monkeypatch):
+        """Verify _use_nomut_matching defaults to False (opt-in)."""
         # Clear any existing env var
         monkeypatch.delenv("D810_NOMUT_MATCHING", raising=False)
         monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
@@ -30,7 +30,7 @@ class TestNomutMatchingHotPath:
             log_dir=None,
         )
 
-        assert optimizer._use_nomut_matching is True
+        assert optimizer._use_nomut_matching is False
 
     def test_nomut_matching_disabled_via_env(self, monkeypatch):
         """Verify D810_NOMUT_MATCHING=0 disables nomut matching."""
@@ -111,8 +111,8 @@ class TestNomutMatchingHotPath:
         # The hot loop will use check_pattern_and_replace instead of nomut
 
     def test_nomut_path_active_with_indexed_storage(self, monkeypatch):
-        """Verify nomut path is active with indexed storage (default)."""
-        monkeypatch.delenv("D810_NOMUT_MATCHING", raising=False)
+        """Verify nomut path is active when explicitly enabled with indexed storage."""
+        monkeypatch.setenv("D810_NOMUT_MATCHING", "1")
         monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
 
         optimizer = PatternOptimizer(
@@ -134,23 +134,23 @@ class TestNomutMatchingHotPath:
         - D810_LEGACY_STORAGE controls whether to use legacy pattern storage
 
         All four combinations are valid, but only some are useful:
-        1. nomut=1, legacy=0 (default) -> Fast path: nomut + indexed storage
-        2. nomut=0, legacy=0 -> Indexed storage with clone+match (testing)
+        1. nomut=0, legacy=0 (default) -> Indexed storage with clone+match
+        2. nomut=1, legacy=0 -> Fast path: nomut + indexed storage (opt-in)
         3. nomut=1, legacy=1 -> Legacy storage ignores nomut (nomut flag set but not used)
         4. nomut=0, legacy=1 -> Legacy path (both optimizations disabled)
         """
-        # Test case 1: Default (nomut ON, indexed storage)
+        # Test case 1: Default (nomut OFF, indexed storage)
         monkeypatch.delenv("D810_NOMUT_MATCHING", raising=False)
         monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
         opt1 = PatternOptimizer(maturities=[], stats=None, log_dir=None)
-        assert opt1._use_nomut_matching is True
+        assert opt1._use_nomut_matching is False
         assert opt1._use_legacy_storage is False
 
-        # Test case 2: Nomut OFF, indexed storage (for A/B testing)
-        monkeypatch.setenv("D810_NOMUT_MATCHING", "0")
+        # Test case 2: Nomut ON, indexed storage (opt-in fast path)
+        monkeypatch.setenv("D810_NOMUT_MATCHING", "1")
         monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
         opt2 = PatternOptimizer(maturities=[], stats=None, log_dir=None)
-        assert opt2._use_nomut_matching is False
+        assert opt2._use_nomut_matching is True
         assert opt2._use_legacy_storage is False
 
         # Test case 3: Nomut ON, legacy storage (nomut disabled by legacy check)
