@@ -190,6 +190,10 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         # Set when safe_verify fails -- prevents further processing on a
         # corrupted MBA that would cause IDA hangs.
         self._verify_failed: bool = False
+        # Set when we hit a hard apply failure (e.g. duplicate->goto conversion
+        # failure). Used to disable this rule for the current maturity to avoid
+        # retry loops that keep growing the CFG with dead duplicates.
+        self._critical_apply_failure: bool = False
 
     def _get_state_var_repr(self, blk: ida_hexrays.mblock_t) -> str:
         """Get cached string representation of the state variable being compared."""
@@ -494,6 +498,8 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         if not self._pending_modifications:
             return 0
 
+        self._critical_apply_failure = False
+
         if unflat_logger.isEnabledFor(20):  # INFO level
             unflat_logger.info(
                 "Applying %d queued predecessor modifications",
@@ -554,7 +560,53 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                 applied_count
             )
 
+        if self._critical_apply_failure and applied_count == 0:
+            self._verify_failed = True
+            unflat_logger.warning(
+                "Disabling FixPredecessorOfConditionalJumpBlock for this maturity: "
+                "critical predecessor redirection failures with zero successful "
+                "patches (prevents retry loops and CFG growth)"
+            )
+
         return applied_count
+
+    def _orphan_block(self, block: ida_hexrays.mblock_t | None, reason: str = "") -> None:
+        """Best-effort cleanup for a partially-created or now-unreachable block."""
+        if block is None:
+            return
+        try:
+            mba = self.mba
+            # Remove this block from all successors' predsets.
+            for succ_serial in list(block.succset):
+                succ_blk = mba.get_mblock(succ_serial)
+                if succ_blk is not None:
+                    succ_blk.predset._del(block.serial)
+                    if succ_blk.serial != mba.qty - 1:
+                        succ_blk.mark_lists_dirty()
+                block.succset._del(succ_serial)
+
+            # Remove incoming edges from predecessors.
+            for pred_serial in list(block.predset):
+                pred_blk = mba.get_mblock(pred_serial)
+                if pred_blk is not None:
+                    pred_blk.succset._del(block.serial)
+                    if pred_blk.serial != mba.qty - 1:
+                        pred_blk.mark_lists_dirty()
+                block.predset._del(pred_serial)
+
+            block.type = ida_hexrays.BLT_0WAY
+            if block.tail is not None:
+                block.make_nop(block.tail)
+            block.flags &= ~ida_hexrays.MBL_GOTO
+            block.mark_lists_dirty()
+            mba.mark_chains_dirty()
+        except Exception as e:
+            unflat_logger.debug(
+                "Best-effort orphan cleanup failed for block %s (%s): %s",
+                getattr(block, "serial", "?"),
+                reason,
+                e,
+            )
 
     def _apply_single_modification(
         self,
@@ -587,6 +639,8 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             )
 
         try:
+            new_jmp_block = None
+            orphaned_nop = None
             # Duplicate the conditional block.
             # For conditional blocks, duplicate_block creates a NOP fallthrough
             # block (orphaned_nop) that serves as the default successor of the
@@ -603,6 +657,11 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                     "Failed to convert block %d to goto %d",
                     new_jmp_block.serial, mod.target_serial
                 )
+                self._critical_apply_failure = True
+                # Conversion failed after duplication; aggressively clean up the
+                # newly created blocks to avoid CFG growth across retries.
+                self._orphan_block(orphaned_nop, "make_2way_block_goto failure (orphaned_nop)")
+                self._orphan_block(new_jmp_block, "make_2way_block_goto failure (new_jmp_block)")
                 return False
 
             # Clean up the orphaned NOP block: remove stale edges so it does
@@ -639,6 +698,10 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                     "Failed to update predecessor %d: %d -> %d",
                     mod.pred_serial, mod.cond_block_serial, new_jmp_block.serial
                 )
+                self._critical_apply_failure = True
+                # No predecessor points to new_jmp_block yet; remove it to avoid
+                # leaving dead duplicate blocks around.
+                self._orphan_block(new_jmp_block, "update_blk_successor failure")
                 return False
 
             if unflat_logger.isEnabledFor(10):  # DEBUG level
@@ -654,6 +717,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                 "Exception in _apply_single_modification for %s: %s",
                 mod.description, e
             )
+            self._critical_apply_failure = True
             return False
 
     def optimize(self, blk: ida_hexrays.mblock_t) -> int:
