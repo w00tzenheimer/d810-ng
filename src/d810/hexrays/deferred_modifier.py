@@ -196,6 +196,7 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.hexrays.cfg_utils import (
+    capture_failure_artifact,
     change_1way_block_successor,
     change_2way_block_conditional_successor,
     create_block,
@@ -205,12 +206,15 @@ from d810.hexrays.cfg_utils import (
     make_2way_block_goto,
     mba_deep_cleaning,
     safe_verify,
+    snapshot_block_for_capture,
 )
 
 if TYPE_CHECKING:
     pass
 
 logger = getLogger("D810.deferred_modifier")
+
+_MAX_CAPTURE_HISTORY = 12
 
 
 def _format_block_info(blk: ida_hexrays.mblock_t) -> str:
@@ -256,6 +260,21 @@ def _format_insn_info(insn: ida_hexrays.minsn_t) -> str:
     if insn is None:
         return "<None>"
     return f"insn[ea={hex(insn.ea)} opcode={insn.opcode}]"
+
+
+def _collect_capture_blocks(*snapshots: dict | None) -> list[int]:
+    block_serials: set[int] = set()
+    for snap in snapshots:
+        if not snap:
+            continue
+        serial = snap.get("serial")
+        if isinstance(serial, int):
+            block_serials.add(serial)
+        for key in ("succs", "preds"):
+            for item in snap.get(key, []) or []:
+                if isinstance(item, int):
+                    block_serials.add(item)
+    return sorted(block_serials)
 
 
 class ModificationType(Enum):
@@ -745,11 +764,18 @@ class DeferredGraphModifier:
         successful = 0
         failed = 0
         rolled_back = 0
+        recent_modifications: list[dict] = []
 
         for i, mod in enumerate(sorted_mods):
             blk = self.mba.get_mblock(mod.block_serial)
             logger.info("--- Applying [%d]: %s ---", i, mod.description)
             logger.info("    BEFORE: %s", _format_block_info(blk))
+            source_before_snapshot = snapshot_block_for_capture(blk)
+            target_before_snapshot = None
+            if mod.new_target is not None:
+                target_before_snapshot = snapshot_block_for_capture(
+                    self.mba.get_mblock(mod.new_target)
+                )
 
             rollback_plan = None
             if verify_each_mod and rollback_on_verify_failure:
@@ -760,17 +786,53 @@ class DeferredGraphModifier:
                 # Re-fetch block after modification
                 blk_after = self.mba.get_mblock(mod.block_serial)
                 logger.info("    AFTER:  %s", _format_block_info(blk_after))
+                source_after_snapshot = snapshot_block_for_capture(blk_after)
+                target_after_snapshot = None
+                if mod.new_target is not None:
+                    target_after_snapshot = snapshot_block_for_capture(
+                        self.mba.get_mblock(mod.new_target)
+                    )
+
+                current_mod_trace = {
+                    "index": i,
+                    "description": mod.description,
+                    "mod_type": mod.mod_type.name,
+                    "priority": mod.priority,
+                    "rule_priority": mod.rule_priority,
+                    "block_serial": mod.block_serial,
+                    "new_target": mod.new_target,
+                    "before": source_before_snapshot,
+                    "after": source_after_snapshot,
+                    "target_before": target_before_snapshot,
+                    "target_after": target_after_snapshot,
+                }
+                recent_modifications.append(current_mod_trace)
+                if len(recent_modifications) > _MAX_CAPTURE_HISTORY:
+                    recent_modifications.pop(0)
 
                 if result:
                     # Optional incremental verification mode: fail fast on the
                     # first bad mutation instead of discovering corruption only
                     # after a large deferred batch is applied.
                     if verify_each_mod:
+                        capture_blocks = _collect_capture_blocks(
+                            source_before_snapshot,
+                            source_after_snapshot,
+                            target_before_snapshot,
+                            target_after_snapshot,
+                        )
+                        capture_metadata = {
+                            "phase": "incremental_verify",
+                            "modification": current_mod_trace,
+                            "recent_modifications": list(recent_modifications),
+                        }
                         try:
                             safe_verify(
                                 self.mba,
                                 f"after deferred modification [{i}] {mod.description}",
                                 logger_func=logger.error,
+                                capture_blocks=capture_blocks,
+                                capture_metadata=capture_metadata,
                             )
                         except RuntimeError:
                             failed += 1
@@ -793,6 +855,14 @@ class DeferredGraphModifier:
                                                 f"modification [{i}] {mod.description}"
                                             ),
                                             logger_func=logger.error,
+                                            capture_blocks=capture_blocks,
+                                            capture_metadata={
+                                                "phase": "rollback_verify",
+                                                "rolled_back_modification": current_mod_trace,
+                                                "recent_modifications": list(
+                                                    recent_modifications
+                                                ),
+                                            },
                                         )
                                         rolled_back_ok = True
                                 except RuntimeError:
@@ -842,6 +912,31 @@ class DeferredGraphModifier:
                 logger.error("    RESULT: EXCEPTION: %s", e)
                 import traceback
                 logger.error("    TRACEBACK: %s", traceback.format_exc())
+                capture_failure_artifact(
+                    self.mba,
+                    f"exception during deferred modification [{i}] {mod.description}",
+                    e,
+                    logger_func=logger.error,
+                    capture_blocks=_collect_capture_blocks(
+                        source_before_snapshot,
+                        target_before_snapshot,
+                    ),
+                    capture_metadata={
+                        "phase": "apply_exception",
+                        "modification": {
+                            "index": i,
+                            "description": mod.description,
+                            "mod_type": mod.mod_type.name,
+                            "priority": mod.priority,
+                            "rule_priority": mod.rule_priority,
+                            "block_serial": mod.block_serial,
+                            "new_target": mod.new_target,
+                            "before": source_before_snapshot,
+                            "target_before": target_before_snapshot,
+                        },
+                        "recent_modifications": list(recent_modifications),
+                    },
+                )
                 logger.warning(
                     "Aborting deferred apply after exception in modification"
                 )
@@ -879,6 +974,12 @@ class DeferredGraphModifier:
                     self.mba,
                     "after deferred modifications",
                     logger_func=logger.error,
+                    capture_metadata={
+                        "phase": "post_apply_verify",
+                        "applied_modifications": successful,
+                        "queued_modifications": len(sorted_mods),
+                        "recent_modifications": list(recent_modifications),
+                    },
                 )
             except RuntimeError:
                 # The modifications are already applied in-place and cannot
@@ -900,6 +1001,12 @@ class DeferredGraphModifier:
                         self.mba,
                         "after deferred modifications (recovery)",
                         logger_func=logger.error,
+                        capture_metadata={
+                            "phase": "post_apply_recovery_verify",
+                            "applied_modifications": successful,
+                            "queued_modifications": len(sorted_mods),
+                            "recent_modifications": list(recent_modifications),
+                        },
                     )
                     self.verify_failed = False
                     logger.warning(
