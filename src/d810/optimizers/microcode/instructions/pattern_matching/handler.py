@@ -1,6 +1,7 @@
 import abc
 import dataclasses
 import itertools
+import time
 import typing
 
 import ida_hexrays
@@ -28,6 +29,26 @@ pattern_search_logger = getLogger("D810.pattern_search")
 if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
     from d810.mba.backends.ida import IDAPatternAdapter
+
+
+@dataclasses.dataclass
+class CompiledRuleView:
+    """Cached compiled state for an optimizer's rule set.
+
+    This dataclass represents the compiled view of all active rules,
+    including opcode filters and pattern storage. It includes a generation
+    counter to detect when invalidation is needed.
+
+    Attributes:
+        generation: Monotonically increasing counter incremented on each mutation.
+        allowed_opcodes: Frozenset of opcodes used by registered patterns.
+        rule_count: Number of rules in the compiled view.
+        compiled_at: Timestamp (time.monotonic()) when view was created.
+    """
+    generation: int
+    allowed_opcodes: frozenset[int]
+    rule_count: int
+    compiled_at: float  # time.monotonic()
 
 
 class PatternMatchingRule(GenericPatternRule):
@@ -281,6 +302,10 @@ class PatternOptimizer(InstructionOptimizer):
         # incompatible instructions.
         self._allowed_root_opcodes: set[int] = set()
 
+        # Generation counter for invalidation tracking (PR3)
+        self._generation: int = 0
+        self._compiled_view: CompiledRuleView | None = None
+
         # Register verifiable rules passed at construction time.
         # These rules (from RULE_REGISTRY) implement check_pattern_and_replace
         # and pattern_candidates, bypassing the normal RULE_CLASSES check.
@@ -294,6 +319,44 @@ class PatternOptimizer(InstructionOptimizer):
     def engine_info(self) -> dict:
         """Return diagnostic info about the active pattern engine."""
         return get_engine_info()
+
+    def _get_compiled_view(self) -> CompiledRuleView:
+        """Get or rebuild the compiled rule view.
+
+        This method implements the compilation cache. It rebuilds the view
+        only when the generation counter has changed (indicating rules were
+        added, removed, or configuration changed).
+
+        Returns:
+            CompiledRuleView: The current compiled view, either cached or freshly built.
+        """
+        if self._compiled_view is None or self._compiled_view.generation != self._generation:
+            self._compiled_view = self._compile_rules()
+        return self._compiled_view
+
+    def _compile_rules(self) -> CompiledRuleView:
+        """Build compiled view from current rule set.
+
+        This method is called only when the generation counter changes,
+        avoiding redundant recomputation of expensive structures.
+
+        Returns:
+            CompiledRuleView: A new compiled view with current generation.
+        """
+        return CompiledRuleView(
+            generation=self._generation,
+            allowed_opcodes=frozenset(self._allowed_root_opcodes),
+            rule_count=len(self.rules),
+            compiled_at=time.monotonic(),
+        )
+
+    def invalidate(self) -> None:
+        """Explicitly invalidate the compiled view.
+
+        This method increments the generation counter, forcing recompilation
+        on the next access. Used by lifecycle events (reload, config changes).
+        """
+        self._generation += 1
 
     def _add_rule_internal(self, rule) -> bool:
         """Add a rule to this optimizer (internal helper).
@@ -331,6 +394,10 @@ class PatternOptimizer(InstructionOptimizer):
                     self._allowed_root_opcodes.add(int(pattern.opcode))
             except Exception:
                 pass
+
+        # Invalidate compiled view after adding rule (PR3)
+        self._generation += 1
+
         return True
 
     def add_rule(self, rule: "PatternMatchingRule | IDAPatternAdapter"):
@@ -344,6 +411,7 @@ class PatternOptimizer(InstructionOptimizer):
         rule_class_name = rule.__class__.__name__
         if rule_class_name == "IDAPatternAdapter":
             self._add_rule_internal(rule)
+            # _add_rule_internal already increments generation
             return True
 
         # For traditional PatternMatchingRule instances, check RULE_CLASSES
@@ -366,6 +434,10 @@ class PatternOptimizer(InstructionOptimizer):
                     self._allowed_root_opcodes.add(int(pattern.opcode))
             except Exception:
                 pass
+
+        # Invalidate compiled view after adding rule (PR3)
+        self._generation += 1
+
         return True
 
     def get_optimized_instruction(
