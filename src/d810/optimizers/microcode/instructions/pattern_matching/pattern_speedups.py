@@ -336,7 +336,10 @@ def _match_recursive(
             if expected is not None:
                 if candidate.mop is None or not hasattr(candidate.mop, 'nnn'):
                     return False
-                if expected != candidate.mop.nnn.value:
+                nnn = candidate.mop.nnn
+                if nnn is None or not hasattr(nnn, "value"):
+                    return False
+                if expected != nnn.value:
                     return False
 
             # Record binding

@@ -1021,6 +1021,9 @@ def ensure_child_has_an_unconditional_father(
     mba = father_block.mba
     if father_block.nsucc() == 1:
         return 0
+    # This helper only supports conditional 2-way fathers.
+    if father_block.nsucc() != 2 or father_block.tail is None:
+        return 0
 
     if father_block.tail.d.b == child_block.serial:
         helper_logger.debug(
@@ -1028,15 +1031,32 @@ def ensure_child_has_an_unconditional_father(
                 father_block.serial, child_block.serial
             )
         )
-        new_father_block = insert_nop_blk(mba.get_mblock(mba.qty - 2))
-        change_1way_block_successor(new_father_block, child_block.serial, verify=verify)
-        change_2way_block_conditional_successor(father_block, new_father_block.serial, verify=verify)
-    else:
-        helper_logger.info(
-            "Father {0} is a conditional jump to child {1} (default child), creating a new father".format(
-                father_block.serial, child_block.serial
-            )
+        # Create a detached helper block that unconditionally jumps to child.
+        # Do NOT use insert_nop_blk() here: it splices into an existing edge
+        # and can leave orphaned append-only helper blocks in this workflow.
+        new_father_block = create_standalone_block(
+            father_block,
+            blk_ins=[],
+            target_serial=child_block.serial,
+            is_0_way=False,
+            verify=verify,
         )
-        new_father_block = insert_nop_blk(father_block)
-        change_1way_block_successor(new_father_block, child_block.serial, verify=verify)
+        if new_father_block is None:
+            return 0
+        if not change_2way_block_conditional_successor(
+            father_block, new_father_block.serial, verify=verify
+        ):
+            return 0
+    else:
+        # Default-child rewrites require re-homing a conditional fallthrough
+        # edge. With append-only helper block creation, creating a detached NOP
+        # block here can leave orphaned blocks (preds=[]), which then trips
+        # mba.verify() (INTERR 50856). Skip this transformation for now.
+        helper_logger.info(
+            "Father %d is a conditional jump to child %d (default child); "
+            "skipping unconditional-father rewrite to avoid orphan block creation",
+            father_block.serial,
+            child_block.serial,
+        )
+        return 0
     return 1

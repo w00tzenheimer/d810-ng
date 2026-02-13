@@ -258,7 +258,10 @@ cdef bint _match_recursive(object pattern, object candidate, CMatchBindings bind
             if expected is not None:
                 if candidate.mop is None or not hasattr(candidate.mop, 'nnn'):
                     return False
-                if expected != candidate.mop.nnn.value:
+                nnn = candidate.mop.nnn
+                if nnn is None or not hasattr(nnn, "value"):
+                    return False
+                if expected != nnn.value:
                     return False
 
             name = getattr(pattern, "name", None) or f"__const_{bindings.count}"
