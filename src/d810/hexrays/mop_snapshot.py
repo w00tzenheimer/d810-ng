@@ -48,6 +48,57 @@ if CythonMode().is_enabled():
 if not _CYTHON_AVAILABLE:
     # Cython speedups not available, use pure Python implementation
 
+    # Proxy classes for sub-object access (duck-typing layer)
+    class _NnnProxy:
+        """Mimics mnumber_t for .nnn.value access."""
+        __slots__ = ('value',)
+        def __init__(self, value: int):
+            self.value = value
+        def __eq__(self, other):
+            if isinstance(other, _NnnProxy):
+                return self.value == other.value
+            return NotImplemented
+        def __hash__(self):
+            return hash(self.value)
+        def __bool__(self):
+            return True  # mop.nnn is truthy when present
+
+    class _StkvarProxy:
+        """Mimics stkvar_ref_t for .s.off access."""
+        __slots__ = ('off',)
+        def __init__(self, off: int):
+            self.off = off
+        @property
+        def start_ea(self):
+            return None  # not available in snapshot
+        @property
+        def mba(self):
+            return None  # not available in snapshot
+        def __eq__(self, other):
+            if isinstance(other, _StkvarProxy):
+                return self.off == other.off
+            # For comparison with real stkvar_ref_t, compare .off
+            if hasattr(other, 'off'):
+                return self.off == other.off
+            return NotImplemented
+        def __hash__(self):
+            return hash(self.off)
+
+    class _LvarProxy:
+        """Mimics lvar_ref_t for .l.idx/.l.off access."""
+        __slots__ = ('idx', 'off')
+        def __init__(self, idx: int, off: int):
+            self.idx = idx
+            self.off = off
+        def __eq__(self, other):
+            if isinstance(other, _LvarProxy):
+                return self.idx == other.idx and self.off == other.off
+            if hasattr(other, 'idx') and hasattr(other, 'off'):
+                return self.idx == other.idx and self.off == other.off
+            return NotImplemented
+        def __hash__(self):
+            return hash((self.idx, self.off))
+
     @dataclass(frozen=True, slots=True)
     class MopSnapshot:
         """Immutable, pure-Python snapshot of an ida_hexrays.mop_t.
@@ -228,3 +279,63 @@ if not _CYTHON_AVAILABLE:
                     self.t,
                 )
             return m
+
+        # === Duck-typing layer: property aliases for mop_t attribute compatibility ===
+
+        # Category A: Simple property aliases
+        @property
+        def r(self) -> int | None:
+            """Alias for .reg (mop_r register number)."""
+            return self.reg
+
+        @property
+        def g(self) -> int | None:
+            """Alias for .gaddr (mop_v global address)."""
+            return self.gaddr
+
+        @property
+        def b(self) -> int | None:
+            """Alias for .block_num (mop_b block reference)."""
+            return self.block_num
+
+        @property
+        def helper(self) -> str | None:
+            """Alias for .helper_name (mop_h helper function name)."""
+            return self.helper_name
+
+        @property
+        def cstr(self) -> str | None:
+            """Alias for .const_str (mop_str string literal)."""
+            return self.const_str
+
+        # Category B: Proxy objects for sub-attributes
+        @property
+        def nnn(self) -> _NnnProxy | None:
+            """Proxy for mnumber_t (.nnn.value access)."""
+            return _NnnProxy(self.value) if self.value is not None else None
+
+        @property
+        def s(self) -> _StkvarProxy | None:
+            """Proxy for stkvar_ref_t (.s.off access)."""
+            return _StkvarProxy(self.stkoff) if self.stkoff is not None else None
+
+        @property
+        def l(self) -> _LvarProxy | None:
+            """Proxy for lvar_ref_t (.l.idx/.l.off access)."""
+            if self.lvar_idx is not None and self.lvar_off is not None:
+                return _LvarProxy(self.lvar_idx, self.lvar_off)
+            return None
+
+        # Category C: __getattr__ fallback for complex types
+        def __getattr__(self, name):
+            """Delegate unknown attributes to owned_mop if available.
+
+            This covers complex attributes like .d, .pair, .a, .f, .c, .fpc,
+            .dstr(), .oprops, etc. that cannot be snapshotted as scalars.
+            """
+            if name.startswith('_'):
+                raise AttributeError(name)
+            owned = object.__getattribute__(self, 'owned_mop')
+            if owned is not None:
+                return getattr(owned, name)
+            raise AttributeError(f"'MopSnapshot' object has no attribute '{name}' (no owned_mop)")
