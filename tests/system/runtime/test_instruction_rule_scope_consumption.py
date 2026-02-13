@@ -141,6 +141,7 @@ def test_instruction_optimizer_accepts_legacy_signature_without_filter_kwarg(mon
 
 def test_pattern_optimizer_filters_matches_by_allowed_rule_names(monkeypatch):
     optimizer = PatternOptimizer([ida_hexrays.MMAT_PREOPTIMIZED], OptimizationStatistics(), log_dir=Path("."))
+    optimizer._use_legacy_storage = True
     optimizer.rules = {object()}
     optimizer._allowed_root_opcodes = {ida_hexrays.m_add}
 
