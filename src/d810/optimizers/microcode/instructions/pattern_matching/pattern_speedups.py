@@ -253,8 +253,12 @@ class MatchBindings:
         return {b.name: b.mop for b in self.bindings}
 
     def get_leafs_by_name(self) -> dict[str, MatchBinding]:
-        """Get bindings indexed by name."""
-        return {b.name: b for b in self.bindings}
+        """Get bindings indexed by name.
+
+        Assumes _check_binding_equalities has validated that duplicate
+        names bind to equal mops, so last-wins dict construction is safe.
+        """
+        return {b.name: b for b in self.bindings[:self.count]}
 
 
 def match_pattern_nomut(
@@ -435,6 +439,23 @@ def _check_binding_equalities(bindings: MatchBindings) -> bool:
         else:
             seen[binding.name] = binding.mop
     return True
+
+
+class BindingsProxy:
+    """Lightweight adapter exposing MatchBindings in the interface expected by get_replacement().
+
+    Wraps non-mutating match bindings so that update_leafs_mop() can read
+    leaf mops by name without requiring a mutated pattern tree.
+    """
+    __slots__ = ("leafs_by_name", "ea", "dst_mop", "dest_size", "mop", "is_candidate_ok")
+
+    def __init__(self, bindings: MatchBindings) -> None:
+        self.leafs_by_name = bindings.get_leafs_by_name()
+        self.ea = bindings.root_ea
+        self.dst_mop = bindings.root_dst_mop
+        self.dest_size = bindings.root_dest_size
+        self.mop = bindings.root_mop
+        self.is_candidate_ok = True
 
 
 # =========================================================================

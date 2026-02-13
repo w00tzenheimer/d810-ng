@@ -954,6 +954,41 @@ class TestIntegrationRealPatterns:
 
         pytest.skip("No AST with two leaf children found")
 
+    @pytest.mark.ida_required
+    def test_pattern_immutable_after_nomut_match(self, real_asts):
+        """PR4 invariant: patterns are never mutated by match_pattern_nomut."""
+        # Build simple patterns from real AST opcodes
+        tested = 0
+        for ast, _ in real_asts[:10]:
+            if not ast.is_node():
+                continue
+
+            # Create a template pattern (leaves have no mop refs)
+            pattern = AstNode(ast.opcode, AstLeaf("x_0"), AstLeaf("y_0"))
+
+            # Snapshot: leaves should have no mop refs (they're template patterns)
+            leaves_before = [(l.name, l.mop) for l in pattern.get_leaf_list()]
+            pattern_opcode_before = pattern.opcode
+
+            # Attempt match
+            bindings = MatchBindings()
+            match_pattern_nomut(pattern, ast, bindings)
+
+            # Verify: pattern unchanged
+            leaves_after = [(l.name, l.mop) for l in pattern.get_leaf_list()]
+            assert leaves_before == leaves_after, (
+                f"Pattern mutated during nomut match! "
+                f"Before: {leaves_before}, After: {leaves_after}"
+            )
+            assert pattern.opcode == pattern_opcode_before, (
+                f"Pattern opcode mutated during nomut match! "
+                f"Before: {pattern_opcode_before}, After: {pattern.opcode}"
+            )
+            tested += 1
+
+        assert tested > 0, "Expected to test at least one pattern"
+        print(f"\n  Tested {tested} patterns: all remained immutable after nomut match")
+
 
 # =========================================================================
 # Test: Cython extension matches pure-Python implementation

@@ -17,6 +17,8 @@ from d810.optimizers.microcode.instructions.handler import (
 
 # Pattern engine dispatcher (PR1) — normalized Cython/Python gate
 from d810.optimizers.microcode.instructions.pattern_matching.engine import (
+    BindingsProxy,
+    MatchBindings,
     OpcodeIndexedStorage as _IndexedStorage,
     match_pattern_nomut as _match_nomut,
     get_engine_info,
@@ -320,6 +322,17 @@ class PatternOptimizer(InstructionOptimizer):
         self._generation: int = 0
         self._compiled_view: CompiledRuleView | None = None
 
+        # PR4: Non-mutating matching feature flag and reusable bindings
+        # Default is to use the new non-mutating match; users can set
+        # D810_NOMUT_MATCHING=0 to rollback if issues arise.
+        self._use_nomut_matching = os.environ.get("D810_NOMUT_MATCHING", "1") != "0"
+        self._match_bindings = MatchBindings()
+
+        if self._use_nomut_matching:
+            optimizer_logger.debug("PatternOptimizer: using non-mutating pattern matching (D810_NOMUT_MATCHING=1)")
+        else:
+            optimizer_logger.debug("PatternOptimizer: using legacy mutating pattern matching (D810_NOMUT_MATCHING=0)")
+
         # Register verifiable rules passed at construction time.
         # These rules (from RULE_REGISTRY) implement check_pattern_and_replace
         # and pattern_candidates, bypassing the normal RULE_CLASSES check.
@@ -526,9 +539,21 @@ class PatternOptimizer(InstructionOptimizer):
                     rule_pattern_info,
                 )
             try:
-                new_ins = rule_pattern_info.rule.check_pattern_and_replace(
-                    rule_pattern_info.pattern, tmp
-                )
+                # PR4: Non-mutating match path (when enabled and using indexed storage)
+                if self._use_nomut_matching and not self._use_legacy_storage:
+                    # Non-mutating match: pattern stays frozen, bindings go to separate object
+                    if not _match_nomut(rule_pattern_info.pattern, tmp, self._match_bindings):
+                        continue
+                    proxy = BindingsProxy(self._match_bindings)
+                    if not rule_pattern_info.rule.check_candidate(proxy):
+                        continue
+                    new_ins = rule_pattern_info.rule.get_replacement(proxy)
+                else:
+                    # Legacy mutating path: pattern gets mop references copied into it
+                    new_ins = rule_pattern_info.rule.check_pattern_and_replace(
+                        rule_pattern_info.pattern, tmp
+                    )
+
                 if new_ins is not None:
                     if optimizer_logger.info_on:
                         optimizer_logger.info(
