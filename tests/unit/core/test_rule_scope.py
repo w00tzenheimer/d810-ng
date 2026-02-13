@@ -5,6 +5,7 @@ from d810.core.rule_scope import (
     FunctionRuleOverlay,
     PIPELINE_FLOW,
     PIPELINE_INSTRUCTION,
+    RuleRecipeOverlay,
     RuleScopeEvent,
     RuleScopeInvalidation,
     RuleScopeService,
@@ -15,6 +16,8 @@ from d810.core.rule_scope import (
 class _DummyRule:
     name: str
     maturities: list[int] = field(default_factory=list)
+    tags_any: list[str] = field(default_factory=list)
+    tags_all: list[str] = field(default_factory=list)
     use_whitelist: bool = False
     whitelisted_function_ea_list: list[int | str] = field(default_factory=list)
     use_blacklist: bool = False
@@ -333,3 +336,75 @@ def test_event_emitter_partial_invalidation_on_function_override():
     )
     assert svc.generation == generation_before + 1
     assert svc.active_cache_size == 1
+
+
+def test_selector_consumes_function_tags_from_overlay():
+    svc = RuleScopeService()
+    rule_tagged = _DummyRule(name="Tagged", maturities=[1], tags_any=["flattened"])
+    rule_plain = _DummyRule(name="Plain", maturities=[1])
+    svc.compile_base_rules(
+        project_name="proj",
+        instruction_rules=(rule_tagged, rule_plain),
+        flow_rules=(),
+        ctree_rules=(),
+    )
+    svc.set_overlay_provider(
+        lambda ea: FunctionRuleOverlay(function_tags=frozenset({"flattened"}))
+        if ea == 0x5555
+        else None
+    )
+
+    tagged_active = svc.get_active_rules(
+        project_name="proj",
+        idb_key="idb",
+        func_ea=0x5555,
+        pipeline=PIPELINE_INSTRUCTION,
+        maturity=1,
+    )
+    assert tuple(rule.name for rule in tagged_active) == ("Tagged", "Plain")
+
+    untagged_active = svc.get_active_rules(
+        project_name="proj",
+        idb_key="idb",
+        func_ea=0x6666,
+        pipeline=PIPELINE_INSTRUCTION,
+        maturity=1,
+    )
+    assert tuple(rule.name for rule in untagged_active) == ("Plain",)
+
+
+def test_active_recipe_filters_targeted_scope_only():
+    svc = RuleScopeService()
+    rule_a = _DummyRule(name="RuleA", maturities=[1])
+    rule_b = _DummyRule(name="RuleB", maturities=[1])
+    svc.compile_base_rules(
+        project_name="proj",
+        instruction_rules=(rule_a, rule_b),
+        flow_rules=(),
+        ctree_rules=(),
+    )
+    svc.set_active_recipe(
+        RuleRecipeOverlay(
+            name="targeted_recipe",
+            enabled_rules=frozenset({"RuleB"}),
+            target_func_eas=frozenset({0x7000}),
+        )
+    )
+
+    targeted = svc.get_active_rules(
+        project_name="proj",
+        idb_key="idb",
+        func_ea=0x7000,
+        pipeline=PIPELINE_INSTRUCTION,
+        maturity=1,
+    )
+    assert tuple(rule.name for rule in targeted) == ("RuleB",)
+
+    untargeted = svc.get_active_rules(
+        project_name="proj",
+        idb_key="idb",
+        func_ea=0x7001,
+        pipeline=PIPELINE_INSTRUCTION,
+        maturity=1,
+    )
+    assert tuple(rule.name for rule in untargeted) == ("RuleA", "RuleB")
