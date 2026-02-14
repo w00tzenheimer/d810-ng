@@ -1360,6 +1360,107 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     # END OF LEGACY ABC CODE
     # =========================================================================
 
+    def _collect_instruction_uses_defs(
+        self, ins: ida_hexrays.minsn_t
+    ) -> tuple[list[ida_hexrays.mop_t], list[ida_hexrays.mop_t]]:
+        """Collect unresolved uses and defs for one instruction."""
+        collector = InstructionDefUseCollector()
+        ins.for_all_ops(collector)
+        uses = (
+            remove_segment_registers(collector.unresolved_ins_mops)
+            + collector.memory_unresolved_ins_mops
+        )
+        defs = collector.target_mops
+        return uses, defs
+
+    def _collect_block_liveins_and_defs(
+        self, blk: ida_hexrays.mblock_t
+    ) -> tuple[list[ida_hexrays.mop_t], list[ida_hexrays.mop_t]]:
+        """Collect source-block live-ins (use-before-def) and defs."""
+        liveins: list[ida_hexrays.mop_t] = []
+        defs: list[ida_hexrays.mop_t] = []
+        cur_ins = blk.head
+        while cur_ins is not None:
+            ins_uses, ins_defs = self._collect_instruction_uses_defs(cur_ins)
+            for ins_use in ins_uses:
+                if get_mop_index(ins_use, defs) == -1:
+                    append_mop_if_not_in_list(ins_use, liveins)
+            for ins_def in ins_defs:
+                append_mop_if_not_in_list(ins_def, defs)
+            cur_ins = cur_ins.next
+        return liveins, defs
+
+    def _filter_dependency_safe_copies(
+        self,
+        source_blk: ida_hexrays.mblock_t,
+        instructions_to_copy: list[ida_hexrays.minsn_t],
+    ) -> list[ida_hexrays.minsn_t]:
+        """Keep only copied instructions whose uses are available at source.
+
+        `BLOCK_CREATE_WITH_REDIRECT` inserts copied dispatcher instructions on a
+        new edge out of `source_blk`. If a copied instruction reads a mop that
+        is only produced inside dispatcher internals (and therefore absent on
+        this edge), Hex-Rays verify can fail (for example INTERR 50860).
+
+        We conservatively allow only instructions whose uses are satisfied by:
+        1. source block live-ins,
+        2. source block defs,
+        3. defs produced by previously-accepted copied instructions.
+
+        Why this exists (root-cause context):
+        - In MMAT_CALLS we observed verify failures (INTERR 50860 / unknown
+          exception) after queueing BLOCK_CREATE_WITH_REDIRECT for some
+          dispatcher fathers.
+        - The created helper block was CFG-correct but carried copied
+          instructions that read mops unavailable on the new edge.
+        - Hex-Rays verify rejects that dataflow shape, and continuing from that
+          state may lead to downstream corruption/segfaults in later pipeline
+          stages.
+
+        This filter intentionally prefers safety over aggressiveness: if we
+        cannot prove copied instruction dependencies are available at insertion,
+        we do not copy that instruction.
+        """
+        if not instructions_to_copy:
+            return []
+
+        source_liveins, source_defs = self._collect_block_liveins_and_defs(source_blk)
+
+        available: list[ida_hexrays.mop_t] = []
+        for source_mop in source_liveins:
+            append_mop_if_not_in_list(source_mop, available)
+        for source_mop in source_defs:
+            append_mop_if_not_in_list(source_mop, available)
+
+        safe_copy_insns: list[ida_hexrays.minsn_t] = []
+        dropped_count = 0
+        for ins in instructions_to_copy:
+            ins_uses, ins_defs = self._collect_instruction_uses_defs(ins)
+            missing_uses = [used for used in ins_uses if get_mop_index(used, available) == -1]
+            if missing_uses:
+                dropped_count += 1
+                if unflat_logger.debug_on:
+                    unflat_logger.debug(
+                        "Dropping unsafe copied instruction in blk %d: %s (missing=%s)",
+                        source_blk.serial,
+                        format_minsn_t(ins),
+                        format_mop_list(missing_uses),
+                    )
+                continue
+            safe_copy_insns.append(ins)
+            for ins_def in ins_defs:
+                append_mop_if_not_in_list(ins_def, available)
+
+        if dropped_count > 0:
+            unflat_logger.info(
+                "Dropped %d/%d copied instruction(s) for blk %d due to missing producers",
+                dropped_count,
+                len(instructions_to_copy),
+                source_blk.serial,
+            )
+
+        return safe_copy_insns
+
     def resolve_dispatcher_father(
         self,
         dispatcher_father: ida_hexrays.mblock_t,
@@ -1437,11 +1538,35 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     dispatcher_father.serial,
                     target_blk.serial,
                 )
-            ins_to_copy = [
+            raw_ins_to_copy = [
                 ins
                 for ins in disp_ins
                 if ((ins is not None) and (ins.opcode not in CONTROL_FLOW_OPCODES))
             ]
+            # Copying dispatcher instructions onto a new edge is only valid when
+            # their producer dependencies exist at the insertion point.
+            ins_to_copy = self._filter_dependency_safe_copies(
+                dispatcher_father, raw_ins_to_copy
+            )
+            # If dispatcher simulation says side effects are required but none
+            # can be safely materialized at this insertion point, do not force
+            # a redirect. Forcing a plain goto in this case can produce invalid
+            # MMAT_CALLS MBA state (verify failure) because the target path may
+            # depend on those side effects.
+            #
+            # Important: "no safe copy" is not equivalent to "no side effects".
+            # It means "required side effects exist but cannot be replayed here
+            # without broken dependencies". In that case, the least harmful
+            # action at MMAT_CALLS is to skip this father rewrite and let later
+            # maturities attempt safer restructuring.
+            if len(raw_ins_to_copy) > 0 and len(ins_to_copy) == 0:
+                unflat_logger.info(
+                    "Skipping rewrite for blk %d at maturity %s: required dispatcher "
+                    "side effects are not dependency-safe to copy",
+                    dispatcher_father.serial,
+                    self.mba.maturity,
+                )
+                return 0
 
             # Check if this is a conditional exit block that needs special handling
             dispatcher_blk_serials_set = {
@@ -1864,6 +1989,15 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             # Selective MMAT_CALLS guard:
             # We only skip the risky shape (high fan-in + large dispatcher) and
             # preserve MMAT_CALLS behavior for common compact dispatchers.
+            #
+            # Historical context:
+            # - Full MMAT_CALLS disable prevented capture crashes but regressed
+            #   legitimate deobfuscation (mixed_dispatcher_pattern).
+            # - Purely re-enabling MMAT_CALLS recovered that case but regressed
+            #   high_fan_in_pattern / switch_case_ollvm_pattern with verify
+            #   failures during deferred CFG edits.
+            # - So we keep MMAT_CALLS enabled by default and apply targeted
+            #   shape guards for known-unstable topologies.
             max_entry_preds = max(
                 (
                     dispatcher_info.entry_block.blk.npred()
@@ -1889,6 +2023,44 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     self.max_calls_entry_preds,
                     max_exit_blocks,
                     self.max_calls_exit_blocks,
+                )
+                return scheduled_changes
+
+            # Additional MMAT_CALLS safety gate:
+            # A conditional predecessor directly feeding the dispatcher entry
+            # can require structural rewrites that are brittle at this
+            # maturity. We defer such functions to later maturities where CFG
+            # surgery is more stable.
+            #
+            # This specifically avoids an MMAT_CALLS failure mode where
+            # ensure_all_dispatcher_fathers_are_direct()/redirect operations
+            # attempt to rewire around a 2-way father and trigger
+            # change_1way_block_successor/verify exceptions. Deferring this
+            # shape preserves stability while keeping compact 1-way dispatcher
+            # cases (for example mixed_dispatcher_pattern) unflattened early.
+            has_conditional_entry_father = False
+            for dispatcher_info in self.dispatcher_list:
+                if (
+                    dispatcher_info.entry_block is None
+                    or dispatcher_info.entry_block.blk is None
+                ):
+                    continue
+                for pred_serial in dispatcher_info.entry_block.blk.predset:
+                    pred_blk = self.mba.get_mblock(pred_serial)
+                    if (
+                        pred_blk is not None
+                        and pred_blk.nsucc() == 2
+                        and pred_blk.tail is not None
+                        and pred_blk.tail.opcode in CONDITIONAL_JUMP_OPCODES
+                    ):
+                        has_conditional_entry_father = True
+                        break
+                if has_conditional_entry_father:
+                    break
+            if has_conditional_entry_father:
+                unflat_logger.warning(
+                    "Skipping MMAT_CALLS unflattening: dispatcher entry has "
+                    "conditional predecessor(s); deferring to later maturities"
                 )
                 return scheduled_changes
         unflat_logger.info(
