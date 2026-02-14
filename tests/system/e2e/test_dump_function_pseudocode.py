@@ -64,6 +64,8 @@ class TestDumpFunctionPseudocode:
     ):
         if not idaapi.init_hexrays_plugin():
             pytest.skip("Hex-Rays decompiler plugin not available")
+        # Dump utility prefers fully expanded locals for copy/paste-compilable output.
+        idaapi.change_hexrays_config("COLLAPSE_LVARS = NO")
         return ida_database
 
     def test_dump_function_pseudocode(

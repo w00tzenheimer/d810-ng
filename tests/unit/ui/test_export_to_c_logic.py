@@ -284,6 +284,23 @@ class TestFormatCOutput:
         # But should have main header comment
         assert "Function: test_func" in output
 
+    def test_infers_collapsed_locals(self):
+        """Collapsed local declarations should emit fallback local vars."""
+        output = format_c_output(
+            func_name="collapsed_locals",
+            func_ea=0x401000,
+            pseudocode_lines=[
+                "__int64 __fastcall collapsed_locals(__int64 a1)",
+                "{",
+                "    // [COLLAPSED LOCAL DECLARATIONS. PRESS NUMPAD \"+\" TO EXPAND]",
+                "",
+                "    v4 = a1 + 1;",
+                "    return v4;",
+                "}",
+            ],
+        )
+        assert "__int64 v4;" in output
+
 
 class TestCExportSettings:
     """Test CExportSettings dataclass."""
@@ -354,8 +371,8 @@ class TestFormatSampleCompatibleC:
             pseudocode_lines=["int test_func(int x) {", "  return x + 1;", "}"],
         )
         # Check includes
-        assert '#include "ida_types.h"' in output
-        assert '#include "export.h"' in output
+        assert '#include "polyfill.h"' in output
+        assert '#include "platform.h"' in output
         # Check sink variable
         assert "volatile int g_test_func_sink = 0;" in output
         # Check EXPORT and noinline
@@ -418,6 +435,32 @@ class TestFormatSampleCompatibleC:
         # Globals should be made volatile
         assert "extern volatile int global_var;" in output
         assert "volatile int another_global;" in output
+
+    def test_infers_globals_when_not_provided(self):
+        """Test globals are inferred from pseudocode when not provided."""
+        output = format_sample_compatible_c(
+            func_name="test_func",
+            func_ea=0x401000,
+            pseudocode_lines=[
+                "int test_func(void) {",
+                "  return dword_1234ABCD + 1;",
+                "}",
+            ],
+        )
+        assert "extern volatile unsigned __int32 dword_1234ABCD;" in output
+
+    def test_infers_forward_declarations(self):
+        """Test call targets are forward-declared for C99 compatibility."""
+        output = format_sample_compatible_c(
+            func_name="test_func",
+            func_ea=0x401000,
+            pseudocode_lines=[
+                "int test_func(void) {",
+                "  return helper_call(7);",
+                "}",
+            ],
+        )
+        assert "extern int helper_call();" in output
 
     def test_global_already_volatile(self):
         """Test globals already volatile are not duplicated."""
@@ -494,17 +537,34 @@ class TestFormatSampleCompatibleC:
         for line in lines:
             if "/**" in line:
                 sections.append("header_comment")
-            elif '#include "ida_types.h"' in line:
-                sections.append("ida_types_include")
-            elif '#include "export.h"' in line:
-                sections.append("export_include")
+            elif '#include "polyfill.h"' in line:
+                sections.append("polyfill_include")
+            elif '#include "platform.h"' in line:
+                sections.append("platform_include")
             elif "volatile int g_test_func_sink" in line:
                 sections.append("sink_variable")
             elif "EXPORT __attribute__" in line:
                 sections.append("function")
 
         # Check sections appear in correct order
-        assert sections.index("header_comment") < sections.index("ida_types_include")
-        assert sections.index("ida_types_include") < sections.index("export_include")
-        assert sections.index("export_include") < sections.index("sink_variable")
+        assert sections.index("header_comment") < sections.index("polyfill_include")
+        assert sections.index("polyfill_include") < sections.index("platform_include")
+        assert sections.index("platform_include") < sections.index("sink_variable")
         assert sections.index("sink_variable") < sections.index("function")
+
+    def test_infers_collapsed_locals(self):
+        """Collapsed local declarations should emit fallback local vars."""
+        output = format_sample_compatible_c(
+            func_name="collapsed_locals",
+            func_ea=0x401000,
+            pseudocode_lines=[
+                "__int64 __fastcall collapsed_locals(__int64 a1, __int64 a2)",
+                "{",
+                "    // [COLLAPSED LOCAL DECLARATIONS. PRESS NUMPAD \"+\" TO EXPAND]",
+                "",
+                "    v2 = a1 + a2;",
+                "    return v2;",
+                "}",
+            ],
+        )
+        assert "__int64 v2;" in output

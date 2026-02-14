@@ -5,7 +5,10 @@ Available from both pseudocode and disassembly views.
 """
 from __future__ import annotations
 
+import os
+import re
 import typing
+from contextlib import contextmanager
 
 from d810.core.logging import getLogger
 from d810.ui.actions.base import D810ActionHandler
@@ -18,6 +21,8 @@ ida_funcs = None
 ida_hexrays = None
 ida_kernwin = None
 ida_lines = None
+ida_name = None
+ida_bytes = None
 idaapi = None
 
 # ---------------------------------------------------------------------------
@@ -39,6 +44,74 @@ try:
     QT_AVAILABLE = True
 except ImportError:
     QT_AVAILABLE = False
+
+_GLOBAL_NAME_RE = re.compile(
+    r"\b((?:byte|word|dword|qword|xmmword|ymmword|zmmword|off|unk|asc|flt|dbl)_[0-9A-Fa-f]+)\b"
+)
+
+_GLOBAL_TYPE_BY_PREFIX = {
+    "byte": "unsigned __int8",
+    "word": "unsigned __int16",
+    "dword": "unsigned __int32",
+    "qword": "unsigned __int64",
+    "xmmword": "unsigned __int64",
+    "ymmword": "unsigned __int64",
+    "zmmword": "unsigned __int64",
+    "off": "unsigned __int64",
+    "unk": "unsigned __int64",
+    "asc": "char",
+    "flt": "float",
+    "dbl": "double",
+}
+
+
+def _get_collapse_lvars_restore_directive() -> str:
+    """Resolve preferred COLLAPSE_LVARS restore directive from user config."""
+    cfg_path = os.path.expanduser("~/.idapro/cfg/hexrays.cfg")
+    try:
+        with open(cfg_path, encoding="utf-8") as cfg_file:
+            for line in cfg_file:
+                match = re.match(r"^\s*COLLAPSE_LVARS\s*=\s*(YES|NO)\b", line, re.IGNORECASE)
+                if match:
+                    return f"COLLAPSE_LVARS = {match.group(1).upper()}"
+    except OSError:
+        pass
+    return "COLLAPSE_LVARS = YES"
+
+
+@contextmanager
+def _temporary_hexrays_config(
+    idaapi_mod: typing.Any | None,
+    set_directive: str,
+    restore_directive: str | None = None,
+):
+    """Temporarily override a Hex-Rays config directive and restore after use."""
+    if idaapi_mod is None or not hasattr(idaapi_mod, "change_hexrays_config"):
+        yield
+        return
+
+    effective_restore = restore_directive or _get_collapse_lvars_restore_directive()
+    applied = False
+    try:
+        idaapi_mod.change_hexrays_config(set_directive)
+        applied = True
+    except Exception as exc:
+        logger.debug("Could not apply Hex-Rays config '%s': %s", set_directive, exc)
+
+    try:
+        yield
+    finally:
+        if not applied:
+            return
+        try:
+            idaapi_mod.change_hexrays_config(effective_restore)
+        except Exception as exc:
+            logger.debug(
+                "Could not restore Hex-Rays config '%s' after '%s': %s",
+                effective_restore,
+                set_directive,
+                exc,
+            )
 
 
 def _get_current_func_ea(
@@ -76,6 +149,7 @@ def _decompile_function(
     ida_hexrays_mod: typing.Any,
     ida_funcs_mod: typing.Any,
     ida_lines_mod: typing.Any,
+    idaapi_mod: typing.Any | None = None,
 ) -> tuple[str, list[str]] | None:
     """Decompile a function and return its pseudocode.
 
@@ -91,27 +165,88 @@ def _decompile_function(
             logger.error("Hex-Rays decompiler is not available")
             return None
 
-        # Decompile the function
-        cfunc = ida_hexrays_mod.decompile(func_ea)
-        if cfunc is None:
-            logger.error("Failed to decompile function at %s", hex(func_ea))
-            return None
+        with _temporary_hexrays_config(idaapi_mod, "COLLAPSE_LVARS = NO"):
+            # Decompile the function
+            cfunc = ida_hexrays_mod.decompile(func_ea)
+            if cfunc is None:
+                logger.error("Failed to decompile function at %s", hex(func_ea))
+                return None
 
-        # Get function name
-        func_name = ida_funcs_mod.get_func_name(func_ea)
-        if not func_name:
-            func_name = f"sub_{func_ea:X}"
+            # Get function name
+            func_name = ida_funcs_mod.get_func_name(func_ea)
+            if not func_name:
+                func_name = f"sub_{func_ea:X}"
 
-        # Get pseudocode as text and clean IDA color tags
-        pseudocode = str(cfunc)
-        clean_code = ida_lines_mod.tag_remove(pseudocode)
-        lines = clean_code.splitlines()
+            # Get pseudocode as text and clean IDA color tags
+            pseudocode = str(cfunc)
+            clean_code = ida_lines_mod.tag_remove(pseudocode)
+            lines = clean_code.splitlines()
 
-        return func_name, lines
+            return func_name, lines
 
     except Exception as exc:
         logger.error("Failed to decompile function at %s: %s", hex(func_ea), exc)
         return None
+
+
+def _extract_global_symbol_names(pseudocode_lines: list[str]) -> list[str]:
+    """Extract IDA-generated global symbol names from pseudocode text."""
+    code = "\n".join(pseudocode_lines)
+    return sorted(set(_GLOBAL_NAME_RE.findall(code)))
+
+
+def _guess_global_type(symbol_name: str) -> str:
+    """Guess C type from an IDA-style symbol name."""
+    prefix = symbol_name.split("_", 1)[0].lower()
+    return _GLOBAL_TYPE_BY_PREFIX.get(prefix, "unsigned __int64")
+
+
+def _format_initializer(
+    symbol_name: str,
+    ea: int,
+    ida_bytes_mod: typing.Any,
+) -> str | None:
+    """Read current IDB value and return an initializer literal when possible."""
+    prefix = symbol_name.split("_", 1)[0].lower()
+    if prefix == "byte":
+        val = ida_bytes_mod.get_byte(ea)
+        return f"0x{val:02X}u"
+    if prefix == "word":
+        val = ida_bytes_mod.get_word(ea)
+        return f"0x{val:04X}u"
+    if prefix == "dword":
+        val = ida_bytes_mod.get_dword(ea)
+        return f"0x{val:08X}u"
+    if prefix in {"qword", "xmmword", "ymmword", "zmmword", "off", "unk"}:
+        val = ida_bytes_mod.get_qword(ea)
+        return f"0x{val:016X}uLL"
+    return None
+
+
+def _build_global_declarations_from_ida(
+    symbol_names: list[str],
+    ida_name_mod: typing.Any,
+    ida_bytes_mod: typing.Any,
+    idaapi_mod: typing.Any,
+) -> list[str]:
+    """Build global declarations with initializers when IDA can resolve them."""
+    declarations: list[str] = []
+    badaddr = idaapi_mod.BADADDR
+
+    for name in symbol_names:
+        c_type = _guess_global_type(name)
+        ea = ida_name_mod.get_name_ea(badaddr, name)
+        if ea == badaddr:
+            declarations.append(f"extern volatile {c_type} {name};")
+            continue
+
+        initializer = _format_initializer(name, ea, ida_bytes_mod)
+        if initializer is None:
+            declarations.append(f"extern volatile {c_type} {name};")
+        else:
+            declarations.append(f"volatile {c_type} {name} = {initializer};")
+
+    return declarations
 
 
 class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc]
@@ -160,7 +295,7 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
 
         # Export globals checkbox
         self.export_globals_check = QCheckBox("Export referenced global variables")
-        self.export_globals_check.setChecked(False)
+        self.export_globals_check.setChecked(True)
         layout.addLayout(QHBoxLayout())  # spacing
         layout.addWidget(self.export_globals_check)
 
@@ -235,6 +370,9 @@ class ExportFunctionToC(D810ActionHandler):
         ida_kernwin_mod = self.ida_module("ida_kernwin", ida_kernwin)
         ida_funcs_mod = self.ida_module("ida_funcs", ida_funcs)
         ida_lines_mod = self.ida_module("ida_lines", ida_lines)
+        ida_name_mod = self.ida_module("ida_name", ida_name)
+        ida_bytes_mod = self.ida_module("ida_bytes", ida_bytes)
+        idaapi_mod = self.ida_module("idaapi", idaapi)
         if (
             ida_hexrays_mod is None
             or ida_kernwin_mod is None
@@ -251,7 +389,13 @@ class ExportFunctionToC(D810ActionHandler):
             return 0
 
         # Decompile the function
-        result = _decompile_function(func_ea, ida_hexrays_mod, ida_funcs_mod, ida_lines_mod)
+        result = _decompile_function(
+            func_ea,
+            ida_hexrays_mod,
+            ida_funcs_mod,
+            ida_lines_mod,
+            idaapi_mod,
+        )
         if result is None:
             ida_kernwin_mod.warning("Failed to decompile function")
             return 0
@@ -270,7 +414,7 @@ class ExportFunctionToC(D810ActionHandler):
             settings = {
                 "sample_compatible": False,
                 "recursion_depth": 0,
-                "export_globals": False,
+                "export_globals": True,
                 "output_path": suggest_filename(func_name),
             }
 
@@ -294,11 +438,20 @@ class ExportFunctionToC(D810ActionHandler):
                 from d810.ui.actions.export_to_c_logic import format_sample_compatible_c
 
                 # Collect global declarations if requested
-                # TODO: implement global variable extraction from IDA
                 global_decls = None
-                if settings.get("export_globals", False):
-                    # Placeholder: global extraction not yet implemented
-                    global_decls = []
+                if (
+                    settings.get("export_globals", False)
+                    and ida_name_mod is not None
+                    and ida_bytes_mod is not None
+                    and idaapi_mod is not None
+                ):
+                    global_symbols = _extract_global_symbol_names(pseudocode_lines)
+                    global_decls = _build_global_declarations_from_ida(
+                        symbol_names=global_symbols,
+                        ida_name_mod=ida_name_mod,
+                        ida_bytes_mod=ida_bytes_mod,
+                        idaapi_mod=idaapi_mod,
+                    )
 
                 c_source = format_sample_compatible_c(
                     func_name=func_name,

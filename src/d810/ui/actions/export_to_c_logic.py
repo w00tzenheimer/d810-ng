@@ -12,6 +12,50 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+_GLOBAL_NAME_RE = re.compile(
+    r"\b((?:byte|word|dword|qword|xmmword|ymmword|zmmword|off|unk|asc|flt|dbl)_[0-9A-Fa-f]+)\b"
+)
+_TEMP_LOCAL_RE = re.compile(r"\bv(\d+)\b")
+_CALL_NAME_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_ADDR_OF_NAME_RE = re.compile(r"&\s*([A-Za-z_][A-Za-z0-9_]*)\b")
+
+_CALL_EXCLUDE = {
+    "if",
+    "for",
+    "while",
+    "switch",
+    "return",
+    "sizeof",
+    "__ROL1__",
+    "__ROL2__",
+    "__ROL4__",
+    "__ROL8__",
+    "__ROR1__",
+    "__ROR2__",
+    "__ROR4__",
+    "__ROR8__",
+    "__PAIR16__",
+    "__PAIR32__",
+    "__PAIR64__",
+    "__PAIR128__",
+    "JUMPOUT",
+}
+
+_GLOBAL_TYPE_BY_PREFIX = {
+    "byte": "unsigned __int8",
+    "word": "unsigned __int16",
+    "dword": "unsigned __int32",
+    "qword": "unsigned __int64",
+    "xmmword": "unsigned __int64",
+    "ymmword": "unsigned __int64",
+    "zmmword": "unsigned __int64",
+    "off": "unsigned __int64",
+    "unk": "unsigned __int64",
+    "asc": "char",
+    "flt": "float",
+    "dbl": "double",
+}
+
 
 @dataclass
 class CExportSettings:
@@ -159,6 +203,180 @@ def build_metadata_comment(stats: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
+def _guess_global_type(symbol_name: str) -> str:
+    """Guess C type for an IDA-style generated global symbol name."""
+    prefix = symbol_name.split("_", 1)[0].lower()
+    return _GLOBAL_TYPE_BY_PREFIX.get(prefix, "unsigned __int64")
+
+
+def infer_global_declarations(pseudocode_lines: list[str]) -> list[str]:
+    """Infer global declarations from pseudocode text.
+
+    This builds conservative extern declarations to make output compile.
+    """
+    code = "\n".join(pseudocode_lines)
+    globals_found = set(_GLOBAL_NAME_RE.findall(code))
+    declarations = [
+        f"extern volatile {_guess_global_type(name)} {name};"
+        for name in sorted(globals_found)
+    ]
+
+    if "_security_cookie" in code:
+        declarations.append("extern unsigned __int64 _security_cookie;")
+    if "__security_cookie" in code:
+        declarations.append("extern unsigned __int64 __security_cookie;")
+
+    return declarations
+
+
+def infer_forward_declarations(
+    func_name: str, pseudocode_lines: list[str]
+) -> list[str]:
+    """Infer conservative forward declarations for external calls/symbol refs."""
+    code = "\n".join(pseudocode_lines)
+    globals_found = set(_GLOBAL_NAME_RE.findall(code))
+
+    names = set()
+    for name in _CALL_NAME_RE.findall(code):
+        if name == func_name:
+            continue
+        if name in _CALL_EXCLUDE:
+            continue
+        if name in globals_found:
+            continue
+        names.add(name)
+
+    for name in _ADDR_OF_NAME_RE.findall(code):
+        if name == func_name:
+            continue
+        if name in _CALL_EXCLUDE:
+            continue
+        if name in globals_found:
+            continue
+        names.add(name)
+
+    return [f"extern int {name}();" for name in sorted(names)]
+
+
+def build_compilation_shims(pseudocode_lines: list[str]) -> list[str]:
+    """Build lightweight compatibility macros/typedefs for exported code."""
+    code = "\n".join(pseudocode_lines)
+    shims = [
+        "#ifndef __fastcall",
+        "#define __fastcall",
+        "#endif",
+        "#ifndef __stdcall",
+        "#define __stdcall",
+        "#endif",
+        "#ifndef __cdecl",
+        "#define __cdecl",
+        "#endif",
+    ]
+
+    if "JUMPOUT(" in code:
+        shims.extend(
+            [
+                "#ifndef JUMPOUT",
+                "#define JUMPOUT(addr) do { (void)(addr); } while (0)",
+                "#endif",
+            ]
+        )
+
+    if "SIZE_T" in code:
+        shims.extend(
+            [
+                "#ifndef SIZE_T",
+                "typedef size_t SIZE_T;",
+                "#endif",
+            ]
+        )
+
+    return shims
+
+
+def _prepend_signature_decorator(
+    pseudocode_lines: list[str], decorator: str
+) -> list[str]:
+    """Prefix the first non-comment pseudocode line with a decorator."""
+    modified = list(pseudocode_lines)
+    for idx, line in enumerate(modified):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            continue
+        if stripped.startswith("EXPORT "):
+            return modified
+        modified[idx] = f"{decorator}{line}"
+        return modified
+    return modified
+
+
+def _infer_parameter_names(pseudocode_lines: list[str]) -> set[str]:
+    """Infer parameter identifiers from the function signature."""
+    signature_lines: list[str] = []
+    for line in pseudocode_lines:
+        signature_lines.append(line)
+        if "{" in line:
+            break
+    signature_text = " ".join(signature_lines)
+    match = re.search(r"\((.*)\)", signature_text)
+    if not match:
+        return set()
+
+    params = set()
+    for raw in match.group(1).split(","):
+        part = raw.strip()
+        if not part or part == "void":
+            continue
+        name_match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*$", part)
+        if name_match:
+            params.add(name_match.group(1))
+    return params
+
+
+def infer_collapsed_local_declarations(pseudocode_lines: list[str]) -> list[str]:
+    """Infer fallback local declarations when IDA collapses local declarations."""
+    if not any("COLLAPSED LOCAL DECLARATIONS" in line for line in pseudocode_lines):
+        return []
+
+    param_names = _infer_parameter_names(pseudocode_lines)
+    ids = set()
+    for line in pseudocode_lines:
+        for match in _TEMP_LOCAL_RE.findall(line):
+            name = f"v{match}"
+            if name in param_names:
+                continue
+            ids.add(int(match))
+
+    return [f"v{i}" for i in sorted(ids)]
+
+
+def inject_inferred_local_declarations(pseudocode_lines: list[str]) -> list[str]:
+    """Inject inferred locals into function body after collapsed-locals comment."""
+    names = infer_collapsed_local_declarations(pseudocode_lines)
+    if not names:
+        return list(pseudocode_lines)
+
+    marker_idx = next(
+        (
+            idx
+            for idx, line in enumerate(pseudocode_lines)
+            if "COLLAPSED LOCAL DECLARATIONS" in line
+        ),
+        None,
+    )
+    if marker_idx is None:
+        return list(pseudocode_lines)
+
+    indent_match = re.match(r"^(\s*)", pseudocode_lines[marker_idx])
+    indent = indent_match.group(1) if indent_match else "    "
+    decl_lines = [f"{indent}__int64 {name};" for name in names]
+
+    modified = list(pseudocode_lines)
+    insert_at = marker_idx + 1
+    modified[insert_at:insert_at] = decl_lines + [""]
+    return modified
+
+
 def format_c_output(
     func_name: str,
     func_ea: int,
@@ -191,6 +409,7 @@ def format_c_output(
         >>> "#include <stdint.h>" in output
         True
     """
+    effective_pseudocode_lines = inject_inferred_local_declarations(pseudocode_lines)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     lines = [
@@ -225,11 +444,30 @@ def format_c_output(
             "typedef int16_t __int16;",
             "typedef int32_t __int32;",
             "typedef int64_t __int64;",
+            "typedef uint32_t DWORD;",
             "typedef bool _BOOL1;",
             "typedef int32_t _BOOL4;",
+            "typedef int64_t _BOOL8;",
             "",
         ]
     )
+
+    # Add compile shims/macros to keep decompiler artifacts buildable.
+    lines.append("// Compatibility shims for decompiler-emitted syntax")
+    lines.extend(build_compilation_shims(effective_pseudocode_lines))
+    lines.append("")
+
+    inferred_globals = infer_global_declarations(effective_pseudocode_lines)
+    if inferred_globals:
+        lines.append("// Inferred referenced globals")
+        lines.extend(inferred_globals)
+        lines.append("")
+
+    inferred_forwards = infer_forward_declarations(func_name, effective_pseudocode_lines)
+    if inferred_forwards:
+        lines.append("// Inferred forward declarations")
+        lines.extend(inferred_forwards)
+        lines.append("")
 
     # Add local type declarations if provided
     if local_types:
@@ -239,7 +477,7 @@ def format_c_output(
 
     # Add the function body
     lines.append(f"// Function: {func_name} at {func_ea:#x}")
-    lines.extend(pseudocode_lines)
+    lines.extend(effective_pseudocode_lines)
     lines.append("")
 
     return "\n".join(lines)
@@ -311,8 +549,8 @@ def format_sample_compatible_c(
     """Generate sample-compatible C source.
 
     Follows the format used in samples/src/c/:
-    - #include "ida_types.h" for IDA type definitions
-    - #include "export.h" for EXPORT macro
+    - #include "polyfill.h" for IDA/Win32 type and API compatibility
+    - #include "platform.h" for EXPORT macro
     - volatile int g_<func>_sink for preventing optimization
     - Referenced globals as volatile declarations
     - EXPORT __attribute__((noinline)) on function
@@ -335,15 +573,16 @@ def format_sample_compatible_c(
         ...     0x401000,
         ...     ["int test_func(int x) {", "  return x + 1;", "}"]
         ... )
-        >>> '#include "ida_types.h"' in output
+        >>> '#include "polyfill.h"' in output
         True
-        >>> '#include "export.h"' in output
+        >>> '#include "platform.h"' in output
         True
         >>> "volatile int g_test_func_sink" in output
         True
         >>> "EXPORT __attribute__((noinline))" in output
         True
     """
+    effective_pseudocode_lines = inject_inferred_local_declarations(pseudocode_lines)
     lines = []
 
     # Header comment with metadata
@@ -352,20 +591,34 @@ def format_sample_compatible_c(
     lines.append("")
 
     # Standard includes for sample format
-    lines.append('#include "ida_types.h"')
-    lines.append('#include "export.h"')
+    lines.append('#include "polyfill.h"')
+    lines.append('#include "platform.h"')
+    lines.append("")
+    lines.append("// Compatibility shims for decompiler-emitted syntax")
+    lines.extend(build_compilation_shims(effective_pseudocode_lines))
     lines.append("")
 
-    # Global declarations if provided
-    if global_declarations:
+    # Global declarations from caller, or inferred from pseudocode.
+    effective_global_decls = (
+        list(global_declarations)
+        if global_declarations is not None
+        else infer_global_declarations(effective_pseudocode_lines)
+    )
+    if effective_global_decls:
         lines.append("// Referenced globals")
-        for decl in global_declarations:
+        for decl in effective_global_decls:
             # Make globals volatile to prevent optimization
             if "volatile" not in decl:
                 decl = decl.replace("extern ", "extern volatile ", 1)
                 if not decl.startswith("extern"):
                     decl = "volatile " + decl
             lines.append(decl)
+        lines.append("")
+
+    inferred_forwards = infer_forward_declarations(func_name, effective_pseudocode_lines)
+    if inferred_forwards:
+        lines.append("// Inferred forward declarations")
+        lines.extend(inferred_forwards)
         lines.append("")
 
     # Local type declarations if provided
@@ -383,15 +636,10 @@ def format_sample_compatible_c(
     # Function with EXPORT and noinline attributes
     lines.append(f"// Function: {func_name} at {func_ea:#x}")
 
-    # Insert EXPORT and __attribute__((noinline)) before function signature
-    # Find the function signature line (usually first line with opening brace or semicolon)
-    modified_code = []
-    for i, line in enumerate(pseudocode_lines):
-        if i == 0:
-            # First line is the function signature - add attributes
-            modified_code.append(f"EXPORT __attribute__((noinline)) {line}")
-        else:
-            modified_code.append(line)
+    # Insert EXPORT and noinline before the function signature line.
+    modified_code = _prepend_signature_decorator(
+        effective_pseudocode_lines, "EXPORT __attribute__((noinline)) "
+    )
 
     lines.extend(modified_code)
     lines.append("")
