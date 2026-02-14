@@ -83,6 +83,36 @@ pytest tests/system/runtime/ -v --tb=short --forked
 pytest tests/system/e2e/ -v --tb=short --forked
 ```
 
+## Dump Before/After Pseudocode For Specific Functions
+
+Use the manual dump harness when you need fast per-function debugging without
+editing test files:
+
+```bash
+# Single function (loads example_libobfuscated.json by default)
+pytest -s tests/system/e2e/test_dump_function_pseudocode.py \
+  --dump-function-pseudocode mixed_dispatcher_pattern
+
+# Multiple functions
+pytest -s tests/system/e2e/test_dump_function_pseudocode.py \
+  --dump-function-pseudocode "func_a,func_b,func_c"
+
+# Choose project config explicitly
+pytest -s tests/system/e2e/test_dump_function_pseudocode.py \
+  --dump-function-pseudocode mixed_dispatcher_pattern \
+  --dump-project example_libobfuscated.json
+
+# Skip project loading
+pytest -s tests/system/e2e/test_dump_function_pseudocode.py \
+  --dump-function-pseudocode mixed_dispatcher_pattern \
+  --dump-no-project
+
+# Override binary when needed
+D810_TEST_BINARY=libobfuscated.dll pytest -s \
+  tests/system/e2e/test_dump_function_pseudocode.py \
+  --dump-function-pseudocode mixed_dispatcher_pattern
+```
+
 ## Backend-Aware Guard Note
 
 - `tests/unit/test_mop_snapshot_guard.py` is intentionally backend-aware.
