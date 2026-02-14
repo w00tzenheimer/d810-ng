@@ -313,8 +313,7 @@ ABC_F6_CASES = [
         function="abc_f6_64bit_pattern",
         description="ABC pattern with 64-bit magic constants",
         project="example_libobfuscated.json",
-        # Current sample emits this in already-structured form.
-        must_change=False,
+        must_change=True,
     ),
 ]
 
@@ -676,17 +675,13 @@ UNWRAP_LOOPS_CASES = [
         function="unwrap_loops",
         description="Loop unwrapping with spin-lock synchronization",
         project="example_libobfuscated.json",
-        # This function is already emitted as structured control flow in current
-        # sample binaries; D-810 does not materially rewrite it.
-        must_change=False,
+        must_change=True,
     ),
     DeobfuscationCase(
         function="unwrap_loops_2",
         description="Loop unwrapping with dynamic size calculations",
         project="example_libobfuscated.json",
-        # This function is already emitted as structured control flow in current
-        # sample binaries; D-810 does not materially rewrite it.
-        must_change=False,
+        must_change=True,
     ),
     DeobfuscationCase(
         function="unwrap_loops_3",
