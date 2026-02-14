@@ -1168,10 +1168,38 @@ def pytest_addoption(parser):
         default=False,
         help="Capture test results to SQLite database",
     )
+    parser.addoption(
+        "--dump-function-pseudocode",
+        action="store",
+        default=None,
+        help=(
+            "Dump before/after pseudocode for one function name "
+            "(or comma-separated function names)."
+        ),
+    )
+    parser.addoption(
+        "--dump-project",
+        action="store",
+        default="example_libobfuscated.json",
+        help=(
+            "Project configuration filename to load for pseudocode dump "
+            "(default: example_libobfuscated.json)."
+        ),
+    )
+    parser.addoption(
+        "--dump-no-project",
+        action="store_true",
+        default=False,
+        help="Do not load any project configuration when dumping pseudocode.",
+    )
 
 
 def pytest_configure(config):
     """Configure pytest plugins."""
+    config.addinivalue_line(
+        "markers",
+        "pseudocode_dump: manual utility tests for before/after pseudocode dumping",
+    )
     # Register the test capture plugin if --capture-to-db is enabled
     if config.getoption("--capture-to-db"):
         from tests.system.runtime.test_capture import CapturePlugin
