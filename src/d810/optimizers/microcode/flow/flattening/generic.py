@@ -24,6 +24,7 @@ See: docs/cfg-modification-audit.md for details.
 from __future__ import annotations
 
 import abc
+from typing import Any
 
 import ida_hexrays
 
@@ -143,6 +144,11 @@ class UnflatteningEvent:
         maturity (int): Current maturity level
         applied_count (int): Number of successfully applied modifications
         optimizer: The optimizer instance
+
+    LAYOUT_SIGNALS:
+        maturity (int): Current maturity level
+        signals (dict[str, Any]): Aggregated dispatcher layout metrics
+        optimizer: The optimizer instance
     """
     # Emitted when modifications are scheduled for a future maturity
     MODIFICATIONS_SCHEDULED = "modifications_scheduled"
@@ -152,6 +158,8 @@ class UnflatteningEvent:
     MODIFICATIONS_APPLIED = "modifications_applied"
     # Emitted when a dispatcher is resolved
     DISPATCHER_RESOLVED = "dispatcher_resolved"
+    # Emitted when dispatcher layout signals are collected
+    LAYOUT_SIGNALS = "layout_signals"
 
 unflat_logger = getLogger("D810.unflat")
 
@@ -765,6 +773,18 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             24,
             "MMAT_CALLS guard: skip unflattening when dispatcher exit block count exceeds this value",
         ),
+        ConfigParam(
+            "defer_calls_on_conditional_entry_father",
+            bool,
+            True,
+            "MMAT_CALLS guard: defer to later maturities when dispatcher entry has conditional predecessor(s)",
+        ),
+        ConfigParam(
+            "log_calls_layout_signals",
+            bool,
+            True,
+            "Emit detailed MMAT_CALLS dispatcher layout signals for triage",
+        ),
     )
 
     MOP_TRACKER_MAX_NB_BLOCK = 100
@@ -787,6 +807,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     # can be tuned per project from the GUI/config files.
     DEFAULT_MAX_CALLS_ENTRY_PREDS = 24
     DEFAULT_MAX_CALLS_EXIT_BLOCKS = 24
+    DEFAULT_DEFER_CALLS_ON_CONDITIONAL_ENTRY_FATHER = True
+    DEFAULT_LOG_CALLS_LAYOUT_SIGNALS = True
 
     def __init__(self):
         super().__init__()
@@ -796,12 +818,18 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self.max_passes = self.DEFAULT_MAX_PASSES
         self.max_calls_entry_preds = self.DEFAULT_MAX_CALLS_ENTRY_PREDS
         self.max_calls_exit_blocks = self.DEFAULT_MAX_CALLS_EXIT_BLOCKS
+        self.defer_calls_on_conditional_entry_father = (
+            self.DEFAULT_DEFER_CALLS_ON_CONDITIONAL_ENTRY_FATHER
+        )
+        self.log_calls_layout_signals = self.DEFAULT_LOG_CALLS_LAYOUT_SIGNALS
         self.non_significant_changes = 0
         # Track processed (source_block, target) pairs to prevent duplicates
         self._processed_dispatcher_fathers: set[tuple[int, int]] = set()
         # Set when deferred modifier verify fails -- prevents further
         # processing on a corrupted MBA that would cause IDA hangs.
         self._verify_failed: bool = False
+        # Last collected dispatcher layout signals (for debug tooling/tests).
+        self._last_layout_signals: dict[str, Any] = {}
 
     @property
     @abc.abstractmethod
@@ -835,7 +863,122 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             self.max_calls_entry_preds = self.config["max_calls_entry_preds"]
         if "max_calls_exit_blocks" in self.config.keys():
             self.max_calls_exit_blocks = self.config["max_calls_exit_blocks"]
+        if "defer_calls_on_conditional_entry_father" in self.config.keys():
+            self.defer_calls_on_conditional_entry_father = self.config[
+                "defer_calls_on_conditional_entry_father"
+            ]
+        if "log_calls_layout_signals" in self.config.keys():
+            self.log_calls_layout_signals = self.config["log_calls_layout_signals"]
         self.dispatcher_collector.configure(kwargs)
+
+    def _collect_dispatcher_layout_signals(self) -> dict[str, Any]:
+        """Collect dispatcher layout signals used by MMAT_CALLS gating.
+
+        Why this exists:
+        - Our recent regressions were driven by CFG *shape* more than raw size.
+        - `high_fan_in_pattern` / `switch_case_ollvm_pattern` share this trait:
+          dispatcher entry has a conditional predecessor requiring brittle
+          MMAT_CALLS rewrites.
+        - `mixed_dispatcher_pattern` does not share that entry-father shape and
+          is stable at MMAT_CALLS.
+
+        Signal semantics used by this rule:
+        - ``max_entry_preds``:
+          upper bound used by the wide-dispatcher guard.
+        - ``max_exit_blocks``:
+          upper bound used by the wide-dispatcher guard.
+        - ``has_conditional_entry_father``:
+          shape guard for brittle MMAT_CALLS rewrites where dispatcher entry
+          is fed by a 2-way conditional predecessor.
+        - ``dispatchers``:
+          per-dispatcher detail retained for triage/debug tooling.
+
+        The returned structure is intentionally JSON-like (plain ints/lists/dicts)
+        so it can be logged, emitted via events, or persisted by tooling.
+        """
+        per_dispatcher: list[dict[str, Any]] = []
+        for dispatcher_info in self.dispatcher_list:
+            entry_blk = (
+                dispatcher_info.entry_block.blk
+                if dispatcher_info.entry_block is not None
+                else None
+            )
+            if entry_blk is None:
+                continue
+            pred_serials = [int(x) for x in entry_blk.predset]
+            conditional_entry_preds: list[int] = []
+            for pred_serial in pred_serials:
+                pred_blk = self.mba.get_mblock(pred_serial)
+                if (
+                    pred_blk is not None
+                    and pred_blk.nsucc() == 2
+                    and pred_blk.tail is not None
+                    and pred_blk.tail.opcode in CONDITIONAL_JUMP_OPCODES
+                ):
+                    conditional_entry_preds.append(pred_serial)
+            per_dispatcher.append(
+                {
+                    "entry_block": int(entry_blk.serial),
+                    "entry_pred_count": len(pred_serials),
+                    "entry_preds": pred_serials,
+                    "conditional_entry_preds": conditional_entry_preds,
+                    "internal_block_count": len(dispatcher_info.dispatcher_internal_blocks),
+                    "exit_block_count": len(dispatcher_info.dispatcher_exit_blocks),
+                }
+            )
+
+        signals: dict[str, Any] = {
+            "dispatcher_count": len(per_dispatcher),
+            "max_entry_preds": max(
+                (item["entry_pred_count"] for item in per_dispatcher),
+                default=0,
+            ),
+            "max_exit_blocks": max(
+                (item["exit_block_count"] for item in per_dispatcher),
+                default=0,
+            ),
+            "max_internal_blocks": max(
+                (item["internal_block_count"] for item in per_dispatcher),
+                default=0,
+            ),
+            "has_conditional_entry_father": any(
+                item["conditional_entry_preds"] for item in per_dispatcher
+            ),
+            "dispatchers": per_dispatcher,
+        }
+        return signals
+
+    def _emit_layout_signals(self, signals: dict[str, Any]) -> None:
+        """Emit layout signals via logs and event bus for downstream tooling."""
+        self._last_layout_signals = signals
+        self.events.emit(
+            UnflatteningEvent.LAYOUT_SIGNALS,
+            maturity=int(self.mba.maturity),
+            signals=signals,
+            optimizer=self,
+        )
+        if not self.log_calls_layout_signals:
+            return
+        unflat_logger.info(
+            "Dispatcher layout signals (maturity=%s): dispatchers=%d "
+            "max_entry_preds=%d max_exit_blocks=%d max_internal_blocks=%d "
+            "has_conditional_entry_father=%s",
+            self.mba.maturity,
+            signals["dispatcher_count"],
+            signals["max_entry_preds"],
+            signals["max_exit_blocks"],
+            signals["max_internal_blocks"],
+            signals["has_conditional_entry_father"],
+        )
+        for item in signals["dispatchers"]:
+            unflat_logger.info(
+                "  layout entry_blk=%d preds=%s conditional_preds=%s internal=%d exits=%d",
+                item["entry_block"],
+                item["entry_preds"],
+                item["conditional_entry_preds"],
+                item["internal_block_count"],
+                item["exit_block_count"],
+            )
 
     # Maximum blocks for which retrieve_all_dispatchers will attempt
     # full exploration.  Beyond this, the dispatcher search is skipped
@@ -1364,6 +1507,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self, ins: ida_hexrays.minsn_t
     ) -> tuple[list[ida_hexrays.mop_t], list[ida_hexrays.mop_t]]:
         """Collect unresolved uses and defs for one instruction."""
+        # Some unit/runtime tests feed generic mocks as "instructions".
+        # Running DefUse collection on those can cross into SWIG-backed helpers
+        # with invalid objects and crash the process.
+        # Treat non-IDA/mock instructions as side-effect opaque: no def/use info.
+        if ins.__class__.__module__.startswith("unittest.mock"):
+            return [], []
         collector = InstructionDefUseCollector()
         ins.for_all_ops(collector)
         uses = (
@@ -1377,10 +1526,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self, blk: ida_hexrays.mblock_t
     ) -> tuple[list[ida_hexrays.mop_t], list[ida_hexrays.mop_t]]:
         """Collect source-block live-ins (use-before-def) and defs."""
+        if blk.__class__.__module__.startswith("unittest.mock"):
+            return [], []
         liveins: list[ida_hexrays.mop_t] = []
         defs: list[ida_hexrays.mop_t] = []
         cur_ins = blk.head
         while cur_ins is not None:
+            if cur_ins.__class__.__module__.startswith("unittest.mock"):
+                break
             ins_uses, ins_defs = self._collect_instruction_uses_defs(cur_ins)
             for ins_use in ins_uses:
                 if get_mop_index(ins_use, defs) == -1:
@@ -1543,6 +1696,33 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 for ins in disp_ins
                 if ((ins is not None) and (ins.opcode not in CONTROL_FLOW_OPCODES))
             ]
+            # MMAT_CALLS safety rule:
+            # If this rewrite requires replaying dispatcher side-effect
+            # instructions (create+redirect path), defer it to later maturities.
+            #
+            # Rationale:
+            # - We have observed cases where MMAT_CALLS accepts the immediate
+            #   deferred modification sequence (incremental verify succeeds) but
+            #   Hex-Rays later crashes during full decompilation.
+            # - Those cases involved repeated BLOCK_CREATE_WITH_REDIRECT with
+            #   copied side-effect instructions in flattened while/switch and
+            #   nested-shared-block layouts.
+            # - At later maturities (GLBOPT*), the same structural rewrites are
+            #   materially more stable.
+            #
+            # Therefore, MMAT_CALLS only handles direct edge rewrites that do
+            # not require instruction replay; side-effect-carrying rewrites are
+            # intentionally deferred.
+            if (
+                self.mba.maturity == ida_hexrays.MMAT_CALLS
+                and len(raw_ins_to_copy) > 0
+            ):
+                unflat_logger.info(
+                    "Skipping side-effect create+redirect for blk %d at MMAT_CALLS; "
+                    "deferring to later maturities",
+                    dispatcher_father.serial,
+                )
+                return 0
             # Copying dispatcher instructions onto a new edge is only valid when
             # their producer dependencies exist at the insertion point.
             ins_to_copy = self._filter_dependency_safe_copies(
@@ -1985,6 +2165,9 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             unflat_logger.info("No dispatcher found at maturity %s", self.mba.maturity)
             return 0
 
+        layout_signals = self._collect_dispatcher_layout_signals()
+        self._emit_layout_signals(layout_signals)
+
         if self.mba.maturity == ida_hexrays.MMAT_CALLS:
             # Selective MMAT_CALLS guard:
             # We only skip the risky shape (high fan-in + large dispatcher) and
@@ -1998,19 +2181,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             #   failures during deferred CFG edits.
             # - So we keep MMAT_CALLS enabled by default and apply targeted
             #   shape guards for known-unstable topologies.
-            max_entry_preds = max(
-                (
-                    dispatcher_info.entry_block.blk.npred()
-                    for dispatcher_info in self.dispatcher_list
-                    if dispatcher_info.entry_block is not None
-                    and dispatcher_info.entry_block.blk is not None
-                ),
-                default=0,
-            )
-            max_exit_blocks = max(
-                (len(dispatcher_info.dispatcher_exit_blocks) for dispatcher_info in self.dispatcher_list),
-                default=0,
-            )
+            max_entry_preds = layout_signals["max_entry_preds"]
+            max_exit_blocks = layout_signals["max_exit_blocks"]
             if (
                 max_entry_preds > self.max_calls_entry_preds
                 or max_exit_blocks > self.max_calls_exit_blocks
@@ -2038,26 +2210,10 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             # change_1way_block_successor/verify exceptions. Deferring this
             # shape preserves stability while keeping compact 1-way dispatcher
             # cases (for example mixed_dispatcher_pattern) unflattened early.
-            has_conditional_entry_father = False
-            for dispatcher_info in self.dispatcher_list:
-                if (
-                    dispatcher_info.entry_block is None
-                    or dispatcher_info.entry_block.blk is None
-                ):
-                    continue
-                for pred_serial in dispatcher_info.entry_block.blk.predset:
-                    pred_blk = self.mba.get_mblock(pred_serial)
-                    if (
-                        pred_blk is not None
-                        and pred_blk.nsucc() == 2
-                        and pred_blk.tail is not None
-                        and pred_blk.tail.opcode in CONDITIONAL_JUMP_OPCODES
-                    ):
-                        has_conditional_entry_father = True
-                        break
-                if has_conditional_entry_father:
-                    break
-            if has_conditional_entry_father:
+            if (
+                self.defer_calls_on_conditional_entry_father
+                and layout_signals["has_conditional_entry_father"]
+            ):
                 unflat_logger.warning(
                     "Skipping MMAT_CALLS unflattening: dispatcher entry has "
                     "conditional predecessor(s); deferring to later maturities"

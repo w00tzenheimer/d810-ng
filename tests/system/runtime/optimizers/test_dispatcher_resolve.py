@@ -282,3 +282,136 @@ class TestDispatcherFatherResolveIntegration:
         deferred_modifier.queue_create_and_redirect.assert_not_called()
         deferred_modifier.queue_goto_change.assert_not_called()
         deferred_modifier.queue_convert_to_goto.assert_not_called()
+
+    def test_collect_layout_signals_detects_conditional_entry_father(self, mock_ida_modules):
+        """Layout signals should capture per-dispatcher shape and conditional entry preds."""
+        from d810.optimizers.microcode.flow.flattening.generic import (
+            GenericDispatcherUnflatteningRule,
+        )
+
+        class TestDispatcherRule(GenericDispatcherUnflatteningRule):
+            @property
+            def DISPATCHER_COLLECTOR_CLASS(self):
+                return Mock
+
+        rule = TestDispatcherRule()
+
+        pred_cond = Mock()
+        pred_cond.serial = 1
+        pred_cond.nsucc.return_value = 2
+        pred_cond.tail = Mock()
+        pred_cond.tail.opcode = mock_ida_modules.m_jz
+
+        pred_linear = Mock()
+        pred_linear.serial = 2
+        pred_linear.nsucc.return_value = 1
+        pred_linear.tail = Mock()
+        pred_linear.tail.opcode = mock_ida_modules.m_goto
+
+        entry_blk = Mock()
+        entry_blk.serial = 10
+        entry_blk.predset = [1, 2]
+
+        rule.mba = Mock()
+        rule.mba.get_mblock.side_effect = lambda serial: {
+            1: pred_cond,
+            2: pred_linear,
+        }[serial]
+
+        dispatcher_info = Mock()
+        dispatcher_info.entry_block = Mock()
+        dispatcher_info.entry_block.blk = entry_blk
+        dispatcher_info.dispatcher_internal_blocks = [Mock()]
+        dispatcher_info.dispatcher_exit_blocks = [Mock(), Mock()]
+        rule.dispatcher_list = [dispatcher_info]
+
+        signals = rule._collect_dispatcher_layout_signals()
+
+        assert signals["dispatcher_count"] == 1
+        assert signals["max_entry_preds"] == 2
+        assert signals["max_exit_blocks"] == 2
+        assert signals["max_internal_blocks"] == 1
+        assert signals["has_conditional_entry_father"] is True
+        assert signals["dispatchers"][0]["entry_block"] == 10
+        assert signals["dispatchers"][0]["entry_preds"] == [1, 2]
+        assert signals["dispatchers"][0]["conditional_entry_preds"] == [1]
+
+    def test_emit_layout_signals_updates_cache_and_event(self, mock_ida_modules):
+        """Emitted layout signals should be cached and published on the event bus."""
+        from d810.optimizers.microcode.flow.flattening.generic import (
+            GenericDispatcherUnflatteningRule,
+            UnflatteningEvent,
+        )
+
+        class TestDispatcherRule(GenericDispatcherUnflatteningRule):
+            @property
+            def DISPATCHER_COLLECTOR_CLASS(self):
+                return Mock
+
+        rule = TestDispatcherRule()
+        rule.log_calls_layout_signals = False
+        rule.mba = Mock()
+        rule.mba.maturity = mock_ida_modules.MMAT_CALLS
+
+        observed = []
+
+        def _on_layout(maturity, signals, optimizer):
+            observed.append((maturity, signals, optimizer))
+
+        rule.events.on(UnflatteningEvent.LAYOUT_SIGNALS, _on_layout)
+
+        payload = {
+            "dispatcher_count": 1,
+            "max_entry_preds": 3,
+            "max_exit_blocks": 2,
+            "max_internal_blocks": 1,
+            "has_conditional_entry_father": True,
+            "dispatchers": [],
+        }
+        rule._emit_layout_signals(payload)
+
+        assert rule._last_layout_signals == payload
+        assert observed == [(mock_ida_modules.MMAT_CALLS, payload, rule)]
+
+    def test_optimize_defers_calls_on_conditional_entry_shape(self, mock_ida_modules):
+        """MMAT_CALLS should return early for conditional-entry dispatcher shape."""
+        import d810.optimizers.microcode.flow.flattening.generic as generic_mod
+        from d810.optimizers.microcode.flow.flattening.generic import (
+            GenericDispatcherUnflatteningRule,
+        )
+
+        class TestDispatcherRule(GenericDispatcherUnflatteningRule):
+            @property
+            def DISPATCHER_COLLECTOR_CLASS(self):
+                return Mock
+
+        rule = TestDispatcherRule()
+        rule.defer_calls_on_conditional_entry_father = True
+        rule.check_if_rule_should_be_used = Mock(return_value=True)
+        rule._apply_scheduled_modifications = Mock(return_value=0)
+        rule.retrieve_all_dispatchers = Mock(
+            side_effect=lambda: setattr(rule, "dispatcher_list", [Mock()])
+        )
+        rule._collect_dispatcher_layout_signals = Mock(
+            return_value={
+                "dispatcher_count": 1,
+                "max_entry_preds": 1,
+                "max_exit_blocks": 1,
+                "max_internal_blocks": 1,
+                "has_conditional_entry_father": True,
+                "dispatchers": [],
+            }
+        )
+        rule._emit_layout_signals = Mock()
+        rule.remove_flattening = Mock(side_effect=AssertionError("should not run"))
+
+        mba = Mock()
+        mba.maturity = generic_mod.ida_hexrays.MMAT_CALLS
+        blk = Mock()
+        blk.mba = mba
+
+        result = rule.optimize(blk)
+
+        assert result == 0
+        rule._emit_layout_signals.assert_called_once()
+        rule.remove_flattening.assert_not_called()
