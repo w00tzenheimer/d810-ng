@@ -25,6 +25,10 @@
                 "min_dispatcher_internal_block": 2,
                 "min_dispatcher_exit_block": 2,
                 "min_dispatcher_comparison_value": 2,
+                "max_calls_entry_preds": 24,
+                "max_calls_exit_blocks": 24,
+                "defer_calls_on_conditional_entry_father": true,
+                "log_calls_layout_signals": true,
                 "min_entropy": 0.0,
                 "max_entropy": 1.0
             }
