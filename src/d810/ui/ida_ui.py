@@ -710,7 +710,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         engine_layout.addWidget(self.btn_logger_cfg)
 
         self.btn_start_profiling = QtWidgets.QPushButton("Profile")
-        self.btn_start_profiling.clicked.connect(self._start_profiling)
+        self.btn_start_profiling.setToolTip("Toggle profiling: start to capture, stop to save report")
+        self.btn_start_profiling.clicked.connect(self._toggle_profiling)
         engine_layout.addWidget(self.btn_start_profiling)
 
         if TestRunnerForm is not None:
@@ -1040,31 +1041,45 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
     def _stop_d810(self):
         logger.debug("Calling _stop_d810")
+        self._stop_profiling()
         self.state.stop_d810()
         self._update_status(loaded=False)
         return
 
-    def _start_profiling(self):
-        logger.debug("Calling _start_profiling")
-        if hasattr(self.state, "manager") and self.state.manager:
-            self.state.manager.start_profiling()
-            logger.info("Profiling started.")
-        else:
-            logger.warning("D810 manager not initialized; cannot start profiling.")
-
-    def _stop_profiling(self):
-        logger.debug("Calling _stop_profiling")
-        if hasattr(self.state, "manager") and self.state.manager:
-            output_path = self.state.manager.stop_profiling()
+    def _toggle_profiling(self):
+        """Start or stop profiling based on current state."""
+        if not hasattr(self.state, "manager") or not self.state.manager:
+            logger.warning("D810 manager not initialized; cannot profile. Start D810 first.")
+            QtWidgets.QMessageBox.warning(
+                self.parent,
+                "Profiling",
+                "D810 must be started before profiling. Click Start first.",
+            )
+            return
+        mgr = self.state.manager
+        if mgr.is_profiling:
+            logger.debug("Stopping profiling")
+            output_path = mgr.stop_profiling()
             if output_path:
                 logger.info("Profiling stopped. Report saved to: %s", output_path)
                 QtWidgets.QMessageBox.information(
                     self.parent,
                     "Profiling Stopped",
-                    f"Profiling report saved to:\n{str(output_path)}",
+                    f"Profiling report saved to:\n{output_path}",
                 )
+            self.btn_start_profiling.setText("Profile")
         else:
-            logger.warning("D810 manager not initialized; cannot stop profiling.")
+            logger.debug("Starting profiling")
+            mgr.enable_profiling()
+            logger.info("Profiling started. Click Profile again to stop and save report.")
+            self.btn_start_profiling.setText("Stop Profile")
+
+    def _stop_profiling(self):
+        """Stop profiling if running (used e.g. on manager stop)."""
+        if hasattr(self.state, "manager") and self.state.manager and self.state.manager.is_profiling:
+            self.state.manager.stop_profiling()
+        if hasattr(self, "btn_start_profiling") and self.btn_start_profiling is not None:
+            self.btn_start_profiling.setText("Profile")
 
     def _show_test_runner(self):
         if self.test_runner is None:
