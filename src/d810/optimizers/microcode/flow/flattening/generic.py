@@ -787,6 +787,11 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             return False
         if not super().check_if_rule_should_be_used(blk):
             return False
+        if self.mba.maturity == ida_hexrays.MMAT_CALLS:
+            # Large CFG surgery at MMAT_CALLS is especially fragile in
+            # Hex-Rays and has repeatedly produced verify failures on real
+            # flattened functions. Keep this rule to safer later maturities.
+            return False
         if (self.cur_maturity_pass >= 1) and (self.last_pass_nb_patch_done == 0):
             return False
         if (self.max_passes is not None) and (
@@ -1466,9 +1471,10 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 queued_change = False
                 source_nsucc = dispatcher_father.nsucc()
                 tail_opcode = dispatcher_father.tail.opcode if dispatcher_father.tail else None
+                copy_insns = ins_to_copy
 
                 # Use deferred CFG modifications
-                if len(ins_to_copy) > 0:
+                if len(copy_insns) > 0:
                     if source_nsucc != 1:
                         # create_and_redirect rewires a single outgoing edge.
                         # Skip non-1way sources to avoid queuing invalid edits
@@ -1483,14 +1489,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     else:
                         unflat_logger.info(
                             "Queuing create_and_redirect: %s instructions from block %s -> %s",
-                            len(ins_to_copy),
+                            len(copy_insns),
                             dispatcher_father.serial,
                             target_blk.serial,
                         )
                         deferred_modifier.queue_create_and_redirect(
                             source_block_serial=dispatcher_father.serial,
                             final_target_serial=target_blk.serial,
-                            instructions_to_copy=ins_to_copy,
+                            instructions_to_copy=copy_insns,
                             is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY),
                             description=f"resolve_dispatcher_father {dispatcher_father.serial} -> {target_blk.serial}",
                         )

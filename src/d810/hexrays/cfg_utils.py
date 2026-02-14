@@ -924,9 +924,37 @@ def _serial_in_predset(blk: "ida_hexrays.mblock_t", serial: int) -> bool:
     return False
 
 
+def _get_fallthrough_successor_serial(blk: ida_hexrays.mblock_t) -> int | None:
+    """Return the logical fallthrough successor for *blk* when available."""
+    if blk.nsucc() == 0:
+        return None
+    if blk.nsucc() == 1:
+        return blk.succset[0]
+
+    # For conditional jumps, fallthrough is the non-conditional successor.
+    if blk.nsucc() == 2 and blk.tail is not None and ida_hexrays.is_mcode_jcond(blk.tail.opcode):
+        cond_target = blk.tail.d.b
+        for succ_serial in blk.succset:
+            if succ_serial != cond_target:
+                return succ_serial
+
+    # Generic fallback: prefer physical next only when it is a real successor.
+    if blk.nextb is not None:
+        next_serial = blk.nextb.serial
+        for succ_serial in blk.succset:
+            if succ_serial == next_serial:
+                return next_serial
+    return blk.succset[0]
+
+
 def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
     mba = blk.mba
-    original_successor_serial = blk.nextb.serial
+    original_successor_serial = _get_fallthrough_successor_serial(blk)
+    if original_successor_serial is None:
+        raise ControlFlowException(
+            f"insert_nop_blk({blk.serial}) called on block with no successors"
+        )
+    original_successor_blk = mba.get_mblock(original_successor_serial)
     # For 2-way/multi-way blocks, fallthrough correctness depends on physical
     # adjacency (blk.nextb). Insert directly after blk so the new NOP block can
     # be the direct successor without creating detached helper blocks.
@@ -936,6 +964,10 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
     insert_after_blk = blk.nsucc() > 1
     if insert_after_blk:
         nop_block = mba.copy_block(blk, blk.serial)
+        # Mid-CFG insertion can shift serials; refresh from the original block
+        # object to keep bookkeeping tied to the same logical successor.
+        if original_successor_blk is not None:
+            original_successor_serial = original_successor_blk.serial
     else:
         # Append the new block at the end of the MBA (before the dummy last
         # block) to avoid serial shifts for generic rewrites.
