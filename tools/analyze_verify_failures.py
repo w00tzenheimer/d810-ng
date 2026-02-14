@@ -1,13 +1,73 @@
 #!/usr/bin/env python3
 """Analyze d810 verify-failure artifacts and suggest likely root causes.
 
-This script reads JSON artifacts produced by:
-  d810.hexrays.cfg_utils.capture_failure_artifact()
+Overview
+--------
+`analyze_verify_failures.py` is a triage helper for JSON artifacts emitted by
+`d810.hexrays.cfg_utils.capture_failure_artifact()`. It condenses noisy verify
+failures into:
 
-Typical use:
-  python tools/analyze_verify_failures.py
-  python tools/analyze_verify_failures.py ~/.idapro/logs/d810_logs/verify_failures --latest 10
-  python tools/analyze_verify_failures.py /path/to/verify_fail_*.json
+1. A directory-level summary (entry EAs, phases, modification types, top errors)
+2. Per-artifact structural signals (orphans, conditional blocks, capture depth)
+3. Heuristic hypotheses to speed up root-cause analysis
+
+The script is intentionally read-only: it never mutates artifacts.
+
+Quick Start
+-----------
+Analyze latest artifacts from the default capture directory:
+
+    python3 tools/analyze_verify_failures.py
+
+Analyze a specific directory and include all files:
+
+    python3 tools/analyze_verify_failures.py /path/to/verify_failures --latest 0
+
+Analyze a single artifact:
+
+    python3 tools/analyze_verify_failures.py /path/to/verify_fail_....json
+
+Filter to one function entry EA:
+
+    python3 tools/analyze_verify_failures.py --entry-ea 0x77c0
+
+Emit machine-readable JSON:
+
+    python3 tools/analyze_verify_failures.py --latest 25 --json
+
+CLI Behavior
+------------
+- Positional `path` is optional:
+  - file: analyze exactly that file
+  - directory: analyze files matching `verify_fail_*.json`
+  - omitted: use `~/.idapro/logs/d810_logs/verify_failures`
+- `--latest N` applies only to directory mode:
+  - default `20`
+  - `0` means "all artifacts"
+- `--entry-ea` accepts hex (`0x...`) or decimal
+- Exit codes:
+  - `0`: success
+  - `1`: no matching/readable artifacts
+  - `2`: invalid path/arguments
+
+Artifact Contract (expected from capture_failure_artifact)
+----------------------------------------------------------
+Top-level required keys:
+- `schema_version` (int)
+- `timestamp_utc` (str)
+- `context` (str)
+- `error_type` (str)
+- `error_message` (str)
+- `mba` (dict with at least `entry_ea`, `maturity`, `qty`)
+- `focus_blocks` (list)
+- `captured_blocks` (list of block snapshots)
+- `metadata` (dict)
+
+Captured block entries are expected to be dicts and may include:
+- `serial`, `type`, `nsucc`, `npred`, `succs`, `preds`, `nextb`, `prevb`, `tail`
+
+The analyzer is tolerant of partial data. Contract mismatches are reported as
+warnings in hypotheses instead of crashing.
 """
 
 from __future__ import annotations
@@ -43,6 +103,51 @@ def _discover_paths(path_arg: str | None, latest: int | None) -> list[pathlib.Pa
     if latest is not None and latest > 0:
         paths = paths[-latest:]
     return paths
+
+
+def _validate_capture_contract(payload: dict[str, Any]) -> list[str]:
+    """Return contract warnings for a captured verify-failure payload.
+
+    The checker validates only the schema that this analyzer *depends on*.
+    It intentionally does not reject unknown fields.
+    """
+    warnings: list[str] = []
+    required_types = {
+        "schema_version": int,
+        "timestamp_utc": str,
+        "context": str,
+        "error_type": str,
+        "error_message": str,
+        "mba": dict,
+        "focus_blocks": list,
+        "captured_blocks": list,
+        "metadata": dict,
+    }
+    for key, expected_type in required_types.items():
+        if key not in payload:
+            warnings.append(f"missing required key '{key}'")
+            continue
+        if not isinstance(payload[key], expected_type):
+            warnings.append(
+                f"key '{key}' has type {type(payload[key]).__name__}, "
+                f"expected {expected_type.__name__}"
+            )
+
+    mba = payload.get("mba", {})
+    if isinstance(mba, dict):
+        for key in ("entry_ea", "maturity", "qty"):
+            if key not in mba:
+                warnings.append(f"mba missing '{key}'")
+
+    captured_blocks = payload.get("captured_blocks", [])
+    if isinstance(captured_blocks, list):
+        for index, blk in enumerate(captured_blocks):
+            if not isinstance(blk, dict):
+                warnings.append(f"captured_blocks[{index}] is not an object")
+                continue
+            if "serial" not in blk:
+                warnings.append(f"captured_blocks[{index}] missing 'serial'")
+    return warnings
 
 
 def _entry_ea(payload: dict[str, Any]) -> int:
@@ -166,6 +271,12 @@ def _infer_hypotheses(payload: dict[str, Any]) -> list[str]:
             "No specific heuristic matched. Inspect context, modification metadata, and captured block diffs."
         )
 
+    contract_warnings = _validate_capture_contract(payload)
+    if contract_warnings:
+        hypotheses.append(
+            "Artifact contract warnings: " + "; ".join(contract_warnings[:3])
+        )
+
     return hypotheses
 
 
@@ -202,6 +313,11 @@ def _format_entry(payload: dict[str, Any], path: pathlib.Path) -> str:
         f"orphans={len(structural['orphan_blocks'])} "
         f"conditional={len(structural['conditional_blocks'])}"
     )
+    contract_warnings = _validate_capture_contract(payload)
+    if contract_warnings:
+        lines.append("  Contract warnings:")
+        for warning in contract_warnings:
+            lines.append(f"    - {warning}")
     lines.append("  Hypotheses:")
     for item in hypotheses:
         lines.append(f"    - {item}")
@@ -337,6 +453,7 @@ def main(argv: list[str]) -> int:
                     "modification": _find_modification(payload),
                     "hypotheses": _infer_hypotheses(payload),
                     "structural_signals": _collect_structural_signals(payload),
+                    "contract_warnings": _validate_capture_contract(payload),
                 }
             )
         print(json.dumps(data, indent=2, sort_keys=True))

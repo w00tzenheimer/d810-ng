@@ -328,3 +328,70 @@ def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch):
     assert 1 in payload["focus_blocks"]
     captured_serials = {blk["serial"] for blk in payload["captured_blocks"]}
     assert 1 in captured_serials
+
+
+def test_verify_failure_analyzer_contract_matches_capture_artifact(tmp_path, monkeypatch, capsys):
+    """Analyzer contract should accept payloads produced by safe_verify/capture_failure_artifact."""
+    from d810.hexrays import cfg_utils
+    from tools import analyze_verify_failures as avf
+
+    mba = _FakeMBA(qty=7)
+    _FakeBlock(0, mba, succs=[1], preds=[])
+    _FakeBlock(
+        1,
+        mba,
+        succs=[2, 3],
+        preds=[0],
+        tail=SimpleNamespace(
+            ea=0x2222,
+            opcode=0x44,
+            l=SimpleNamespace(t=0, b=2),
+            d=SimpleNamespace(t=0, b=3),
+        ),
+    )
+    _FakeBlock(2, mba, succs=[4], preds=[1])
+    _FakeBlock(3, mba, succs=[4], preds=[1])
+    _FakeBlock(4, mba, succs=[], preds=[2, 3])
+    mba.verify_error = RuntimeError("Unknown exception")
+
+    monkeypatch.setenv("D810_VERIFY_CAPTURE", "1")
+    monkeypatch.setenv("D810_VERIFY_CAPTURE_DIR", str(tmp_path))
+
+    with pytest.raises(RuntimeError):
+        cfg_utils.safe_verify(
+            mba,
+            "unit-test analyzer contract",
+            capture_blocks=[1, 2],
+            capture_metadata={
+                "phase": "incremental_verify",
+                "modification": {
+                    "mod_type": "BLOCK_GOTO_CHANGE",
+                    "block_serial": 1,
+                    "new_target": 4,
+                    "description": "unit-test change",
+                },
+            },
+        )
+
+    artifacts = sorted(tmp_path.glob("verify_fail_*.json"))
+    assert len(artifacts) == 1
+    payload = avf._load_artifact(artifacts[0])
+
+    # Contract check: analyzer-required shape should be present in real captures.
+    contract_warnings = avf._validate_capture_contract(payload)
+    assert contract_warnings == []
+
+    # Heuristic APIs should consume captured payload without fallback contract warnings.
+    hypotheses = avf._infer_hypotheses(payload)
+    assert hypotheses
+    assert not any("Artifact contract warnings:" in h for h in hypotheses)
+    formatted = avf._format_entry(payload, artifacts[0])
+    assert "Contract warnings:" not in formatted
+
+    # CLI JSON mode should include contract_warnings=[] for this artifact.
+    rc = avf.main([str(tmp_path), "--latest", "1", "--json"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    rendered = json.loads(out)
+    assert rendered["count"] == 1
+    assert rendered["artifacts"][0]["contract_warnings"] == []
