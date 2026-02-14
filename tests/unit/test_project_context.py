@@ -2,7 +2,9 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
+from d810.core.config import D810Configuration
 from d810.core.project import ProjectContext
+from d810.core.project import ProjectManager
 
 
 class TestProjectContext:
@@ -195,3 +197,22 @@ class TestRegistrantFind:
 
         result = TestBase2.find("MYTESTRULE")
         assert result is MyTestRule
+
+
+class TestProjectManager:
+    """Tests for ProjectManager index bounds handling."""
+
+    def test_get_invalid_positive_index_raises_clear_error(self, tmp_path):
+        config = D810Configuration(ida_user_dir=tmp_path)
+        manager = ProjectManager(config)
+
+        with pytest.raises(IndexError, match=r"Unknown project index"):
+            manager.get(len(manager.projects()))
+
+    def test_get_from_empty_projects_raises_clear_error(self, tmp_path):
+        config = D810Configuration(ida_user_dir=tmp_path)
+        manager = ProjectManager(config)
+        manager._projects.clear()
+
+        with pytest.raises(IndexError, match=r"available range: empty"):
+            manager.get(0)

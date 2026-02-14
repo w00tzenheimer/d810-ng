@@ -71,8 +71,11 @@ class ProjectManager:
     def _(self, identifier: int) -> ProjectConfiguration:
         with self._lock:
             lst = list(self._projects.values())
-            if logger.debug_on and 0 > identifier >= len(lst):
-                logger.error("Unknown project index: %s", identifier)
+            if not 0 <= identifier < len(lst):
+                available = f"0..{len(lst) - 1}" if lst else "empty"
+                raise IndexError(
+                    f"Unknown project index: {identifier} (available range: {available})"
+                )
             return lst[identifier]
 
     def add(self, project: ProjectConfiguration) -> None:

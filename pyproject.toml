@@ -35,6 +35,9 @@ version = { attr = "d810.__version__" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+d810 = ["conf/*.json"]
+
 # pytest configuration
 [tool.pytest.ini_options]
 testpaths = ["tests"]

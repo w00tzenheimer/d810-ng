@@ -699,7 +699,6 @@ class D810State(metaclass=SingletonMeta):
                 raw_index,
             )
             self.current_project_index = 0
-        self.current_project = self.project_manager.get(self.current_project_index)
 
         self.current_ins_rules = []
         self.current_blk_rules = []
@@ -730,6 +729,7 @@ class D810State(metaclass=SingletonMeta):
             self._is_loaded = self.load_project(self.current_project_index) is not None
         else:
             logger.warning("No project configurations available; plugin is idle.")
+            self.current_project = None  # type: ignore[assignment]
             self._is_loaded = False
 
         if gui and self._is_loaded:
