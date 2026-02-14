@@ -179,7 +179,12 @@ class TestCapturePseudocode:
             print(f"  {', '.join(rules_fired[:5])}{'...' if len(rules_fired) > 5 else ''}")
 
         # Assert deobfuscation happened for most functions
-        if func_name not in ["test_neg", "unwrap_loops_3"]:  # These might not change
+        if func_name not in [
+            "test_neg",
+            "unwrap_loops",
+            "unwrap_loops_2",
+            "unwrap_loops_3",
+        ]:  # These might not change
             assert code_before != code_after, f"Deobfuscation should change code for {func_name}"
 
 

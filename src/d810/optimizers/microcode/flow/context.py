@@ -36,7 +36,6 @@ class FlowMaturityContext:
     """Shared function+maturity analysis context for flow optimizers."""
 
     MIN_FIXPRED_DISPATCHER_PREDS = 3
-    MIN_FIXPRED_STATE_CONSTANTS = 3
 
     def __init__(self, mba: ida_hexrays.mba_t, func_ea: int, maturity: int):
         self.mba = mba
@@ -140,19 +139,48 @@ class FlowMaturityContext:
             return FlowGateDecision(False, "dispatcher analysis unavailable")
         if analysis.dispatcher_type == DispatcherType.SWITCH_TABLE:
             return FlowGateDecision(True, "switch-table dispatcher")
-        if analysis.dispatcher_type != DispatcherType.CONDITIONAL_CHAIN:
-            return FlowGateDecision(False, f"dispatcher_type={analysis.dispatcher_type.name}")
         if len(analysis.dispatchers) == 0:
             return FlowGateDecision(False, "no dispatcher candidates")
-        if self._strong_dispatcher_count(analysis) == 0:
-            return FlowGateDecision(False, "no strong dispatcher candidates")
-        return FlowGateDecision(True, "conditional-chain dispatcher")
+        strong_dispatchers = self._strong_dispatcher_count(analysis)
+        if analysis.dispatcher_type == DispatcherType.CONDITIONAL_CHAIN:
+            if strong_dispatchers == 0:
+                return FlowGateDecision(False, "no strong dispatcher candidates")
+            return FlowGateDecision(True, "conditional-chain dispatcher")
+        if analysis.dispatcher_type == DispatcherType.UNKNOWN:
+            if strong_dispatchers > 0:
+                return FlowGateDecision(True, "unknown dispatcher with strong candidates")
+            profile = self.get_profile_stats()
+            if profile is None:
+                return FlowGateDecision(False, "unknown dispatcher without profile stats")
+            if profile.has_nested_dispatch:
+                return FlowGateDecision(True, "unknown dispatcher with nested dispatch profile")
+            if profile.dispatch_scc_n >= 2 and profile.flattening_score >= 0.35:
+                return FlowGateDecision(
+                    True,
+                    (
+                        "unknown dispatcher with cyclic dispatch profile "
+                        f"(scc={profile.dispatch_scc_n}, score={profile.flattening_score:.2f})"
+                    ),
+                )
+            return FlowGateDecision(
+                False,
+                (
+                    "unknown dispatcher profile too weak "
+                    f"(scc={profile.dispatch_scc_n}, score={profile.flattening_score:.2f})"
+                ),
+            )
+        return FlowGateDecision(False, f"dispatcher_type={analysis.dispatcher_type.name}")
 
     def evaluate_fix_predecessor_gate(self) -> FlowGateDecision:
         analysis = self.ensure_dispatcher_analysis()
         if analysis is None:
             return FlowGateDecision(False, "dispatcher analysis unavailable")
-        if analysis.dispatcher_type != DispatcherType.CONDITIONAL_CHAIN:
+        if analysis.dispatcher_type == DispatcherType.SWITCH_TABLE:
+            return FlowGateDecision(False, f"dispatcher_type={analysis.dispatcher_type.name}")
+        if analysis.dispatcher_type not in (
+            DispatcherType.CONDITIONAL_CHAIN,
+            DispatcherType.UNKNOWN,
+        ):
             return FlowGateDecision(False, f"dispatcher_type={analysis.dispatcher_type.name}")
         if len(analysis.dispatchers) == 0:
             return FlowGateDecision(False, "no dispatcher candidates")
@@ -168,13 +196,6 @@ class FlowMaturityContext:
                     f"< {self.MIN_FIXPRED_DISPATCHER_PREDS}"
                 ),
             )
-        state_constants = len(analysis.state_constants)
-        if state_constants < self.MIN_FIXPRED_STATE_CONSTANTS:
-            return FlowGateDecision(
-                False,
-                (
-                    f"state constants {state_constants} "
-                    f"< {self.MIN_FIXPRED_STATE_CONSTANTS}"
-                ),
-            )
-        return FlowGateDecision(True, "conditional-chain dispatcher with strong signals")
+        if analysis.dispatcher_type == DispatcherType.CONDITIONAL_CHAIN:
+            return FlowGateDecision(True, "conditional-chain dispatcher with strong signals")
+        return FlowGateDecision(True, "unknown dispatcher with strong signals")

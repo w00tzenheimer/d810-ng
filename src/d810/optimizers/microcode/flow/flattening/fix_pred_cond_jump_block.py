@@ -446,6 +446,8 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         # create invalid CFG rewrites.
         if analysis.dispatcher_type == DispatcherType.SWITCH_TABLE:
             return 0
+        if blk.serial not in analysis.dispatchers:
+            return 0
 
         # NOTE: For CONDITIONAL_CHAIN dispatchers (nested jnz/jz comparisons),
         # this rule uses dispatcher_info=None to avoid cascading unreachability.

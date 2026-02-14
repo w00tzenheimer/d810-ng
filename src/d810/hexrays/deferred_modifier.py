@@ -1101,12 +1101,12 @@ class DeferredGraphModifier:
             return False
 
     def _apply_goto_change(self, blk: ida_hexrays.mblock_t, new_target: int) -> bool:
-        """Change an unconditional goto's destination."""
-        if blk.tail is None or blk.tail.opcode != ida_hexrays.m_goto:
+        """Redirect a 1-way block successor (tail may be non-goto)."""
+        if blk.nsucc() != 1:
             logger.warning(
-                "Block %d doesn't end with goto (opcode=%s)",
+                "Block %d is not 1-way (nsucc=%d)",
                 blk.serial,
-                blk.tail.opcode if blk.tail else "none"
+                blk.nsucc(),
             )
             return False
 
@@ -1616,12 +1616,12 @@ class ImmediateGraphModifier:
 
     # Reuse the same implementation methods from DeferredGraphModifier
     def _apply_goto_change(self, blk: ida_hexrays.mblock_t, new_target: int) -> bool:
-        """Change an unconditional goto's destination."""
-        if blk.tail is None or blk.tail.opcode != ida_hexrays.m_goto:
+        """Redirect a 1-way block successor (tail may be non-goto)."""
+        if blk.nsucc() != 1:
             logger.warning(
-                "Block %d doesn't end with goto (opcode=%s)",
+                "Block %d is not 1-way (nsucc=%d)",
                 blk.serial,
-                blk.tail.opcode if blk.tail else "none"
+                blk.nsucc(),
             )
             return False
 
