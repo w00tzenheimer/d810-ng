@@ -753,12 +753,40 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         ConfigParam("min_dispatcher_internal_block", int, 2, "Minimum internal blocks for dispatcher detection"),
         ConfigParam("min_dispatcher_exit_block", int, 2, "Minimum exit blocks for dispatcher detection"),
         ConfigParam("min_dispatcher_comparison_value", int, 2, "Minimum comparison values for dispatcher"),
+        ConfigParam(
+            "max_calls_entry_preds",
+            int,
+            24,
+            "MMAT_CALLS guard: skip unflattening when dispatcher entry predecessor count exceeds this value",
+        ),
+        ConfigParam(
+            "max_calls_exit_blocks",
+            int,
+            24,
+            "MMAT_CALLS guard: skip unflattening when dispatcher exit block count exceeds this value",
+        ),
     )
 
     MOP_TRACKER_MAX_NB_BLOCK = 100
     MOP_TRACKER_MAX_NB_PATH = 100
     DEFAULT_MAX_DUPLICATION_PASSES = 20
     DEFAULT_MAX_PASSES = 5
+    # MMAT_CALLS guard defaults.
+    #
+    # Why these values exist:
+    # - We previously had a blanket MMAT_CALLS disable to stop Hex-Rays crashes,
+    #   but that regressed legitimate small dispatcher patterns
+    #   (mixed_dispatcher_pattern).
+    # - Crash repros showed failures in very "wide" dispatcher graphs where
+    #   entry predecessor count and exit-block count are both large.
+    # - These thresholds keep MMAT_CALLS enabled for normal/compact cases while
+    #   routing only pathological graphs to later maturities (GLBOPT*), where
+    #   rewrites are materially more stable.
+    #
+    # These are defaults (not constants): they are exposed in CONFIG_SCHEMA and
+    # can be tuned per project from the GUI/config files.
+    DEFAULT_MAX_CALLS_ENTRY_PREDS = 24
+    DEFAULT_MAX_CALLS_EXIT_BLOCKS = 24
 
     def __init__(self):
         super().__init__()
@@ -766,6 +794,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self.dispatcher_list = []
         self.max_duplication_passes = self.DEFAULT_MAX_DUPLICATION_PASSES
         self.max_passes = self.DEFAULT_MAX_PASSES
+        self.max_calls_entry_preds = self.DEFAULT_MAX_CALLS_ENTRY_PREDS
+        self.max_calls_exit_blocks = self.DEFAULT_MAX_CALLS_EXIT_BLOCKS
         self.non_significant_changes = 0
         # Track processed (source_block, target) pairs to prevent duplicates
         self._processed_dispatcher_fathers: set[tuple[int, int]] = set()
@@ -787,11 +817,6 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             return False
         if not super().check_if_rule_should_be_used(blk):
             return False
-        if self.mba.maturity == ida_hexrays.MMAT_CALLS:
-            # Large CFG surgery at MMAT_CALLS is especially fragile in
-            # Hex-Rays and has repeatedly produced verify failures on real
-            # flattened functions. Keep this rule to safer later maturities.
-            return False
         if (self.cur_maturity_pass >= 1) and (self.last_pass_nb_patch_done == 0):
             return False
         if (self.max_passes is not None) and (
@@ -806,6 +831,10 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             self.max_passes = self.config["max_passes"]
         if "max_duplication_passes" in self.config.keys():
             self.max_duplication_passes = self.config["max_duplication_passes"]
+        if "max_calls_entry_preds" in self.config.keys():
+            self.max_calls_entry_preds = self.config["max_calls_entry_preds"]
+        if "max_calls_exit_blocks" in self.config.keys():
+            self.max_calls_exit_blocks = self.config["max_calls_exit_blocks"]
         self.dispatcher_collector.configure(kwargs)
 
     # Maximum blocks for which retrieve_all_dispatchers will attempt
@@ -1830,45 +1859,76 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         if len(self.dispatcher_list) == 0:
             unflat_logger.info("No dispatcher found at maturity %s", self.mba.maturity)
             return 0
-        else:
-            unflat_logger.info(
-                "Unflattening: %s dispatcher(s) found", len(self.dispatcher_list)
+
+        if self.mba.maturity == ida_hexrays.MMAT_CALLS:
+            # Selective MMAT_CALLS guard:
+            # We only skip the risky shape (high fan-in + large dispatcher) and
+            # preserve MMAT_CALLS behavior for common compact dispatchers.
+            max_entry_preds = max(
+                (
+                    dispatcher_info.entry_block.blk.npred()
+                    for dispatcher_info in self.dispatcher_list
+                    if dispatcher_info.entry_block is not None
+                    and dispatcher_info.entry_block.blk is not None
+                ),
+                default=0,
             )
-            # self.dispatcher_fixer_abc(self.dispatcher_list)
-            for dispatcher_info in self.dispatcher_list:
-                dispatcher_info.print_info()
-                dispatcher_father_list = [
-                    self.mba.get_mblock(x)
-                    for x in dispatcher_info.entry_block.blk.predset
-                ]
-                total_fixed_father_block = 0
-                if self.dump_intermediate_microcode:
-                    dump_microcode_for_debug(
-                        self.mba,
-                        self.log_dir,
-                        "unflat_{0}_dispatcher_{1}_before_fix_abc".format(
-                            self.cur_maturity_pass, dispatcher_info.entry_block.serial
-                        ),
-                    )
-                for dispatcher_father in dispatcher_father_list:
-                    if self._is_past_deadline():
-                        unflat_logger.warning(
-                            "fix_fathers: time budget exceeded, skipping remaining fathers"
-                        )
-                        break
-                    try:
-                        total_fixed_father_block += self.fix_fathers_from_mop_history(
-                            dispatcher_father,
-                            dispatcher_info.entry_block,
-                            dispatcher_info,
-                        )
-                    except Exception as e:
-                        print(e)
-                unflat_logger.info(
-                    "Fixed %s instructions in father history",
-                    total_fixed_father_block,
+            max_exit_blocks = max(
+                (len(dispatcher_info.dispatcher_exit_blocks) for dispatcher_info in self.dispatcher_list),
+                default=0,
+            )
+            if (
+                max_entry_preds > self.max_calls_entry_preds
+                or max_exit_blocks > self.max_calls_exit_blocks
+            ):
+                unflat_logger.warning(
+                    "Skipping MMAT_CALLS unflattening for complex dispatcher "
+                    "(max_entry_preds=%d limit=%d, max_exit_blocks=%d limit=%d); "
+                    "continuing at later maturities",
+                    max_entry_preds,
+                    self.max_calls_entry_preds,
+                    max_exit_blocks,
+                    self.max_calls_exit_blocks,
                 )
-            self.last_pass_nb_patch_done = self.remove_flattening()
+                return scheduled_changes
+        unflat_logger.info(
+            "Unflattening: %s dispatcher(s) found", len(self.dispatcher_list)
+        )
+        # self.dispatcher_fixer_abc(self.dispatcher_list)
+        for dispatcher_info in self.dispatcher_list:
+            dispatcher_info.print_info()
+            dispatcher_father_list = [
+                self.mba.get_mblock(x)
+                for x in dispatcher_info.entry_block.blk.predset
+            ]
+            total_fixed_father_block = 0
+            if self.dump_intermediate_microcode:
+                dump_microcode_for_debug(
+                    self.mba,
+                    self.log_dir,
+                    "unflat_{0}_dispatcher_{1}_before_fix_abc".format(
+                        self.cur_maturity_pass, dispatcher_info.entry_block.serial
+                    ),
+                )
+            for dispatcher_father in dispatcher_father_list:
+                if self._is_past_deadline():
+                    unflat_logger.warning(
+                        "fix_fathers: time budget exceeded, skipping remaining fathers"
+                    )
+                    break
+                try:
+                    total_fixed_father_block += self.fix_fathers_from_mop_history(
+                        dispatcher_father,
+                        dispatcher_info.entry_block,
+                        dispatcher_info,
+                    )
+                except Exception as e:
+                    print(e)
+            unflat_logger.info(
+                "Fixed %s instructions in father history",
+                total_fixed_father_block,
+            )
+        self.last_pass_nb_patch_done = self.remove_flattening()
         unflat_logger.info(
             "Unflattening at maturity %s pass %s: %s changes",
             self.cur_maturity,
