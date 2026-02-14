@@ -729,8 +729,9 @@ HARDENED_OLLVM_COND_CHAIN_CASES = [
         function="hardened_cond_chain_simple",
         description="Hardened OLLVM conditional chain (6 states, binary search dispatch)",
         project="example_libobfuscated.json",
-        # Obfuscated code should reference the opaque constant table
-        obfuscated_contains=["g_opaque_table"],
+        # Use state-machine constants instead of symbol names to remain backend-stable
+        # across PE/Mach-O naming differences.
+        obfuscated_contains=["0x1000", "0x6000"],
         # After deobfuscation, table references should be resolved away
         deobfuscated_not_contains=["g_opaque_table"],
         # The underlying computation is: result = input * 3 + 7
@@ -743,7 +744,8 @@ HARDENED_OLLVM_COND_CHAIN_CASES = [
         function="sub_7FFC1EB47830",
         description="Real hardened OLLVM conditional chain from malware sample (14 states, nested dispatch, opaque table)",
         project="example_libobfuscated.json",
-        obfuscated_contains=["dword_7FFC1ECAEC"],  # opaque table refs in obfuscated code
+        # Avoid address-dependent symbol assertions (varies by backend/build base).
+        obfuscated_contains=["0x623FEB6A"],
         must_change=True,
         # Keep this outcome-focused: rule composition may vary (FixPred vs Unflattener).
         required_rules=[],

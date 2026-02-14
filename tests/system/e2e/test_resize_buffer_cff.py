@@ -102,6 +102,18 @@ class TestResizeBufferCFFIncremental:
     binary_name = _get_default_binary()
     FUNC_NAME = "sub_7FFC1E9D3BB0_resize"
 
+    @staticmethod
+    def _has_resize_opaque_markers(code: str) -> bool:
+        """Backend-stable obfuscation markers for resize CFF function."""
+        markers = (
+            "g_resize_opaque_table",
+            "0x3C837EFA",
+            "0x7BE4032F",
+            "0x7E069F35",
+            "0x4DFE3D51",
+        )
+        return any(marker in code for marker in markers)
+
     def _get_func_ea(self):
         """Resolve the function EA, handling macOS underscore prefix."""
         ea = get_func_ea(self.FUNC_NAME)
@@ -157,8 +169,8 @@ class TestResizeBufferCFFIncremental:
             "This means IDA cannot decompile it at all."
         )
         # Verify we see obfuscation indicators
-        assert "g_resize_opaque_table" in code, (
-            "Expected obfuscation pattern 'g_resize_opaque_table' not found in baseline"
+        assert self._has_resize_opaque_markers(code), (
+            "Expected resize opaque-state markers not found in baseline"
         )
 
     @pytest.mark.ida_required
@@ -187,9 +199,9 @@ class TestResizeBufferCFFIncremental:
                 self._print_stats_summary(state)
 
                 # Check if opaque table references are folded
-                has_opaque_table = "g_resize_opaque_table" in code
-                print(f"\n  Opaque table refs remaining: {has_opaque_table}")
-                if not has_opaque_table:
+                has_opaque_markers = self._has_resize_opaque_markers(code)
+                print(f"\n  Opaque/CFF markers remaining: {has_opaque_markers}")
+                if not has_opaque_markers:
                     print("  --> FoldReadonlyDataRule successfully resolved table lookups")
                 else:
                     print("  --> Opaque table references NOT fully resolved")
@@ -234,8 +246,8 @@ class TestResizeBufferCFFIncremental:
                 print("\n  Stats (rules that fired):")
                 self._print_stats_summary(state)
 
-                has_opaque_table = "g_resize_opaque_table" in code
-                print(f"\n  Opaque table refs remaining: {has_opaque_table}")
+                has_opaque_markers = self._has_resize_opaque_markers(code)
+                print(f"\n  Opaque/CFF markers remaining: {has_opaque_markers}")
             else:
                 print("\n  FAILURE: flatfold config caused decompile() -> None")
                 print("  Block rules are the cause -- isolate further with per-rule tests.")
