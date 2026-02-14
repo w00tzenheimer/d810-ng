@@ -957,9 +957,7 @@
         {
             "name": "Unflattener",
             "is_activated": true,
-            "config": {
-                "whitelisted_functions": ["0x1de2"]
-            }
+            "config": {}
         },
         {
             "name": "UnflattenerSwitchCase",
