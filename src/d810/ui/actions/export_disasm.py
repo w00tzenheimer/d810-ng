@@ -178,7 +178,7 @@ class ExportDisassembly(D810ActionHandler):
             func_name,
             ida_kernwin_module=ida_kernwin_mod,
         )
-        if dialog.exec() != QDialog.Accepted:
+        if dialog.exec_() != QDialog.Accepted:
             logger.info("Export disassembly cancelled by user")
             return 0
 

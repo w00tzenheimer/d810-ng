@@ -185,7 +185,7 @@ class ExportMicrocode(D810ActionHandler):
 
         # Show dialog
         dialog = ExportMicrocodeDialog(func_name, ida_kernwin_module=ida_kernwin_mod)
-        if dialog.exec() != QDialog.Accepted:
+        if dialog.exec_() != QDialog.Accepted:
             logger.info("Export microcode cancelled by user")
             return 0
 

@@ -1,0 +1,26 @@
+# Enforce exec_() for Qt dialogs - PyQt5/PySide6 compatibility
+#
+# BAD:  dialog.exec()
+# GOOD: dialog.exec_()
+#
+# PyQt5 uses exec_() (exec is a Python keyword). PySide6 uses exec().
+# The qt_shim adds exec_ as alias on PySide6. Using exec_() works on both.
+
+id: use-qt-dialog-exec-underscore
+language: python
+severity: warning
+
+files:
+  - "src/**/*.py"
+
+message: |
+  Use exec_() instead of exec() for Qt dialogs (QDialog, QMessageBox, QMenu).
+  exec_() works on both PyQt5 and PySide6; exec() may fail on PyQt5.
+
+rule:
+  pattern: $OBJ.exec()
+
+fix: $OBJ.exec_()
+
+note: |
+  See src/d810/qt_shim.py _setup_compatibility() for exec_ alias on PySide6.

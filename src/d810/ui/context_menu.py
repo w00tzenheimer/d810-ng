@@ -320,6 +320,9 @@ class D810ContextMenu:
             "ida_loader",
             "ida_funcs",
             "ida_fpro",
+            "ida_lines",
+            "ida_name",
+            "ida_bytes",
             "idc",
         ):
             try:

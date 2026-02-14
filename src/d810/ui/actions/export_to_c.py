@@ -31,6 +31,7 @@ idaapi = None
 try:
     from d810.qt_shim import (
         QtWidgets,
+        QApplication,
         QDialog,
         QVBoxLayout,
         QHBoxLayout,
@@ -112,6 +113,61 @@ def _temporary_hexrays_config(
                 set_directive,
                 exc,
             )
+
+
+def _get_qt_parent_for_dialog(ctx: typing.Any, ida_kernwin_mod: typing.Any) -> typing.Any:
+    """Get a Qt parent widget from the action context so dialogs display properly in IDA."""
+    import sys
+
+    # 1. Try converting ctx.widget (TWidget) to QWidget via IDA's converter
+    if ctx is not None and ida_kernwin_mod is not None and getattr(ctx, "widget", None) is not None:
+        plugin_form = getattr(ida_kernwin_mod, "PluginForm", None)
+        if plugin_form is not None:
+            # Pass our module as ctx so converter finds Qt bindings (PySide6/PyQt5)
+            qt_ctx = sys.modules.get("d810.ui.actions.export_to_c") or sys.modules.get("__main__")
+            for method_name in ("FormToPySideWidget", "FormToPyQtWidget", "TWidgetToPySideWidget", "TWidgetToQtPythonWidget"):
+                converter = getattr(plugin_form, method_name, None)
+                if converter is not None:
+                    try:
+                        parent = converter(ctx.widget, qt_ctx) if qt_ctx else converter(ctx.widget)
+                        if parent is not None:
+                            return parent
+                    except Exception:
+                        try:
+                            parent = converter(ctx.widget)
+                            if parent is not None:
+                                return parent
+                        except Exception:
+                            pass
+
+    # 2. Fallback: use QApplication.activeWindow() or first top-level widget
+    if QT_AVAILABLE and QApplication is not None:
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                active = app.activeWindow()
+                if active is not None:
+                    return active
+                # activeWindow can be None when e.g. context menu has focus
+                for w in (app.topLevelWidgets() or [])[:3]:
+                    if w is not None and w.isVisible():
+                        return w
+        except Exception:
+            pass
+
+    return None
+
+
+def _get_default_export_dir(idaapi_mod: typing.Any | None) -> str:
+    """Return a sensible default directory for C export (input file dir or cwd)."""
+    if idaapi_mod is not None and hasattr(idaapi_mod, "get_input_file_path"):
+        try:
+            path = idaapi_mod.get_input_file_path()
+            if path:
+                return os.path.dirname(path)
+        except Exception:
+            pass
+    return os.getcwd()
 
 
 def _get_current_func_ea(
@@ -257,16 +313,19 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
         func_name: str,
         parent=None,
         ida_kernwin_module: typing.Any | None = None,
+        default_output_path: str | None = None,
     ):
         """Initialize the export to C dialog.
 
         Args:
             func_name: Name of the function being exported (for default filename)
             parent: Parent widget
+            default_output_path: Full path for default output file (used when provided)
         """
         super().__init__(parent)
         self.func_name = func_name
         self._ida_kernwin = ida_kernwin_module
+        self._default_output_path = default_output_path
         self.setWindowTitle("Export to C")
         self.setup_ui()
 
@@ -303,7 +362,9 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
         file_layout = QHBoxLayout()
         file_layout.addWidget(QLabel("Output file:"))
         self.file_edit = QLineEdit()
-        self.file_edit.setText(f"{self.func_name}.c")
+        self.file_edit.setText(
+            self._default_output_path if self._default_output_path else f"{self.func_name}.c"
+        )
         file_layout.addWidget(self.file_edit)
 
         browse_btn = QPushButton("Browse...")
@@ -366,19 +427,32 @@ class ExportFunctionToC(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
-        ida_hexrays_mod = self.ida_module("ida_hexrays", ida_hexrays)
-        ida_kernwin_mod = self.ida_module("ida_kernwin", ida_kernwin)
-        ida_funcs_mod = self.ida_module("ida_funcs", ida_funcs)
-        ida_lines_mod = self.ida_module("ida_lines", ida_lines)
-        ida_name_mod = self.ida_module("ida_name", ida_name)
-        ida_bytes_mod = self.ida_module("ida_bytes", ida_bytes)
-        idaapi_mod = self.ida_module("idaapi", idaapi)
+        def _ensure_mod(name: str, default: typing.Any) -> typing.Any:
+            m = self.ida_module(name, default)
+            if m is None:
+                try:
+                    return __import__(name)
+                except ImportError:
+                    return None
+            return m
+
+        ida_hexrays_mod = _ensure_mod("ida_hexrays", ida_hexrays)
+        ida_kernwin_mod = _ensure_mod("ida_kernwin", ida_kernwin)
+        ida_funcs_mod = _ensure_mod("ida_funcs", ida_funcs)
+        ida_lines_mod = _ensure_mod("ida_lines", ida_lines)
+        ida_name_mod = _ensure_mod("ida_name", ida_name)
+        ida_bytes_mod = _ensure_mod("ida_bytes", ida_bytes)
+        idaapi_mod = _ensure_mod("idaapi", idaapi)
         if (
             ida_hexrays_mod is None
             or ida_kernwin_mod is None
             or ida_funcs_mod is None
             or ida_lines_mod is None
         ):
+            msg = "Export to C: missing IDA modules (hexrays, kernwin, funcs, or lines)"
+            logger.warning(msg)
+            if ida_kernwin_mod:
+                ida_kernwin_mod.warning(msg)
             return 0
 
         # Get current function EA
@@ -402,26 +476,42 @@ class ExportFunctionToC(D810ActionHandler):
 
         func_name, pseudocode_lines = result
 
-        # Show dialog if Qt available, otherwise use simple file dialog
-        if QT_AVAILABLE:
-            dialog = ExportToCDialog(func_name, ida_kernwin_module=ida_kernwin_mod)
-            if dialog.exec() != QDialog.Accepted:
+        default_dir = _get_default_export_dir(idaapi_mod)
+        default_output_path = os.path.join(default_dir, suggest_filename(func_name))
+
+        parent_widget = _get_qt_parent_for_dialog(ctx, ida_kernwin_mod)
+        if QT_AVAILABLE and parent_widget is not None:
+            dialog = ExportToCDialog(
+                func_name,
+                parent=parent_widget,
+                ida_kernwin_module=ida_kernwin_mod,
+                default_output_path=default_output_path,
+            )
+            if dialog.exec_() != QDialog.Accepted:
                 logger.info("Export to C cancelled by user")
                 return 0
             settings = dialog.get_settings()
         else:
-            # Fallback to simple file dialog
+            save_path = ida_kernwin_mod.ask_file(1, default_output_path, "Save C source as...")
+            if not save_path:
+                logger.info("Export to C cancelled by user")
+                return 0
             settings = {
                 "sample_compatible": False,
                 "recursion_depth": 0,
                 "export_globals": True,
-                "output_path": suggest_filename(func_name),
+                "output_path": save_path,
             }
 
         output_path = settings.get("output_path")
         if not output_path:
             ida_kernwin_mod.warning("No output file specified")
             return 0
+
+        # Resolve to absolute path so the file is written to an explicit location
+        if not os.path.isabs(output_path):
+            output_path = os.path.join(default_dir, output_path)
+        output_path = os.path.normpath(os.path.abspath(output_path))
 
         # Get d810ng deobfuscation stats if available
         metadata = None

@@ -260,7 +260,7 @@ class FunctionRules(D810ActionHandler):
             initial_tags=initial_tags,
             initial_notes=initial_notes,
         )
-        if dialog.exec() != QDialog.Accepted:
+        if dialog.exec_() != QDialog.Accepted:
             return 0
 
         enabled_names = dialog.selected_rule_names()
