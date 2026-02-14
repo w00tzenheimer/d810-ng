@@ -135,6 +135,15 @@ class D810Manager:
             ),
         )
 
+    @property
+    def is_profiling(self) -> bool:
+        """Return True if either cProfile or pyinstrument profiler is currently running."""
+        if self.cprofiler and self.cprofiler.is_running:
+            return True
+        if self.profiler and getattr(self.profiler, "is_running", False):
+            return True
+        return False
+
     def start_profiling(self):
         if not self._profiling_enabled:
             return
