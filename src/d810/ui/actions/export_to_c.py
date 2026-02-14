@@ -3,6 +3,7 @@
 Export the decompiled function as a compilable C source file with metadata.
 Available from both pseudocode and disassembly views.
 """
+
 from __future__ import annotations
 
 import os
@@ -10,6 +11,7 @@ import re
 import typing
 from contextlib import contextmanager
 
+from d810.core.config import DEFAULT_IDA_USER_DIR
 from d810.core.logging import getLogger
 from d810.ui.actions.base import D810ActionHandler
 from d810.ui.actions.export_to_c_logic import format_c_output, suggest_filename
@@ -30,16 +32,16 @@ idaapi = None
 # ---------------------------------------------------------------------------
 try:
     from d810.qt_shim import (
-        QtWidgets,
         QApplication,
+        QCheckBox,
         QDialog,
-        QVBoxLayout,
         QHBoxLayout,
         QLabel,
-        QCheckBox,
-        QPushButton,
         QLineEdit,
+        QPushButton,
         QSpinBox,
+        QtWidgets,
+        QVBoxLayout,
     )
 
     QT_AVAILABLE = True
@@ -68,11 +70,13 @@ _GLOBAL_TYPE_BY_PREFIX = {
 
 def _get_collapse_lvars_restore_directive() -> str:
     """Resolve preferred COLLAPSE_LVARS restore directive from user config."""
-    cfg_path = os.path.expanduser("~/.idapro/cfg/hexrays.cfg")
+    cfg_path = DEFAULT_IDA_USER_DIR / "cfg" / "hexrays.cfg"
     try:
         with open(cfg_path, encoding="utf-8") as cfg_file:
             for line in cfg_file:
-                match = re.match(r"^\s*COLLAPSE_LVARS\s*=\s*(YES|NO)\b", line, re.IGNORECASE)
+                match = re.match(
+                    r"^\s*COLLAPSE_LVARS\s*=\s*(YES|NO)\b", line, re.IGNORECASE
+                )
                 if match:
                     return f"COLLAPSE_LVARS = {match.group(1).upper()}"
     except OSError:
@@ -115,21 +119,38 @@ def _temporary_hexrays_config(
             )
 
 
-def _get_qt_parent_for_dialog(ctx: typing.Any, ida_kernwin_mod: typing.Any) -> typing.Any:
+def _get_qt_parent_for_dialog(
+    ctx: typing.Any, ida_kernwin_mod: typing.Any
+) -> typing.Any:
     """Get a Qt parent widget from the action context so dialogs display properly in IDA."""
     import sys
 
     # 1. Try converting ctx.widget (TWidget) to QWidget via IDA's converter
-    if ctx is not None and ida_kernwin_mod is not None and getattr(ctx, "widget", None) is not None:
+    if (
+        ctx is not None
+        and ida_kernwin_mod is not None
+        and getattr(ctx, "widget", None) is not None
+    ):
         plugin_form = getattr(ida_kernwin_mod, "PluginForm", None)
         if plugin_form is not None:
             # Pass our module as ctx so converter finds Qt bindings (PySide6/PyQt5)
-            qt_ctx = sys.modules.get("d810.ui.actions.export_to_c") or sys.modules.get("__main__")
-            for method_name in ("FormToPySideWidget", "FormToPyQtWidget", "TWidgetToPySideWidget", "TWidgetToQtPythonWidget"):
+            qt_ctx = sys.modules.get("d810.ui.actions.export_to_c") or sys.modules.get(
+                "__main__"
+            )
+            for method_name in (
+                "FormToPySideWidget",
+                "FormToPyQtWidget",
+                "TWidgetToPySideWidget",
+                "TWidgetToQtPythonWidget",
+            ):
                 converter = getattr(plugin_form, method_name, None)
                 if converter is not None:
                     try:
-                        parent = converter(ctx.widget, qt_ctx) if qt_ctx else converter(ctx.widget)
+                        parent = (
+                            converter(ctx.widget, qt_ctx)
+                            if qt_ctx
+                            else converter(ctx.widget)
+                        )
                         if parent is not None:
                             return parent
                     except Exception:
@@ -338,7 +359,9 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
         format_layout.addWidget(QLabel("Output format:"))
         self.normal_radio = QtWidgets.QRadioButton("Normal C (standard decompilation)")
         self.normal_radio.setChecked(True)
-        self.sample_radio = QtWidgets.QRadioButton("Sample-compatible C (for recompilation)")
+        self.sample_radio = QtWidgets.QRadioButton(
+            "Sample-compatible C (for recompilation)"
+        )
         format_layout.addWidget(self.normal_radio)
         format_layout.addWidget(self.sample_radio)
         layout.addLayout(format_layout)
@@ -363,7 +386,9 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
         file_layout.addWidget(QLabel("Output file:"))
         self.file_edit = QLineEdit()
         self.file_edit.setText(
-            self._default_output_path if self._default_output_path else f"{self.func_name}.c"
+            self._default_output_path
+            if self._default_output_path
+            else f"{self.func_name}.c"
         )
         file_layout.addWidget(self.file_edit)
 
@@ -389,7 +414,9 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
         if self._ida_kernwin is None:
             return
 
-        file_path = self._ida_kernwin.ask_file(1, self.file_edit.text(), "Save C source as...")
+        file_path = self._ida_kernwin.ask_file(
+            1, self.file_edit.text(), "Save C source as..."
+        )
         if file_path:
             self.file_edit.setText(file_path)
 
@@ -405,7 +432,6 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
             "export_globals": self.export_globals_check.isChecked(),
             "output_path": self.file_edit.text(),
         }
-
 
 
 class ExportFunctionToC(D810ActionHandler):
@@ -427,6 +453,7 @@ class ExportFunctionToC(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
+
         def _ensure_mod(name: str, default: typing.Any) -> typing.Any:
             m = self.ida_module(name, default)
             if m is None:
@@ -456,7 +483,9 @@ class ExportFunctionToC(D810ActionHandler):
             return 0
 
         # Get current function EA
-        func_ea = _get_current_func_ea(ctx, ida_hexrays_mod, ida_kernwin_mod, ida_funcs_mod)
+        func_ea = _get_current_func_ea(
+            ctx, ida_hexrays_mod, ida_kernwin_mod, ida_funcs_mod
+        )
         if func_ea is None:
             logger.warning("ExportFunctionToC: could not determine function EA")
             ida_kernwin_mod.warning("No function at cursor")
@@ -492,7 +521,9 @@ class ExportFunctionToC(D810ActionHandler):
                 return 0
             settings = dialog.get_settings()
         else:
-            save_path = ida_kernwin_mod.ask_file(1, default_output_path, "Save C source as...")
+            save_path = ida_kernwin_mod.ask_file(
+                1, default_output_path, "Save C source as..."
+            )
             if not save_path:
                 logger.info("Export to C cancelled by user")
                 return 0
@@ -551,7 +582,9 @@ class ExportFunctionToC(D810ActionHandler):
                     global_declarations=global_decls,
                 )
             except ImportError:
-                logger.warning("Sample-compatible formatter not yet implemented, using normal format")
+                logger.warning(
+                    "Sample-compatible formatter not yet implemented, using normal format"
+                )
                 c_source = format_c_output(
                     func_name=func_name,
                     func_ea=func_ea,
@@ -570,7 +603,9 @@ class ExportFunctionToC(D810ActionHandler):
         # TODO: Handle recursion_depth > 0 (recursively decompile called functions)
         recursion_depth = settings.get("recursion_depth", 0)
         if recursion_depth > 0:
-            logger.warning("Recursion depth > 0 not yet implemented, exporting only current function")
+            logger.warning(
+                "Recursion depth > 0 not yet implemented, exporting only current function"
+            )
 
         # Save to file
         try:
