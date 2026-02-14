@@ -181,8 +181,6 @@ class TestCapturePseudocode:
         # Assert deobfuscation happened for most functions
         if func_name not in [
             "test_neg",
-            "unwrap_loops",
-            "unwrap_loops_2",
             "unwrap_loops_3",
         ]:  # These might not change
             assert code_before != code_after, f"Deobfuscation should change code for {func_name}"
