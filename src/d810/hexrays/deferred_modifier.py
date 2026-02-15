@@ -210,7 +210,9 @@ from d810.hexrays.cfg_utils import (
     mba_deep_cleaning,
     safe_verify,
     snapshot_block_for_capture,
+    _rewire_edge,
 )
+from d810.hexrays.portable_cfg import lift, PortableCFG
 
 if TYPE_CHECKING:
     pass
@@ -403,6 +405,7 @@ class DeferredGraphModifier:
     modifications: list[GraphModification] = field(default_factory=list)
     _applied: bool = False
     verify_failed: bool = False
+    _pre_snapshot: PortableCFG | None = None
 
     def reset(self) -> None:
         """Clear all queued modifications."""
@@ -651,6 +654,74 @@ class DeferredGraphModifier:
         """Check if there are any queued modifications."""
         return len(self.modifications) > 0
 
+    def _restore_from_snapshot(self, snapshot: PortableCFG) -> bool:
+        """Restore MBA topology from a PortableCFG snapshot.
+
+        Best-effort restoration of block topology (edges, types, flags).
+        Instruction content restoration is not guaranteed.
+
+        Args:
+            snapshot: Pre-modification snapshot to restore from.
+
+        Returns:
+            True if restoration succeeded and mba.verify() passed.
+        """
+        if snapshot is None:
+            logger.warning("Cannot restore from None snapshot")
+            return False
+
+        logger.info("Restoring MBA topology from snapshot (nblocks=%d)", snapshot.num_blocks)
+
+        # Restore block topology: iterate over snapshot blocks and rewire edges
+        for serial, snap_blk in snapshot.blocks.items():
+            blk = self.mba.get_mblock(serial)
+            if blk is None:
+                logger.warning("Block %d not found in MBA during restoration", serial)
+                continue
+
+            # Compute what needs to change: old edges (current state) vs new edges (snapshot state)
+            current_succs = [blk.succset[i] for i in range(blk.succset.size())]
+            target_succs = list(snap_blk.succs)
+
+            # Skip if already correct
+            if current_succs == target_succs and blk.type == snap_blk.block_type:
+                continue
+
+            # Compute edges to remove and add
+            old_succs = [s for s in current_succs if s not in target_succs]
+            new_succs = [s for s in target_succs if s not in current_succs]
+
+            logger.debug(
+                "Restoring block %d: type %d->%d, succs %s->%s",
+                serial, blk.type, snap_blk.block_type, current_succs, target_succs
+            )
+
+            # Use _rewire_edge helper to update topology
+            try:
+                _rewire_edge(
+                    blk,
+                    old_succs=old_succs,
+                    new_succs=new_succs,
+                    new_block_type=snap_blk.block_type,
+                    new_flags=snap_blk.flags,
+                    verify=False,  # Defer verify until all blocks are restored
+                )
+            except Exception as e:
+                logger.error("Failed to restore block %d: %s", serial, e)
+                return False
+
+        # Mark chains dirty after restoration
+        self.mba.mark_chains_dirty()
+
+        # Verify restoration
+        try:
+            self.mba.verify(True)
+            logger.info("MBA topology restored successfully from snapshot")
+            return True
+        except RuntimeError as e:
+            logger.error("MBA verify failed after snapshot restoration: %s", e)
+            return False
+
     def coalesce(self) -> int:
         """
         Coalesce queued modifications to remove duplicates and optimize the queue.
@@ -805,6 +876,7 @@ class DeferredGraphModifier:
         rollback_on_verify_failure: bool = False,
         continue_on_verify_failure: bool = False,
         defer_post_apply_maintenance: bool = False,
+        enable_snapshot_rollback: bool = False,
     ) -> int:
         """
         Apply all queued modifications in priority order.
@@ -824,6 +896,9 @@ class DeferredGraphModifier:
                 applying queued modifications (and marking chains dirty),
                 skipping cleanup/verify so callers can perform custom
                 canonicalization first.
+            enable_snapshot_rollback: If True, capture a pre-modification snapshot
+                and restore from it on post-apply verify failure. This provides
+                full-topology rollback at the cost of snapshot overhead.
 
         Returns:
             Number of successful modifications applied.
@@ -850,6 +925,21 @@ class DeferredGraphModifier:
                 logger.warning("DEBUG: pre-apply verify passed")
             except RuntimeError:
                 logger.error("DEBUG: pre-apply verify failed")
+
+        # Capture pre-modification snapshot if enabled
+        if enable_snapshot_rollback:
+            logger.info("Capturing pre-modification snapshot for rollback")
+            try:
+                self._pre_snapshot = lift(self.mba)
+                logger.debug(
+                    "Snapshot captured: %d blocks, entry=%d",
+                    self._pre_snapshot.num_blocks,
+                    self._pre_snapshot.entry_serial,
+                )
+            except Exception as e:
+                logger.error("Failed to capture pre-modification snapshot: %s", e)
+                # Continue without snapshot - best effort
+                self._pre_snapshot = None
 
         # Coalesce duplicates and detect conflicts before applying
         self.coalesce()
@@ -1191,6 +1281,24 @@ class DeferredGraphModifier:
                     "-- marking verify_failed so callers can abort gracefully",
                     successful,
                 )
+
+                # If snapshot rollback is enabled and we have a snapshot, try full restoration
+                if enable_snapshot_rollback and self._pre_snapshot is not None:
+                    logger.warning(
+                        "Attempting snapshot-based rollback (nblocks=%d)",
+                        self._pre_snapshot.num_blocks,
+                    )
+                    if self._restore_from_snapshot(self._pre_snapshot):
+                        self.verify_failed = False
+                        logger.warning(
+                            "Successfully restored MBA from snapshot after verify failure"
+                        )
+                        # Return 0 to indicate no successful changes (rolled back)
+                        self._applied = True
+                        return 0
+                    else:
+                        logger.error("Snapshot rollback failed, MBA remains corrupted")
+
                 # Best-effort recovery: conservative cleanup + one re-verify
                 # attempt. If this succeeds, callers can safely continue.
                 try:
