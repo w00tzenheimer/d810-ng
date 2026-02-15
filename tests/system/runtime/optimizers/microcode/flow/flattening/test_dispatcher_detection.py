@@ -78,7 +78,7 @@ class TestDispatcherDetectionWithRealMicrocode:
             ("nested_while_hodur_pattern", DispatcherType.CONDITIONAL_CHAIN),  # 3-level nested while
             ("_hodur_func", DispatcherType.CONDITIONAL_CHAIN),                 # Real Hodur malware
             ("high_fan_in_pattern", DispatcherType.SWITCH_TABLE),             # May produce jtbl
-            ("hardened_cond_chain_simple", None),                             # May not meet CONDITIONAL_CHAIN threshold
+            ("hardened_cond_chain_simple", DispatcherType.CONDITIONAL_CHAIN),  # Uses state values 0x1000-0x7000 (now detected)
         ]
 
         maturities_to_test = [

@@ -51,8 +51,9 @@ if TYPE_CHECKING:
 
 unflat_logger = getLogger("D810.unflat.hodur")
 
-# Hodur uses large 32-bit constants as state values
-MIN_STATE_CONSTANT = 0x10000
+# State values must exceed this threshold to be considered dispatcher constants.
+# Real obfuscators use values from 0x1000+ (hardened OLLVM) to 0xDEAD0000+ (Hodur).
+MIN_STATE_CONSTANT = 0x100
 # Minimum number of unique state constants to consider it a state machine
 MIN_STATE_CONSTANTS = 3
 # Maximum number of state constants - if more, it's likely OLLVM FLA not Hodur

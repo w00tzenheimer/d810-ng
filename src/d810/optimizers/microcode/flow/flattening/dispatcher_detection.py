@@ -191,7 +191,7 @@ class DispatcherAnalysis:
 
 # Thresholds for detection strategies
 MIN_HIGH_FAN_IN = 5
-MIN_STATE_CONSTANT = 0x10000
+MIN_STATE_CONSTANT = 0x100  # Lowered from 0x10000 to detect smaller state values (e.g., 0x1000-0x7000)
 MIN_UNIQUE_CONSTANTS = 3
 MIN_PREDECESSOR_UNIFORMITY_RATIO = 0.8
 MIN_BACK_EDGE_RATIO = 0.3
