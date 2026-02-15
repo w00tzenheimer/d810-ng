@@ -37,7 +37,6 @@ from dataclasses import dataclass
 from d810.optimizers.microcode.flow.state_var_alias import VarRef
 
 __all__ = [
-    "VarRef",
     "BlockComparison",
     "CompareEntry",
     "DispatchTable",
@@ -270,6 +269,9 @@ class CompareChainResolver:
             if var not in state_aliases:
                 continue
 
+            # Always track the chain's fallthrough, even for duplicates
+            last_false_target = comp.false_target
+
             # Check for duplicate/conflicting constants
             if constant in seen_constants:
                 existing_target = seen_constants[constant]
@@ -292,9 +294,6 @@ class CompareChainResolver:
             entry = CompareEntry(constant, comp.true_target, comp.block_serial)
             entries.append(entry)
             seen_constants[constant] = comp.true_target
-
-            # Track the last false_target as the default
-            last_false_target = comp.false_target
 
         # Determine default_serial: the final fallthrough in the chain
         default_serial = last_false_target if entries else None
