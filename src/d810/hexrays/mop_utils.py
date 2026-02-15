@@ -7,7 +7,6 @@ CFG Pass Pipeline refactor (Phase 1).
 from __future__ import annotations
 
 import functools
-import logging
 
 import ida_hexrays
 
@@ -88,8 +87,6 @@ def get_stack_var_name(mop: ida_hexrays.mop_t) -> str | None:
         name = _cached_stack_var_name(id(mop), mop.t, mop.r, mop.size, mop.valnum, None)
     else:
         return None
-    return name
-
     _VALNUM_NAME_CACHE[mop.valnum] = name
     return name
 

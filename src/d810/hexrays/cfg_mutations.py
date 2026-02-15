@@ -6,8 +6,6 @@ as part of the CFG Pass Pipeline refactor (Phase 1).
 """
 from __future__ import annotations
 
-import logging
-
 import ida_hexrays
 import idaapi
 
