@@ -190,6 +190,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
+import logging
 
 from d810.core.typing import TYPE_CHECKING
 import os
@@ -660,6 +661,10 @@ class DeferredGraphModifier:
         Best-effort restoration of block topology (edges, types, flags).
         Instruction content restoration is not guaranteed.
 
+        Note: Blocks created during failed modifications (serials beyond
+        the snapshot) are not removed. Callers should run mba_deep_cleaning()
+        after failed rollback if orphaned blocks are suspected.
+
         Args:
             snapshot: Pre-modification snapshot to restore from.
 
@@ -691,19 +696,26 @@ class DeferredGraphModifier:
             old_succs = [s for s in current_succs if s not in target_succs]
             new_succs = [s for s in target_succs if s not in current_succs]
 
-            logger.debug(
-                "Restoring block %d: type %d->%d, succs %s->%s",
-                serial, blk.type, snap_blk.block_type, current_succs, target_succs
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Restoring block %d: type %d->%d, succs %s->%s",
+                    serial, blk.type, snap_blk.block_type, current_succs, target_succs
+                )
 
-            # Use _rewire_edge helper to update topology
+            # Restore block type and flags directly (before _rewire_edge)
+            # CRITICAL FIX: _rewire_edge does OR for flags (blk.flags |= new_flags),
+            # but rollback requires full replacement
+            blk.type = snap_blk.block_type
+            blk.flags = snap_blk.flags
+
+            # Use _rewire_edge helper to update topology only
             try:
                 _rewire_edge(
                     blk,
                     old_succs=old_succs,
                     new_succs=new_succs,
-                    new_block_type=snap_blk.block_type,
-                    new_flags=snap_blk.flags,
+                    new_block_type=None,  # Already set above
+                    new_flags=None,       # Already set above
                     verify=False,  # Defer verify until all blocks are restored
                 )
             except Exception as e:
@@ -938,6 +950,10 @@ class DeferredGraphModifier:
                 )
             except Exception as e:
                 logger.error("Failed to capture pre-modification snapshot: %s", e)
+                logger.warning(
+                    "Snapshot rollback disabled: failed to capture snapshot, "
+                    "proceeding without rollback protection"
+                )
                 # Continue without snapshot - best effort
                 self._pre_snapshot = None
 
