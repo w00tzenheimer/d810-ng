@@ -20,12 +20,16 @@ from d810.core.typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 try:
     import ida_bytes
+    import ida_funcs
     import ida_hexrays
+    import idaapi
 
     _IDA_AVAILABLE = True
 except ImportError:
     ida_bytes = None  # type: ignore[assignment]
+    ida_funcs = None  # type: ignore[assignment]
     ida_hexrays = None  # type: ignore[assignment]
+    idaapi = None  # type: ignore[assignment]
     _IDA_AVAILABLE = False
 
 if TYPE_CHECKING:
@@ -34,6 +38,40 @@ if TYPE_CHECKING:
 from d810.core import getLogger
 
 logger = getLogger(__name__)
+
+BADADDR: int = 0xFFFFFFFFFFFFFFFF
+
+
+def is_valid_database_ea(ea: int) -> bool:
+    """Check whether ea falls within the loaded database address range."""
+    if not _IDA_AVAILABLE:
+        return False
+    if ea == BADADDR:
+        return False
+    min_ea = idaapi.inf_get_min_ea()
+    max_ea = idaapi.inf_get_max_ea()
+    return min_ea <= ea < max_ea
+
+
+def is_code_ea(ea: int) -> bool:
+    """Check whether ea is a valid database address pointing to code."""
+    if not is_valid_database_ea(ea):
+        return False
+    return ida_bytes.is_code(ida_bytes.get_flags(ea))
+
+
+def get_func_safe(ea: int):
+    """Safe wrapper around ida_funcs.get_func(). Returns None for invalid EAs."""
+    if not is_valid_database_ea(ea):
+        return None
+    return ida_funcs.get_func(ea)
+
+
+def get_flags_safe(ea: int) -> int:
+    """Safe wrapper around ida_bytes.get_flags(). Returns 0 for invalid EAs."""
+    if not is_valid_database_ea(ea):
+        return 0
+    return ida_bytes.get_flags(ea)
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +232,9 @@ def validate_code_target(
     bool
     """
     if not _IDA_AVAILABLE:
+        return False
+
+    if not is_valid_database_ea(ea):
         return False
 
     flags = ida_bytes.get_flags(ea)

@@ -74,6 +74,8 @@ class InstructionDefUseCollector(ida_hexrays.mop_visitor_t):
                 append_mop_if_not_in_list(op, self.unresolved_ins_mops)
             elif op.t == ida_hexrays.mop_r:
                 append_mop_if_not_in_list(op, self.unresolved_ins_mops)
+            elif op.t == ida_hexrays.mop_l:
+                append_mop_if_not_in_list(op, self.unresolved_ins_mops)
             elif op.t == ida_hexrays.mop_v:
                 append_mop_if_not_in_list(op, self.memory_unresolved_ins_mops)
             elif op.t == ida_hexrays.mop_a:
@@ -378,7 +380,7 @@ def get_standard_and_memory_mop_lists(mop_in: ida_hexrays.mop_t) -> tuple[list[i
             )
         return [], []
 
-    if mop_in.t in [ida_hexrays.mop_r, ida_hexrays.mop_S]:
+    if mop_in.t in [ida_hexrays.mop_r, ida_hexrays.mop_S, ida_hexrays.mop_l]:
         return [mop_in], []
     elif mop_in.t == ida_hexrays.mop_v:
         return [], [mop_in]
@@ -850,7 +852,7 @@ class MopTracker(object):
     def _build_ml_list(self, blk: ida_hexrays.mblock_t) -> Union[None, ida_hexrays.mlist_t]:
         ml = ida_hexrays.mlist_t()
         for unresolved_mop in self._unresolved_mops:
-            if unresolved_mop.t not in [ida_hexrays.mop_r, ida_hexrays.mop_S]:
+            if unresolved_mop.t not in [ida_hexrays.mop_r, ida_hexrays.mop_S, ida_hexrays.mop_l]:
                 logger.warning(
                     "_build_ml_list: Not supported mop type '{0}'".format(
                         unresolved_mop.t

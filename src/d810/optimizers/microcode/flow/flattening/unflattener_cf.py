@@ -2016,7 +2016,13 @@ class cf_unflattener_t:
                         # are now spoiled. Mark it dirty.
                         non_jcc.mark_lists_dirty()
 
-        changed += dgm.apply(mba, self.cfi)
+        from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
+        num_redirected = len(dgm.edges)
+        total_case_blocks = len(self.cfi.key_to_block)
+        if not should_apply_cfg_modifications(num_redirected, total_case_blocks, "cf"):
+            dgm.clear()
+        else:
+            changed += dgm.apply(mba, self.cfi)
         # After we've processed every block, apply the deferred modifications to
         # the graph structure.
 

@@ -2092,17 +2092,25 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
         # Apply all deferred CFG modifications after analysis is complete
         if deferred_modifier.has_modifications():
-            unflat_logger.info(
-                "Applying %d deferred CFG modifications from resolve_dispatcher_father",
-                len(deferred_modifier.modifications),
+            from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
+            num_redirected = len(deferred_modifier.modifications)
+            total_exit_blocks = sum(
+                len(d.dispatcher_exit_blocks) for d in self.dispatcher_list
             )
-            deferred_modifier.apply(
-                run_optimize_local=False,
-                run_deep_cleaning=False,
-                verify_each_mod=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
-                rollback_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
-                continue_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
-            )
+            if not should_apply_cfg_modifications(num_redirected, total_exit_blocks, "generic"):
+                deferred_modifier.reset()
+            else:
+                unflat_logger.info(
+                    "Applying %d deferred CFG modifications from resolve_dispatcher_father",
+                    len(deferred_modifier.modifications),
+                )
+                deferred_modifier.apply(
+                    run_optimize_local=False,
+                    run_deep_cleaning=False,
+                    verify_each_mod=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
+                    rollback_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
+                    continue_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
+                )
 
             if deferred_modifier.verify_failed:
                 self._verify_failed = True

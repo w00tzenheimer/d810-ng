@@ -502,14 +502,20 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Apply all queued modifications at once
         nb_changes = 0
         if self.deferred.has_modifications():
-            unflat_logger.info(
-                "Applying %d queued modifications",
-                len(self.deferred.modifications)
-            )
-            nb_changes = self.deferred.apply(
-                run_optimize_local=True,
-                run_deep_cleaning=False,
-            )
+            from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
+            num_redirected = len(self.deferred.modifications)
+            total_handlers = len(self.state_machine.handlers)
+            if not should_apply_cfg_modifications(num_redirected, total_handlers, "hodur"):
+                pass  # skip apply
+            else:
+                unflat_logger.info(
+                    "Applying %d queued modifications",
+                    len(self.deferred.modifications)
+                )
+                nb_changes = self.deferred.apply(
+                    run_optimize_local=True,
+                    run_deep_cleaning=False,
+                )
 
         self.last_pass_nb_patch_done = nb_changes
         unflat_logger.info(

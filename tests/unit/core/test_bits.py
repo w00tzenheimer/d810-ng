@@ -1,7 +1,7 @@
 import pytest
 
 # Import from d810.core.bits (IDA-independent bitwise utilities)
-from d810.core.bits import signed_to_unsigned, unsigned_to_signed, get_parity_flag
+from d810.core.bits import signed_to_unsigned, unsigned_to_signed, get_parity_flag, popcount, is_state_constant
 
 def test_signed_to_unsigned_small_sizes():
     # Test positive values
@@ -134,4 +134,61 @@ def test_invalid_sizes():
         unsigned_to_signed(42, 32)
     with pytest.raises(KeyError):
         get_parity_flag(1, 2, 64)
+
+
+class TestPopcount:
+    def test_zero(self):
+        assert popcount(0) == 0
+
+    def test_one(self):
+        assert popcount(1) == 1
+
+    def test_all_ones_32(self):
+        assert popcount(0xFFFFFFFF) == 32
+
+    def test_alternating(self):
+        assert popcount(0x55555555) == 16
+        assert popcount(0xAAAAAAAA) == 16
+
+    def test_deadbeef(self):
+        assert popcount(0xDEADBEEF) == 24
+
+    def test_width_64(self):
+        assert popcount(0xFFFFFFFFFFFFFFFF, width=64) == 64
+
+    def test_width_8(self):
+        assert popcount(0xFF, width=8) == 8
+
+
+class TestIsStateConstant:
+    @pytest.mark.parametrize("value", [
+        0xDEADBEEF, 0xCAFEBABE, 0x12345678, 0x55555555, 0x87654321,
+    ])
+    def test_known_state_constants(self, value):
+        assert is_state_constant(value) is True
+
+    @pytest.mark.parametrize("value", [
+        0x0, 0x1, 0x100, 0x10000, 0xFFFF,
+        0x10000000,  # low half is zero
+        0xFFFF0000,  # low half is zero
+        0xFFFFFFFF,  # popcount=32
+        0x100000000,  # 64-bit
+    ])
+    def test_known_non_state_constants(self, value):
+        assert is_state_constant(value) is False
+
+    def test_popcount_boundary_26_accepted(self):
+        val = 0xFFFFFFC0  # popcount=26
+        assert is_state_constant(val) is True
+
+    def test_popcount_boundary_27_rejected(self):
+        val = 0xFFFFFFE0  # popcount=27
+        assert is_state_constant(val) is False
+
+    def test_range_boundary_below_floor(self):
+        assert is_state_constant(0x0FFFFFFF) is False
+
+    def test_custom_popcount_range(self):
+        assert is_state_constant(0xDEADBEEF, min_popcount=1, max_popcount=31) is True
+        assert is_state_constant(0xDEADBEEF, min_popcount=30, max_popcount=31) is False
 

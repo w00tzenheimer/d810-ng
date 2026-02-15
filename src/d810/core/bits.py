@@ -242,6 +242,52 @@ def __ROR8__(value: int, count: int) -> int:
     return __ror__(value, count, 64)
 
 
+def popcount(value: int, width: int = 32) -> int:
+    """Count the number of set bits (population count).
+
+    Args:
+        value: The integer value.
+        width: Bit width to mask to (default 32).
+
+    Returns:
+        Number of 1-bits in the value.
+    """
+    mask = (1 << width) - 1
+    return bin(value & mask).count("1")
+
+
+def is_state_constant(
+    value: int,
+    *,
+    min_popcount: int = 6,
+    max_popcount: int = 26,
+) -> bool:
+    """Check if a value looks like a control-flow flattening state constant.
+
+    State constants used by obfuscators are typically pseudo-random 32-bit
+    values with moderate bit density. This heuristic detects them via:
+    1. Range check: value must be in [0x10000000, 0xFFFFFFFF]
+    2. Half-entropy: both high and low 16-bit halves must be non-zero
+    3. Popcount: set bits must be in [min_popcount, max_popcount]
+
+    Args:
+        value: The integer constant to check.
+        min_popcount: Minimum number of set bits (default 6).
+        max_popcount: Maximum number of set bits (default 26).
+
+    Returns:
+        True if the value has characteristics of a state constant.
+    """
+    if value < 0x10000000 or value > 0xFFFFFFFF:
+        return False
+    high = (value >> 16) & 0xFFFF
+    low = value & 0xFFFF
+    if high == 0 or low == 0:
+        return False
+    bit_count = bin(value & 0xFFFFFFFF).count("1")
+    return min_popcount <= bit_count <= max_popcount
+
+
 __all__ = [
     # Constants
     "SUB_TABLE",
@@ -272,4 +318,7 @@ __all__ = [
     "__ROR2__",
     "__ROR4__",
     "__ROR8__",
+    # State constant detection
+    "popcount",
+    "is_state_constant",
 ]

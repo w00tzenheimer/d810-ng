@@ -69,6 +69,8 @@ from d810.core import getLogger
 from d810.hexrays.table_utils import (
     find_table_reference,
     find_xor_with_globals,
+    get_func_safe,
+    is_valid_database_ea,
     read_global_value,
     validate_code_target,
 )
@@ -278,6 +280,10 @@ class IndirectCallResolver(_BASE_CLASS):
         )
 
         # Step 4: Validate the target is a function start
+        if not is_valid_database_ea(target_ea):
+            logger.info("target %#x outside database EA range, skipping", target_ea)
+            return False
+
         func = ida_funcs.get_func(target_ea)
         is_func_start = func is not None and func.start_ea == target_ea
 
@@ -619,7 +625,7 @@ class IndirectCallResolver(_BASE_CLASS):
 
         # Also accept if it is within a known function
         if _IDA_AVAILABLE:
-            func = ida_funcs.get_func(target)
+            func = get_func_safe(target)
             if func is not None:
                 return target
 
@@ -672,7 +678,7 @@ class IndirectCallResolver(_BASE_CLASS):
                 insn.l.erase()
                 insn.l.t = ida_hexrays.mop_v
                 insn.l.g = target_ea
-                insn.l.size = 0  # NOSIZE
+                insn.l.size = ida_hexrays.NOSIZE  # NOSIZE
 
                 # m_call requires r to be empty
                 insn.r.erase()
@@ -705,7 +711,7 @@ class IndirectCallResolver(_BASE_CLASS):
                 insn.l.erase()
                 insn.l.t = ida_hexrays.mop_v
                 insn.l.g = target_ea
-                insn.l.size = 0
+                insn.l.size = ida_hexrays.NOSIZE
 
                 insn.r.erase()
 
@@ -722,7 +728,7 @@ class IndirectCallResolver(_BASE_CLASS):
             insn.l.erase()
             insn.l.t = ida_hexrays.mop_v
             insn.l.g = target_ea
-            insn.l.size = 0
+            insn.l.size = ida_hexrays.NOSIZE
 
             logger.debug(
                 "IndirectCallResolver: updated m_call target to %#x",
