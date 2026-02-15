@@ -101,48 +101,31 @@ def _largest_dispatch_scc_size(
     dispatch_region: set[int],
     succs: dict[int, tuple[int, ...]],
 ) -> int:
+    """Compute the size of the largest SCC within the dispatch region.
+
+    This function now delegates to DispatchRegionDetector.tarjan_scc for the
+    core algorithm. We filter the adjacency dict to only include edges within
+    the dispatch region, then find the largest SCC.
+    """
     if not dispatch_region:
         return 0
 
-    index = 0
-    stack: list[int] = []
-    indices: dict[int, int] = {}
-    lowlink: dict[int, int] = {}
-    on_stack: set[int] = set()
-    best = 0
+    from d810.optimizers.microcode.flow.dispatch_region import DispatchRegionDetector
 
-    def strongconnect(v: int) -> None:
-        nonlocal index, best
-        indices[v] = index
-        lowlink[v] = index
-        index += 1
-        stack.append(v)
-        on_stack.add(v)
-
-        for w in succs.get(v, ()):
-            if w not in dispatch_region:
-                continue
-            if w not in indices:
-                strongconnect(w)
-                lowlink[v] = min(lowlink[v], lowlink[w])
-            elif w in on_stack:
-                lowlink[v] = min(lowlink[v], indices[w])
-
-        if lowlink[v] == indices[v]:
-            size = 0
-            while stack:
-                w = stack.pop()
-                on_stack.remove(w)
-                size += 1
-                if w == v:
-                    break
-            if size > best:
-                best = size
-
+    # Build filtered adjacency dict containing only dispatch region nodes
+    filtered_adj: dict[int, tuple[int, ...]] = {}
     for node in dispatch_region:
-        if node not in indices:
-            strongconnect(node)
-    return int(best)
+        # Filter successors to only include nodes in the dispatch region
+        filtered_succs = tuple(s for s in succs.get(node, ()) if s in dispatch_region)
+        filtered_adj[node] = filtered_succs
+
+    # Compute all SCCs in the dispatch region
+    sccs = DispatchRegionDetector.tarjan_scc(filtered_adj)
+
+    # Return size of largest SCC
+    if not sccs:
+        return 0
+    return max(len(scc) for scc in sccs)
 
 
 def _reachable_nodes(entry: int, succs: dict[int, tuple[int, ...]]) -> set[int]:
