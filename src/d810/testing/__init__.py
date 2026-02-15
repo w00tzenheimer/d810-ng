@@ -45,6 +45,8 @@ from .assertions import (
     assert_not_contains,
     assert_code_equivalent,
     assert_rules_fired,
+    assert_code_changed,
+    assert_operator_complexity,
 )
 
 __all__ = [
@@ -54,4 +56,6 @@ __all__ = [
     "assert_not_contains",
     "assert_code_equivalent",
     "assert_rules_fired",
+    "assert_code_changed",
+    "assert_operator_complexity",
 ]
