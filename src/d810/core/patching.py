@@ -19,7 +19,8 @@ class shows how one might apply these actions using IDA APIs.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, List, Dict, Optional
+
+from d810.core.typing import Any, List, Dict, Optional
 
 
 @dataclass

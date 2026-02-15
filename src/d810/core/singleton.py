@@ -1,5 +1,6 @@
 import threading
-import typing
+
+from d810.core import typing
 
 T = typing.TypeVar("T")
 

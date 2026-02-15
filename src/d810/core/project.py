@@ -3,9 +3,9 @@ from __future__ import annotations
 import dataclasses
 import functools
 import threading
-import typing
-from typing import TYPE_CHECKING
 
+from d810.core import typing
+from d810.core.typing import TYPE_CHECKING
 from .config import D810Configuration, ProjectConfiguration
 from .logging import getLogger
 

@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from d810.core.typing import Any, Optional
 
 import ida_hexrays
 

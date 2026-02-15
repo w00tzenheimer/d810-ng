@@ -2,7 +2,7 @@ import abc
 import functools
 import inspect
 import unittest
-from typing import Annotated, AnyStr, Literal
+from d810.core.typing import Annotated, AnyStr, Literal
 
 from d810.core import (
     FilterableGenerator,

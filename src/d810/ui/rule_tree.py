@@ -8,7 +8,7 @@ text-based filtering and emits signals when the user selects a rule.
 from __future__ import annotations
 
 import logging
-import typing
+from d810.core import typing
 
 from d810.qt_shim import QtCore, QtWidgets, qt_flag_or, QColor, QBrush
 

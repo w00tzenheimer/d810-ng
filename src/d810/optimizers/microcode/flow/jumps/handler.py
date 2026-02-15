@@ -1,4 +1,4 @@
-from typing import Union
+from d810.core.typing import Union
 
 import ida_hexrays
 

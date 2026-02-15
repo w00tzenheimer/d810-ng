@@ -14,6 +14,13 @@ import pytest
 import idaapi
 import idc
 
+from d810.testing.skip_controls import should_skip_reason
+
+
+RULE_TRACKING_SKIP_REASON = (
+    "hangs in CI - triggers full deobfuscation with all_rules=True"
+)
+
 
 def _get_default_binary() -> str:
     """Get default binary name based on platform, with env var override."""
@@ -156,9 +163,10 @@ class TestRuleTracking:
 
     binary_name = _get_default_binary()
 
-    @pytest.mark.skip(reason="hangs in CI - triggers full deobfuscation with all_rules=True")
     def test_xor_pattern_optimization(self, d810_state_all_rules, pseudocode_to_string):
         """Test that XOR pattern is optimized by DSL rules."""
+        if should_skip_reason(RULE_TRACKING_SKIP_REASON):
+            pytest.skip(RULE_TRACKING_SKIP_REASON)
         logger.info("\n" + "=" * 80)
         logger.info("TEST: XOR Pattern Optimization")
         logger.info("=" * 80)
@@ -181,9 +189,10 @@ class TestRuleTracking:
         # Check for obfuscated patterns in before
         assert " & " in before, "Before should contain AND from obfuscated XOR pattern"
 
-    @pytest.mark.skip(reason="hangs in CI - triggers full deobfuscation with all_rules=True")
     def test_constant_folding_optimization(self, d810_state_all_rules, pseudocode_to_string):
         """Test that constant folding uses DSL rules."""
+        if should_skip_reason(RULE_TRACKING_SKIP_REASON):
+            pytest.skip(RULE_TRACKING_SKIP_REASON)
         logger.info("\n" + "=" * 80)
         logger.info("TEST: Constant Folding")
         logger.info("=" * 80)
@@ -203,9 +212,10 @@ class TestRuleTracking:
         # Check for hex constants (we configured DEFAULT_RADIX=16)
         assert "0x" in after, "Should have hexadecimal constants after d810"
 
-    @pytest.mark.skip(reason="hangs in CI - triggers full deobfuscation with all_rules=True")
     def test_mba_pattern_optimization(self, d810_state_all_rules, pseudocode_to_string):
         """Test that MBA patterns are optimized by DSL rules."""
+        if should_skip_reason(RULE_TRACKING_SKIP_REASON):
+            pytest.skip(RULE_TRACKING_SKIP_REASON)
         logger.info("\n" + "=" * 80)
         logger.info("TEST: MBA Pattern Optimization")
         logger.info("=" * 80)
@@ -230,9 +240,10 @@ class TestRuleTracking:
             ops_after < ops_before
         ), f"MBA simplification should reduce operators ({ops_before} -> {ops_after})"
 
-    @pytest.mark.skip(reason="hangs in CI - triggers full deobfuscation with all_rules=True")
     def test_opaque_predicate_removal(self, d810_state_all_rules, pseudocode_to_string):
         """Test that opaque predicates are removed."""
+        if should_skip_reason(RULE_TRACKING_SKIP_REASON):
+            pytest.skip(RULE_TRACKING_SKIP_REASON)
         logger.info("\n" + "=" * 80)
         logger.info("TEST: Opaque Predicate Removal")
         logger.info("=" * 80)

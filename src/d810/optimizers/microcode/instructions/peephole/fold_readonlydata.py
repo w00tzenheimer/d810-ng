@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 
 """fold_readonlydata.py
 
@@ -71,7 +71,7 @@ this becomes: `(__ROL8__(MEMORY[0xB10000007FFE03FD]...)` which is obviously wron
 """
 
 
-from typing import Optional
+from d810.core.typing import Optional
 
 import ida_hexrays
 import ida_segment

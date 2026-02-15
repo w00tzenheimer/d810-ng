@@ -5,7 +5,7 @@ action system by creating ida_kernwin.action_handler_t wrappers.
 """
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 
 from d810.core.logging import getLogger
 

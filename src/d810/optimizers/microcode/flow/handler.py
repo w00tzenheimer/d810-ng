@@ -3,7 +3,7 @@ from __future__ import annotations
 import abc
 import warnings
 from enum import IntEnum
-from typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING
 
 import ida_hexrays
 import idc

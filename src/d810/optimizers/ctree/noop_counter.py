@@ -5,7 +5,7 @@ ctree body and counts expression nodes, but returns 0 (no modifications).
 """
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 
 from d810.core import getLogger
 from d810.hexrays.ctree_hooks import CtreeOptimizationRule

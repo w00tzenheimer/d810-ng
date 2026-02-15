@@ -10,7 +10,7 @@ import inspect
 import pkgutil
 import sys
 from types import ModuleType
-from typing import Any
+from d810.core.typing import Any
 
 from d810.core.logging import getLogger
 from d810.ui import actions

@@ -7,7 +7,9 @@ from abc import ABCMeta
 from functools import cache, wraps
 from types import GenericAlias, MappingProxyType
 from collections.abc import MutableMapping
-from typing import (
+from weakref import WeakKeyDictionary
+
+from d810.core.typing import (
     Annotated,
     Any,
     AnyStr,
@@ -21,9 +23,12 @@ from typing import (
     Hashable,
     Iterable,
     Literal,
+    LiteralString,
     Optional,
+    Self,
     Sequence,
     TypeAlias,
+    TypeAliasType,
     TypeVar,
     cast,
     get_args,
@@ -31,9 +36,6 @@ from typing import (
     get_type_hints,
     overload,
 )
-from weakref import WeakKeyDictionary
-
-from .typing import LiteralString, Self, TypeAliasType
 
 T = TypeVar("T")
 _R = TypeVar("_R", bound="Registrant")

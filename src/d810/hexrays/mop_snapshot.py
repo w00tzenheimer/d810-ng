@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import NewType, TYPE_CHECKING
+
+from d810.core.typing import NewType, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import ida_hexrays

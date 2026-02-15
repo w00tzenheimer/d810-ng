@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import abc
 import dataclasses
-import typing
-
 import ida_hexrays
 import idaapi
 
@@ -314,6 +312,34 @@ class AstNode(AstBase):
         return True
 
     def _check_implicit_equalities(self) -> bool:
+        def _equal_pattern_binding_mops(mop_left, mop_right) -> bool:
+            """Pattern-binding equality that ignores mop_d destination artifacts.
+
+            The same logical subexpression can be materialized into different
+            temporaries (different destination registers) along a block. For
+            repeated pattern variables we care about expression identity, not the
+            destination carrier register of nested m_insn operands.
+            """
+            try:
+                left = mop_left.to_mop() if isinstance(mop_left, MopSnapshot) else mop_left
+                right = mop_right.to_mop() if isinstance(mop_right, MopSnapshot) else mop_right
+                if (
+                    left is not None
+                    and right is not None
+                    and left.t == ida_hexrays.mop_d
+                    and right.t == ida_hexrays.mop_d
+                ):
+                    left_ins = ida_hexrays.minsn_t(left.d)
+                    right_ins = ida_hexrays.minsn_t(right.d)
+                    left_ins.d = ida_hexrays.mop_t()
+                    right_ins.d = ida_hexrays.mop_t()
+                    left_ins.d.erase()
+                    right_ins.d.erase()
+                    return left_ins.equal_insns(right_ins, ida_hexrays.EQ_IGNSIZE)
+            except Exception:
+                pass
+            return equal_mops_ignore_size(mop_left, mop_right)
+
         self.leafs = self.get_leaf_list()
         self.leafs_by_name = {}
         self.is_candidate_ok = True
@@ -321,7 +347,7 @@ class AstNode(AstBase):
         for leaf in self.leafs:
             ref_leaf = self.leafs_by_name.get(leaf.name)
             if ref_leaf is not None and leaf.mop is not None:
-                if not equal_mops_ignore_size(ref_leaf.mop, leaf.mop):
+                if not _equal_pattern_binding_mops(ref_leaf.mop, leaf.mop):
                     self.is_candidate_ok = False
             self.leafs_by_name[leaf.name] = leaf
         return self.is_candidate_ok

@@ -63,6 +63,58 @@ def _maybe_load_dotenv(path: pathlib.Path) -> None:
             os.environ[key] = value
 
 
+def _dotenv_candidates() -> list[pathlib.Path]:
+    """Return candidate .env locations in priority order."""
+    candidates = [
+        pathlib.Path.cwd() / ".env",
+        PROJECT_ROOT / ".env",
+    ]
+
+    # In a git worktree, CWD and PROJECT_ROOT may both point to the
+    # worktree directory, which might have an empty or missing .env.
+    # Use git to discover the main repository root as a fallback.
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+        )
+        if result.returncode == 0:
+            # --git-common-dir returns e.g. /repo/.git or /repo/.git for worktrees
+            git_common = pathlib.Path(result.stdout.strip())
+            repo_root = git_common.parent if git_common.name == ".git" else git_common
+            candidates.append(repo_root / ".env")
+    except (OSError, FileNotFoundError):
+        pass
+
+    return candidates
+
+
+_DOTENV_LOADED = False
+
+
+def _load_dotenv_once() -> None:
+    """Load .env candidates once per pytest process."""
+    global _DOTENV_LOADED
+    if _DOTENV_LOADED:
+        return
+
+    seen = set()
+    for candidate in _dotenv_candidates():
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        _maybe_load_dotenv(candidate)
+
+    _DOTENV_LOADED = True
+
+
+# Load .env early during conftest import so module-level test defaults can
+# observe environment overrides (e.g., D810_TEST_BINARY).
+_load_dotenv_once()
+
+
 # endregion
 
 
@@ -130,36 +182,7 @@ def env() -> EnvWrapper:
             if env.as_bool("DEBUG"):
                 assert env.as_int("MAX_RETRIES") == 5
     """
-    candidates = [
-        pathlib.Path.cwd() / ".env",
-        PROJECT_ROOT / ".env",
-    ]
-
-    # In a git worktree, CWD and PROJECT_ROOT may both point to the
-    # worktree directory, which might have an empty or missing .env.
-    # Use git to discover the main repository root as a fallback.
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            capture_output=True, text=True, cwd=str(PROJECT_ROOT),
-        )
-        if result.returncode == 0:
-            # --git-common-dir returns e.g. /repo/.git or /repo/.git for worktrees
-            git_common = pathlib.Path(result.stdout.strip())
-            repo_root = git_common.parent if git_common.name == ".git" else git_common
-            candidates.append(repo_root / ".env")
-    except (OSError, FileNotFoundError):
-        pass
-
-    # Deduplicate while preserving order
-    seen = set()
-    for candidate in candidates:
-        resolved = candidate.resolve()
-        if resolved not in seen:
-            seen.add(resolved)
-            _maybe_load_dotenv(candidate)
-
+    _load_dotenv_once()
     return EnvWrapper()
 
 

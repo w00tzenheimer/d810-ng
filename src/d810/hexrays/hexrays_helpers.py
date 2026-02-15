@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-import typing
-from typing import TYPE_CHECKING, Optional, Tuple, Union
 
+from d810.core import typing
+from d810.core.typing import TYPE_CHECKING, Optional, Tuple, Union
 import ida_hexrays
 
 if TYPE_CHECKING:

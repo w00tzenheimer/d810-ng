@@ -13,6 +13,7 @@ import pytest
 import idaapi
 import idc
 
+from d810.testing.skip_controls import should_skip_reason
 from tests.system.cases.known_issues import SEGFAULT_FUNCTIONS
 
 # Database path
@@ -118,7 +119,9 @@ class TestCapturePseudocode:
     ):
         """Capture before/after pseudocode for a function."""
         if func_name in SEGFAULT_FUNCTIONS:
-            pytest.skip(f"Known segfault in decompile_func for '{func_name}'")
+            reason = f"Known segfault in decompile_func for '{func_name}'"
+            if should_skip_reason(reason):
+                pytest.skip(reason)
 
         func_ea = get_func_ea(func_name)
         if func_ea == idaapi.BADADDR:

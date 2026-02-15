@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
-from typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING
 
 import pytest
 
@@ -99,7 +99,26 @@ def get_mba_for_function(func_name: str, maturity: int = ida_hexrays.MMAT_PREOPT
     if func is None:
         return None
 
-    # Use the standard decompile API which is simpler and more reliable
+    if not idaapi.init_hexrays_plugin():
+        return None
+
+    # Prefer direct microcode generation at requested maturity to preserve CFF structure.
+    try:
+        mbr = ida_hexrays.mba_ranges_t(func)
+        hf = ida_hexrays.hexrays_failure_t()
+        mba = ida_hexrays.gen_microcode(
+            mbr,
+            hf,
+            None,
+            ida_hexrays.DECOMP_NO_WAIT,
+            maturity,
+        )
+        if mba is not None:
+            return mba
+    except Exception as e:
+        logger.warning(f"gen_microcode failed for {func_name}: {e}")
+
+    # Fallback to decompile API.
     try:
         cfunc = idaapi.decompile(func_ea)
         if cfunc is None:
@@ -108,6 +127,28 @@ def get_mba_for_function(func_name: str, maturity: int = ida_hexrays.MMAT_PREOPT
     except Exception as e:
         logger.warning(f"Failed to decompile {func_name}: {e}")
         return None
+
+
+def _find_dispatcher_context():
+    """Return (mba, context, dispatchers, function_name) for the best candidate."""
+    finder = OLLVMDispatcherFinder()
+    candidates = [
+        "abc_xor_dispatch",
+        "abc_or_dispatch",
+        "nested_simple",
+        "while_switch_flattened",
+        "test_function_ollvm_fla_bcf_sub",
+    ]
+
+    for func_name in candidates:
+        mba = get_mba_for_function(func_name)
+        if mba is None:
+            continue
+        context = make_test_context(mba)
+        dispatchers = finder.find(context)
+        if dispatchers:
+            return mba, context, dispatchers, func_name
+    return None, None, [], None
 
 
 class TestOLLVMDispatcherFinderIntegration:
@@ -212,17 +253,12 @@ class TestOLLVMDispatcherFinderIntegration:
 
     def test_find_single_dispatcher(self, ida_database):
         """Test the find_single method for targeted analysis."""
-        mba = get_mba_for_function("abc_xor_dispatch")
-        if mba is None:
-            pytest.skip("Could not get mba for abc_xor_dispatch")
+        mba, context, dispatchers, func_name = _find_dispatcher_context()
+        if mba is None or context is None or not dispatchers:
+            pytest.xfail("No dispatcher found in candidate CFF functions")
 
         finder = OLLVMDispatcherFinder()
-        context = make_test_context(mba)
-
-        # Find using the general method first
-        dispatchers = finder.find(context)
-        if not dispatchers:
-            pytest.skip("No dispatcher found to test find_single")
+        logger.info(f"Using {func_name} for find_single test")
 
         # Now use find_single on the same entry block
         entry_block = dispatchers[0].entry_block
@@ -245,17 +281,10 @@ class TestPathEmulatorIntegration:
 
     def test_resolve_target_basic(self, ida_database):
         """Test resolving a dispatcher target from a predecessor block."""
-        mba = get_mba_for_function("abc_xor_dispatch")
-        if mba is None:
-            pytest.skip("Could not get mba for abc_xor_dispatch")
-
-        # First find a dispatcher
-        finder = OLLVMDispatcherFinder()
-        context = make_test_context(mba)
-        dispatchers = finder.find(context)
-
-        if not dispatchers:
-            pytest.skip("No dispatcher found")
+        mba, context, dispatchers, func_name = _find_dispatcher_context()
+        if mba is None or context is None or not dispatchers:
+            pytest.xfail("No dispatcher found in candidate CFF functions")
+        logger.info(f"Using {func_name} for resolve_target test")
 
         dispatcher = dispatchers[0]
         emulator = PathEmulator()
@@ -281,16 +310,10 @@ class TestPathEmulatorIntegration:
 
     def test_emulate_with_history(self, ida_database):
         """Test emulation with full state history tracking."""
-        mba = get_mba_for_function("abc_xor_dispatch")
-        if mba is None:
-            pytest.skip("Could not get mba for abc_xor_dispatch")
-
-        finder = OLLVMDispatcherFinder()
-        context = make_test_context(mba)
-        dispatchers = finder.find(context)
-
-        if not dispatchers:
-            pytest.skip("No dispatcher found")
+        mba, context, dispatchers, func_name = _find_dispatcher_context()
+        if mba is None or context is None or not dispatchers:
+            pytest.xfail("No dispatcher found in candidate CFF functions")
+        logger.info(f"Using {func_name} for emulate_with_history test")
 
         dispatcher = dispatchers[0]
         emulator = PathEmulator()
@@ -407,18 +430,10 @@ class TestServicesEndToEnd:
 
     def test_full_unflattening_pipeline(self, ida_database):
         """Test the complete unflattening workflow without applying changes."""
-        mba = get_mba_for_function("abc_xor_dispatch")
-        if mba is None:
-            pytest.skip("Could not get mba for abc_xor_dispatch")
-
-        context = make_test_context(mba)
-
-        # Step 1: Find dispatchers
-        finder = OLLVMDispatcherFinder()
-        dispatchers = finder.find(context)
-
-        if not dispatchers:
-            pytest.skip("No dispatcher found for end-to-end test")
+        mba, context, dispatchers, func_name = _find_dispatcher_context()
+        if mba is None or context is None or not dispatchers:
+            pytest.xfail("No dispatcher found in candidate CFF functions for end-to-end test")
+        logger.info(f"Using {func_name} for end-to-end unflattening pipeline")
 
         logger.info(f"Step 1: Found {len(dispatchers)} dispatcher(s)")
 

@@ -12,7 +12,7 @@ Three optimizations:
 
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 
 if typing.TYPE_CHECKING:
     from d810.expr.p_ast import AstBase, AstConstant, AstLeaf, AstNode

@@ -75,8 +75,8 @@ Low priority since this code works and is only used at runtime inside IDA.
 from __future__ import annotations
 
 import functools
-import typing
-from typing import TYPE_CHECKING, Dict, Tuple
+from d810.core import typing
+from d810.core.typing import TYPE_CHECKING, Dict, Tuple
 
 import ida_hexrays
 
@@ -639,10 +639,12 @@ def _resolve_mop_to_ast_via_tracker(
     # Get the first (and only) history
     history = histories[0]
 
-    # Look for the defining instruction in the history
-    # The history contains BlockInfo objects with instruction lists
-    for blk_info in history.history:
-        for def_ins in blk_info.ins_list:
+    # Look for the *nearest* defining instruction in the history.
+    # MopTracker stores instructions in chronological order inside each block
+    # info, so iterate in reverse to pick the reaching definition closest to
+    # the use site (ins) rather than an older overwritten definition.
+    for blk_info in reversed(history.history):
+        for def_ins in reversed(blk_info.ins_list):
             # Check if this instruction defines our mop
             # The defining instruction writes to our mop as its destination
             if def_ins.d is not None and def_ins.d.t == mop.t:
@@ -740,6 +742,9 @@ def _recursively_resolve_ast(
         # Create a new AstNode with the same opcode but resolved children
         new_ast = AstNode(ast_node.opcode, new_left, new_right)
         new_ast.mop = ast_node.mop  # Preserve original mop info
+        # Preserve destination metadata so downstream replacement can emit
+        # a valid instruction destination instead of a transient value mop.
+        new_ast.dst_mop = ast_node.dst_mop
         new_ast.dest_size = ast_node.dest_size
         new_ast.ea = ast_node.ea
         if logger.debug_on:

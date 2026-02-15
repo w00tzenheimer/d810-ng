@@ -77,7 +77,7 @@ import json
 import pathlib
 import sys
 from collections import Counter, defaultdict
-from typing import Any
+from d810.core.typing import Any
 
 DEFAULT_ARTIFACT_DIR = pathlib.Path("~/.idapro/logs/d810_logs/verify_failures").expanduser()
 

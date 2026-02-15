@@ -13,7 +13,7 @@ resolving dispatcher fathers.
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING
 
 try:
     import ida_hexrays

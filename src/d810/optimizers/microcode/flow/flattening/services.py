@@ -13,7 +13,7 @@ Following the composition-over-inheritance principle, these services are:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Protocol, Tuple
+from d810.core.typing import List, Protocol, Tuple
 
 import ida_hexrays
 

@@ -21,7 +21,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-import typing
+from d810.core import typing
 
 # Suppress extremely verbose egglog logging (generates 100k+ lines of INFO output)
 # Must be done BEFORE importing egglog

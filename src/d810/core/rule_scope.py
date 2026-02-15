@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Protocol
 
+from d810.core.typing import Any, Callable, Iterable, Protocol
 from d810.core.logging import getLogger
 from d810.core.registry import EventEmitter
 

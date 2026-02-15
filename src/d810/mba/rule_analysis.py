@@ -10,7 +10,7 @@ These utilities help identify redundant rules and potential optimization loops.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from d810.mba.rules._base import VerifiableRule

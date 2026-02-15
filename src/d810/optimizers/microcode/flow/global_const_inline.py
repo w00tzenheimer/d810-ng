@@ -27,7 +27,7 @@ Algorithm (ported from copycat ``global_const_handler_t``):
 
 from __future__ import annotations
 
-from typing import Optional
+from d810.core.typing import Optional
 
 import ida_bytes
 import ida_hexrays

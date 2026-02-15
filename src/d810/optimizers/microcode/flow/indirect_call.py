@@ -39,7 +39,7 @@ Key differences from Phase 5 (indirect branches)
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from d810.core.typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # IDA-dependent imports -- guarded so unit tests can run without IDA.

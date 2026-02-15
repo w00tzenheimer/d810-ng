@@ -1,4 +1,4 @@
-import typing
+from d810.core import typing
 
 import ida_hexrays
 

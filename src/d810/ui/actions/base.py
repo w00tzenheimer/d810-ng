@@ -5,7 +5,7 @@ auto-discovery of action handlers via the Registrant metaclass.
 """
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 from abc import abstractmethod
 
 from d810.core.registry import Registrant

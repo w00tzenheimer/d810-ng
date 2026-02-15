@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import functools
 import pathlib
-import typing
-from typing import TYPE_CHECKING
 
+from d810.core import typing
+from d810.core.typing import TYPE_CHECKING
 import ida_hexrays
 import idaapi
 

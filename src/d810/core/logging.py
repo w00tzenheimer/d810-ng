@@ -6,7 +6,8 @@ import logging.config
 import pathlib
 import shutil
 import threading
-import typing
+
+from d810.core import typing
 
 LOG_FILENAME = "d810.log"
 Z3_TEST_FILENAME = "z3_check_instructions_substitution.py"

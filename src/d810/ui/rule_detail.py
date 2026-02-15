@@ -9,7 +9,7 @@ from __future__ import annotations
 import html
 import json
 import logging
-import typing
+from d810.core import typing
 
 from d810.qt_shim import QtCore, QtWidgets
 

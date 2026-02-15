@@ -4,6 +4,9 @@ These tests verify that BindingsProxy correctly exposes MatchBindings
 in the interface expected by update_leafs_mop() and get_replacement().
 """
 
+import os
+import platform
+
 import pytest
 
 from d810.hexrays.mop_snapshot import MopSnapshot
@@ -21,6 +24,14 @@ class MockMopSnapshot:
         self.size = size
         self.t = 0  # mop_n
         self.is_constant = True
+
+
+def _get_default_binary() -> str:
+    """Get default binary name based on platform, with env var override."""
+    override = os.environ.get("D810_TEST_BINARY")
+    if override:
+        return override
+    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
 
 
 class TestBindingsProxy:
@@ -152,6 +163,8 @@ class TestBindingsProxy:
 class TestBindingsProxyRealIntegration:
     """Test BindingsProxy works with real AST matching and update_leafs_mop bridge."""
 
+    binary_name = _get_default_binary()
+
     @pytest.mark.ida_required
     def test_proxy_works_with_real_replacement(self, real_asts, populated_storages):
         """Verify BindingsProxy can feed into the replacement pipeline."""
@@ -166,7 +179,6 @@ class TestBindingsProxyRealIntegration:
         # Get storage from fixture
         new_storage = populated_storages["new"]
 
-        bindings = MatchBindings()
         tested = 0
 
         for ast, _ in real_asts[:20]:
@@ -175,7 +187,8 @@ class TestBindingsProxyRealIntegration:
 
             candidates = new_storage.get_candidates(ast)
             for entry in candidates[:3]:
-                bindings.reset()
+                # Cython MatchBindings does not expose .reset(); re-instantiate per attempt.
+                bindings = MatchBindings()
                 if match_pattern_nomut(entry.pattern, ast, bindings):
                     proxy = BindingsProxy(bindings)
 
@@ -186,10 +199,19 @@ class TestBindingsProxyRealIntegration:
 
                     # Verify each leaf binding has required attributes for update_leafs_mop
                     for name, binding in proxy.leafs_by_name.items():
-                        assert binding.mop is not None, f"Leaf {name} has no mop"
-                        assert hasattr(binding, "dest_size"), f"Leaf {name} missing dest_size"
-                        assert hasattr(binding, "ea"), f"Leaf {name} missing ea"
-                        assert binding.name == name, f"Leaf name mismatch: {binding.name} != {name}"
+                        # Python backend returns MatchBinding (with .mop/.dest_size/.ea/.name).
+                        # Cython backend may return MopSnapshot directly.
+                        if hasattr(binding, "mop"):
+                            assert binding.mop is not None, f"Leaf {name} has no mop"
+                            assert hasattr(binding, "dest_size"), (
+                                f"Leaf {name} missing dest_size"
+                            )
+                            assert hasattr(binding, "ea"), f"Leaf {name} missing ea"
+                            assert binding.name == name, (
+                                f"Leaf name mismatch: {binding.name} != {name}"
+                            )
+                        else:
+                            assert binding is not None, f"Leaf {name} is None"
 
                     # Verify root metadata is present
                     assert proxy.ea is not None or proxy.mop is not None, (

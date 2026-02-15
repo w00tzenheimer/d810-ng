@@ -18,7 +18,7 @@ This replaces the inline father_patcher_abc_create_blocks approach.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING
 
 import ida_hexrays
 

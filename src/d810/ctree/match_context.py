@@ -8,8 +8,7 @@ Ported from herast (herast/tree/match_context.py).
 """
 from __future__ import annotations
 
-import typing
-
+from d810.core import typing
 from d810.core import getLogger
 
 if typing.TYPE_CHECKING:

@@ -6,8 +6,8 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any
 
+from d810.core.typing import Any
 import ida_hexrays
 import idaapi
 

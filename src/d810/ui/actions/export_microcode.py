@@ -7,7 +7,7 @@ Available from pseudocode view.
 from __future__ import annotations
 
 import json
-import typing
+from d810.core import typing
 
 from d810.core.logging import getLogger
 from d810.ui.actions.base import D810ActionHandler

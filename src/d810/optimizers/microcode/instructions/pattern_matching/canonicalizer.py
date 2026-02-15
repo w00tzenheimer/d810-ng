@@ -90,7 +90,7 @@ Related: beads issue d810ng-d7j (P4)
 from __future__ import annotations
 
 import hashlib
-import typing
+from d810.core import typing
 
 import ida_hexrays
 

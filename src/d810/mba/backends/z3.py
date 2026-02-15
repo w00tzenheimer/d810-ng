@@ -58,8 +58,8 @@ The d810.mba package is designed to be reusable outside of IDA Pro entirely.
 from __future__ import annotations
 
 import functools
-import typing
-from typing import TYPE_CHECKING, Any, Dict
+from d810.core import typing
+from d810.core.typing import TYPE_CHECKING, Any, Dict
 
 from d810.core import getLogger
 from d810.errors import D810Z3Exception

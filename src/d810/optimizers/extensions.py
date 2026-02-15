@@ -26,7 +26,7 @@ Example usage:
     ```
 """
 
-from typing import Any, Dict, Optional
+from d810.core.typing import Any, Dict, Optional
 
 import ida_hexrays
 

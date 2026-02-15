@@ -46,8 +46,8 @@ import time
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Protocol, Set, runtime_checkable
 
+from d810.core.typing import Any, Dict, Iterator, List, Optional, Protocol, Set, runtime_checkable
 from .logging import getLogger
 
 logger = getLogger("D810.persistence")

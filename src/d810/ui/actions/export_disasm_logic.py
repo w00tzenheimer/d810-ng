@@ -8,7 +8,7 @@ All functions in this module can be imported and tested without IDA Pro.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from d810.core.typing import Any
 
 
 @dataclass

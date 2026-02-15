@@ -8,7 +8,7 @@ Ported from herast (herast/tree/ast_processor.py).
 """
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 from enum import Enum
 
 from d810.core import getLogger

@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import List, Optional
+
+from d810.core.typing import List, Optional
 
 
 def _sha256_concat(left: str, right: str) -> str:

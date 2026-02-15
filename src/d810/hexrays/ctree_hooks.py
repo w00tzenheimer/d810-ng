@@ -6,8 +6,8 @@ and ``CtreeOptimizerManager`` (iterates rules at the right maturity).
 from __future__ import annotations
 
 import abc
-import typing
 
+from d810.core import typing
 from d810.core import getLogger
 from d810.core.registry import Registrant
 from d810.core.stats import OptimizationStatistics

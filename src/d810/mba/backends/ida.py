@@ -12,7 +12,7 @@ the rule definitions in d810.mba.rules pure and backend-agnostic.
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import ida_hexrays
 
@@ -570,7 +570,7 @@ class IDAPatternAdapter:
             valid_candidates.append(mutable_candidate)
             if stop_early:
                 return valid_candidates
-        return []
+        return valid_candidates
 
     def get_replacement(self, candidate) -> Optional[Any]:
         """Create a replacement instruction from a matched candidate.

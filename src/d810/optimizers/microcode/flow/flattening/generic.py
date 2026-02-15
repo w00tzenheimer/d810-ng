@@ -24,7 +24,7 @@ See: docs/cfg-modification-audit.md for details.
 from __future__ import annotations
 
 import abc
-from typing import Any
+from d810.core.typing import Any
 
 import ida_hexrays
 

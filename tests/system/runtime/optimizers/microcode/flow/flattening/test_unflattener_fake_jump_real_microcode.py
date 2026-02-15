@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import os
 import platform
-from typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest

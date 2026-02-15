@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
-from typing import Iterable
+from d810.core.typing import Any
+from d810.core.typing import Iterable
 
 
 @dataclass(frozen=True)

@@ -10,7 +10,7 @@ Follows the CTO function lister lifecycle pattern:
 """
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 
 from d810.core.logging import getLogger
 

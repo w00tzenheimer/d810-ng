@@ -18,7 +18,8 @@ additional attributes that are JSON serialisable.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+
+from d810.core.typing import Any, Dict, Optional
 
 
 def serialize_ctree(ctree: Any) -> Dict[str, Any]:

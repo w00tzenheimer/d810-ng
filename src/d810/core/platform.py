@@ -7,8 +7,8 @@ and platform characteristics, useful for architecture-specific rule configuratio
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import TYPE_CHECKING
 
+from d810.core.typing import TYPE_CHECKING
 from .logging import getLogger
 
 logger = getLogger(__name__)

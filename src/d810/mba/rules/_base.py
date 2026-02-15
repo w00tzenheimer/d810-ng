@@ -26,9 +26,7 @@ Registry Architecture:
 from __future__ import annotations
 
 import abc
-from typing import TYPE_CHECKING, Any, Dict, List
-
-from d810.core.typing import Self
+from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Self
 
 from d810.core import getLogger
 from d810.core.registry import Registrant

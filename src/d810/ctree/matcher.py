@@ -8,8 +8,7 @@ Ported from herast (herast/tree/matcher.py).
 from __future__ import annotations
 
 import traceback
-import typing
-
+from d810.core import typing
 from d810.core import getLogger
 from d810.ctree.ast_context import ASTContext
 from d810.ctree.ast_patch import ASTPatch

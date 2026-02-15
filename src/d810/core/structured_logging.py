@@ -12,7 +12,8 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+
+from d810.core.typing import Any, Dict, List, Optional, Union
 
 
 class SQLiteHandler(logging.Handler):

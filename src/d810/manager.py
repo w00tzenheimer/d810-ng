@@ -11,8 +11,8 @@ try:
 except ImportError:
     cProfile = None  # type: ignore[assignment]
 import time
-import typing
-from typing import TYPE_CHECKING
+from d810.core import typing
+from d810.core.typing import TYPE_CHECKING
 
 from d810.core.config import D810Configuration, ProjectConfiguration
 from d810.core.logging import clear_logs, configure_loggers, getLogger

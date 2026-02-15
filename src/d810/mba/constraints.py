@@ -22,7 +22,7 @@ To convert constraints to Z3 for verification:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from d810.core.typing import Any, Protocol, runtime_checkable
 
 from .dsl import SymbolicExpression, SymbolicExpressionProtocol
 

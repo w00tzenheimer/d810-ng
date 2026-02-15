@@ -1,0 +1,76 @@
+# Forbid mock usage in system tests
+#
+# System tests MUST use real IDA APIs and runtime.
+# Mocking IDA APIs (ida_hexrays, ida_bytes, etc.) defeats the purpose of system tests.
+#
+# BAD:  from unittest.mock import Mock, MagicMock, patch
+# BAD:  from unittest import mock
+# BAD:  import unittest.mock
+# BAD:  from mock import Mock
+# BAD:  from pytest_mock import mocker
+#
+# System tests validate integration with real IDA runtime.
+# Unit tests (tests/unit/) are for pure logic and may use mocks.
+#
+# See: CORE_INSTRUCTIONS.md "Test Placement Rule"
+
+id: no-mocks-in-system-tests
+language: python
+severity: error
+
+# Only scan system test directories
+files:
+  - "tests/system/**/*.py"
+
+message: |
+  Mocks are forbidden in system tests.
+
+  System tests must use real IDA APIs and runtime to validate integration behavior.
+  If you need to mock IDA APIs, the test belongs in tests/unit/ instead.
+
+  Unit tests are for pure logic testing with mocks.
+  System tests are for integration testing with real IDA runtime.
+
+rule:
+  any:
+    # unittest.mock imports (all variants)
+    - pattern: from unittest.mock import $$$
+    - pattern: from unittest import mock
+    - pattern: import unittest.mock
+
+    # standalone mock package
+    - pattern: from mock import $$$
+    - pattern: import mock
+
+    # pytest-mock
+    - pattern: from pytest_mock import $$$
+
+    # Direct mock constructor calls
+    - pattern: Mock($$$)
+    - pattern: MagicMock($$$)
+    - pattern: patch($$$)
+    - pattern: patch.object($$$)
+    - pattern: patch.dict($$$)
+    - pattern: patch.multiple($$$)
+
+    # Mock class instantiation with type annotation
+    - pattern: $VAR = Mock
+    - pattern: $VAR = MagicMock
+
+    # pytest mocker fixture usage (common pattern)
+    - pattern: mocker.patch($$$)
+    - pattern: mocker.Mock($$$)
+    - pattern: mocker.MagicMock($$$)
+
+note: |
+  Test Placement Guidelines:
+
+  - tests/unit/: Pure logic tests, no IDA imports, mocks allowed
+  - tests/system/runtime/: IDA runtime required, real APIs, no mocks
+  - tests/system/e2e/: Full workflows/integration, real APIs, no mocks
+
+  If a test requires mocking IDA APIs, it indicates the code under test
+  is not properly separated into testable logic and IDA integration layers.
+
+  Consider refactoring to separate business logic (testable with mocks in unit tests)
+  from IDA integration (testable with real runtime in system tests).

@@ -4,7 +4,7 @@ Show and edit function-scoped rule overrides for the current pseudocode function
 """
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 
 from d810.core.logging import getLogger
 from d810.core.persistence import FunctionRuleConfig

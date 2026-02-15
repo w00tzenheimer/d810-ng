@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from d810.core.typing import Any, Dict, List, Optional, Set
 
 import ida_hexrays
 

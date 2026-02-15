@@ -20,7 +20,7 @@ Performance impact:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Set
+from d810.core.typing import List, Optional, Set
 
 import ida_hexrays
 

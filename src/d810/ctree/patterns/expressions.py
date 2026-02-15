@@ -10,8 +10,7 @@ Ported from herast (herast/tree/patterns/expressions.py).
 from __future__ import annotations
 
 import sys
-import typing
-
+from d810.core import typing
 from d810.core import getLogger
 from d810.ctree.patterns.base_pattern import BasePat
 from d810.ctree.match_context import MatchContext

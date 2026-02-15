@@ -21,8 +21,9 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field, asdict
-from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
 from enum import IntEnum
+
+from d810.core.typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
 
 # Defer IDA imports until needed - allows module to be imported for CLI --help
 idaapi = None

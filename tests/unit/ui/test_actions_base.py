@@ -5,7 +5,7 @@ the auto-discovery mechanism.
 """
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 from unittest.mock import MagicMock
 
 import pytest

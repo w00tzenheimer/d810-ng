@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
-from typing import Any, Literal, Union, cast
+from d810.core.typing import Any, Literal, Union, cast
 
 
 def _is_ida_gui_available() -> bool:

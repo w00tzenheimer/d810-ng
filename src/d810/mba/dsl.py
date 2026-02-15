@@ -14,7 +14,7 @@ Example:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from d810.core.typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from d810.mba.constraints import ConstraintExpr

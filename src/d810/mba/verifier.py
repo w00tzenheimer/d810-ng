@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Protocol, runtime_checkable
+from d810.core.typing import Any, Dict, List, Protocol, runtime_checkable
 
 from d810.mba.dsl import SymbolicExpression, SymbolicExpressionProtocol
 

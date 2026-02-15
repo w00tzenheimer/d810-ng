@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any
+from d810.core.typing import Any
 
 import ida_hexrays
 

@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+
+from d810.core.typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # IDA-dependent imports -- guarded so unit tests can run without IDA.

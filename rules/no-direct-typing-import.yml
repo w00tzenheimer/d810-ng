@@ -1,0 +1,45 @@
+# Forbid direct typing imports - use d810.core.typing instead
+#
+# BAD:  import typing
+# BAD:  from typing import Any, Dict
+# GOOD: from d810.core.typing import Any, Dict
+# GOOD: from d810.core import typing
+#
+# Rationale:
+# - d810.core.typing provides compatibility layer for different Python versions
+# - Includes typing_extensions backports (override, Self, NotRequired, etc.)
+# - Ensures consistent typing symbols across IDA Pro environments
+#
+# See: src/d810/core/typing.py for all exported symbols
+
+id: no-direct-typing-import
+language: python
+severity: error
+
+# Only scan d810 source code (exclude vendor and typing.py itself)
+files:
+  - "src/d810/**/*.py"
+  - "tests/**/*.py"
+  - "tools/**/*.py"
+
+ignores:
+  - "src/d810/_vendor/**"
+  - "src/d810/core/typing.py"
+
+message: |
+  Direct typing imports are forbidden.
+  Use `from d810.core.typing import ...` or `from d810.core import typing` instead.
+
+  d810.core.typing provides a compatibility layer for different Python versions
+  and ensures consistent typing symbols across IDA Pro environments.
+
+rule:
+  any:
+    - pattern: import typing
+    - pattern: from typing import $$$
+
+note: |
+  d810.core.typing re-exports all standard typing symbols plus backports
+  for Python 3.10+ compatibility (override, Self, NotRequired, LiteralString, etc.).
+
+  If you need a typing symbol not in d810.core.typing.__all__, add it there first.

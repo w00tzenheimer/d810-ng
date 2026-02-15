@@ -22,6 +22,7 @@ import idaapi
 import idc
 import pytest
 
+from d810.testing.skip_controls import unskip_cases_enabled
 from d810.testing.runner import _resolve_test_project_index
 
 
@@ -50,6 +51,11 @@ class TestDumpFunctionPseudocode:
     @pytest.fixture(scope="class")
     def _dump_target(self, request) -> str:
         raw = request.config.getoption("--dump-function-pseudocode")
+        if not raw:
+            raw = os.environ.get("D810_DUMP_FUNCTION_PSEUDOCODE")
+        if not raw and unskip_cases_enabled():
+            # Research default: run against a stable baseline function.
+            raw = "test_xor"
         if not raw:
             pytest.skip("No --dump-function-pseudocode value provided")
         return raw

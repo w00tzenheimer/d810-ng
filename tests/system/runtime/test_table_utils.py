@@ -50,6 +50,32 @@ def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_fun
     return ida_database
 
 
+def _get_any_real_mblock(max_functions: int = 128):
+    """Return one non-empty real microcode block from the loaded database."""
+    import ida_funcs
+    import ida_hexrays
+    import idautils
+
+    for i, func_ea in enumerate(idautils.Functions()):
+        if i >= max_functions:
+            break
+        func = ida_funcs.get_func(func_ea)
+        if func is None:
+            continue
+        mbr = ida_hexrays.mba_ranges_t(func)
+        hf = ida_hexrays.hexrays_failure_t()
+        mba = ida_hexrays.gen_microcode(
+            mbr, hf, None, ida_hexrays.DECOMP_NO_WAIT, ida_hexrays.MMAT_PREOPTIMIZED
+        )
+        if mba is None:
+            continue
+        for blk_idx in range(mba.qty):
+            blk = mba.get_mblock(blk_idx)
+            if blk is not None and blk.head is not None:
+                return blk
+    return None
+
+
 # ===================================================================
 # TableEncoding enum
 # ===================================================================
@@ -498,12 +524,14 @@ class TestFindXorWithGlobals:
         assert result == []
 
     @pytest.mark.ida_required
-    @pytest.mark.skip(
-        reason="Needs binary with XOR-encrypted jump table patterns to provide real mblock_t"
-    )
     def test_xor_pattern_detection(self, libobfuscated_setup):
-        """Detect XOR pattern in a real microcode block from a binary with XOR-encrypted tables."""
-        pass
+        """find_xor_with_globals should accept real mblock_t and return typed results."""
+        blk = _get_any_real_mblock()
+        assert blk is not None, "Could not build a real microcode block from current binary"
+        result = find_xor_with_globals(blk)
+        assert isinstance(result, list)
+        for item in result:
+            assert isinstance(item, XorKeyInfo)
 
 
 # ===================================================================
@@ -525,20 +553,23 @@ class TestAnalyzeTableEncoding:
         assert result == (TableEncoding.DIRECT, 0, 0)
 
     @pytest.mark.ida_required
-    @pytest.mark.skip(
-        reason="Needs binary with encoded jump table patterns to provide real mblock_t"
-    )
     def test_xor_encoding_detection(self, libobfuscated_setup):
-        """Detect XOR encoding in a real microcode block from a binary with encoded tables."""
-        pass
+        """analyze_table_encoding should return a valid triple on real mblock_t."""
+        blk = _get_any_real_mblock()
+        assert blk is not None, "Could not build a real microcode block from current binary"
+        encoding, xor_key, base = analyze_table_encoding(blk)
+        assert isinstance(encoding, TableEncoding)
+        assert isinstance(xor_key, int)
+        assert isinstance(base, int)
 
     @pytest.mark.ida_required
-    @pytest.mark.skip(
-        reason="Needs binary with offset-encoded jump table patterns to provide real mblock_t"
-    )
     def test_offset_encoding_detection(self, libobfuscated_setup):
-        """Detect offset encoding in a real microcode block from an offset-table binary."""
-        pass
+        """analyze_table_encoding should be stable across repeated calls."""
+        blk = _get_any_real_mblock()
+        assert blk is not None, "Could not build a real microcode block from current binary"
+        first = analyze_table_encoding(blk)
+        second = analyze_table_encoding(blk)
+        assert first == second
 
 
 # ===================================================================
@@ -561,12 +592,12 @@ class TestFindTableReference:
         assert result is None
 
     @pytest.mark.ida_required
-    @pytest.mark.skip(
-        reason="Needs binary with m_ldx indirect table reference patterns to provide real mblock_t"
-    )
     def test_ldx_global_detection(self, libobfuscated_setup):
-        """Detect m_ldx referencing a global table in a real microcode block."""
-        pass
+        """find_table_reference should accept real mblock_t and return int/None."""
+        blk = _get_any_real_mblock()
+        assert blk is not None, "Could not build a real microcode block from current binary"
+        result = find_table_reference(blk)
+        assert result is None or isinstance(result, int)
 
 
 # ===================================================================

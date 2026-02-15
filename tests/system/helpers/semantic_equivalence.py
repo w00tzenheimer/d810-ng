@@ -33,7 +33,7 @@ import platform
 import random
 import subprocess
 import tempfile
-from typing import Any
+from d810.core.typing import Any
 
 logger = logging.getLogger(__name__)
 

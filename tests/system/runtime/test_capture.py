@@ -21,7 +21,7 @@ import datetime
 import json
 import pathlib
 import sqlite3
-from typing import Any, Optional
+from d810.core.typing import Any, Optional
 
 # Database path
 DB_PATH = pathlib.Path(__file__).parent / ".test_results.db"

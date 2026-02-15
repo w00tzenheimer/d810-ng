@@ -155,11 +155,11 @@ MANUALLY_OBFUSCATED_CASES = [
         # Obfuscated code has MBA patterns with & and - operators
         obfuscated_contains=["&", "-", "2 *"],
         expected_code="""
-            __int64 __fastcall test_xor(int a1, int a2, int a3, int *a4)
+            __int64 __fastcall test_xor(__int64 a1, __int64 a2, __int64 a3, __int64 *a4)
             {
                 *a4 = a2 ^ a1;
                 a4[1] = (a2 - 3) ^ (a3 * a1);
-                return (unsigned int)(a4[1] + *a4);
+                return a4[1] + *a4;
             }
         """,
         acceptable_patterns=[],
@@ -167,7 +167,6 @@ MANUALLY_OBFUSCATED_CASES = [
         must_change=True,
         # From results.toml: PatternOptimizer (2), Xor_HackersDelightRule_3 (2)
         required_rules=["Xor_HackersDelightRule_3"],
-        skip="deobfuscation output mismatch - golden reference needs update",
     ),
     DeobfuscationCase(
         function="test_or",
@@ -237,7 +236,6 @@ MANUALLY_OBFUSCATED_CASES = [
         must_change=True,
         # Rules vary by IDA version - validation done via expected_code/acceptable_patterns
         # Common rules: BnotXor_FactorRule_1, Add_HackersDelightRule_2, ArithmeticChain
-        skip="hangs during decompilation - infinite loop in microcode callbacks",
     ),
 ]
 

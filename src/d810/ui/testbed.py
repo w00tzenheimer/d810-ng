@@ -9,7 +9,7 @@ import weakref
 
 # Added for easier path manipulations
 from pathlib import Path
-from typing import TextIO
+from d810.core.typing import TextIO
 from unittest import loader, runner, suite
 
 import ida_kernwin

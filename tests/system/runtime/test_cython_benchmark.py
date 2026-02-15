@@ -8,7 +8,7 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Callable
+from d810.core.typing import Callable
 
 import pytest
 

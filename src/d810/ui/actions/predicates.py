@@ -5,7 +5,7 @@ can show only relevant actions.
 """
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 
 
 def is_pseudocode_widget(

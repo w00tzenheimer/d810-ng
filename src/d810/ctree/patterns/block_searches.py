@@ -7,8 +7,7 @@ Ported from herast (herast/tree/patterns/block_searches.py).
 """
 from __future__ import annotations
 
-import typing
-
+from d810.core import typing
 from d810.core import getLogger
 from d810.ctree.patterns.instructions import InstructionPat
 from d810.ctree.match_context import MatchContext

@@ -3,8 +3,8 @@ import json
 import os
 import pathlib
 import sys
-import typing
 
+from d810.core import typing
 from .logging import getLogger
 
 logger = getLogger(__name__)

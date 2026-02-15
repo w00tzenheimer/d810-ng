@@ -1,8 +1,9 @@
 import abc
 import dataclasses
 import itertools
+import os
 import time
-import typing
+from d810.core import typing
 
 import ida_hexrays
 
@@ -310,8 +311,13 @@ class PatternOptimizer(InstructionOptimizer):
         # PR2: Feature flag for rollback to legacy PatternStorage
         # Default is to use the new indexed storage; users can set
         # D810_LEGACY_STORAGE=1 to rollback if issues arise.
-        import os
         self._use_legacy_storage = os.environ.get("D810_LEGACY_STORAGE", "0") == "1"
+        # Correctness fallback: if indexed lookup yields no candidates, retry
+        # with legacy PatternStorage. This catches wildcard-heavy expressions
+        # where strict fingerprints can produce false negatives.
+        self._use_indexed_legacy_fallback = (
+            os.environ.get("D810_INDEXED_LEGACY_FALLBACK", "1") == "1"
+        )
 
         if self._use_legacy_storage:
             optimizer_logger.debug("PatternOptimizer: using legacy PatternStorage (D810_LEGACY_STORAGE=1)")
@@ -332,6 +338,17 @@ class PatternOptimizer(InstructionOptimizer):
             optimizer_logger.debug("PatternOptimizer: using non-mutating pattern matching (D810_NOMUT_MATCHING=1 opt-in)")
         else:
             optimizer_logger.debug("PatternOptimizer: using legacy mutating pattern matching (default, nomut is opt-in)")
+
+        # Optional fallback: if direct AST matching fails, try a def-use expanded
+        # AST via MopTracker for opcodes where expressions are commonly split into
+        # temporaries (e.g. x+y-2*(x&y) lowered as chained sub/add/mul/and).
+        self._use_tracker_resolution_fallback = (
+            os.environ.get("D810_PATTERN_TRACKER_RESOLVE", "1") == "1"
+        )
+        self._trace_tracker_resolution = (
+            os.environ.get("D810_PATTERN_TRACE_TRACKER", "0") == "1"
+        )
+        self._tracker_resolution_opcodes = {ida_hexrays.m_sub}
 
         # Register verifiable rules passed at construction time.
         # These rules (from RULE_REGISTRY) implement check_pattern_and_replace
@@ -518,12 +535,95 @@ class PatternOptimizer(InstructionOptimizer):
         # in multiple forms (via ast_generator or equivalent) to match different
         # but mathematically equivalent input structures.
 
-        # PR2: Storage backend selection based on feature flag
-        if self._use_legacy_storage:
-            all_matches = self.pattern_storage.get_matching_rule_pattern_info(tmp)
-        else:
-            all_matches = self._indexed_storage.get_candidates(tmp)
+        new_ins = self._try_matches(
+            ins,
+            tmp,
+            allowed_rule_names=allowed_rule_names,
+            source_label="direct",
+        )
+        if new_ins is not None:
+            return new_ins
 
+        # Fallback path: reconstruct expression trees from local def-use chains
+        # and retry pattern matching once.
+        resolved_ast = self._resolve_ast_with_tracker(blk, ins, tmp)
+        if resolved_ast is not None and resolved_ast is not tmp:
+            new_ins = self._try_matches(
+                ins,
+                resolved_ast,
+                allowed_rule_names=allowed_rule_names,
+                source_label="tracker",
+            )
+            if new_ins is not None:
+                return new_ins
+        return None
+
+    def _resolve_ast_with_tracker(
+        self,
+        blk: ida_hexrays.mblock_t,
+        ins: ida_hexrays.minsn_t,
+        ast: AstBase,
+    ) -> AstBase | None:
+        if not self._use_tracker_resolution_fallback:
+            return None
+        if blk is None:
+            return None
+        if ins.opcode not in self._tracker_resolution_opcodes:
+            return None
+        try:
+            # Reuse the tracker-aware AST resolver already used by Z3 helpers.
+            from d810.expr.z3_utils import _recursively_resolve_ast
+        except Exception:
+            return None
+        try:
+            resolved = _recursively_resolve_ast(ast, blk, ins, depth=0, max_depth=6)
+        except Exception:
+            return None
+        if resolved is None or resolved is ast:
+            if self._trace_tracker_resolution:
+                optimizer_logger.info(
+                    "[PatternOptimizer] tracker unresolved for %s",
+                    format_minsn_t(ins),
+                )
+            return None
+        if self._trace_tracker_resolution:
+            optimizer_logger.info(
+                "[PatternOptimizer] tracker resolved %s -> %s",
+                format_minsn_t(ins),
+                resolved,
+            )
+        if optimizer_logger.debug_on:
+            optimizer_logger.debug(
+                "[PatternOptimizer] tracker-resolved AST for %s -> %s",
+                format_minsn_t(ins),
+                resolved,
+            )
+        return resolved
+
+    def _get_candidates(self, ast: AstBase) -> list[RulePatternInfo]:
+        if self._use_legacy_storage:
+            return self.pattern_storage.get_matching_rule_pattern_info(ast)
+        candidates = self._indexed_storage.get_candidates(ast)
+        if candidates or not self._use_indexed_legacy_fallback:
+            return candidates
+        fallback_candidates = self.pattern_storage.get_matching_rule_pattern_info(ast)
+        if fallback_candidates and optimizer_logger.debug_on:
+            optimizer_logger.debug(
+                "[PatternOptimizer] indexed miss, legacy fallback produced %d candidate(s) for %s",
+                len(fallback_candidates),
+                ast,
+            )
+        return fallback_candidates
+
+    def _try_matches(
+        self,
+        ins: ida_hexrays.minsn_t,
+        test_ast: AstBase,
+        *,
+        allowed_rule_names: frozenset[str] | None,
+        source_label: str,
+    ) -> ida_hexrays.minsn_t | None:
+        all_matches = self._get_candidates(test_ast)
         match_len = len(all_matches)
         for i, rule_pattern_info in enumerate(all_matches):
             if (
@@ -533,7 +633,8 @@ class PatternOptimizer(InstructionOptimizer):
                 continue
             if optimizer_logger.debug_on:
                 optimizer_logger.debug(
-                    "[PatternOptimizer.get_optimized_instruction] %s/%s rule_pattern_info: %s",
+                    "[PatternOptimizer.get_optimized_instruction:%s] %s/%s rule_pattern_info: %s",
+                    source_label,
                     i + 1,
                     match_len,
                     rule_pattern_info,
@@ -542,7 +643,9 @@ class PatternOptimizer(InstructionOptimizer):
                 # PR4: Non-mutating match path (when enabled and using indexed storage)
                 if self._use_nomut_matching and not self._use_legacy_storage:
                     # Non-mutating match: pattern stays frozen, bindings go to separate object
-                    if not _match_nomut(rule_pattern_info.pattern, tmp, self._match_bindings):
+                    if not _match_nomut(
+                        rule_pattern_info.pattern, test_ast, self._match_bindings
+                    ):
                         continue
                     proxy = BindingsProxy(self._match_bindings)
                     if not rule_pattern_info.rule.check_candidate(proxy):
@@ -551,7 +654,7 @@ class PatternOptimizer(InstructionOptimizer):
                 else:
                     # Legacy mutating path: pattern gets mop references copied into it
                     new_ins = rule_pattern_info.rule.check_pattern_and_replace(
-                        rule_pattern_info.pattern, tmp
+                        rule_pattern_info.pattern, test_ast
                     )
 
                 if new_ins is not None:

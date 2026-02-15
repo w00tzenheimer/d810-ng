@@ -14,7 +14,7 @@ Architecture Note:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Optional
+from d810.core.typing import Any, Callable, Optional
 
 import idaapi
 import idc
@@ -33,6 +33,7 @@ from .assertions import (
     assert_rules_fired,
 )
 from .cases import DeobfuscationCase
+from .skip_controls import should_skip_reason
 from d810.core.config import ProjectConfiguration
 
 
@@ -137,8 +138,8 @@ def run_deobfuscation_test(
     binary_suffix = get_binary_suffix()
     effective_case = case.get_effective_config(binary_suffix)
 
-    # Handle skip
-    if effective_case.skip:
+    # Handle per-case skip controls
+    if effective_case.skip and should_skip_reason(effective_case.skip):
         pytest.skip(effective_case.skip)
 
     # Get function address

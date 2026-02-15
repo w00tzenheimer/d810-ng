@@ -3,9 +3,9 @@ from __future__ import annotations
 import enum
 import pathlib
 import time
-import typing
 from collections import defaultdict
 
+from d810.core import typing
 import ida_hexrays
 
 from d810.core import getLogger

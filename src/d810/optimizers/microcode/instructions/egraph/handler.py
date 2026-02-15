@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
-import typing
+from d810.core import typing
 
 import ida_hexrays  # noqa: F401,F403
 

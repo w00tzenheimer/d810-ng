@@ -23,7 +23,7 @@ Detection flow
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional
+from d810.core.typing import TYPE_CHECKING, List, Optional
 
 # ---------------------------------------------------------------------------
 # IDA-dependent imports -- guarded so unit tests can run without IDA.

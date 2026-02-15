@@ -6,7 +6,7 @@ The actual IDA integration is tested in system tests.
 
 import pytest
 import itertools
-from typing import List
+from d810.core.typing import List
 
 from d810.mba.dsl import Var, SymbolicExpression
 

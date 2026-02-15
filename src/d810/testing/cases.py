@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import textwrap
 from dataclasses import dataclass, field
-from typing import Optional
+from d810.core.typing import Optional
 
 
 @dataclass

@@ -6,7 +6,7 @@ patterns in deobfuscation testing.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from d810.core.typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from d810.core.stats import OptimizationStatistics

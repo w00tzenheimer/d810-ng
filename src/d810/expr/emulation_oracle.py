@@ -21,7 +21,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Callable
+from d810.core.typing import TYPE_CHECKING, Callable
 
 # Optional imports - gracefully degrade if not available
 try:

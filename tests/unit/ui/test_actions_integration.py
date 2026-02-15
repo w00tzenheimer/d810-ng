@@ -4,7 +4,7 @@ Tests the full flow from action definition to registration and discovery.
 """
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 from unittest.mock import MagicMock
 
 from d810.ui.actions import D810ActionHandler

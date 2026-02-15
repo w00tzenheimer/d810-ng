@@ -190,8 +190,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING
 
+from d810.core.typing import TYPE_CHECKING
 import ida_hexrays
 
 from d810.core import getLogger

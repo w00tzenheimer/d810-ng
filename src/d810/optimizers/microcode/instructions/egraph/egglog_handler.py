@@ -27,7 +27,7 @@ Usage:
 
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 
 import ida_hexrays
 

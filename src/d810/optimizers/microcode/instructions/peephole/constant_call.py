@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import functools
-import typing
+from d810.core import typing
 
 import ida_hexrays
 

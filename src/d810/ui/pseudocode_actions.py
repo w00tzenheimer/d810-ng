@@ -5,7 +5,7 @@ The action classes are implemented in d810.ui.actions.
 """
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 
 from d810.core.logging import getLogger
 

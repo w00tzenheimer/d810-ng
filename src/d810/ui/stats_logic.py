@@ -7,7 +7,7 @@ All functions in this module can be imported and tested without IDA Pro.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from d810.core.persistence import FunctionRuleConfig

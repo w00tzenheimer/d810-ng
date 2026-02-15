@@ -6,8 +6,9 @@ import functools
 import sys
 import threading
 import time
-import typing
 import weakref
+
+from d810.core import typing
 
 from .logging import getLogger
 

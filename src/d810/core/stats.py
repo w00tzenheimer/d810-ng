@@ -3,8 +3,8 @@ from __future__ import annotations
 import dataclasses
 from collections import defaultdict
 from enum import Enum, auto
-from typing import Any, Dict, List, Optional
 
+from d810.core.typing import Any, Dict, List, Optional
 from .logging import getLogger
 from .registry import EventEmitter
 

@@ -4,7 +4,7 @@ Shows a dialog with rule-fire counts for the last decompilation.
 """
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 
 from d810.core.logging import getLogger
 from d810.ui.actions.base import D810ActionHandler

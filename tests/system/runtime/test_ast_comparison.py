@@ -303,3 +303,21 @@ class TestTier3CastStripping:
                 return (unsigned int)(a4[2] + a4[1] + *a4);
             }""")
         code_comparator.check_equivalence(code_actual, code_expected)
+
+    def test_unexposed_cast_wrapper_vs_bare_return(self, require_clang, code_comparator):
+        """Cast wrapped in UNEXPOSED_EXPR should match bare binary return."""
+        code_dll = textwrap.dedent("""\
+            __int64 __fastcall test_xor(int a1, int a2, int a3, int *a4)
+            {
+                *a4 = a2 ^ a1;
+                a4[1] = (a2 - 3) ^ (a3 * a1);
+                return (unsigned int)(a4[1] + *a4);
+            }""")
+        code_alt = textwrap.dedent("""\
+            __int64 __fastcall test_xor(__int64 a1, __int64 a2, __int64 a3, __int64 *a4)
+            {
+                *a4 = a2 ^ a1;
+                a4[1] = (a2 - 3) ^ (a3 * a1);
+                return a4[1] + *a4;
+            }""")
+        code_comparator.check_equivalence(code_dll, code_alt)

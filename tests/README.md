@@ -83,6 +83,58 @@ pytest tests/system/runtime/ -v --tb=short --forked
 pytest tests/system/e2e/ -v --tb=short --forked
 ```
 
+## Unskip Tooling (Research Mode)
+
+Use this when you are actively investigating tests that are intentionally skipped
+by case metadata (golden mismatch, missing sample, known instability).
+
+### When to use it
+
+- You want to see the real current behavior instead of skip reasons.
+- You are updating golden outputs or narrowing down regressions.
+- You need to distinguish "expected stale skip" from "real breakage."
+
+### When NOT to use it
+
+- Normal CI gating.
+- Quick smoke checks where known-hang/known-segfault cases are not relevant.
+
+### Commands
+
+```bash
+# 1) Unskip normal research cases (safe default)
+pytest tests/system/ -v -rs --unskip-research
+
+# 2) Also unskip dangerous known-hang/known-segfault cases (local only)
+pytest tests/system/ -v -rs --unskip-research --unskip-dangerous
+
+# 3) Focus one case (zsh: quote parametrized ids)
+pytest -q -rs --unskip-research \
+  'tests/system/e2e/test_libdeobfuscated_dsl.py::TestCoreDeobfuscation::test_core_deobfuscation[test_xor]'
+
+# 4) Environment-variable equivalent
+D810_UNSKIP_CASES=1 pytest tests/system/ -v -rs
+D810_UNSKIP_CASES=1 D810_UNSKIP_DANGEROUS=1 pytest tests/system/ -v -rs
+```
+
+### Result Triage
+
+| Outcome | Meaning | Action |
+|--|--|--|
+| `SKIPPED` (without unskip flags) | Intentional case skip from metadata | Use `--unskip-research` if you want to investigate |
+| `XFAIL` | Known unsupported runtime condition in current sample/runtime | Not blocking; capture as environment/sample gap |
+| `FAIL` after unskip | Real mismatch now visible (often why the skip existed) | Fix rule behavior or update expectation/golden if behavior is now acceptable |
+| `SKIPPED` with `--unskip-research` | Usually dangerous case still blocked | Add `--unskip-dangerous` for local deep investigation |
+
+### Current Known Examples
+
+- `test_xor` in `test_libdeobfuscated_dsl` now simplifies both MBA XOR forms
+  (rule `Xor_HackersDelightRule_3` fires twice). If it fails, it is usually
+  an expected-code drift (type/cast formatting), not a rule-miss.
+- `test_services_integration::test_find_single_dispatcher` is `XFAIL` when no
+  dispatcher is discovered in candidate functions at runtime. Treat this as
+  sample/maturity coverage, not a hard regression in the services API.
+
 ## Dump Before/After Pseudocode For Specific Functions
 
 Use the manual dump harness when you need fast per-function debugging without
@@ -111,6 +163,10 @@ pytest -s tests/system/e2e/test_dump_function_pseudocode.py \
 D810_TEST_BINARY=libobfuscated.dll pytest -s \
   tests/system/e2e/test_dump_function_pseudocode.py \
   --dump-function-pseudocode mixed_dispatcher_pattern
+
+# Research mode convenience: if no --dump-function-pseudocode is provided,
+# the dump harness defaults to test_xor
+pytest -s tests/system/e2e/test_dump_function_pseudocode.py --unskip-research
 ```
 
 ## Backend-Aware Guard Note

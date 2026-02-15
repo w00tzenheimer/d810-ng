@@ -14,7 +14,8 @@ Performance targets based on profiling:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional, Tuple
+
+from d810.core.typing import TYPE_CHECKING, List, Optional, Tuple
 
 if TYPE_CHECKING:
     import ida_hexrays

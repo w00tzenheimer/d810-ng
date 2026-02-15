@@ -40,7 +40,7 @@ import sys
 import tempfile
 import time
 import warnings
-from typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING
 
 import pytest
 
@@ -447,17 +447,18 @@ typedef int int32_t;
         ):
             return True
 
+        # Normalize common wrapper nodes early when type-agnostic comparison is enabled.
+        # This handles real-world shapes like:
+        #   UNEXPOSED_EXPR -> CSTYLE_CAST_EXPR -> BINARY_OPERATOR
+        # vs
+        #   BINARY_OPERATOR
+        if ignore_types:
+            c1n = self._unwrap_single_child(c1)
+            c2n = self._unwrap_single_child(c2)
+            if c1n is not c1 or c2n is not c2:
+                return self._cursors_equal(c1n, c2n, ignore_comments, ignore_types)
+
         if c1.kind != c2.kind:
-            # Tier 3 (implicit conversion): when ignore_types is True and
-            # one side is an UNEXPOSED_EXPR implicit conversion wrapper,
-            # unwrap it and retry.  Clang inserts these wrappers when
-            # typedef-based types require implicit conversion that built-in
-            # types do not.
-            if ignore_types:
-                c1u = self._unwrap_implicit(c1)
-                c2u = self._unwrap_implicit(c2)
-                if c1u is not c1 or c2u is not c2:
-                    return self._cursors_equal(c1u, c2u, ignore_comments, ignore_types)
             logger.debug("Kind mismatch: %s vs %s", c1.kind, c2.kind)
             return False
 
@@ -1192,10 +1193,34 @@ def pytest_addoption(parser):
         default=False,
         help="Do not load any project configuration when dumping pseudocode.",
     )
+    parser.addoption(
+        "--unskip-research",
+        action="store_true",
+        default=False,
+        help=(
+            "Run system test cases normally marked with case-level skip reasons. "
+            "Dangerous hang/segfault cases remain skipped unless "
+            "--unskip-dangerous is also set."
+        ),
+    )
+    parser.addoption(
+        "--unskip-dangerous",
+        action="store_true",
+        default=False,
+        help=(
+            "Also run dangerous known-hang/known-segfault cases. "
+            "Use only for local investigation."
+        ),
+    )
 
 
 def pytest_configure(config):
     """Configure pytest plugins."""
+    if config.getoption("--unskip-research"):
+        os.environ["D810_UNSKIP_CASES"] = "1"
+    if config.getoption("--unskip-dangerous"):
+        os.environ["D810_UNSKIP_DANGEROUS"] = "1"
+
     config.addinivalue_line(
         "markers",
         "pseudocode_dump: manual utility tests for before/after pseudocode dumping",

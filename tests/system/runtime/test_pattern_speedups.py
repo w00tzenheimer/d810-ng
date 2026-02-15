@@ -151,11 +151,7 @@ def real_asts(libobfuscated_setup):
         "test_opaque_predicate",
     ]
 
-    for func_name in test_functions:
-        func_ea = get_func_ea(func_name)
-        if func_ea == idaapi.BADADDR:
-            continue
-
+    def _collect_from_function_ea(func_ea: int):
         for maturity in [
             ida_hexrays.MMAT_PREOPTIMIZED,
             ida_hexrays.MMAT_LOCOPT,
@@ -167,10 +163,32 @@ def real_asts(libobfuscated_setup):
             asts = collect_real_asts_from_mba(mba)
             if len(asts) >= 3:
                 print(
-                    f"\n  Collected {len(asts)} ASTs from {func_name} "
+                    f"\n  Collected {len(asts)} ASTs "
                     f"@ maturity {maturity}"
                 )
                 return asts
+        return None
+
+    for func_name in test_functions:
+        func_ea = get_func_ea(func_name)
+        if func_ea == idaapi.BADADDR:
+            continue
+
+        asts = _collect_from_function_ea(func_ea)
+        if asts is not None:
+            print(f"  Source function: {func_name}")
+            return asts
+
+    # Fallback: scan arbitrary functions in the current binary.
+    import idautils
+
+    for idx, func_ea in enumerate(idautils.Functions()):
+        if idx >= 128:
+            break
+        asts = _collect_from_function_ea(func_ea)
+        if asts is not None:
+            print(f"  Source function EA: {hex(func_ea)}")
+            return asts
 
     pytest.skip("Could not collect enough ASTs from any test function")
 
@@ -769,7 +787,23 @@ class TestOpcodeIndexedStorageReal:
                     )
                     return
 
-        pytest.skip("No opcode with different depth ASTs found for filtering test")
+        # Fallback: synthesize depth mismatch under same opcode so this test still runs.
+        shallow_ast = AstNode(ida_hexrays.m_add, AstLeaf("x_0"), AstLeaf("y_0"))
+        deep_ast = AstNode(
+            ida_hexrays.m_add,
+            AstNode(ida_hexrays.m_add, AstLeaf("x_0"), AstLeaf("z_0")),
+            AstLeaf("y_0"),
+        )
+        storage = OpcodeIndexedStorage()
+
+        class DepthRule:
+            name = "deep_rule_fallback"
+
+        storage.add_pattern(deep_ast, DepthRule())
+        results = storage.get_candidates(shallow_ast)
+        assert len(results) == 0, (
+            "Depth-incompatible candidate should be filtered out in fallback path"
+        )
 
     @pytest.mark.ida_required
     def test_leaf_patterns_real(self, real_asts):

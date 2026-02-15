@@ -7,8 +7,7 @@ Ported from herast (herast/tree/ast_iteration.py).
 """
 from __future__ import annotations
 
-import typing
-
+from d810.core import typing
 from d810.core import getLogger
 
 logger = getLogger("D810.ctree")

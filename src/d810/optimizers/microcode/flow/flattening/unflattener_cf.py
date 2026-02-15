@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 import enum
 import hashlib
-import typing
+from d810.core import typing
 import weakref
 
 import ida_hexrays

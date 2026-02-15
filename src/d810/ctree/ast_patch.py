@@ -7,7 +7,7 @@ Ported from herast (herast/tree/ast_patch.py).
 """
 from __future__ import annotations
 
-import typing
+from d810.core import typing
 from enum import Enum
 from collections import defaultdict
 

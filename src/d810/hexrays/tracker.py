@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
+from d810.core.typing import TYPE_CHECKING
 import ida_hexrays
 
 import idaapi
@@ -29,7 +29,7 @@ from d810.hexrays.hexrays_helpers import (
 from d810.hexrays.ida_utils import is_never_written_var
 
 if TYPE_CHECKING:
-    from typing import Union
+    from d810.core.typing import Union
 
 # This module can be use to find the instruction that define the value of a mop. Basically, you:
 # 1 - Create a MopTracker object with the list of mops to search
