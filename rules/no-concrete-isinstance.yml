@@ -10,6 +10,14 @@
 id: no-concrete-isinstance
 language: python
 severity: warning
+
+# Limit this advisory rule to first-party source code only.
+files:
+  - "src/**/*.py"
+
+ignores:
+  - "src/d810/_vendor/**"
+
 message: |
   isinstance() with concrete class may break after hot reload.
   Use a @runtime_checkable Protocol instead for structural typing.
