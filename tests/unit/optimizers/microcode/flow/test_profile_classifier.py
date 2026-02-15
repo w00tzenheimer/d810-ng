@@ -40,40 +40,24 @@ class TestFlowProfile:
         assert profile.has_default_target is True
         assert profile.max_block_successors == 2
 
-    def test_negative_total_blocks_raises(self) -> None:
-        """Negative total_blocks should raise ValueError."""
-        with pytest.raises(ValueError, match="total_blocks must be non-negative"):
-            FlowProfile(-1, 3, 17, 10, 2, 10, True, 2)
-
-    def test_negative_dispatch_region_size_raises(self) -> None:
-        """Negative dispatch_region_size should raise ValueError."""
-        with pytest.raises(ValueError, match="dispatch_region_size must be non-negative"):
-            FlowProfile(20, -1, 17, 10, 2, 10, True, 2)
-
-    def test_negative_case_block_count_raises(self) -> None:
-        """Negative case_block_count should raise ValueError."""
-        with pytest.raises(ValueError, match="case_block_count must be non-negative"):
-            FlowProfile(20, 3, -1, 10, 2, 10, True, 2)
-
-    def test_negative_compare_chain_length_raises(self) -> None:
-        """Negative compare_chain_length should raise ValueError."""
-        with pytest.raises(ValueError, match="compare_chain_length must be non-negative"):
-            FlowProfile(20, 3, 17, -1, 2, 10, True, 2)
-
-    def test_negative_state_alias_count_raises(self) -> None:
-        """Negative state_alias_count should raise ValueError."""
-        with pytest.raises(ValueError, match="state_alias_count must be non-negative"):
-            FlowProfile(20, 3, 17, 10, -1, 10, True, 2)
-
-    def test_negative_dispatch_table_size_raises(self) -> None:
-        """Negative dispatch_table_size should raise ValueError."""
-        with pytest.raises(ValueError, match="dispatch_table_size must be non-negative"):
-            FlowProfile(20, 3, 17, 10, 2, -1, True, 2)
-
-    def test_negative_max_block_successors_raises(self) -> None:
-        """Negative max_block_successors should raise ValueError."""
-        with pytest.raises(ValueError, match="max_block_successors must be non-negative"):
-            FlowProfile(20, 3, 17, 10, 2, 10, True, -1)
+    @pytest.mark.parametrize(
+        "field_index, field_name",
+        [
+            (0, "total_blocks"),
+            (1, "dispatch_region_size"),
+            (2, "case_block_count"),
+            (3, "compare_chain_length"),
+            (4, "state_alias_count"),
+            (5, "dispatch_table_size"),
+            (7, "max_block_successors"),
+        ],
+    )
+    def test_negative_field_raises(self, field_index: int, field_name: str) -> None:
+        """Negative values should raise ValueError for any numeric field."""
+        args = [20, 3, 17, 10, 2, 10, True, 2]
+        args[field_index] = -1
+        with pytest.raises(ValueError, match=f"{field_name} must be non-negative"):
+            FlowProfile(*args)
 
     def test_zero_values_allowed(self) -> None:
         """Zero values should be allowed for all metrics."""
@@ -81,6 +65,12 @@ class TestFlowProfile:
         assert profile.total_blocks == 0
         assert profile.dispatch_region_size == 0
         assert profile.compare_chain_length == 0
+
+    def test_flow_profile_is_immutable(self) -> None:
+        """FlowProfile should be immutable (frozen dataclass)."""
+        profile = FlowProfile(20, 3, 17, 10, 2, 10, True, 2)
+        with pytest.raises(AttributeError):
+            profile.total_blocks = 99
 
 
 class TestClassificationResult:
