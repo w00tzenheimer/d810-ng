@@ -41,6 +41,7 @@ from d810.optimizers.microcode.flow.flattening.generic import (
     GenericDispatcherUnflatteningRule,
     GenericDispatcherCollector,
     GenericDispatcherInfo,
+    GenericDispatcherBlockInfo,
     UnflatteningEvent,
 )
 from d810.hexrays.deferred_modifier import DeferredGraphModifier
@@ -129,13 +130,21 @@ class TestDispatcherFatherResolveIntegration:
         return rule
 
     def _create_minimal_dispatcher_info(self, mba: "mba_t") -> GenericDispatcherInfo:
-        """Create a minimal GenericDispatcherInfo for testing."""
+        """Create a minimal GenericDispatcherInfo using real microcode blocks.
+
+        This creates a GenericDispatcherInfo with a real entry block wrapped in
+        GenericDispatcherBlockInfo (no anonymous types).
+        """
         dispatcher_info = GenericDispatcherInfo(mba)
-        dispatcher_info.entry_block = type('EntryBlock', (), {
-            'use_before_def_list': [],
-            'blk': mba.get_mblock(0) if mba.qty > 0 else None,
-            'serial': 0
-        })()
+
+        # Use real first block and wrap it in GenericDispatcherBlockInfo
+        if mba.qty > 0:
+            entry_blk = mba.get_mblock(0)
+            entry_block_info = GenericDispatcherBlockInfo(entry_blk)
+            # Parse the block to populate use_before_def_list and other attributes
+            entry_block_info.parse()
+            dispatcher_info.entry_block = entry_block_info
+
         dispatcher_info.dispatcher_internal_blocks = []
         dispatcher_info.dispatcher_exit_blocks = []
         return dispatcher_info
@@ -275,13 +284,17 @@ class TestLayoutSignalCollection:
         return rule
 
     def _create_dispatcher_info(self, mba: "mba_t", entry_blk: "mblock_t") -> GenericDispatcherInfo:
-        """Create a GenericDispatcherInfo with specified entry block."""
+        """Create a GenericDispatcherInfo with specified real entry block.
+
+        Uses GenericDispatcherBlockInfo to wrap the real mblock_t object.
+        """
         dispatcher_info = GenericDispatcherInfo(mba)
-        dispatcher_info.entry_block = type('EntryBlock', (), {
-            'use_before_def_list': [],
-            'blk': entry_blk,
-            'serial': entry_blk.serial if entry_blk else 0
-        })()
+
+        # Wrap the real block in GenericDispatcherBlockInfo
+        entry_block_info = GenericDispatcherBlockInfo(entry_blk)
+        entry_block_info.parse()
+        dispatcher_info.entry_block = entry_block_info
+
         dispatcher_info.dispatcher_internal_blocks = []
         dispatcher_info.dispatcher_exit_blocks = []
         return dispatcher_info
