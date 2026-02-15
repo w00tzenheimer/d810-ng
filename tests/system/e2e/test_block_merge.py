@@ -55,7 +55,6 @@ BLOCK_MERGE_CASES = [
         check_stats=True,
         expected_rules=["BlockMerger"],
         deobfuscated_not_contains=["JUMPOUT"],
-        skip="Unflattener produces CFG that fails decompilation (needs investigation)",
     ),
     DeobfuscationCase(
         function="tigress_minmaxarray",

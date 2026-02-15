@@ -187,7 +187,6 @@ MANUALLY_OBFUSCATED_CASES = [
         must_change=True,
         # From results.toml: PatternOptimizer (3), Or_MbaRule_1 (3)
         required_rules=["Or_MbaRule_1"],
-        skip="deobfuscation output mismatch - golden reference needs update",
     ),
     DeobfuscationCase(
         function="test_and",
@@ -208,7 +207,6 @@ MANUALLY_OBFUSCATED_CASES = [
         must_change=True,
         # From results.toml: PatternOptimizer (3), And_HackersDelightRule_4 (3)
         required_rules=["And_HackersDelightRule_4"],
-        skip="deobfuscation output mismatch - golden reference needs update",
     ),
     DeobfuscationCase(
         function="test_neg",
@@ -298,7 +296,6 @@ ABC_F6_CASES = [
         must_change=True,
         # From results.toml: UnflattenerFakeJump (2 uses, 5 patches)
         required_rules=["UnflattenerFakeJump"],
-        skip="Known issue: Returns default path (-1) instead of a1|0xFF - unflattener path resolution bug",
     ),
     DeobfuscationCase(
         function="abc_f6_nested",

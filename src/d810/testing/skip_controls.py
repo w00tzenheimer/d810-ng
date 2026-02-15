@@ -7,6 +7,7 @@ skipped due to known instability or missing expectations.
 from __future__ import annotations
 
 import os
+import re
 
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -16,6 +17,12 @@ _DANGEROUS_SKIP_KEYWORDS = (
     "infinite loop",
     "interr",
     "native bug",
+)
+_DANGEROUS_SKIP_PATTERNS = tuple(
+    re.compile(
+        r"\b" + r"\s+".join(re.escape(part) for part in keyword.split()) + r"\b"
+    )
+    for keyword in _DANGEROUS_SKIP_KEYWORDS
 )
 
 
@@ -39,7 +46,7 @@ def is_dangerous_skip_reason(reason: str | None) -> bool:
     if not reason:
         return False
     lowered = reason.lower()
-    return any(keyword in lowered for keyword in _DANGEROUS_SKIP_KEYWORDS)
+    return any(pattern.search(lowered) for pattern in _DANGEROUS_SKIP_PATTERNS)
 
 
 def should_skip_reason(reason: str | None) -> bool:
@@ -51,4 +58,3 @@ def should_skip_reason(reason: str | None) -> bool:
     if is_dangerous_skip_reason(reason) and not unskip_dangerous_enabled():
         return True
     return False
-
