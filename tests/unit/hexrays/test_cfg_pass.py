@@ -1,0 +1,356 @@
+"""Tests for CFGPass abstract base class and CFGBackend protocol.
+
+This module tests:
+- CFGPass subclassing and validation
+- CFGBackend protocol conformance (runtime_checkable)
+- InMemoryBackend implementation for testing
+- Concrete pass examples (NoOpPass, CountBlocksPass)
+"""
+from __future__ import annotations
+
+import pytest
+
+from d810.hexrays.cfg_backend import CFGBackend
+from d810.hexrays.cfg_pass import CFGPass
+from d810.hexrays.graph_modification import ConvertToGoto, GraphModification
+from d810.hexrays.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+
+
+# ============================================================================
+# Mock Backend for Testing
+# ============================================================================
+
+
+class InMemoryBackend:
+    """Mock backend operating on synthetic PortableCFG.
+
+    Implements CFGBackend protocol without IDA dependency.
+    Used for testing CFGPass instances in isolation.
+    """
+
+    def __init__(self, blocks: dict[int, BlockSnapshot] | None = None):
+        """Initialize with optional block dict.
+
+        Args:
+            blocks: Dict mapping serial to BlockSnapshot (default: empty).
+        """
+        self.blocks = blocks or {}
+        self.applied_modifications: list[GraphModification] = []
+
+    @property
+    def name(self) -> str:
+        """Backend identifier."""
+        return "in_memory"
+
+    def lift(self, state: dict[int, BlockSnapshot] | None = None) -> PortableCFG:
+        """Lift blocks dict to PortableCFG.
+
+        Args:
+            state: Optional blocks dict (uses self.blocks if None).
+
+        Returns:
+            PortableCFG with blocks from state or self.blocks.
+        """
+        blocks = state if state is not None else self.blocks
+        # If empty, return minimal CFG with entry_serial=0
+        if not blocks:
+            return PortableCFG(blocks={}, entry_serial=0, func_ea=0)
+        # Otherwise use first block as entry
+        entry_serial = min(blocks.keys())
+        return PortableCFG(
+            blocks=blocks,
+            entry_serial=entry_serial,
+            func_ea=blocks[entry_serial].start_ea
+        )
+
+    def lower(
+        self,
+        modifications: list[GraphModification],
+        state: dict[int, BlockSnapshot] | None = None
+    ) -> int:
+        """Record modifications and return count.
+
+        Args:
+            modifications: List of modification intents.
+            state: Optional state (ignored, uses self.applied_modifications).
+
+        Returns:
+            Number of modifications (always len(modifications)).
+        """
+        self.applied_modifications.extend(modifications)
+        return len(modifications)
+
+    def verify(self, state: dict[int, BlockSnapshot] | None = None) -> bool:
+        """Always returns True (no validation logic in mock).
+
+        Args:
+            state: Optional state (ignored).
+
+        Returns:
+            True (always valid).
+        """
+        return True
+
+
+# ============================================================================
+# Concrete CFGPass Examples for Testing
+# ============================================================================
+
+
+class NoOpPass(CFGPass):
+    """Pass that does nothing (returns empty modification list)."""
+    name = "noop"
+
+    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+        """Return empty list."""
+        return []
+
+
+class CountBlocksPass(CFGPass):
+    """Pass that returns ConvertToGoto for each block with nsucc==0."""
+    name = "count_blocks"
+    tags = frozenset({"test", "example"})
+
+    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+        """Return ConvertToGoto for terminal blocks.
+
+        Args:
+            cfg: Portable CFG to analyze.
+
+        Returns:
+            List with ConvertToGoto for each block with nsucc==0.
+            Targets serial 0 (entry) as dummy target.
+        """
+        modifications = []
+        for serial, blk in cfg.blocks.items():
+            if blk.nsucc == 0:
+                # Use entry block (0) as dummy target
+                modifications.append(ConvertToGoto(block_serial=serial, goto_target=0))
+        return modifications
+
+
+class ConditionalPass(CFGPass):
+    """Pass that only applies to CFGs with >2 blocks."""
+    name = "conditional"
+
+    def is_applicable(self, cfg: PortableCFG) -> bool:
+        """Only apply if more than 2 blocks."""
+        return cfg.num_blocks > 2
+
+    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+        """Return empty list (just for testing is_applicable)."""
+        return []
+
+
+# ============================================================================
+# Tests
+# ============================================================================
+
+
+class TestInMemoryBackend:
+    """Tests for InMemoryBackend protocol conformance."""
+
+    def test_conforms_to_protocol(self):
+        """InMemoryBackend should satisfy CFGBackend protocol."""
+        backend = InMemoryBackend()
+        assert isinstance(backend, CFGBackend)
+
+    def test_name_property(self):
+        """Backend should have 'name' property."""
+        backend = InMemoryBackend()
+        assert backend.name == "in_memory"
+
+    def test_lift_empty_blocks(self):
+        """Lift with empty blocks should return minimal CFG."""
+        backend = InMemoryBackend()
+        cfg = backend.lift()
+        assert cfg.num_blocks == 0
+        assert cfg.entry_serial == 0
+        assert cfg.func_ea == 0
+
+    def test_lift_with_blocks(self):
+        """Lift with blocks should return PortableCFG."""
+        # Create synthetic blocks
+        blk0 = BlockSnapshot(
+            serial=0, block_type=1, succs=(1,), preds=(),
+            flags=0, start_ea=0x1000, insn_snapshots=()
+        )
+        blk1 = BlockSnapshot(
+            serial=1, block_type=0, succs=(), preds=(0,),
+            flags=0, start_ea=0x1010, insn_snapshots=()
+        )
+        blocks = {0: blk0, 1: blk1}
+
+        backend = InMemoryBackend(blocks)
+        cfg = backend.lift()
+
+        assert cfg.num_blocks == 2
+        assert cfg.entry_serial == 0
+        assert cfg.func_ea == 0x1000
+        assert 0 in cfg.blocks
+        assert 1 in cfg.blocks
+
+    def test_lower_records_modifications(self):
+        """Lower should record modifications and return count."""
+        backend = InMemoryBackend()
+        mods = [
+            ConvertToGoto(block_serial=1, goto_target=2),
+            ConvertToGoto(block_serial=3, goto_target=4),
+        ]
+
+        count = backend.lower(mods)
+
+        assert count == 2
+        assert len(backend.applied_modifications) == 2
+        assert backend.applied_modifications[0].block_serial == 1
+        assert backend.applied_modifications[1].block_serial == 3
+
+    def test_verify_always_true(self):
+        """Verify should always return True (mock has no validation)."""
+        backend = InMemoryBackend()
+        assert backend.verify() is True
+
+
+class TestCFGPass:
+    """Tests for CFGPass abstract base class."""
+
+    def test_noop_pass_returns_empty_list(self):
+        """NoOpPass should return empty modification list."""
+        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0)
+        pass_instance = NoOpPass()
+
+        result = pass_instance.transform(cfg)
+
+        assert result == []
+
+    def test_count_blocks_pass_finds_terminals(self):
+        """CountBlocksPass should return ConvertToGoto for terminal blocks."""
+        # Create CFG: 0 -> 1, 2 (terminals)
+        blk0 = BlockSnapshot(
+            serial=0, block_type=2, succs=(1, 2), preds=(),
+            flags=0, start_ea=0x1000, insn_snapshots=()
+        )
+        blk1 = BlockSnapshot(
+            serial=1, block_type=0, succs=(), preds=(0,),
+            flags=0, start_ea=0x1010, insn_snapshots=()
+        )
+        blk2 = BlockSnapshot(
+            serial=2, block_type=0, succs=(), preds=(0,),
+            flags=0, start_ea=0x1020, insn_snapshots=()
+        )
+        cfg = PortableCFG(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
+
+        pass_instance = CountBlocksPass()
+        result = pass_instance.transform(cfg)
+
+        # Should find 2 terminal blocks (1 and 2)
+        assert len(result) == 2
+        assert all(isinstance(mod, ConvertToGoto) for mod in result)
+        serials = {mod.block_serial for mod in result}
+        assert serials == {1, 2}
+
+    def test_is_applicable_default_true(self):
+        """Default is_applicable should return True."""
+        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0)
+        pass_instance = NoOpPass()
+
+        assert pass_instance.is_applicable(cfg) is True
+
+    def test_is_applicable_custom_logic(self):
+        """Custom is_applicable should be honored."""
+        # Small CFG (2 blocks)
+        blk0 = BlockSnapshot(
+            serial=0, block_type=1, succs=(1,), preds=(),
+            flags=0, start_ea=0x1000, insn_snapshots=()
+        )
+        blk1 = BlockSnapshot(
+            serial=1, block_type=0, succs=(), preds=(0,),
+            flags=0, start_ea=0x1010, insn_snapshots=()
+        )
+        small_cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+
+        # Large CFG (3 blocks)
+        blk2 = BlockSnapshot(
+            serial=2, block_type=0, succs=(), preds=(0,),
+            flags=0, start_ea=0x1020, insn_snapshots=()
+        )
+        blk0_large = BlockSnapshot(
+            serial=0, block_type=2, succs=(1, 2), preds=(),
+            flags=0, start_ea=0x1000, insn_snapshots=()
+        )
+        large_cfg = PortableCFG(
+            blocks={0: blk0_large, 1: blk1, 2: blk2},
+            entry_serial=0, func_ea=0x1000
+        )
+
+        pass_instance = ConditionalPass()
+
+        # Should not apply to small CFG (2 blocks)
+        assert pass_instance.is_applicable(small_cfg) is False
+
+        # Should apply to large CFG (3 blocks)
+        assert pass_instance.is_applicable(large_cfg) is True
+
+    def test_missing_name_raises_typeerror(self):
+        """Defining a pass without 'name' should raise TypeError."""
+        with pytest.raises(TypeError, match="must define 'name' class attribute"):
+            class MissingNamePass(CFGPass):
+                def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+                    return []
+
+    def test_repr(self):
+        """Pass __repr__ should show class name and name attribute."""
+        pass_instance = NoOpPass()
+        repr_str = repr(pass_instance)
+
+        assert "NoOpPass" in repr_str
+        assert "name='noop'" in repr_str
+
+    def test_tags_default_empty(self):
+        """Default tags should be empty frozenset."""
+        pass_instance = NoOpPass()
+        assert pass_instance.tags == frozenset()
+
+    def test_tags_custom(self):
+        """Custom tags should be preserved."""
+        pass_instance = CountBlocksPass()
+        assert pass_instance.tags == frozenset({"test", "example"})
+
+
+class TestIntegration:
+    """Integration tests with backend + pass."""
+
+    def test_backend_lift_pass_lower_cycle(self):
+        """Full cycle: lift CFG, run pass, lower modifications."""
+        # Setup backend with 3 blocks
+        blk0 = BlockSnapshot(
+            serial=0, block_type=2, succs=(1, 2), preds=(),
+            flags=0, start_ea=0x1000, insn_snapshots=()
+        )
+        blk1 = BlockSnapshot(
+            serial=1, block_type=0, succs=(), preds=(0,),
+            flags=0, start_ea=0x1010, insn_snapshots=()
+        )
+        blk2 = BlockSnapshot(
+            serial=2, block_type=0, succs=(), preds=(0,),
+            flags=0, start_ea=0x1020, insn_snapshots=()
+        )
+        blocks = {0: blk0, 1: blk1, 2: blk2}
+        backend = InMemoryBackend(blocks)
+
+        # Lift to PortableCFG
+        cfg = backend.lift()
+        assert cfg.num_blocks == 3
+
+        # Run CountBlocksPass
+        pass_instance = CountBlocksPass()
+        modifications = pass_instance.transform(cfg)
+        assert len(modifications) == 2  # 2 terminal blocks
+
+        # Lower modifications
+        count = backend.lower(modifications)
+        assert count == 2
+
+        # Verify
+        assert backend.verify() is True
+        assert len(backend.applied_modifications) == 2
