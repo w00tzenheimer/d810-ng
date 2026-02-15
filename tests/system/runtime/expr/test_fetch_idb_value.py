@@ -1,241 +1,151 @@
-"""Unit tests for fetch_idb_value in d810.expr.emulator.
+"""System tests for fetch_idb_value in d810.expr.emulator.
 
 fetch_idb_value reads a value from the IDA database at a given address.
 It supports sizes 1, 2, 4, and 8 bytes. All other sizes (including 0,
 negative, and unsupported positive values) must return None.
 
-These tests mock the idaapi module to avoid requiring a live IDA instance.
+These tests use real IDA APIs with libobfuscated.dll loaded.
 """
 
-import sys
-import types
-from unittest.mock import MagicMock, patch
-
 import pytest
+import idaapi
+import idc
+
+from d810.expr.emulator import fetch_idb_value
 
 
-@pytest.fixture(autouse=True)
-def mock_ida_modules():
-    """Inject mock IDA modules so d810.expr.emulator can be imported."""
-    mock_idaapi = MagicMock()
-    mock_hexrays = MagicMock()
-
-    # Configure idaapi read helpers to return deterministic values
-    mock_idaapi.get_byte.return_value = 0xAB
-    mock_idaapi.get_word.return_value = 0xABCD
-    mock_idaapi.get_dword.return_value = 0xDEADBEEF
-    mock_idaapi.get_qword.return_value = 0xCAFEBABEDEADBEEF
-
-    # mop_t must be a real class (not MagicMock) to avoid singledispatch issues
-    class mop_t:
-        def __init__(self):
-            self.t = 0
-            self.size = 4
-
-    mock_hexrays.mop_t = mop_t
-
-    # Provide MMAT_ constants needed by transitive imports
-    mock_hexrays.MMAT_GENERATED = 0
-    mock_hexrays.MMAT_PREOPTIMIZED = 1
-    mock_hexrays.MMAT_LOCOPT = 2
-    mock_hexrays.MMAT_CALLS = 3
-    mock_hexrays.MMAT_GLBOPT1 = 4
-    mock_hexrays.MMAT_GLBOPT2 = 5
-    mock_hexrays.MMAT_GLBOPT3 = 6
-    mock_hexrays.MMAT_LVARS = 7
-
-    # mop type constants
-    mock_hexrays.mop_z = 0
-    mock_hexrays.mop_r = 1
-    mock_hexrays.mop_n = 2
-    mock_hexrays.mop_d = 4
-    mock_hexrays.mop_S = 5
-    mock_hexrays.mop_v = 6
-    mock_hexrays.mop_b = 7
-    mock_hexrays.mop_a = 10
-    mock_hexrays.mop_h = 11
-
-    # Opcode constants used by the emulator module
-    mock_hexrays.m_mov = 0x04
-    mock_hexrays.m_ldx = 0x02
-    mock_hexrays.m_stx = 0x01
-    mock_hexrays.m_call = 0x38
-    mock_hexrays.m_icall = 0x39
-    mock_hexrays.m_goto = 0x37
-    mock_hexrays.m_jcnd = 0x2A
-    mock_hexrays.m_jnz = 0x2B
-    mock_hexrays.m_jz = 0x2C
-    mock_hexrays.m_jae = 0x2D
-    mock_hexrays.m_jb = 0x2E
-    mock_hexrays.m_ja = 0x2F
-    mock_hexrays.m_jbe = 0x30
-    mock_hexrays.m_jg = 0x31
-    mock_hexrays.m_jge = 0x32
-    mock_hexrays.m_jl = 0x33
-    mock_hexrays.m_jle = 0x34
-    mock_hexrays.m_jtbl = 0x35
-    mock_hexrays.m_ijmp = 0x36
-    mock_hexrays.m_ret = 0x3A
-    mock_hexrays.m_neg = 0x05
-    mock_hexrays.m_lnot = 0x06
-    mock_hexrays.m_bnot = 0x07
-    mock_hexrays.m_xds = 0x08
-    mock_hexrays.m_xdu = 0x09
-    mock_hexrays.m_low = 0x0A
-    mock_hexrays.m_high = 0x0B
-    mock_hexrays.m_add = 0x0C
-    mock_hexrays.m_sub = 0x0D
-    mock_hexrays.m_mul = 0x0E
-    mock_hexrays.m_udiv = 0x0F
-    mock_hexrays.m_sdiv = 0x10
-    mock_hexrays.m_umod = 0x11
-    mock_hexrays.m_smod = 0x12
-    mock_hexrays.m_or = 0x13
-    mock_hexrays.m_and = 0x14
-    mock_hexrays.m_xor = 0x15
-    mock_hexrays.m_shl = 0x16
-    mock_hexrays.m_shr = 0x17
-    mock_hexrays.m_sar = 0x18
-    mock_hexrays.m_cfadd = 0x19
-    mock_hexrays.m_ofadd = 0x1A
-    mock_hexrays.m_sets = 0x1D
-    mock_hexrays.m_seto = 0x1E
-    mock_hexrays.m_setp = 0x1F
-    mock_hexrays.m_setnz = 0x20
-    mock_hexrays.m_setz = 0x21
-    mock_hexrays.m_setae = 0x22
-    mock_hexrays.m_setb = 0x23
-    mock_hexrays.m_seta = 0x24
-    mock_hexrays.m_setbe = 0x25
-    mock_hexrays.m_setg = 0x26
-    mock_hexrays.m_setge = 0x27
-    mock_hexrays.m_setl = 0x28
-    mock_hexrays.m_setle = 0x29
-
-    # Make dir(mock_hexrays) return the attribute names we set so that
-    # MicrocodeHelper's list comprehensions (filtering MMAT_, mop_, m_) work.
-    _explicit_attrs = [
-        a for a in dir(type(mock_hexrays))
-        if not a.startswith("_")
-    ]
-    # Collect our manually-set constant names
-    _our_attrs = [
-        a for a in mock_hexrays.__dict__
-        if not a.startswith("_")
-    ]
-    _all_attrs = sorted(set(_explicit_attrs + _our_attrs))
-    type(mock_hexrays).__dir__ = lambda self: _all_attrs
-
-    # SEGPERM constants
-    mock_idaapi.SEGPERM_READ = 4
-    mock_idaapi.SEGPERM_WRITE = 2
-
-    # xref constants
-    mock_idaapi.XREF_DATA = 2
-    mock_idaapi.dr_W = 2
-
-    mock_idc = MagicMock()
-    mock_ida_ida = MagicMock()
-    mock_ida_idp = MagicMock()
-    mock_ida_bytes = MagicMock()
-
-    modules_to_mock = {
-        "ida_hexrays": mock_hexrays,
-        "idaapi": mock_idaapi,
-        "idc": mock_idc,
-        "ida_ida": mock_ida_ida,
-        "ida_idp": mock_ida_idp,
-        "ida_bytes": mock_ida_bytes,
-    }
-
-    # Purge any previously-cached d810 modules so they reimport with our mocks
-    cached_d810 = [k for k in sys.modules if k.startswith("d810")]
-    saved = {k: sys.modules.pop(k) for k in cached_d810}
-
-    with patch.dict("sys.modules", modules_to_mock):
-        yield mock_idaapi
-
-    # Restore previously-cached modules
-    for k, v in saved.items():
-        sys.modules[k] = v
-
-
-# ---------------------------------------------------------------------------
-# Tests for fetch_idb_value
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.ida_required
 class TestFetchIdbValueSupportedSizes:
     """fetch_idb_value should delegate to the correct idaapi reader."""
 
-    def test_size_1_calls_get_byte(self, mock_ida_modules):
-        from d810.expr.emulator import fetch_idb_value
+    binary_name = "libobfuscated.dll"
 
-        result = fetch_idb_value(0x401000, 1)
-        mock_ida_modules.get_byte.assert_called_once_with(0x401000)
-        assert result == 0xAB
+    def test_size_1_calls_get_byte(self, ida_database):
+        """Test reading a single byte from .rdata section.
 
-    def test_size_2_calls_get_word(self, mock_ida_modules):
-        from d810.expr.emulator import fetch_idb_value
+        At address 0x180012000 in .rdata, we have the byte sequence:
+        40 14 01 80 01 00 00 00 ...
+        """
+        # Use a known address in .rdata section
+        test_addr = 0x180012000
 
-        result = fetch_idb_value(0x401000, 2)
-        mock_ida_modules.get_word.assert_called_once_with(0x401000)
-        assert result == 0xABCD
+        # Read using fetch_idb_value
+        result = fetch_idb_value(test_addr, 1)
 
-    def test_size_4_calls_get_dword(self, mock_ida_modules):
-        from d810.expr.emulator import fetch_idb_value
+        # Verify it matches direct idaapi call
+        expected = idaapi.get_byte(test_addr)
+        assert result == expected
+        assert result == 0x40
 
-        result = fetch_idb_value(0x401000, 4)
-        mock_ida_modules.get_dword.assert_called_once_with(0x401000)
-        assert result == 0xDEADBEEF
+    def test_size_2_calls_get_word(self, ida_database):
+        """Test reading a 2-byte word from .rdata section.
 
-    def test_size_8_calls_get_qword(self, mock_ida_modules):
-        from d810.expr.emulator import fetch_idb_value
+        At address 0x180012000 in .rdata, we have:
+        40 14 (little-endian) = 0x1440
+        """
+        test_addr = 0x180012000
 
-        result = fetch_idb_value(0x401000, 8)
-        mock_ida_modules.get_qword.assert_called_once_with(0x401000)
-        assert result == 0xCAFEBABEDEADBEEF
+        result = fetch_idb_value(test_addr, 2)
+
+        expected = idaapi.get_word(test_addr)
+        assert result == expected
+        assert result == 0x1440  # little-endian: 40 14
+
+    def test_size_4_calls_get_dword(self, ida_database):
+        """Test reading a 4-byte dword from .rdata section.
+
+        At address 0x180012000 in .rdata, we have:
+        40 14 01 80 (little-endian) = 0x80011440
+        """
+        test_addr = 0x180012000
+
+        result = fetch_idb_value(test_addr, 4)
+
+        expected = idaapi.get_dword(test_addr)
+        assert result == expected
+        assert result == 0x80011440  # little-endian: 40 14 01 80
+
+    def test_size_8_calls_get_qword(self, ida_database):
+        """Test reading an 8-byte qword from .rdata section.
+
+        At address 0x180012000 in .rdata, we have:
+        40 14 01 80 01 00 00 00 (little-endian) = 0x0000000180011440
+        """
+        test_addr = 0x180012000
+
+        result = fetch_idb_value(test_addr, 8)
+
+        expected = idaapi.get_qword(test_addr)
+        assert result == expected
+        assert result == 0x0000000180011440  # little-endian: 40 14 01 80 01 00 00 00
 
 
+@pytest.mark.ida_required
 class TestFetchIdbValueUnsupportedSizes:
     """fetch_idb_value must return None for unsupported sizes."""
 
-    @pytest.mark.parametrize("bad_size", [0, 3, 5, 6, 7, 9, 16, 32, 64])
-    def test_unsupported_positive_sizes_return_none(self, mock_ida_modules, bad_size):
-        from d810.expr.emulator import fetch_idb_value
+    binary_name = "libobfuscated.dll"
 
-        assert fetch_idb_value(0x401000, bad_size) is None
+    @pytest.mark.parametrize("bad_size", [0, 3, 5, 6, 7, 9, 16, 32, 64])
+    def test_unsupported_positive_sizes_return_none(self, ida_database, bad_size):
+        test_addr = 0x180012000
+        assert fetch_idb_value(test_addr, bad_size) is None
 
     @pytest.mark.parametrize("bad_size", [-1, -2, -8])
-    def test_negative_sizes_return_none(self, mock_ida_modules, bad_size):
-        from d810.expr.emulator import fetch_idb_value
-
-        assert fetch_idb_value(0x401000, bad_size) is None
-
-    def test_no_idaapi_call_for_unsupported_size(self, mock_ida_modules):
-        """Ensure no idaapi read function is called for unsupported sizes."""
-        from d810.expr.emulator import fetch_idb_value
-
-        fetch_idb_value(0x401000, 3)
-        mock_ida_modules.get_byte.assert_not_called()
-        mock_ida_modules.get_word.assert_not_called()
-        mock_ida_modules.get_dword.assert_not_called()
-        mock_ida_modules.get_qword.assert_not_called()
+    def test_negative_sizes_return_none(self, ida_database, bad_size):
+        test_addr = 0x180012000
+        assert fetch_idb_value(test_addr, bad_size) is None
 
 
+@pytest.mark.ida_required
 class TestFetchIdbValueEdgeCases:
-    """Edge cases: address 0, large addresses."""
+    """Edge cases: different addresses and valid reads."""
 
-    def test_address_zero(self, mock_ida_modules):
-        from d810.expr.emulator import fetch_idb_value
+    binary_name = "libobfuscated.dll"
 
-        result = fetch_idb_value(0x0, 4)
-        mock_ida_modules.get_dword.assert_called_once_with(0x0)
-        assert result == 0xDEADBEEF
+    def test_different_rdata_offset(self, ida_database):
+        """Test reading from a different offset in .rdata section.
 
-    def test_large_address(self, mock_ida_modules):
-        from d810.expr.emulator import fetch_idb_value
+        At address 0x180012010 in .rdata, we have:
+        90 18 01 80 (little-endian) = 0x80011890
+        """
+        test_addr = 0x180012010
 
-        result = fetch_idb_value(0x7FFC1EB47830, 8)
-        mock_ida_modules.get_qword.assert_called_once_with(0x7FFC1EB47830)
-        assert result == 0xCAFEBABEDEADBEEF
+        result = fetch_idb_value(test_addr, 4)
+        expected = idaapi.get_dword(test_addr)
+
+        assert result == expected
+        assert result == 0x80011890
+
+    def test_text_section_read(self, ida_database):
+        """Test reading from .text section (first bytes of code)."""
+        # .text section starts at 0x180001000
+        test_addr = 0x180001000
+
+        # Just verify we can read and it matches direct idaapi call
+        result = fetch_idb_value(test_addr, 1)
+        expected = idaapi.get_byte(test_addr)
+
+        assert result == expected
+        assert result is not None
+
+    def test_consistency_across_sizes(self, ida_database):
+        """Verify that reading overlapping sizes yields consistent values.
+
+        Reading a dword should equal combining two words, etc.
+        """
+        test_addr = 0x180012000
+
+        # Read as individual bytes
+        b0 = fetch_idb_value(test_addr, 1)
+        b1 = fetch_idb_value(test_addr + 1, 1)
+        b2 = fetch_idb_value(test_addr + 2, 1)
+        b3 = fetch_idb_value(test_addr + 3, 1)
+
+        # Read as dword
+        dword = fetch_idb_value(test_addr, 4)
+
+        # Reconstruct dword from bytes (little-endian)
+        reconstructed = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+
+        assert dword == reconstructed
