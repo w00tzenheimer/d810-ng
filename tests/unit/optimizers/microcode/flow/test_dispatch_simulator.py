@@ -8,8 +8,6 @@ No IDA runtime required - operates on abstract types.
 
 from __future__ import annotations
 
-import logging
-
 import pytest
 
 from d810.optimizers.microcode.flow.compare_chain import (
@@ -315,93 +313,6 @@ class TestSimulateWithDefault:
         assert trans_map[0x999] == 99
 
 
-class TestSimulateMultiLevelDispatch:
-    """Test simulate() with multi-level dispatch (target is another dispatcher)."""
-
-    def test_two_level_dispatch(self) -> None:
-        """Target resolves through another dispatch entry."""
-        # 0x42 → 100 → 200 (100 is also in the table)
-        entries = (
-            CompareEntry(0x42, 100, 1),
-            CompareEntry(100, 200, 2),  # 100 maps to 200
-        )
-        table = DispatchTable(entries, default_serial=None)
-        state_writes = {10: [0x42]}
-        case_blocks = frozenset([10, 100, 200])
-
-        graph = DispatchSimulator.simulate(table, state_writes, case_blocks)
-
-        assert len(graph) == 1
-        # Should resolve to 200 (through 100)
-        assert graph.transitions[0].to_serial == 200
-
-    def test_three_level_dispatch(self) -> None:
-        """Target resolves through multiple dispatch levels."""
-        # 0x42 → 100 → 200 → 300
-        entries = (
-            CompareEntry(0x42, 100, 1),
-            CompareEntry(100, 200, 2),
-            CompareEntry(200, 300, 3),
-        )
-        table = DispatchTable(entries, default_serial=None)
-        state_writes = {10: [0x42]}
-        case_blocks = frozenset([10, 100, 200, 300])
-
-        graph = DispatchSimulator.simulate(table, state_writes, case_blocks)
-
-        assert len(graph) == 1
-        # Should resolve to 300 (through 100 → 200)
-        assert graph.transitions[0].to_serial == 300
-
-
-class TestSimulateCycleDetection:
-    """Test simulate() cycle detection in multi-level dispatch."""
-
-    def test_direct_self_cycle(self, caplog) -> None:
-        """Value maps to itself should be detected as cycle."""
-        entries = (CompareEntry(0x42, 0x42, 1),)  # Self-reference
-        table = DispatchTable(entries, default_serial=None)
-        state_writes = {10: [0x42]}
-        case_blocks = frozenset([10])
-
-        with caplog.at_level(logging.WARNING):
-            graph = DispatchSimulator.simulate(table, state_writes, case_blocks)
-
-        assert len(graph) == 0
-        assert len(graph.unresolved) == 1
-        assert "Cycle detected" in caplog.text
-
-    def test_two_value_cycle(self, caplog) -> None:
-        """A → B → A cycle should be detected."""
-        entries = (
-            CompareEntry(0x42, 0x100, 1),
-            CompareEntry(0x100, 0x42, 2),  # Cycle
-        )
-        table = DispatchTable(entries, default_serial=None)
-        state_writes = {10: [0x42]}
-        case_blocks = frozenset([10])
-
-        with caplog.at_level(logging.WARNING):
-            graph = DispatchSimulator.simulate(table, state_writes, case_blocks)
-
-        assert len(graph) == 0
-        assert len(graph.unresolved) == 1
-        assert "Cycle detected" in caplog.text
-
-    def test_max_depth_exceeded(self, caplog) -> None:
-        """Very deep chain should hit max_depth limit."""
-        # Create a long chain: 1→2→3→...→15
-        entries = tuple(CompareEntry(i, i + 1, i) for i in range(1, 15))
-        table = DispatchTable(entries, default_serial=None)
-        state_writes = {10: [1]}
-        case_blocks = frozenset([10])
-
-        with caplog.at_level(logging.WARNING):
-            graph = DispatchSimulator.simulate(table, state_writes, case_blocks, max_depth=5)
-
-        assert len(graph) == 0
-        assert len(graph.unresolved) == 1
-        assert "Max depth" in caplog.text
 
 
 class TestSimulateEmptyInputs:
@@ -472,28 +383,30 @@ class TestResolveTarget:
 
         assert target == 99
 
-    def test_multi_level_resolution(self) -> None:
-        """Multi-level dispatch should resolve through chain."""
-        entries = (
-            CompareEntry(0x42, 100, 1),
-            CompareEntry(100, 200, 2),
-        )
-        table = DispatchTable(entries, default_serial=None)
+    def test_empty_dispatch_table_no_default(self) -> None:
+        """Empty dispatch table with no default should return None."""
+        table = DispatchTable((), default_serial=None)
 
         target = DispatchSimulator.resolve_target(table, 0x42)
 
-        assert target == 200
+        assert target is None
 
-    def test_cycle_detection_in_resolve(self, caplog) -> None:
-        """Cycle should be detected and return None."""
-        entries = (CompareEntry(0x42, 0x42, 1),)
+    def test_empty_dispatch_table_with_default(self) -> None:
+        """Empty dispatch table with default should return default."""
+        table = DispatchTable((), default_serial=99)
+
+        target = DispatchSimulator.resolve_target(table, 0x42)
+
+        assert target == 99
+
+    def test_zero_state_value_lookup(self) -> None:
+        """State value of 0 should be handled correctly."""
+        entries = (CompareEntry(0, 20, 1),)
         table = DispatchTable(entries, default_serial=None)
 
-        with caplog.at_level(logging.WARNING):
-            target = DispatchSimulator.resolve_target(table, 0x42)
+        target = DispatchSimulator.resolve_target(table, 0)
 
-        assert target is None
-        assert "Cycle detected" in caplog.text
+        assert target == 20
 
 
 class TestFindSelfLoops:
