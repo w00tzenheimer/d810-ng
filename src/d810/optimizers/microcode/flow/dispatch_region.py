@@ -19,6 +19,8 @@ Usage:
 
 from __future__ import annotations
 
+__all__ = ["DispatchRegionDetector"]
+
 
 class DispatchRegionDetector:
     """Detect dispatch regions using Tarjan's SCC algorithm.
@@ -139,9 +141,7 @@ class DispatchRegionDetector:
                     scc_nodes.add(w)
                     if w == v:
                         break
-                if len(scc_nodes) > 1:
-                    sccs.append(frozenset(scc_nodes))
-                elif scc_nodes:
+                if scc_nodes:
                     sccs.append(frozenset(scc_nodes))
 
         for node in nodes:
