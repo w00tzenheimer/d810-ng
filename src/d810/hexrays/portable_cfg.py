@@ -18,7 +18,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
+from d810.core.typing import TYPE_CHECKING
 from d810.hexrays.mop_snapshot import MopSnapshot
+
+if TYPE_CHECKING:
+    import ida_hexrays
 
 logger = logging.getLogger(__name__)
 
@@ -178,12 +182,12 @@ class PortableCFG:
             for succ in blk.succs:
                 if succ not in self.blocks:
                     logger.warning(
-                        f"PortableCFG: block {serial} references non-existent successor {succ}"
+                        "PortableCFG: block %s references non-existent successor %s", serial, succ
                     )
             for pred in blk.preds:
                 if pred not in self.blocks:
                     logger.warning(
-                        f"PortableCFG: block {serial} references non-existent predecessor {pred}"
+                        "PortableCFG: block %s references non-existent predecessor %s", serial, pred
                     )
 
     @property
@@ -283,16 +287,17 @@ def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
         ea = insn.ea
 
         # Capture operands (l, r, d) - skip mop_z (unused)
-        operands = []
-        for mop in (insn.l, insn.r, insn.d):
-            if mop.t != ida_hexrays.mop_z:  # type: ignore[attr-defined]
-                operands.append(MopSnapshot.from_mop(mop))
+        operands = tuple(
+            MopSnapshot.from_mop(mop)
+            for mop in (insn.l, insn.r, insn.d)
+            if mop.t != ida_hexrays.mop_z  # type: ignore[attr-defined]
+        )
 
         insn_snapshots.append(
             InsnSnapshot(
                 opcode=opcode,
                 ea=ea,
-                operands=tuple(operands)
+                operands=operands
             )
         )
 
@@ -348,6 +353,7 @@ def lift(mba: "ida_hexrays.mba_t") -> PortableCFG:
     # Create PortableCFG with entry block and metadata
     return PortableCFG(
         blocks=blocks,
+        # IDA MBA entry block is always serial 0
         entry_serial=0,
         func_ea=mba.entry_ea,
         metadata={"maturity": mba.maturity}
