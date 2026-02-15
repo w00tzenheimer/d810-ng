@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import re
-import typing
+from d810.core import typing
 from contextlib import contextmanager
 
 from d810.core.config import DEFAULT_IDA_USER_DIR
@@ -358,10 +358,11 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
         format_layout = QVBoxLayout()
         format_layout.addWidget(QLabel("Output format:"))
         self.normal_radio = QtWidgets.QRadioButton("Normal C (standard decompilation)")
-        self.normal_radio.setChecked(True)
+        self.normal_radio.setChecked(False)
         self.sample_radio = QtWidgets.QRadioButton(
             "Sample-compatible C (for recompilation)"
         )
+        self.sample_radio.setChecked(True)
         format_layout.addWidget(self.normal_radio)
         format_layout.addWidget(self.sample_radio)
         layout.addLayout(format_layout)
@@ -528,7 +529,7 @@ class ExportFunctionToC(D810ActionHandler):
                 logger.info("Export to C cancelled by user")
                 return 0
             settings = {
-                "sample_compatible": False,
+                "sample_compatible": True,
                 "recursion_depth": 0,
                 "export_globals": True,
                 "output_path": save_path,

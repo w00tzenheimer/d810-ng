@@ -462,6 +462,33 @@ class TestFormatSampleCompatibleC:
         )
         assert "extern int helper_call();" in output
 
+    def test_ignores_macro_like_and_polyfill_forward_decls(self):
+        """Do not emit conflicting forward declarations for known helpers/macros."""
+        output = format_sample_compatible_c(
+            func_name="test_func",
+            func_ea=0x401000,
+            pseudocode_lines=[
+                "int test_func(__int64 a1) {",
+                "  return LOBYTE(a1) + (int)(unsigned __int64)NtCurrentTeb();",
+                "}",
+            ],
+        )
+        assert "extern int LOBYTE();" not in output
+        assert "extern int NtCurrentTeb();" not in output
+
+    def test_infers_callback_symbol_forward_declaration(self):
+        """Function symbols passed as callback args should be forward-declared."""
+        output = format_sample_compatible_c(
+            func_name="test_func",
+            func_ea=0x401000,
+            pseudocode_lines=[
+                "void test_func(void) {",
+                "  CreateFiber(0, sub_7FFB207ADFE0, 0);",
+                "}",
+            ],
+        )
+        assert "extern int sub_7FFB207ADFE0();" in output
+
     def test_global_already_volatile(self):
         """Test globals already volatile are not duplicated."""
         globals_decls = ["volatile int already_volatile;"]
@@ -568,3 +595,45 @@ class TestFormatSampleCompatibleC:
             ],
         )
         assert "__int64 v2;" in output
+
+    def test_oword_typedef_not_emitted_inline(self):
+        """_OWORD should come from ida_types.h via polyfill.h, not inline shim."""
+        output = format_sample_compatible_c(
+            func_name="has_oword",
+            func_ea=0x401000,
+            pseudocode_lines=[
+                "void has_oword(char *p) {",
+                "  *(_OWORD *)p = 0;",
+                "}",
+            ],
+        )
+        assert '#include "polyfill.h"' in output
+        assert "typedef unsigned __int128 _OWORD;" not in output
+
+    def test_memory_macro_not_emitted_inline(self):
+        """MEMORY should come from polyfill.h, not inline shim."""
+        output = format_sample_compatible_c(
+            func_name="has_memory",
+            func_ea=0x401000,
+            pseudocode_lines=[
+                "void has_memory(void) {",
+                "  MEMORY[0x123]();",
+                "}",
+            ],
+        )
+        assert '#include "polyfill.h"' in output
+        assert "#define MEMORY" not in output
+
+    def test_size_t_type_not_emitted_inline(self):
+        """SIZE_T should come from polyfill.h, not inline shim."""
+        output = format_sample_compatible_c(
+            func_name="has_size_t",
+            func_ea=0x401000,
+            pseudocode_lines=[
+                "void has_size_t(SIZE_T a1) {",
+                "  (void)a1;",
+                "}",
+            ],
+        )
+        assert '#include "polyfill.h"' in output
+        assert "typedef size_t SIZE_T;" not in output

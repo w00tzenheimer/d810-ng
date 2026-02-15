@@ -36,6 +36,18 @@ typedef int BOOL;
 #define __cdecl
 #endif
 
+/* Hex-Rays synthetic memory indirection helper.
+ * Allows expressions like MEMORY[0x123](); to compile in samples.
+ */
+#ifndef MEMORY
+#define MEMORY ((void (**)(void))0)
+#endif
+
+/* Windows-sized unsigned integer used across exported signatures. */
+#ifndef SIZE_T
+typedef size_t SIZE_T;
+#endif
+
 /* Basic handle types */
 typedef void *HANDLE;
 typedef void *HMODULE;

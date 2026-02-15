@@ -145,6 +145,10 @@ typedef uint64 uint64_t;
 #if !defined(_MSC_VER)
 #define _LONGLONG __int128
 #endif
+// Common Hex-Rays 16-byte pseudo-type used in generated casts.
+#ifndef _OWORD
+typedef unsigned __int128 _OWORD;
+#endif
 
 // Non-standard boolean types. They are used when the decompiler can not use
 // the standard "bool" type because of the size mistmatch but the possible

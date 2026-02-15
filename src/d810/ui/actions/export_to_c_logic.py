@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from d810.core.typing import Any
 
 _GLOBAL_NAME_RE = re.compile(
     r"\b((?:byte|word|dword|qword|xmmword|ymmword|zmmword|off|unk|asc|flt|dbl)_[0-9A-Fa-f]+)\b"
@@ -41,6 +41,40 @@ _CALL_EXCLUDE = {
     "JUMPOUT",
 }
 
+_FORWARD_DECL_EXCLUDE = _CALL_EXCLUDE | {
+    # ida_types.h / polyfill.h helpers/macros
+    "LOBYTE",
+    "HIBYTE",
+    "LOWORD",
+    "HIWORD",
+    "BYTE1",
+    "BYTE2",
+    "BYTE3",
+    "BYTE4",
+    "BYTE5",
+    "BYTE6",
+    "BYTE7",
+    "WORD1",
+    "WORD2",
+    "WORD3",
+    "DWORD1",
+    "DWORD2",
+    "DWORD3",
+    "QWORD1",
+    # polyfill API declarations
+    "NtCurrentTeb",
+    "ConvertThreadToFiber",
+    "CreateFiber",
+    "GetThreadContext",
+    "IsThreadAFiber",
+    "RtlAcquireSRWLockExclusive",
+    "RtlReleaseSRWLockExclusive",
+    "SetThreadContext",
+    "SwitchToFiber",
+    "TlsGetValue",
+    "TlsSetValue",
+}
+
 _GLOBAL_TYPE_BY_PREFIX = {
     "byte": "unsigned __int8",
     "word": "unsigned __int16",
@@ -55,6 +89,11 @@ _GLOBAL_TYPE_BY_PREFIX = {
     "flt": "float",
     "dbl": "double",
 }
+
+_FUNC_SYMBOL_RE = re.compile(r"^(?:sub|nullsub|loc|j)_[A-Za-z0-9_]+$")
+_FUNC_PTR_ARG_RE = re.compile(
+    r"(?:^|[(,\s])&?\s*((?:sub|nullsub|loc|j)_[A-Za-z0-9_]+)\s*(?=,|\))"
+)
 
 
 @dataclass
@@ -240,16 +279,31 @@ def infer_forward_declarations(
     for name in _CALL_NAME_RE.findall(code):
         if name == func_name:
             continue
-        if name in _CALL_EXCLUDE:
+        if name in _FORWARD_DECL_EXCLUDE:
             continue
         if name in globals_found:
+            continue
+        if name.startswith("__"):
             continue
         names.add(name)
 
     for name in _ADDR_OF_NAME_RE.findall(code):
         if name == func_name:
             continue
-        if name in _CALL_EXCLUDE:
+        if name in _FORWARD_DECL_EXCLUDE:
+            continue
+        if name in globals_found:
+            continue
+        if not _FUNC_SYMBOL_RE.match(name):
+            continue
+        names.add(name)
+
+    # Handle function symbols passed as callback/function-pointer arguments:
+    #   CreateFiber(..., sub_1234, ...)
+    for name in _FUNC_PTR_ARG_RE.findall(code):
+        if name == func_name:
+            continue
+        if name in _FORWARD_DECL_EXCLUDE:
             continue
         if name in globals_found:
             continue
@@ -278,15 +332,6 @@ def build_compilation_shims(pseudocode_lines: list[str]) -> list[str]:
             [
                 "#ifndef JUMPOUT",
                 "#define JUMPOUT(addr) do { (void)(addr); } while (0)",
-                "#endif",
-            ]
-        )
-
-    if "SIZE_T" in code:
-        shims.extend(
-            [
-                "#ifndef SIZE_T",
-                "typedef size_t SIZE_T;",
                 "#endif",
             ]
         )
