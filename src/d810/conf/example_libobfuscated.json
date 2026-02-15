@@ -950,6 +950,13 @@
             "config": {}
         },
         {
+            "name": "MbaStatePreconditioner",
+            "is_activated": true,
+            "config": {
+                "max_optimize_local_rounds": 1
+            }
+        },
+        {
             "name": "FixPredecessorOfConditionalJumpBlock",
             "is_activated": true,
             "config": {}

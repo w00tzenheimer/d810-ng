@@ -897,6 +897,13 @@
   ],
   "blk_rules": [
     {
+      "name": "MbaStatePreconditioner",
+      "is_activated": true,
+      "config": {
+        "max_optimize_local_rounds": 1
+      }
+    },
+    {
       "name": "Unflattener",
       "is_activated": true,
       "config": {
