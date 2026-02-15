@@ -1,6 +1,6 @@
 """Regression tests for cfg_utils CFG safety guards.
 
-These tests run with mocked IDA modules and focus on crash-prone CFG helpers:
+These tests run with lightweight fake IDA modules and focus on crash-prone CFG helpers:
 1. ensure_child_has_an_unconditional_father() default-child handling
 2. create_block(is_0_way=True) goto cleanup
 """
@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -76,7 +75,7 @@ class _FakeBlock:
 
 @pytest.fixture(autouse=True)
 def _mock_cfg_utils_import_deps():
-    """Load cfg_utils with minimal mocked IDA/transitive Hex-Rays deps."""
+    """Load cfg_utils with minimal fake IDA/transitive Hex-Rays deps."""
     mock_hexrays = SimpleNamespace(
         BLT_0WAY=0,
         BLT_1WAY=1,
@@ -84,7 +83,7 @@ def _mock_cfg_utils_import_deps():
         MBL_GOTO=0x20,
         m_goto=0x37,
     )
-    mock_idaapi = MagicMock()
+    mock_idaapi = SimpleNamespace()
 
     class _Printer:
         def get_block_mc(self):
@@ -107,12 +106,25 @@ def _mock_cfg_utils_import_deps():
         if mod_name in sys.modules:
             popped[mod_name] = sys.modules.pop(mod_name)
 
-    with patch.dict("sys.modules", modules_to_mock):
-        yield
+    # Temporarily inject mock modules into sys.modules
+    original_modules = {}
+    for mod_name, mod_obj in modules_to_mock.items():
+        original_modules[mod_name] = sys.modules.get(mod_name)
+        sys.modules[mod_name] = mod_obj
 
-    # Restore previously cached modules.
-    for mod_name, mod in popped.items():
-        sys.modules[mod_name] = mod
+    try:
+        yield
+    finally:
+        # Restore original sys.modules state
+        for mod_name in modules_to_mock:
+            if original_modules[mod_name] is None:
+                sys.modules.pop(mod_name, None)
+            else:
+                sys.modules[mod_name] = original_modules[mod_name]
+
+        # Restore previously cached modules
+        for mod_name, mod in popped.items():
+            sys.modules[mod_name] = mod
 
 
 def test_ensure_child_skips_default_child_rewrite(monkeypatch):
