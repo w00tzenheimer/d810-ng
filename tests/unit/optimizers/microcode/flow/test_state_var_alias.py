@@ -58,6 +58,12 @@ class TestVarRef:
         assert r0 in alias_set
         assert r1 in alias_set
 
+    def test_repr_formatting(self):
+        """VarRef repr includes kind-specific formatting."""
+        assert "reg=0" in repr(VarRef("reg", 0, 8))
+        assert "stack=" in repr(VarRef("stack", -16, 4))
+        assert "temp=3" in repr(VarRef("temp", 3, 8))
+
 
 class TestAssignment:
     """Test the Assignment abstraction."""
@@ -274,6 +280,13 @@ class TestStateVarAliasExpander:
         aliases = StateVarAliasExpander.expand(assignments, state_var)
 
         # Only state_var, no aliases discovered
+        assert aliases == frozenset([state_var])
+
+    def test_self_assignment(self):
+        """Self-assignment (state_var = state_var) adds no new aliases."""
+        state_var = VarRef("reg", 0, 8)
+        assignments = [Assignment(5, state_var, state_var)]
+        aliases = StateVarAliasExpander.expand(assignments, state_var)
         assert aliases == frozenset([state_var])
 
 

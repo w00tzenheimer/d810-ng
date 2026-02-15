@@ -17,6 +17,11 @@ References:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+
+__all__ = ["VarRef", "Assignment", "StateVarAliasExpander"]
+
+VarKind = Literal["reg", "stack", "temp"]
 
 
 @dataclass(frozen=True)
@@ -40,7 +45,7 @@ class VarRef:
         >>> temp = VarRef("temp", 3, 8)
     """
 
-    kind: str
+    kind: VarKind
     identifier: int
     size: int
 
@@ -86,10 +91,9 @@ class Assignment:
 
     def __repr__(self) -> str:
         """Return a human-readable representation."""
-        if self.is_var_to_var():
-            return f"Assignment(blk={self.block_serial}, {self.target} = {self.source})"
-        else:
+        if self.is_constant_write():
             return f"Assignment(blk={self.block_serial}, {self.target} = 0x{self.source:x})"
+        return f"Assignment(blk={self.block_serial}, {self.target} = {self.source})"
 
 
 class StateVarAliasExpander:
