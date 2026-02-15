@@ -291,19 +291,110 @@ class HodurStateMachineDetector:
                 insn = insn.next
         return assignments
 
+    def _mop_depends_on_state_var(
+        self, mop: ida_hexrays.mop_t | None, state_var: ida_hexrays.mop_t
+    ) -> bool:
+        """Return True if *mop* directly/indirectly references state_var."""
+        if mop is None:
+            return False
+
+        try:
+            if mop.equal_mops(state_var, ida_hexrays.EQ_IGNSIZE):
+                return True
+        except Exception:
+            # Some mop variants may not compare cleanly; treat as non-match here.
+            pass
+
+        if mop.t == ida_hexrays.mop_a:
+            return self._mop_depends_on_state_var(mop.a, state_var)
+
+        if mop.t == ida_hexrays.mop_d and mop.d is not None:
+            nested = mop.d
+            return (
+                self._mop_depends_on_state_var(nested.l, state_var)
+                or self._mop_depends_on_state_var(nested.r, state_var)
+                or self._mop_depends_on_state_var(nested.d, state_var)
+            )
+
+        return False
+
+    def _resolve_single_mop_constant(
+        self,
+        blk: ida_hexrays.mblock_t,
+        insn: ida_hexrays.minsn_t,
+        mop: ida_hexrays.mop_t | None,
+    ) -> int | None:
+        """Resolve *mop* to a single constant before *insn* executes."""
+        if mop is None:
+            return None
+        if mop.t == ida_hexrays.mop_n:
+            return int(mop.nnn.value)
+
+        tracker = MopTracker([mop], max_nb_block=100, max_path=100)
+        tracker.reset()
+        histories = tracker.search_backward(
+            blk,
+            insn,
+            stop_at_first_duplication=True,
+        )
+        if not histories:
+            return None
+
+        values = get_all_possibles_values(histories, [mop])
+        resolved_values = set()
+        for value_list in values:
+            if not value_list or value_list[0] is None:
+                return None
+            resolved_values.add(int(value_list[0]))
+
+        if len(resolved_values) != 1:
+            return None
+        return next(iter(resolved_values))
+
+    def _is_deterministic_constant_bitwise_update(
+        self,
+        blk: ida_hexrays.mblock_t,
+        insn: ida_hexrays.minsn_t,
+        state_var: ida_hexrays.mop_t,
+    ) -> bool:
+        """Allow bitwise state writes only when both operands are deterministic constants."""
+        # Reject state accumulation patterns like:
+        #   state = state ^ x
+        #   state = state | x
+        if self._mop_depends_on_state_var(insn.l, state_var):
+            return False
+        if self._mop_depends_on_state_var(insn.r, state_var):
+            return False
+
+        left_value = self._resolve_single_mop_constant(blk, insn, insn.l)
+        if left_value is None:
+            return False
+
+        right_value = self._resolve_single_mop_constant(blk, insn, insn.r)
+        if right_value is None:
+            return False
+
+        return True
+
     def _has_bitwise_state_modifications(
         self, state_var: ida_hexrays.mop_t
     ) -> bool:
         """Check if state variable is modified via bitwise operations.
 
-        Returns True if any m_or, m_xor, or m_and instruction writes to
-        the state variable. This indicates an OR-based state machine pattern
-        where state depends on input, not suitable for Hodur unflattening.
+        Returns True when we see unsupported bitwise state writes.
 
-        In OR-based patterns like ABC (state = state | input), the final state
-        depends on the input value, not just control flow. HodurUnflattener
-        assumes pure state assignments (state = CONST) and will produce
-        incorrect results for bitwise state patterns.
+        Accepted:
+            state = C1 ^ C2
+            state = C1 | C2
+            state = C1 & C2
+
+        Rejected:
+            state = state ^ x
+            state = state | x
+            state = unresolved_expr ^ y
+
+        Hodur unflattening requires deterministic transitions. Bitwise writes are
+        allowed only if both operands resolve to single constants at that program point.
         """
         if state_var is None:
             return False
@@ -317,12 +408,21 @@ class HodurStateMachineDetector:
                 if insn.opcode in BITWISE_OPCODES:
                     # Check if destination is the state variable
                     if insn.d and insn.d.equal_mops(state_var, ida_hexrays.EQ_IGNSIZE):
-                        unflat_logger.debug(
-                            "Block %d: bitwise op %d modifies state var - "
-                            "detected OR-based pattern",
-                            blk.serial, insn.opcode
-                        )
-                        return True
+                        if self._is_deterministic_constant_bitwise_update(blk, insn, state_var):
+                            unflat_logger.debug(
+                                "Block %d: bitwise op %d updates state var with deterministic "
+                                "constants - accepted",
+                                blk.serial,
+                                insn.opcode,
+                            )
+                        else:
+                            unflat_logger.debug(
+                                "Block %d: bitwise op %d modifies state var with non-constant "
+                                "or self-referential expression - rejecting Hodur path",
+                                blk.serial,
+                                insn.opcode,
+                            )
+                            return True
                 insn = insn.next
         return False
 
@@ -492,7 +592,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         self.deferred = DeferredGraphModifier(self.mba)
 
         # Queue direct transition patches (more effective for Hodur-style)
-        self._queue_transitions_direct()
+        direct_transition_patches = self._queue_transitions_direct()
 
         # Queue predecessor-based patches for any remaining cases
         self._queue_predecessor_patches()
@@ -518,6 +618,16 @@ class HodurUnflattener(GenericUnflatteningRule):
                     run_deep_cleaning=False,
                 )
 
+        # Fallback path: some Hodur variants do not terminate transition blocks
+        # with m_goto, so direct queueing won't patch anything. Use the legacy
+        # predecessor/path-based strategy as backup in that case.
+        if direct_transition_patches == 0:
+            unflat_logger.info(
+                "No direct transition patches queued; falling back to path-based "
+                "Hodur patching"
+            )
+            nb_changes += self._resolve_and_patch()
+
         self.last_pass_nb_patch_done = nb_changes
         unflat_logger.info(
             "HodurUnflattener: Pass %d made %d changes",
@@ -527,7 +637,7 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         return nb_changes
 
-    def _queue_transitions_direct(self) -> None:
+    def _queue_transitions_direct(self) -> int:
         """
         Queue direct transition patches: bypass dispatcher and state checks.
 
@@ -540,7 +650,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         is the dispatcher itself (which can have any state value).
         """
         if self.state_machine is None or self.deferred is None:
-            return
+            return 0
+
+        queued_patches = 0
 
         for transition in self.state_machine.transitions:
             from_blk = self.mba.get_mblock(transition.from_block)
@@ -600,6 +712,9 @@ class HodurUnflattener(GenericUnflatteningRule):
                 description=f"transition {hex(transition.from_state)} -> {hex(transition.to_state)}",
                 rule_priority=50,  # Medium priority - path-based analysis
             )
+            queued_patches += 1
+
+        return queued_patches
 
     def _queue_predecessor_patches(self) -> None:
         """
