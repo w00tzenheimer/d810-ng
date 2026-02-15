@@ -133,7 +133,8 @@ class TestDispatcherFatherResolveIntegration:
         dispatcher_info = GenericDispatcherInfo(mba)
         dispatcher_info.entry_block = type('EntryBlock', (), {
             'use_before_def_list': [],
-            'blk': mba.get_mblock(0) if mba.qty > 0 else None
+            'blk': mba.get_mblock(0) if mba.qty > 0 else None,
+            'serial': 0
         })()
         dispatcher_info.dispatcher_internal_blocks = []
         dispatcher_info.dispatcher_exit_blocks = []
@@ -232,7 +233,7 @@ class TestDispatcherFatherResolveIntegration:
         # Create minimal dispatcher_info
         dispatcher_info = self._create_minimal_dispatcher_info(mba)
 
-        initial_queue_size = len(deferred_modifier._modifications)
+        initial_queue_size = len(deferred_modifier.modifications)
 
         try:
             from d810.optimizers.microcode.flow.flattening.utils import (
@@ -241,7 +242,7 @@ class TestDispatcherFatherResolveIntegration:
 
             rule.resolve_dispatcher_father(test_block, dispatcher_info, deferred_modifier)
             # If it succeeded, check that modifications were queued
-            final_queue_size = len(deferred_modifier._modifications)
+            final_queue_size = len(deferred_modifier.modifications)
             print(
                 f"\n  Modifications queued: {final_queue_size - initial_queue_size}"
             )
@@ -278,7 +279,8 @@ class TestLayoutSignalCollection:
         dispatcher_info = GenericDispatcherInfo(mba)
         dispatcher_info.entry_block = type('EntryBlock', (), {
             'use_before_def_list': [],
-            'blk': entry_blk
+            'blk': entry_blk,
+            'serial': entry_blk.serial if entry_blk else 0
         })()
         dispatcher_info.dispatcher_internal_blocks = []
         dispatcher_info.dispatcher_exit_blocks = []
