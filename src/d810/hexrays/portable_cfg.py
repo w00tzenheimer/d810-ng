@@ -14,7 +14,9 @@ All types are frozen (immutable) to ensure snapshot integrity.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
 from d810.hexrays.mop_snapshot import MopSnapshot
 
@@ -44,6 +46,8 @@ class InsnSnapshot:
 
     def __post_init__(self) -> None:
         """Validate instruction snapshot."""
+        if self.opcode < 0:
+            raise ValueError(f"InsnSnapshot: opcode must be non-negative, got {self.opcode}")
         if self.ea < 0:
             raise ValueError(f"InsnSnapshot: ea must be non-negative, got {self.ea}")
         if not isinstance(self.operands, tuple):
@@ -141,15 +145,19 @@ class PortableCFG:
         >>> cfg.num_blocks
         2
     """
-    blocks: dict[int, BlockSnapshot]
+    blocks: Mapping[int, BlockSnapshot]
     entry_serial: int
     func_ea: int
-    metadata: dict[str, object] = field(default_factory=dict)
+    metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Validate CFG snapshot."""
+        """Validate CFG snapshot and freeze mutable fields."""
         if self.func_ea < 0:
             raise ValueError(f"PortableCFG: func_ea must be non-negative, got {self.func_ea}")
+
+        # Freeze mutable dict fields with MappingProxyType for true immutability
+        object.__setattr__(self, 'blocks', MappingProxyType(dict(self.blocks)))
+        object.__setattr__(self, 'metadata', MappingProxyType(dict(self.metadata)))
 
         # Entry serial must exist in blocks (unless empty CFG for test construction)
         if self.blocks and self.entry_serial not in self.blocks:

@@ -5,10 +5,10 @@ Tests the frozen dataclass IR for CFG snapshots without requiring IDA runtime.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 import pytest
 
+from d810.core.typing import TYPE_CHECKING
 from d810.hexrays.portable_cfg import InsnSnapshot, BlockSnapshot, PortableCFG
 
 if TYPE_CHECKING:
@@ -73,6 +73,11 @@ class TestInsnSnapshot:
         """Test that non-tuple operands raises TypeError."""
         with pytest.raises(TypeError, match="operands must be tuple"):
             InsnSnapshot(opcode=0x10, ea=0x1000, operands=[])  # type: ignore
+
+    def test_negative_opcode_validation(self) -> None:
+        """Test that negative opcode raises ValueError."""
+        with pytest.raises(ValueError, match="opcode must be non-negative"):
+            InsnSnapshot(opcode=-1, ea=0x1000, operands=())
 
 
 class TestBlockSnapshot:
@@ -360,6 +365,25 @@ class TestPortableCFG:
         cfg3 = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x2000)
         assert cfg1 == cfg2
         assert cfg1 != cfg3
+
+    def test_blocks_immutable(self) -> None:
+        """PortableCFG.blocks should not allow mutation after construction."""
+        blk = BlockSnapshot(serial=0, block_type=1, succs=(), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
+        cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+        with pytest.raises(TypeError):
+            cfg.blocks[99] = blk  # type: ignore
+
+    def test_metadata_immutable(self) -> None:
+        """PortableCFG.metadata should not allow mutation after construction."""
+        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000, metadata={"key": "value"})
+        with pytest.raises(TypeError):
+            cfg.metadata["new_key"] = "new_value"  # type: ignore
+
+    def test_not_hashable(self) -> None:
+        """PortableCFG with MappingProxyType is not hashable (values may be mutable)."""
+        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000)
+        with pytest.raises(TypeError):
+            hash(cfg)
 
 
 class TestPortableCFGIntegration:
