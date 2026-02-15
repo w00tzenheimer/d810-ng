@@ -8,6 +8,8 @@ No IDA runtime required - operates on abstract BlockComparison types.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from d810.optimizers.microcode.flow.compare_chain import (
@@ -101,8 +103,8 @@ class TestCompareChainResolver:
         assert len(table.entries) == 1
         assert table.as_dict()[0x42] == 10
 
-    def test_conflicting_constants_different_targets(self) -> None:
-        """Conflicting constants (same value, different targets) keep first."""
+    def test_conflicting_constants_different_targets(self, caplog) -> None:
+        """Conflicting constants (same value, different targets) keep first and warn."""
         state_var = VarRef("reg", 0, 8)
         comparisons = [
             BlockComparison(1, state_var, 0x42, 10, 2),
@@ -110,11 +112,25 @@ class TestCompareChainResolver:
         ]
         aliases = frozenset([state_var])
 
-        table = CompareChainResolver.resolve(comparisons, aliases)
+        with caplog.at_level(logging.WARNING):
+            table = CompareChainResolver.resolve(comparisons, aliases)
 
         # Should only have one entry, first mapping wins
         assert len(table.entries) == 1
         assert table.as_dict()[0x42] == 10
+        assert "Conflicting dispatch entry" in caplog.text
+
+    def test_default_serial_from_duplicate_entry(self) -> None:
+        """Default serial tracks chain fallthrough even for duplicate comparisons."""
+        state_var = VarRef("reg", 0, 8)
+        comparisons = [
+            BlockComparison(1, state_var, 0x42, 10, 2),
+            BlockComparison(2, state_var, 0x100, 20, 3),
+            BlockComparison(3, state_var, 0x42, 10, 99),  # duplicate
+        ]
+        aliases = frozenset([state_var])
+        table = CompareChainResolver.resolve(comparisons, aliases)
+        assert table.default_serial == 99  # Last false_target, not 3
 
     def test_mixed_comparisons_filters_non_state(self) -> None:
         """Filter out comparisons not involving state variable."""

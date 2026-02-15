@@ -17,7 +17,8 @@ References:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+
+from d810.core.typing import Literal
 
 __all__ = ["VarRef", "Assignment", "StateVarAliasExpander"]
 
