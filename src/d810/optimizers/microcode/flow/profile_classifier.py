@@ -259,6 +259,8 @@ class FlowProfileClassifier:
             )
 
         # Compute ratios for classification
+        # dispatch_table_size > 0 guaranteed by early return above,
+        # but guard defensively against future refactoring
         chain_to_table_ratio = (
             profile.compare_chain_length / profile.dispatch_table_size
             if profile.dispatch_table_size > 0
@@ -317,7 +319,7 @@ class FlowProfileClassifier:
         # 4. NESTED_COMPARE_TREE: Low chain/table ratio, low fan-out
         #    Suggests binary search tree organization (fewer comparisons)
         if chain_to_table_ratio < 0.5:
-            confidence = 0.7 + (0.5 - chain_to_table_ratio) * 0.4
+            confidence = min(1.0, 0.7 + (0.5 - chain_to_table_ratio) * 0.4)
             return ClassificationResult(
                 pattern=DispatchPattern.NESTED_COMPARE_TREE,
                 confidence=confidence,
@@ -344,7 +346,11 @@ class FlowProfileClassifier:
 
     @staticmethod
     def recommend_strategy(result: ClassificationResult) -> str:
-        """Return the recommended unflattening strategy name.
+        """Map classification result to strategy name independently.
+
+        This provides an independent mapping from pattern to strategy name,
+        separate from the classify() method. This ensures the mapping logic
+        is verified independently and can be used for validation.
 
         Mapping:
         - SIMPLE_COMPARE_CHAIN → "compare_chain_direct"
@@ -372,9 +378,14 @@ class FlowProfileClassifier:
         >>> FlowProfileClassifier.recommend_strategy(result)
         'compare_chain_direct'
         """
-        # The recommended_strategy is already computed during classification,
-        # so this is just an accessor. Kept for API compatibility.
-        return result.recommended_strategy
+        _STRATEGY_MAP = {
+            DispatchPattern.SIMPLE_COMPARE_CHAIN: "compare_chain_direct",
+            DispatchPattern.NESTED_COMPARE_TREE: "symbolic_execution",
+            DispatchPattern.SWITCH_TABLE: "switch_reconstruction",
+            DispatchPattern.MIXED_DISPATCH: "hybrid",
+            DispatchPattern.UNKNOWN: "conservative",
+        }
+        return _STRATEGY_MAP.get(result.pattern, "conservative")
 
     @staticmethod
     def from_components(
