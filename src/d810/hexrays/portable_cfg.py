@@ -22,6 +22,13 @@ from d810.hexrays.mop_snapshot import MopSnapshot
 
 logger = logging.getLogger(__name__)
 
+# IDA availability guard for lift() functions
+try:
+    import ida_hexrays
+    _IDA_AVAILABLE = True
+except ImportError:
+    _IDA_AVAILABLE = False
+
 
 @dataclass(frozen=True)
 class InsnSnapshot:
@@ -234,8 +241,123 @@ class PortableCFG:
                 f"entry={self.entry_serial}, func_ea=0x{self.func_ea:x})")
 
 
+def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
+    """Snapshot a single block's topology and instructions.
+
+    Parameters
+    ----------
+    blk : ida_hexrays.mblock_t
+        The microcode block to snapshot.
+
+    Returns
+    -------
+    BlockSnapshot
+        Frozen snapshot of the block's topology and instructions.
+
+    Raises
+    ------
+    RuntimeError
+        If IDA Hexrays is not available.
+    """
+    if not _IDA_AVAILABLE:
+        raise RuntimeError("lift_block requires IDA Hexrays (ida_hexrays module not available)")
+
+    # Capture block metadata
+    serial = blk.serial
+    block_type = blk.type
+    flags = blk.flags
+    start_ea = blk.start
+
+    # Capture successors
+    succs = tuple(blk.succset[i] for i in range(blk.succset.size()))
+
+    # Capture predecessors
+    preds = tuple(blk.predset[i] for i in range(blk.predset.size()))
+
+    # Capture instructions (walk linked list from head to tail)
+    insn_snapshots = []
+    insn = blk.head
+    while insn:
+        # Capture opcode and address
+        opcode = insn.opcode
+        ea = insn.ea
+
+        # Capture operands (l, r, d) - skip mop_z (unused)
+        operands = []
+        for mop in (insn.l, insn.r, insn.d):
+            if mop.t != ida_hexrays.mop_z:  # type: ignore[attr-defined]
+                operands.append(MopSnapshot.from_mop(mop))
+
+        insn_snapshots.append(
+            InsnSnapshot(
+                opcode=opcode,
+                ea=ea,
+                operands=tuple(operands)
+            )
+        )
+
+        # Move to next instruction
+        insn = insn.next
+
+    return BlockSnapshot(
+        serial=serial,
+        block_type=block_type,
+        succs=succs,
+        preds=preds,
+        flags=flags,
+        start_ea=start_ea,
+        insn_snapshots=tuple(insn_snapshots)
+    )
+
+
+def lift(mba: "ida_hexrays.mba_t") -> PortableCFG:
+    """Snapshot an MBA's full graph topology into a PortableCFG.
+
+    Parameters
+    ----------
+    mba : ida_hexrays.mba_t
+        The microcode block array to snapshot.
+
+    Returns
+    -------
+    PortableCFG
+        Frozen snapshot of the CFG topology and instructions.
+
+    Raises
+    ------
+    RuntimeError
+        If IDA Hexrays is not available.
+
+    Example
+    -------
+    >>> cfg = lift(mba)
+    >>> cfg.num_blocks
+    5
+    >>> cfg.entry_serial
+    0
+    """
+    if not _IDA_AVAILABLE:
+        raise RuntimeError("lift requires IDA Hexrays (ida_hexrays module not available)")
+
+    # Snapshot all blocks
+    blocks = {}
+    for i in range(mba.qty):
+        blk = mba.get_mblock(i)
+        blocks[blk.serial] = lift_block(blk)
+
+    # Create PortableCFG with entry block and metadata
+    return PortableCFG(
+        blocks=blocks,
+        entry_serial=0,
+        func_ea=mba.entry_ea,
+        metadata={"maturity": mba.maturity}
+    )
+
+
 __all__ = [
     "InsnSnapshot",
     "BlockSnapshot",
     "PortableCFG",
+    "lift",
+    "lift_block",
 ]
