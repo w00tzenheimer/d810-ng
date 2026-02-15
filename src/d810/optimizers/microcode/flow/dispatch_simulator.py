@@ -38,6 +38,7 @@ References:
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass
 
 from d810.optimizers.microcode.flow.compare_chain import DispatchTable
@@ -144,21 +145,26 @@ class TransitionGraph:
     def for_case(self, serial: int) -> tuple[CaseTransition, ...]:
         """Filter transitions originating from a specific case block.
 
-        Parameters:
-            serial: Source case block serial to filter by
+        Parameters
+        ----------
+        serial : int
+            Source case block serial to filter by
 
-        Returns:
+        Returns
+        -------
+        tuple[CaseTransition, ...]
             Tuple of transitions with from_serial == serial
 
-        Examples:
-            >>> transitions = (
-            ...     CaseTransition(10, 0x42, 20),
-            ...     CaseTransition(10, 0x100, 30),
-            ...     CaseTransition(20, 0x200, 10),
-            ... )
-            >>> graph = TransitionGraph(transitions, ())
-            >>> graph.for_case(10)
-            (CaseTransition(10, 0x42, 20), CaseTransition(10, 0x100, 30))
+        Examples
+        --------
+        >>> transitions = (
+        ...     CaseTransition(10, 0x42, 20),
+        ...     CaseTransition(10, 0x100, 30),
+        ...     CaseTransition(20, 0x200, 10),
+        ... )
+        >>> graph = TransitionGraph(transitions, ())
+        >>> graph.for_case(10)  # doctest: +ELLIPSIS
+        (CaseTransition(blk=10 → blk=20, via 0x42), CaseTransition(blk=10 → blk=30, via 0x100))
         """
         return tuple(t for t in self.transitions if t.from_serial == serial)
 
@@ -205,7 +211,6 @@ class DispatchSimulator:
         dispatch_table: DispatchTable,
         state_writes: dict[int, list[int]],
         case_blocks: frozenset[int],
-        max_depth: int = 10,
     ) -> TransitionGraph:
         """Simulate state machine transitions through the dispatcher.
 
@@ -220,23 +225,16 @@ class DispatchSimulator:
             State variable assignments from Phase 2.2
         case_blocks : set of case block serials to simulate
             Usually all non-dispatcher blocks in the function
-        max_depth : maximum recursion depth for multi-level dispatch
-            Prevents infinite loops in malformed dispatch tables
 
         Returns
         -------
-        TransitionGraph with all resolved transitions and unresolved writes
+        TransitionGraph
+            All resolved transitions and unresolved writes
 
         Notes
         -----
-        Multi-level dispatch: If a state value maps to another dispatcher
-        block (one that's in the dispatch table as a target), we recursively
-        resolve through that dispatcher up to max_depth levels.
-
         Unresolved writes occur when:
         - State value not in dispatch table and no default_serial
-        - Max depth exceeded (cycle detection)
-        - Target is not a valid case block
 
         Examples
         --------
@@ -267,19 +265,23 @@ class DispatchSimulator:
         transitions: list[CaseTransition] = []
         unresolved: list[tuple[int, int]] = []
 
+        # Compute lookup dict once
+        lookup = dispatch_table.as_dict()
+        default = dispatch_table.default_serial
+
         for case_serial in case_blocks:
             # Get state writes for this case block (default to empty list)
             writes = state_writes.get(case_serial, [])
 
             for assigned_value in writes:
-                # Resolve target through dispatch table
-                target_serial = DispatchSimulator.resolve_target(
-                    dispatch_table, assigned_value, max_depth
-                )
+                # Resolve target through dispatch table (single lookup)
+                target = lookup.get(assigned_value)
+                if target is None:
+                    target = default
 
-                if target_serial is not None:
+                if target is not None:
                     # Resolved: create transition
-                    transition = CaseTransition(case_serial, assigned_value, target_serial)
+                    transition = CaseTransition(case_serial, assigned_value, target)
                     transitions.append(transition)
                 else:
                     # Unresolved: track for diagnostics
@@ -291,30 +293,21 @@ class DispatchSimulator:
     def resolve_target(
         dispatch_table: DispatchTable,
         state_value: int,
-        max_depth: int = 10,
     ) -> int | None:
-        """Resolve a state value to its target case block serial.
-
-        Performs dispatch table lookup with support for multi-level dispatch
-        (where a target itself is another dispatcher) and cycle detection.
+        """Look up a single state value in the dispatch table.
 
         Parameters
         ----------
-        dispatch_table : DispatchTable to look up in
-        state_value : State variable value to resolve
-        max_depth : Maximum recursion depth (prevents infinite loops)
+        dispatch_table : DispatchTable
+            Dispatch table to look up in
+        state_value : int
+            State variable value to resolve
 
         Returns
         -------
-        Target case block serial, or None if unresolved
-
-        Notes
-        -----
-        Resolution algorithm:
-        1. Look up state_value in dispatch table
-        2. If found and target is in table (multi-level), recurse
-        3. If not found, return default_serial if available
-        4. Track visited values to detect cycles
+        int | None
+            Target block serial if found, default_serial if not found but
+            default exists, or None if neither exists
 
         Examples
         --------
@@ -337,47 +330,10 @@ class DispatchSimulator:
         True
         """
         lookup = dispatch_table.as_dict()
-        visited: set[int] = set()
-        current_value = state_value
-        depth = 0
-
-        while depth < max_depth:
-            # Cycle detection
-            if current_value in visited:
-                if logger.isEnabledFor(logging.WARNING):
-                    logger.warning(
-                        "Cycle detected in dispatch table resolution for value 0x%x",
-                        state_value,
-                    )
-                return None
-
-            visited.add(current_value)
-
-            # Look up current value
-            if current_value in lookup:
-                target = lookup[current_value]
-
-                # Check if target is itself a dispatcher (multi-level dispatch)
-                if target in lookup:
-                    # Multi-level: recurse through the next dispatcher
-                    current_value = target
-                    depth += 1
-                    continue
-                else:
-                    # Terminal target found
-                    return target
-            else:
-                # Not in table: use default if available
-                return dispatch_table.default_serial
-
-        # Max depth exceeded (likely a cycle or very deep nesting)
-        if logger.isEnabledFor(logging.WARNING):
-            logger.warning(
-                "Max depth (%d) exceeded resolving value 0x%x",
-                max_depth,
-                state_value,
-            )
-        return None
+        target = lookup.get(state_value)
+        if target is not None:
+            return target
+        return dispatch_table.default_serial
 
     @staticmethod
     def find_self_loops(graph: TransitionGraph) -> frozenset[int]:
@@ -386,21 +342,26 @@ class DispatchSimulator:
         Self-loops can indicate infinite loops in the original obfuscated code
         or special control flow patterns (busy-wait, retry logic).
 
-        Parameters:
-            graph: Transition graph to analyze
+        Parameters
+        ----------
+        graph : TransitionGraph
+            Transition graph to analyze
 
-        Returns:
+        Returns
+        -------
+        frozenset[int]
             Set of case block serials with self-transitions
 
-        Examples:
-            >>> transitions = (
-            ...     CaseTransition(10, 0x42, 10),  # Self-loop
-            ...     CaseTransition(20, 0x100, 30),
-            ...     CaseTransition(30, 0x200, 30),  # Self-loop
-            ... )
-            >>> graph = TransitionGraph(transitions, ())
-            >>> DispatchSimulator.find_self_loops(graph)
-            frozenset({10, 30})
+        Examples
+        --------
+        >>> transitions = (
+        ...     CaseTransition(10, 0x42, 10),  # Self-loop
+        ...     CaseTransition(20, 0x100, 30),
+        ...     CaseTransition(30, 0x200, 30),  # Self-loop
+        ... )
+        >>> graph = TransitionGraph(transitions, ())
+        >>> DispatchSimulator.find_self_loops(graph)
+        frozenset({10, 30})
         """
         self_loops: set[int] = set()
         for trans in graph.transitions:
@@ -417,37 +378,44 @@ class DispatchSimulator:
         Performs reachability analysis from the entry point to identify dead
         case blocks that can never be reached in normal execution.
 
-        Parameters:
-            graph: Transition graph to analyze
-            entry_serial: Entry point case block serial
+        Parameters
+        ----------
+        graph : TransitionGraph
+            Transition graph to analyze
+        entry_serial : int
+            Entry point case block serial
 
-        Returns:
+        Returns
+        -------
+        frozenset[int]
             Set of case block serials that are unreachable from entry
 
-        Notes:
-            This is a simple reachability check, not sophisticated dead code
-            analysis. Cases may be "unreachable" due to incomplete state write
-            tracking, not necessarily dead code.
+        Notes
+        -----
+        This is a simple reachability check, not sophisticated dead code
+        analysis. Cases may be "unreachable" due to incomplete state write
+        tracking, not necessarily dead code.
 
-        Examples:
-            >>> transitions = (
-            ...     CaseTransition(10, 0x42, 20),
-            ...     CaseTransition(20, 0x100, 30),
-            ...     CaseTransition(40, 0x200, 50),  # Unreachable island
-            ... )
-            >>> graph = TransitionGraph(transitions, ())
-            >>> DispatchSimulator.find_unreachable_cases(graph, 10)
-            frozenset({40, 50})
+        Examples
+        --------
+        >>> transitions = (
+        ...     CaseTransition(10, 0x42, 20),
+        ...     CaseTransition(20, 0x100, 30),
+        ...     CaseTransition(40, 0x200, 50),  # Unreachable island
+        ... )
+        >>> graph = TransitionGraph(transitions, ())
+        >>> DispatchSimulator.find_unreachable_cases(graph, 10)
+        frozenset({40, 50})
         """
         # Build adjacency for forward reachability
         edges = graph.as_edge_dict()
 
-        # BFS from entry
+        # BFS from entry using deque for O(1) popleft
         reachable: set[int] = {entry_serial}
-        queue: list[int] = [entry_serial]
+        queue: deque[int] = deque([entry_serial])
 
         while queue:
-            current = queue.pop(0)
+            current = queue.popleft()
             for successor in edges.get(current, set()):
                 if successor not in reachable:
                     reachable.add(successor)
