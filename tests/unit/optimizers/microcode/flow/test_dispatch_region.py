@@ -152,12 +152,8 @@ class TestDispatchRegionDetector:
 
         region = DispatchRegionDetector.detect(adj, dispatcher_serial)
 
-        # No cycle, so dispatcher is in a singleton SCC
-        # But we only return multi-node SCCs that represent dispatch regions
-        # Actually, tarjan_scc returns ALL SCCs including singletons
-        # Let me check the implementation...
-        # The detect() method looks for dispatcher_serial in any SCC
-        # If it's in a singleton, we still return it
+        # Singleton SCC: dispatcher is in a trivial (size-1) component.
+        # detect() still returns it since tarjan_scc emits all SCCs.
         assert region == frozenset({0})
 
     def test_detect_dispatcher_in_nested_scc(self) -> None:
@@ -323,8 +319,8 @@ class TestEdgeCases:
 
         region = DispatchRegionDetector.detect(adj, dispatcher_serial=0)
 
-        # Tarjan handles this - node 2 is discovered via successors
-        assert 2 in region or len(region) == 2  # Depends on cycle detection
+        # Graph has SCC {0, 1} - node 2 has no outgoing edges, cannot be in a cycle
+        assert region == frozenset({0, 1})
 
     def test_large_dispatcher_pattern(self) -> None:
         """Large dispatcher with many cases."""
