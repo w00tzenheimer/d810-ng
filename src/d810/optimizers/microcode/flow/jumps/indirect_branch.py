@@ -321,8 +321,6 @@ class IndirectBranchResolver(FlowOptimizationRule):
         max_depth: int = 2,
     ) -> Optional[int]:
         """Best-effort predecessor walk to recover a register constant."""
-        if not _IDA_AVAILABLE:
-            return None
         mba = blk.mba
         if mba is None:
             return None
