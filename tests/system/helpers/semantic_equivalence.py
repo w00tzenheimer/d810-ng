@@ -28,6 +28,7 @@ from __future__ import annotations
 import atexit
 import ctypes
 import logging
+import os
 import pathlib
 import platform
 import random
@@ -106,8 +107,8 @@ def compile_reference_function(
     include_dir = src_path.parent.parent.parent / "include"
 
     # Build compiler command
-    # Use cc as default (symlinks to clang on macOS, gcc on Linux)
-    compiler = "cc"
+    # Use clang as default (can be overridden with D810_C_COMPILER env var)
+    compiler = os.environ.get("D810_C_COMPILER", "clang")
     cmd = [
         compiler,
         "-shared",

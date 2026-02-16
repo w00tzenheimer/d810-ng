@@ -20,8 +20,6 @@
  */
 
 #include "ida_types.h"
-#include <stdio.h>
-#include <string.h>
 
 /* ============================================================================
  * Pattern 1: High Fan-In Dispatcher

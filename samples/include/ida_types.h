@@ -116,7 +116,9 @@ typedef uint32 uint32_t;
 #define _UINT32_T_DECLARED
 #endif
 
-#if !defined(__int64_t_defined) && !defined(_INT64_T_DECLARED)
+// On Linux/glibc, <stdint.h> (included above) already defines int64_t/uint64_t
+// and sets _STDINT_H. Skip our typedefs to avoid conflicts with the standard types.
+#if !defined(_STDINT_H) && !defined(_STDINT_H_) && !defined(__int64_t_defined) && !defined(_INT64_T_DECLARED)
 typedef int64 int64_t;
 #endif
 #ifndef __int64_t_defined
@@ -126,7 +128,7 @@ typedef int64 int64_t;
 #define _INT64_T_DECLARED
 #endif
 
-#if !defined(__uint64_t_defined) && !defined(_UINT64_T_DECLARED)
+#if !defined(_STDINT_H) && !defined(_STDINT_H_) && !defined(__uint64_t_defined) && !defined(_UINT64_T_DECLARED)
 typedef uint64 uint64_t;
 #endif
 #ifndef __uint64_t_defined
@@ -688,7 +690,7 @@ inline int64 abs64(int64 x) { return x >= 0 ? x : -x; }
 // 	#include <arm_neon.h>
 // #endif
 
-#if defined(__clang__) || (defined(__GNUC__) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 5)))
+#if defined(__clang__)
 #define __ROL1__(x, count) __builtin_rotateleft8((x), (count))
 #define __ROR1__(x, count) __builtin_rotateright8((x), (count))
 #define __ROL2__(x, count) __builtin_rotateleft16((x), (count))
