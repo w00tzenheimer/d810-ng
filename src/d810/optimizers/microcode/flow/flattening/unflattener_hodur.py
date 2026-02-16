@@ -29,6 +29,8 @@ import ida_hexrays
 
 from d810.core.bits import unsigned_to_signed
 from d810.core import getLogger
+from d810.expr.ast import minsn_to_ast
+from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
 from d810.hexrays.cfg_utils import (
     change_1way_block_successor,
     duplicate_block,
@@ -73,6 +75,15 @@ HODUR_STATE_CHECK_OPCODES = [
     ida_hexrays.m_jle,
 ]
 
+HODUR_STATE_UPDATE_OPCODES = {
+    ida_hexrays.m_mov,
+    ida_hexrays.m_add,
+    ida_hexrays.m_sub,
+    ida_hexrays.m_xor,
+    ida_hexrays.m_or,
+    ida_hexrays.m_and,
+}
+
 
 @dataclass
 class StateTransition:
@@ -82,6 +93,13 @@ class StateTransition:
     from_block: int  # Block serial where transition originates
     condition_block: int | None = None  # Block serial with state check (if conditional)
     is_conditional: bool = False  # True if this is a conditional transition
+
+
+@dataclass
+class StateUpdateSite:
+    """Represents an instruction that writes the dispatcher state variable."""
+    block_serial: int
+    instruction: ida_hexrays.minsn_t
 
 
 @dataclass
@@ -212,17 +230,7 @@ class HodurStateMachineDetector:
                 state_constants.add(const)
 
         # Step 4: Find state assignments and build transition graph
-        state_assignments = self._find_state_assignments(state_constants)
-
-        # Step 4.5: Check for bitwise state modifications (OR-based patterns)
-        # If state is modified via OR/XOR/AND, this is not a pure Hodur state machine
-        # because state depends on input, not just control flow
-        if self._has_bitwise_state_modifications(state_var):
-            unflat_logger.info(
-                "Found bitwise state modifications (OR/XOR/AND) on state var - "
-                "skipping OR-based state machine pattern"
-            )
-            return None
+        state_assignments = self._find_state_assignments(state_var)
 
         # Step 5: Find initial state (assignment in entry block or its immediate successors)
         # Use cached value if available
@@ -346,49 +354,49 @@ class HodurStateMachineDetector:
 
         return jump_target, fallthrough
 
+    def _mops_match_state_var(
+        self,
+        candidate: ida_hexrays.mop_t | None,
+        state_var: ida_hexrays.mop_t,
+    ) -> bool:
+        """Compare state mops with structural and semantic fallback."""
+        if candidate is None:
+            return False
+
+        try:
+            if candidate.equal_mops(state_var, ida_hexrays.EQ_IGNSIZE):
+                return True
+        except Exception:
+            pass
+
+        # Use semantic equality as fallback to tolerate wrapper differences.
+        try:
+            from d810.expr.z3_utils import z3_check_mop_equality
+
+            return bool(z3_check_mop_equality(candidate, state_var))
+        except Exception:
+            return False
+
     def _find_state_assignments(
-        self, state_constants: set[int]
-    ) -> list[tuple[int, int]]:
-        """Find mov instructions that assign state constants."""
-        assignments = []
+        self, state_var: ida_hexrays.mop_t
+    ) -> list[StateUpdateSite]:
+        """
+        Find semantic state-update instructions (not only mov constants).
+        """
+        assignments: list[StateUpdateSite] = []
         for i in range(self.mba.qty):
             blk = self.mba.get_mblock(i)
             insn = blk.head
             while insn:
-                if insn.opcode == ida_hexrays.m_mov:
-                    if insn.l.t == ida_hexrays.mop_n:
-                        const_val = insn.l.nnn.value
-                        if const_val in state_constants:
-                            assignments.append((blk.serial, const_val))
+                if (
+                    insn.opcode in HODUR_STATE_UPDATE_OPCODES
+                    and insn.d is not None
+                    and insn.d.t != ida_hexrays.mop_z
+                    and self._mops_match_state_var(insn.d, state_var)
+                ):
+                    assignments.append(StateUpdateSite(blk.serial, insn))
                 insn = insn.next
         return assignments
-
-    def _mop_depends_on_state_var(
-        self, mop: ida_hexrays.mop_t | None, state_var: ida_hexrays.mop_t
-    ) -> bool:
-        """Return True if *mop* directly/indirectly references state_var."""
-        if mop is None:
-            return False
-
-        try:
-            if mop.equal_mops(state_var, ida_hexrays.EQ_IGNSIZE):
-                return True
-        except Exception:
-            # Some mop variants may not compare cleanly; treat as non-match here.
-            pass
-
-        if mop.t == ida_hexrays.mop_a:
-            return self._mop_depends_on_state_var(mop.a, state_var)
-
-        if mop.t == ida_hexrays.mop_d and mop.d is not None:
-            nested = mop.d
-            return (
-                self._mop_depends_on_state_var(nested.l, state_var)
-                or self._mop_depends_on_state_var(nested.r, state_var)
-                or self._mop_depends_on_state_var(nested.d, state_var)
-            )
-
-        return False
 
     def _resolve_single_mop_constant(
         self,
@@ -399,6 +407,11 @@ class HodurStateMachineDetector:
         """Resolve *mop* to a single constant before *insn* executes."""
         if mop is None:
             return None
+        if hasattr(mop, "to_mop"):
+            try:
+                mop = mop.to_mop()  # type: ignore[assignment]
+            except Exception:
+                return None
         if mop.t == ida_hexrays.mop_n:
             return int(mop.nnn.value)
 
@@ -423,80 +436,99 @@ class HodurStateMachineDetector:
             return None
         return next(iter(resolved_values))
 
-    def _is_deterministic_constant_bitwise_update(
+    def _evaluate_state_update_with_emulator(
         self,
         blk: ida_hexrays.mblock_t,
         insn: ida_hexrays.minsn_t,
         state_var: ida_hexrays.mop_t,
-    ) -> bool:
-        """Allow bitwise state writes only when both operands are deterministic constants."""
-        # Reject state accumulation patterns like:
-        #   state = state ^ x
-        #   state = state | x
-        if self._mop_depends_on_state_var(insn.l, state_var):
-            return False
-        if self._mop_depends_on_state_var(insn.r, state_var):
-            return False
+        from_state: int,
+    ) -> int | None:
+        """Evaluate one state update by running the existing microcode emulator."""
+        interpreter = MicroCodeInterpreter(symbolic_mode=False)
+        env = MicroCodeEnvironment()
 
-        left_value = self._resolve_single_mop_constant(blk, insn, insn.l)
-        if left_value is None:
-            return False
+        try:
+            env.define(state_var, int(from_state))
+        except Exception:
+            return None
 
-        right_value = self._resolve_single_mop_constant(blk, insn, insn.r)
-        if right_value is None:
-            return False
+        cur = blk.head
+        while cur is not None:
+            ok = interpreter.eval_instruction(
+                blk,
+                cur,
+                environment=env,
+                raise_exception=False,
+            )
+            if cur is insn:
+                if not ok:
+                    return None
+                value = env.lookup(state_var, raise_exception=False)
+                if value is not None:
+                    return int(value)
+                value = interpreter.eval_mop(insn.d, environment=env, raise_exception=False)
+                return int(value) if value is not None else None
+            cur = cur.next
 
-        return True
+        return None
 
-    def _has_bitwise_state_modifications(
-        self, state_var: ida_hexrays.mop_t
-    ) -> bool:
-        """Check if state variable is modified via bitwise operations.
+    def _evaluate_state_update_with_ast(
+        self,
+        blk: ida_hexrays.mblock_t,
+        insn: ida_hexrays.minsn_t,
+        state_var: ida_hexrays.mop_t,
+        from_state: int,
+    ) -> int | None:
+        """AST fallback for state updates when concrete emulation cannot resolve."""
+        ast = minsn_to_ast(insn)
+        if ast is None:
+            return None
 
-        Returns True when we see unsupported bitwise state writes.
+        leaf_values: dict[int, int] = {}
+        for leaf in ast.get_leaf_list():
+            if leaf.ast_index is None or leaf.mop is None:
+                continue
+            if leaf.is_constant():
+                continue
+            if self._mops_match_state_var(leaf.mop, state_var):
+                leaf_values[leaf.ast_index] = int(from_state)
+                continue
 
-        Accepted:
-            state = C1 ^ C2
-            state = C1 | C2
-            state = C1 & C2
+            resolved = self._resolve_single_mop_constant(blk, insn, leaf.mop)
+            if resolved is None:
+                return None
+            leaf_values[leaf.ast_index] = int(resolved)
 
-        Rejected:
-            state = state ^ x
-            state = state | x
-            state = unresolved_expr ^ y
+        try:
+            return int(ast.evaluate(leaf_values))
+        except Exception:
+            return None
 
-        Hodur unflattening requires deterministic transitions. Bitwise writes are
-        allowed only if both operands resolve to single constants at that program point.
+    def _resolve_next_state_value(
+        self,
+        blk: ida_hexrays.mblock_t,
+        insn: ida_hexrays.minsn_t,
+        state_var: ida_hexrays.mop_t,
+        from_state: int,
+    ) -> int | None:
         """
-        if state_var is None:
-            return False
+        Resolve the concrete next-state from an update instruction.
 
-        BITWISE_OPCODES = [ida_hexrays.m_or, ida_hexrays.m_xor, ida_hexrays.m_and]
+        Uses interpreter first, then AST fallback for resilience.
+        """
+        next_state = self._evaluate_state_update_with_emulator(
+            blk, insn, state_var, from_state
+        )
+        if next_state is None:
+            next_state = self._evaluate_state_update_with_ast(
+                blk, insn, state_var, from_state
+            )
+        if next_state is None:
+            return None
 
-        for i in range(self.mba.qty):
-            blk = self.mba.get_mblock(i)
-            insn = blk.head
-            while insn:
-                if insn.opcode in BITWISE_OPCODES:
-                    # Check if destination is the state variable
-                    if insn.d and insn.d.equal_mops(state_var, ida_hexrays.EQ_IGNSIZE):
-                        if self._is_deterministic_constant_bitwise_update(blk, insn, state_var):
-                            unflat_logger.debug(
-                                "Block %d: bitwise op %d updates state var with deterministic "
-                                "constants - accepted",
-                                blk.serial,
-                                insn.opcode,
-                            )
-                        else:
-                            unflat_logger.debug(
-                                "Block %d: bitwise op %d modifies state var with non-constant "
-                                "or self-referential expression - rejecting Hodur path",
-                                blk.serial,
-                                insn.opcode,
-                            )
-                            return True
-                insn = insn.next
-        return False
+        size = state_var.size if getattr(state_var, "size", 0) in (1, 2, 4, 8) else 4
+        mask = (1 << (size * 8)) - 1
+        return int(next_state) & mask
 
     def _find_initial_state(self, state_constants: set[int]) -> int | None:
         """Find the initial state value (set before entering the state machine)."""
@@ -529,21 +561,23 @@ class HodurStateMachineDetector:
 
     def _build_transitions(
         self,
-        state_assignments: list[tuple[int, int]],
+        state_assignments: list[StateUpdateSite],
         state_check_blocks: list[tuple[int, int, int]],
     ) -> None:
         """Build state transitions based on assignments and checks."""
-        if self.state_machine is None:
+        if self.state_machine is None or self.state_machine.state_var is None:
             return
 
-        # Create a map: block_serial -> state_constant for assignments
-        assignment_map = {}
-        for blk_serial, const in state_assignments:
-            if blk_serial not in assignment_map:
-                assignment_map[blk_serial] = []
-            assignment_map[blk_serial].append(const)
+        state_var = self.state_machine.state_var
 
-        # Create a map: state_constant -> check_block
+        # Create a map: block_serial -> update instructions
+        assignment_map: dict[int, list[ida_hexrays.minsn_t]] = {}
+        for update_site in state_assignments:
+            assignment_map.setdefault(update_site.block_serial, []).append(
+                update_site.instruction
+            )
+
+        # Create a map: state_constant -> check_block serial
         check_map = {const: blk_serial for blk_serial, _, const in state_check_blocks}
 
         # For each state handler, find what state it transitions to
@@ -560,7 +594,6 @@ class HodurStateMachineDetector:
 
             # Start from the fall-through successor
             for succ_serial in check_blk.succset:
-                succ_blk = self.mba.get_mblock(succ_serial)
                 # Skip the jump target (that's the "break" path)
                 if check_blk.tail and check_blk.tail.d.t == ida_hexrays.mop_b:
                     if succ_serial == check_blk.tail.d.b:
@@ -577,7 +610,16 @@ class HodurStateMachineDetector:
 
                 # Check if this block has a state assignment
                 if curr_serial in assignment_map:
-                    for next_state in assignment_map[curr_serial]:
+                    curr_blk = self.mba.get_mblock(curr_serial)
+                    for assignment_insn in assignment_map[curr_serial]:
+                        next_state = self._resolve_next_state_value(
+                            curr_blk,
+                            assignment_insn,
+                            state_var,
+                            int(state_val),
+                        )
+                        if next_state is None:
+                            continue
                         # Skip self-loops (re-assignment of current state at handler start)
                         if next_state == state_val:
                             continue

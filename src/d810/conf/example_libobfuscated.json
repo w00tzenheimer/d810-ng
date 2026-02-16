@@ -953,7 +953,7 @@
             "name": "MbaStatePreconditioner",
             "is_activated": true,
             "config": {
-                "max_optimize_local_rounds": 1
+                "max_optimize_local_rounds": 3
             }
         },
         {
@@ -968,13 +968,27 @@
                 "max_calls_entry_preds": 24,
                 "max_calls_exit_blocks": 24,
                 "defer_calls_on_conditional_entry_father": true,
-                "log_calls_layout_signals": true
+                "log_calls_layout_signals": true,
+                "per_function_overrides": {
+                    "AntiDebug_ExceptionFilter": {
+                        "max_calls_exit_blocks": 500,
+                        "min_cfg_edges_required": 256
+                    }
+                }
             }
         },
         {
             "name": "UnflattenerSwitchCase",
             "is_activated": true,
-            "config": {}
+            "config": {
+                "pre_unflatten_optimize_local_rounds": 2,
+                "per_function_overrides": {
+                    "AntiDebug_ExceptionFilter": {
+                        "max_exit_blocks_for_additional_passes": 500,
+                        "min_cfg_edges_required": 256
+                    }
+                }
+            }
         },
         {
             "name": "UnflattenerFakeJump",

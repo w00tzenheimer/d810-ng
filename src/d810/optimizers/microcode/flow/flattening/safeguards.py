@@ -13,6 +13,7 @@ def should_apply_cfg_modifications(
     num_redirected_edges: int,
     total_case_blocks: int,
     context: str = "",
+    min_required_override: int | None = None,
 ) -> bool:
     """Check if enough edges were redirected to justify CFG modification.
 
@@ -27,7 +28,9 @@ def should_apply_cfg_modifications(
     Returns:
         True if modifications should proceed, False to skip.
     """
-    if total_case_blocks > 0:
+    if min_required_override is not None and int(min_required_override) > 0:
+        min_required = int(min_required_override)
+    elif total_case_blocks > 0:
         min_required = max(MIN_ABSOLUTE_EDGES, total_case_blocks // MIN_EDGE_RATIO)
     else:
         min_required = MIN_ABSOLUTE_EDGES
@@ -35,16 +38,28 @@ def should_apply_cfg_modifications(
     if num_redirected_edges >= min_required:
         return True
 
-    logger.warning(
-        "SAFEGUARD%s: Only %d edges redirected but %d required "
-        "(case_blocks=%d, threshold=max(%d, %d/%d)); "
-        "skipping CFG reconstruction to avoid breaking function",
-        f" [{context}]" if context else "",
-        num_redirected_edges,
-        min_required,
-        total_case_blocks,
-        MIN_ABSOLUTE_EDGES,
-        total_case_blocks,
-        MIN_EDGE_RATIO,
-    )
+    if min_required_override is not None and int(min_required_override) > 0:
+        logger.warning(
+            "SAFEGUARD%s: Only %d edges redirected but %d required "
+            "(case_blocks=%d, override threshold=%d); "
+            "skipping CFG reconstruction to avoid breaking function",
+            f" [{context}]" if context else "",
+            num_redirected_edges,
+            min_required,
+            total_case_blocks,
+            min_required,
+        )
+    else:
+        logger.warning(
+            "SAFEGUARD%s: Only %d edges redirected but %d required "
+            "(case_blocks=%d, threshold=max(%d, %d/%d)); "
+            "skipping CFG reconstruction to avoid breaking function",
+            f" [{context}]" if context else "",
+            num_redirected_edges,
+            min_required,
+            total_case_blocks,
+            MIN_ABSOLUTE_EDGES,
+            total_case_blocks,
+            MIN_EDGE_RATIO,
+        )
     return False
