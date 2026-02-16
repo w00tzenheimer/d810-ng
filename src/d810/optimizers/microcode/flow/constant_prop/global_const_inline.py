@@ -27,7 +27,7 @@ Algorithm (ported from the copycat project ``global_const_handler_t``):
 
 from __future__ import annotations
 
-from d810.core.typing import Optional
+from d810.core.typing import Callable, Optional
 
 import ida_bytes
 import ida_hexrays
@@ -214,31 +214,113 @@ def _read_constant_value(ea: int, size: int) -> int:
     return int.from_bytes(raw, byteorder="little")
 
 
-def _looks_like_pointer(value: int, size: int) -> bool:
-    """Heuristic: return ``True`` if *value* resembles a pointer.
+class _PointerHeuristicContext:
+    """Input shared by pointer-likeness heuristic handlers."""
 
-    * Values smaller than 4 bytes cannot be pointers.
-    * Zero is ambiguous (NULL) but also a common constant -- keep it.
-    * If the value falls inside any known segment, treat it as a pointer.
-    * If ``imagebase + value`` falls inside any known segment, treat it as a
-      rebased RVA-style pointer (common in PE binaries).
-    * Common 64-bit ASLR ranges are also flagged.
+    def __init__(
+        self,
+        value: int,
+        size: int,
+        badaddr: int,
+        imagebase: int,
+        safe_getseg: Callable[[int], Optional[object]],
+    ) -> None:
+        self.value = value
+        self.size = size
+        self.badaddr = badaddr
+        self.imagebase = imagebase
+        self.safe_getseg = safe_getseg
+
+
+class _PointerHeuristicHandler:
+    """Chain-of-responsibility handler for pointer heuristics.
+
+    Each handler returns:
+    - ``True``: value is pointer-like (stop chain)
+    - ``False``: value is definitely not pointer-like (stop chain)
+    - ``None``: no decision, continue with next handler
     """
-    if size < 4:
-        return False
-    if value == 0:
-        return False
 
-    # IDA's ida_segment.getseg() expects an ea_t-sized integer. Some rebased
-    # values can overflow ea_t (or be non-int-like from SWIG wrappers), which
-    # raises TypeError in callbacks. Coerce defensively and treat invalid EAs
-    # as "not a pointer-like segment hit".
+    def __init__(self, next_handler: Optional["_PointerHeuristicHandler"] = None) -> None:
+        self._next = next_handler
+
+    def handle(self, ctx: _PointerHeuristicContext) -> bool:
+        decision = self._check(ctx)
+        if decision is not None:
+            return decision
+        if self._next is None:
+            return False
+        return self._next.handle(ctx)
+
+    def _check(self, ctx: _PointerHeuristicContext) -> Optional[bool]:
+        raise NotImplementedError
+
+
+class _MinimumPointerSizeHandler(_PointerHeuristicHandler):
+    def _check(self, ctx: _PointerHeuristicContext) -> Optional[bool]:
+        return False if ctx.size < 4 else None
+
+
+class _ZeroValueHandler(_PointerHeuristicHandler):
+    def _check(self, ctx: _PointerHeuristicContext) -> Optional[bool]:
+        return False if ctx.value == 0 else None
+
+
+class _BadaddrSentinelHandler(_PointerHeuristicHandler):
+    def _check(self, ctx: _PointerHeuristicContext) -> Optional[bool]:
+        width_mask = (1 << (ctx.size * 8)) - 1
+        if (ctx.value & width_mask) == (ctx.badaddr & width_mask):
+            return True
+        return None
+
+
+class _SegmentHitHandler(_PointerHeuristicHandler):
+    def _check(self, ctx: _PointerHeuristicContext) -> Optional[bool]:
+        if ctx.safe_getseg(ctx.value) is not None:
+            return True
+        return None
+
+
+class _RebasedSegmentHitHandler(_PointerHeuristicHandler):
+    def _check(self, ctx: _PointerHeuristicContext) -> Optional[bool]:
+        if ctx.imagebase in (0, ctx.badaddr):
+            return None
+        rebased = ctx.imagebase + ctx.value
+        if ctx.safe_getseg(rebased) is not None:
+            return True
+        return None
+
+
+class _AslrRangeHandler(_PointerHeuristicHandler):
+    def _check(self, ctx: _PointerHeuristicContext) -> Optional[bool]:
+        if ctx.size != 8:
+            return None
+        # macOS/iOS ASLR range (0x1XX_XXXX_XXXX)
+        if (ctx.value >> 40) == 0x1:
+            return True
+        # Linux typical user-space (0x5X_XXXX_XXXX, 0x7X_XXXX_XXXX)
+        top_nibble = ctx.value >> 44
+        if top_nibble in (0x5, 0x7):
+            return True
+        return None
+
+
+def _get_badaddr_value() -> int:
     try:
-        ea_mask = int(idaapi.BADADDR)
+        return int(idaapi.BADADDR)
     except Exception:
-        ea_mask = 0xFFFFFFFFFFFFFFFF
+        return 0xFFFFFFFFFFFFFFFF
 
-    def _safe_getseg(addr: int):
+
+def _get_imagebase_value(badaddr: int) -> int:
+    try:
+        return int(idaapi.get_imagebase())
+    except Exception:
+        return badaddr
+
+
+def _build_safe_getseg(ea_mask: int) -> Callable[[int], Optional[object]]:
+    def _safe_getseg(addr: int) -> Optional[object]:
         try:
             ea = int(addr)
         except Exception:
@@ -252,33 +334,47 @@ def _looks_like_pointer(value: int, size: int) -> bool:
         except (TypeError, OverflowError, ValueError):
             return None
 
-    # Falls inside a known segment?
-    if _safe_getseg(value) is not None:
-        return True
+    return _safe_getseg
 
-    # PE binaries often store RVAs (imagebase-relative offsets) instead of
-    # absolute addresses.  If rebasing the value lands in a loaded segment, it
-    # is very likely address-like and should not be folded into an integer.
-    try:
-        imagebase = idaapi.get_imagebase()
-    except Exception:
-        imagebase = idaapi.BADADDR
-    if imagebase not in (0, idaapi.BADADDR):
-        rebased = imagebase + value
-        if _safe_getseg(rebased) is not None:
-            return True
 
-    # 64-bit heuristics for common user-space ranges.
-    if size == 8:
-        # macOS/iOS ASLR range (0x1XX_XXXX_XXXX)
-        if (value >> 40) == 0x1:
-            return True
-        # Linux typical user-space (0x5X_XXXX_XXXX, 0x7X_XXXX_XXXX)
-        top_nibble = value >> 44
-        if top_nibble in (0x5, 0x7):
-            return True
+def _build_pointer_heuristic_chain() -> _PointerHeuristicHandler:
+    return _MinimumPointerSizeHandler(
+        _ZeroValueHandler(
+            _BadaddrSentinelHandler(
+                _SegmentHitHandler(
+                    _RebasedSegmentHitHandler(
+                        _AslrRangeHandler(),
+                    )
+                )
+            )
+        )
+    )
 
-    return False
+
+_POINTER_HEURISTIC_CHAIN = _build_pointer_heuristic_chain()
+
+
+def _looks_like_pointer(value: int, size: int) -> bool:
+    """Heuristic: return ``True`` if *value* resembles a pointer.
+
+    * Values smaller than 4 bytes cannot be pointers.
+    * Zero is ambiguous (NULL) but also a common constant -- keep it.
+    * If the value falls inside any known segment, treat it as a pointer.
+    * If ``imagebase + value`` falls inside any known segment, treat it as a
+      rebased RVA-style pointer (common in PE binaries).
+    * Common 64-bit ASLR ranges are also flagged.
+    * ``BADADDR``-like all-ones sentinels are treated as pointer-like to avoid
+      folding unresolved/invalid addresses into bogus call targets.
+    """
+    badaddr = _get_badaddr_value()
+    ctx = _PointerHeuristicContext(
+        value=value,
+        size=size,
+        badaddr=badaddr,
+        imagebase=_get_imagebase_value(badaddr),
+        safe_getseg=_build_safe_getseg(badaddr),
+    )
+    return _POINTER_HEURISTIC_CHAIN.handle(ctx)
 
 
 def _replace_with_immediate(
