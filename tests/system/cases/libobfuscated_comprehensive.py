@@ -286,8 +286,8 @@ ABC_F6_CASES = [
     DeobfuscationCase(
         function="abc_f6_or_dispatch",
         description="ABC pattern with OR operations on state variables",
-        # Uses example_libobfuscated_no_fixprecedessor.json which HAS UnflattenerFakeJump
-        project="example_libobfuscated_no_fixprecedessor.json",
+        # Run with FixPredecessor + generic/switch-case unflatteners (no Hodur)
+        project="example_libobfuscated.json",
         obfuscated_contains=["0xF6"],
         expected_code="""
             __int64 __fastcall abc_f6_or_dispatch(int a1)
