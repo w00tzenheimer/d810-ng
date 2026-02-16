@@ -2454,10 +2454,15 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         handler = ConditionalStateResolver(self.mba, dispatcher_info)
 
         total_n = 0
-        # Process each block in the father histories
+        # Process only the dispatcher father block with each concrete history.
+        # A full path history represents one valuation at the dispatcher entry;
+        # applying that valuation to other blocks in the path can misattribute
+        # state and over-rewrite unrelated transitions.
         for father_history in father_histories:
-            for block in father_history.block_path:
-                total_n += handler.analyze_and_apply(block)
+            total_n += handler.analyze_and_apply(
+                dispatcher_father,
+                father_history=father_history,
+            )
 
         return total_n
 

@@ -28,6 +28,7 @@ from d810.hexrays.hexrays_helpers import dup_mop
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.generic import GenericDispatcherInfo
+    from d810.hexrays.tracker import MopHistory
 
 logger = getLogger("D810.abc_splitter")
 
@@ -54,9 +55,11 @@ class ABCPatternInfo:
     block_serial: int
     instruction_ea: int
     cnst: int  # Magic constant
-    condition_mop: ida_hexrays.mop_t  # The x in "state = x + magic"
+    condition_mop: ida_hexrays.mop_t | None  # The x in "state = x + magic"
     opcode: int  # m_add, m_sub, m_or, m_xor
     state_mop: ida_hexrays.mop_t  # The destination (state variable)
+    pattern_kind: str = "conditional"
+    resolved_state: int | None = None
 
 
 @dataclass
@@ -89,33 +92,113 @@ class ConditionalStateResolver:
     # Magic number range for ABC patterns
     ABC_CONST_MIN: int = 1010000
     ABC_CONST_MAX: int = 1011999
+    rewritten_blocks: set[int] = field(default_factory=set)
 
-    def analyze_and_apply(self, block: ida_hexrays.mblock_t) -> int:
+    def _is_abc_state(self, value: int) -> bool:
+        return self.ABC_CONST_MIN < int(value) < self.ABC_CONST_MAX
+
+    @staticmethod
+    def _mask_for_size(size: int) -> int:
+        nbits = max(1, int(size)) * 8
+        if nbits >= 64:
+            return 0xFFFFFFFFFFFFFFFF
+        return (1 << nbits) - 1
+
+    def _resolve_dispatcher_case_value(self, block_serial: int) -> int | None:
+        """Resolve the dispatcher case value that reaches *block_serial*."""
+        entry_blk = self.dispatcher_info.entry_block.blk
+        if entry_blk is None or entry_blk.tail is None:
+            return None
+        if entry_blk.tail.opcode != ida_hexrays.m_jtbl:
+            return None
+        if (
+            entry_blk.tail.r is None
+            or entry_blk.tail.r.t != ida_hexrays.mop_c
+            or entry_blk.tail.r.c is None
+        ):
+            return None
+
+        candidate_values: list[int] = []
+        mcases = entry_blk.tail.r.c
+        for possible_values, target_serial in zip(mcases.values, mcases.targets):
+            if int(target_serial) != int(block_serial):
+                continue
+            if len(possible_values) == 0:
+                continue
+            candidate_values.append(int(possible_values[0]))
+
+        if not candidate_values:
+            return None
+        unique_values = set(candidate_values)
+        if len(unique_values) != 1:
+            return None
+        return candidate_values[0]
+
+    def _is_dispatcher_state_mop(self, mop: ida_hexrays.mop_t) -> bool:
+        for init_mop in self.dispatcher_info.entry_block.use_before_def_list:
+            if mop.equal_mops(init_mop, ida_hexrays.EQ_IGNSIZE):
+                return True
+        return False
+
+    def _resolve_state_from_history(
+        self,
+        father_history: MopHistory | None,
+        state_mop: ida_hexrays.mop_t,
+    ) -> int | None:
+        if father_history is None:
+            return None
+        try:
+            value = father_history.get_mop_constant_value(state_mop)
+        except Exception:
+            return None
+        if value is None:
+            return None
+        return int(value)
+
+    def analyze_and_apply(
+        self,
+        block: ida_hexrays.mblock_t,
+        father_history: MopHistory | None = None,
+    ) -> int:
         """
         Analyze a block for ABC patterns and apply in-place fix.
 
         Returns number of patterns fixed.
         """
-        pattern = self._find_abc_pattern(block)
+        if block.serial in self.rewritten_blocks:
+            return 0
+
+        pattern = self._find_abc_pattern(block, father_history)
         if pattern is None:
             return 0
 
         logger.debug(
-            "ConditionalStateResolver: Found ABC pattern in block %d, "
-            "magic=%d, opcode=%d",
-            block.serial, pattern.cnst, pattern.opcode
+            "ConditionalStateResolver: Found %s ABC pattern in block %d, "
+            "const=%d, opcode=%d, resolved_state=%s",
+            pattern.pattern_kind,
+            block.serial,
+            pattern.cnst,
+            pattern.opcode,
+            pattern.resolved_state,
         )
 
-        return self._apply_inplace(block, pattern)
+        applied = self._apply_inplace(block, pattern)
+        if applied > 0:
+            self.rewritten_blocks.add(block.serial)
+        return applied
 
-    def _find_abc_pattern(self, block: ida_hexrays.mblock_t) -> ABCPatternInfo | None:
+    def _find_abc_pattern(
+        self,
+        block: ida_hexrays.mblock_t,
+        father_history: MopHistory | None = None,
+    ) -> ABCPatternInfo | None:
         """Find ABC pattern in block. Returns info or None."""
         curr_inst = block.head
         while curr_inst is not None:
             result = self._check_instruction_for_abc(curr_inst)
             if result is not None:
                 cnst, condition_mop, state_mop, opcode = result
-                if self.ABC_CONST_MIN < cnst < self.ABC_CONST_MAX:
+                if self._is_abc_state(cnst):
                     return ABCPatternInfo(
                         block_serial=block.serial,
                         instruction_ea=curr_inst.ea,
@@ -124,8 +207,72 @@ class ConditionalStateResolver:
                         opcode=opcode,
                         state_mop=state_mop,
                     )
+
+            self_update_pattern = self._check_instruction_for_self_update(
+                curr_inst,
+                block.serial,
+                father_history,
+            )
+            if self_update_pattern is not None:
+                return self_update_pattern
+
             curr_inst = curr_inst.next
         return None
+
+    def _check_instruction_for_self_update(
+        self,
+        inst: ida_hexrays.minsn_t,
+        block_serial: int,
+        father_history: MopHistory | None,
+    ) -> ABCPatternInfo | None:
+        """Detect self-referential transitions like state = state ^ K."""
+        # Start with XOR self-updates (state = state ^ K), which are the
+        # stable/validated case for ABC F6 dispatchers.
+        # Other self-referential ops (OR/AND/ADD/SUB) need stronger
+        # per-path state validation to avoid over-redirection.
+        if inst.opcode != ida_hexrays.m_xor:
+            return None
+
+        state_src: ida_hexrays.mop_t | None = None
+        transition_const: int | None = None
+        if inst.l.t == ida_hexrays.mop_n:
+            transition_const = int(inst.l.signed_value())
+            state_src = inst.r
+        elif inst.r.t == ida_hexrays.mop_n:
+            transition_const = int(inst.r.signed_value())
+            state_src = inst.l
+
+        if state_src is None or transition_const is None:
+            return None
+        if not inst.d.equal_mops(state_src, ida_hexrays.EQ_IGNSIZE):
+            return None
+
+        state_mop = dup_mop(inst.d)
+        if not self._is_dispatcher_state_mop(state_mop):
+            return None
+
+        current_state = self._resolve_dispatcher_case_value(block_serial)
+        if current_state is None:
+            # Fallback for non-jtbl dispatchers where case-value mapping is unavailable.
+            current_state = self._resolve_state_from_history(father_history, state_mop)
+        if current_state is None:
+            return None
+
+        mask = self._mask_for_size(state_mop.size)
+        resolved_state = (int(current_state) ^ int(transition_const)) & mask
+        if resolved_state is None or not self._is_abc_state(resolved_state):
+            return None
+
+        return ABCPatternInfo(
+            block_serial=block_serial,
+            instruction_ea=inst.ea,
+            cnst=transition_const,
+            condition_mop=None,
+            opcode=inst.opcode,
+            state_mop=state_mop,
+            pattern_kind="self_update",
+            resolved_state=resolved_state,
+        )
 
     def _check_instruction_for_abc(
         self, inst: ida_hexrays.minsn_t
@@ -174,7 +321,7 @@ class ConditionalStateResolver:
 
     def _resolve_target_for_state(self, state_value: int) -> ida_hexrays.mblock_t | None:
         """Resolve dispatcher target for a given state value."""
-        from d810.hexrays.microcode_interpreter import (
+        from d810.expr.emulator import (
             MicroCodeInterpreter, MicroCodeEnvironment
         )
 
@@ -209,6 +356,34 @@ class ConditionalStateResolver:
         self, block: ida_hexrays.mblock_t, pattern: ABCPatternInfo
     ) -> int:
         """Apply in-place transformation: create conditional jump to targets."""
+        if pattern.pattern_kind == "self_update":
+            if pattern.resolved_state is None:
+                return 0
+            target = self._resolve_target_for_state(pattern.resolved_state)
+            if target is None:
+                logger.warning(
+                    "ABC self-update: Could not resolve target for block %d, state=%d",
+                    block.serial,
+                    pattern.resolved_state,
+                )
+                return 0
+            if block.nsucc() != 1:
+                logger.warning(
+                    "ABC self-update: block %d has %d successors (expected 1), skipping",
+                    block.serial,
+                    block.nsucc(),
+                )
+                return 0
+            change_1way_block_successor(block, target.serial, verify=False)
+            self.mba.mark_chains_dirty()
+            logger.info(
+                "ABC self-update: redirected block %d -> %d (state=%d)",
+                block.serial,
+                target.serial,
+                pattern.resolved_state,
+            )
+            return 1
+
         state0, state1 = self._calculate_state_values(pattern)
 
         logger.info(
