@@ -192,6 +192,8 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from d810.core.typing import TYPE_CHECKING
+import os
+
 import ida_hexrays
 
 from d810.core import getLogger
@@ -203,6 +205,7 @@ from d810.hexrays.cfg_utils import (
     create_standalone_block,
     duplicate_block,
     insert_nop_blk,
+    log_block_info,
     make_2way_block_goto,
     mba_deep_cleaning,
     safe_verify,
@@ -215,6 +218,39 @@ if TYPE_CHECKING:
 logger = getLogger("D810.deferred_modifier")
 
 _MAX_CAPTURE_HISTORY = 12
+
+
+def _env_flag(name: str) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    return value in ("1", "true", "yes", "on")
+
+
+def _parse_watch_edges_env() -> set[tuple[int, int]]:
+    """Parse debug watch edge env vars into {(src, dst), ...} set.
+
+    Supported vars:
+      - D810_DEFERRED_WATCH_EDGE="381:382"
+      - D810_DEFERRED_WATCH_EDGES="381:382,0x17d:0x17e"
+    """
+    raw = ",".join(
+        part for part in (
+            os.environ.get("D810_DEFERRED_WATCH_EDGE", ""),
+            os.environ.get("D810_DEFERRED_WATCH_EDGES", ""),
+        ) if part
+    ).strip()
+    if not raw:
+        return set()
+    edges: set[tuple[int, int]] = set()
+    for token in raw.split(","):
+        token = token.strip()
+        if not token or ":" not in token:
+            continue
+        lhs, rhs = token.split(":", 1)
+        try:
+            edges.add((int(lhs, 0), int(rhs, 0)))
+        except ValueError:
+            continue
+    return edges
 
 
 def _format_block_info(blk: ida_hexrays.mblock_t) -> str:
@@ -373,6 +409,44 @@ class DeferredGraphModifier:
         self.modifications.clear()
         self._applied = False
 
+    def _is_watched_edge(self, block_serial: int, new_target: int | None) -> bool:
+        if new_target is None:
+            return False
+        watch_edges = _parse_watch_edges_env()
+        if not watch_edges:
+            return False
+        return (int(block_serial), int(new_target)) in watch_edges
+
+    def _debug_dump_block_neighborhood(self, center_serial: int, label: str) -> None:
+        """Dump center block and one-hop neighbors with microcode text."""
+        try:
+            center_blk = self.mba.get_mblock(center_serial)
+        except Exception:
+            center_blk = None
+        logger.warning(
+            "DEBUG WATCH %s center=%s",
+            label,
+            center_serial,
+        )
+        if center_blk is None:
+            logger.warning("DEBUG WATCH block %s not found", center_serial)
+            return
+        log_block_info(center_blk, logger.warning, ctx=f"DEBUG WATCH {label} center")
+        for pred_serial in list(center_blk.predset):
+            pred_blk = self.mba.get_mblock(pred_serial)
+            log_block_info(
+                pred_blk,
+                logger.warning,
+                ctx=f"DEBUG WATCH {label} predecessor {pred_serial}",
+            )
+        for succ_serial in list(center_blk.succset):
+            succ_blk = self.mba.get_mblock(succ_serial)
+            log_block_info(
+                succ_blk,
+                logger.warning,
+                ctx=f"DEBUG WATCH {label} successor {succ_serial}",
+            )
+
     def queue_goto_change(
         self,
         block_serial: int,
@@ -403,6 +477,15 @@ class DeferredGraphModifier:
             "Queued goto change: block %d -> %d (rule_priority=%d)",
             block_serial, new_target, rule_priority
         )
+        if self._is_watched_edge(block_serial, new_target):
+            logger.warning(
+                "DEBUG WATCH enqueue BLOCK_GOTO_CHANGE %d -> %d desc=%s",
+                block_serial,
+                new_target,
+                description,
+            )
+            self._debug_dump_block_neighborhood(block_serial, "enqueue source")
+            self._debug_dump_block_neighborhood(new_target, "enqueue target")
 
     def queue_conditional_target_change(
         self,
@@ -551,6 +634,18 @@ class DeferredGraphModifier:
             "-> jcc:%d / fallthrough:%d",
             source_blk_serial, conditional_target_serial, fallthrough_target_serial
         )
+        if self._is_watched_edge(source_blk_serial, ref_blk_serial):
+            logger.warning(
+                "DEBUG WATCH enqueue BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT "
+                "source=%d ref=%d jcc=%d ft=%d desc=%s",
+                source_blk_serial,
+                ref_blk_serial,
+                conditional_target_serial,
+                fallthrough_target_serial,
+                description,
+            )
+            self._debug_dump_block_neighborhood(source_blk_serial, "enqueue source")
+            self._debug_dump_block_neighborhood(ref_blk_serial, "enqueue ref-target")
 
     def has_modifications(self) -> bool:
         """Check if there are any queued modifications."""
@@ -709,6 +804,7 @@ class DeferredGraphModifier:
         verify_each_mod: bool = False,
         rollback_on_verify_failure: bool = False,
         continue_on_verify_failure: bool = False,
+        defer_post_apply_maintenance: bool = False,
     ) -> int:
         """
         Apply all queued modifications in priority order.
@@ -724,6 +820,10 @@ class DeferredGraphModifier:
             continue_on_verify_failure: If True, and rollback succeeds plus
                 verify passes after rollback, skip the bad modification and
                 continue applying later queued modifications.
+            defer_post_apply_maintenance: If True, return immediately after
+                applying queued modifications (and marking chains dirty),
+                skipping cleanup/verify so callers can perform custom
+                canonicalization first.
 
         Returns:
             Number of successful modifications applied.
@@ -736,6 +836,21 @@ class DeferredGraphModifier:
             logger.debug("No modifications to apply")
             return 0
 
+        if _env_flag("D810_DEFERRED_PREVERIFY"):
+            try:
+                safe_verify(
+                    self.mba,
+                    "before deferred modifications (debug preverify)",
+                    logger_func=logger.error,
+                    capture_metadata={
+                        "phase": "pre_apply_verify",
+                        "queued_modifications": len(self.modifications),
+                    },
+                )
+                logger.warning("DEBUG: pre-apply verify passed")
+            except RuntimeError:
+                logger.error("DEBUG: pre-apply verify failed")
+
         # Coalesce duplicates and detect conflicts before applying
         self.coalesce()
 
@@ -743,8 +858,76 @@ class DeferredGraphModifier:
             logger.debug("No modifications after coalescing")
             return 0
 
+        if _env_flag("D810_DEFERRED_VERIFY_EACH"):
+            verify_each_mod = True
+            if _env_flag("D810_DEFERRED_ROLLBACK_ON_VERIFY_FAILURE"):
+                rollback_on_verify_failure = True
+            if _env_flag("D810_DEFERRED_CONTINUE_ON_VERIFY_FAILURE"):
+                continue_on_verify_failure = True
+            logger.warning(
+                "DEBUG: forcing verify_each_mod=%s rollback_on_verify_failure=%s "
+                "continue_on_verify_failure=%s",
+                verify_each_mod,
+                rollback_on_verify_failure,
+                continue_on_verify_failure,
+            )
+
         # Sort by priority (lower = earlier)
         sorted_mods = sorted(self.modifications, key=lambda m: m.priority)
+
+        # Debug knob: limit number of deferred modifications applied in this batch.
+        # Useful for bisecting CFG corruption/segfault sources without changing
+        # optimizer logic. Ignored unless explicitly set to a positive integer.
+        max_apply_env = os.environ.get("D810_DEFERRED_MAX_APPLY", "").strip()
+        if max_apply_env:
+            try:
+                max_apply = int(max_apply_env, 10)
+            except ValueError:
+                max_apply = 0
+            if max_apply > 0 and max_apply < len(sorted_mods):
+                logger.warning(
+                    "DEBUG: Limiting deferred apply to first %d/%d modifications "
+                    "(D810_DEFERRED_MAX_APPLY)",
+                    max_apply,
+                    len(sorted_mods),
+                )
+                sorted_mods = sorted_mods[:max_apply]
+
+        # Debug knob: skip specific edge rewrites, e.g. "381:382,100:42"
+        # in D810_DEFERRED_SKIP_EDGES. Only affects BLOCK_* modifications
+        # with both source block and new_target populated.
+        skip_edges_env = os.environ.get("D810_DEFERRED_SKIP_EDGES", "").strip()
+        if skip_edges_env:
+            skip_edges: set[tuple[int, int]] = set()
+            for token in skip_edges_env.split(","):
+                token = token.strip()
+                if not token or ":" not in token:
+                    continue
+                lhs, rhs = token.split(":", 1)
+                try:
+                    skip_edges.add((int(lhs, 10), int(rhs, 10)))
+                except ValueError:
+                    continue
+            if skip_edges:
+                filtered_mods = []
+                skipped = 0
+                for mod in sorted_mods:
+                    if mod.new_target is None:
+                        filtered_mods.append(mod)
+                        continue
+                    edge_key = (int(mod.block_serial), int(mod.new_target))
+                    if edge_key in skip_edges:
+                        skipped += 1
+                        continue
+                    filtered_mods.append(mod)
+                if skipped:
+                    logger.warning(
+                        "DEBUG: Skipped %d deferred edge rewrite(s) via "
+                        "D810_DEFERRED_SKIP_EDGES: %s",
+                        skipped,
+                        sorted(skip_edges),
+                    )
+                sorted_mods = filtered_mods
 
         logger.info("Applying %d queued graph modifications", len(sorted_mods))
 
@@ -770,6 +953,17 @@ class DeferredGraphModifier:
             blk = self.mba.get_mblock(mod.block_serial)
             logger.info("--- Applying [%d]: %s ---", i, mod.description)
             logger.info("    BEFORE: %s", _format_block_info(blk))
+            if self._is_watched_edge(mod.block_serial, mod.new_target):
+                logger.warning(
+                    "DEBUG WATCH apply[%d] %s src=%d dst=%s",
+                    i,
+                    mod.mod_type.name,
+                    mod.block_serial,
+                    mod.new_target,
+                )
+                self._debug_dump_block_neighborhood(mod.block_serial, f"pre-apply[{i}] source")
+                if mod.new_target is not None:
+                    self._debug_dump_block_neighborhood(mod.new_target, f"pre-apply[{i}] target")
             source_before_snapshot = snapshot_block_for_capture(blk)
             target_before_snapshot = None
             if mod.new_target is not None:
@@ -960,6 +1154,10 @@ class DeferredGraphModifier:
             return successful
 
         if successful > 0:
+            if defer_post_apply_maintenance:
+                self._applied = True
+                return successful
+
             if run_deep_cleaning:
                 mba_deep_cleaning(self.mba, call_mba_combine_block=True)
             elif run_optimize_local:

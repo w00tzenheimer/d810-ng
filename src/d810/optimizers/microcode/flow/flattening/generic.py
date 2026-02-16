@@ -24,9 +24,12 @@ See: docs/cfg-modification-audit.md for details.
 from __future__ import annotations
 
 import abc
+import os
 from d810.core.typing import Any
 
+import idaapi
 import ida_hexrays
+import idc
 
 from d810.core import getLogger
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
@@ -321,7 +324,10 @@ class GenericDispatcherInfo(object):
         return False
 
     def emulate_dispatcher_with_father_history(
-        self, father_history: MopHistory
+        self,
+        father_history: MopHistory,
+        resolve_conditional_exits: bool = False,
+        max_emulated_instructions: int = 10000,
     ) -> tuple[ida_hexrays.mblock_t, list[ida_hexrays.minsn_t]]:
         # Use concrete values from tracker - do NOT use symbolic mode here
         # Symbolic mode would generate fake values instead of using tracked values
@@ -358,8 +364,26 @@ class GenericDispatcherInfo(object):
         instructions_executed = []
         cur_blk = self.entry_block.blk
         cur_ins = cur_blk.head
-        # We will continue emulation while we are in one of the dispatcher blocks
-        while self.should_emulation_continue(cur_blk):
+        nb_emulated = 0
+        while cur_blk is not None:
+            if cur_ins is None:
+                cur_ins = cur_blk.head
+            if cur_ins is None:
+                break
+            should_continue = self.should_emulation_continue(cur_blk)
+            # Optional semantic refinement: if we reached a dispatcher exit
+            # block that is conditional, execute that conditional as well to
+            # recover the concrete successor instead of returning the
+            # intermediate 2-way block.
+            if not should_continue:
+                can_refine_exit = (
+                    resolve_conditional_exits
+                    and cur_blk.nsucc() == 2
+                    and cur_blk.tail is not None
+                    and ida_hexrays.is_mcode_jcond(cur_blk.tail.opcode)
+                )
+                if not can_refine_exit:
+                    break
             unflat_logger.debug(
                 "  Executing: %s.%s", cur_blk.serial, format_minsn_t(cur_ins)
             )
@@ -371,6 +395,18 @@ class GenericDispatcherInfo(object):
             if not is_ok:
                 return cur_blk, instructions_executed
             instructions_executed.append(cur_ins)
+            nb_emulated += 1
+            if nb_emulated >= int(max_emulated_instructions):
+                unflat_logger.warning(
+                    "Stopping dispatcher emulation after %d instructions "
+                    "(entry=%d, father=%d)",
+                    nb_emulated,
+                    self.entry_block.serial,
+                    father_history.block_serial_path[0]
+                    if len(father_history.block_serial_path) > 0
+                    else -1,
+                )
+                break
             cur_blk = microcode_environment.next_blk
             cur_ins = microcode_environment.next_ins
         # We return the first block executed which is not part of the dispatcher
@@ -785,6 +821,30 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             True,
             "Emit detailed MMAT_CALLS dispatcher layout signals for triage",
         ),
+        ConfigParam(
+            "min_cfg_edges_required",
+            int,
+            -1,
+            "Override deferred CFG-apply minimum resolved edges (<=0 keeps default safeguard heuristic)",
+        ),
+        ConfigParam(
+            "per_function_overrides",
+            dict,
+            {},
+            "Per-function runtime overrides keyed by function EA (e.g. {'0x1de2': {'max_calls_exit_blocks': 500}})",
+        ),
+        ConfigParam(
+            "pre_unflatten_optimize_local_rounds",
+            int,
+            0,
+            "Run bounded optimize_local() rounds before dispatcher collection in each unflatten pass",
+        ),
+        ConfigParam(
+            "pre_unflatten_verify",
+            bool,
+            True,
+            "Run safe_verify() after each pre-unflatten optimize_local() round",
+        ),
     )
 
     MOP_TRACKER_MAX_NB_BLOCK = 100
@@ -809,6 +869,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     DEFAULT_MAX_CALLS_EXIT_BLOCKS = 24
     DEFAULT_DEFER_CALLS_ON_CONDITIONAL_ENTRY_FATHER = True
     DEFAULT_LOG_CALLS_LAYOUT_SIGNALS = True
+    DEFAULT_PRE_UNFLATTEN_OPTIMIZE_LOCAL_ROUNDS = 0
+    DEFAULT_PRE_UNFLATTEN_VERIFY = True
 
     def __init__(self):
         super().__init__()
@@ -822,9 +884,21 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             self.DEFAULT_DEFER_CALLS_ON_CONDITIONAL_ENTRY_FATHER
         )
         self.log_calls_layout_signals = self.DEFAULT_LOG_CALLS_LAYOUT_SIGNALS
+        self.min_cfg_edges_required = -1
+        self.per_function_overrides_by_ea: dict[int, dict[str, Any]] = {}
+        self.per_function_overrides_by_name: dict[str, dict[str, Any]] = {}
+        self._base_override_values: dict[str, Any] = {}
+        self.pre_unflatten_optimize_local_rounds = (
+            self.DEFAULT_PRE_UNFLATTEN_OPTIMIZE_LOCAL_ROUNDS
+        )
+        self.pre_unflatten_verify = self.DEFAULT_PRE_UNFLATTEN_VERIFY
         self.non_significant_changes = 0
         # Track processed (source_block, target) pairs to prevent duplicates
         self._processed_dispatcher_fathers: set[tuple[int, int]] = set()
+        # Track deferred direct edge rewrites per dispatcher entry:
+        # {dispatcher_entry_serial: {(source_serial, target_serial), ...}}
+        # Used for post-apply jtbl overlap canonicalization.
+        self._deferred_case_overlap_edges: dict[int, set[tuple[int, int]]] = {}
         # Set when deferred modifier verify fails -- prevents further
         # processing on a corrupted MBA that would cause IDA hangs.
         self._verify_failed: bool = False
@@ -869,7 +943,160 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             ]
         if "log_calls_layout_signals" in self.config.keys():
             self.log_calls_layout_signals = self.config["log_calls_layout_signals"]
+        if "min_cfg_edges_required" in self.config.keys():
+            self.min_cfg_edges_required = int(self.config["min_cfg_edges_required"])
+        (
+            self.per_function_overrides_by_ea,
+            self.per_function_overrides_by_name,
+        ) = self._normalize_per_function_overrides(
+            self.config.get("per_function_overrides", {})
+        )
+        if "pre_unflatten_optimize_local_rounds" in self.config.keys():
+            self.pre_unflatten_optimize_local_rounds = int(
+                self.config["pre_unflatten_optimize_local_rounds"]
+            )
+        if "pre_unflatten_verify" in self.config.keys():
+            self.pre_unflatten_verify = bool(self.config["pre_unflatten_verify"])
+        self._snapshot_base_override_values()
         self.dispatcher_collector.configure(kwargs)
+
+    OVERRIDABLE_ATTRS = (
+        "max_passes",
+        "max_duplication_passes",
+        "max_calls_entry_preds",
+        "max_calls_exit_blocks",
+        "defer_calls_on_conditional_entry_father",
+        "log_calls_layout_signals",
+        "min_cfg_edges_required",
+        "pre_unflatten_optimize_local_rounds",
+        "pre_unflatten_verify",
+        "max_exit_blocks_for_additional_passes",
+    )
+
+    def _snapshot_base_override_values(self) -> None:
+        self._base_override_values = {}
+        for attr_name in self.OVERRIDABLE_ATTRS:
+            if hasattr(self, attr_name):
+                self._base_override_values[attr_name] = getattr(self, attr_name)
+
+    @staticmethod
+    def _parse_function_ea(value: Any) -> int | None:
+        try:
+            if isinstance(value, str):
+                text = value.strip()
+                if text.startswith(("0x", "0X")):
+                    return int(text, 16)
+                return int(text, 10)
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _normalize_per_function_overrides(
+        self, raw: Any
+    ) -> tuple[dict[int, dict[str, Any]], dict[str, dict[str, Any]]]:
+        if not isinstance(raw, dict):
+            return {}, {}
+        normalized_ea: dict[int, dict[str, Any]] = {}
+        normalized_name: dict[str, dict[str, Any]] = {}
+        for raw_ea, raw_override in raw.items():
+            if not isinstance(raw_override, dict):
+                continue
+            ea = self._parse_function_ea(raw_ea)
+            if ea is not None:
+                normalized_ea[ea] = dict(raw_override)
+                continue
+            key_name = str(raw_ea).strip().lower()
+            if key_name:
+                normalized_name[key_name] = dict(raw_override)
+        return normalized_ea, normalized_name
+
+    def _apply_function_overrides(self) -> None:
+        # Reset to configured base values first so one function's overrides do
+        # not leak into another function on the shared rule instance.
+        for attr_name, attr_value in self._base_override_values.items():
+            setattr(self, attr_name, attr_value)
+
+        if self.mba is None:
+            return
+        func_ea = int(getattr(self.mba, "entry_ea", 0) or 0)
+        merged_override: dict[str, Any] = {}
+        exact_override = self.per_function_overrides_by_ea.get(func_ea)
+        if exact_override:
+            merged_override.update(exact_override)
+
+        try:
+            imagebase = int(idaapi.get_imagebase())
+        except Exception:
+            imagebase = 0
+        if imagebase:
+            rebase_ea = func_ea - imagebase
+            if rebase_ea >= 0:
+                rebase_override = self.per_function_overrides_by_ea.get(rebase_ea)
+                if rebase_override:
+                    merged_override.update(rebase_override)
+
+        func_name = str(idc.get_func_name(func_ea) or "").strip()
+        if func_name:
+            name_override = self.per_function_overrides_by_name.get(func_name.lower())
+            if name_override:
+                merged_override.update(name_override)
+            if func_name.startswith("_"):
+                stripped_override = self.per_function_overrides_by_name.get(
+                    func_name[1:].lower()
+                )
+                if stripped_override:
+                    merged_override.update(stripped_override)
+
+        if not merged_override:
+            return
+        for attr_name, attr_value in merged_override.items():
+            if hasattr(self, attr_name):
+                setattr(self, attr_name, attr_value)
+        if unflat_logger.debug_on:
+            unflat_logger.debug(
+                "Applied per-function overrides for 0x%x: %s",
+                func_ea,
+                sorted(merged_override.keys()),
+            )
+
+    def _run_pre_unflatten_local_optimization(self) -> int:
+        rounds = int(max(0, self.pre_unflatten_optimize_local_rounds))
+        if rounds <= 0:
+            return 0
+        total_changes = 0
+        for round_index in range(rounds):
+            nb_changes = int(self.mba.optimize_local(0))
+            if nb_changes <= 0:
+                break
+            total_changes += nb_changes
+            if self.pre_unflatten_verify:
+                safe_verify(
+                    self.mba,
+                    "pre-unflatten optimize_local round %d (%s)" % (
+                        round_index + 1,
+                        self.__class__.__name__,
+                    ),
+                    logger_func=unflat_logger.error,
+                )
+        if total_changes > 0:
+            self.mba.mark_chains_dirty()
+            unflat_logger.info(
+                "Pre-unflatten local optimization applied %d change(s) at maturity %s pass %s",
+                total_changes,
+                self.cur_maturity,
+                self.cur_maturity_pass,
+            )
+        return total_changes
+
+    def should_skip_pass_for_layout(
+        self, layout_signals: dict[str, Any]
+    ) -> tuple[bool, str | None]:
+        """Optional per-rule guard to skip risky passes based on layout shape.
+
+        Subclasses can override this to reject a pass (typically pass>0) when
+        dispatcher topology is known to be unstable for that rule.
+        """
+        return False, None
 
     def _collect_dispatcher_layout_signals(self) -> dict[str, Any]:
         """Collect dispatcher layout signals used by MMAT_CALLS gating.
@@ -1543,6 +1770,152 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             cur_ins = cur_ins.next
         return liveins, defs
 
+    def _record_deferred_case_overlap_edge(
+        self,
+        dispatcher_entry_serial: int,
+        source_serial: int,
+        target_serial: int,
+    ) -> None:
+        edges = self._deferred_case_overlap_edges.setdefault(
+            int(dispatcher_entry_serial), set()
+        )
+        edges.add((int(source_serial), int(target_serial)))
+
+    @staticmethod
+    def _serial_in_set(serial_set, serial: int) -> bool:
+        for cur in serial_set:
+            if int(cur) == int(serial):
+                return True
+        return False
+
+    def _canonicalize_jtbl_cross_case_overlaps(self) -> int:
+        """Retarget overlapping jtbl entries to avoid shared case-entry headers.
+
+        Deferred rewrites can create edges from one switch case target to
+        another. If both remain direct jtbl targets, Hex-Rays may crash while
+        structuring due to shared case-entry headers. This post-pass rewrites
+        only overlaps introduced by this pass.
+        """
+        if not self._deferred_case_overlap_edges:
+            return 0
+
+        total_case_retargets = 0
+        for dispatcher_serial, rewrite_edges in self._deferred_case_overlap_edges.items():
+            dispatcher_blk = self.mba.get_mblock(dispatcher_serial)
+            if dispatcher_blk is None or dispatcher_blk.tail is None:
+                continue
+            if dispatcher_blk.tail.opcode != ida_hexrays.m_jtbl:
+                continue
+            if (
+                dispatcher_blk.tail.r is None
+                or dispatcher_blk.tail.r.t != ida_hexrays.mop_c
+                or dispatcher_blk.tail.r.c is None
+            ):
+                continue
+
+            cases = dispatcher_blk.tail.r.c
+            targets = cases.targets
+            if targets is None:
+                continue
+
+            old_target_set: set[int] = set()
+            target_to_indices: dict[int, list[int]] = {}
+            for i in range(targets.size()):
+                target_serial = int(targets[i])
+                old_target_set.add(target_serial)
+                target_to_indices.setdefault(target_serial, []).append(i)
+            if not old_target_set:
+                continue
+
+            dispatcher_changed = False
+            case_targets = set(old_target_set)
+            for target_serial in sorted(old_target_set):
+                target_blk = self.mba.get_mblock(target_serial)
+                if target_blk is None:
+                    continue
+
+                overlap_preds: list[int] = []
+                for pred_serial in target_blk.predset:
+                    pred_serial_int = int(pred_serial)
+                    if pred_serial_int in (dispatcher_serial, target_serial):
+                        continue
+                    if pred_serial_int not in case_targets:
+                        continue
+                    pred_blk = self.mba.get_mblock(pred_serial_int)
+                    if pred_blk is None:
+                        continue
+                    if not self._serial_in_set(pred_blk.succset, target_serial):
+                        continue
+                    overlap_preds.append(pred_serial_int)
+
+                if not overlap_preds:
+                    continue
+
+                # Canonicalize only overlaps introduced by the current pass.
+                rewritten_overlap_preds = [
+                    pred
+                    for pred in overlap_preds
+                    if (pred, target_serial) in rewrite_edges
+                ]
+                if not rewritten_overlap_preds:
+                    continue
+
+                chosen_pred = min(rewritten_overlap_preds)
+                rewired_count = 0
+                for idx in target_to_indices.get(target_serial, []):
+                    if int(targets[idx]) == chosen_pred:
+                        continue
+                    targets[idx] = chosen_pred
+                    rewired_count += 1
+
+                if rewired_count == 0:
+                    continue
+
+                dispatcher_changed = True
+                total_case_retargets += rewired_count
+                unflat_logger.warning(
+                    "Canonicalized jtbl overlap in dispatcher %d: "
+                    "retargeted %d case(s) %d -> %d (overlap_preds=%s)",
+                    dispatcher_serial,
+                    rewired_count,
+                    target_serial,
+                    chosen_pred,
+                    sorted(overlap_preds),
+                )
+
+            if not dispatcher_changed:
+                continue
+
+            new_target_set = set(int(targets[i]) for i in range(targets.size()))
+
+            removed_targets = sorted(old_target_set - new_target_set)
+            for removed_target in removed_targets:
+                if self._serial_in_set(dispatcher_blk.succset, removed_target):
+                    dispatcher_blk.succset._del(removed_target)
+                removed_blk = self.mba.get_mblock(removed_target)
+                if removed_blk is not None and self._serial_in_set(
+                    removed_blk.predset, dispatcher_serial
+                ):
+                    removed_blk.predset._del(dispatcher_serial)
+                    removed_blk.mark_lists_dirty()
+
+            added_targets = sorted(new_target_set - old_target_set)
+            for added_target in added_targets:
+                if not self._serial_in_set(dispatcher_blk.succset, added_target):
+                    dispatcher_blk.succset.push_back(added_target)
+                added_blk = self.mba.get_mblock(added_target)
+                if added_blk is not None and not self._serial_in_set(
+                    added_blk.predset, dispatcher_serial
+                ):
+                    added_blk.predset.push_back(dispatcher_serial)
+                    added_blk.mark_lists_dirty()
+
+            dispatcher_blk.mark_lists_dirty()
+
+        if total_case_retargets > 0:
+            self.mba.mark_chains_dirty()
+        return total_case_retargets
+
     def _filter_dependency_safe_copies(
         self,
         source_blk: ida_hexrays.mblock_t,
@@ -1669,9 +2042,34 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 )
 
         target_blk, disp_ins = dispatcher_info.emulate_dispatcher_with_father_history(
-            dispatcher_father_histories[0]
+            dispatcher_father_histories[0],
+            resolve_conditional_exits=True,
         )
         if target_blk is not None:
+            watch_edge_raw = os.environ.get("D810_DEFERRED_WATCH_EDGE", "").strip()
+            if watch_edge_raw and ":" in watch_edge_raw:
+                try:
+                    watch_src_s, watch_dst_s = watch_edge_raw.split(":", 1)
+                    watch_src = int(watch_src_s, 0)
+                    watch_dst = int(watch_dst_s, 0)
+                except ValueError:
+                    watch_src = -1
+                    watch_dst = -1
+                if (
+                    dispatcher_father.serial == watch_src
+                    and target_blk.serial == watch_dst
+                ):
+                    unflat_logger.warning(
+                        "DEBUG WATCH resolve_dispatcher_father hit edge %d -> %d "
+                        "(father_path=%s, target_type=%d nsucc=%d tail_opcode=%s)",
+                        dispatcher_father.serial,
+                        target_blk.serial,
+                        dispatcher_father_histories[0].block_serial_path,
+                        target_blk.type,
+                        target_blk.nsucc(),
+                        target_blk.tail.opcode if target_blk.tail else None,
+                    )
+
             # Check if this (source, target) pair has already been processed
             pair_key = (dispatcher_father.serial, target_blk.serial)
             if pair_key in self._processed_dispatcher_fathers:
@@ -1837,21 +2235,113 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         queued_change = True
                 else:
                     if source_nsucc == 1:
-                        unflat_logger.info(
-                            "Queuing goto change: block %s -> %s",
-                            dispatcher_father.serial,
-                            target_blk.serial,
+                        clone_conditional_targets = (
+                            os.environ.get("D810_UNFLAT_CLONE_COND_TARGET", "").strip().lower()
+                            in ("1", "true", "yes", "on")
                         )
-                        deferred_modifier.queue_goto_change(
-                            block_serial=dispatcher_father.serial,
-                            new_target=target_blk.serial,
-                            description=f"resolve_dispatcher_father {dispatcher_father.serial} -> {target_blk.serial}",
-                            rule_priority=100,  # High priority - proven constant analysis
+                        # When the resolved target is itself a conditional 2-way
+                        # block, redirecting many new predecessors directly into
+                        # that shared block can produce unstable CFGs for some
+                        # large flattened functions (AntiDebug case). Instead,
+                        # clone the conditional shape and redirect the father to
+                        # the clone, following the same proven pattern used by
+                        # FixPredecessorOfConditionalJumpBlock.
+                        target_is_conditional = (
+                            target_blk.nsucc() == 2
+                            and target_blk.tail is not None
+                            and ida_hexrays.is_mcode_jcond(target_blk.tail.opcode)
+                            and target_blk.nextb is not None
                         )
-                        queued_change = True
+                        if target_is_conditional and clone_conditional_targets:
+                            cond_target_serial = int(target_blk.tail.d.b)
+                            fallthrough_target_serial = int(target_blk.nextb.serial)
+                            unflat_logger.info(
+                                "Queuing conditional redirect clone: father %s via ref %s "
+                                "(jcc->%s, fallthrough->%s)",
+                                dispatcher_father.serial,
+                                target_blk.serial,
+                                cond_target_serial,
+                                fallthrough_target_serial,
+                            )
+                            deferred_modifier.queue_create_conditional_redirect(
+                                source_blk_serial=dispatcher_father.serial,
+                                ref_blk_serial=target_blk.serial,
+                                conditional_target_serial=cond_target_serial,
+                                fallthrough_target_serial=fallthrough_target_serial,
+                                description=(
+                                    "resolve_dispatcher_father(cond-clone) "
+                                    f"{dispatcher_father.serial} -> ref {target_blk.serial} "
+                                    f"(jcc:{cond_target_serial}, ft:{fallthrough_target_serial})"
+                                ),
+                            )
+                            queued_change = True
+                        else:
+                            # [SAFETY] Triangle check:
+                            # If target is conditional AND a direct dispatcher successor,
+                            # enforce a trampoline to break the "Switch Case -> Switch Case" edge.
+                            #
+                            # This prevents Hex-Rays crashes (INTERR/segfault) caused by
+                            # "Triangle with Shared Conditional Header" topology where a
+                            # conditional block is entered both from the switch (as a case)
+                            # and from another case block (via unflattening).
+                            is_target_in_dispatcher = False
+                            dispatcher_head = dispatcher_info.entry_block.blk
+                            if dispatcher_head:
+                                for i in range(dispatcher_head.nsucc()):
+                                    if dispatcher_head.succ(i) == target_blk.serial:
+                                        is_target_in_dispatcher = True
+                                        break
+
+                            # We use a relaxed definition of conditional here (ignoring nextb requirement)
+                            # because create_and_redirect works fine even for the last block.
+                            is_risky_conditional = (
+                                target_blk.nsucc() == 2
+                                and target_blk.tail is not None
+                                and ida_hexrays.is_mcode_jcond(target_blk.tail.opcode)
+                            )
+
+                            if is_risky_conditional and is_target_in_dispatcher:
+                                unflat_logger.info(
+                                    "Queuing trampoline for triangle edge: block %s -> %s",
+                                    dispatcher_father.serial,
+                                    target_blk.serial,
+                                )
+                                nop = ida_hexrays.minsn_t(dispatcher_father.tail.ea)
+                                nop.opcode = ida_hexrays.m_nop
+                                deferred_modifier.queue_create_and_redirect(
+                                    source_block_serial=dispatcher_father.serial,
+                                    final_target_serial=target_blk.serial,
+                                    instructions_to_copy=[nop],
+                                    is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY),
+                                    description=f"resolve_dispatcher_father(trampoline) {dispatcher_father.serial} -> {target_blk.serial}",
+                                )
+                                queued_change = True
+                            else:
+                                unflat_logger.info(
+                                    "Queuing goto change: block %s -> %s",
+                                    dispatcher_father.serial,
+                                    target_blk.serial,
+                                )
+                                self._record_deferred_case_overlap_edge(
+                                    dispatcher_info.entry_block.serial,
+                                    dispatcher_father.serial,
+                                    target_blk.serial,
+                                )
+                                deferred_modifier.queue_goto_change(
+                                    block_serial=dispatcher_father.serial,
+                                    new_target=target_blk.serial,
+                                    description=f"resolve_dispatcher_father {dispatcher_father.serial} -> {target_blk.serial}",
+                                    rule_priority=100,  # High priority - proven constant analysis
+                                )
+                                queued_change = True
                     elif source_nsucc == 2 and tail_opcode in CONDITIONAL_JUMP_OPCODES:
                         unflat_logger.info(
                             "Queuing convert_to_goto for conditional father: block %s -> %s",
+                            dispatcher_father.serial,
+                            target_blk.serial,
+                        )
+                        self._record_deferred_case_overlap_edge(
+                            dispatcher_info.entry_block.serial,
                             dispatcher_father.serial,
                             target_blk.serial,
                         )
@@ -1999,6 +2489,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
         # Reset tracking for this optimization pass
         self._processed_dispatcher_fathers.clear()
+        self._deferred_case_overlap_edges.clear()
 
         # Create deferred modifier for all resolve_dispatcher_father operations
         deferred_modifier = DeferredGraphModifier(self.mba)
@@ -2097,7 +2588,17 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             total_exit_blocks = sum(
                 len(d.dispatcher_exit_blocks) for d in self.dispatcher_list
             )
-            if not should_apply_cfg_modifications(num_redirected, total_exit_blocks, "generic"):
+            min_cfg_edges_required = (
+                self.min_cfg_edges_required
+                if int(self.min_cfg_edges_required) > 0
+                else None
+            )
+            if not should_apply_cfg_modifications(
+                num_redirected,
+                total_exit_blocks,
+                "generic",
+                min_required_override=min_cfg_edges_required,
+            ):
                 deferred_modifier.reset()
             else:
                 unflat_logger.info(
@@ -2110,7 +2611,33 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     verify_each_mod=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
                     rollback_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
                     continue_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
+                    defer_post_apply_maintenance=True,
                 )
+                if not deferred_modifier.verify_failed:
+                    unflat_logger.info(
+                        "Post-apply jtbl overlap scan: %d dispatcher edge-set(s)",
+                        len(self._deferred_case_overlap_edges),
+                    )
+                    canonicalized_cases = self._canonicalize_jtbl_cross_case_overlaps()
+                    if canonicalized_cases > 0:
+                        unflat_logger.info(
+                            "Applied jtbl overlap canonicalization: %d case target retarget(s)",
+                            canonicalized_cases,
+                        )
+                        safe_verify(
+                            self.mba,
+                            "after jtbl cross-case overlap canonicalization",
+                            logger_func=unflat_logger.error,
+                        )
+                        total_nb_change += canonicalized_cases
+                    # DeferredGraphModifier maintenance is deferred so we can
+                    # canonicalize switch-case overlaps first.
+                    mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                    safe_verify(
+                        self.mba,
+                        "after deferred modifications (generic post-maintenance)",
+                        logger_func=unflat_logger.error,
+                    )
 
             if deferred_modifier.verify_failed:
                 self._verify_failed = True
@@ -2142,6 +2669,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     def optimize(self, blk: ida_hexrays.mblock_t) -> int:
         import time as _time
         self.mba = blk.mba
+        self._apply_function_overrides()
         if not self.check_if_rule_should_be_used(blk):
             return 0
 
@@ -2155,6 +2683,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 scheduled_changes,
                 self.cur_maturity,
             )
+        pre_unflatten_changes = self._run_pre_unflatten_local_optimization()
+        initial_changes = scheduled_changes + pre_unflatten_changes
 
         self.last_pass_nb_patch_done = 0
         unflat_logger.info(
@@ -2171,7 +2701,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self.retrieve_all_dispatchers()
         if len(self.dispatcher_list) == 0:
             unflat_logger.info("No dispatcher found at maturity %s", self.mba.maturity)
-            return 0
+            return initial_changes
 
         layout_signals = self._collect_dispatcher_layout_signals()
         self._emit_layout_signals(layout_signals)
@@ -2204,7 +2734,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     max_exit_blocks,
                     self.max_calls_exit_blocks,
                 )
-                return scheduled_changes
+                return initial_changes
 
             # Additional MMAT_CALLS safety gate:
             # A conditional predecessor directly feeding the dispatcher entry
@@ -2226,7 +2756,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     "Skipping MMAT_CALLS unflattening: dispatcher entry has "
                     "conditional predecessor(s); deferring to later maturities"
                 )
-                return scheduled_changes
+                return initial_changes
+        skip_pass, skip_reason = self.should_skip_pass_for_layout(layout_signals)
+        if skip_pass:
+            if skip_reason:
+                unflat_logger.warning(skip_reason)
+            else:
+                unflat_logger.warning("Skipping unflattening pass via layout guard")
+            return initial_changes
         unflat_logger.info(
             "Unflattening: %s dispatcher(s) found", len(self.dispatcher_list)
         )
@@ -2282,7 +2819,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 "Skipping post-unflattening cleanup because MBA verify "
                 "failed during deferred modifications"
             )
-            return self.last_pass_nb_patch_done
+            return self.last_pass_nb_patch_done + initial_changes
 
         nb_clean = mba_deep_cleaning(self.mba, False)
         if self.dump_intermediate_microcode:
@@ -2299,4 +2836,4 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             "optimizing GenericDispatcherUnflatteningRule.optimize",
             logger_func=unflat_logger.error,
         )
-        return self.last_pass_nb_patch_done
+        return self.last_pass_nb_patch_done + initial_changes
