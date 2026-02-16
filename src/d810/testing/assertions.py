@@ -196,6 +196,89 @@ def assert_code_changed(before: str, after: str) -> None:
         )
 
 
+def assert_operator_complexity(
+    before: str,
+    after: str,
+    mode: str,
+    operators: Optional[list[str]] = None,
+    context: str = "code",
+) -> None:
+    """Assert operator-count complexity trends between before/after code.
+
+    Theory and purpose:
+        This assertion treats operator density as a lightweight proxy for
+        expression complexity in decompiled pseudocode. In practice, many
+        deobfuscation transforms reduce algebraic noise by collapsing
+        multi-operator MBA expressions into simpler canonical forms. When that
+        happens, the total count of selected operators should decrease or at
+        least not increase.
+
+        This is intentionally weaker than AST semantic equivalence:
+        - AST equivalence answers "is it the same meaning?"
+        - operator complexity answers "did we simplify the surface shape?"
+
+        The two are complementary. A transform can preserve semantics while
+        still making the output harder to read (complexity increase), and this
+        helper catches that class of regression when a case opts in.
+
+    Recommended usage:
+        - Use for cases where readability/simplification is a product goal.
+        - Configure per case (do not enforce globally).
+        - Prefer ``mode="non_increase"`` unless strict reduction is a stable
+          invariant for that function/profile.
+        - Choose an operator set that matches the target family
+          (e.g. MBA: ``+ - * ^ & |``).
+
+    Limits:
+        - This is lexical counting, not full symbolic complexity.
+        - Equivalent rewrites can move complexity across operators.
+        - Different decompiler versions can alter formatting/tokenization.
+        - Therefore this should be used as a targeted guardrail, not as a sole
+          correctness oracle.
+
+    Args:
+        before: Code before deobfuscation.
+        after: Code after deobfuscation.
+        mode: One of:
+            - "decrease": after count must be strictly lower.
+            - "non_increase": after count must be <= before.
+        operators: Operators to count. Defaults to ["+", "-", "*"].
+        context: Description for error messages.
+
+    Raises:
+        AssertionError: If complexity trend does not match mode.
+        ValueError: If mode is unsupported.
+    """
+    ops = operators or ["+", "-", "*"]
+    before_count = sum(before.count(op) for op in ops)
+    after_count = sum(after.count(op) for op in ops)
+
+    if mode == "decrease":
+        if after_count >= before_count:
+            raise AssertionError(
+                f"Operator complexity did not decrease in {context}:\n"
+                f"  Operators: {ops}\n"
+                f"  Before: {before_count}\n"
+                f"  After: {after_count}"
+            )
+        return
+
+    if mode == "non_increase":
+        if after_count > before_count:
+            raise AssertionError(
+                f"Operator complexity increased in {context}:\n"
+                f"  Operators: {ops}\n"
+                f"  Before: {before_count}\n"
+                f"  After: {after_count}"
+            )
+        return
+
+    raise ValueError(
+        f"Unsupported operator complexity mode '{mode}'. "
+        "Expected 'decrease' or 'non_increase'."
+    )
+
+
 def _get_fired_rules(
     stats: "OptimizationStatistics",
     function_name: Optional[str] = None,

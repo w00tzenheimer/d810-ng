@@ -47,6 +47,8 @@ class BinaryOverride:
     # Override behavior
     must_change: Optional[bool] = None
     skip: Optional[str] = None  # Skip reason for this binary
+    operator_complexity_mode: Optional[str] = None
+    operator_complexity_ops: Optional[list[str]] = None
 
 
 @dataclass
@@ -92,6 +94,9 @@ class DeobfuscationCase:
         must_change: Whether deobfuscation must change the code (default: True).
         check_stats: Whether to verify rule firing statistics (default: True).
         skip: If set, skip this test with this reason.
+        operator_complexity_mode: Optional complexity trend assertion mode:
+            "decrease" or "non_increase".
+        operator_complexity_ops: Optional operator tokens to count for complexity.
 
         dll_override: Override config for .dll binaries.
         dylib_override: Override config for .dylib binaries.
@@ -125,6 +130,8 @@ class DeobfuscationCase:
     must_change: bool = True
     check_stats: bool = True
     skip: Optional[str] = None
+    operator_complexity_mode: Optional[str] = None
+    operator_complexity_ops: list[str] = field(default_factory=list)
 
     # Binary-specific overrides
     dll_override: Optional[BinaryOverride] = None
@@ -212,6 +219,16 @@ class DeobfuscationCase:
             ),
             check_stats=self.check_stats,
             skip=override.skip if override.skip is not None else self.skip,
+            operator_complexity_mode=(
+                override.operator_complexity_mode
+                if override.operator_complexity_mode is not None
+                else self.operator_complexity_mode
+            ),
+            operator_complexity_ops=(
+                override.operator_complexity_ops
+                if override.operator_complexity_ops is not None
+                else self.operator_complexity_ops
+            ),
             # Don't copy overrides to the effective config
             dll_override=None,
             dylib_override=None,

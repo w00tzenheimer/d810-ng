@@ -1,8 +1,14 @@
 """System tests for EA validation guards (IDA required)."""
+import os
+
 import pytest
 
 
+@pytest.mark.usefixtures("ida_database")
 class TestEaValidationHelpers:
+    # Any real sample binary is fine for EA guard tests.
+    binary_name = os.getenv("D810_TEST_BINARY", "libobfuscated.dll")
+
     @pytest.mark.ida_required
     def test_valid_ea_accepted(self):
         import idaapi

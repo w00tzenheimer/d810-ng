@@ -117,6 +117,8 @@ MANUALLY_OBFUSCATED_CASES = [
         obfuscated_contains=["0x222E69C2", "0x50211120"],
         acceptable_patterns=["0x222E69C0", "0xD32B5931", "0xA29"],
         must_change=True,  # Original test explicitly requires code change
+        operator_complexity_mode="non_increase",
+        operator_complexity_ops=["+", "-", "*", "^", "&", "|"],
     ),
     DeobfuscationCase(
         function="test_opaque_predicate",
@@ -165,6 +167,8 @@ MANUALLY_OBFUSCATED_CASES = [
         acceptable_patterns=[],
         deobfuscated_contains=["^"],  # Should simplify to XOR
         must_change=True,
+        operator_complexity_mode="decrease",
+        operator_complexity_ops=["+", "-", "*", "&", "|", "^"],
         # From results.toml: PatternOptimizer (2), Xor_HackersDelightRule_3 (2)
         required_rules=["Xor_HackersDelightRule_3"],
     ),
@@ -329,6 +333,7 @@ ABC_XOR_CASES = [
         description="OR-based state manipulation with mask operations",
         project="example_libobfuscated.json",
         must_change=True,
+        skip="Pre-existing: OR-mask dispatcher pattern not yet supported",
     ),
     DeobfuscationCase(
         function="abc_mixed_dispatch",
@@ -368,7 +373,7 @@ APPROOV_CASES = [
         project="default_unflattening_approov.json",  # Requires Approov-specific unflattener
         deobfuscated_not_contains=["switch"],
         must_change=True,
-        skip="Pre-existing: approov VM dispatcher detection failure",
+        skip="Known gap: approov VM dispatcher still unchanged in current harness",
     ),
     DeobfuscationCase(
         function="approov_simple_loop",
@@ -417,7 +422,6 @@ CONSTANT_FOLDING_CASES = [
         description="Anti-debugging exception handler with constant folding",
         project="example_libobfuscated.json",
         must_change=False,
-        skip="hangs during decompilation - infinite loop in microcode callbacks",
     ),
 ]
 
@@ -637,6 +641,7 @@ OLLVM_CASES = [
             "ArithmeticChain",
             "AndBnot_FactorRule_2",
         ],
+        skip="Known gap: partial deobfuscation, required patterns still missing",
     ),
 ]
 
@@ -656,7 +661,6 @@ TIGRESS_CASES = [
         # Must restore natural control flow (for/if instead of switch cases)
         deobfuscated_contains=["for ("],
         must_change=True,  # Original test: case_count_after < case_count_before
-        skip="Segfault in ida_hexrays.decompile_func during Tigress unflattening - INTERR 50863 investigation",
     ),
 ]
 

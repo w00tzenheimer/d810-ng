@@ -30,6 +30,7 @@ from .assertions import (
     assert_code_equivalent,
     assert_contains,
     assert_not_contains,
+    assert_operator_complexity,
     assert_rules_fired,
 )
 from .cases import DeobfuscationCase
@@ -204,6 +205,16 @@ def run_deobfuscation_test(
         # Assert code changed (if required)
         if effective_case.must_change:
             assert_code_changed(code_before, code_after)
+
+        # Optional operator-complexity trend checks (case-specific)
+        if effective_case.operator_complexity_mode:
+            assert_operator_complexity(
+                code_before,
+                code_after,
+                mode=effective_case.operator_complexity_mode,
+                operators=effective_case.operator_complexity_ops,
+                context=effective_case.function,
+            )
 
         # Assert deobfuscation patterns are present
         if effective_case.deobfuscated_contains:
