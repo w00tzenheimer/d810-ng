@@ -7,7 +7,7 @@ import d810._vendor
 import d810._vendor.ida_reloader as reloadable
 from d810.core.typing import override
 
-D810_VERSION = "0.1"
+D810_VERSION = d810.__version__
 
 
 def init_hexrays() -> bool:

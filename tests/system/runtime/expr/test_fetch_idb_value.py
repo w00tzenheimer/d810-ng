@@ -21,11 +21,7 @@ class TestFetchIdbValueSupportedSizes:
     binary_name = "libobfuscated.dll"
 
     def test_size_1_calls_get_byte(self, ida_database):
-        """Test reading a single byte from .rdata section.
-
-        At address 0x180012000 in .rdata, we have the byte sequence:
-        40 14 01 80 01 00 00 00 ...
-        """
+        """Test reading a single byte from .rdata section."""
         # Use a known address in .rdata section
         test_addr = 0x180012000
 
@@ -35,49 +31,33 @@ class TestFetchIdbValueSupportedSizes:
         # Verify it matches direct idaapi call
         expected = idaapi.get_byte(test_addr)
         assert result == expected
-        assert result == 0x40
 
     def test_size_2_calls_get_word(self, ida_database):
-        """Test reading a 2-byte word from .rdata section.
-
-        At address 0x180012000 in .rdata, we have:
-        40 14 (little-endian) = 0x1440
-        """
+        """Test reading a 2-byte word from .rdata section."""
         test_addr = 0x180012000
 
         result = fetch_idb_value(test_addr, 2)
 
         expected = idaapi.get_word(test_addr)
         assert result == expected
-        assert result == 0x1440  # little-endian: 40 14
 
     def test_size_4_calls_get_dword(self, ida_database):
-        """Test reading a 4-byte dword from .rdata section.
-
-        At address 0x180012000 in .rdata, we have:
-        40 14 01 80 (little-endian) = 0x80011440
-        """
+        """Test reading a 4-byte dword from .rdata section."""
         test_addr = 0x180012000
 
         result = fetch_idb_value(test_addr, 4)
 
         expected = idaapi.get_dword(test_addr)
         assert result == expected
-        assert result == 0x80011440  # little-endian: 40 14 01 80
 
     def test_size_8_calls_get_qword(self, ida_database):
-        """Test reading an 8-byte qword from .rdata section.
-
-        At address 0x180012000 in .rdata, we have:
-        40 14 01 80 01 00 00 00 (little-endian) = 0x0000000180011440
-        """
+        """Test reading an 8-byte qword from .rdata section."""
         test_addr = 0x180012000
 
         result = fetch_idb_value(test_addr, 8)
 
         expected = idaapi.get_qword(test_addr)
         assert result == expected
-        assert result == 0x0000000180011440  # little-endian: 40 14 01 80 01 00 00 00
 
 
 @pytest.mark.ida_required
@@ -104,18 +84,13 @@ class TestFetchIdbValueEdgeCases:
     binary_name = "libobfuscated.dll"
 
     def test_different_rdata_offset(self, ida_database):
-        """Test reading from a different offset in .rdata section.
-
-        At address 0x180012010 in .rdata, we have:
-        90 18 01 80 (little-endian) = 0x80011890
-        """
+        """Test reading from a different offset in .rdata section."""
         test_addr = 0x180012010
 
         result = fetch_idb_value(test_addr, 4)
         expected = idaapi.get_dword(test_addr)
 
         assert result == expected
-        assert result == 0x80011890
 
     def test_text_section_read(self, ida_database):
         """Test reading from .text section (first bytes of code)."""

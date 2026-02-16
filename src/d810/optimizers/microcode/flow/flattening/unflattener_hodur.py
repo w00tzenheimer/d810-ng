@@ -20,15 +20,15 @@ Key differences from O-LLVM:
 - State comparisons use jnz (jump if not zero/not equal)
 - Each while loop handles one state value
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from d810.core.typing import TYPE_CHECKING
 
 import ida_hexrays
 
-from d810.core.bits import unsigned_to_signed
 from d810.core import getLogger
+from d810.core.bits import unsigned_to_signed
 from d810.expr.ast import minsn_to_ast
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
 from d810.hexrays.cfg_utils import (
@@ -47,10 +47,10 @@ from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
     DispatcherStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
+from d810.optimizers.microcode.flow.flattening.safeguards import (
+    should_apply_cfg_modifications,
+)
 from d810.optimizers.microcode.flow.flattening.utils import get_all_possibles_values
-
-if TYPE_CHECKING:
-    pass
 
 unflat_logger = getLogger("D810.unflat.hodur")
 
@@ -88,6 +88,7 @@ HODUR_STATE_UPDATE_OPCODES = {
 @dataclass
 class StateTransition:
     """Represents a state transition in the Hodur state machine."""
+
     from_state: int
     to_state: int
     from_block: int  # Block serial where transition originates
@@ -98,6 +99,7 @@ class StateTransition:
 @dataclass
 class StateUpdateSite:
     """Represents an instruction that writes the dispatcher state variable."""
+
     block_serial: int
     instruction: ida_hexrays.minsn_t
 
@@ -105,20 +107,26 @@ class StateUpdateSite:
 @dataclass
 class StateHandler:
     """Represents a handler for a specific state value."""
+
     state_value: int
     check_block: int  # Block with jnz state, CONSTANT
-    handler_blocks: list[int] = field(default_factory=list)  # Blocks executed when state matches
+    handler_blocks: list[int] = field(
+        default_factory=list
+    )  # Blocks executed when state matches
     transitions: list[StateTransition] = field(default_factory=list)
 
 
 @dataclass
 class HodurStateMachine:
     """Represents the complete Hodur state machine structure."""
+
     mba: ida_hexrays.mba_t
     state_var: ida_hexrays.mop_t | None = None
     initial_state: int | None = None
     state_constants: set[int] = field(default_factory=set)
-    handlers: dict[int, StateHandler] = field(default_factory=dict)  # state_value -> handler
+    handlers: dict[int, StateHandler] = field(
+        default_factory=dict
+    )  # state_value -> handler
     transitions: list[StateTransition] = field(default_factory=list)
 
     def add_state_constant(self, const: int) -> None:
@@ -168,7 +176,11 @@ class HodurStateMachineDetector:
                 unflat_logger.debug(
                     "Dispatcher cache confirms Hodur-style: %d state constants, initial=%s",
                     len(analysis.state_constants),
-                    hex(analysis.initial_state) if analysis.initial_state else "unknown",
+                    (
+                        hex(analysis.initial_state)
+                        if analysis.initial_state
+                        else "unknown"
+                    ),
                 )
 
         # Step 1: Find all state comparison blocks (jnz with large constants)
@@ -176,7 +188,8 @@ class HodurStateMachineDetector:
         if len(state_check_blocks) < MIN_STATE_CONSTANTS:
             unflat_logger.debug(
                 "Not enough state check blocks found: %d < %d",
-                len(state_check_blocks), MIN_STATE_CONSTANTS
+                len(state_check_blocks),
+                MIN_STATE_CONSTANTS,
             )
             return None
 
@@ -186,7 +199,8 @@ class HodurStateMachineDetector:
         if len(state_check_blocks) > MAX_STATE_CONSTANTS_HODUR:
             unflat_logger.info(
                 "Too many state check blocks (%d > %d) - likely OLLVM FLA, not Hodur",
-                len(state_check_blocks), MAX_STATE_CONSTANTS_HODUR
+                len(state_check_blocks),
+                MAX_STATE_CONSTANTS_HODUR,
             )
             return None
 
@@ -263,7 +277,7 @@ class HodurStateMachineDetector:
             "Detected Hodur state machine: %d states, %d transitions, initial=%s",
             len(state_constants),
             len(self.state_machine.transitions),
-            hex(initial_state) if initial_state else "unknown"
+            hex(initial_state) if initial_state else "unknown",
         )
 
         return self.state_machine
@@ -316,21 +330,21 @@ class HodurStateMachineDetector:
         if opcode == ida_hexrays.m_jbe:
             return left_value <= right_value
         if opcode == ida_hexrays.m_jg:
-            return unsigned_to_signed(left_value, right_value_size) > unsigned_to_signed(
-                right_value, right_value_size
-            )
+            return unsigned_to_signed(
+                left_value, right_value_size
+            ) > unsigned_to_signed(right_value, right_value_size)
         if opcode == ida_hexrays.m_jge:
-            return unsigned_to_signed(left_value, right_value_size) >= unsigned_to_signed(
-                right_value, right_value_size
-            )
+            return unsigned_to_signed(
+                left_value, right_value_size
+            ) >= unsigned_to_signed(right_value, right_value_size)
         if opcode == ida_hexrays.m_jl:
-            return unsigned_to_signed(left_value, right_value_size) < unsigned_to_signed(
-                right_value, right_value_size
-            )
+            return unsigned_to_signed(
+                left_value, right_value_size
+            ) < unsigned_to_signed(right_value, right_value_size)
         if opcode == ida_hexrays.m_jle:
-            return unsigned_to_signed(left_value, right_value_size) <= unsigned_to_signed(
-                right_value, right_value_size
-            )
+            return unsigned_to_signed(
+                left_value, right_value_size
+            ) <= unsigned_to_signed(right_value, right_value_size)
         return None
 
     @staticmethod
@@ -466,7 +480,9 @@ class HodurStateMachineDetector:
                 value = env.lookup(state_var, raise_exception=False)
                 if value is not None:
                     return int(value)
-                value = interpreter.eval_mop(insn.d, environment=env, raise_exception=False)
+                value = interpreter.eval_mop(
+                    insn.d, environment=env, raise_exception=False
+                )
                 return int(value) if value is not None else None
             cur = cur.next
 
@@ -633,7 +649,10 @@ class HodurStateMachineDetector:
                 # Continue BFS but stop at state check blocks
                 curr_blk = self.mba.get_mblock(curr_serial)
                 for succ_serial in curr_blk.succset:
-                    if succ_serial not in visited and succ_serial not in check_map.values():
+                    if (
+                        succ_serial not in visited
+                        and succ_serial not in check_map.values()
+                    ):
                         to_visit.append(succ_serial)
 
 
@@ -718,15 +737,15 @@ class HodurUnflattener(GenericUnflatteningRule):
         nb_changes = 0
 
         if self.deferred.has_modifications():
-            from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
             num_redirected = len(self.deferred.modifications)
             total_handlers = len(self.state_machine.handlers)
-            if not should_apply_cfg_modifications(num_redirected, total_handlers, "hodur"):
-                pass  # skip apply
+            if not should_apply_cfg_modifications(
+                num_redirected, total_handlers, "hodur"
+            ):
+                self.deferred.reset()
             else:
                 unflat_logger.info(
-                    "Applying %d queued modifications",
-                    len(self.deferred.modifications)
+                    "Applying %d queued modifications", len(self.deferred.modifications)
                 )
                 nb_changes += self.deferred.apply(
                     run_optimize_local=True,
@@ -795,8 +814,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             # can map them to an exit target, avoiding conflicting queued rewrites.
             if (
                 defer_loopback_to_terminal_fix
-                and
-                initial_state is not None
+                and initial_state is not None
                 and transition.to_state == initial_state
                 and transition.from_state != initial_state
             ):
@@ -839,7 +857,9 @@ class HodurUnflattener(GenericUnflatteningRule):
                     queued_patches += 1
                 continue
 
-            if from_blk.nsucc() == 2 and any(s in check_blocks for s in from_blk.succset):
+            if from_blk.nsucc() == 2 and any(
+                s in check_blocks for s in from_blk.succset
+            ):
                 if self._queue_transition_redirect(
                     from_blk,
                     target_block,
@@ -891,9 +911,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         Return True when dispatcher checks use non-legacy comparisons.
         """
         check_opcode = self._get_primary_check_opcode()
-        return (
-            check_opcode in HODUR_STATE_CHECK_OPCODES
-            and check_opcode not in (ida_hexrays.m_jnz, ida_hexrays.m_jz)
+        return check_opcode in HODUR_STATE_CHECK_OPCODES and check_opcode not in (
+            ida_hexrays.m_jnz,
+            ida_hexrays.m_jz,
         )
 
     def _collect_state_machine_blocks(self) -> set[int]:
@@ -914,7 +934,8 @@ class HodurUnflattener(GenericUnflatteningRule):
         loopbacks = [
             transition
             for transition in self.state_machine.transitions
-            if transition.to_state == initial_state and transition.from_state != initial_state
+            if transition.to_state == initial_state
+            and transition.from_state != initial_state
         ]
         if len(loopbacks) != 1:
             return None
@@ -981,7 +1002,9 @@ class HodurUnflattener(GenericUnflatteningRule):
             blk = self.mba.get_mblock(blk_serial)
             if blk is None or blk.tail is None:
                 continue
-            if blk.tail.opcode == ida_hexrays.m_ret and (blk.npred() > 0 or self._can_reach_return(blk.serial)):
+            if blk.tail.opcode == ida_hexrays.m_ret and (
+                blk.npred() > 0 or self._can_reach_return(blk.serial)
+            ):
                 return blk.serial
 
         # Last-resort fallback: use the stop block so terminal loops can be cut
@@ -1130,16 +1153,21 @@ class HodurUnflattener(GenericUnflatteningRule):
             return
 
         initial_state = int(self.state_machine.initial_state)
-        check_blocks = {handler.check_block for handler in self.state_machine.handlers.values()}
+        check_blocks = {
+            handler.check_block for handler in self.state_machine.handlers.values()
+        }
         processed_blocks = set()
 
         # Primary strategy: rewrite transitions that loop back to INITIAL_STATE.
         loopback_transitions = [
             transition
             for transition in self.state_machine.transitions
-            if transition.to_state == initial_state and transition.from_state != initial_state
+            if transition.to_state == initial_state
+            and transition.from_state != initial_state
         ]
-        candidate_blocks = [transition.from_block for transition in loopback_transitions]
+        candidate_blocks = [
+            transition.from_block for transition in loopback_transitions
+        ]
 
         # Fallback: no explicit loopback transition found, use structural back-edges
         # to the dispatcher entry among lightweight state-machine blocks.
@@ -1148,7 +1176,10 @@ class HodurUnflattener(GenericUnflatteningRule):
                 blk = self.mba.get_mblock(blk_serial)
                 if blk is None:
                     continue
-                if first_check_block in blk.succset and self._is_lightweight_terminal_transition_block(blk):
+                if (
+                    first_check_block in blk.succset
+                    and self._is_lightweight_terminal_transition_block(blk)
+                ):
                     candidate_blocks.append(blk_serial)
 
         for blk_serial in candidate_blocks:
@@ -1194,7 +1225,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             return False
 
         success_target = None
-        if first_check_blk.tail.opcode == ida_hexrays.m_jnz and first_check_blk.tail.d.t == ida_hexrays.mop_b:
+        if (
+            first_check_blk.tail.opcode == ida_hexrays.m_jnz
+            and first_check_blk.tail.d.t == ida_hexrays.mop_b
+        ):
             success_target = first_check_blk.tail.d.b
         if success_target is None:
             return False
@@ -1236,7 +1270,9 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         first_check_block = handlers[0].check_block
         state_machine_blocks = self._collect_state_machine_blocks()
-        exit_target = self._find_terminal_exit_target(first_check_block, state_machine_blocks)
+        exit_target = self._find_terminal_exit_target(
+            first_check_block, state_machine_blocks
+        )
         if exit_target is None:
             return 0
 
@@ -1267,7 +1303,11 @@ class HodurUnflattener(GenericUnflatteningRule):
             if not self._is_degenerate_loop_block(succ_blk):
                 continue
             succ2 = next(iter(succ_blk.succset))
-            if succ2 == blk.serial and blk.serial != exit_target and succ != exit_target:
+            if (
+                succ2 == blk.serial
+                and blk.serial != exit_target
+                and succ != exit_target
+            ):
                 if change_1way_block_successor(blk, exit_target, verify=False):
                     nb_fixed += 1
                     unflat_logger.info(
@@ -1365,8 +1405,8 @@ class HodurUnflattener(GenericUnflatteningRule):
             if blk.tail.r.t != ida_hexrays.mop_n:
                 return current
 
-            jump_target, fallthrough = HodurStateMachineDetector._get_jump_and_fallthrough_targets(
-                blk
+            jump_target, fallthrough = (
+                HodurStateMachineDetector._get_jump_and_fallthrough_targets(blk)
             )
             if jump_target is None or fallthrough is None:
                 return None
@@ -1392,21 +1432,31 @@ class HodurUnflattener(GenericUnflatteningRule):
         unflat_logger.info("=== Hodur State Machine ===")
         unflat_logger.info(
             "State variable: %s",
-            format_mop_t(self.state_machine.state_var) if self.state_machine.state_var else "unknown"
+            (
+                format_mop_t(self.state_machine.state_var)
+                if self.state_machine.state_var
+                else "unknown"
+            ),
         )
         unflat_logger.info(
             "Initial state: %s",
-            hex(self.state_machine.initial_state) if self.state_machine.initial_state else "unknown"
+            (
+                hex(self.state_machine.initial_state)
+                if self.state_machine.initial_state
+                else "unknown"
+            ),
         )
         unflat_logger.info(
             "State constants: %s",
-            ", ".join(hex(c) for c in sorted(self.state_machine.state_constants))
+            ", ".join(hex(c) for c in sorted(self.state_machine.state_constants)),
         )
         unflat_logger.info("Transitions:")
         for t in self.state_machine.transitions:
             unflat_logger.info(
                 "  %s -> %s (block %d)",
-                hex(t.from_state), hex(t.to_state), t.from_block
+                hex(t.from_state),
+                hex(t.to_state),
+                t.from_block,
             )
 
     def _resolve_and_patch(self) -> int:
@@ -1443,7 +1493,8 @@ class HodurUnflattener(GenericUnflatteningRule):
 
             unflat_logger.debug(
                 "Analyzing state check block %d for state %s",
-                handler.check_block, hex(state_val)
+                handler.check_block,
+                hex(state_val),
             )
 
             # For each predecessor of the check block
@@ -1465,8 +1516,7 @@ class HodurUnflattener(GenericUnflatteningRule):
 
                 if not flat_values:
                     unflat_logger.debug(
-                        "  Pred %d: could not determine state value",
-                        pred_serial
+                        "  Pred %d: could not determine state value", pred_serial
                     )
                     continue
 
@@ -1475,22 +1525,26 @@ class HodurUnflattener(GenericUnflatteningRule):
                     unflat_logger.debug(
                         "  Pred %d: multiple possible state values: %s",
                         pred_serial,
-                        [hex(v) for v in unique_values]
+                        [hex(v) for v in unique_values],
                     )
                     continue
 
                 pred_state = flat_values[0]
                 unflat_logger.debug(
-                    "  Pred %d: state value is %s",
-                    pred_serial, hex(pred_state)
+                    "  Pred %d: state value is %s", pred_serial, hex(pred_state)
                 )
 
                 check_opcode = check_blk.tail.opcode if check_blk.tail else None
-                if check_blk.tail is None or check_opcode not in HODUR_STATE_CHECK_OPCODES:
+                if (
+                    check_blk.tail is None
+                    or check_opcode not in HODUR_STATE_CHECK_OPCODES
+                ):
                     continue
 
-                jump_target, fall_through = HodurStateMachineDetector._get_jump_and_fallthrough_targets(
-                    check_blk
+                jump_target, fall_through = (
+                    HodurStateMachineDetector._get_jump_and_fallthrough_targets(
+                        check_blk
+                    )
                 )
                 if jump_target is None or fall_through is None:
                     continue
@@ -1524,35 +1578,49 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Apply patches: jump never taken (fall through)
         for pred_blk, check_blk, fall_through in patches_fall_through:
             try:
-                new_jmp_block, new_default_block = duplicate_block(check_blk, verify=False)
+                new_jmp_block, new_default_block = duplicate_block(
+                    check_blk, verify=False
+                )
                 make_2way_block_goto(new_jmp_block, fall_through, verify=False)
-                update_blk_successor(pred_blk, check_blk.serial, new_jmp_block.serial, verify=False)
+                update_blk_successor(
+                    pred_blk, check_blk.serial, new_jmp_block.serial, verify=False
+                )
                 nb_changes += 1
                 unflat_logger.debug(
                     "Applied fall-through patch: pred %d -> new block %d -> %d",
-                    pred_blk.serial, new_jmp_block.serial, fall_through
+                    pred_blk.serial,
+                    new_jmp_block.serial,
+                    fall_through,
                 )
             except Exception as e:
                 unflat_logger.warning(
                     "Failed to apply fall-through patch for pred %d: %s",
-                    pred_blk.serial, e
+                    pred_blk.serial,
+                    e,
                 )
 
         # Apply patches: jump always taken
         for pred_blk, check_blk, jump_target in patches_jump_taken:
             try:
-                new_jmp_block, new_default_block = duplicate_block(check_blk, verify=False)
+                new_jmp_block, new_default_block = duplicate_block(
+                    check_blk, verify=False
+                )
                 make_2way_block_goto(new_jmp_block, jump_target, verify=False)
-                update_blk_successor(pred_blk, check_blk.serial, new_jmp_block.serial, verify=False)
+                update_blk_successor(
+                    pred_blk, check_blk.serial, new_jmp_block.serial, verify=False
+                )
                 nb_changes += 1
                 unflat_logger.debug(
                     "Applied jump-taken patch: pred %d -> new block %d -> %d",
-                    pred_blk.serial, new_jmp_block.serial, jump_target
+                    pred_blk.serial,
+                    new_jmp_block.serial,
+                    jump_target,
                 )
             except Exception as e:
                 unflat_logger.warning(
                     "Failed to apply jump-taken patch for pred %d: %s",
-                    pred_blk.serial, e
+                    pred_blk.serial,
+                    e,
                 )
 
         return nb_changes

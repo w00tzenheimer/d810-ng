@@ -84,6 +84,7 @@ from d810.optimizers.microcode.flow.flattening.loop_prover import (
     SingleIterationLoopTracker,
     prove_single_iteration,
 )
+from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRulePriority
 
@@ -2588,7 +2589,6 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
         # Apply all deferred CFG modifications after analysis is complete
         if deferred_modifier.has_modifications():
-            from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
             num_redirected = len(deferred_modifier.modifications)
             total_exit_blocks = sum(
                 len(d.dispatcher_exit_blocks) for d in self.dispatcher_list

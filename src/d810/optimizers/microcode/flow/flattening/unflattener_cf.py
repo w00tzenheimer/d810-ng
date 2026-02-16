@@ -16,6 +16,7 @@ from d810.core.logging import getLogger
 from d810.hexrays.cfg_utils import safe_verify
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.hexrays.hexrays_helpers import MicrocodeHelper, MicroInstruction, MicroOperand
+from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
@@ -2016,11 +2017,11 @@ class cf_unflattener_t:
                         # are now spoiled. Mark it dirty.
                         non_jcc.mark_lists_dirty()
 
-        from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
         num_redirected = len(dgm.edges)
         total_case_blocks = len(self.cfi.key_to_block)
         if not should_apply_cfg_modifications(num_redirected, total_case_blocks, "cf"):
             dgm.clear()
+            changed = 0
         else:
             changed += dgm.apply(mba, self.cfi)
         # After we've processed every block, apply the deferred modifications to

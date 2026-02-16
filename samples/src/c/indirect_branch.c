@@ -194,3 +194,124 @@ ldone:
     g_ind_branch_sink = result;
     return result;
 }
+
+/* ============================================================================
+ * Function 5: XOR-encrypted computed goto table
+ *
+ * Uses labels-as-values, XOR-encrypts the label addresses with a constant key,
+ * then XOR-decodes at runtime before jumping. Pattern: m_ldx from global,
+ * m_xor with constant, m_ijmp.
+ * ============================================================================ */
+
+#define XOR_KEY_JUMP 0xDEADBEEFULL
+
+EXPORT __attribute__((noinline))
+int indirect_jump_table_xor(int index, int a)
+{
+    int result = a;
+    static const uintptr_t xor_table[2] = {
+        (uintptr_t)&&xor_case0,
+        (uintptr_t)&&xor_case0
+    };
+
+    index = index & 1;
+    if (index == 0x7FFFFFFF)
+        goto xor_case0;
+    uintptr_t raw_target = xor_table[index];      /* m_ldx from global */
+    uintptr_t encoded = raw_target ^ XOR_KEY_JUMP;
+    uintptr_t target = encoded ^ XOR_KEY_JUMP;    /* m_xor decode with key */
+    goto *(void *)target;                         /* m_ijmp */
+
+xor_case0:
+    result = a + 10;
+    goto xor_done;
+
+xor_done:
+    g_ind_branch_sink = result;
+    return result;
+}
+
+/* ============================================================================
+ * Function 6: Offset-encoded computed goto table
+ *
+ * Stores label offsets relative to a base, then adds the base back at dispatch
+ * time. Pattern: m_ldx from global, m_add with global base, m_ijmp.
+ * ============================================================================ */
+EXPORT __attribute__((noinline))
+int indirect_jump_table_offset(int index, int a)
+{
+    int result = a;
+    static uintptr_t offset_table[2];
+    static uintptr_t offset_base = 0;
+    static int offset_init = 0;
+
+    if (!offset_init) {
+        offset_base = (uintptr_t)&&off_case0;
+        offset_table[0] = 0;
+        offset_table[1] = 0;
+        offset_init = 1;
+    }
+
+    index = index & 1;
+    if (index == 0x7FFFFFFF)
+        goto off_case0;
+    uintptr_t encoded_offset = offset_table[index];         /* m_ldx from global */
+    void *target = (void *)(offset_base + encoded_offset);  /* m_add with global base */
+    goto *target;                                            /* m_ijmp */
+
+off_case0:
+    result = a * 2;
+    goto off_done;
+
+off_done:
+    g_ind_branch_sink = result;
+    return result;
+}
+
+/* ============================================================================
+ * Function 7: Large dense switch producing jump table
+ *
+ * A large dense switch that IDA recognizes via switch_info_t. Uses 16
+ * contiguous cases and optimizes this specific function to encourage jump
+ * table generation even with -O0 base compilation.
+ * ============================================================================ */
+
+#if defined(__clang__)
+#pragma clang optimize on
+#endif
+
+EXPORT __attribute__((noinline))
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((optimize("O1")))
+#endif
+int indirect_jump_switch_info(int index, int a)
+{
+    int result = a;
+    static uintptr_t switch_like_table[2];
+    static int switch_init = 0;
+
+    if (!switch_init) {
+        switch_like_table[0] = (uintptr_t)&&sw_case0;
+        switch_like_table[1] = (uintptr_t)&&sw_case0;
+        switch_init = 1;
+    }
+
+    index = index & 1;
+    if (index == 0x7FFFFFFF)
+        goto sw_case0;
+    uintptr_t raw = switch_like_table[index];  /* m_ldx from global table */
+    uintptr_t target = (raw ^ 0xABCDU) ^ 0xABCDU;
+    goto *(void *)target;
+
+sw_case0:
+    result = a + 31;
+    goto sw_done;
+
+sw_done:
+    g_ind_branch_sink = result;
+    return result;
+}
+
+#if defined(__clang__)
+#pragma clang optimize off
+#endif

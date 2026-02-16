@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import os
 import re
-from d810.core import typing
 from contextlib import contextmanager
 
+from d810.core import typing
 from d810.core.config import DEFAULT_IDA_USER_DIR
 from d810.core.logging import getLogger
 from d810.ui.actions.base import D810ActionHandler
@@ -18,6 +18,7 @@ from d810.ui.actions.export_to_c_logic import (
     format_c_output,
     get_forward_declaration_names,
     get_imported_function_names,
+    make_compilable,
     suggest_filename,
 )
 from d810.ui.actions_logic import get_deobfuscation_stats
@@ -47,6 +48,7 @@ try:
         QLineEdit,
         QPushButton,
         QSpinBox,
+        QTextEdit,
         QtWidgets,
         QVBoxLayout,
     )
@@ -58,6 +60,47 @@ except ImportError:
 _GLOBAL_NAME_RE = re.compile(
     r"\b((?:byte|word|dword|qword|xmmword|ymmword|zmmword|off|unk|asc|flt|dbl)_[0-9A-Fa-f]+)\b"
 )
+_IDENT_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\b")
+
+_GLOBAL_IDENT_EXCLUDE = {
+    # language keywords / common pseudo helpers
+    "if",
+    "else",
+    "for",
+    "while",
+    "switch",
+    "case",
+    "return",
+    "goto",
+    "sizeof",
+    "do",
+    # calling-convention / macros
+    "__fastcall",
+    "__stdcall",
+    "__cdecl",
+    "JUMPOUT",
+    "EXPORT",
+    "D810_NOINLINE",
+    # helper macros/typedef aliases from polyfill/ida types
+    "LOBYTE",
+    "HIBYTE",
+    "LOWORD",
+    "HIWORD",
+    "BYTE1",
+    "BYTE2",
+    "BYTE3",
+    "BYTE4",
+    "BYTE5",
+    "BYTE6",
+    "BYTE7",
+    "WORD1",
+    "WORD2",
+    "WORD3",
+    "DWORD1",
+    "DWORD2",
+    "DWORD3",
+    "QWORD1",
+}
 
 _GLOBAL_TYPE_BY_PREFIX = {
     "byte": "unsigned __int8",
@@ -234,6 +277,8 @@ def _decompile_function(
     ida_funcs_mod: typing.Any,
     ida_lines_mod: typing.Any,
     idaapi_mod: typing.Any | None = None,
+    *,
+    clear_decomp_cache: bool = False,
 ) -> tuple[str, list[str]] | None:
     """Decompile a function and return its pseudocode.
 
@@ -250,6 +295,11 @@ def _decompile_function(
             return None
 
         with _temporary_hexrays_config(idaapi_mod, "COLLAPSE_LVARS = NO"):
+            if clear_decomp_cache and hasattr(ida_hexrays_mod, "mark_cfunc_dirty"):
+                try:
+                    ida_hexrays_mod.mark_cfunc_dirty(func_ea, False)
+                except Exception:
+                    pass
             # Decompile the function
             cfunc = ida_hexrays_mod.decompile(func_ea)
             if cfunc is None:
@@ -279,6 +329,48 @@ def _extract_global_symbol_names(pseudocode_lines: list[str]) -> list[str]:
     return sorted(set(_GLOBAL_NAME_RE.findall(code)))
 
 
+def _extract_global_symbol_names_from_ida(
+    pseudocode_lines: list[str],
+    ida_name_mod: typing.Any,
+    idaapi_mod: typing.Any,
+    ida_funcs_mod: typing.Any,
+    exclude_names: set[str] | None = None,
+) -> list[str]:
+    """Extract referenced global symbols by resolving identifiers through IDA."""
+    badaddr = idaapi_mod.BADADDR if idaapi_mod is not None else 0xFFFFFFFFFFFFFFFF
+    names: set[str] = set()
+    excluded = exclude_names or set()
+    code = "\n".join(pseudocode_lines)
+
+    for ident in _IDENT_RE.findall(code):
+        if ident in _GLOBAL_IDENT_EXCLUDE:
+            continue
+        if ident in excluded:
+            continue
+        # Preserve old strict IDA auto-name extraction.
+        if _GLOBAL_NAME_RE.match(ident):
+            names.add(ident)
+            continue
+        # Skip function-ish auto names (handled by forward decl logic).
+        if ident.startswith(("sub_", "loc_", "nullsub_", "j_")):
+            continue
+
+        ea = ida_name_mod.get_name_ea(badaddr, ident)
+        if ea == badaddr:
+            continue
+
+        # Only keep data/global symbols; skip functions.
+        try:
+            if ida_funcs_mod is not None and ida_funcs_mod.get_func(ea) is not None:
+                continue
+        except Exception:
+            pass
+
+        names.add(ident)
+
+    return sorted(names)
+
+
 def _guess_global_type(symbol_name: str) -> str:
     """Guess C type from an IDA-style symbol name."""
     prefix = symbol_name.split("_", 1)[0].lower()
@@ -289,6 +381,7 @@ def _format_initializer(
     symbol_name: str,
     ea: int,
     ida_bytes_mod: typing.Any,
+    c_type: str | None = None,
 ) -> str | None:
     """Read current IDB value and return an initializer literal when possible."""
     prefix = symbol_name.split("_", 1)[0].lower()
@@ -304,13 +397,35 @@ def _format_initializer(
     if prefix in {"xmmword", "ymmword", "zmmword"}:
         raw = ida_bytes_mod.get_bytes(ea, 16)
         if raw is not None and len(raw) == 16:
-            val = int.from_bytes(raw, "little")
-            return f"0x{val:032X}LL"
-        val = ida_bytes_mod.get_qword(ea)
-        return f"0x{val:016X}uLL"
+            # D810_XMMWORD expects 32 hex chars, MSB first (byte 15..0)
+            hex32 = "".join(f"{b:02X}" for b in reversed(raw))
+            return f'D810_XMMWORD("{hex32}")'
+        return None
     if prefix in {"qword", "off", "unk"}:
         val = ida_bytes_mod.get_qword(ea)
         return f"0x{val:016X}uLL"
+    # Typed fallback for non-prefixed symbols (e.g. hThread, _security_cookie).
+    cts = (c_type or "").strip().replace("const ", "")
+    if cts in {"HANDLE", "LPVOID", "LPCVOID", "PVOID", "uintptr_t"}:
+        val = ida_bytes_mod.get_qword(ea)
+        if cts in {"HANDLE", "LPVOID", "LPCVOID", "PVOID"}:
+            return f"({cts})0x{val:016X}uLL"
+        return f"0x{val:016X}uLL"
+
+    # Conservative scalar fallback by size.
+    try:
+        item_size = int(ida_bytes_mod.get_item_size(ea))
+    except Exception:
+        item_size = 0
+
+    if item_size == 1:
+        return f"0x{ida_bytes_mod.get_byte(ea):02X}u"
+    if item_size == 2:
+        return f"0x{ida_bytes_mod.get_word(ea):04X}u"
+    if item_size == 4:
+        return f"0x{ida_bytes_mod.get_dword(ea):08X}u"
+    if item_size == 8:
+        return f"0x{ida_bytes_mod.get_qword(ea):016X}uLL"
     return None
 
 
@@ -445,6 +560,9 @@ def _get_imported_function_declarations_from_ida(
         if not type_str or not type_str.strip():
             continue
         s = type_str.strip()
+        # idaapi get_type returns function-pointer type without name; insert name between * and )
+        if "*)(" in s:
+            s = s.replace("*)(", f"*{name})(", 1)
         if not s.startswith("extern "):
             s = "extern " + s
         if not s.endswith(";"):
@@ -473,9 +591,17 @@ def _build_global_declarations_from_ida(
             declarations.append(f"extern volatile {c_type} {name};")
             continue
 
-        # xmmword/ymmword/zmmword are always __int128 regardless of IDA type
         prefix = name.split("_", 1)[0].lower()
-        if prefix not in {"xmmword", "ymmword", "zmmword"}:
+        if prefix in {"xmmword", "ymmword", "zmmword"}:
+            initializer = _format_initializer(name, ea, ida_bytes_mod, c_type="_OWORD")
+            if initializer is not None:
+                declarations.append(
+                    f"static volatile const _OWORD {name} = {initializer};"
+                )
+            else:
+                declarations.append(f"extern volatile _OWORD {name};")
+            continue
+        else:
             ida_type = _get_type_str(
                 ea,
                 idaapi_mod,
@@ -485,7 +611,7 @@ def _build_global_declarations_from_ida(
             if ida_type and ida_type.strip():
                 c_type = ida_type.strip()
 
-        initializer = _format_initializer(name, ea, ida_bytes_mod)
+        initializer = _format_initializer(name, ea, ida_bytes_mod, c_type=c_type)
         if initializer is None:
             declarations.append(f"extern volatile {c_type} {name};")
         else:
@@ -550,6 +676,20 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
         layout.addLayout(QHBoxLayout())  # spacing
         layout.addWidget(self.export_globals_check)
 
+        # Cache behavior checkbox
+        self.clear_decomp_cache_check = QCheckBox("Clear decompilation cache")
+        self.clear_decomp_cache_check.setChecked(False)
+        layout.addWidget(self.clear_decomp_cache_check)
+
+        # Optional header metadata block
+        layout.addWidget(QLabel("Header metadata (optional):"))
+        self.header_metadata_edit = QTextEdit()
+        self.header_metadata_edit.setPlaceholderText(
+            "Add notes/comments to include at the top of the exported file."
+        )
+        self.header_metadata_edit.setFixedHeight(90)
+        layout.addWidget(self.header_metadata_edit)
+
         # Output file selection
         file_layout = QHBoxLayout()
         file_layout.addWidget(QLabel("Output file:"))
@@ -593,12 +733,15 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
         """Get the configured export settings.
 
         Returns:
-            Dictionary with sample_compatible, recursion_depth, export_globals, output_path
+            Dictionary with sample_compatible, recursion_depth, export_globals,
+            clear_decomp_cache, header_metadata_text, output_path
         """
         return {
             "sample_compatible": self.sample_radio.isChecked(),
             "recursion_depth": self.recursion_spin.value(),
             "export_globals": self.export_globals_check.isChecked(),
+            "clear_decomp_cache": self.clear_decomp_cache_check.isChecked(),
+            "header_metadata_text": self.header_metadata_edit.toPlainText().strip(),
             "output_path": self.file_edit.text(),
         }
 
@@ -689,6 +832,8 @@ class ExportFunctionToC(D810ActionHandler):
                 "sample_compatible": True,
                 "recursion_depth": 0,
                 "export_globals": True,
+                "clear_decomp_cache": False,
+                "header_metadata_text": "",
                 "output_path": save_path,
             }
 
@@ -700,7 +845,9 @@ class ExportFunctionToC(D810ActionHandler):
                 logger.info("Invoked IDA Produce C file dialog")
                 return 1
             logger.warning("Failed to invoke hx:CreateCFile")
-            ida_kernwin_mod.warning("Could not open Produce C file dialog. Ensure Hex-Rays decompiler is loaded.")
+            ida_kernwin_mod.warning(
+                "Could not open Produce C file dialog. Ensure Hex-Rays decompiler is loaded."
+            )
             return 0
 
         output_path = settings.get("output_path")
@@ -721,6 +868,7 @@ class ExportFunctionToC(D810ActionHandler):
             ida_funcs_mod,
             ida_lines_mod,
             idaapi_mod,
+            clear_decomp_cache=settings.get("clear_decomp_cache", False),
         )
         if result is None:
             ida_kernwin_mod.warning("Failed to decompile function")
@@ -739,6 +887,7 @@ class ExportFunctionToC(D810ActionHandler):
         # Import sample-compatible formatter from logic layer
         try:
             from d810.ui.actions.export_to_c_logic import format_sample_compatible_c
+            imported_names = set(get_imported_function_names(pseudocode_lines))
 
             # Collect global declarations if requested
             global_decls = None
@@ -748,7 +897,13 @@ class ExportFunctionToC(D810ActionHandler):
                 and ida_bytes_mod is not None
                 and idaapi_mod is not None
             ):
-                global_symbols = _extract_global_symbol_names(pseudocode_lines)
+                global_symbols = _extract_global_symbol_names_from_ida(
+                    pseudocode_lines,
+                    ida_name_mod=ida_name_mod,
+                    idaapi_mod=idaapi_mod,
+                    ida_funcs_mod=ida_funcs_mod,
+                    exclude_names=imported_names,
+                )
                 global_decls = _build_global_declarations_from_ida(
                     symbol_names=global_symbols,
                     ida_name_mod=ida_name_mod,
@@ -786,6 +941,7 @@ class ExportFunctionToC(D810ActionHandler):
                 func_ea=func_ea,
                 pseudocode_lines=pseudocode_lines,
                 metadata=metadata,
+                user_header_text=settings.get("header_metadata_text", ""),
                 global_declarations=global_decls,
                 forward_declarations=forward_decls,
                 imported_function_declarations=imported_decls,
@@ -799,6 +955,7 @@ class ExportFunctionToC(D810ActionHandler):
                 func_ea=func_ea,
                 pseudocode_lines=pseudocode_lines,
                 metadata=metadata,
+                user_header_text=settings.get("header_metadata_text", ""),
             )
 
         # TODO: Handle recursion_depth > 0 (recursively decompile called functions)
@@ -808,12 +965,14 @@ class ExportFunctionToC(D810ActionHandler):
                 "Recursion depth > 0 not yet implemented, exporting only current function"
             )
 
-        # Post-process with clang to apply fixits and improve compilability
+        # Post-process with clang to apply fixits and improve compilability.
+        # libclang is required for supported IDA versions; fail hard if unavailable.
         try:
-            from d810.ui.actions.export_to_c_clang import make_compilable
             c_source = make_compilable(c_source, idaapi_mod=idaapi_mod)
         except Exception as exc:
-            logger.debug("Clang post-process skipped: %s", exc)
+            logger.error("Clang post-process failed: %s", exc)
+            ida_kernwin_mod.warning(f"Clang post-process failed:\n{exc}")
+            return 0
 
         # Save to file
         try:

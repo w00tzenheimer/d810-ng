@@ -278,6 +278,42 @@ class JaeRule1(JumpOptimizationRule):
         return True
 
 
+class JnzRuleModIdentity(JumpOptimizationRule):
+    """Opaque predicate for x*(x+1)%2 == 0 (always true).
+
+    This mathematical identity holds because either x or (x+1) is even,
+    so their product is always divisible by 2. The modulo 2 always yields 0.
+    Pattern currently matches the signed-mod variant (smod).
+    The umod form can be added as a sibling rule if it appears in samples.
+    """
+    ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jnz, ida_hexrays.m_jz]
+    # Pattern: smod(mul(X, add(X, 1)), 2) == 0
+    # AstChoice was removed from the AST API; this keeps the opaque identity
+    # optimization active without relying on a non-existent node type.
+    LEFT_PATTERN = AstNode(
+        ida_hexrays.m_smod,
+        AstNode(
+            ida_hexrays.m_mul,
+            AstLeaf("x_0"),
+            AstNode(ida_hexrays.m_add, AstLeaf("x_0"), AstConstant("1", 1))
+        ),
+        AstConstant("2", 2)
+    )
+    RIGHT_PATTERN = AstConstant("0", 0)
+    REPLACEMENT_OPCODE = ida_hexrays.m_goto
+
+    def check_candidate(self, opcode, left_candidate, right_candidate):
+        # x*(x+1) % 2 == 0 is ALWAYS true (left operand always equals right operand 0).
+        # Condition: left == right is TRUE
+        # - m_jnz (jump if NOT equal): condition FALSE → jump NOT taken → fallthrough (direct_block_serial)
+        # - m_jz (jump if equal): condition TRUE → jump taken → go to jump_original_block_serial
+        if opcode == ida_hexrays.m_jnz:
+            self.jump_replacement_block_serial = self.direct_block_serial
+        else:
+            self.jump_replacement_block_serial = self.jump_original_block_serial
+        return True
+
+
 class JmpRuleZ3Const(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jcnd] + list(
         dict.fromkeys(op for pair in COND_JUMP_PAIR_ENUM for op in pair)
@@ -311,9 +347,6 @@ class JmpRuleZ3Const(JumpOptimizationRule):
         return super().check_pattern_and_replace(blk, instruction, left_ast, right_ast)
 
     def check_candidate(self, opcode, left_candidate, right_candidate):
-        # print(mop_to_ast(left_candidate.mop))
-        # print(repr(left_candidate.mop))
-        # print(dir(left_candidate.mop))
         if opcode in (ida_hexrays.m_jnz, ida_hexrays.m_jz) and z3_check_mop_equality(
             left_candidate.mop, right_candidate.mop
         ):

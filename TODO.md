@@ -38,7 +38,7 @@ This file tracks tactical follow-ups and mirrors the higher-level roadmap in `RE
 
 ### convert_jtbl_to_goto helper (v0.3.4)
 
-**Added.** Ported copycat's `convert_jtbl_to_goto()` (deflatten.cpp:2063-2126) as a reusable helper in `cfg_utils.py`. Safely converts an `m_jtbl` tail to `m_goto` by collecting old case targets from `mcases_t.targets`, rewiring succset/predset using codebase conventions (`_del`/`push_back`), and setting `BLT_1WAY`. Includes `_serial_in_predset()` helper for duplicate-safe predset insertion.
+**Added.** Ported the copycat project's `convert_jtbl_to_goto()` (deflatten.cpp:2063-2126) as a reusable helper in `cfg_utils.py`. Safely converts an `m_jtbl` tail to `m_goto` by collecting old case targets from `mcases_t.targets`, rewiring succset/predset using codebase conventions (`_del`/`push_back`), and setting `BLT_1WAY`. Includes `_serial_in_predset()` helper for duplicate-safe predset insertion.
 
 ### hardened_cond_chain_simple / sub_7FFC1EB47830 (v0.3.4)
 

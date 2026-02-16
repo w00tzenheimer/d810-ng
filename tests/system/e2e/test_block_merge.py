@@ -130,24 +130,24 @@ class TestBlockMergerAttributes:
 
     @pytest.mark.ida_required
     def test_name(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.block_merge import BlockMerger
+        from d810.optimizers.microcode.flow.flattening.block_merge import BlockMerger
         # NAME is not overridden; .name property returns __class__.__name__
         assert BlockMerger().name == "BlockMerger"
 
     @pytest.mark.ida_required
     def test_description_mentions_merge_or_split(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.block_merge import BlockMerger
+        from d810.optimizers.microcode.flow.flattening.block_merge import BlockMerger
         desc = BlockMerger.DESCRIPTION.lower()
         assert "split" in desc or "merge" in desc
 
     @pytest.mark.ida_required
     def test_uses_deferred_cfg_false(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.block_merge import BlockMerger
+        from d810.optimizers.microcode.flow.flattening.block_merge import BlockMerger
         assert BlockMerger.USES_DEFERRED_CFG is False
 
     @pytest.mark.ida_required
     def test_safe_maturities_contains_real_constants(self, libobfuscated_setup):
         import ida_hexrays
-        from d810.optimizers.microcode.flow.block_merge import BlockMerger
+        from d810.optimizers.microcode.flow.flattening.block_merge import BlockMerger
         assert ida_hexrays.MMAT_CALLS in BlockMerger.SAFE_MATURITIES
         assert ida_hexrays.MMAT_GLBOPT1 in BlockMerger.SAFE_MATURITIES

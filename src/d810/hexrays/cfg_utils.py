@@ -846,7 +846,7 @@ def convert_jtbl_to_goto(
 ) -> bool:
     """Convert an m_jtbl tail instruction to a direct m_goto.
 
-    Ported from copycat deflatten.cpp:2063-2126. Safely converts a
+    Ported from the copycat project deflatten.cpp:2063-2126. Safely converts a
     switch-dispatch block to a single-target goto by:
     1. Collecting old case targets for predset cleanup
     2. Changing opcode m_jtbl -> m_goto

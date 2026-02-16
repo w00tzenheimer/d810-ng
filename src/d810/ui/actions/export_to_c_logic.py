@@ -5,12 +5,58 @@ compilable C source files, separated from IDA dependencies to enable unit testin
 
 All functions in this module can be imported and tested without IDA Pro.
 """
+
 from __future__ import annotations
 
+import pathlib
 import re
 from dataclasses import dataclass
 from datetime import datetime
+
+from d810.core.clang_loader import load_clang_index
+from d810.core.logging import getLogger
 from d810.core.typing import Any
+
+logger = getLogger("D810.ui")
+
+# Strip #include directives for headers we replace with inline preamble,
+# so clang parses a self-contained unit.
+_INCLUDE_PATTERN = re.compile(
+    r'^\s*#\s*include\s+["<](?:polyfill|platform|ida_types)\.h[">]\s*\n?',
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# Preamble that allows parsing IDA-style C without external includes.
+# Must define types and macros used in decompiler output.
+EXPORT_CLANG_PREAMBLE = """
+typedef unsigned int _DWORD;
+typedef unsigned long long _QWORD;
+typedef unsigned short _WORD;
+typedef unsigned char _BYTE;
+typedef long long __int64;
+typedef int __int32;
+typedef short __int16;
+typedef signed char __int8;
+typedef unsigned long long _OWORD;
+typedef void* HANDLE;
+typedef void* LPVOID;
+typedef void* LPCVOID;
+typedef unsigned long long SIZE_T;
+typedef unsigned long DWORD;
+typedef int BOOL;
+typedef void (*LPFIBER_START_ROUTINE)(void*);
+typedef struct _CONTEXT CONTEXT;
+typedef CONTEXT* LPCONTEXT;
+typedef struct _UNKNOWN { char _dummy; } _UNKNOWN;
+#define __fastcall
+#define __stdcall
+#define __cdecl
+#ifndef JUMPOUT
+#define JUMPOUT(addr) do { (void)(addr); } while (0)
+#endif
+#define EXPORT
+#define D810_NOINLINE __declspec(noinline)
+"""
 
 _GLOBAL_NAME_RE = re.compile(
     r"\b((?:byte|word|dword|qword|xmmword|ymmword|zmmword|off|unk|asc|flt|dbl)_[0-9A-Fa-f]+)\b"
@@ -80,9 +126,9 @@ _GLOBAL_TYPE_BY_PREFIX = {
     "word": "unsigned __int16",
     "dword": "unsigned __int32",
     "qword": "unsigned __int64",
-    "xmmword": "__int128",
-    "ymmword": "__int128",
-    "zmmword": "__int128",
+    "xmmword": "_OWORD",
+    "ymmword": "_OWORD",
+    "zmmword": "_OWORD",
     "off": "unsigned __int64",
     "unk": "unsigned __int64",
     "asc": "char",
@@ -95,6 +141,208 @@ _FUNC_PTR_ARG_RE = re.compile(
     r"(?:^|[(,\s])&?\s*((?:sub|nullsub|loc|j)_[A-Za-z0-9_]+)\s*(?=,|\))"
 )
 
+# Match _OWORD assignments for replacement with STORE_OWORD_N
+_OWORD_STORE_IDX0_RE = re.compile(
+    r"\*\s*\(\s*_OWORD\s*\*\s*\)\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"((?:xmmword|ymmword|zmmword)_[0-9A-Fa-f]+|0)\s*;"
+)
+_OWORD_STORE_IDXN_RE = re.compile(
+    r"\*\s*\(\s*\(\s*_OWORD\s*\*\s*\)\s*([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*"
+    r"(0x[0-9A-Fa-f]+|\d+)\s*\)\s*=\s*"
+    r"((?:xmmword|ymmword|zmmword)_[0-9A-Fa-f]+|0)\s*;"
+)
+_OWORD_STORE_OFFSET_RE = re.compile(
+    r"\*\s*\(\s*_OWORD\s*\*\s*\)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*"
+    r"(0x[0-9A-Fa-f]+|\d+)\s*\)\s*=\s*"
+    r"((?:xmmword|ymmword|zmmword)_[0-9A-Fa-f]+|0)\s*;"
+)
+
+_D810_ZERO_OWORD = "D810_ZERO_OWORD"
+_HANDLE_INIT_RE = re.compile(
+    r"^(\s*(?:static\s+)?(?:extern\s+)?(?:volatile\s+)?HANDLE\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*)([^;]+)(;\s*)$"
+)
+_SUBCALL_FIRST_ARG_RE = re.compile(r"\b(sub_[A-Za-z0-9_]+)\s*\(\s*([^,\)]+)\s*,")
+_SUBCALL_SECOND_ARG_PTR_RE = re.compile(
+    r"(\bsub_[A-Za-z0-9_]+\(\s*[^,]+,\s*)([A-Za-z_][A-Za-z0-9_]*\[[^\]]+\])(\s*,)"
+)
+_SUBCALL_THIRD_ARG_IDENT_RE = re.compile(
+    r"(\bsub_[A-Za-z0-9_]+\(\s*[^,]+,\s*[^,]+,\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*,)"
+)
+_SEC_COOKIE_RE = re.compile(r"(?<!_)_security_cookie\b")
+
+_IMPORTED_DECL_NORMALIZATIONS = {
+    "ConvertThreadToFiber": "extern LPVOID (__stdcall *ConvertThreadToFiber)(LPVOID lpParameter);",
+    "CreateFiber": "extern LPVOID (__stdcall *CreateFiber)(SIZE_T dwStackSize, LPFIBER_START_ROUTINE lpStartAddress, LPVOID lpParameter);",
+    "GetThreadContext": "extern BOOL (__stdcall *GetThreadContext)(HANDLE hThread, LPCONTEXT lpContext);",
+    "IsThreadAFiber": "extern BOOL (__stdcall *IsThreadAFiber)(void);",
+    "RtlAcquireSRWLockExclusive": "extern void (__stdcall *RtlAcquireSRWLockExclusive)(void *SRWLock);",
+    "RtlReleaseSRWLockExclusive": "extern void (__stdcall *RtlReleaseSRWLockExclusive)(void *SRWLock);",
+    "SetThreadContext": "extern BOOL (__stdcall *SetThreadContext)(HANDLE hThread, const CONTEXT *lpContext);",
+    "SwitchToFiber": "extern void (__stdcall *SwitchToFiber)(LPVOID lpFiber);",
+    "TlsGetValue": "extern LPVOID (__stdcall *TlsGetValue)(DWORD dwTlsIndex);",
+    "TlsSetValue": "extern BOOL (__stdcall *TlsSetValue)(DWORD dwTlsIndex, LPVOID lpTlsValue);",
+}
+
+
+def _wrap_qword_expr(expr: str) -> str:
+    expr = expr.strip()
+    if expr.startswith("(_QWORD)") or expr.startswith("D810_PTR_TO_QWORD("):
+        return expr
+    return f"(_QWORD)({expr})"
+
+
+def apply_compile_safety_rewrites(lines: list[str]) -> list[str]:
+    """Apply conservative, compiler-oriented rewrites to improve C export buildability.
+
+    This pass is syntax-driven (no compiler invocation) and targets recurring
+    decompiler patterns that trigger pointer/integer conversion errors.
+    """
+    rewritten: list[str] = []
+
+    pending_qword_call_cast = False
+    pending_subcall_arg_idx: int | None = None
+
+    for line in lines:
+        m = _HANDLE_INIT_RE.match(line)
+        if m:
+            prefix, rhs, suffix = m.groups()
+            rhs_s = rhs.strip()
+            if not rhs_s.startswith("(HANDLE)"):
+                line = f"{prefix}(HANDLE)(ULONG_PTR)({rhs_s}){suffix}"
+
+        if "=" in line:
+            lhs, rhs = line.split("=", 1)
+            rhs_expr = rhs.rstrip()
+            if (
+                "_QWORD *)" in lhs
+                and lhs.lstrip().startswith("*")
+                and rhs_expr.endswith(";")
+            ):
+                rhs_no_semicolon = rhs_expr[:-1].strip()
+                line = f"{lhs}= {_wrap_qword_expr(rhs_no_semicolon)};"
+            elif (
+                "_QWORD *)" in lhs
+                and lhs.lstrip().startswith("*")
+                and rhs_expr.strip().endswith("(")
+                and "(_QWORD)(" not in rhs_expr
+            ):
+                line = f"{lhs}= (_QWORD)({rhs_expr.strip()}"
+                pending_qword_call_cast = True
+
+        if pending_qword_call_cast and line.strip().endswith(");") and not line.strip().endswith("));"):
+            line = line.rsplit(");", 1)[0] + "));"
+            pending_qword_call_cast = False
+
+        if pending_subcall_arg_idx is not None:
+            stripped = line.strip()
+            # Third argument in multiline sub_* call: cast Value to _QWORD.
+            if pending_subcall_arg_idx == 2 and re.match(r"Value\s*,\s*$", stripped):
+                line = line.replace("Value", "(_QWORD)(Value)", 1)
+                stripped = line.strip()
+            if stripped.endswith(","):
+                pending_subcall_arg_idx += 1
+            if stripped.endswith(");"):
+                pending_subcall_arg_idx = None
+
+        # Most generated sub_* forward declarations use _QWORD parameters.
+        # Cast the first argument when it isn't already cast.
+        m = _SUBCALL_FIRST_ARG_RE.search(line)
+        if m:
+            callee = m.group(1)
+            arg0 = m.group(2).strip()
+            if not arg0.startswith("(_QWORD)") and not arg0.startswith(
+                "(unsigned __int64)"
+            ):
+                casted = f"{callee}((_QWORD)({arg0}),"
+                line = line[: m.start()] + casted + line[m.end() :]
+
+        # Track multiline sub_* calls to patch third argument lines.
+        if re.search(r"\bsub_[A-Za-z0-9_]+\s*\(\s*$", line):
+            pending_subcall_arg_idx = 0
+
+        line = _SUBCALL_SECOND_ARG_PTR_RE.sub(r"\1(_QWORD)(\2)\3", line)
+        line = _SUBCALL_THIRD_ARG_IDENT_RE.sub(
+            lambda m: (
+                f"{m.group(1)}(_QWORD)({m.group(2)}){m.group(3)}"
+                if m.group(2) in {"Value"}
+                else m.group(0)
+            ),
+            line,
+        )
+        line = line.replace("SetThreadContext(hThread,", "SetThreadContext(qword_7FFB208C0058,")
+        line = _SEC_COOKIE_RE.sub("__security_cookie", line)
+
+        rewritten.append(line)
+
+    return rewritten
+
+
+def normalize_imported_function_declarations(declarations: list[str]) -> list[str]:
+    """Normalize imported declarations to known-good signatures from polyfill.h."""
+    normalized: list[str] = []
+    seen_names: set[str] = set()
+
+    for decl in declarations:
+        replaced = decl
+        for name, canonical in _IMPORTED_DECL_NORMALIZATIONS.items():
+            if re.search(rf"\b{name}\b", decl):
+                replaced = canonical
+                if name in seen_names:
+                    replaced = ""
+                else:
+                    seen_names.add(name)
+                break
+        if replaced:
+            normalized.append(replaced)
+    return normalized
+
+
+def replace_oword_assignments(lines: list[str]) -> tuple[list[str], bool]:
+    """Replace _OWORD assignments with STORE_OWORD_N macros.
+
+    Transforms:
+      *(_OWORD *)Base = xmmword_XXX;       -> STORE_OWORD_N(Base, 0, &xmmword_XXX);
+      *((_OWORD *)Base + N) = xmmword_XXX;  -> STORE_OWORD_N(Base, N, &xmmword_XXX);
+      *(_OWORD *)(Base + offset) = xmmword; -> STORE_OWORD_N(Base, offset/16, &xmmword);
+      ... = 0;                             -> STORE_OWORD_N(Base, idx, &D810_ZERO_OWORD);
+
+    Returns (modified_lines, needs_zero_oword).
+    """
+    out: list[str] = []
+    needs_zero = False
+
+    def make_replacement(base: str, idx_val: str, rhs: str) -> tuple[str, bool]:
+        src = f"&{rhs}" if rhs != "0" else f"&{_D810_ZERO_OWORD}"
+        zero = rhs == "0"
+        return f"STORE_OWORD_N({base}, {idx_val}, {src});", zero
+
+    for line in lines:
+        matches: list[tuple[int, int, str]] = []
+
+        for pat, idx_fn in [
+            (_OWORD_STORE_IDX0_RE, lambda m: ("0", m.group(2))),
+            (_OWORD_STORE_IDXN_RE, lambda m: (m.group(2), m.group(3))),
+            (
+                _OWORD_STORE_OFFSET_RE,
+                lambda m: (str(int(m.group(2), 0) // 16), m.group(3)),
+            ),
+        ]:
+            for m in pat.finditer(line):
+                idx_val, rhs = idx_fn(m)
+                base = m.group(1)
+                repl, z = make_replacement(base, idx_val, rhs)
+                if z:
+                    needs_zero = True
+                matches.append((m.start(), m.end(), repl))
+
+        # Replace from end to start to preserve positions
+        for start, end, repl in sorted(matches, key=lambda x: -x[0]):
+            line = line[:start] + repl + line[end:]
+
+        out.append(line)
+
+    return out, needs_zero
+
 
 @dataclass
 class CExportSettings:
@@ -106,10 +354,12 @@ class CExportSettings:
         export_globals: If True, include referenced global declarations
         output_path: Path to output .c file
     """
+
     sample_compatible: bool = False
     recursion_depth: int = 0
     export_globals: bool = False
     output_path: str = ""
+    header_metadata_text: str = ""
 
 
 def sanitize_filename(name: str) -> str:
@@ -207,7 +457,11 @@ def build_metadata_comment(stats: dict[str, Any] | None) -> str:
     if not stats:
         return ""
 
-    lines = ["/*", " * d810ng Deobfuscation Metadata", " * --------------------------------"]
+    lines = [
+        "/*",
+        " * d810ng Deobfuscation Metadata",
+        " * --------------------------------",
+    ]
 
     opt_matches = stats.get("optimizer_matches", {})
     if opt_matches:
@@ -291,7 +545,12 @@ def get_forward_declaration_names(
     names = set()
 
     for name in _CALL_NAME_RE.findall(code):
-        if name == func_name or name in _FORWARD_DECL_EXCLUDE or name in globals_found or name.startswith("__"):
+        if (
+            name == func_name
+            or name in _FORWARD_DECL_EXCLUDE
+            or name in globals_found
+            or name.startswith("__")
+        ):
             continue
         names.add(name)
 
@@ -434,6 +693,7 @@ def format_c_output(
     pseudocode_lines: list[str],
     local_types: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    user_header_text: str = "",
 ) -> str:
     """Generate compilable C source with metadata and standard headers.
 
@@ -469,9 +729,18 @@ def format_c_output(
         f" * Address: {func_ea:#x}",
         f" * Exported: {timestamp}",
         f" * Tool: d810ng (IDA Pro deobfuscation plugin)",
-        " */",
-        "",
     ]
+    if user_header_text:
+        lines.append(" *")
+        lines.append(" * User metadata:")
+        for note_line in user_header_text.splitlines():
+            lines.append(f" *   {note_line}")
+    lines.extend(
+        [
+            " */",
+            "",
+        ]
+    )
 
     # Add deobfuscation metadata if available
     metadata_comment = build_metadata_comment(metadata)
@@ -514,7 +783,9 @@ def format_c_output(
         lines.extend(inferred_globals)
         lines.append("")
 
-    inferred_forwards = infer_forward_declarations(func_name, effective_pseudocode_lines)
+    inferred_forwards = infer_forward_declarations(
+        func_name, effective_pseudocode_lines
+    )
     if inferred_forwards:
         lines.append("// Inferred forward declarations")
         lines.extend(inferred_forwards)
@@ -535,7 +806,10 @@ def format_c_output(
 
 
 def build_sample_header_comment(
-    func_name: str, func_ea: int, metadata: dict[str, Any] | None = None
+    func_name: str,
+    func_ea: int,
+    metadata: dict[str, Any] | None = None,
+    user_header_text: str = "",
 ) -> str:
     """Build header comment for sample-compatible C output.
 
@@ -566,20 +840,28 @@ def build_sample_header_comment(
     lines.append(f" * Address: {func_ea:#x}")
     lines.append(" *")
 
+    if user_header_text:
+        lines.append(" * User metadata:")
+        for note_line in user_header_text.splitlines():
+            lines.append(f" *   {note_line}")
+        lines.append(" *")
+
     # Add metadata if available
     if metadata:
-        lines.append(" * d810ng Deobfuscation Applied:")
+        deobfs_applied = []
         opt_matches = metadata.get("optimizer_matches", {})
         if opt_matches:
+
             for name, count in sorted(opt_matches.items()):
-                lines.append(f" *   {name}: {count} matches")
+                deobfs_applied.append(f" *   {name}: {count} matches")
 
         rule_matches = metadata.get("rule_matches", {})
         if rule_matches:
             total = sum(rule_matches.values())
-            lines.append(f" *   MBA rules: {total} simplifications")
-
-        lines.append(" *")
+            deobfs_applied.append(f" *   MBA rules: {total} simplifications")
+        if deobfs_applied:
+            lines.append(" * Deobfuscation applied:")
+            lines.extend(deobfs_applied)
 
     # Compilation flags
     lines.append(" * Compilation flags (recommended):")
@@ -595,6 +877,7 @@ def format_sample_compatible_c(
     pseudocode_lines: list[str],
     local_types: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    user_header_text: str = "",
     global_declarations: list[str] | None = None,
     forward_declarations: list[str] | None = None,
     imported_function_declarations: list[str] | None = None,
@@ -606,7 +889,7 @@ def format_sample_compatible_c(
     - #include "platform.h" for EXPORT macro
     - volatile int g_<func>_sink for preventing optimization
     - Referenced globals as volatile declarations
-    - EXPORT __attribute__((noinline)) on function
+    - EXPORT D810_NOINLINE on function
     - Header comment with metadata and compilation flags
 
     Args:
@@ -634,23 +917,28 @@ def format_sample_compatible_c(
         True
         >>> "volatile int g_test_func_sink" in output
         True
-        >>> "EXPORT __attribute__((noinline))" in output
+        >>> "EXPORT D810_NOINLINE" in output
         True
     """
     effective_pseudocode_lines = inject_inferred_local_declarations(pseudocode_lines)
+    effective_pseudocode_lines = apply_compile_safety_rewrites(
+        effective_pseudocode_lines
+    )
+    effective_pseudocode_lines, _ = replace_oword_assignments(
+        effective_pseudocode_lines
+    )
     lines = []
 
     # Header comment with metadata
-    header_comment = build_sample_header_comment(func_name, func_ea, metadata)
+    header_comment = build_sample_header_comment(
+        func_name, func_ea, metadata, user_header_text=user_header_text
+    )
     lines.append(header_comment)
     lines.append("")
 
     # Standard includes for sample format
     lines.append('#include "polyfill.h"')
     lines.append('#include "platform.h"')
-    lines.append("")
-    lines.append("// Compatibility shims for decompiler-emitted syntax")
-    lines.extend(build_compilation_shims(effective_pseudocode_lines))
     lines.append("")
 
     # Global declarations from caller, or inferred from pseudocode.
@@ -667,6 +955,12 @@ def format_sample_compatible_c(
                 decl = decl.replace("extern ", "extern volatile ", 1)
                 if not decl.startswith("extern"):
                     decl = "volatile " + decl
+            m = _HANDLE_INIT_RE.match(decl)
+            if m:
+                prefix, rhs, suffix = m.groups()
+                rhs_s = rhs.strip()
+                if not rhs_s.startswith("(HANDLE)"):
+                    decl = f"{prefix}(HANDLE)(ULONG_PTR)({rhs_s}){suffix}"
             lines.append(decl)
         lines.append("")
 
@@ -682,7 +976,9 @@ def format_sample_compatible_c(
 
     if imported_function_declarations:
         lines.append("// Imported / external function pointers")
-        lines.extend(imported_function_declarations)
+        lines.extend(
+            normalize_imported_function_declarations(imported_function_declarations)
+        )
         lines.append("")
 
     # Local type declarations if provided
@@ -697,15 +993,349 @@ def format_sample_compatible_c(
     lines.append(f"volatile int g_{safe_name}_sink = 0;")
     lines.append("")
 
-    # Function with EXPORT and noinline attributes
+    # Function with EXPORT and D810_NOINLINE (from platform.h)
     lines.append(f"// Function: {func_name} at {func_ea:#x}")
 
-    # Insert EXPORT and noinline before the function signature line.
+    # Insert EXPORT and D810_NOINLINE before the function signature line.
     modified_code = _prepend_signature_decorator(
-        effective_pseudocode_lines, "EXPORT __attribute__((noinline)) "
+        effective_pseudocode_lines, "EXPORT D810_NOINLINE "
     )
 
     lines.extend(modified_code)
     lines.append("")
 
     return "\n".join(lines)
+
+
+def _get_clang_index(idaapi_mod: Any | None = None) -> Any:
+    """Create and return a clang Index.
+
+    Args:
+        idaapi_mod: Optional IDA API module for getting IDA installation directory
+    """
+    ida_dir: pathlib.Path | None = None
+    if idaapi_mod is not None and hasattr(idaapi_mod, "get_ida_directory"):
+        try:
+            ida_dir = pathlib.Path(idaapi_mod.get_ida_directory())
+        except Exception:
+            ida_dir = None
+
+    project_root = pathlib.Path(__file__).resolve().parents[4]
+    index, path, tried = load_clang_index(
+        ida_directory=ida_dir,
+        project_root=project_root,
+    )
+    if index is None:
+        tried_text = ", ".join(str(p) for p in tried) if tried else "<none>"
+        raise RuntimeError(f"libclang is required but unavailable. Tried: {tried_text}")
+    if path is not None:
+        logger.debug("Loaded libclang from %s", path)
+    return index
+
+
+def _apply_fixits(content: str, tu: Any) -> str:
+    """Apply all fixits from translation unit diagnostics. Returns modified content."""
+    from d810._vendor.clang.cindex import Diagnostic
+
+    edits: list[tuple[int, int, str]] = []  # (start, end, replacement)
+
+    for diag in tu.diagnostics:
+        if diag.severity < Diagnostic.Error:
+            continue
+        for fixit in diag.fixits:
+            try:
+                start = fixit.range.start.offset
+                end = fixit.range.end.offset
+            except Exception:
+                continue
+            if start < 0 or end > len(content) or start > end:
+                continue
+            edits.append((start, end, fixit.value))
+
+    if not edits:
+        return content
+
+    edits.sort(key=lambda x: x[0], reverse=True)
+    result = content
+    for start, end, replacement in edits:
+        result = result[:start] + replacement + result[end:]
+    return result
+
+
+def _apply_edits(content: str, edits: list[tuple[int, int, str]]) -> str:
+    """Apply text edits in descending offset order."""
+    if not edits:
+        return content
+    result = content
+    for start, end, replacement in sorted(edits, key=lambda e: e[0], reverse=True):
+        result = result[:start] + replacement + result[end:]
+    return result
+
+
+def _range_offsets(extent: Any, content_len: int) -> tuple[int, int] | None:
+    """Return validated [start, end) offsets from a clang SourceRange."""
+    try:
+        start = extent.start.offset
+        end = extent.end.offset
+    except Exception:
+        return None
+    if start < 0 or end < start or end > content_len:
+        return None
+    return start, end
+
+
+def _is_integer_type(c_type: Any) -> bool:
+    """True when the canonical clang type is an integer kind."""
+    from d810._vendor.clang.cindex import TypeKind
+
+    kind = c_type.get_canonical().kind
+    return kind in {
+        TypeKind.BOOL,
+        TypeKind.CHAR_U,
+        TypeKind.UCHAR,
+        TypeKind.CHAR16,
+        TypeKind.CHAR32,
+        TypeKind.USHORT,
+        TypeKind.UINT,
+        TypeKind.ULONG,
+        TypeKind.ULONGLONG,
+        TypeKind.UINT128,
+        TypeKind.CHAR_S,
+        TypeKind.SCHAR,
+        TypeKind.WCHAR,
+        TypeKind.SHORT,
+        TypeKind.INT,
+        TypeKind.LONG,
+        TypeKind.LONGLONG,
+        TypeKind.INT128,
+        TypeKind.ENUM,
+    }
+
+
+def _is_pointer_type(c_type: Any) -> bool:
+    """True when the canonical clang type is pointer-like."""
+    from d810._vendor.clang.cindex import TypeKind
+
+    kind = c_type.get_canonical().kind
+    return kind in {
+        TypeKind.POINTER,
+        TypeKind.OBJCOBJECTPOINTER,
+        TypeKind.MEMBERPOINTER,
+    }
+
+
+def _needs_cast(expr_text: str, target_type: str) -> bool:
+    """Avoid adding duplicate casts when expression is already cast."""
+    stripped = expr_text.strip()
+    return not (
+        stripped.startswith(f"({target_type})")
+        or stripped.startswith("(void *)")
+        or stripped.startswith("(void*)")
+        or stripped.startswith("(_QWORD)")
+    )
+
+
+def _get_call_param_types(call_cursor: Any) -> list[Any]:
+    """Best-effort extraction of call parameter types from clang AST."""
+    try:
+        ref = call_cursor.referenced
+    except Exception:
+        ref = None
+
+    if ref is not None:
+        params = [arg.type for arg in ref.get_arguments() if arg is not None]
+        if params:
+            return params
+
+    children = list(call_cursor.get_children())
+    if not children:
+        return []
+
+    callee_type = children[0].type.get_canonical()
+    try:
+        from d810._vendor.clang.cindex import TypeKind
+    except Exception:
+        return []
+
+    if callee_type.kind == TypeKind.POINTER:
+        callee_type = callee_type.get_pointee().get_canonical()
+
+    if callee_type.kind != TypeKind.FUNCTIONPROTO:
+        return []
+
+    try:
+        return [t for t in callee_type.argument_types()]
+    except Exception:
+        return []
+
+
+def _collect_ast_cast_edits(
+    content: str, tu: Any, preamble_len: int
+) -> list[tuple[int, int, str]]:
+    """Collect AST-guided cast edits for common pointer/integer incompatibilities."""
+    from d810._vendor.clang.cindex import CursorKind
+
+    edits: list[tuple[int, int, str]] = []
+    seen_ranges: set[tuple[int, int]] = set()
+
+    def has_function_ancestor(cur: Any) -> bool:
+        parent = cur.semantic_parent
+        while parent is not None:
+            if parent.kind == CursorKind.FUNCTION_DECL:
+                return True
+            parent = parent.semantic_parent
+        return False
+
+    def maybe_add_cast(extent: Any, target_type: str) -> None:
+        off = _range_offsets(extent, len(content))
+        if off is None:
+            return
+        start, end = off
+        if start < preamble_len:
+            return
+        if (start, end) in seen_ranges:
+            return
+        expr_text = content[start:end]
+        if not _needs_cast(expr_text, target_type):
+            return
+        edits.append((start, end, f"({target_type})({expr_text.strip()})"))
+        seen_ranges.add((start, end))
+
+    for cur in tu.cursor.walk_preorder():
+        if cur.kind == CursorKind.VAR_DECL:
+            if not _is_pointer_type(cur.type):
+                continue
+            try:
+                tok_text = " ".join(tok.spelling for tok in cur.get_tokens())
+            except Exception:
+                tok_text = ""
+            if "=" not in tok_text or " extern " in f" {tok_text} ":
+                continue
+            children = [c for c in cur.get_children()]
+            if not children:
+                continue
+            init_expr = children[-1]
+            try:
+                if _is_integer_type(init_expr.type):
+                    maybe_add_cast(init_expr.extent, cur.type.spelling)
+            except Exception:
+                continue
+            continue
+
+        if cur.kind == CursorKind.CALL_EXPR:
+            if not has_function_ancestor(cur):
+                continue
+            params = _get_call_param_types(cur)
+            if not params:
+                continue
+            args = [a for a in cur.get_arguments() if a is not None]
+            for idx, arg in enumerate(args):
+                if idx >= len(params):
+                    break
+                param_t = params[idx]
+                try:
+                    if _is_integer_type(param_t) and _is_pointer_type(arg.type):
+                        maybe_add_cast(arg.extent, param_t.spelling)
+                    elif _is_pointer_type(param_t) and _is_integer_type(arg.type):
+                        maybe_add_cast(arg.extent, param_t.spelling)
+                except Exception:
+                    continue
+            continue
+
+        if cur.kind == CursorKind.BINARY_OPERATOR:
+            if not has_function_ancestor(cur):
+                continue
+            try:
+                tokens = [tok.spelling for tok in cur.get_tokens()]
+            except Exception:
+                continue
+            if "=" not in tokens:
+                continue
+
+            operands = [c for c in cur.get_children()]
+            if len(operands) < 2:
+                continue
+            lhs = operands[0]
+            rhs = operands[-1]
+            try:
+                if _is_integer_type(lhs.type) and _is_pointer_type(rhs.type):
+                    maybe_add_cast(rhs.extent, lhs.type.spelling)
+                elif _is_pointer_type(lhs.type) and _is_integer_type(rhs.type):
+                    maybe_add_cast(rhs.extent, lhs.type.spelling)
+            except Exception:
+                continue
+
+    return edits
+
+
+def _apply_ast_typed_cast_rewrites(
+    content: str, tu: Any, preamble_len: int
+) -> str:
+    """Apply AST-driven cast rewrites for typed pointer/integer mismatches."""
+    edits = _collect_ast_cast_edits(content, tu, preamble_len)
+    if not edits:
+        return content
+    return _apply_edits(content, edits)
+
+
+def make_compilable(c_source: str, max_rounds: int = 5, idaapi_mod: Any | None = None) -> str:
+    """Parse C source with clang and apply fixits until it compiles or max_rounds."""
+    index = _get_clang_index(idaapi_mod)
+
+    parse_content = _INCLUDE_PATTERN.sub("", c_source)
+    filename = "export.c"
+    full_content = EXPORT_CLANG_PREAMBLE + "\n" + parse_content
+
+    args = [
+        "-target", "x86_64-pc-windows-msvc",
+        "-fms-extensions",
+        "-fms-compatibility",
+        "-w",
+        "-std=c11",
+    ]
+
+    content = full_content
+    preamble_len = len(EXPORT_CLANG_PREAMBLE) + 1
+
+    for _ in range(max_rounds):
+        try:
+            tu = index.parse(
+                filename,
+                args=args,
+                unsaved_files=[(filename, content)],
+                options=0,
+            )
+        except Exception as e:
+            logger.debug("Clang parse failed: %s", e)
+            break
+
+        has_error = any(d.severity >= 3 for d in tu.diagnostics)
+        if not has_error:
+            break
+
+        ast_rewritten = _apply_ast_typed_cast_rewrites(content, tu, preamble_len)
+        if ast_rewritten != content:
+            content = ast_rewritten
+            continue
+
+        fixit_rewritten = _apply_fixits(content, tu)
+        if fixit_rewritten == content:
+            logger.debug("No fixits to apply, stopping")
+            break
+        content = fixit_rewritten
+
+    result = content[preamble_len:] if len(content) > preamble_len else parse_content
+
+    include_lines = [m.group(0).rstrip() for m in _INCLUDE_PATTERN.finditer(c_source)]
+    if include_lines:
+        insert = "\n".join(include_lines) + "\n\n"
+        if not result.strip().startswith("#include"):
+            if result.strip().startswith("/*"):
+                idx = result.find("*/")
+                if idx >= 0:
+                    result = result[: idx + 3] + "\n\n" + insert + result[idx + 3 :].lstrip()
+                else:
+                    result = insert + result
+            else:
+                result = insert + result
+    return result

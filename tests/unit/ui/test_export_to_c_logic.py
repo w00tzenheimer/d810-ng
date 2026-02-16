@@ -6,10 +6,12 @@ from __future__ import annotations
 
 from d810.ui.actions.export_to_c_logic import (
     CExportSettings,
+    apply_compile_safety_rewrites,
     build_metadata_comment,
     build_sample_header_comment,
     format_c_output,
     format_sample_compatible_c,
+    replace_oword_assignments,
     sanitize_c_identifier,
     sanitize_filename,
     suggest_filename,
@@ -343,7 +345,7 @@ class TestBuildSampleHeaderComment:
         """Test header includes optimizer metadata."""
         metadata = {"optimizer_matches": {"OpaquePredicate": 5, "ConstantFolding": 3}}
         comment = build_sample_header_comment("test_func", 0x401000, metadata)
-        assert "d810ng Deobfuscation Applied:" in comment
+        assert "Deobfuscation applied:" in comment
         assert "OpaquePredicate: 5 matches" in comment
         assert "ConstantFolding: 3 matches" in comment
 
@@ -373,10 +375,11 @@ class TestFormatSampleCompatibleC:
         # Check includes
         assert '#include "polyfill.h"' in output
         assert '#include "platform.h"' in output
+        assert "// Compatibility shims for decompiler-emitted syntax" not in output
         # Check sink variable
         assert "volatile int g_test_func_sink = 0;" in output
-        # Check EXPORT and noinline
-        assert "EXPORT __attribute__((noinline))" in output
+        # Check EXPORT and D810_NOINLINE
+        assert "EXPORT D810_NOINLINE" in output
         # Check function code
         assert "int test_func(int x) {" in output
         assert "  return x + 1;" in output
@@ -405,7 +408,7 @@ class TestFormatSampleCompatibleC:
             pseudocode_lines=["void test_func() {}"],
             metadata=metadata,
         )
-        assert "d810ng Deobfuscation Applied:" in output
+        assert "Deobfuscation applied:" in output
         assert "OpaquePredicate: 5 matches" in output
         assert "MBA rules: 3 simplifications" in output
 
@@ -435,6 +438,16 @@ class TestFormatSampleCompatibleC:
         # Globals should be made volatile
         assert "extern volatile int global_var;" in output
         assert "volatile int another_global;" in output
+
+    def test_handle_global_initializer_gets_cast(self):
+        """HANDLE globals initialized from integers should be cast safely."""
+        output = format_sample_compatible_c(
+            func_name="test_func",
+            func_ea=0x401000,
+            pseudocode_lines=["void test_func(void) {}"],
+            global_declarations=["volatile HANDLE qword_1234 = 0x2C0uLL;"],
+        )
+        assert "volatile HANDLE qword_1234 = (HANDLE)(ULONG_PTR)(0x2C0uLL);" in output
 
     def test_infers_globals_when_not_provided(self):
         """Test globals are inferred from pseudocode when not provided."""
@@ -489,6 +502,22 @@ class TestFormatSampleCompatibleC:
         )
         assert "extern int sub_7FFB207ADFE0();" in output
 
+    def test_imported_declarations_are_normalized(self):
+        """Known imported APIs should use canonical declaration spellings."""
+        output = format_sample_compatible_c(
+            func_name="test_func",
+            func_ea=0x401000,
+            pseudocode_lines=["void test_func(void) {}"],
+            imported_function_declarations=[
+                "intintintintextern (BOOL (int*)())(BOOL) (__stdcall int*IsThreadAFiber)();",
+                "extern __int64 (__fastcall *RtlAcquireSRWLockExclusive)(int(long long (*)(_QWORD))(_QWORD));",
+                "extern LPVOID (__stdcall *TlsGetValue)(int(LPVOID (*)(DWORD))(DWORD dwTlsIndex));",
+            ],
+        )
+        assert "extern BOOL (__stdcall *IsThreadAFiber)(void);" in output
+        assert "extern void (__stdcall *RtlAcquireSRWLockExclusive)(void *SRWLock);" in output
+        assert "extern LPVOID (__stdcall *TlsGetValue)(DWORD dwTlsIndex);" in output
+
     def test_global_already_volatile(self):
         """Test globals already volatile are not duplicated."""
         globals_decls = ["volatile int already_volatile;"]
@@ -525,7 +554,7 @@ class TestFormatSampleCompatibleC:
         )
         # Check EXPORT is on same line as function signature
         lines = output.splitlines()
-        export_line = [line for line in lines if "EXPORT __attribute__" in line]
+        export_line = [line for line in lines if "EXPORT D810_NOINLINE" in line]
         assert len(export_line) == 1
         assert "int test_func(int x)" in export_line[0]
 
@@ -547,7 +576,7 @@ class TestFormatSampleCompatibleC:
         for line in pseudocode[1:]:
             assert line in output
         # First line should have EXPORT prepended
-        assert "EXPORT __attribute__((noinline)) int complex_func(int a, int b) {" in output
+        assert "EXPORT D810_NOINLINE int complex_func(int a, int b) {" in output
 
     def test_complete_sample_format(self):
         """Test complete output matches expected sample format."""
@@ -570,7 +599,7 @@ class TestFormatSampleCompatibleC:
                 sections.append("platform_include")
             elif "volatile int g_test_func_sink" in line:
                 sections.append("sink_variable")
-            elif "EXPORT __attribute__" in line:
+            elif "EXPORT D810_NOINLINE" in line:
                 sections.append("function")
 
         # Check sections appear in correct order
@@ -637,3 +666,180 @@ class TestFormatSampleCompatibleC:
         )
         assert '#include "polyfill.h"' in output
         assert "typedef size_t SIZE_T;" not in output
+
+    def test_oword_assignments_replaced_with_store_macro(self):
+        """_OWORD assignments should be replaced with STORE_OWORD_N."""
+        output = format_sample_compatible_c(
+            func_name="has_oword_stores",
+            func_ea=0x401000,
+            pseudocode_lines=[
+                "void has_oword_stores(char *Value) {",
+                "  *(_OWORD *)Value = xmmword_7FFB2084A716;",
+                "  *((_OWORD *)Value + 1) = xmmword_7FFB2084A726;",
+                "}",
+            ],
+            global_declarations=[
+                "static volatile const _OWORD xmmword_7FFB2084A716 = D810_XMMWORD(\"90708D8A9D04E7A19D273081BA1B2423\");",
+                "static volatile const _OWORD xmmword_7FFB2084A726 = D810_XMMWORD(\"33E919F4343E7A0985500402EEC8F9F4\");",
+            ],
+        )
+        assert "STORE_OWORD_N(Value, 0, &xmmword_7FFB2084A716);" in output
+        assert "STORE_OWORD_N(Value, 1, &xmmword_7FFB2084A726);" in output
+        assert "*(_OWORD *)Value =" not in output
+
+    def test_oword_zero_store_uses_zero_constant(self):
+        """_OWORD = 0 should use D810_ZERO_OWORD from ida_types.h."""
+        output = format_sample_compatible_c(
+            func_name="has_oword_zero",
+            func_ea=0x401000,
+            pseudocode_lines=[
+                "void has_oword_zero(char *p) {",
+                "  *((_OWORD *)p + 2) = 0;",
+                "}",
+            ],
+        )
+        assert "STORE_OWORD_N(p, 2, &D810_ZERO_OWORD);" in output
+        assert '#include "polyfill.h"' in output  # ida_types.h defines D810_ZERO_OWORD
+
+    def test_oword_offset_store_converted_to_index(self):
+        """*(_OWORD *)(Base + offset) = xmmword should use offset/16 as index."""
+        output = format_sample_compatible_c(
+            func_name="has_oword_offset",
+            func_ea=0x401000,
+            pseudocode_lines=[
+                "void has_oword_offset(char *Value) {",
+                "  *(_OWORD *)(Value + 0x3C) = xmmword_7FFB2084A736;",
+                "}",
+            ],
+            global_declarations=[
+                "static volatile const _OWORD xmmword_7FFB2084A736 = D810_XMMWORD(\"9A5BC3C2D1CDC6822CCC81A6D1D635D1\");",
+            ],
+        )
+        assert "STORE_OWORD_N(Value, 3, &xmmword_7FFB2084A736);" in output
+
+
+class TestReplaceOwordAssignments:
+    """Test replace_oword_assignments transformation."""
+
+    def test_index_zero(self):
+        """*(_OWORD *)Base = xmmword -> STORE_OWORD_N(Base, 0, &xmmword)."""
+        lines = ["  *(_OWORD *)Value = xmmword_7FFB2084A716;"]
+        out, needs_zero = replace_oword_assignments(lines)
+        assert out[0] == "  STORE_OWORD_N(Value, 0, &xmmword_7FFB2084A716);"
+        assert needs_zero is False
+
+    def test_index_n(self):
+        """*((_OWORD *)Base + N) = xmmword -> STORE_OWORD_N(Base, N, &xmmword)."""
+        lines = ["  *((_OWORD *)Value + 1) = xmmword_7FFB2084A726;"]
+        out, needs_zero = replace_oword_assignments(lines)
+        assert out[0] == "  STORE_OWORD_N(Value, 1, &xmmword_7FFB2084A726);"
+        assert needs_zero is False
+
+    def test_offset_converted_to_index(self):
+        """*(_OWORD *)(Base + 0x3C) = xmmword -> STORE_OWORD_N(Base, 3, &xmmword)."""
+        lines = ["  *(_OWORD *)(Value + 0x3C) = xmmword_7FFB2084A736;"]
+        out, needs_zero = replace_oword_assignments(lines)
+        assert out[0] == "  STORE_OWORD_N(Value, 3, &xmmword_7FFB2084A736);"
+        assert needs_zero is False
+
+    def test_zero_rhs_uses_d810_zero_oword(self):
+        """= 0 should use &D810_ZERO_OWORD and set needs_zero True."""
+        lines = ["  *((_OWORD *)Value + 2) = 0;"]
+        out, needs_zero = replace_oword_assignments(lines)
+        assert out[0] == "  STORE_OWORD_N(Value, 2, &D810_ZERO_OWORD);"
+        assert needs_zero is True
+
+    def test_mixed_replacements(self):
+        """Multiple patterns in one run."""
+        lines = [
+            "  *(_OWORD *)Value = xmmword_7FFB2084A716;",
+            "  *((_OWORD *)Value + 1) = xmmword_7FFB2084A726;",
+            "  *((_OWORD *)Value + 2) = 0;",
+            "  *(_OWORD *)(Value + 0x3C) = xmmword_7FFB2084A736;",
+        ]
+        out, needs_zero = replace_oword_assignments(lines)
+        assert out[0] == "  STORE_OWORD_N(Value, 0, &xmmword_7FFB2084A716);"
+        assert out[1] == "  STORE_OWORD_N(Value, 1, &xmmword_7FFB2084A726);"
+        assert out[2] == "  STORE_OWORD_N(Value, 2, &D810_ZERO_OWORD);"
+        assert out[3] == "  STORE_OWORD_N(Value, 3, &xmmword_7FFB2084A736);"
+        assert needs_zero is True
+
+    def test_unchanged_lines_preserved(self):
+        """Lines without _OWORD assignments are left unchanged."""
+        lines = [
+            "  int x = 1;",
+            "  *(_OWORD *)p = xmmword_123;",
+            "  return x;",
+        ]
+        out, _ = replace_oword_assignments(lines)
+        assert out[0] == "  int x = 1;"
+        assert out[1] == "  STORE_OWORD_N(p, 0, &xmmword_123);"
+        assert out[2] == "  return x;"
+
+
+class TestCompileSafetyRewrites:
+    """Test static compile-safety rewrite pass."""
+
+    def test_handle_integer_initializer_gets_cast(self):
+        lines = ["volatile HANDLE h = 0x2C0uLL;"]
+        out = apply_compile_safety_rewrites(lines)
+        assert out[0] == "volatile HANDLE h = (HANDLE)(ULONG_PTR)(0x2C0uLL);"
+
+    def test_qword_store_from_pointer_gets_cast(self):
+        lines = ["  *((_QWORD *)Value + 4) = CreateFiber(0, sub_foo, Value);"]
+        out = apply_compile_safety_rewrites(lines)
+        assert (
+            out[0]
+            == "  *((_QWORD *)Value + 4) = (_QWORD)(CreateFiber(0, sub_foo, Value));"
+        )
+
+    def test_multiline_qword_store_from_call_gets_cast(self):
+        lines = [
+            "  *((_QWORD *)Value + 4) = CreateFiber(",
+            "      0,",
+            "      sub_foo,",
+            "      Value);",
+        ]
+        out = apply_compile_safety_rewrites(lines)
+        assert out[0] == "  *((_QWORD *)Value + 4) = (_QWORD)(CreateFiber("
+        assert out[3] == "      Value));"
+
+    def test_rtl_lock_address_not_rewritten(self):
+        lines = ["  RtlAcquireSRWLockExclusive(&unk_7FFB208C0068);"]
+        out = apply_compile_safety_rewrites(lines)
+        assert out[0] == "  RtlAcquireSRWLockExclusive(&unk_7FFB208C0068);"
+
+    def test_subcall_first_arg_casted(self):
+        lines = ["  v = sub_7FFB205841B0(a1, 0x2E, 0x52, 5);"]
+        out = apply_compile_safety_rewrites(lines)
+        assert out[0] == "  v = sub_7FFB205841B0((_QWORD)(a1), 0x2E, 0x52, 5);"
+
+    def test_subcall_pointer_args_get_casted(self):
+        lines = [
+            "  sub_7FFB20835490((_QWORD)(&Context), a1[1], 0x4D0);",
+            "  sub_7FFB207233E0(0x23, 0x26, Value, 0xAA, 0xA);",
+        ]
+        out = apply_compile_safety_rewrites(lines)
+        assert out[0] == "  sub_7FFB20835490((_QWORD)(&Context), (_QWORD)(a1[1]), 0x4D0);"
+        assert "(_QWORD)(Value)" in out[1]
+
+    def test_multiline_subcall_third_arg_gets_casted(self):
+        lines = [
+            "  sub_7FFB207233E0(",
+            "      0x23,",
+            "      0x26,",
+            "      Value,",
+            "      0xAA,",
+            "      0xA);",
+        ]
+        out = apply_compile_safety_rewrites(lines)
+        assert out[3].strip() == "(_QWORD)(Value),"
+
+    def test_setthreadcontext_hthread_and_security_cookie_rewritten(self):
+        lines = [
+            "  SetThreadContext(hThread, &Context);",
+            "  if (x != _security_cookie) return 0;",
+        ]
+        out = apply_compile_safety_rewrites(lines)
+        assert out[0] == "  SetThreadContext(qword_7FFB208C0058, &Context);"
+        assert out[1] == "  if (x != __security_cookie) return 0;"

@@ -119,3 +119,48 @@ EXPORT long test_chained_temps(long a, long b, long *out) {
     out[0] = t1 + 2 * t2;
     return out[0];
 }
+
+/**
+ * MBA with complex arithmetic subexpressions
+ *
+ * Pattern: ((2*a + 1) + (b - 3)) - 2*((2*a + 1) & (b - 3))
+ * Result: (2*a + 1) ^ (b - 3)
+ *
+ * IDA cannot simplify because operands are complex expressions, not variables.
+ */
+EXPORT long test_complex_operand_xor(long a, long b, long *out) {
+    long expr1 = 2 * a + 1;
+    long expr2 = b - 3;
+    out[0] = (expr1 + expr2) - 2 * (expr1 & expr2);
+    return out[0];
+}
+
+/**
+ * HODUR-style constrained constants
+ *
+ * Pattern: ((c_0 - x) & ~z) ^ ((x - c_3) & z)
+ * Constraint: c_0 + 1 == c_3
+ * Result: ~((x - c_3) ^ z)
+ *
+ * IDA cannot verify the algebraic relationship between constants.
+ */
+EXPORT long test_hodur_constraint(long x, long z, long *out) {
+    long c_0 = 0x1C;
+    long c_3 = 0x1D;  // c_0 + 1
+    out[0] = ((c_0 - x) & ~z) ^ ((x - c_3) & z);
+    return out[0];
+}
+
+
+/**
+ * 3-variable WeirdRule5 identity
+ *
+ * Pattern: ((~x | (~y & z)) + (x + (y & z))) - z
+ * Result: x | (y | ~z)
+ *
+ * This is a complex 3-variable identity not in IDA's template library.
+ */
+EXPORT long test_3var_weird(long x, long y, long z, long *out) {
+    out[0] = ((~x | (~y & z)) + (x + (y & z))) - z;
+    return out[0];
+}

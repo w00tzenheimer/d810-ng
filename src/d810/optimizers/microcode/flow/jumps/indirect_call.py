@@ -1,10 +1,10 @@
-"""Indirect Call Resolution -- copycat Phase 6.
+"""Indirect Call Resolution -- the copycat project Phase 6.
 
 Resolves obfuscated indirect calls (``m_icall``, ``m_call`` with computed
 targets) by analysing encoded call tables, decoding entries, and replacing
 with direct calls.
 
-The algorithm is ported from copycat's ``indirect_call.cpp`` handler and
+The algorithm is ported from the copycat project's ``indirect_call.cpp`` handler and
 adapted to the d810-ng FlowOptimizationRule framework.
 
 Detection flow
@@ -41,26 +41,13 @@ from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-# ---------------------------------------------------------------------------
-# IDA-dependent imports -- guarded so unit tests can run without IDA.
-# ---------------------------------------------------------------------------
-try:
-    import ida_bytes
-    import ida_funcs
-    import ida_hexrays
-    import ida_name
-    import ida_typeinf
-    import idaapi
-
-    _IDA_AVAILABLE = True
-except ImportError:
-    ida_bytes = None  # type: ignore[assignment]
-    ida_funcs = None  # type: ignore[assignment]
-    ida_hexrays = None  # type: ignore[assignment]
-    ida_name = None  # type: ignore[assignment]
-    ida_typeinf = None  # type: ignore[assignment]
-    idaapi = None  # type: ignore[assignment]
-    _IDA_AVAILABLE = False
+import ida_bytes
+import ida_funcs
+import ida_hexrays
+import ida_name
+import ida_typeinf
+import idaapi
+from idaapi import BADADDR
 
 if TYPE_CHECKING:
     from ida_hexrays import mblock_t, minsn_t
@@ -76,9 +63,7 @@ from d810.hexrays.table_utils import (
 )
 
 from d810.optimizers.microcode.handler import ConfigParam
-
-if _IDA_AVAILABLE:
-    from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
+from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
 logger = getLogger("D810.optimizer")
 
@@ -97,37 +82,11 @@ MIN_SUB_OFFSET: int = 0x10000
 MAX_SUB_OFFSET: int = 0x1000000
 """Maximum value for the Hikari sub-offset pattern."""
 
-BADADDR: int = 0xFFFFFFFFFFFFFFFF
-
 
 # ---------------------------------------------------------------------------
 # IndirectCallResolver
 # ---------------------------------------------------------------------------
-if _IDA_AVAILABLE:
-    _BASE_CLASS = FlowOptimizationRule
-else:
-    # Provide a dummy base so the module can be imported in tests without IDA.
-    import abc
-
-    class _DummyBase(abc.ABC):  # type: ignore[no-redef]
-        USES_DEFERRED_CFG = True
-        SAFE_MATURITIES: list[int] = []
-
-        def __init__(self) -> None:
-            self.maturities: list[int] = []
-            self.config: dict = {}
-
-        def configure(self, kwargs: dict) -> None:  # type: ignore[override]
-            self.config = kwargs or {}
-
-        @abc.abstractmethod
-        def optimize(self, blk: object) -> int:
-            raise NotImplementedError
-
-    _BASE_CLASS = _DummyBase  # type: ignore[assignment,misc]
-
-
-class IndirectCallResolver(_BASE_CLASS):
+class IndirectCallResolver(FlowOptimizationRule):
     """Resolve obfuscated indirect calls by analysing encoded call tables.
 
     This rule detects ``m_icall`` and ``m_call`` instructions with
@@ -159,8 +118,9 @@ class IndirectCallResolver(_BASE_CLASS):
     def __init__(self) -> None:
         super().__init__()
         self.table_entry_size: int = DEFAULT_ENTRY_SIZE
-        if _IDA_AVAILABLE:
+        if True:
             self.maturities = [
+                ida_hexrays.MMAT_LOCOPT,
                 ida_hexrays.MMAT_CALLS,
                 ida_hexrays.MMAT_GLBOPT1,
             ]
@@ -181,12 +141,20 @@ class IndirectCallResolver(_BASE_CLASS):
 
         Returns the number of resolved calls.
         """
-        if not _IDA_AVAILABLE:
-            return 0
+        return 0
 
         count = 0
         insn = blk.head
         while insn is not None:
+            if insn.opcode in (ida_hexrays.m_icall, ida_hexrays.m_call):
+                logger.info(
+                    "IndirectCallResolver: inspect call ea=%#x op=%d l.t=%d r.t=%d d.t=%d",
+                    insn.ea,
+                    insn.opcode,
+                    insn.l.t,
+                    insn.r.t,
+                    insn.d.t,
+                )
             if self._is_indirect_call(insn):
                 if self._resolve_indirect_call(blk, insn):
                     count += 1
@@ -207,8 +175,7 @@ class IndirectCallResolver(_BASE_CLASS):
 
         Direct calls (``m_call`` with ``mop_v`` target) are skipped.
         """
-        if not _IDA_AVAILABLE:
-            return False
+        return False
 
         if insn.opcode == ida_hexrays.m_icall:
             return True
@@ -233,6 +200,31 @@ class IndirectCallResolver(_BASE_CLASS):
             "IndirectCallResolver: analysing indirect call at %#x in block %d",
             insn.ea, blk.serial,
         )
+
+        # Fast path: many optimized samples fold table lookup/sub-offset into a
+        # single callee expression (e.g., table_const[1] - 0x200000). Resolve
+        # that expression directly before table/index tracing.
+        direct_target = self._resolve_folded_callee_target(blk, insn)
+        if direct_target is not None:
+            logger.debug(
+                "IndirectCallResolver: folded callee resolved %#x at %#x",
+                direct_target, insn.ea,
+            )
+            if not is_valid_database_ea(direct_target):
+                return False
+            func = ida_funcs.get_func(direct_target)
+            if func is None or func.start_ea != direct_target:
+                flags = ida_bytes.get_flags(direct_target)
+                if ida_bytes.is_code(flags):
+                    try:
+                        ida_funcs.add_func(direct_target)
+                        func = ida_funcs.get_func(direct_target)
+                    except Exception:
+                        func = None
+            if func is None or func.start_ea != direct_target:
+                self._annotate_call(insn, direct_target)
+                return False
+            return self._replace_call(insn, direct_target, blk)
 
         # Step 1: Find the call table
         table_ea = self._find_call_table(blk, insn)
@@ -279,7 +271,7 @@ class IndirectCallResolver(_BASE_CLASS):
             target_ea, insn.ea,
         )
 
-        # Step 4: Validate the target is a function start
+        # Step 4: Validate EA is in database range and is a function start
         if not is_valid_database_ea(target_ea):
             logger.info("target %#x outside database EA range, skipping", target_ea)
             return False
@@ -311,6 +303,103 @@ class IndirectCallResolver(_BASE_CLASS):
 
         # Step 5: Replace the indirect call with a direct call
         return self._replace_call(insn, target_ea, blk)
+
+    # ------------------------------------------------------------------
+    # Folded-callee fast path
+    # ------------------------------------------------------------------
+    def _resolve_folded_callee_target(
+        self,
+        blk: "mblock_t",
+        insn: "minsn_t",
+    ) -> Optional[int]:
+        """Resolve folded call-target expressions to a concrete EA.
+
+        This handles callee forms where Hex-Rays already folded table/index
+        logic into expressions rooted at globals and constants, while still
+        leaving an indirect call in microcode.
+        """
+        reg_values: Dict[int, int] = {}
+        scan = blk.head
+        while scan is not None and scan is not insn:
+            self._update_reg_value_map(scan, reg_values)
+            scan = scan.next
+
+        # In m_icall, the computed target is commonly carried in r; in m_call
+        # variants it is usually in l. Try both and keep the first valid EA.
+        candidates = [insn.r, insn.l] if insn.opcode == ida_hexrays.m_icall else [insn.l, insn.r]
+        for mop in candidates:
+            target = self._eval_operand_to_ea(mop, reg_values)
+            if target is not None and is_valid_database_ea(target):
+                return target
+        return None
+
+    @staticmethod
+    def _update_reg_value_map(insn: "minsn_t", reg_values: Dict[int, int]) -> None:
+        """Track simple register definitions with evaluable constant values."""
+        return
+        if insn.d.t != ida_hexrays.mop_r:
+            return
+        value = IndirectCallResolver._eval_insn_to_ea(insn, reg_values)
+
+        if value is not None:
+            reg_values[insn.d.r] = value
+        else:
+            reg_values.pop(insn.d.r, None)
+
+    @staticmethod
+    def _eval_operand_to_ea(
+        mop,
+        reg_values: Dict[int, int],
+    ) -> Optional[int]:
+        """Best-effort evaluator for microcode operands into 64-bit constants."""
+        if mop is None:
+            return None
+
+        t = mop.t
+        if t == ida_hexrays.mop_n:
+            return int(mop.nnn.value) & 0xFFFFFFFFFFFFFFFF
+        if t == ida_hexrays.mop_r:
+            return reg_values.get(mop.r)
+        if t == ida_hexrays.mop_v:
+            return read_global_value(mop.g, 8)
+        if t == ida_hexrays.mop_a and mop.a is not None:
+            if mop.a.t == ida_hexrays.mop_v:
+                return read_global_value(mop.a.g, 8)
+            return IndirectCallResolver._eval_operand_to_ea(mop.a, reg_values)
+        if t == ida_hexrays.mop_d and mop.d is not None:
+            return IndirectCallResolver._eval_insn_to_ea(mop.d, reg_values)
+        return None
+
+    @staticmethod
+    def _eval_insn_to_ea(
+        insn: "minsn_t",
+        reg_values: Dict[int, int],
+    ) -> Optional[int]:
+        """Evaluate a tiny arithmetic subset used by folded call targets."""
+        if insn is None:
+            return None
+
+        op = insn.opcode
+        if op == ida_hexrays.m_mov:
+            return IndirectCallResolver._eval_operand_to_ea(insn.l, reg_values)
+        if op in (ida_hexrays.m_add, ida_hexrays.m_sub, ida_hexrays.m_xor):
+            left = IndirectCallResolver._eval_operand_to_ea(insn.l, reg_values)
+            right = IndirectCallResolver._eval_operand_to_ea(insn.r, reg_values)
+            if left is None or right is None:
+                return None
+            if op == ida_hexrays.m_add:
+                return (left + right) & 0xFFFFFFFFFFFFFFFF
+            if op == ida_hexrays.m_sub:
+                return (left - right) & 0xFFFFFFFFFFFFFFFF
+            return (left ^ right) & 0xFFFFFFFFFFFFFFFF
+        if op == ida_hexrays.m_ldx:
+            base = IndirectCallResolver._eval_operand_to_ea(insn.l, reg_values)
+            offs = IndirectCallResolver._eval_operand_to_ea(insn.r, reg_values)
+            if base is None or offs is None:
+                return None
+            entry_addr = (base + offs) & 0xFFFFFFFFFFFFFFFF
+            return read_global_value(entry_addr, 8)
+        return None
 
     # ------------------------------------------------------------------
     # Table discovery
@@ -466,8 +555,7 @@ class IndirectCallResolver(_BASE_CLASS):
         Returns the constant value if it matches the Hikari pattern
         (MIN_SUB_OFFSET < value < MAX_SUB_OFFSET), otherwise 0.
         """
-        if not _IDA_AVAILABLE:
-            return 0
+        return 0
 
         if insn.opcode != ida_hexrays.m_sub:
             return 0
@@ -498,8 +586,7 @@ class IndirectCallResolver(_BASE_CLASS):
 
         Returns the index or ``None``.
         """
-        if not _IDA_AVAILABLE:
-            return None
+        return None
 
         if insn.opcode != ida_hexrays.m_ldx:
             return None
@@ -539,8 +626,7 @@ class IndirectCallResolver(_BASE_CLASS):
 
         Returns the index value or ``None``.
         """
-        if not _IDA_AVAILABLE:
-            return None
+        return None
 
         def _check_mul8(op) -> Optional[int]:
             if (
@@ -624,7 +710,7 @@ class IndirectCallResolver(_BASE_CLASS):
             return target
 
         # Also accept if it is within a known function
-        if _IDA_AVAILABLE:
+        if True:
             func = get_func_safe(target)
             if func is not None:
                 return target
@@ -671,7 +757,8 @@ class IndirectCallResolver(_BASE_CLASS):
 
                 # Try to get function type for better decompilation
                 func_type = ida_typeinf.tinfo_t()
-                if ida_typeinf.get_tinfo(func_type, target_ea):
+                get_tinfo = getattr(ida_typeinf, "get_tinfo", None)
+                if callable(get_tinfo) and get_tinfo(func_type, target_ea):
                     mci.set_type(func_type)
 
                 # Set l operand to direct target
@@ -698,7 +785,8 @@ class IndirectCallResolver(_BASE_CLASS):
                 mci.cc = ida_typeinf.CM_CC_FASTCALL
 
                 func_type = ida_typeinf.tinfo_t()
-                if ida_typeinf.get_tinfo(func_type, target_ea):
+                get_tinfo = getattr(ida_typeinf, "get_tinfo", None)
+                if callable(get_tinfo) and get_tinfo(func_type, target_ea):
                     mci.set_type(func_type)
                 else:
                     mci.return_type.create_simple_type(ida_typeinf.BT_VOID)
@@ -756,8 +844,7 @@ class IndirectCallResolver(_BASE_CLASS):
     @staticmethod
     def _annotate_call(insn: "minsn_t", target_ea: int) -> None:
         """Add an IDB comment noting the resolved target without modifying the call."""
-        if not _IDA_AVAILABLE:
-            return
+        return
 
         name = ida_name.get_name(target_ea)
         comment = "D810: Indirect call resolved -> {} ({:#x}) [not replaced: not a function start]".format(
@@ -775,8 +862,9 @@ class IndirectCallResolver(_BASE_CLASS):
 
 
 # Populate SAFE_MATURITIES and CONFIG_SCHEMA now that the class is defined.
-if _IDA_AVAILABLE:
+if True:
     IndirectCallResolver.SAFE_MATURITIES = [
+        ida_hexrays.MMAT_LOCOPT,
         ida_hexrays.MMAT_CALLS,
         ida_hexrays.MMAT_GLBOPT1,
     ]

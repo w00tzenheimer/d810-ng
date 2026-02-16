@@ -1,0 +1,16 @@
+{
+  "description": "Default system-test project for indirect branch/call resolver coverage",
+  "ins_rules": [],
+  "blk_rules": [
+    {
+      "name": "IndirectBranchResolver",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "IndirectCallResolver",
+      "is_activated": true,
+      "config": {}
+    }
+  ]
+}

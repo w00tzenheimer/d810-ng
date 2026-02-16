@@ -1,0 +1,15 @@
+{
+  "description": "Identity-call resolver profile (experimental) for Hikari-style wrappers",
+  "ins_rules": [],
+  "blk_rules": [
+    {
+      "name": "IdentityCallResolver",
+      "is_activated": true,
+      "config": {
+        "enable_experimental": true,
+        "max_trampoline_depth": 32,
+        "max_search_instructions": 30
+      }
+    }
+  ]
+}

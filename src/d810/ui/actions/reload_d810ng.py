@@ -2,10 +2,10 @@
 
 Hot-reloads the D810ng plugin code.
 """
+
 from __future__ import annotations
 
 from d810.core import typing
-
 from d810.core.logging import getLogger
 from d810.ui.actions.base import D810ActionHandler
 
@@ -47,7 +47,7 @@ class ReloadD810ng(D810ActionHandler):
             try:
                 # Try to get the plugin instance directly
                 plugin = idaapi_mod.find_plugin("D810", True)
-                if plugin and hasattr(plugin, 'reload'):
+                if plugin and hasattr(plugin, "reload"):
                     logger.info("Executing deferred reload of d810-ng plugin")
                     plugin.reload()
                     ida_kernwin_mod.info("d810-ng reloaded successfully")

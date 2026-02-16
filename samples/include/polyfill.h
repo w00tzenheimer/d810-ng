@@ -7,6 +7,12 @@
  * Windows API Stubs for Cross-Platform Compilation
  * These allow code using Windows APIs to compile on non-Windows platforms.
  * Functions are stubbed to return failure/NULL - only structure is preserved.
+ * Inspired by:
+ * - https://github.com/microsoft/SysmonForLinux/blob/main/linuxTypes.h
+ * - https://github.com/Leandros/WindowsHModular/blob/master/include/win32/dbghelp.h
+ * - https://github.com/ajkhoury/ReClassEx/blob/master/ReClass/NativeTeb.h
+ * - https://github.com/DynamoRIO/dynamorio/blob/master/ext/drmf/common/windefs.h
+ * - https://github.com/xChonkster/zero-dependency-process/blob/master/x64-payload/src/winapi/winapi.hpp
  * ============================================================================ */
 
 /* Ensure Windows base types are defined even when _WIN32 is set */
@@ -25,6 +31,12 @@ typedef int32 LONG;
 #if !defined(BOOL)
 typedef int BOOL;
 #endif
+#if !defined(CONST)
+#define CONST const
+#endif
+#if !defined(VOID)
+typedef void VOID;
+#endif
 
 /* Calling conventions */
 #define WINAPI
@@ -35,12 +47,30 @@ typedef int BOOL;
 #ifndef __cdecl
 #define __cdecl
 #endif
+#ifndef __fastcall
+#define __fastcall
+#endif
+
+#define _In_
+#define _Inout_
+#define _Out_
+#define _Outptr_
+#define _In_opt_
+#define _Inout_opt_
+#define _Out_opt_
+#define _Outptr_opt_
+#define _In_reads_(s)
+#define _In_reads_opt_(s)
 
 /* Hex-Rays synthetic memory indirection helper.
  * Allows expressions like MEMORY[0x123](); to compile in samples.
  */
 #ifndef MEMORY
 #define MEMORY ((void (**)(void))0)
+#endif
+
+#ifndef JUMPOUT
+#define JUMPOUT(addr) do { (void)(addr); } while (0)
 #endif
 
 /* Windows-sized unsigned integer used across exported signatures. */
@@ -53,18 +83,47 @@ typedef void *HANDLE;
 typedef void *HMODULE;
 typedef void *HINSTANCE;
 typedef void *HINTERNET;
-typedef void *LPVOID;
+typedef void* PVOID, * LPVOID;
 typedef const void *LPCVOID;
 
-/* Pointer-sized integer */
+/* Unsigned and signed types */
+typedef uint UINT;
+typedef uchar UCHAR;
+typedef ushort USHORT;
+typedef ulong ULONG;
+
+/* Pointer types for unsigned/signed long, DWORD, etc */
+typedef ULONG* PULONG;
+typedef DWORD* PDWORD;
+typedef unsigned __int64 ULONG64;
+typedef ULONG64* PULONG64;
+typedef long long LONGLONG;
+typedef LONGLONG* PLONGLONG;
+
+/**
+ * @brief Pointer-sized integer types
+ *
+ * - typedef unsigned long* PULONG;
+ * - typedef unsigned long* PDWORD;
+ * - typedef unsigned __int64 *PULONG_PTR;
+ * - typedef unsigned __int64* PSIZE_T;
+ * - typedef __int64* PLARGE_INTEGER;
+ * 
+ */
 #ifdef __LP64__
 typedef unsigned long long DWORD_PTR;
 typedef unsigned long long ULONG_PTR;
 typedef long long LONG_PTR;
+typedef ULONG_PTR* PULONG_PTR;
+typedef DWORD_PTR* PDWORD_PTR;
+typedef ULONG_PTR* PSIZE_T;
 #else
 typedef unsigned long DWORD_PTR;
 typedef unsigned long ULONG_PTR;
 typedef long LONG_PTR;
+typedef ULONG_PTR* PULONG_PTR;
+typedef DWORD_PTR* PDWORD_PTR;
+typedef ULONG_PTR* PSIZE_T;
 #endif
 
 /* String types */
@@ -75,6 +134,13 @@ typedef const wchar_t *LPCWSTR;
 
 /* Wide character */
 typedef wchar_t WCHAR;
+
+typedef WCHAR *NWPSTR, *LPWSTR, *PWSTR;
+typedef PWSTR *PZPWSTR;
+typedef CONST PWSTR *PCZPWSTR;
+typedef WCHAR *LPUWSTR, *PUWSTR;
+typedef CONST WCHAR *LPCWSTR, *PCWSTR;
+typedef PCWSTR *PZPCWSTR;
 
 /* Kernel32 stubs */
 static inline HMODULE LoadLibraryA(const char *name)
@@ -2138,7 +2204,7 @@ union _XSAVE_UNION
 };
 
 /* 67 */
-struct _CONTEXT
+typedef struct _CONTEXT
 {
     unsigned __int64 P1Home;
     unsigned __int64 P2Home;
@@ -2186,14 +2252,15 @@ struct _CONTEXT
     unsigned __int64 LastBranchFromRip;
     unsigned __int64 LastExceptionToRip;
     unsigned __int64 LastExceptionFromRip;
-};
+} CONTEXT, *PCONTEXT;
 
-/* 68 */
 /* _CONTEXT_X64 is an alias for _CONTEXT (x64 version) */
-typedef struct _CONTEXT _CONTEXT_X64;
+typedef CONTEXT CONTEXT_X64;
+typedef PCONTEXT PCONTEXT_X64;
+typedef PCONTEXT LPCONTEXT;
 
 /* 69 */
-struct _EXCEPTION_RECORD
+typedef struct _EXCEPTION_RECORD
 {
     enum NtStatus ExceptionCode;
     unsigned int ExceptionFlags;
@@ -2201,31 +2268,304 @@ struct _EXCEPTION_RECORD
     void *ExceptionAddress;
     unsigned int NumberParameters;
     unsigned __int64 ExceptionInformation[15];
-};
+} EXCEPTION_RECORD, *PEXCEPTION_RECORD;
 
 /* 70 */
-struct _EXCEPTION_POINTERS
+typedef struct _EXCEPTION_POINTERS
 {
     struct _EXCEPTION_RECORD *ExceptionRecord;
-    _CONTEXT_X64 *ContextRecord;
-};
+    CONTEXT *ContextRecord;
+} EXCEPTION_POINTERS, *PEXCEPTION_POINTERS;
 
 // Fake Windows structures to avoid including Windows headers
 #ifndef _NT_TIB_DEFINED
 #define _NT_TIB_DEFINED
 typedef struct _NT_TIB
 {
-    void *FiberData;
+    /* We lay out NT_TIB, which is declared in winnt.h */
+    PVOID /* PEXCEPTION_REGISTRATION_RECORD */ ExceptionList; /* 0x000 / 0x000 */
+    PVOID StackBase;                                          /* 0x004 / 0x008 */
+    PVOID StackLimit;                                         /* 0x008 / 0x010 */
+    PVOID SubSystemTib;                                       /* 0x00c / 0x018 */
+    union {
+        PVOID FiberData; /* 0x010 / 0x020 */
+        DWORD Version;   /* 0x010 / 0x020 */
+    };
+    PVOID ArbitraryUserPointer;                    /* 0x014 / 0x028 */
+    struct _TEB *Self;                             /* 0x018 / 0x030 */
 } NT_TIB;
 #endif // _NT_TIB_DEFINED
+
+#ifndef _CLIENT_ID_DEFINED
+#define _CLIENT_ID_DEFINED
+typedef struct _CLIENT_ID
+{
+    HANDLE					UniqueProcess;
+    HANDLE					UniqueThread;
+} CLIENT_ID, *PCLIENT_ID;
+#endif // _CLIENT_ID_DEFINED
+
+#ifndef _LIST_ENTRY_DEFINED
+#define _LIST_ENTRY_DEFINED
+typedef struct _LIST_ENTRY
+{
+    struct _LIST_ENTRY* Flink;
+    struct _LIST_ENTRY* Blink; // its so tempting to just name these next and previous...
+} LIST_ENTRY, * PLIST_ENTRY;
+#endif // _LIST_ENTRY_DEFINED
+
+#ifndef _GDI_TEB_BATCH_DEFINED
+#define _GDI_TEB_BATCH_DEFINED
+typedef struct _GDI_TEB_BATCH {
+    ULONG Offset;
+    HANDLE HDC;
+    ULONG Buffer[0x136];
+} GDI_TEB_BATCH, *PGDI_TEB_BATCH;
+#endif // _GDI_TEB_BATCH_DEFINED
+
+#ifndef _LARGE_INTEGER_DEFINED
+#define _LARGE_INTEGER_DEFINED
+typedef union _LARGE_INTEGER {
+    struct {
+        DWORD LowPart;
+        LONG  HighPart;
+    };
+    LONGLONG QuadPart;
+} LARGE_INTEGER, *PLARGE_INTEGER;
+#endif // _LARGE_INTEGER_DEFINED
+
+#ifndef _LUID_DEFINED
+#define _LUID_DEFINED
+typedef struct {
+    DWORD LowPart;
+    LONG  HighPart;
+} LUID, *PLUID;
+#endif // _LUID_DEFINED
+
+#ifndef _SYSTEMTIME_DEFINED
+#define _SYSTEMTIME_DEFINED 
+typedef struct _SYSTEMTIME {
+    WORD wYear;
+    WORD wMonth;
+    WORD wDayOfWeek;
+    WORD wDay;
+    WORD wHour;
+    WORD wMinute;
+    WORD wSecond;
+    WORD wMilliseconds;
+} SYSTEMTIME, *PSYSTEMTIME, *LPSYSTEMTIME;
+#endif // _SYSTEMTIME_DEFINED
+
+#ifndef _GUID_DEFINED
+#define _GUID_DEFINED
+typedef struct {
+    ULONG   Data1;
+    USHORT  Data2;
+    USHORT  Data3;
+    UCHAR   Data4[8];
+} GUID, *PGUID, IID, *PIID, *REFGUID;
+typedef CONST GUID *LPCGUID;
+#endif // _GUID_DEFINED
+
+#ifndef _FILETIME_DEFINED
+#define _FILETIME_DEFINED       
+typedef struct _FILETIME {
+  DWORD dwLowDateTime;
+  DWORD dwHighDateTime;
+} FILETIME, *PFILETIME, *LPFILETIME;
+#endif // _FILETIME_DEFINED
+
+#ifndef _UNICODE_STRING_DEFINED
+#define _UNICODE_STRING_DEFINED
+typedef struct _UNICODE_STRING
+{
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR Buffer;
+} UNICODE_STRING, *PUNICODE_STRING;
+typedef const UNICODE_STRING *PCUNICODE_STRING;
+#endif // _UNICODE_STRING_DEFINED
+
+#ifndef _PROCESSOR_NUMBER_DEFINED
+#define _PROCESSOR_NUMBER_DEFINED
+typedef struct _PROCESSOR_NUMBER {
+    WORD Group;
+    BYTE Number;    
+    BYTE Reserved;
+} PROCESSOR_NUMBER, *PPROCESSOR_NUMBER;
+#endif // _PROCESSOR_NUMBER_DEFINED
+
+
+#ifndef _PTHREAD_START_ROUTINE_DEFINED
+#define _PTHREAD_START_ROUTINE_DEFINED
+typedef DWORD (WINAPI *PTHREAD_START_ROUTINE)(
+    LPVOID lpThreadParameter
+    );
+typedef PTHREAD_START_ROUTINE LPTHREAD_START_ROUTINE;
+#endif // _PTHREAD_START_ROUTINE_DEFINED
+
+#ifndef _PFIBER_START_ROUTINE_DEFINED
+#define _PFIBER_START_ROUTINE_DEFINED
+typedef VOID (WINAPI *PFIBER_START_ROUTINE)(
+    LPVOID lpFiberParameter
+    );
+typedef PFIBER_START_ROUTINE LPFIBER_START_ROUTINE;
+#endif // _PFIBER_START_ROUTINE_DEFINED
+
 
 #ifndef _TEB_DEFINED
 #define _TEB_DEFINED
 typedef struct _TEB
 {
     NT_TIB NtTib;
-} TEB;
+    PVOID EnvironmentPointer; // 0x38
+    struct _CLIENT_ID ClientId; // 0x40
+    PVOID ActiveRpcHandle; // 0x50
+    PVOID ThreadLocalStoragePointer; // 0x58
+    struct _PEB* ProcessEnvironmentBlock; // 0x60
+    ULONG LastErrorValue; // 0x68
+    ULONG CountOfOwnedCriticalSections; // 0x6C
+    PVOID CsrClientThread; // 0x70
+    PVOID Win32ThreadInfo; // 0x78
+    ULONG User32Reserved[26]; // 0x80
+    ULONG UserReserved[5]; // 0xE8
+    PVOID WOW32Reserved; // 0x100
+    ULONG CurrentLocale; // 0x108
+    ULONG FpSoftwareStatusRegister; // 0x10C
+    PVOID ReservedForDebuggerInstrumentation[16]; // 0x110
+    PVOID SystemReserved1[38]; // 0x190
+    LONG ExceptionCode; // 0x2C0
+    UCHAR Padding0[4]; // 0x2C4
+    struct _ACTIVATION_CONTEXT_STACK* ActivationContextStackPointer; // 0x2C8
+    ULONG_PTR InstrumentationCallbackSp; // 0x2D0
+    ULONG_PTR InstrumentationCallbackPreviousPc; // 0x2D8
+    ULONG_PTR InstrumentationCallbackPreviousSp; // 0x2E0
+    ULONG TxFsContext; // 0x2E8
+    UCHAR InstrumentationCallbackDisabled; // 0x2EC
+    UCHAR Padding1[3]; // 0x2ED
+    struct _GDI_TEB_BATCH GdiTebBatch; // 0x2F0
+    struct _CLIENT_ID RealClientId; // 0x7D8
+    PVOID GdiCachedProcessHandle; // 0x7E8
+    ULONG GdiClientPID; // 0x7F0
+    ULONG GdiClientTID; // 0x7F4
+    PVOID GdiThreadLocalInfo; // 0x7F8
+    ULONG_PTR Win32ClientInfo[62]; // 0x800
+    PVOID glDispatchTable[233]; // 0x9F0
+    ULONG_PTR glReserved1[29]; // 0x1138
+    PVOID glReserved2; // 0x1220
+    PVOID glSectionInfo; // 0x1228
+    PVOID glSection; // 0x1230
+    PVOID glTable; // 0x1238
+    PVOID glCurrentRC; // 0x1240
+    PVOID glContext; // 0x1248
+    ULONG LastStatusValue; // 0x1250
+    UCHAR Padding2[4]; // 0x1254
+    struct _UNICODE_STRING StaticUnicodeString; // 0x1258
+    WCHAR StaticUnicodeBuffer[261]; // 0x1268
+    UCHAR Padding3[6]; // 0x1472
+    PVOID DeallocationStack; // 0x1478
+    PVOID TlsSlots[64]; // 0x1480
+    struct _LIST_ENTRY TlsLinks; // 0x1680
+    PVOID Vdm; // 0x1690
+    PVOID ReservedForNtRpc; // 0x1698
+    PVOID DbgSsReserved[2]; // 0x16A0
+    ULONG HardErrorMode; // 0x16B0
+    UCHAR Padding4[4]; // 0x16B4
+    PVOID Instrumentation[11]; // 0x16B8
+    GUID ActivityId; // 0x1710
+    PVOID SubProcessTag; // 0x1720
+    PVOID PerflibData; // 0x1728
+    PVOID EtwTraceData; // 0x1730
+    PVOID WinSockData; // 0x1738
+    ULONG GdiBatchCount; // 0x1740
+    PROCESSOR_NUMBER CurrentIdealProcessor; // 0x1744
+    ULONG IdealProcessorValue; // 0x1744
+    UCHAR ReservedPad0; // 0x1744
+    UCHAR ReservedPad1; // 0x1745
+    UCHAR ReservedPad2; // 0x1746
+    UCHAR IdealProcessor; // 0x1747
+    ULONG GuaranteedStackBytes; // 0x1748
+    UCHAR Padding5[4]; // 0x174C
+    PVOID ReservedForPerf; // 0x1750
+    PVOID ReservedForOle; // 0x1758
+    ULONG WaitingOnLoaderLock; // 0x1760
+    UCHAR Padding6[4]; // 0x1764
+    PVOID SavedPriorityState; // 0x1768
+    ULONG_PTR ReservedForCodeCoverage; // 0x1770
+    PVOID ThreadPoolData; // 0x1778
+    PVOID* TlsExpansionSlots; // 0x1780
+    PVOID DeallocationBStore; // 0x1788
+    PVOID BStoreLimit; // 0x1790
+    ULONG MuiGeneration; // 0x1798
+    ULONG IsImpersonating; // 0x179C
+    PVOID NlsCache; // 0x17A0
+    PVOID pShimData; // 0x17A8
+    USHORT HeapVirtualAffinity; // 0x17B0
+    USHORT LowFragHeapDataSlot; // 0x17B2
+    UCHAR Padding7[4]; // 0x17B4
+    PVOID CurrentTransactionHandle; // 0x17B8
+    struct _TEB_ACTIVE_FRAME* ActiveFrame; // 0x17C0
+    PVOID FlsData; // 0x17C8
+    PVOID PreferredLanguages; // 0x17D0
+    PVOID UserPrefLanguages; // 0x17D8
+    PVOID MergedPrefLanguages; // 0x17E0
+    ULONG MuiImpersonation; // 0x17E8
+    union
+    {
+        USHORT CrossTebFlags; // 0x17EC
+        struct
+        {
+            USHORT SpareCrossTebBits : 16; // 0x17EC
+        };
+    };
+    union
+    {
+        USHORT SameTebFlags; // 0x17EE
+        struct
+        {
+            USHORT SafeThunkCall : 1; // 0x17EE
+            USHORT InDebugPrint : 1; // 0x17EE
+            USHORT HasFiberData : 1; // 0x17EE
+            USHORT SkipThreadAttach : 1; // 0x17EE
+            USHORT WerInShipAssertCode : 1; // 0x17EE
+            USHORT RanProcessInit : 1; // 0x17EE
+            USHORT ClonedThread : 1; // 0x17EE
+            USHORT SuppressDebugMsg : 1; // 0x17EE
+            USHORT DisableUserStackWalk : 1; // 0x17EE
+            USHORT RtlExceptionAttached : 1; // 0x17EE
+            USHORT InitialThread : 1; // 0x17EE
+            USHORT SessionAware : 1; // 0x17EE
+            USHORT LoadOwner : 1; // 0x17EE
+            USHORT LoaderWorker : 1; // 0x17EE
+            USHORT SpareSameTebBits : 2; // 0x17EE
+        };
+    };
+    PVOID TxnScopeEnterCallback; // 0x17F0
+    PVOID TxnScopeExitCallback; // 0x17F8
+    PVOID TxnScopeContext; // 0x1800
+    ULONG LockCount; // 0x1808
+    LONG WowTebOffset; // 0x180C
+    PVOID ResourceRetValue; // 0x1810
+    PVOID ReservedForWdf; // 0x1818
+    ULONG64 ReservedForCrt; // 0x1820
+    GUID EffectiveContainerId; // 0x1828
+} TEB, *PTEB;
 #endif // _TEB_DEFINED
+
+#ifndef _INITIAL_TEB_DEFINED
+#define _INITIAL_TEB_DEFINED
+typedef struct _INITIAL_TEB
+{
+    struct
+    {
+        PVOID OldStackBase;
+        PVOID OldStackLimit;
+    } OldInitialTeb;
+    PVOID StackBase;
+    PVOID StackLimit;
+    PVOID StackAllocationBase;
+} INITIAL_TEB, *PINITIAL_TEB;
+#endif // _INITIAL_TEB_DEFINED
 
 #ifndef FAKE_FIBER_DATA_DEFINED
 #define FAKE_FIBER_DATA_DEFINED

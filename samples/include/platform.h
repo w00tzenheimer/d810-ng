@@ -78,6 +78,14 @@
 #define D810_FORCEINLINE inline
 #endif
 
+#if (defined(__GNUC__) && !defined(__clang__))
+#define D810_NOINLINE __attribute__((noinline))
+#elif defined(_MSC_VER)
+#define D810_NOINLINE __declspec(noinline)
+#else
+#define D810_NOINLINE
+#endif
+
 // Alignment specifier
 #if defined(_MSC_VER)
 #define D810_ALIGNAS(x) __declspec(align(x))
@@ -109,5 +117,10 @@
 #define NO_OPTIMIZE_ATTR
 #endif
 
+#if (defined(__GNUC__) && !defined(__clang__))
+#define ATTR_UNUSED
+#else
+#define ATTR_UNUSED __attribute__((unused))
+#endif
 
 #endif /* PLATFORM_H */

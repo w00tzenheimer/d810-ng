@@ -1,15 +1,15 @@
 /*
-
-   This file contains definitions used by the Hex-Rays decompiler output.
-   It has type definitions and convenience macros to make the
-   output more readable.
-
-   Copyright (c) 2007-2018 Hex-Rays
-
+   This file contains type definitions and convenience macros to increase the
+   readability of the decompiler output.
 */
-
+// We don't want to collide with the Hex-Rays defs.h so let's use the same header guard.
 #ifndef HEXRAYS_DEFS_H
 #define HEXRAYS_DEFS_H
+
+// Freestanding Headers Only
+#include <limits.h> // CHAR_BIT
+#include <stddef.h> // NULL size_t offsetof
+#include <stdint.h> // [u]intX_t
 
 #if defined(__GNUC__)
 typedef long long ll;
@@ -33,6 +33,8 @@ typedef unsigned __int64 ull;
 #else
 #error "unknown compiler"
 #endif
+
+// Common Hex-Rays 16-byte pseudo-type used in generated casts.
 typedef unsigned int uint;
 typedef unsigned char uchar;
 typedef unsigned short ushort;
@@ -136,19 +138,112 @@ typedef uint64 uint64_t;
 
 #endif // __D810_STDINT_TYPES_DEFINED
 
+
+// memcpy() with determined behavoir: it always copies
+// from the start to the end of the buffer
+// note: it copies byte by byte, so it is not equivalent to, for example, rep movsd
+static inline void *qmemcpy(void *dst, const void *src, size_t cnt)
+{
+    unsigned char *out = (unsigned char *)dst;
+    const unsigned char *in = (const unsigned char *)src;
+    while (cnt-- != 0) {
+        *out++ = *in++;
+    }
+    return dst;
+}
+// this is the same as qmemcpy, but with volatile pointers to avoid
+// the compiler from optimizing the copy away
+static inline void *vqmemcpy(void *dst, const volatile void *src, size_t cnt)
+{
+    unsigned char *out = (unsigned char *)dst;
+    const volatile unsigned char *in = (const volatile unsigned char *)src;
+    while (cnt-- != 0) {
+        *out++ = *in++;
+    }
+    return dst;
+}
+
+
 // Partially defined types. They are used when the decompiler does not know
 // anything about the type except its size.
 #define _BYTE uint8
 #define _WORD uint16
 #define _DWORD uint32
 #define _QWORD uint64
-#if !defined(_MSC_VER)
-#define _LONGLONG __int128
-#endif
-// Common Hex-Rays 16-byte pseudo-type used in generated casts.
-#ifndef _OWORD
-typedef unsigned __int128 _OWORD;
-#endif
+
+// 128-bit "xmmword" / OWORD (raw bytes; decompiler often prints these as __int128)
+typedef struct _OWORD
+{
+    unsigned char b[16];
+} _OWORD;
+
+// Build an _OWORD from an IDA/Hex-Rays 32-hex-digit string.
+// IDA prints MSB-first; memory on your targets (x86_64/arm64) is little-endian,
+// so we reverse the byte order.
+#ifdef __cplusplus
+
+constexpr unsigned char d810_hexval(char c)
+{
+    return (c >= '0' && c <= '9') ? (unsigned char)(c - '0') :
+           (c >= 'a' && c <= 'f') ? (unsigned char)(c - 'a' + 10) :
+           (c >= 'A' && c <= 'F') ? (unsigned char)(c - 'A' + 10) :
+           0;
+}
+
+constexpr unsigned char d810_hexbyte(char hi, char lo)
+{
+    return (unsigned char)((d810_hexval(hi) << 4) | d810_hexval(lo));
+}
+
+constexpr _OWORD d810_xmmword(const char (&hex)[33])
+{
+    _OWORD v = {};
+    for (int i = 0; i < 16; ++i)
+        v.b[i] = d810_hexbyte(hex[(15 - i) * 2], hex[(15 - i) * 2 + 1]);
+    return v;
+}
+
+#define D810_XMMWORD(hex32) d810_xmmword(hex32)
+
+#else // !__cplusplus (C)
+
+#define D810_HEXVAL(c) \
+    ((c) >= '0' && (c) <= '9' ? (c) - '0' : \
+     (c) >= 'a' && (c) <= 'f' ? (c) - 'a' + 10 : \
+     (c) >= 'A' && (c) <= 'F' ? (c) - 'A' + 10 : 0)
+
+#define D810_HEXBYTE(hi, lo) \
+    ((unsigned char)(((D810_HEXVAL(hi)) << 4) | (D810_HEXVAL(lo))))
+
+#define D810_XMMWORD(hex) { { \
+    D810_HEXBYTE((hex)[30], (hex)[31]), \
+    D810_HEXBYTE((hex)[28], (hex)[29]), \
+    D810_HEXBYTE((hex)[26], (hex)[27]), \
+    D810_HEXBYTE((hex)[24], (hex)[25]), \
+    D810_HEXBYTE((hex)[22], (hex)[23]), \
+    D810_HEXBYTE((hex)[20], (hex)[21]), \
+    D810_HEXBYTE((hex)[18], (hex)[19]), \
+    D810_HEXBYTE((hex)[16], (hex)[17]), \
+    D810_HEXBYTE((hex)[14], (hex)[15]), \
+    D810_HEXBYTE((hex)[12], (hex)[13]), \
+    D810_HEXBYTE((hex)[10], (hex)[11]), \
+    D810_HEXBYTE((hex)[8],  (hex)[9]),  \
+    D810_HEXBYTE((hex)[6],  (hex)[7]),  \
+    D810_HEXBYTE((hex)[4],  (hex)[5]),  \
+    D810_HEXBYTE((hex)[2],  (hex)[3]),  \
+    D810_HEXBYTE((hex)[0],  (hex)[1])   \
+} }
+
+#endif // __cplusplus
+
+#define OWORD_SIZE 16u
+#define OWORD_PTR(p, i) ((unsigned char*)(p) + (size_t)(i) * (size_t)OWORD_SIZE)
+#define STORE_OWORD(dst_ptr, src_oword_ptr) vqmemcpy((dst_ptr), (src_oword_ptr), (size_t)OWORD_SIZE)
+#define STORE_OWORD_N(dst_base, index, src_oword_ptr) \
+    vqmemcpy(OWORD_PTR((dst_base), (index)), (src_oword_ptr), (size_t)OWORD_SIZE)
+
+/* Zero _OWORD for STORE_OWORD_N(..., &D810_ZERO_OWORD) when decompiler emits = 0 */
+static const _OWORD D810_ZERO_OWORD = D810_XMMWORD("00000000000000000000000000000000");
 
 // Non-standard boolean types. They are used when the decompiler can not use
 // the standard "bool" type because of the size mistmatch but the possible
@@ -285,11 +380,106 @@ typedef int bool; // we want to use bool in our C programs
 #define __SPAIR16__(high, low) (((int16)(high) << 8) | (uint8)(low))
 #define __SPAIR32__(high, low) (((int32)(high) << 16) | (uint16)(low))
 #define __SPAIR64__(high, low) (((int64)(high) << 32) | (uint32)(low))
-#define __SPAIR128__(high, low) (((int128)(high) << 64) | (uint64)(low))
 #define __PAIR16__(high, low) (((uint16)(high) << 8) | (uint8)(low))
 #define __PAIR32__(high, low) (((uint32)(high) << 16) | (uint16)(low))
 #define __PAIR64__(high, low) (((uint64)(high) << 32) | (uint32)(low))
-#define __PAIR128__(high, low) (((uint128)(high) << 64) | (uint64)(low))
+
+//------------------------------
+// Minimal 128-bit support (no STL, works in C and C++)
+//------------------------------
+
+#if (defined(__clang__) || defined(__GNUC__)) && defined(__SIZEOF_INT128__)
+#define D810_HAS_NATIVE_INT128 1
+typedef unsigned __int128 uint128;
+typedef __int128 int128;
+
+#define LO128(x) ((uint64)((uint128)(x)))
+#define HI128(x) ((uint64)(((uint128)(x)) >> 64))
+
+// Pair constructors (native)
+#define __PAIR128__(high, low)  (((uint128)(uint64)(high) << 64) | (uint64)(low))
+#define __SPAIR128__(high, low) (((int128)(int64)(high) << 64) | (uint64)(low))
+
+#else
+#define D810_HAS_NATIVE_INT128 0
+
+typedef struct uint128 { uint64 lo; uint64 hi; } uint128;
+typedef struct int128  { uint64 lo; int64  hi; } int128;
+
+#define LO128(x) ((uint64)((x).lo))
+#define HI128(x) ((uint64)((x).hi))
+
+static __inline uint128 d810_u128(uint64 hi, uint64 lo) { uint128 r; r.lo = lo; r.hi = hi; return r; }
+static __inline int128  d810_i128(int64  hi, uint64 lo) { int128  r; r.lo = lo; r.hi = hi; return r; }
+
+// Pair constructors (portable)
+#define __PAIR128__(high, low)  d810_u128((uint64)(high), (uint64)(low))
+#define __SPAIR128__(high, low) d810_i128((int64)(high), (uint64)(low))
+
+// --- minimal ops (portable) ---
+
+static __inline uint128 d810_u128_or(uint128 a, uint128 b) { return d810_u128(a.hi | b.hi, a.lo | b.lo); }
+static __inline uint128 d810_u128_and(uint128 a, uint128 b){ return d810_u128(a.hi & b.hi, a.lo & b.lo); }
+static __inline uint128 d810_u128_xor(uint128 a, uint128 b){ return d810_u128(a.hi ^ b.hi, a.lo ^ b.lo); }
+
+static __inline uint128 d810_u128_add(uint128 a, uint128 b)
+{
+    uint128 r;
+    r.lo = a.lo + b.lo;
+    r.hi = a.hi + b.hi + (r.lo < a.lo);
+    return r;
+}
+static __inline uint128 d810_u128_sub(uint128 a, uint128 b)
+{
+    uint128 r;
+    r.lo = a.lo - b.lo;
+    r.hi = a.hi - b.hi - (a.lo < b.lo);
+    return r;
+}
+
+static __inline int d810_u128_cmp(uint128 a, uint128 b)
+{
+    if (a.hi < b.hi) return -1;
+    if (a.hi > b.hi) return  1;
+    if (a.lo < b.lo) return -1;
+    if (a.lo > b.lo) return  1;
+    return 0;
+}
+
+static __inline uint128 d810_u128_shl(uint128 v, unsigned s)
+{
+    if (s == 0) return v;
+    if (s >= 128) return d810_u128(0, 0);
+    if (s >= 64)  return d810_u128(v.lo << (s - 64), 0);
+    return d810_u128((v.hi << s) | (v.lo >> (64 - s)), v.lo << s);
+}
+
+static __inline uint128 d810_u128_shr(uint128 v, unsigned s)
+{
+    if (s == 0) return v;
+    if (s >= 128) return d810_u128(0, 0);
+    if (s >= 64)  return d810_u128(0, v.hi >> (s - 64));
+    return d810_u128(v.hi >> s, (v.lo >> s) | (v.hi << (64 - s)));
+}
+
+#ifdef __cplusplus
+// C++ sugar (still no STL): operators for struct fallback
+static __inline uint128 operator|(uint128 a, uint128 b) { return d810_u128_or(a,b); }
+static __inline uint128 operator&(uint128 a, uint128 b) { return d810_u128_and(a,b); }
+static __inline uint128 operator^(uint128 a, uint128 b) { return d810_u128_xor(a,b); }
+static __inline uint128 operator+(uint128 a, uint128 b) { return d810_u128_add(a,b); }
+static __inline uint128 operator-(uint128 a, uint128 b) { return d810_u128_sub(a,b); }
+static __inline uint128 operator<<(uint128 a, unsigned s) { return d810_u128_shl(a,s); }
+static __inline uint128 operator>>(uint128 a, unsigned s) { return d810_u128_shr(a,s); }
+static __inline bool operator==(uint128 a, uint128 b) { return d810_u128_cmp(a,b) == 0; }
+static __inline bool operator!=(uint128 a, uint128 b) { return d810_u128_cmp(a,b) != 0; }
+static __inline bool operator< (uint128 a, uint128 b) { return d810_u128_cmp(a,b) <  0; }
+static __inline bool operator> (uint128 a, uint128 b) { return d810_u128_cmp(a,b) >  0; }
+static __inline bool operator<=(uint128 a, uint128 b) { return d810_u128_cmp(a,b) <= 0; }
+static __inline bool operator>=(uint128 a, uint128 b) { return d810_u128_cmp(a,b) >= 0; }
+#endif
+
+#endif // native vs portable
 
 // Helper functions to represent some assembly instructions.
 
@@ -318,22 +508,6 @@ bool saturated_mul(T count, T elsize)
     return is_mul_ok(count, elsize) ? count * elsize : T(-1);
 }
 
-#include <stddef.h> // for size_t
-
-// memcpy() with determined behavoir: it always copies
-// from the start to the end of the buffer
-// note: it copies byte by byte, so it is not equivalent to, for example, rep movsd
-inline void *qmemcpy(void *dst, const void *src, size_t cnt)
-{
-    char *out = (char *)dst;
-    const char *in = (const char *)src;
-    while (cnt > 0)
-    {
-        *out++ = *in++;
-        --cnt;
-    }
-    return dst;
-}
 
 // rotate left
 template <class T>
@@ -503,8 +677,6 @@ inline int64 abs64(int64 x) { return x >= 0 ? x : -x; }
 // inline int128 abs128(int128 x) { return x >= 0 ? x : -x; }
 
 #else // C++
-
-#include <stddef.h> // for size_t
 
 // #if defined(_MSC_VER)
 // 	#include <intrin.h>

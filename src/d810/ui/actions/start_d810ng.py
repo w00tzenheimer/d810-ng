@@ -2,10 +2,10 @@
 
 Starts the D810ng deobfuscation engine.
 """
+
 from __future__ import annotations
 
 from d810.core import typing
-
 from d810.core.logging import getLogger
 from d810.ui.actions.base import D810ActionHandler
 
@@ -78,7 +78,7 @@ class StartD810ng(D810ActionHandler):
             False if already started, True otherwise
         """
         # Disable if already started
-        if hasattr(self._state, 'manager') and self._state.manager is not None:
+        if hasattr(self._state, "manager") and self._state.manager is not None:
             if self._state.manager.started:
                 return False
         return True

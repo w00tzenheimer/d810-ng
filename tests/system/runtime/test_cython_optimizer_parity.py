@@ -2,7 +2,7 @@
 
 Validates that the Cython and Python backends produce identical results when
 running through the complete PatternOptimizer hot path. This is the integration
-test for the copycat acceleration project (PR1-PR4).
+test for the copycat project acceleration project (PR1-PR4).
 
 All tests require IDA Pro with Hex-Rays decompiler.
 """

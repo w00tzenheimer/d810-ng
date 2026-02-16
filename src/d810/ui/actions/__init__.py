@@ -38,6 +38,7 @@ _BUILTIN_ACTION_MODULES = (
     "export_to_c",
     "function_rules",
     "mark_deobfuscated",
+    "term_d810ng",
     "reload_d810ng",
     "start_d810ng",
     "stop_d810ng",

@@ -10,7 +10,7 @@ instruction-level ``FoldReadonlyDataRule`` peephole.  While the peephole handles
 ``ldx`` displacement patterns via ``mop_S``/``mop_b``, this rule targets
 ``mop_v`` (global variable) operands in ``mov`` and ``ldx`` instructions.
 
-Algorithm (ported from copycat ``global_const_handler_t``):
+Algorithm (ported from the copycat project ``global_const_handler_t``):
 
 1. **Detect** -- find ``m_mov`` / ``m_ldx`` instructions with ``mop_v``
    operands referencing global addresses.

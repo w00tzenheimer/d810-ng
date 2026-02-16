@@ -1,13 +1,13 @@
 """Unit tests for edge-count safeguard logic."""
-import logging
-import pytest
+
+import unittest
+
 from d810.optimizers.microcode.flow.flattening.safeguards import (
     should_apply_cfg_modifications,
-    MIN_ABSOLUTE_EDGES,
 )
 
 
-class TestEdgeCountSafeguard:
+class TestEdgeCountSafeguard(unittest.TestCase):
     def test_zero_edges_rejected(self):
         assert not should_apply_cfg_modifications(0, 10)
 
@@ -32,7 +32,7 @@ class TestEdgeCountSafeguard:
     def test_all_redirected_passes(self):
         assert should_apply_cfg_modifications(50, 50)
 
-    def test_context_logged(self, caplog):
-        with caplog.at_level(logging.WARNING):
+    def test_context_logged(self):
+        with self.assertLogs("D810.unflat.safeguard") as cm:
             should_apply_cfg_modifications(1, 10, context="hodur")
-        assert "SAFEGUARD [hodur]" in caplog.text
+        self.assertIn("SAFEGUARD [hodur]", cm.output[0])

@@ -1,4 +1,4 @@
-"""System tests for IndirectCallResolver (copycat Phase 6).
+"""System tests for IndirectCallResolver (the copycat project Phase 6).
 
 Tests that IndirectCallResolver correctly detects indirect call
 instructions (m_icall / m_call with register targets), locates the
@@ -25,6 +25,7 @@ import pytest
 
 from d810.testing.cases import DeobfuscationCase
 from d810.testing.runner import run_deobfuscation_test
+from d810.optimizers.microcode.flow.jumps.indirect_call import IndirectCallResolver
 
 
 def _get_default_binary() -> str:
@@ -58,11 +59,10 @@ INDIRECT_CALL_CASES = [
             "the index, extract the sub-offset, compute the target, and "
             "convert m_icall to m_call."
         ),
-        project="default.json",
+        project="default_indirect_resolution.json",
         must_change=True,
         check_stats=True,
         required_rules=["IndirectCallResolver"],
-        skip="Needs test binary with sub-offset encoded function pointer table",
     ),
     DeobfuscationCase(
         function="indirect_call_register_target",
@@ -71,11 +71,10 @@ INDIRECT_CALL_CASES = [
             "table lookup).  IndirectCallResolver should resolve the "
             "register value and replace with a direct call."
         ),
-        project="default.json",
+        project="default_indirect_resolution.json",
         must_change=True,
         check_stats=True,
         required_rules=["IndirectCallResolver"],
-        skip="Needs test binary with register-target indirect calls",
     ),
     DeobfuscationCase(
         function="indirect_call_hikari_mov_sub",
@@ -84,11 +83,10 @@ INDIRECT_CALL_CASES = [
             "IndirectCallResolver should detect the full pattern chain "
             "and resolve the target function."
         ),
-        project="default.json",
+        project="default_indirect_resolution.json",
         must_change=True,
         check_stats=True,
         required_rules=["IndirectCallResolver"],
-        skip="Needs test binary with Hikari mov+sub indirect call pattern",
     ),
 ]
 
@@ -150,49 +148,46 @@ class TestIndirectCallResolverAttributes:
 
     @pytest.mark.ida_required
     def test_name(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_call import (
-            IndirectCallResolver,
-        )
         assert IndirectCallResolver.NAME == "IndirectCallResolver"
 
     @pytest.mark.ida_required
     def test_description_mentions_indirect_call(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_call import (
+        from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
         assert "indirect call" in IndirectCallResolver.DESCRIPTION.lower()
 
     @pytest.mark.ida_required
     def test_uses_deferred_cfg_is_true(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_call import (
+        from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
         assert IndirectCallResolver.USES_DEFERRED_CFG is True
 
     @pytest.mark.ida_required
     def test_max_table_entries(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_call import (
+        from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
         assert IndirectCallResolver.MAX_TABLE_ENTRIES == 512
 
     @pytest.mark.ida_required
     def test_default_entry_size(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_call import (
+        from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
         assert IndirectCallResolver.DEFAULT_ENTRY_SIZE == 8
 
     @pytest.mark.ida_required
     def test_min_sub_offset(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_call import (
+        from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
         assert IndirectCallResolver.MIN_SUB_OFFSET == 0x10000
 
     @pytest.mark.ida_required
     def test_max_sub_offset(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_call import (
+        from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
         assert IndirectCallResolver.MAX_SUB_OFFSET == 0x1000000
@@ -200,7 +195,7 @@ class TestIndirectCallResolverAttributes:
     @pytest.mark.ida_required
     def test_safe_maturities_uses_real_constants(self, libobfuscated_setup):
         """SAFE_MATURITIES should contain real IDA maturity values."""
-        from d810.optimizers.microcode.flow.indirect_call import (
+        from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
         assert isinstance(IndirectCallResolver.SAFE_MATURITIES, list)
@@ -219,20 +214,20 @@ class TestModuleConstants:
 
     @pytest.mark.ida_required
     def test_max_table_entries_module_level(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_call import MAX_TABLE_ENTRIES
+        from d810.optimizers.microcode.flow.jumps.indirect_call import MAX_TABLE_ENTRIES
         assert MAX_TABLE_ENTRIES == 512
 
     @pytest.mark.ida_required
     def test_default_entry_size_module_level(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_call import DEFAULT_ENTRY_SIZE
+        from d810.optimizers.microcode.flow.jumps.indirect_call import DEFAULT_ENTRY_SIZE
         assert DEFAULT_ENTRY_SIZE == 8
 
     @pytest.mark.ida_required
     def test_min_sub_offset_module_level(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_call import MIN_SUB_OFFSET
+        from d810.optimizers.microcode.flow.jumps.indirect_call import MIN_SUB_OFFSET
         assert MIN_SUB_OFFSET == 0x10000
 
     @pytest.mark.ida_required
     def test_max_sub_offset_module_level(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_call import MAX_SUB_OFFSET
+        from d810.optimizers.microcode.flow.jumps.indirect_call import MAX_SUB_OFFSET
         assert MAX_SUB_OFFSET == 0x1000000

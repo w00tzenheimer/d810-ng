@@ -19,7 +19,7 @@ For every block *blk* passed to :meth:`BlockMerger.optimize`:
 5. If all conditions hold, NOP the ``m_goto`` instruction.  IDA will
    merge the two blocks in the next ``optimize_local`` pass.
 
-Ported from **copycat** ``block_merge_handler_t`` (``block_merge.cpp``).
+Ported from **the copycat project** ``block_merge_handler_t`` (``block_merge.cpp``).
 """
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ class BlockMerger(FlowOptimizationRule):
     def _can_merge(blk: ida_hexrays.mblock_t) -> bool:
         """Return ``True`` if *blk* can be merged with its successor.
 
-        Criteria (mirroring copycat ``can_merge`` + ``has_single_goto_succ``):
+        Criteria (mirroring the copycat project ``can_merge`` + ``has_single_goto_succ``):
 
         * *blk* has a tail instruction whose opcode is ``m_goto``.
         * *blk* has exactly one successor.

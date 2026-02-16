@@ -5,7 +5,7 @@ Resolution) and 6 (Indirect Call Resolution).  Both phases need to read
 jump/call tables from the IDB, decode encoded entries, and find
 XOR-with-globals patterns.
 
-The algorithms are ported from the copycat C++ plugin's
+The algorithms are ported from the copycat project C++ plugin's
 ``indirect_branch.cpp`` and ``indirect_call.cpp`` handlers.
 """
 from __future__ import annotations
@@ -80,7 +80,7 @@ def get_flags_safe(ea: int) -> int:
 class TableEncoding(enum.IntEnum):
     """How entries in a jump/call table are encoded.
 
-    Mirrors the ``table_encoding_t`` enum from copycat's deobf_types.h.
+    Mirrors the ``table_encoding_t`` enum from the copycat project's deobf_types.h.
     """
 
     DIRECT = 0       # raw addresses
@@ -231,10 +231,10 @@ def validate_code_target(
     -------
     bool
     """
-    if not _IDA_AVAILABLE:
+    if not is_valid_database_ea(ea):
         return False
 
-    if not is_valid_database_ea(ea):
+    if not _IDA_AVAILABLE:
         return False
 
     flags = ida_bytes.get_flags(ea)
@@ -253,7 +253,7 @@ def validate_code_target(
 def find_xor_with_globals(blk: "mblock_t") -> List[XorKeyInfo]:
     """Scan a microcode block for XOR patterns involving global values.
 
-    Walks instructions from head to tail (matching copycat's forward
+    Walks instructions from head to tail (matching the copycat project's forward
     iteration) and tracks:
 
     * ``m_mov`` of immediates and global loads to registers

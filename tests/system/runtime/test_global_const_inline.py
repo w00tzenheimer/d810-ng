@@ -147,14 +147,14 @@ class TestGlobalConstantInlinerAttributes:
 
     @pytest.mark.ida_required
     def test_description_mentions_constant(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.global_const_inline import (
+        from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             GlobalConstantInliner,
         )
         assert "constant" in GlobalConstantInliner.DESCRIPTION.lower()
 
     @pytest.mark.ida_required
     def test_uses_deferred_cfg_true(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.global_const_inline import (
+        from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             GlobalConstantInliner,
         )
         assert GlobalConstantInliner.USES_DEFERRED_CFG is True
@@ -162,7 +162,7 @@ class TestGlobalConstantInlinerAttributes:
     @pytest.mark.ida_required
     def test_safe_maturities_is_none(self, libobfuscated_setup):
         """SAFE_MATURITIES=None means safe at any maturity."""
-        from d810.optimizers.microcode.flow.global_const_inline import (
+        from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             GlobalConstantInliner,
         )
         assert GlobalConstantInliner.SAFE_MATURITIES is None
@@ -170,7 +170,7 @@ class TestGlobalConstantInlinerAttributes:
     @pytest.mark.ida_required
     def test_maturities_include_preoptimized(self, libobfuscated_setup):
         import ida_hexrays
-        from d810.optimizers.microcode.flow.global_const_inline import (
+        from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             GlobalConstantInliner,
         )
         rule = GlobalConstantInliner()
@@ -179,7 +179,7 @@ class TestGlobalConstantInlinerAttributes:
     @pytest.mark.ida_required
     def test_maturities_include_locopt(self, libobfuscated_setup):
         import ida_hexrays
-        from d810.optimizers.microcode.flow.global_const_inline import (
+        from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             GlobalConstantInliner,
         )
         rule = GlobalConstantInliner()
@@ -203,7 +203,7 @@ class TestHelperFunctions:
     @pytest.mark.ida_required
     def test_looks_like_pointer_rejects_small_sizes(self, libobfuscated_setup):
         """Values smaller than 4 bytes should never be treated as pointers."""
-        from d810.optimizers.microcode.flow.global_const_inline import (
+        from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             _looks_like_pointer,
         )
         assert _looks_like_pointer(0xFFFF, 1) is False
@@ -213,7 +213,7 @@ class TestHelperFunctions:
     @pytest.mark.ida_required
     def test_looks_like_pointer_zero_is_not_pointer(self, libobfuscated_setup):
         """Zero (NULL) should not be flagged as a pointer."""
-        from d810.optimizers.microcode.flow.global_const_inline import (
+        from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             _looks_like_pointer,
         )
         assert _looks_like_pointer(0, 4) is False
@@ -237,7 +237,7 @@ class TestHelperFunctions:
     @pytest.mark.ida_required
     def test_is_constant_global_no_segment_returns_false(self, libobfuscated_setup):
         """An address not in any segment should not be constant."""
-        from d810.optimizers.microcode.flow.global_const_inline import (
+        from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             _is_constant_global,
         )
         # Use an address far outside the loaded binary
@@ -253,7 +253,7 @@ class TestHelperFunctions:
         import ida_segment
         import idaapi
 
-        from d810.optimizers.microcode.flow.global_const_inline import (
+        from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             _is_constant_global,
             _read_constant_value,
         )

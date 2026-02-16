@@ -34,7 +34,6 @@ import contextlib
 import logging
 import os
 import pathlib
-import platform
 import shutil
 import sys
 import tempfile
@@ -44,6 +43,7 @@ from d810.core.typing import TYPE_CHECKING
 
 import pytest
 
+from d810.core.clang_loader import load_clang_index
 from tests.conftest import PROJECT_ROOT, EnvWrapper
 
 logger = logging.getLogger(__name__)
@@ -127,52 +127,22 @@ def _init_clang(env: EnvWrapper) -> "Index | None":
     if not _CLANG_AVAILABLE:
         return None
 
-    system = platform.system()
     ida_install_dir = env.as_path("IDA_INSTALL_DIR")
     logger.info("Initializing libclang from %s", ida_install_dir)
 
-    possible_lib_paths = []
-    if ida_install_dir.exists():
-        lib_names = {
-            "Linux": "libclang.so",
-            "Darwin": "libclang.dylib",
-            "Windows": "libclang.dll",
-        }
-        if lib_name := lib_names.get(system):
-            possible_lib_paths.append(ida_install_dir / lib_name)
+    index, lib_path, tried_paths = load_clang_index(
+        ida_directory=ida_install_dir,
+        project_root=PROJECT_ROOT,
+    )
 
-    if system == "Linux":
-        possible_lib_paths.append(ida_install_dir / "libclang.so")
-    elif system == "Darwin":
-        possible_lib_paths.append(ida_install_dir / "libclang.dylib")
-    elif system == "Windows":
-        possible_lib_paths.append(ida_install_dir / "libclang.dll")
-
-    local_names = {
-        "Linux": "libclang.so",
-        "Darwin": "libclang.dylib",
-        "Windows": "libclang.dll",
-    }
-    if local_lib_name := local_names.get(system):
-        possible_lib_paths.append(PROJECT_ROOT / local_lib_name)
-
-    lib_path = None
-    for path in possible_lib_paths:
-        if path.exists():
-            lib_path = path
-            break
-
-    if not lib_path:
+    if index is None:
         logger.warning(
             "libclang library not found. Tried: %s",
-            ", ".join(str(p) for p in possible_lib_paths),
+            ", ".join(str(p) for p in tried_paths),
         )
         return None
 
-    Config.set_library_file(str(lib_path.resolve()))
-
     try:
-        index = Index.create()
         logger.info("Clang loaded successfully from %s", lib_path)
         return index
     except Exception as e:

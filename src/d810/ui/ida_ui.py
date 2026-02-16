@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import logging
 import pathlib
-from d810.core import typing
 
 import ida_kernwin
 import idaapi
 
-from d810.qt_shim import QFrame, QGroupBox, QMenu, QToolButton, QtCore, QtGui, QtWidgets
+from d810.core import typing
+from d810.qt_shim import QFrame, QGroupBox, QMenu, QtCore, QtGui, QToolButton, QtWidgets
 
 if typing.TYPE_CHECKING:
     from d810.manager import D810State
@@ -48,10 +48,10 @@ class LoggingConfigDialog(QtWidgets.QDialog):
 
     # Color map for level visualization
     LEVEL_COLORS: typing.Final[dict[str, str]] = {
-        "DEBUG": "#64B5F6",    # blue
-        "INFO": "",             # default
-        "WARNING": "#FFA726",   # orange
-        "ERROR": "#EF5350",     # red
+        "DEBUG": "#64B5F6",  # blue
+        "INFO": "",  # default
+        "WARNING": "#FFA726",  # orange
+        "ERROR": "#EF5350",  # red
         "CRITICAL": "#EF5350",  # red
     }
 
@@ -84,7 +84,9 @@ class LoggingConfigDialog(QtWidgets.QDialog):
         self._set_all_menu = QMenu(self._set_all_btn)
         for level_name in self.LOG_LEVELS:
             action = self._set_all_menu.addAction(level_name)
-            action.triggered.connect(lambda checked=False, lvl=level_name: self._set_all_levels(lvl))
+            action.triggered.connect(
+                lambda checked=False, lvl=level_name: self._set_all_levels(lvl)
+            )
         self._set_all_btn.setMenu(self._set_all_menu)
         top_row.addWidget(self._set_all_btn)
 
@@ -153,14 +155,14 @@ class LoggingConfigDialog(QtWidgets.QDialog):
             display_name = full_name
             for prefix in ["d810.", "D810."]:
                 if display_name.startswith(prefix):
-                    display_name = display_name[len(prefix):]
+                    display_name = display_name[len(prefix) :]
                     break
 
             parts = display_name.split(".")
 
             # Build/find parent nodes
             for i in range(len(parts)):
-                path = ".".join(parts[:i+1])
+                path = ".".join(parts[: i + 1])
                 if path not in nodes:
                     parent_path = ".".join(parts[:i]) if i > 0 else None
                     parent = nodes[parent_path] if parent_path else None
@@ -187,7 +189,7 @@ class LoggingConfigDialog(QtWidgets.QDialog):
             display_name = full_name
             for prefix in ["d810.", "D810."]:
                 if display_name.startswith(prefix):
-                    display_name = display_name[len(prefix):]
+                    display_name = display_name[len(prefix) :]
                     break
 
             item = nodes[display_name]
@@ -199,7 +201,9 @@ class LoggingConfigDialog(QtWidgets.QDialog):
             # Apply color styling
             self._update_combo_color(combo, level)
             combo.currentTextChanged.connect(
-                lambda new_level, name=full_name, cb=combo: self._on_level_changed(name, new_level, cb)
+                lambda new_level, name=full_name, cb=combo: self._on_level_changed(
+                    name, new_level, cb
+                )
             )
             self._tree.setItemWidget(item, 1, combo)
 
@@ -222,7 +226,9 @@ class LoggingConfigDialog(QtWidgets.QDialog):
         self._set_all_visible(self._tree.invisibleRootItem(), False)
         self._show_matching(self._tree.invisibleRootItem(), text)
 
-    def _set_all_visible(self, parent: QtWidgets.QTreeWidgetItem, visible: bool) -> None:
+    def _set_all_visible(
+        self, parent: QtWidgets.QTreeWidgetItem, visible: bool
+    ) -> None:
         """Recursively set visibility for all items under parent."""
         for i in range(parent.childCount()):
             child = parent.child(i)
@@ -249,7 +255,9 @@ class LoggingConfigDialog(QtWidgets.QDialog):
         """Set all visible loggers to the specified level."""
         self._set_all_levels_recursive(self._tree.invisibleRootItem(), level)
 
-    def _set_all_levels_recursive(self, parent: QtWidgets.QTreeWidgetItem, level: str) -> None:
+    def _set_all_levels_recursive(
+        self, parent: QtWidgets.QTreeWidgetItem, level: str
+    ) -> None:
         """Recursively set level for all visible items with combo boxes."""
         for i in range(parent.childCount()):
             item = parent.child(i)
@@ -263,7 +271,9 @@ class LoggingConfigDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
-    def _on_level_changed(self, logger_name: str, new_level: str, combo: QtWidgets.QComboBox) -> None:
+    def _on_level_changed(
+        self, logger_name: str, new_level: str, combo: QtWidgets.QComboBox
+    ) -> None:
         """Slot triggered when the user selects a new level from the drop-down."""
         try:
             self._logger_mgr.set_level(logger_name, new_level)
@@ -535,7 +545,9 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         # Status indicator (colored circle)
         self._status_indicator = QtWidgets.QLabel()
         self._status_indicator.setTextFormat(QtCore.Qt.RichText)
-        self._status_indicator.setText('<span style="color: #D32F2F; font-size: 20px;">●</span>')
+        self._status_indicator.setText(
+            '<span style="color: #D32F2F; font-size: 20px;">●</span>'
+        )
         self._status_indicator.setToolTip("D810 is stopped")
         config_row.addWidget(self._status_indicator)
 
@@ -710,7 +722,9 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         engine_layout.addWidget(self.btn_logger_cfg)
 
         self.btn_start_profiling = QtWidgets.QPushButton("Profile")
-        self.btn_start_profiling.setToolTip("Toggle profiling: start to capture, stop to save report")
+        self.btn_start_profiling.setToolTip(
+            "Toggle profiling: start to capture, stop to save report"
+        )
         self.btn_start_profiling.clicked.connect(self._toggle_profiling)
         engine_layout.addWidget(self.btn_start_profiling)
 
@@ -738,10 +752,14 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             logger.debug("Cannot update status indicator: widget not created yet")
             return
         if loaded:
-            self._status_indicator.setText('<span style="color: #4CAF50; font-size: 20px;">●</span>')
+            self._status_indicator.setText(
+                '<span style="color: #4CAF50; font-size: 20px;">●</span>'
+            )
             self._status_indicator.setToolTip("D810 is running")
         else:
-            self._status_indicator.setText('<span style="color: #D32F2F; font-size: 20px;">●</span>')
+            self._status_indicator.setText(
+                '<span style="color: #D32F2F; font-size: 20px;">●</span>'
+            )
             self._status_indicator.setToolTip("D810 is stopped")
 
     def _on_rule_selected(self, rule) -> None:
@@ -768,7 +786,6 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         cfg[param_name] = value
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Config stored: %s.%s = %s", rule.name, param_name, value)
-
 
     def update_cfg_select(self):
         logger.debug("Calling update_cfg_select")
@@ -1049,7 +1066,9 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
     def _toggle_profiling(self):
         """Start or stop profiling based on current state."""
         if not hasattr(self.state, "manager") or not self.state.manager:
-            logger.warning("D810 manager not initialized; cannot profile. Start D810 first.")
+            logger.warning(
+                "D810 manager not initialized; cannot profile. Start D810 first."
+            )
             QtWidgets.QMessageBox.warning(
                 self.parent,
                 "Profiling",
@@ -1071,14 +1090,23 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         else:
             logger.debug("Starting profiling")
             mgr.enable_profiling()
-            logger.info("Profiling started. Click Profile again to stop and save report.")
+            logger.info(
+                "Profiling started. Click Profile again to stop and save report."
+            )
             self.btn_start_profiling.setText("Stop Profile")
 
     def _stop_profiling(self):
         """Stop profiling if running (used e.g. on manager stop)."""
-        if hasattr(self.state, "manager") and self.state.manager and self.state.manager.is_profiling:
+        if (
+            hasattr(self.state, "manager")
+            and self.state.manager
+            and self.state.manager.is_profiling
+        ):
             self.state.manager.stop_profiling()
-        if hasattr(self, "btn_start_profiling") and self.btn_start_profiling is not None:
+        if (
+            hasattr(self, "btn_start_profiling")
+            and self.btn_start_profiling is not None
+        ):
             self.btn_start_profiling.setText("Profile")
 
     def _show_test_runner(self):
@@ -1093,6 +1121,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 | ida_kernwin.PluginForm.WOPN_TAB
             ),
         )
+
 
 class D810GUI(object):
     def __init__(self, state: "D810State"):

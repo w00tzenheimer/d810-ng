@@ -1,4 +1,4 @@
-"""System tests for IndirectBranchResolver (copycat Phase 5).
+"""System tests for IndirectBranchResolver (the copycat project Phase 5).
 
 Tests that IndirectBranchResolver correctly detects m_ijmp instructions,
 locates jump tables (via switch_info or known symbol names), decodes
@@ -24,6 +24,7 @@ import pytest
 
 from d810.testing.cases import DeobfuscationCase
 from d810.testing.runner import run_deobfuscation_test
+from d810.optimizers.microcode.flow.jumps.indirect_branch import IndirectBranchResolver
 
 
 def _get_default_binary() -> str:
@@ -56,11 +57,10 @@ INDIRECT_BRANCH_CASES = [
             "IndirectBranchResolver should decode the table entries "
             "and convert m_ijmp to m_goto."
         ),
-        project="default.json",
+        project="default_indirect_resolution.json",
         must_change=True,
         check_stats=True,
         required_rules=["IndirectBranchResolver"],
-        skip="Needs test binary with XOR-encrypted indirect jump table",
     ),
     DeobfuscationCase(
         function="indirect_jump_table_offset",
@@ -69,11 +69,10 @@ INDIRECT_BRANCH_CASES = [
             "IndirectBranchResolver should decode base+offset entries "
             "and convert m_ijmp to m_goto."
         ),
-        project="default.json",
+        project="default_indirect_resolution.json",
         must_change=True,
         check_stats=True,
         required_rules=["IndirectBranchResolver"],
-        skip="Needs test binary with offset-encoded indirect jump table",
     ),
     DeobfuscationCase(
         function="indirect_jump_switch_info",
@@ -82,11 +81,10 @@ INDIRECT_BRANCH_CASES = [
             "should use IDA's switch_info_t to locate the jump table "
             "and resolve the indirect jump."
         ),
-        project="default.json",
+        project="default_indirect_resolution.json",
         must_change=True,
         check_stats=True,
         required_rules=["IndirectBranchResolver"],
-        skip="Needs test binary with IDA-recognized switch/indirect jump",
     ),
 ]
 
@@ -147,14 +145,11 @@ class TestIndirectBranchResolverAttributes:
 
     @pytest.mark.ida_required
     def test_name(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_branch import (
-            IndirectBranchResolver,
-        )
         assert IndirectBranchResolver.NAME == "IndirectBranchResolver"
 
     @pytest.mark.ida_required
     def test_description_mentions_indirect(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_branch import (
+        from d810.optimizers.microcode.flow.jumps.indirect_branch import (
             IndirectBranchResolver,
         )
         desc = IndirectBranchResolver.DESCRIPTION.lower()
@@ -163,7 +158,7 @@ class TestIndirectBranchResolverAttributes:
     @pytest.mark.ida_required
     def test_safe_maturities_uses_real_constants(self, libobfuscated_setup):
         import ida_hexrays
-        from d810.optimizers.microcode.flow.indirect_branch import (
+        from d810.optimizers.microcode.flow.jumps.indirect_branch import (
             IndirectBranchResolver,
         )
         # SAFE_MATURITIES should contain real IDA maturity constants
@@ -172,21 +167,21 @@ class TestIndirectBranchResolverAttributes:
 
     @pytest.mark.ida_required
     def test_max_table_entries(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_branch import (
+        from d810.optimizers.microcode.flow.jumps.indirect_branch import (
             MAX_TABLE_ENTRIES,
         )
         assert MAX_TABLE_ENTRIES == 512
 
     @pytest.mark.ida_required
     def test_max_consecutive_invalid(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_branch import (
+        from d810.optimizers.microcode.flow.jumps.indirect_branch import (
             MAX_CONSECUTIVE_INVALID,
         )
         assert MAX_CONSECUTIVE_INVALID == 5
 
     @pytest.mark.ida_required
     def test_default_entry_size(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.indirect_branch import (
+        from d810.optimizers.microcode.flow.jumps.indirect_branch import (
             DEFAULT_TABLE_ENTRY_SIZE,
         )
         assert DEFAULT_TABLE_ENTRY_SIZE == 8

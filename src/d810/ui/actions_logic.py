@@ -5,6 +5,7 @@ separated from IDA/Qt dependencies to enable unit testing.
 
 All functions in this module can be imported and tested without IDA Pro.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING, Any
@@ -29,7 +30,7 @@ def check_plugin_state(state: "D810State | None") -> tuple[bool, str]:
     if not state.is_loaded():
         return False, "d810-ng is not loaded. Please load the plugin first."
 
-    if hasattr(state, 'manager') and state.manager is not None:
+    if hasattr(state, "manager") and state.manager is not None:
         if not state.manager.started:
             return False, "d810-ng is not started. Use Edit > d810-ng to start."
 
@@ -52,7 +53,7 @@ def get_deobfuscation_stats(manager: "D810Manager") -> dict[str, Any]:
     Returns:
         Dictionary with formatted statistics suitable for display
     """
-    if not hasattr(manager, 'stats') or manager.stats is None:
+    if not hasattr(manager, "stats") or manager.stats is None:
         return {
             "optimizer_matches": {},
             "rule_matches": {},
@@ -224,7 +225,9 @@ def format_stats_for_display(
     if cfg_patches:
         lines.append("CFG rule patches:")
         for name, info in sorted(cfg_patches.items()):
-            lines.append(f"  {name}: {info['uses']} uses, {info['total_patches']} patches")
+            lines.append(
+                f"  {name}: {info['uses']} uses, {info['total_patches']} patches"
+            )
         lines.append("")
 
     total = stats.get("total_rule_firings", 0)

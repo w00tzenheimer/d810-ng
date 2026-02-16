@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.optimizers.microcode.flow.context import FlowGateDecision
-from d810.optimizers.microcode.flow.mba_state_preconditioner import (
+from d810.optimizers.microcode.flow.flattening.mba_state_preconditioner import (
     MbaStatePreconditioner,
 )
 
