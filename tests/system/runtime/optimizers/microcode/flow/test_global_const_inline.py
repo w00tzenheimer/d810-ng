@@ -96,3 +96,30 @@ def test_try_inline_globals_inlines_non_pointer_constant(monkeypatch):
     assert insn.opcode == ida_hexrays.m_mov
     assert insn.l.number_calls == [(0x1337, 8)]
     assert insn.r.erase_calls == 1
+
+
+def test_try_inline_globals_skips_badaddr_sentinel(monkeypatch):
+    """Do not inline all-ones BADADDR sentinels into call/data flows."""
+    rule = gci.GlobalConstantInliner()
+
+    insn = _FakeInsn(
+        opcode=ida_hexrays.m_mov,
+        l=_FakeMop(t=ida_hexrays.mop_v, size=8, g=0x1805AEB10),
+        r=_FakeMop(t=ida_hexrays.mop_z, size=0),
+        d=_FakeMop(t=ida_hexrays.mop_z, size=8),
+    )
+
+    monkeypatch.setattr(gci.ida_bytes, "get_flags", lambda ea: 0)
+    monkeypatch.setattr(gci.ida_bytes, "is_code", lambda flags: False)
+    monkeypatch.setattr(gci, "_is_constant_global", lambda ea: True)
+    monkeypatch.setattr(gci, "_read_constant_value", lambda ea, size: 0xFFFFFFFFFFFFFFFF)
+    monkeypatch.setattr(gci.ida_segment, "getseg", lambda ea: None)
+    monkeypatch.setattr(gci.idaapi, "get_imagebase", lambda: 0x180000000)
+    monkeypatch.setattr(gci.idaapi, "BADADDR", 0xFFFFFFFFFFFFFFFF)
+
+    patched = rule._try_inline_globals(SimpleNamespace(), insn)
+
+    assert patched == 0
+    assert insn.opcode == ida_hexrays.m_mov
+    assert insn.l.number_calls == []
+    assert insn.r.erase_calls == 0
