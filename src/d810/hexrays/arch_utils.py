@@ -150,7 +150,7 @@ def is_identity_function(func_ea: int) -> bool:
     Returns:
         True if function is identity, False otherwise
     """
-    if not _IDA_AVAILABLE or func_ea == BADADDR:
+    if func_ea == BADADDR:
         return False
 
     # Check cache first
@@ -353,7 +353,7 @@ def resolve_global_pointer(ptr_addr: int) -> int | None:
     Returns:
         Target EA if valid code pointer, None otherwise
     """
-    if not _IDA_AVAILABLE or ptr_addr == BADADDR:
+    if ptr_addr == BADADDR:
         return None
 
     # Check if ptr_addr is in a data segment
@@ -405,7 +405,7 @@ def is_trampoline_code(addr: int) -> tuple[bool, int | None]:
         Tuple of (is_trampoline, global_ptr_ea) where global_ptr_ea is None if
         not a trampoline or pointer address if it is
     """
-    if not _IDA_AVAILABLE or addr == BADADDR:
+    if addr == BADADDR:
         return (False, None)
 
     insn = idaapi.insn_t()
@@ -564,7 +564,7 @@ def resolve_trampoline_chain(
     Returns:
         Final target EA (may be start_addr if not a trampoline)
     """
-    if not _IDA_AVAILABLE or start_addr == BADADDR or max_depth <= 0:
+    if start_addr == BADADDR or max_depth <= 0:
         return start_addr
 
     # Use module-level cache if not provided

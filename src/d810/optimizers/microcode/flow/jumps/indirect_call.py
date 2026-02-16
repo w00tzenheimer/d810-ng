@@ -141,8 +141,6 @@ class IndirectCallResolver(FlowOptimizationRule):
 
         Returns the number of resolved calls.
         """
-        return 0
-
         count = 0
         insn = blk.head
         while insn is not None:
@@ -175,8 +173,6 @@ class IndirectCallResolver(FlowOptimizationRule):
 
         Direct calls (``m_call`` with ``mop_v`` target) are skipped.
         """
-        return False
-
         if insn.opcode == ida_hexrays.m_icall:
             return True
 
@@ -336,7 +332,6 @@ class IndirectCallResolver(FlowOptimizationRule):
     @staticmethod
     def _update_reg_value_map(insn: "minsn_t", reg_values: Dict[int, int]) -> None:
         """Track simple register definitions with evaluable constant values."""
-        return
         if insn.d.t != ida_hexrays.mop_r:
             return
         value = IndirectCallResolver._eval_insn_to_ea(insn, reg_values)
@@ -555,8 +550,6 @@ class IndirectCallResolver(FlowOptimizationRule):
         Returns the constant value if it matches the Hikari pattern
         (MIN_SUB_OFFSET < value < MAX_SUB_OFFSET), otherwise 0.
         """
-        return 0
-
         if insn.opcode != ida_hexrays.m_sub:
             return 0
 
@@ -586,8 +579,6 @@ class IndirectCallResolver(FlowOptimizationRule):
 
         Returns the index or ``None``.
         """
-        return None
-
         if insn.opcode != ida_hexrays.m_ldx:
             return None
 
@@ -626,8 +617,6 @@ class IndirectCallResolver(FlowOptimizationRule):
 
         Returns the index value or ``None``.
         """
-        return None
-
         def _check_mul8(op) -> Optional[int]:
             if (
                 op.t == ida_hexrays.mop_d
@@ -844,8 +833,6 @@ class IndirectCallResolver(FlowOptimizationRule):
     @staticmethod
     def _annotate_call(insn: "minsn_t", target_ea: int) -> None:
         """Add an IDB comment noting the resolved target without modifying the call."""
-        return
-
         name = ida_name.get_name(target_ea)
         comment = "D810: Indirect call resolved -> {} ({:#x}) [not replaced: not a function start]".format(
             name if name else "?", target_ea,
