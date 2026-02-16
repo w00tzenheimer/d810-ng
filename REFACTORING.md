@@ -1,6 +1,6 @@
 # Refactoring D810
 
-## Status (v0.3.0 - February 2026)
+## Status (v0.3.5 - February 2026)
 
 ### Completed
 
@@ -23,6 +23,7 @@
 | Declarative DSL rules (183 rules) | **DONE** | `src/d810/mba/rules/` |
 | Legacy `rewrite_*.py` removal | **DONE** | Removed 13 files, 155 classes |
 | INTERR 50856/50858/51810 CFG fixes | **DONE** | v0.3.0 |
+| AntiDebug deferred-apply segfault fix | **DONE** | Deferred post-apply maintenance + jtbl overlap canonicalization in generic path |
 
 ### Remaining Work
 
@@ -30,9 +31,16 @@
 |------|--------|-------|
 | Wire `OptimizationRule` Protocol as primary dispatch | **TODO** | Protocol exists but `hexrays_hooks.py` still dispatches via legacy hierarchy |
 | Make `UnflattenerRule` the primary unflattening path | **TODO** | Parallel implementation alongside legacy `GenericDispatcherUnflatteningRule` |
-| Re-enable `CstSimplificationRule2` | **TODO** | Z3-provable with constraint `c1 \| c2 == MAX_VAL` |
 | Evaluate `FoldPureConstantRule` | **TODO** | Disabled; `FoldReadonlyDataRule` is active replacement |
 | Clean up `canonicalizer.py` | **TODO** | Dead code with potentially useful AST normalization utils |
+
+### Known Deobfuscation / Harness Gaps (synced with `TODO.md`)
+
+- `abc_f6_xor_dispatch` and `abc_or_dispatch`: unsupported XOR-toggle / OR-mask dispatcher transition semantics in current DSL path.
+- `test_function_ollvm_fla_bcf_sub`: partial recovery (`UnflattenerFakeJump` fires) but full core logic reconstruction remains incomplete.
+- `tigress_minmaxarray`: BlockMerger characterization gap; no stable visible changes yet.
+- `constant_folding_test2`: harness/profile mismatch (`example_libobfuscated.json` passes, `default_instruction_only.json` does not).
+- `hardened_cond_chain_simple` (`fold_writable_constants=True` runtime path): runtime/e2e divergence when CFG cleanup components are intentionally disabled.
 
 ---
 

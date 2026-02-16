@@ -1,5 +1,7 @@
 # TODO
 
+This file tracks tactical follow-ups and mirrors the higher-level roadmap in `REFACTORING.md`.
+
 ## Resolved Issues
 
 ### INTERR 51810 in insert_nop_blk (v0.3.0)
@@ -42,6 +44,15 @@
 
 **Fixed.** Both tests pass after opaque table global resolution fix in MopTracker (`try_resolve_memory_mops()`) and m_jbe unsigned semantics correction in `FixPredecessorOfConditionalJumpBlock`. The backward tracker now evaluates compound expressions with concrete global values, enabling the conditional chain rule to fire correctly.
 
+### AntiDebug_ExceptionFilter deferred-apply segfault (v0.3.5)
+
+**Fixed.** The crash was caused by a switch/jtbl overlap topology after deferred CFG rewrites were applied. Resolution required:
+- deferring post-apply maintenance in `DeferredGraphModifier` so canonicalization can run first,
+- applying post-rewrite switch-case overlap canonicalization in generic unflattening,
+- running cleanup/verify only after canonicalization.
+
+Validated with `D810_TEST_BINARY=libobfuscated.dll` on `TestConstantFolding::test_constant_folding[AntiDebug_ExceptionFilter]`.
+
 ## Open Items
 
 - Wire `OptimizationRule` Protocol as primary dispatch path in `hexrays_hooks.py`
@@ -49,7 +60,8 @@
 - Evaluate whether `FoldPureConstantRule` should be re-enabled behind a feature flag
 - Clean up `canonicalizer.py` (dead code with useful AST normalization utils)
 - Add config schema validation at `rule.configure()` boundary to reject arch-structured dicts (prevent silent `resolve_arch_config` bypass)
-- Investigate `test_function_ollvm_fla_bcf_sub` — unflattener produces CFG that fails decompilation (test skipped in `test_block_merge.py`)
 - Investigate `tigress_minmaxarray` — BlockMerger does not produce visible changes on Tigress patterns (test skipped in `test_block_merge.py`)
 - Investigate `constant_folding_test2` — needs full project config to produce changes; passes in DSL test with `example_libobfuscated.json` but not with `default_instruction_only.json` (test skipped in `test_global_const_inline.py`)
 - Investigate `hardened_cond_chain_simple` under `FoldReadonlyDataRule(fold_writable_constants=True)` + `example_libobfuscated_no_fixprecedessor.json` — runtime harness can diverge from e2e output (state constants may remain and CFG simplification can over/under-shoot). Root cause: this project intentionally disables CFG cleanup components (`FixPredecessorOfConditionalJumpBlock`, `SingleIterationLoopUnflattener`), so full state-loop collapse is not guaranteed in runtime integration tests. `tests/system/runtime/expr/test_opaque_table_folding.py::test_fold_opaque_table_with_flag_enabled` now uses `example_libobfuscated.json`; this stabilizes state-constant elimination and arithmetic recovery, but a terminal `while (1)` wrapper may still remain in runtime pseudocode.
+- Investigate `abc_f6_xor_dispatch` and `abc_or_dispatch` deobfuscation gaps — XOR toggle (`state ^= 1`) and OR-mask (`state & 0xF`) dispatcher styles are currently unsupported in the DSL suite and are marked skipped pending pattern support.
+- Investigate `test_function_ollvm_fla_bcf_sub` (`FLA+BCF+SUB`) — partial unflattening occurs (`UnflattenerFakeJump` fires) but full string-comparison logic recovery is incomplete; case is marked skipped as a feature gap.
