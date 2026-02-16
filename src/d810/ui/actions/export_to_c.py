@@ -14,7 +14,12 @@ from contextlib import contextmanager
 from d810.core.config import DEFAULT_IDA_USER_DIR
 from d810.core.logging import getLogger
 from d810.ui.actions.base import D810ActionHandler
-from d810.ui.actions.export_to_c_logic import format_c_output, suggest_filename
+from d810.ui.actions.export_to_c_logic import (
+    format_c_output,
+    get_forward_declaration_names,
+    get_imported_function_names,
+    suggest_filename,
+)
 from d810.ui.actions_logic import get_deobfuscation_stats
 
 logger = getLogger("D810.ui")
@@ -25,6 +30,8 @@ ida_kernwin = None
 ida_lines = None
 ida_name = None
 ida_bytes = None
+ida_nalt = None
+ida_typeinf = None
 idaapi = None
 
 # ---------------------------------------------------------------------------
@@ -57,9 +64,9 @@ _GLOBAL_TYPE_BY_PREFIX = {
     "word": "unsigned __int16",
     "dword": "unsigned __int32",
     "qword": "unsigned __int64",
-    "xmmword": "unsigned __int64",
-    "ymmword": "unsigned __int64",
-    "zmmword": "unsigned __int64",
+    "xmmword": "__int128",
+    "ymmword": "__int128",
+    "zmmword": "__int128",
     "off": "unsigned __int64",
     "unk": "unsigned __int64",
     "asc": "char",
@@ -294,10 +301,157 @@ def _format_initializer(
     if prefix == "dword":
         val = ida_bytes_mod.get_dword(ea)
         return f"0x{val:08X}u"
-    if prefix in {"qword", "xmmword", "ymmword", "zmmword", "off", "unk"}:
+    if prefix in {"xmmword", "ymmword", "zmmword"}:
+        raw = ida_bytes_mod.get_bytes(ea, 16)
+        if raw is not None and len(raw) == 16:
+            val = int.from_bytes(raw, "little")
+            return f"0x{val:032X}LL"
+        val = ida_bytes_mod.get_qword(ea)
+        return f"0x{val:016X}uLL"
+    if prefix in {"qword", "off", "unk"}:
         val = ida_bytes_mod.get_qword(ea)
         return f"0x{val:016X}uLL"
     return None
+
+
+def _get_type_str(
+    ea: int,
+    idaapi_mod: typing.Any,
+    ida_nalt_mod: typing.Any = None,
+    ida_typeinf_mod: typing.Any = None,
+) -> str | None:
+    """Get type declaration string for address using idaapi (ida_nalt + ida_typeinf).
+
+    Uses ida_nalt.get_tinfo + ida_typeinf.print_type/print_tinfo when available;
+    falls back to idc.get_type otherwise.
+    """
+    nalt = ida_nalt_mod if ida_nalt_mod is not None else ida_nalt
+    tinf = ida_typeinf_mod if ida_typeinf_mod is not None else ida_typeinf
+
+    # 1. idaapi.get_type (idaapi often exposes get_type)
+    if idaapi_mod is not None:
+        get_type = getattr(idaapi_mod, "get_type", None)
+        if callable(get_type):
+            try:
+                t = get_type(ea)
+                if t and str(t).strip():
+                    return str(t)
+            except Exception:
+                pass
+
+    # 2. ida_nalt + ida_typeinf (no idc)
+    if nalt is not None and tinf is not None:
+        try:
+            tif = tinf.tinfo_t()
+            if nalt.get_tinfo(tif, ea):
+                qstring_cls = getattr(tinf, "qstring", None)
+                if qstring_cls is not None:
+                    out = qstring_cls()
+                    if getattr(tinf, "print_type", lambda *a: False)(out, ea, 0):
+                        s = str(out)
+                        if s:
+                            return s
+                    out = qstring_cls()
+                    if getattr(tinf, "print_tinfo", lambda *a: False)(
+                        out, "", 0, 0, 0, tif, "", ""
+                    ):
+                        s = str(out)
+                        if s:
+                            return s
+        except Exception:
+            pass
+
+    # 3. Fallback: idc.get_type
+    idc_mod = getattr(idaapi_mod, "idc", None) if idaapi_mod else None
+    if idc_mod is None:
+        try:
+            idc_mod = __import__("idc")
+        except ImportError:
+            return None
+    get_type = getattr(idc_mod, "get_type", None)
+    if callable(get_type):
+        try:
+            return get_type(ea) or None
+        except Exception:
+            pass
+    return None
+
+
+def _get_typed_forward_declarations_from_ida(
+    func_name: str,
+    pseudocode_lines: list[str],
+    ida_name_mod: typing.Any,
+    idaapi_mod: typing.Any,
+    ida_nalt_mod: typing.Any = None,
+    ida_typeinf_mod: typing.Any = None,
+) -> list[str] | None:
+    """Build forward declarations using IDA type info when available.
+
+    Returns list of full signatures (e.g. __int64 __fastcall sub_xxx(_QWORD, _QWORD);)
+    or None if type info is not available.
+    """
+    callee_names = get_forward_declaration_names(func_name, pseudocode_lines)
+    badaddr = idaapi_mod.BADADDR if idaapi_mod else 0xFFFFFFFFFFFFFFFF
+    declarations: list[str] = []
+    for name in sorted(callee_names):
+        ea = ida_name_mod.get_name_ea(badaddr, name)
+        if ea == badaddr:
+            continue
+        type_str = _get_type_str(
+            ea, idaapi_mod, ida_nalt_mod=ida_nalt_mod, ida_typeinf_mod=ida_typeinf_mod
+        )
+        if not type_str or not type_str.strip():
+            continue
+        s = type_str.strip()
+        # Type string has no symbol name; insert name before '('
+        paren = s.find("(")
+        if paren >= 0:
+            s = s[:paren].rstrip() + " " + name + s[paren:]
+        if not s.startswith("extern "):
+            s = "extern " + s
+        if not s.endswith(";"):
+            s += ";"
+        declarations.append(s)
+
+    return declarations if declarations else None
+
+
+def _get_imported_function_declarations_from_ida(
+    pseudocode_lines: list[str],
+    ida_name_mod: typing.Any,
+    idaapi_mod: typing.Any,
+    ida_nalt_mod: typing.Any = None,
+    ida_typeinf_mod: typing.Any = None,
+) -> list[str] | None:
+    """Build function-pointer declarations for imported/API functions.
+
+    Returns list like IDA's Data declarations: e.g.
+    LPVOID (__stdcall *ConvertThreadToFiber)(LPVOID lpParameter);
+    """
+    names = get_imported_function_names(pseudocode_lines)
+    if not names:
+        return None
+
+    badaddr = idaapi_mod.BADADDR if idaapi_mod else 0xFFFFFFFFFFFFFFFF
+    declarations: list[str] = []
+
+    for name in names:
+        ea = ida_name_mod.get_name_ea(badaddr, name)
+        if ea == badaddr:
+            continue
+        type_str = _get_type_str(
+            ea, idaapi_mod, ida_nalt_mod=ida_nalt_mod, ida_typeinf_mod=ida_typeinf_mod
+        )
+        if not type_str or not type_str.strip():
+            continue
+        s = type_str.strip()
+        if not s.startswith("extern "):
+            s = "extern " + s
+        if not s.endswith(";"):
+            s += ";"
+        declarations.append(s)
+
+    return declarations if declarations else None
 
 
 def _build_global_declarations_from_ida(
@@ -305,6 +459,8 @@ def _build_global_declarations_from_ida(
     ida_name_mod: typing.Any,
     ida_bytes_mod: typing.Any,
     idaapi_mod: typing.Any,
+    ida_nalt_mod: typing.Any = None,
+    ida_typeinf_mod: typing.Any = None,
 ) -> list[str]:
     """Build global declarations with initializers when IDA can resolve them."""
     declarations: list[str] = []
@@ -316,6 +472,18 @@ def _build_global_declarations_from_ida(
         if ea == badaddr:
             declarations.append(f"extern volatile {c_type} {name};")
             continue
+
+        # xmmword/ymmword/zmmword are always __int128 regardless of IDA type
+        prefix = name.split("_", 1)[0].lower()
+        if prefix not in {"xmmword", "ymmword", "zmmword"}:
+            ida_type = _get_type_str(
+                ea,
+                idaapi_mod,
+                ida_nalt_mod=ida_nalt_mod,
+                ida_typeinf_mod=ida_typeinf_mod,
+            )
+            if ida_type and ida_type.strip():
+                c_type = ida_type.strip()
 
         initializer = _format_initializer(name, ea, ida_bytes_mod)
         if initializer is None:
@@ -471,6 +639,8 @@ class ExportFunctionToC(D810ActionHandler):
         ida_name_mod = _ensure_mod("ida_name", ida_name)
         ida_bytes_mod = _ensure_mod("ida_bytes", ida_bytes)
         idaapi_mod = _ensure_mod("idaapi", idaapi)
+        ida_nalt_mod = _ensure_mod("ida_nalt", ida_nalt)
+        ida_typeinf_mod = _ensure_mod("ida_typeinf", ida_typeinf)
         if (
             ida_hexrays_mod is None
             or ida_kernwin_mod is None
@@ -492,20 +662,7 @@ class ExportFunctionToC(D810ActionHandler):
             ida_kernwin_mod.warning("No function at cursor")
             return 0
 
-        # Decompile the function
-        result = _decompile_function(
-            func_ea,
-            ida_hexrays_mod,
-            ida_funcs_mod,
-            ida_lines_mod,
-            idaapi_mod,
-        )
-        if result is None:
-            ida_kernwin_mod.warning("Failed to decompile function")
-            return 0
-
-        func_name, pseudocode_lines = result
-
+        func_name = ida_funcs_mod.get_func_name(func_ea) or f"sub_{func_ea:X}"
         default_dir = _get_default_export_dir(idaapi_mod)
         default_output_path = os.path.join(default_dir, suggest_filename(func_name))
 
@@ -535,6 +692,17 @@ class ExportFunctionToC(D810ActionHandler):
                 "output_path": save_path,
             }
 
+        # Normal C = IDA's native Produce C file dialog
+        if not settings.get("sample_compatible", True):
+            ida_kernwin_mod.jumpto(func_ea, -1, 0)
+            ok = ida_kernwin_mod.process_ui_action("hx:CreateCFile", 0)
+            if ok:
+                logger.info("Invoked IDA Produce C file dialog")
+                return 1
+            logger.warning("Failed to invoke hx:CreateCFile")
+            ida_kernwin_mod.warning("Could not open Produce C file dialog. Ensure Hex-Rays decompiler is loaded.")
+            return 0
+
         output_path = settings.get("output_path")
         if not output_path:
             ida_kernwin_mod.warning("No output file specified")
@@ -545,6 +713,21 @@ class ExportFunctionToC(D810ActionHandler):
             output_path = os.path.join(default_dir, output_path)
         output_path = os.path.normpath(os.path.abspath(output_path))
 
+        # Sample-compatible: decompile and write our format
+        # Decompile the function (deferred until we know Sample mode is selected)
+        result = _decompile_function(
+            func_ea,
+            ida_hexrays_mod,
+            ida_funcs_mod,
+            ida_lines_mod,
+            idaapi_mod,
+        )
+        if result is None:
+            ida_kernwin_mod.warning("Failed to decompile function")
+            return 0
+
+        func_name, pseudocode_lines = result
+
         # Get d810ng deobfuscation stats if available
         metadata = None
         if hasattr(self._state, "manager") and self._state.manager is not None:
@@ -553,47 +736,64 @@ class ExportFunctionToC(D810ActionHandler):
             except Exception as exc:
                 logger.warning("Could not retrieve deobfuscation stats: %s", exc)
 
-        # Format C output based on mode
-        if settings.get("sample_compatible", False):
-            # Import sample-compatible formatter from logic layer
-            try:
-                from d810.ui.actions.export_to_c_logic import format_sample_compatible_c
+        # Import sample-compatible formatter from logic layer
+        try:
+            from d810.ui.actions.export_to_c_logic import format_sample_compatible_c
 
-                # Collect global declarations if requested
-                global_decls = None
-                if (
-                    settings.get("export_globals", False)
-                    and ida_name_mod is not None
-                    and ida_bytes_mod is not None
-                    and idaapi_mod is not None
-                ):
-                    global_symbols = _extract_global_symbol_names(pseudocode_lines)
-                    global_decls = _build_global_declarations_from_ida(
-                        symbol_names=global_symbols,
-                        ida_name_mod=ida_name_mod,
-                        ida_bytes_mod=ida_bytes_mod,
-                        idaapi_mod=idaapi_mod,
-                    )
+            # Collect global declarations if requested
+            global_decls = None
+            if (
+                settings.get("export_globals", False)
+                and ida_name_mod is not None
+                and ida_bytes_mod is not None
+                and idaapi_mod is not None
+            ):
+                global_symbols = _extract_global_symbol_names(pseudocode_lines)
+                global_decls = _build_global_declarations_from_ida(
+                    symbol_names=global_symbols,
+                    ida_name_mod=ida_name_mod,
+                    ida_bytes_mod=ida_bytes_mod,
+                    idaapi_mod=idaapi_mod,
+                    ida_nalt_mod=ida_nalt_mod,
+                    ida_typeinf_mod=ida_typeinf_mod,
+                )
 
-                c_source = format_sample_compatible_c(
+            # Use IDA type info for forward declarations when available
+            forward_decls = None
+            if ida_name_mod is not None and idaapi_mod is not None:
+                forward_decls = _get_typed_forward_declarations_from_ida(
                     func_name=func_name,
-                    func_ea=func_ea,
                     pseudocode_lines=pseudocode_lines,
-                    metadata=metadata,
-                    global_declarations=global_decls,
+                    ida_name_mod=ida_name_mod,
+                    idaapi_mod=idaapi_mod,
+                    ida_nalt_mod=ida_nalt_mod,
+                    ida_typeinf_mod=ida_typeinf_mod,
                 )
-            except ImportError:
-                logger.warning(
-                    "Sample-compatible formatter not yet implemented, using normal format"
-                )
-                c_source = format_c_output(
-                    func_name=func_name,
-                    func_ea=func_ea,
+
+            # Imported function pointers (ConvertThreadToFiber, TlsGetValue, etc.)
+            imported_decls = None
+            if ida_name_mod is not None and idaapi_mod is not None:
+                imported_decls = _get_imported_function_declarations_from_ida(
                     pseudocode_lines=pseudocode_lines,
-                    metadata=metadata,
+                    ida_name_mod=ida_name_mod,
+                    idaapi_mod=idaapi_mod,
+                    ida_nalt_mod=ida_nalt_mod,
+                    ida_typeinf_mod=ida_typeinf_mod,
                 )
-        else:
-            # Normal C format
+
+            c_source = format_sample_compatible_c(
+                func_name=func_name,
+                func_ea=func_ea,
+                pseudocode_lines=pseudocode_lines,
+                metadata=metadata,
+                global_declarations=global_decls,
+                forward_declarations=forward_decls,
+                imported_function_declarations=imported_decls,
+            )
+        except ImportError:
+            logger.warning(
+                "Sample-compatible formatter not yet implemented, using normal format"
+            )
             c_source = format_c_output(
                 func_name=func_name,
                 func_ea=func_ea,
@@ -607,6 +807,13 @@ class ExportFunctionToC(D810ActionHandler):
             logger.warning(
                 "Recursion depth > 0 not yet implemented, exporting only current function"
             )
+
+        # Post-process with clang to apply fixits and improve compilability
+        try:
+            from d810.ui.actions.export_to_c_clang import make_compilable
+            c_source = make_compilable(c_source)
+        except Exception as exc:
+            logger.debug("Clang post-process skipped: %s", exc)
 
         # Save to file
         try:

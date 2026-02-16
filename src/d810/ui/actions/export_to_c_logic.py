@@ -80,9 +80,9 @@ _GLOBAL_TYPE_BY_PREFIX = {
     "word": "unsigned __int16",
     "dword": "unsigned __int32",
     "qword": "unsigned __int64",
-    "xmmword": "unsigned __int64",
-    "ymmword": "unsigned __int64",
-    "zmmword": "unsigned __int64",
+    "xmmword": "__int128",
+    "ymmword": "__int128",
+    "zmmword": "__int128",
     "off": "unsigned __int64",
     "unk": "unsigned __int64",
     "asc": "char",
@@ -268,48 +268,54 @@ def infer_global_declarations(pseudocode_lines: list[str]) -> list[str]:
     return declarations
 
 
-def infer_forward_declarations(
+def get_imported_function_names(pseudocode_lines: list[str]) -> list[str]:
+    """Return sorted list of imported/API function names referenced in pseudocode.
+
+    These are names in _FORWARD_DECL_EXCLUDE (e.g. ConvertThreadToFiber, TlsGetValue)
+    that appear as function calls. IDA exports them as function pointer declarations.
+    """
+    code = "\n".join(pseudocode_lines)
+    found = set()
+    for name in _CALL_NAME_RE.findall(code):
+        if name in _FORWARD_DECL_EXCLUDE:
+            found.add(name)
+    return sorted(found)
+
+
+def get_forward_declaration_names(
     func_name: str, pseudocode_lines: list[str]
 ) -> list[str]:
-    """Infer conservative forward declarations for external calls/symbol refs."""
+    """Return sorted list of names that need forward declarations."""
     code = "\n".join(pseudocode_lines)
     globals_found = set(_GLOBAL_NAME_RE.findall(code))
-
     names = set()
+
     for name in _CALL_NAME_RE.findall(code):
-        if name == func_name:
-            continue
-        if name in _FORWARD_DECL_EXCLUDE:
-            continue
-        if name in globals_found:
-            continue
-        if name.startswith("__"):
+        if name == func_name or name in _FORWARD_DECL_EXCLUDE or name in globals_found or name.startswith("__"):
             continue
         names.add(name)
 
     for name in _ADDR_OF_NAME_RE.findall(code):
-        if name == func_name:
-            continue
-        if name in _FORWARD_DECL_EXCLUDE:
-            continue
-        if name in globals_found:
+        if name == func_name or name in _FORWARD_DECL_EXCLUDE or name in globals_found:
             continue
         if not _FUNC_SYMBOL_RE.match(name):
             continue
         names.add(name)
 
-    # Handle function symbols passed as callback/function-pointer arguments:
-    #   CreateFiber(..., sub_1234, ...)
     for name in _FUNC_PTR_ARG_RE.findall(code):
-        if name == func_name:
-            continue
-        if name in _FORWARD_DECL_EXCLUDE:
-            continue
-        if name in globals_found:
+        if name == func_name or name in _FORWARD_DECL_EXCLUDE or name in globals_found:
             continue
         names.add(name)
 
-    return [f"extern int {name}();" for name in sorted(names)]
+    return sorted(names)
+
+
+def infer_forward_declarations(
+    func_name: str, pseudocode_lines: list[str]
+) -> list[str]:
+    """Infer conservative forward declarations for external calls/symbol refs."""
+    names = get_forward_declaration_names(func_name, pseudocode_lines)
+    return [f"extern int {name}();" for name in names]
 
 
 def build_compilation_shims(pseudocode_lines: list[str]) -> list[str]:
@@ -590,6 +596,8 @@ def format_sample_compatible_c(
     local_types: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
     global_declarations: list[str] | None = None,
+    forward_declarations: list[str] | None = None,
+    imported_function_declarations: list[str] | None = None,
 ) -> str:
     """Generate sample-compatible C source.
 
@@ -608,6 +616,8 @@ def format_sample_compatible_c(
         local_types: Optional local type declarations
         metadata: Optional d810ng deobfuscation statistics
         global_declarations: Optional list of global variable declarations
+    forward_declarations: Optional list of function forward declarations (with full signatures)
+    imported_function_declarations: Optional list of imported function pointer declarations
 
     Returns:
         Complete C source file content in sample format
@@ -660,10 +670,19 @@ def format_sample_compatible_c(
             lines.append(decl)
         lines.append("")
 
-    inferred_forwards = infer_forward_declarations(func_name, effective_pseudocode_lines)
-    if inferred_forwards:
-        lines.append("// Inferred forward declarations")
-        lines.extend(inferred_forwards)
+    effective_forwards = (
+        forward_declarations
+        if forward_declarations is not None
+        else infer_forward_declarations(func_name, effective_pseudocode_lines)
+    )
+    if effective_forwards:
+        lines.append("// Forward declarations")
+        lines.extend(effective_forwards)
+        lines.append("")
+
+    if imported_function_declarations:
+        lines.append("// Imported / external function pointers")
+        lines.extend(imported_function_declarations)
         lines.append("")
 
     # Local type declarations if provided
