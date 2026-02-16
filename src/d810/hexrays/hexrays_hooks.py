@@ -15,6 +15,7 @@ from d810.errors import D810Exception
 from d810.expr.z3_utils import log_z3_instructions
 from d810.hexrays.cfg_utils import safe_verify
 from d810.hexrays.hexrays_formatters import (
+    count_minsn_nodes,
     dump_microcode_for_debug,
     format_minsn_t,
     maturity_to_string,
@@ -372,9 +373,16 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
     def _resolve_active_instruction_rule_names(
         self,
         blk: ida_hexrays.mblock_t,
-    ) -> frozenset[str] | None:
+    ) -> frozenset[str]:
         if self._rule_scope_service is None:
-            return None
+            # FAIL CLOSED: If rule scope service not initialized, run NO rules
+            # instead of ALL rules. This prevents expression bloat when optimizer
+            # callbacks fire before configure() is called.
+            optimizer_logger.warning(
+                "Rule scope service not initialized at optimize time - no rules will run. "
+                "This may indicate a race condition during initialization."
+            )
+            return frozenset()
         if blk is None or blk.mba is None or blk.mba.entry_ea is None:
             return frozenset()
         if self.current_maturity is None:
@@ -412,6 +420,13 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             except TypeError as exc:
                 if "allowed_rule_names" not in str(exc):
                     raise
+                # Optimizer doesn't support scoped rules yet - fall back to unscoped.
+                # This should be a temporary shim until all optimizers support scoping.
+                optimizer_logger.warning(
+                    "%s does not support allowed_rule_names parameter - "
+                    "falling back to unscoped execution (all rules active)",
+                    ins_optimizer.name,
+                )
                 new_ins = ins_optimizer.get_optimized_instruction(blk, ins)
 
             if new_ins is not None:
@@ -433,6 +448,35 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             format_minsn_t(ins),
                         )
                 else:
+                    # --- expression size guard ---
+                    # Reject replacements that significantly increase expression size.
+                    # This is a defense-in-depth measure against rules that cause
+                    # expression bloat (e.g., CstSimplificationRule4's 4.24x bloat).
+                    # Check BEFORE the cycle detection hash to avoid polluting the
+                    # seen-hash set with bloated replacements.
+                    original_nodes = count_minsn_nodes(ins)
+                    new_nodes = count_minsn_nodes(new_ins)
+                    max_allowed_nodes = original_nodes * 2
+
+                    if new_nodes > max_allowed_nodes and original_nodes > 0:
+                        optimizer_logger.warning(
+                            "Expression bloat detected at %s by %s: "
+                            "%d nodes -> %d nodes (%.2fx, max allowed 2x) -- "
+                            "rejecting replacement",
+                            hex(ins.ea),
+                            ins_optimizer.name,
+                            original_nodes,
+                            new_nodes,
+                            new_nodes / original_nodes,
+                        )
+                        if self.stats is not None:
+                            self.stats.record_expression_bloat_rejected(
+                                ins_optimizer.name,
+                                hex(ins.ea),
+                            )
+                        return False
+                    # --- end expression size guard ---
+
                     # --- cycle detection guard ---
                     # Compute structural hash of the NEW instruction
                     # (after swap, `ins` holds the new content).
@@ -620,7 +664,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self, blk: ida_hexrays.mblock_t
     ) -> tuple[FlowOptimizationRule, ...] | None:
         if self._rule_scope_service is None:
-            return None
+            # FAIL CLOSED: If rule scope service not initialized, run NO rules
+            # instead of ALL rules. This prevents hangs when optimizer callbacks
+            # fire before configure() is called.
+            optimizer_logger.warning(
+                "Rule scope service not initialized at block optimize time - no rules will run. "
+                "This may indicate a race condition during initialization."
+            )
+            return tuple()
         if blk.mba is None or blk.mba.entry_ea is None:
             return tuple()
         if self.current_maturity is None:

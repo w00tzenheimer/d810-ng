@@ -284,6 +284,65 @@ class MopTreeLogger:
         return renderer.render(mop, indent, child_indent, 0)
 
 
+def count_minsn_nodes(ins: ida_hexrays.minsn_t | None) -> int:
+    """
+    Count the total number of operand nodes in an instruction tree.
+    Used to detect expression bloat from optimization rules.
+
+    Returns the count of all mop_t nodes in the instruction's operand tree.
+    """
+    if ins is None:
+        return 0
+
+    def count_mop_nodes(mop: ida_hexrays.mop_t | None) -> int:
+        if mop is None:
+            return 0
+
+        count = 1  # Count this node
+        mop_type = mop.t if hasattr(mop, "t") else None
+        if mop_type is None:
+            return count
+
+        # Recurse for sub-operands based on mop type
+        if mop_type == ida_hexrays.mop_d and hasattr(mop, "d") and mop.d is not None:
+            # mop_d: instruction, has l, r, d
+            count += count_mop_nodes(getattr(mop.d, "l", None))
+            count += count_mop_nodes(getattr(mop.d, "r", None))
+            count += count_mop_nodes(getattr(mop.d, "d", None))
+        elif mop_type == ida_hexrays.mop_a and hasattr(mop, "a") and mop.a is not None:
+            # mop_a: address, has v
+            count += count_mop_nodes(getattr(mop.a, "v", None))
+        elif mop_type == ida_hexrays.mop_f and hasattr(mop, "f") and mop.f is not None:
+            # mop_f: function call, has args
+            for arg in getattr(mop.f, "args", []):
+                count += count_mop_nodes(arg)
+        elif mop_type == ida_hexrays.mop_c and hasattr(mop, "c") and mop.c is not None:
+            # mop_c: switch cases, has cases (list of mop_t)
+            for case in getattr(mop.c, "cases", []):
+                count += count_mop_nodes(case)
+        elif (
+            mop_type == ida_hexrays.mop_p
+            and hasattr(mop, "pair")
+            and mop.pair is not None
+        ):
+            # mop_p: register pair
+            count += count_mop_nodes(getattr(mop.pair, "lop", None))
+            count += count_mop_nodes(getattr(mop.pair, "hop", None))
+
+        return count
+
+    # Count nodes in all three operands
+    total = 0
+    if hasattr(ins, "l"):
+        total += count_mop_nodes(ins.l)
+    if hasattr(ins, "r"):
+        total += count_mop_nodes(ins.r)
+    if hasattr(ins, "d"):
+        total += count_mop_nodes(ins.d)
+
+    return total
+
+
 def format_mop_t(mop_in: ida_hexrays.mop_t | None) -> str:
     if mop_in is None:
         return "mop_t is None"

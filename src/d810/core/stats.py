@@ -174,6 +174,20 @@ class OptimizationStatistics:
             OptimizationEvent.CYCLE_DETECTED, optimizer_name, instruction_info
         )
 
+    def record_expression_bloat_rejected(self, optimizer_name: str, instruction_info: str = "") -> None:
+        """Record that an expression bloat was detected and rejected.
+
+        This is a defense-in-depth measure against rules that significantly
+        increase expression size (e.g., CstSimplificationRule4's 4.24x bloat).
+
+        Args:
+            optimizer_name: Name of the optimizer that produced the bloated expression.
+            instruction_info: Optional description of the instruction (address, repr).
+        """
+        # For now, we just log this. Could add dedicated tracking if needed.
+        # The warning is already logged in hexrays_hooks.py.
+        pass
+
     # -------------------------------------------------------------------------
     # Query APIs (enhanced for test assertions)
     # -------------------------------------------------------------------------
