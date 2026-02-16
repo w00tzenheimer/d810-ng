@@ -183,3 +183,49 @@ pytest -s tests/system/e2e/test_dump_function_pseudocode.py --unskip-research
 ```bash
 D810_NO_CYTHON=1 PYTHONPATH=src pytest -q tests/unit/test_mop_snapshot_guard.py
 ```
+
+## Operator Complexity Assertions
+
+`assert_operator_complexity()` is a case-level guardrail for "did this
+deobfuscation actually simplify expression shape?" checks.
+
+Why it exists:
+
+- Semantic equivalence alone is not enough for deobfuscation UX.
+- Two outputs can be equivalent, but one can still be harder to read due to
+  extra MBA noise.
+- Operator-count trend checks catch readability regressions where transforms
+  preserve meaning but increase surface complexity.
+
+What it measures:
+
+- It counts selected operator tokens in before/after pseudocode.
+- Typical MBA set: `["+", "-", "*", "^", "&", "|"]`.
+- It supports:
+  - `decrease` (strictly fewer)
+  - `non_increase` (same or fewer)
+
+When to use:
+
+- Add per-case via `DeobfuscationCase` fields:
+  - `operator_complexity_mode`
+  - `operator_complexity_ops`
+- Use only for functions where simplification trend is part of expected product
+  behavior.
+
+When not to use:
+
+- As a global test invariant across all functions.
+- As a replacement for semantic/code-equivalence checks.
+
+Limitations:
+
+- This is lexical counting, not symbolic math complexity.
+- Decompiler formatting/version changes can move tokens around.
+- Equivalent rewrites can shift complexity across operator families.
+
+Practical guidance:
+
+- Default to `non_increase` for stability.
+- Use `decrease` only when you have repeatedly validated that strict reduction
+  is stable across target binaries/platforms/profiles.
