@@ -811,7 +811,7 @@ class ExportFunctionToC(D810ActionHandler):
         # Post-process with clang to apply fixits and improve compilability
         try:
             from d810.ui.actions.export_to_c_clang import make_compilable
-            c_source = make_compilable(c_source)
+            c_source = make_compilable(c_source, idaapi_mod=idaapi_mod)
         except Exception as exc:
             logger.debug("Clang post-process skipped: %s", exc)
 

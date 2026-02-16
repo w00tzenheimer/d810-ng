@@ -51,8 +51,12 @@ typedef struct _UNKNOWN { char _dummy; } _UNKNOWN;
 """
 
 
-def _get_clang_index() -> typing.Any | None:
-    """Create and return a clang Index, or None if libclang is unavailable."""
+def _get_clang_index(idaapi_mod: typing.Any | None = None) -> typing.Any | None:
+    """Create and return a clang Index, or None if libclang is unavailable.
+
+    Args:
+        idaapi_mod: Optional IDA API module for getting IDA installation directory
+    """
     try:
         from d810._vendor.clang.cindex import Config, Index
     except ImportError:
@@ -66,13 +70,13 @@ def _get_clang_index() -> typing.Any | None:
     paths_to_try: list[pathlib.Path] = []
 
     # IDA install dir (when running inside IDA)
-    try:
-        import idaapi
-        ida_dir = pathlib.Path(idaapi.get_ida_directory())
-        if ida_dir.exists():
-            paths_to_try.append(ida_dir / lib_name)
-    except Exception:
-        pass
+    if idaapi_mod is not None and hasattr(idaapi_mod, "get_ida_directory"):
+        try:
+            ida_dir = pathlib.Path(idaapi_mod.get_ida_directory())
+            if ida_dir.exists():
+                paths_to_try.append(ida_dir / lib_name)
+        except Exception:
+            pass
 
     # Project-relative (development)
     try:
@@ -127,19 +131,24 @@ def _apply_fixits(content: str, tu: typing.Any) -> str:
     return result
 
 
-def make_compilable(c_source: str, max_rounds: int = 5) -> str:
+def make_compilable(c_source: str, max_rounds: int = 5, idaapi_mod: typing.Any | None = None) -> str:
     """Parse C source with clang and apply fixits until it compiles or max_rounds.
 
     Strips polyfill/platform includes and prepends a minimal typedef preamble
     for parsing. Applies clang's suggested fixits. Returns the modified source
     with original includes restored (fixits are applied before include restoration).
+
+    Args:
+        c_source: The C source code to process
+        max_rounds: Maximum number of fixit rounds to apply
+        idaapi_mod: Optional IDA API module for getting IDA installation directory
     """
     try:
         from d810._vendor.clang.cindex import Index
     except ImportError:
         return c_source
 
-    index = _get_clang_index()
+    index = _get_clang_index(idaapi_mod)
     if index is None:
         return c_source
 
