@@ -79,7 +79,7 @@ def test_scoped_perf_counters_track_calls_candidates_and_lookup_time():
     assert manager._perf_counters["scoped_lookup_ns"] >= 0
 
 
-def test_legacy_perf_counters_track_filtered_candidate_count():
+def test_no_scope_service_fail_closed_ignores_legacy_candidates():
     manager = BlockOptimizerManager(OptimizationStatistics(), Path("."))
     manager.current_maturity = 1
     allowed = _DummyRule("allowed", whitelist=[0x401000])
@@ -89,10 +89,12 @@ def test_legacy_perf_counters_track_filtered_candidate_count():
 
     assert manager.optimize(_make_block()) == 0
 
-    assert manager._perf_counters["legacy_calls"] == 1
-    assert manager._perf_counters["legacy_candidates_total"] == 1
-    assert manager._perf_counters["scoped_calls"] == 0
+    assert manager._perf_counters["legacy_calls"] == 0
+    assert manager._perf_counters["legacy_candidates_total"] == 0
+    assert manager._perf_counters["scoped_calls"] == 1
     assert manager._perf_counters["scoped_candidates_total"] == 0
+    assert allowed.calls == 0
+    assert denied.calls == 0
 
 
 def test_scoped_compare_mode_records_legacy_baseline_and_can_reset():
@@ -147,7 +149,7 @@ def test_scoped_rules_are_executed_in_priority_order():
     assert low.calls == 0
 
 
-def test_legacy_rules_are_executed_in_priority_order():
+def test_no_scope_service_does_not_execute_legacy_rules():
     manager = BlockOptimizerManager(OptimizationStatistics(), Path("."))
     manager.current_maturity = 1
     low = _DummyRule("legacy_low", patches=1, priority=20)
@@ -155,6 +157,6 @@ def test_legacy_rules_are_executed_in_priority_order():
     manager.add_rule(low)
     manager.add_rule(high)
 
-    assert manager.optimize(_make_block()) == 1
-    assert high.calls == 1
+    assert manager.optimize(_make_block()) == 0
+    assert high.calls == 0
     assert low.calls == 0
