@@ -153,7 +153,12 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         # that EA, we have a cycle (Rule A: X->Y, Rule B: Y->X) and break it.
         self._rewrite_seen: dict[int, set[int]] = defaultdict(set)
 
+        # Optional event emitter — set by D810Manager after construction to
+        # allow emitting DecompilationEvent.MATURITY_CHANGED events.
+        self.event_emitter = None
+
         self.instruction_optimizers = []
+        self._active_optimizers: list = []
         # usage tracking moved to centralized statistics object
         ChainOptimizer: type[ChainOptimizer] = InstructionOptimizer.get(
             "ChainOptimizer"
@@ -305,8 +310,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         mba: ida_hexrays.mbl_array_t = blk.mba
 
         if (mba is not None) and (mba.maturity != self.current_maturity):
-            self.current_maturity = mba.maturity
+            new_maturity = mba.maturity
+            self.current_maturity = new_maturity
             main_logger.update_maturity(maturity_to_string(self.current_maturity))
+            if self.event_emitter is not None:
+                self.event_emitter.emit(DecompilationEvent.MATURITY_CHANGED, new_maturity)
             if main_logger.debug_on:
                 main_logger.debug(
                     "Instruction optimization function called at maturity: %s",
@@ -322,6 +330,12 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
 
             for ins_optimizer in self.instruction_optimizers:
                 ins_optimizer.cur_maturity = self.current_maturity
+
+            # Pre-compute which optimizers are active at this maturity
+            self._active_optimizers = [
+                opt for opt in self.instruction_optimizers
+                if self.current_maturity in opt.maturities
+            ]
 
             if self.dump_intermediate_microcode:
                 dump_microcode_for_debug(
@@ -407,7 +421,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
     def optimize(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
         # optimizer_log.info("Trying to optimize {0}".format(format_minsn_t(ins)))
         allowed_rule_names = self._resolve_active_instruction_rule_names(blk)
-        for ins_optimizer in self.instruction_optimizers:
+        for ins_optimizer in self._active_optimizers:
             self._last_optimizer_tried = ins_optimizer
             try:
                 new_ins = ins_optimizer.get_optimized_instruction(
@@ -836,6 +850,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
 class DecompilationEvent(enum.Enum):
     STARTED = "decompilation_started"
     FINISHED = "decompilation_finished"
+    MATURITY_CHANGED = "maturity_changed"
 
 
 class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
