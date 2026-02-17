@@ -94,7 +94,11 @@ jobs:
                     echo "IDA SDK already present, skipping clone"
                   else
                     rm -rf .ida-sdk
-                    git clone --depth=1 https://github.com/HexRaysSA/ida-sdk.git .ida-sdk
+                    git clone https://github.com/HexRaysSA/ida-sdk.git .ida-sdk
+                    cd .ida-sdk
+                    # This is the commit that last works on 9.2
+                    git checkout 7f8fd3100142295bffa5eabb2ce6f5b5ac163c6b
+                    cd ..
                   fi
 
             - name: Build with Cython speedups
