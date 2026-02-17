@@ -85,6 +85,7 @@ cdef class AstBase:
     cdef public object dest_size
     cdef public object ea
     cdef public object ast_index
+    cdef public object ins
     # cdef public ida_hexrays.mop_t dst_mop
     # cdef public int dest_size
     # cdef public int ea

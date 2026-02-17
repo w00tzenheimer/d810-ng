@@ -84,6 +84,7 @@ class AstBase:
     dest_size: int | None = None
     ea: int | None = None
     ast_index: int | None = None
+    ins: object = None
 
     @property
     @abc.abstractmethod
