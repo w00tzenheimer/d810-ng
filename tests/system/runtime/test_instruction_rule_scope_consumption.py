@@ -53,16 +53,6 @@ class _CaptureOptimizer:
         return None
 
 
-class _LegacyOptimizer:
-    name = "LegacyOptimizer"
-
-    def __init__(self):
-        self.calls = 0
-
-    def get_optimized_instruction(self, blk, ins):
-        self.calls += 1
-        return None
-
 
 class _PatternRule:
     def __init__(self, name: str, replacement):
@@ -126,21 +116,6 @@ def test_instruction_scope_cache_is_used_per_function_and_maturity(monkeypatch):
     assert capture.allowed[-1] == frozenset({"Rule.D"})
     assert len(scope_service.calls) == 3
 
-
-def test_instruction_optimizer_accepts_legacy_signature_without_filter_kwarg(monkeypatch):
-    monkeypatch.setattr(
-        "d810.hexrays.hexrays_hooks.InstructionVisitorManager",
-        lambda _optimizer: SimpleNamespace(),
-    )
-    manager = InstructionOptimizerManager(OptimizationStatistics(), Path("."))
-    manager.analyzer = SimpleNamespace(analyze=lambda *_args, **_kwargs: None)
-    legacy = _LegacyOptimizer()
-    manager.instruction_optimizers = [legacy]
-    manager._active_optimizers = list(manager.instruction_optimizers)
-    manager.current_maturity = 1
-
-    assert manager.optimize(_make_block(0x401000), SimpleNamespace(opcode=ida_hexrays.m_add)) is False
-    assert legacy.calls == 1
 
 
 def test_pattern_optimizer_filters_matches_by_allowed_rule_names(monkeypatch):
