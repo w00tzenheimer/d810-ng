@@ -15,6 +15,7 @@ $ErrorActionPreference = "Stop"
 # --- Configuration ---
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$SamplesDir = Split-Path -Parent $ScriptDir
 
 # --- Helpers ---
 
@@ -94,7 +95,7 @@ Write-Host "  Done."
 
 # Step 3: Build
 Write-Step 3 $TotalSteps "Building libobfuscated.dll via Makefile"
-Set-Location $ScriptDir
+Set-Location $SamplesDir
 
 # Prefer a real Git bash shell path for GNU make recipes.
 $RealSh = $null
@@ -128,8 +129,8 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$DllPath = Join-Path $ScriptDir "bins\libobfuscated.dll"
-$PdbPath = Join-Path $ScriptDir "bins\libobfuscated.pdb"
+$DllPath = Join-Path $SamplesDir "bins\libobfuscated.dll"
+$PdbPath = Join-Path $SamplesDir "bins\libobfuscated.pdb"
 
 if (-not (Test-Path $DllPath)) {
     Write-Host "ERROR: DLL not created at $DllPath" -ForegroundColor Red
@@ -138,7 +139,7 @@ if (-not (Test-Path $DllPath)) {
 
 # Verify output
 Write-Banner "BUILD SUCCESSFUL"
-Write-Host "  Output directory: $ScriptDir\bins"
+Write-Host "  Output directory: $SamplesDir\bins"
 if (Test-Path $DllPath) {
     $DllSize = (Get-Item $DllPath).Length
     Write-Host "  libobfuscated.dll: $([math]::Round($DllSize/1KB, 1)) KB"
