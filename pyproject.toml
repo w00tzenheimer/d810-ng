@@ -12,10 +12,10 @@ authors = [
     { name = "Mahmoud Abdelkader", email = "mabdelkader@gmail.com" },
 ]
 description = "This is a next generation version of D-810, an IDA Pro plugin which can be used to deobfuscate code at decompilation time by modifying IDA Pro microcode."
-dependencies = ["z3-solver>=4.13,<4.15.5", "typing-extensions"]
+dependencies = ["typing-extensions"]
 
 [project.optional-dependencies]
-speedups = ["Cython>=3.0.0"]
+speedups = ["Cython>=3.0.0", "z3-solver>=4.13,<4.15.5"]
 egraph = ["egglog>=12.0.0", "cloudpickle>=3.0.0"]
 dev = [
     "pyinstrument",
@@ -25,6 +25,9 @@ dev = [
     "coverage[toml]>=7.0.0",
     "import-linter>=2.0",
 ]
+
+[project.scripts]
+install-speedups = "tools.install_speedups:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
