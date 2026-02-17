@@ -37,7 +37,7 @@ class _ConcreteOptimizer(InstructionOptimizer):
 
 
 def _make_blk(maturity: int) -> SimpleNamespace:
-    return SimpleNamespace(mba=SimpleNamespace(maturity=maturity))
+    return SimpleNamespace(mba=SimpleNamespace(maturity=maturity), serial=0)
 
 
 def _make_ins(opcode: int = ida_hexrays.m_mov) -> SimpleNamespace:
@@ -119,7 +119,7 @@ def test_active_optimizer_list_filters_by_maturity():
     mgr._rule_scope_service = None
     mgr._rule_scope_project_name = ""
     mgr._rule_scope_idb_key = ""
-    mgr.analyzer = SimpleNamespace(set_maturity=lambda m: None)
+    mgr.analyzer = SimpleNamespace(set_maturity=lambda m: None, analyze=lambda blk, ins: None)
     mgr.event_emitter = None
     mgr.dump_intermediate_microcode = False
     mgr.stats = None

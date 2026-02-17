@@ -90,6 +90,7 @@ def test_instruction_scope_cache_is_used_per_function_and_maturity(monkeypatch):
     manager.analyzer = SimpleNamespace(analyze=lambda *_args, **_kwargs: None)
     capture = _CaptureOptimizer()
     manager.instruction_optimizers = [capture]
+    manager._active_optimizers = list(manager.instruction_optimizers)
 
     scope_service = _FakeRuleScopeService(
         {
@@ -135,6 +136,7 @@ def test_instruction_optimizer_accepts_legacy_signature_without_filter_kwarg(mon
     manager.analyzer = SimpleNamespace(analyze=lambda *_args, **_kwargs: None)
     legacy = _LegacyOptimizer()
     manager.instruction_optimizers = [legacy]
+    manager._active_optimizers = list(manager.instruction_optimizers)
     manager.current_maturity = 1
 
     assert manager.optimize(_make_block(0x401000), SimpleNamespace(opcode=ida_hexrays.m_add)) is False
