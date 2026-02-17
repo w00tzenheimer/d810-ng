@@ -191,6 +191,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
 import logging
+import uuid
 
 from d810.core.typing import TYPE_CHECKING
 import os
@@ -198,6 +199,7 @@ import os
 import ida_hexrays
 
 from d810.core import getLogger
+from d810.hexrays.deferred_events import DeferredEvent, EventEmitter
 from d810.hexrays.cfg_utils import (
     capture_failure_artifact,
     change_1way_block_successor,
@@ -407,11 +409,77 @@ class DeferredGraphModifier:
     _applied: bool = False
     verify_failed: bool = False
     _pre_snapshot: PortableCFG | None = None
+    # Optional event emitter; when None, no events are emitted (zero overhead).
+    event_emitter: EventEmitter | None = None
+    # Metadata injected by callers so payloads carry rich context.
+    _optimizer_name: str = field(default="", init=False)
+    _pass_id: int = field(default=0, init=False)
+    _session_id: str = field(default="", init=False)
 
     def reset(self) -> None:
         """Clear all queued modifications."""
         self.modifications.clear()
         self._applied = False
+
+    def configure_events(
+        self,
+        optimizer_name: str = "",
+        pass_id: int = 0,
+    ) -> None:
+        """Set per-apply context fields injected into event payloads.
+
+        Call this (optionally) before :meth:`apply` so that emitted payloads
+        carry useful optimizer/pass metadata.  A fresh ``session_id`` is always
+        generated automatically.
+
+        Args:
+            optimizer_name: Name of the optimizer/rule that owns this modifier.
+            pass_id: Maturity-relative pass counter.
+        """
+        self._optimizer_name = optimizer_name
+        self._pass_id = pass_id
+        self._session_id = uuid.uuid4().hex
+
+    def _emit(self, event: DeferredEvent, payload: dict) -> None:
+        """Emit *event* with *payload* if an emitter is configured.
+
+        This is a zero-cost guard: when ``self.event_emitter is None`` the
+        body is never reached and no dict is constructed by the caller.
+        """
+        if self.event_emitter is not None:
+            self.event_emitter.emit(event, payload)
+
+    def _base_payload(self) -> dict:
+        """Build the required-field base for a payload dict."""
+        try:
+            function_ea: int | None = int(self.mba.entry_ea)
+        except Exception:
+            function_ea = None
+        try:
+            maturity: int | None = int(self.mba.maturity)
+        except Exception:
+            maturity = None
+        return {
+            "optimizer_name": self._optimizer_name,
+            "function_ea": function_ea,
+            "maturity": maturity,
+            "pass_id": self._pass_id,
+            "session_id": self._session_id,
+        }
+
+    def _mod_payload(self, mod: GraphModification, mod_index: int | None = None) -> dict:
+        """Extend a base payload with modification-specific fields."""
+        payload = self._base_payload()
+        payload.update({
+            "mod_index": mod_index,
+            "mod_type": mod.mod_type.name,
+            "block_serial": mod.block_serial,
+            "new_target": mod.new_target,
+            "priority": mod.priority,
+            "rule_priority": mod.rule_priority,
+            "description": mod.description,
+        })
+        return payload
 
     def _is_watched_edge(self, block_serial: int, new_target: int | None) -> bool:
         if new_target is None:
@@ -481,6 +549,9 @@ class DeferredGraphModifier:
             "Queued goto change: block %d -> %d (rule_priority=%d)",
             block_serial, new_target, rule_priority
         )
+        if self.event_emitter is not None:
+            payload = self._mod_payload(self.modifications[-1])
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, payload)
         if self._is_watched_edge(block_serial, new_target):
             logger.warning(
                 "DEBUG WATCH enqueue BLOCK_GOTO_CHANGE %d -> %d desc=%s",
@@ -506,6 +577,8 @@ class DeferredGraphModifier:
             description=description or f"jmp target {block_serial} -> {new_target}",
         ))
         logger.debug("Queued target change: block %d -> %d", block_serial, new_target)
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
 
     def queue_convert_to_goto(
         self,
@@ -522,6 +595,8 @@ class DeferredGraphModifier:
             description=description or f"convert {block_serial} to goto {goto_target}",
         ))
         logger.debug("Queued convert to goto: block %d -> %d", block_serial, goto_target)
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
 
     def queue_insn_remove(
         self,
@@ -538,6 +613,8 @@ class DeferredGraphModifier:
             description=description or f"remove insn at {hex(insn_ea)} in block {block_serial}",
         ))
         logger.debug("Queued insn remove: block %d, ea=%s", block_serial, hex(insn_ea))
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
 
     def queue_insn_nop(
         self,
@@ -554,6 +631,8 @@ class DeferredGraphModifier:
             description=description or f"nop insn at {hex(insn_ea)} in block {block_serial}",
         ))
         logger.debug("Queued insn nop: block %d, ea=%s", block_serial, hex(insn_ea))
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
 
     def queue_create_and_redirect(
         self,
@@ -591,6 +670,8 @@ class DeferredGraphModifier:
             "Queued create_and_redirect: %d -> (new) -> %d with %d instructions",
             source_block_serial, final_target_serial, len(instructions_to_copy)
         )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
 
     def queue_create_conditional_redirect(
         self,
@@ -638,6 +719,8 @@ class DeferredGraphModifier:
             "-> jcc:%d / fallthrough:%d",
             source_blk_serial, conditional_target_serial, fallthrough_target_serial
         )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
         if self._is_watched_edge(source_blk_serial, ref_blk_serial):
             logger.warning(
                 "DEBUG WATCH enqueue BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT "
@@ -748,6 +831,12 @@ class DeferredGraphModifier:
         """
         if not self.modifications:
             return 0
+
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_COALESCE_STARTED, {
+                **self._base_payload(),
+                "queue_size": len(self.modifications),
+            })
 
         original_count = len(self.modifications)
 
@@ -878,6 +967,12 @@ class DeferredGraphModifier:
             )
 
         self.modifications = unique_modifications
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_COALESCE_FINISHED, {
+                **self._base_payload(),
+                "queue_size": len(self.modifications),
+                "removed_count": removed_count,
+            })
         return removed_count
 
     def apply(
@@ -1037,6 +1132,12 @@ class DeferredGraphModifier:
 
         logger.info("Applying %d queued graph modifications", len(sorted_mods))
 
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_APPLY_STARTED, {
+                **self._base_payload(),
+                "modification_count": len(sorted_mods),
+            })
+
         # Log all queued modifications before applying
         logger.info("=== QUEUED MODIFICATIONS (sorted by priority) ===")
         for i, mod in enumerate(sorted_mods):
@@ -1080,6 +1181,9 @@ class DeferredGraphModifier:
             rollback_plan = None
             if verify_each_mod and rollback_on_verify_failure:
                 rollback_plan = self._prepare_rollback(mod)
+
+            if self.event_emitter is not None:
+                self._emit(DeferredEvent.DEFERRED_MOD_STARTED, self._mod_payload(mod, i))
 
             try:
                 result = self._apply_single(mod)
@@ -1137,6 +1241,10 @@ class DeferredGraphModifier:
                         except RuntimeError:
                             failed += 1
                             logger.warning("    RESULT: VERIFY FAILED")
+                            if self.event_emitter is not None:
+                                _vp = self._mod_payload(mod, i)
+                                _vp["result"] = "verify_failed"
+                                self._emit(DeferredEvent.DEFERRED_VERIFY_FAILED, _vp)
                             rolled_back_ok = False
 
                             if rollback_plan is not None:
@@ -1146,6 +1254,11 @@ class DeferredGraphModifier:
                                     i,
                                     rb_desc,
                                 )
+                                if self.event_emitter is not None:
+                                    _rp = self._mod_payload(mod, i)
+                                    _rp["description"] = rb_desc
+                                    self._emit(DeferredEvent.DEFERRED_ROLLBACK_STARTED, _rp)
+                                _rb_succeeded = False
                                 try:
                                     if rb_func():
                                         safe_verify(
@@ -1165,6 +1278,7 @@ class DeferredGraphModifier:
                                             },
                                         )
                                         rolled_back_ok = True
+                                        _rb_succeeded = True
                                 except RuntimeError:
                                     rolled_back_ok = False
                                 except Exception as rb_exc:
@@ -1175,6 +1289,10 @@ class DeferredGraphModifier:
                                         exc_info=True,
                                     )
                                     rolled_back_ok = False
+                                if self.event_emitter is not None:
+                                    _rfp = self._mod_payload(mod, i)
+                                    _rfp["result"] = "rolled_back" if _rb_succeeded else "failed"
+                                    self._emit(DeferredEvent.DEFERRED_ROLLBACK_FINISHED, _rfp)
 
                             if rolled_back_ok:
                                 rolled_back += 1
@@ -1199,9 +1317,17 @@ class DeferredGraphModifier:
 
                     successful += 1
                     logger.info("    RESULT: SUCCESS")
+                    if self.event_emitter is not None:
+                        _p = self._mod_payload(mod, i)
+                        _p["result"] = "success"
+                        self._emit(DeferredEvent.DEFERRED_MOD_APPLIED, _p)
                 else:
                     failed += 1
                     logger.warning("    RESULT: FAILED")
+                    if self.event_emitter is not None:
+                        _p = self._mod_payload(mod, i)
+                        _p["result"] = "failed"
+                        self._emit(DeferredEvent.DEFERRED_MOD_FAILED, _p)
                     logger.warning(
                         "Aborting deferred apply after first failed modification "
                         "to avoid compounding CFG corruption"
@@ -1210,6 +1336,11 @@ class DeferredGraphModifier:
             except Exception as e:
                 failed += 1
                 logger.error("    RESULT: EXCEPTION: %s", e)
+                if self.event_emitter is not None:
+                    _ep = self._mod_payload(mod, i)
+                    _ep["result"] = "failed"
+                    _ep["error"] = str(e)
+                    self._emit(DeferredEvent.DEFERRED_MOD_FAILED, _ep)
                 import traceback
                 logger.error("    TRACEBACK: %s", traceback.format_exc())
                 capture_failure_artifact(
@@ -1251,18 +1382,30 @@ class DeferredGraphModifier:
         if successful > 0:
             self.mba.mark_chains_dirty()
 
+        def _finish(result_count: int) -> int:
+            """Shared exit: emit APPLY_FINISHED and mark applied."""
+            self._applied = True
+            if self.event_emitter is not None:
+                _fp = self._base_payload()
+                _fp.update({
+                    "applied": result_count,
+                    "failed": failed,
+                    "rolled_back": rolled_back,
+                    "verify_failed": self.verify_failed,
+                })
+                self._emit(DeferredEvent.DEFERRED_APPLY_FINISHED, _fp)
+            return result_count
+
         if self.verify_failed:
             logger.warning(
                 "Skipping post-apply cleanup because incremental verify has "
                 "already failed; caller must treat MBA as suspect"
             )
-            self._applied = True
-            return successful
+            return _finish(successful)
 
         if successful > 0:
             if defer_post_apply_maintenance:
-                self._applied = True
-                return successful
+                return _finish(successful)
 
             if run_deep_cleaning:
                 mba_deep_cleaning(self.mba, call_mba_combine_block=True)
@@ -1297,6 +1440,11 @@ class DeferredGraphModifier:
                     "-- marking verify_failed so callers can abort gracefully",
                     successful,
                 )
+                if self.event_emitter is not None:
+                    _vfp = self._base_payload()
+                    _vfp["result"] = "verify_failed"
+                    _vfp["error"] = "post-apply verify failed"
+                    self._emit(DeferredEvent.DEFERRED_VERIFY_FAILED, _vfp)
 
                 # If snapshot rollback is enabled and we have a snapshot, try full restoration
                 if enable_snapshot_rollback and self._pre_snapshot is not None:
@@ -1310,8 +1458,7 @@ class DeferredGraphModifier:
                             "Successfully restored MBA from snapshot after verify failure"
                         )
                         # Return 0 to indicate no successful changes (rolled back)
-                        self._applied = True
-                        return 0
+                        return _finish(0)
                     else:
                         logger.error("Snapshot rollback failed, MBA remains corrupted")
 
@@ -1338,8 +1485,7 @@ class DeferredGraphModifier:
                 except RuntimeError:
                     pass
 
-        self._applied = True
-        return successful
+        return _finish(successful)
 
     def _prepare_rollback(self, mod: GraphModification) -> tuple[str, callable] | None:
         """Prepare a best-effort rollback closure for reversible modifications.
