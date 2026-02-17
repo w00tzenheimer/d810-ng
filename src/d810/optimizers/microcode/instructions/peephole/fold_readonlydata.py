@@ -89,6 +89,28 @@ from d810.optimizers.microcode.instructions.peephole.handler import (
 peephole_logger = getLogger(__name__)
 
 
+# Operand types that may reference readonly global data.
+_READONLY_CANDIDATE_TYPES: frozenset[int] = frozenset({
+    ida_hexrays.mop_v,   # Global variable
+    ida_hexrays.mop_S,   # Stack/segment variable
+    ida_hexrays.mop_d,   # Nested sub-instruction (may contain refs)
+    ida_hexrays.mop_b,   # Micro basic block (may contain refs)
+})
+
+
+def _has_potential_readonly_operand(ins) -> bool:
+    """Fast check: could this instruction contain a readonly global reference?
+
+    Returns True if any source operand has type mop_v, mop_S, mop_d, or mop_b.
+    Pure register/constant/number instructions return False, avoiding the
+    expensive clone-and-walk path in _fold_readonly_operands_in_expr().
+    """
+    for mop in (ins.l, ins.r):
+        if mop and mop.t in _READONLY_CANDIDATE_TYPES:
+            return True
+    return False
+
+
 class FoldReadonlyDataRule(PeepholeSimplificationRule):
     """Replace constant table look-ups by immediates."""
 
@@ -213,6 +235,10 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             ea = self._ea_from_simple_mov_load(ins)
 
         if ea is None:
+            # Quick pre-check: skip instructions that cannot possibly contain
+            # a readonly global reference (pure register/constant operands).
+            if not _has_potential_readonly_operand(ins):
+                return None
             # Try folding readonly globals used as plain values inside
             # expression trees (e.g., nested under mop_d). Do NOT fold top-level
             # mov of addresses (e.g., function pointers / IAT entries) into
@@ -442,9 +468,9 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                             op.make_number(folded, out_size)
                             return True
             # Otherwise, recurse into sub-operands of the inner instruction
-            return self._fold_readonly_inplace(inner.l) or self._fold_readonly_inplace(
-                inner.r
-            )
+            res_l = self._fold_readonly_inplace(inner.l)
+            res_r = self._fold_readonly_inplace(inner.r)
+            return res_l or res_r
 
         # Address-of or pointer-like forms are not folded here
         if op.t in {ida_hexrays.mop_a, ida_hexrays.mop_b}:
