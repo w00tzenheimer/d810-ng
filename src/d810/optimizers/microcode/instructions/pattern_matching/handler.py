@@ -499,8 +499,9 @@ class PatternOptimizer(InstructionOptimizer):
     ) -> ida_hexrays.minsn_t | None:
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
-        if self.cur_maturity not in self.maturities:
-            return None
+        # Optimizer-level maturity gate removed: per-rule maturities are checked in the loop below
+        # if self.cur_maturity not in self.maturities:
+        #     return None
         # Skip this optimizer entirely when no pattern-matching rules are configured.
         # This avoids the (potentially expensive) AST conversion and pattern lookup
         # overhead when the user has not enabled any pattern rules.
@@ -630,6 +631,9 @@ class PatternOptimizer(InstructionOptimizer):
                 allowed_rule_names is not None
                 and rule_pattern_info.rule.name not in allowed_rule_names
             ):
+                continue
+            # Per-rule maturity check (Gate 2)
+            if self.cur_maturity not in rule_pattern_info.rule.maturities:
                 continue
             if optimizer_logger.debug_on:
                 optimizer_logger.debug(

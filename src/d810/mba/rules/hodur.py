@@ -10,6 +10,11 @@ verified with Z3.
 from d810.mba.dsl import Const, Var, ONE, ZERO
 from d810.mba.rules._base import VerifiableRule
 
+# Maturity constants (from ida_hexrays)
+# MMAT_PREOPTIMIZED=2, MMAT_LOCOPT=3, MMAT_CALLS=4, MMAT_GLBOPT1=5
+# MBA/HackersDelight patterns need to fire early (including MMAT_PREOPTIMIZED)
+_ALL_MATURITIES = [2, 3, 4, 5]
+
 # Common variables for HODUR patterns
 x = Var("x")
 y = Var("y")
@@ -30,6 +35,7 @@ class Xor_Hodur_1(VerifiableRule):
         => enc[i] ^ ((i - 0x1D) ^ ~0x1C)
         => enc[i] ^ ((i - 0x1D) ^ 0xE3)
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = ~(x ^ (y ^ z))
     REPLACEMENT = x ^ (y ^ ~z)
@@ -62,6 +68,7 @@ class Bnot_Hodur_1(VerifiableRule):
         ((0x1C - i) & 0xFA) ^ ((i - 0x1D) & 5)
         => ~((i - 0x1D) ^ 5)
     """
+    maturities = _ALL_MATURITIES
 
     c_0 = Const("c_0")
     c_3 = Const("c_3")
@@ -93,6 +100,7 @@ class Or_Hodur_1(VerifiableRule):
         => (~enc[i] & (0xE3 | 0x18)) | (enc[i] & 4)
         => (~enc[i] & 0xFB) | (enc[i] & 4)
     """
+    maturities = _ALL_MATURITIES
 
     c_0 = Const("c_0")
     c_1 = Const("c_1")
@@ -127,6 +135,7 @@ class Or_Hodur_2(VerifiableRule):
         (x & (y ^ 0x1C)) | ((y ^ 0xE3) & ~x)
         => x ^ (y ^ 0xE3)  [when 0xE3 == ~0x1C]
     """
+    maturities = _ALL_MATURITIES
 
     c_0 = Const("c_0")
     bnot_c_0 = Const("bnot_c_0")
@@ -162,6 +171,7 @@ class Xor_Hodur_2(VerifiableRule):
 
     Now fully verifiable with 8-bit Z3 bitvectors!
     """
+    maturities = _ALL_MATURITIES
 
     # Use 8-bit verification for byte-specific rule
     BIT_WIDTH = 8

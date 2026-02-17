@@ -91,13 +91,11 @@ main_logger = getLogger("D810")
 optimizer_logger = getLogger("D810.optimizer")
 
 DEFAULT_OPTIMIZATION_PATTERN_MATURITIES = [
-    ida_hexrays.MMAT_PREOPTIMIZED,
     ida_hexrays.MMAT_LOCOPT,
     ida_hexrays.MMAT_CALLS,
     ida_hexrays.MMAT_GLBOPT1,
 ]
 DEFAULT_OPTIMIZATION_CHAIN_MATURITIES = [
-    ida_hexrays.MMAT_PREOPTIMIZED,
     ida_hexrays.MMAT_LOCOPT,
     ida_hexrays.MMAT_CALLS,
     ida_hexrays.MMAT_GLBOPT1,

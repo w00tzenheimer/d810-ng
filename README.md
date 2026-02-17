@@ -120,6 +120,57 @@ class Xor_HackersDelightRule_1(VerifiableRule):
 
 Rules marked `SKIP_VERIFICATION = True` (e.g. microcode-type checks or very slow Z3 cases) are exempt but must be documented.
 
+### Rule Maturity System
+
+D-810 rules fire at specific IDA microcode maturity levels. Each rule declares which maturities it targets; the optimizer calls rules only at the declared levels.
+
+#### Maturity Levels
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `MMAT_PREOPTIMIZED` | 2 | Raw microcode, before IDA's optimizer |
+| `MMAT_LOCOPT` | 3 | After local optimization |
+| `MMAT_CALLS` | 4 | After call analysis |
+| `MMAT_GLBOPT1` | 5 | After global optimization pass 1 |
+
+#### Default Behavior
+
+Rules that do not declare maturities inherit the optimizer defaults: `MMAT_LOCOPT`, `MMAT_CALLS`, and `MMAT_GLBOPT1`. `MMAT_PREOPTIMIZED` is **not** included by default — firing rules at maturity 2 on complex functions can cause expression bloat and IDA hangs.
+
+#### Per-Category Exceptions
+
+- **MBA rules** (XOR, OR, AND, HackersDelight, O-LLVM, etc.) explicitly declare `MMAT_PREOPTIMIZED` because they need to match arithmetic patterns before IDA's optimizer transforms them away.
+- **CstSimplification rules** intentionally omit `MMAT_PREOPTIMIZED` to prevent expression bloat — for example, De Morgan's law expansion at maturity 2 can create cascading rewrites that stall decompilation.
+
+#### Per-Rule Override via Project Config
+
+Any rule's maturities can be overridden in your project JSON config:
+
+```json
+{
+    "name": "CstSimplificationRule17",
+    "is_activated": true,
+    "config": {
+        "maturities": ["MMAT_PREOPTIMIZED", "MMAT_LOCOPT", "MMAT_CALLS", "MMAT_GLBOPT1"]
+    }
+}
+```
+
+Priority order: **project config JSON** > **class-level `maturities`** > **optimizer default inheritance**.
+
+#### Adding Maturities to New Rules
+
+When subclassing `VerifiableRule`, add a class-level `maturities` attribute if the rule needs to fire at `MMAT_PREOPTIMIZED`:
+
+```python
+class MyNewRule(VerifiableRule):
+    maturities = [2, 3, 4, 5]  # Include MMAT_PREOPTIMIZED (2)
+    PATTERN = ...
+    REPLACEMENT = ...
+```
+
+Omit `maturities` entirely to inherit the default (`MMAT_LOCOPT`, `MMAT_CALLS`, `MMAT_GLBOPT1`), which is safe for most rules.
+
 ## Installation
 
 **Only IDA v9 or later is supported with Python 3.10 and higher** (since we need the microcode Python API)

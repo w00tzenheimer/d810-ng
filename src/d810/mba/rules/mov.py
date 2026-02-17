@@ -11,6 +11,11 @@ All rules are verified using Z3 SMT solver.
 from d810.mba.dsl import Var, when
 from d810.mba.rules._base import VerifiableRule
 
+# Maturity constants (from ida_hexrays)
+# MMAT_PREOPTIMIZED=2, MMAT_LOCOPT=3, MMAT_CALLS=4, MMAT_GLBOPT1=5
+# MBA/HackersDelight patterns need to fire early (including MMAT_PREOPTIMIZED)
+_ALL_MATURITIES = [2, 3, 4, 5]
+
 # Define variables for pattern matching
 x, y = Var("x_0"), Var("x_1")
 bnot_y = Var("bnot_x_1")
@@ -36,6 +41,7 @@ class GetIdentRule1(VerifiableRule):
     Note: In modular arithmetic (y + ~y) != 1, but in Boolean algebra
     where we're masking bits, this identity holds.
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x & y) + (x & bnot_y)
     REPLACEMENT = x
@@ -58,6 +64,7 @@ class GetIdentRule2(VerifiableRule):
                             = x & 1         [y ^ ~y = 1]
                             = x             [identity]
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x & y) ^ (x & bnot_y)
     REPLACEMENT = x
@@ -80,6 +87,7 @@ class GetIdentRule3(VerifiableRule):
 
     This is one of the fundamental absorption laws.
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = x & (x | y)
     REPLACEMENT = x
