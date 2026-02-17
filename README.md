@@ -177,18 +177,18 @@ Omit `maturities` entirely to inherit the default (`MMAT_LOCOPT`, `MMAT_CALLS`, 
 
 Copy the contents of this repository to `.idapro/plugins` or `%appdata%\Hex-Rays\IDA pro\plugins`.
 
-To active [Cython](https://cython.org) speedups, install the pre-built wheels for your platform and then run the helper that keeps Z3 isolated from IDA:
+To activate [Cython](https://cython.org) speedups, install the pre-built wheels for your platform and then run the helper that keeps Z3 isolated from IDA:
 
 ```bash
 pip3 install d810-ng[speedups]
-python -m d810.speedups
+python -m tools.install_speedups
 ```
 
 Speedups are generously provided by [Mahmoud Abdelkader](https://mahmoudimus.com) who writes about how Cython ["super-charging the work-horse of reverse engineering"](https://mahmoudimus.com/blog/2025/08/ida-pro-and-cython-super-charging-the-work-horse-of-reverse-engineering/) gives C++ level performance with the same productivity of Python.
 
 ### Optional speedups dependencies
 
-Z3 is included as part of `d810-ng[speedups]`, but the DLL shipped with IDA is older, so the package installs the matching `libz3.dll` into a private directory inside the repo instead of into `site-packages`. Run this helper after cloning whenever you need solver-assisted speedups (or invoke `python -m tools.install_speedups` via the entry point):
+Z3 is included as part of `d810-ng[speedups]`, but the DLL shipped with IDA is older, so the package installs the matching `libz3.dll` into a private directory inside the repo instead of into `site-packages`. Run this helper after cloning whenever you need solver-assisted speedups:
 
 ```bash
 python -m d810.speedups
