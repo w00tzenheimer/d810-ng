@@ -1,0 +1,56 @@
+name: Ensure IDA SDK
+description: Clone and pin the Hex-Rays IDA SDK for the runner/workflow.
+inputs:
+  sdk-dir:
+    description: Path where the SDK should live relative to the workspace.
+    required: false
+    default: .ida-sdk
+  ref:
+    description: Git ref (branch, tag, or commit) to check out.
+    required: false
+    default: 7f8fd3100142295bffa5eabb2ce6f5b5ac163c6b
+outputs:
+  sdk-dir:
+    description: Relative path to the SDK directory under the workspace.
+    value: "${{ steps.prepare.outputs.sdk-dir }}"
+  sdk-abs:
+    description: Absolute SDK path on the runner.
+    value: "${{ steps.prepare.outputs.sdk-abs }}"
+runs:
+  using: composite
+  steps:
+    - name: Ensure SDK directory exists
+      id: prepare
+      shell: bash
+      run: |
+        set -euo pipefail
+        sdk_dir="${{ inputs.sdk-dir }}"
+        ref="${{ inputs.ref }}"
+        workspace="${GITHUB_WORKSPACE%/}"
+        if [ -z "$sdk_dir" ]; then
+          sdk_dir=".ida-sdk"
+        fi
+        if [ "$sdk_dir" = "." ]; then
+          echo "SDK dir cannot be '.'" >&2
+          exit 1
+        fi
+        sdk_abs="$workspace/$sdk_dir"
+        if [ -d "$sdk_dir/src/include" ] || [ -d "$sdk_dir/include" ]; then
+          echo "IDA SDK already present at $sdk_dir"
+          echo "sdk-dir=$sdk_dir" >> "$GITHUB_OUTPUT"
+          echo "sdk-abs=$sdk_abs" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        rm -rf "$sdk_dir"
+        git clone https://github.com/HexRaysSA/ida-sdk.git "$sdk_dir"
+        cd "$sdk_dir"
+        if [ -n "$ref" ]; then
+          if ! git checkout "$ref"; then
+            git fetch --depth=1 origin "$ref"
+            git checkout "$ref"
+          fi
+        fi
+        cd - >/dev/null
+        echo "IDA SDK ready at $sdk_dir"
+        echo "sdk-dir=$sdk_dir" >> "$GITHUB_OUTPUT"
+        echo "sdk-abs=$sdk_abs" >> "$GITHUB_OUTPUT"
