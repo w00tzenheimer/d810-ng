@@ -181,20 +181,20 @@ To activate [Cython](https://cython.org) speedups, install the pre-built wheels 
 
 ```bash
 pip3 install d810-ng[speedups]
-python -m tools.install_speedups
+python -m d810.speedups.install
 ```
 
 Speedups are generously provided by [Mahmoud Abdelkader](https://mahmoudimus.com) who writes about how Cython ["super-charging the work-horse of reverse engineering"](https://mahmoudimus.com/blog/2025/08/ida-pro-and-cython-super-charging-the-work-horse-of-reverse-engineering/) gives C++ level performance with the same productivity of Python.
 
 ### Optional speedups dependencies
 
-Z3 is included as part of `d810-ng[speedups]`, but the DLL shipped with IDA is older, so the package installs the matching `libz3.dll` into a private directory inside the repo instead of into `site-packages`. Run this helper after cloning whenever you need solver-assisted speedups:
+`d810-ng[speedups]` installs Cython speedups, but not Z3. The DLL shipped with IDA is older, so install the matching `libz3.dll` into an isolated user directory instead of `site-packages`:
 
 ```bash
-python -m d810.speedups
+python -m d810.speedups.install
 ```
 
-This command installs `z3-solver>=4.13,<4.15.5` into `.d810-speedups/` and automatically adds that directory to `sys.path` so it is picked up before IDA’s built-in DLL, preventing library conflicts.
+This command installs `z3-solver>=4.13,<4.15.5` into `~/.d810-speedups/` (override with `D810_SPEEDUPS_DIR`) and d810 prepends that directory to `sys.path` before importing Z3, preventing IDA DLL conflicts.
 
 ### Install from source
 
