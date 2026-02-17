@@ -49,6 +49,7 @@ jobs:
               run: |
                   pip install --upgrade pip setuptools wheel uv
                   uv pip install --system -e .
+                  uv pip install --system "z3-solver>=4.13,<4.15.5"
                   uv pip install --system pytest pytest-cov import-linter
 
             - name: Install repo-local speedups helper
