@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from d810.speedups import install_speedups
+from d810.speedups.install import install_speedups
 
 
 def main() -> None:

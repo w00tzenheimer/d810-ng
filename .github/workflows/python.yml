@@ -98,6 +98,10 @@ jobs:
               run: |
                   uv pip install --system --no-build-isolation -e ".[speedups]"
 
+            - name: Install repo-local speedups helper
+              run: |
+                  python -m tools.install_speedups
+
             - name: Verify speedups installed
               run: |
                   python -c "from d810.speedups import cythxr; print('Cython speedups available')" || echo "Speedups not built (expected if compile failed)"
