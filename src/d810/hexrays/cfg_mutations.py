@@ -17,6 +17,75 @@ from d810.hexrays.cfg_queries import _serial_in_predset
 helper_logger = getLogger(__name__)
 
 
+def _rewire_edge(
+    blk: "ida_hexrays.mblock_t",
+    old_succs: list[int],
+    new_succs: list[int],
+    new_block_type: int | None = None,
+    new_flags: int | None = None,
+    verify: bool = True,
+) -> bool:
+    """Shared edge rewiring bookkeeping.
+
+    Handles succset/predset updates, dirty marking, and optional verify.
+    Callers handle instruction-specific logic before calling this.
+
+    Args:
+        blk: Block whose edges are being rewired.
+        old_succs: List of old successor serials to remove.
+        new_succs: List of new successor serials to add.
+        new_block_type: If not None, set blk.type to this value.
+        new_flags: If not None, OR these flags into blk.flags.
+        verify: If True, run mba.verify() after rewiring.
+
+    Returns:
+        True if successful (and verify passed if enabled).
+
+    Raises:
+        RuntimeError: If verify is True and mba.verify() fails.
+    """
+    mba = blk.mba
+
+    # Update block type/flags if specified
+    if new_block_type is not None:
+        blk.type = new_block_type
+    if new_flags is not None:
+        blk.flags |= new_flags
+
+    # Remove old successors
+    for old_succ in old_succs:
+        blk.succset._del(old_succ)
+        old_blk = mba.get_mblock(old_succ)
+        old_blk.predset._del(blk.serial)
+        if old_blk.serial != mba.qty - 1:
+            old_blk.mark_lists_dirty()
+
+    # Add new successors
+    for new_succ in new_succs:
+        blk.succset.push_back(new_succ)
+        new_blk = mba.get_mblock(new_succ)
+        # Add blk to new successor's predset (without duplicates)
+        if not _serial_in_predset(new_blk, blk.serial):
+            new_blk.predset.push_back(blk.serial)
+        if new_blk.serial != mba.qty - 1:
+            new_blk.mark_lists_dirty()
+
+    blk.mark_lists_dirty()
+    mba.mark_chains_dirty()
+
+    if not verify:
+        return True
+    try:
+        mba.verify(True)
+        return True
+    except RuntimeError as e:
+        helper_logger.error("Error in edge rewiring for block %d: %s", blk.serial, e)
+        log_block_info(blk, helper_logger.error)
+        for new_succ in new_succs:
+            log_block_info(mba.get_mblock(new_succ), helper_logger.error)
+        raise
+
+
 def insert_goto_instruction(
     blk: ida_hexrays.mblock_t, goto_blk_serial: int, nop_previous_instruction=False
 ):
@@ -933,6 +1002,7 @@ def ensure_child_has_an_unconditional_father(
 
 
 __all__ = [
+    "_rewire_edge",
     "insert_goto_instruction",
     "change_1way_call_block_successor",
     "change_1way_block_successor",

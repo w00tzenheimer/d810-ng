@@ -175,6 +175,7 @@ def test_ensure_child_skips_default_child_rewrite(monkeypatch):
 def test_ensure_child_conditional_path_rewires_via_helper_block(monkeypatch):
     """Conditional-child path should still perform the helper-block rewrite."""
     from d810.hexrays import cfg_utils
+    from d810.hexrays import cfg_mutations
 
     mba = _FakeMBA(qty=120)
     father = _FakeBlock(
@@ -202,8 +203,10 @@ def test_ensure_child_conditional_path_rewires_via_helper_block(monkeypatch):
         )
         return new_father
 
-    monkeypatch.setattr(cfg_utils, "create_standalone_block", _create_standalone)
-    monkeypatch.setattr(cfg_utils, "change_2way_block_conditional_successor", _change_2way)
+    # Patch in cfg_mutations (where ensure_child_has_an_unconditional_father
+    # is defined and calls these helpers directly via module-level names).
+    monkeypatch.setattr(cfg_mutations, "create_standalone_block", _create_standalone)
+    monkeypatch.setattr(cfg_mutations, "change_2way_block_conditional_successor", _change_2way)
 
     changed = cfg_utils.ensure_child_has_an_unconditional_father(
         father,
@@ -264,7 +267,12 @@ def test_ensure_child_guard_paths_noop(father_factory, monkeypatch):
 
 def test_create_block_0way_clears_goto_and_edges(monkeypatch):
     """0-way created blocks must not keep insert_nop_blk's goto (INTERR 50856 regression)."""
+    from d810.hexrays import cfg_mutations
     from d810.hexrays import cfg_utils
+
+    # Use the same ida_hexrays object that cfg_mutations bound at import time,
+    # so our constants match exactly what create_block uses internally.
+    _hr = cfg_mutations.ida_hexrays
 
     mba = _FakeMBA(qty=12)
     prev_succ = _FakeBlock(7, mba, succs=[], preds=[6])
@@ -274,11 +282,13 @@ def test_create_block_0way_clears_goto_and_edges(monkeypatch):
         mba,
         succs=[7],
         preds=[],
-        tail=SimpleNamespace(opcode=cfg_utils.ida_hexrays.m_goto),
+        tail=SimpleNamespace(opcode=_hr.m_goto),
     )
-    new_blk.flags = cfg_utils.ida_hexrays.MBL_GOTO
+    new_blk.flags = _hr.MBL_GOTO
 
-    monkeypatch.setattr(cfg_utils, "insert_nop_blk", lambda _blk: new_blk)
+    # Patch in cfg_mutations (where create_block is defined and calls
+    # insert_nop_blk directly via module-level name).
+    monkeypatch.setattr(cfg_mutations, "insert_nop_blk", lambda _blk: new_blk)
 
     result = cfg_utils.create_block(
         ref_blk,
@@ -288,8 +298,8 @@ def test_create_block_0way_clears_goto_and_edges(monkeypatch):
     )
 
     assert result is new_blk
-    assert new_blk.type == cfg_utils.ida_hexrays.BLT_0WAY
-    assert (new_blk.flags & cfg_utils.ida_hexrays.MBL_GOTO) == 0
+    assert new_blk.type == _hr.BLT_0WAY
+    assert (new_blk.flags & _hr.MBL_GOTO) == 0
     assert new_blk.nopped == [new_blk.tail]
     assert list(new_blk.succset) == []
     assert 6 not in prev_succ.predset
