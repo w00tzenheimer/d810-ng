@@ -80,6 +80,35 @@ class CProfileWrapper:
     def profiler(self):
         return self._profiler
 
+    def snapshot(self, output_path: str) -> None:
+        """Dump current stats to file and start a fresh profiler for the next segment."""
+        if self._is_running:
+            self._profiler.disable()
+        self._profiler.dump_stats(output_path)
+        self._profiler = cProfile.Profile()
+        if self._is_running:
+            self._profiler.enable()
+
+
+def _maturity_name(maturity: int) -> str:
+    """Map IDA maturity integer to a human-readable name for file labels."""
+    try:
+        import ida_hexrays
+        _names = {
+            ida_hexrays.MMAT_ZERO: "MMAT_ZERO",
+            ida_hexrays.MMAT_GENERATED: "MMAT_GENERATED",
+            ida_hexrays.MMAT_PREOPTIMIZED: "MMAT_PREOPTIMIZED",
+            ida_hexrays.MMAT_LOCOPT: "MMAT_LOCOPT",
+            ida_hexrays.MMAT_CALLS: "MMAT_CALLS",
+            ida_hexrays.MMAT_GLBOPT1: "MMAT_GLBOPT1",
+            ida_hexrays.MMAT_GLBOPT2: "MMAT_GLBOPT2",
+            ida_hexrays.MMAT_GLBOPT3: "MMAT_GLBOPT3",
+            ida_hexrays.MMAT_LVARS: "MMAT_LVARS",
+        }
+        return _names.get(maturity, f"MMAT_{maturity}")
+    except ImportError:
+        return f"MMAT_{maturity}"
+
 
 @dataclasses.dataclass
 class D810Manager:
@@ -176,6 +205,17 @@ class D810Manager:
     def disable_profiling(self):
         self._profiling_enabled = False
         self.stop_profiling()
+
+    def dump_profiling_segment(self, new_maturity: int) -> None:
+        """Dump cProfile snapshot when maturity changes, then re-enable for next phase."""
+        if not self._profiling_enabled:
+            return
+        if not self.cprofiler or not self.cprofiler.is_running:
+            return
+        label = _maturity_name(new_maturity)
+        output_path = self.log_dir / f"d810_cprofile_{label}.prof"
+        self.cprofiler.snapshot(str(output_path))
+        logger.info("Profiling segment dumped for %s: %s", label, output_path)
 
     def start(self):
         if self._started:
@@ -476,6 +516,9 @@ class D810Manager:
         ):
             self.event_emitter.on(DecompilationEvent.FINISHED, _subscriber)
 
+        self.event_emitter.on(DecompilationEvent.MATURITY_CHANGED, self.dump_profiling_segment)
+
+        self.instruction_optimizer.event_emitter = self.event_emitter
         self.instruction_optimizer.install()
         self.block_optimizer.install()
         self.hx_decompiler_hook.hook()
