@@ -202,12 +202,11 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
             pass
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
-        # This was commented out in the original code,
-        # and it looks like the entire instruction optimizer can be skipped
-        # if the maturity level isn't desired for this specific optimizer.
-        # TODO: we should check to see if this is still relevant?
-        # if self.cur_maturity not in self.maturities:
-        #     return None
+        # Optimizer-level maturity gate: skip entire optimizer if current
+        # maturity is not in this optimizer's allowed maturities.
+        # Per-rule maturity checks (below) provide defense-in-depth.
+        if self.cur_maturity not in self.maturities:
+            return None
         for rule in self.rules:
             if allowed_rule_names is not None and rule.name not in allowed_rule_names:
                 continue
