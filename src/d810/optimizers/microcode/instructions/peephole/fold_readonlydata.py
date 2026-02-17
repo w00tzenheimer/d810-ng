@@ -128,7 +128,12 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
     def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
         super().__init__(*args, **kwargs)
         # Run where the IR is stable enough to rewrite `ldx` forms safely.
+        # MMAT_PREOPTIMIZED is included so that read-only data constants are
+        # folded before MMAT_LOCOPT, enabling MBA pattern recognition to see
+        # the simplified form at MMAT_LOCOPT (needed after Layer 1/2 maturity
+        # gating was enforced in commits 986204a/c13dda9/500a05e).
         self.maturities = [
+            ida_hexrays.MMAT_PREOPTIMIZED,
             ida_hexrays.MMAT_LOCOPT,
             ida_hexrays.MMAT_CALLS,
             getattr(ida_hexrays, "MMAT_GLBOPT1", ida_hexrays.MMAT_CALLS),
