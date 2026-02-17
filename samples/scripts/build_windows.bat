@@ -45,7 +45,7 @@ echo   Done.
 REM Step 3: Build
 echo.
 echo [3/3] Building via Makefile...
-cd /d %~dp0
+cd /d "%~dp0.."
 
 REM Find real sh.exe from Git for Windows (not a shim)
 set "REAL_SH="
