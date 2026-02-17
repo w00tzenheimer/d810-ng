@@ -159,6 +159,7 @@ jobs:
                       set -e
                       cd /work
                       pip install -e .[dev] -q
+                      pip install 'z3-solver>=4.13,<4.15.5' -q
                       D810_TEST_BINARY=libobfuscated.dll pytest tests/system/ -v --tb=short --forked
                   "
 
@@ -212,6 +213,7 @@ jobs:
                       cd /work
                       pip install setuptools wheel Cython>=3.0.0 -q
                       D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e '.[dev]' -q
+                      pip install 'z3-solver>=4.13,<4.15.5' -q
                       echo 'Speedups .so files built:'
                       find /work/src/d810/speedups -name '*.so' -type f
                       D810_TEST_BINARY=libobfuscated.dll pytest tests/system/ -v --tb=short --forked
