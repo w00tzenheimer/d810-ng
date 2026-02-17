@@ -50,6 +50,10 @@ jobs:
                   pip install --upgrade pip setuptools wheel uv
                   uv pip install --system -e .
                   uv pip install --system pytest pytest-cov import-linter
+
+            - name: Install repo-local speedups helper
+              run: |
+                  python -m tools.install_speedups
             - name: Check import boundaries
               run: |
                   lint-imports
