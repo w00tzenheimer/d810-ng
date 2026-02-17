@@ -109,6 +109,7 @@ if CythonMode().is_enabled():
             AstNode,
             AstProxy,
             get_constant_mop,
+            get_mop_key,
             minsn_to_ast,
             mop_to_ast,
         )
@@ -123,6 +124,7 @@ if CythonMode().is_enabled():
             AstNode,
             AstProxy,
             get_constant_mop,
+            get_mop_key,
             minsn_to_ast,
             mop_to_ast,
         )
@@ -137,6 +139,7 @@ else:
         AstNode,
         AstProxy,
         get_constant_mop,
+        get_mop_key,
         minsn_to_ast,
         mop_to_ast,
     )
@@ -157,6 +160,7 @@ __all__ = [
     "AstNodeProtocol",
     # Functions
     "get_constant_mop",
+    "get_mop_key",
     "minsn_to_ast",
     "mop_to_ast",
 ]

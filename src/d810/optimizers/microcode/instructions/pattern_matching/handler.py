@@ -577,7 +577,7 @@ class PatternOptimizer(InstructionOptimizer):
         except Exception:
             return None
         try:
-            resolved = _recursively_resolve_ast(ast, blk, ins, depth=0, max_depth=6)
+            resolved = _recursively_resolve_ast(ast, blk, ins, depth=0, max_depth=6, cache={})
         except Exception:
             return None
         if resolved is None or resolved is ast:

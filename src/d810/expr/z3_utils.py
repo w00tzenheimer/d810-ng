@@ -79,10 +79,11 @@ from d810.core import typing
 from d810.core.typing import TYPE_CHECKING, Dict, Tuple
 
 import ida_hexrays
+import idaapi
 
 from d810.core import getLogger
 from d810.errors import D810Z3Exception
-from d810.expr.ast import AstLeaf, AstNode, minsn_to_ast, mop_to_ast
+from d810.expr.ast import AstLeaf, AstNode, minsn_to_ast, mop_to_ast, get_mop_key
 from d810.hexrays.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,
@@ -90,9 +91,12 @@ from d810.hexrays.hexrays_formatters import (
 )
 from d810.hexrays.hexrays_helpers import get_mop_index, structural_mop_hash
 from d810.hexrays.mop_snapshot import MopSnapshot
+from d810.speedups.bootstrap import ensure_speedups_on_path
 
 logger = getLogger(__name__)
 z3_file_logger = getLogger("D810.z3_test")
+
+ensure_speedups_on_path()
 
 try:
     import z3
@@ -542,6 +546,9 @@ def _resolve_memory_load_via_store(
                         stored_value = cur_ins.l
                         if stored_value is not None:
                             ast = mop_to_ast(stored_value)
+                            if ast is not None:
+                                ast.ea = cur_ins.ea
+                                ast.ins = cur_ins
                             if logger.debug_on:
                                 logger.debug(
                                     "_resolve_memory_load_via_store: Resolved ldx to stx: %s -> %s",
@@ -652,6 +659,9 @@ def _resolve_mop_to_ast_via_tracker(
                 if mop.t == ida_hexrays.mop_r and def_ins.d.r == mop.r:
                     # Build AST from the instruction's source operands
                     ast = minsn_to_ast(def_ins)
+                    if ast is not None:
+                        ast.ea = def_ins.ea
+                        ast.ins = def_ins
                     if logger.debug_on:
                         logger.debug(
                             "_resolve_mop_to_ast_via_tracker: Resolved %s to %s from %s",
@@ -663,6 +673,9 @@ def _resolve_mop_to_ast_via_tracker(
                     try:
                         if def_ins.d.s.off == mop.s.off:
                             ast = minsn_to_ast(def_ins)
+                            if ast is not None:
+                                ast.ea = def_ins.ea
+                                ast.ins = def_ins
                             if logger.debug_on:
                                 logger.debug(
                                     "_resolve_mop_to_ast_via_tracker: Resolved %s to %s from %s",
@@ -683,6 +696,7 @@ def _recursively_resolve_ast(
     ins: "ida_hexrays.minsn_t",
     depth: int = 0,
     max_depth: int = 10,
+    cache: dict | None = None,
 ) -> "AstNode | AstLeaf | None":
     """Recursively resolve register/stack leaves in an AST to their defining expressions.
 
@@ -702,10 +716,14 @@ def _recursively_resolve_ast(
         ins: Current instruction for backward search
         depth: Current recursion depth
         max_depth: Maximum recursion depth to prevent infinite loops
+        cache: Optional dictionary for caching resolution results
 
     Returns:
         AST with register/stack leaves replaced by their defining expressions
     """
+    if cache is None:
+        cache = {}
+
     if depth >= max_depth:
         return ast
 
@@ -725,17 +743,31 @@ def _recursively_resolve_ast(
                     is_resolvable = True
 
             if is_resolvable:
+                mop_key = get_mop_key(ast_leaf.mop)
+                cache_key = (mop_key, ins.ea)
+                if cache_key in cache:
+                    return cache[cache_key]
+
                 resolved = _resolve_mop_to_ast_via_tracker(ast_leaf.mop, blk, ins)
                 if resolved is not None and resolved is not ast:
+                    # Update search context for children: search from the defining instruction
+                    # This correctly handles register redefinitions within the same block.
+                    new_ins = ins
+                    if hasattr(resolved, 'ins') and resolved.ins is not None:
+                        new_ins = resolved.ins
+
                     # Recursively resolve the new AST
-                    return _recursively_resolve_ast(resolved, blk, ins, depth + 1, max_depth)
+                    res = _recursively_resolve_ast(resolved, blk, new_ins, depth + 1, max_depth, cache)
+                    cache[cache_key] = res
+                    return res
+                cache[cache_key] = ast
         return ast
 
     # For non-leaf nodes, recursively resolve children
     ast_node = typing.cast(AstNode, ast)
 
-    new_left = _recursively_resolve_ast(ast_node.left, blk, ins, depth, max_depth) if ast_node.left else None
-    new_right = _recursively_resolve_ast(ast_node.right, blk, ins, depth, max_depth) if ast_node.right else None
+    new_left = _recursively_resolve_ast(ast_node.left, blk, ins, depth, max_depth, cache) if ast_node.left else None
+    new_right = _recursively_resolve_ast(ast_node.right, blk, ins, depth, max_depth, cache) if ast_node.right else None
 
     # If children changed, create new AST node
     if new_left is not ast_node.left or new_right is not ast_node.right:
