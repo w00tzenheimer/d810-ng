@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from d810.core.typing import TYPE_CHECKING
+from d810.hexrays.block_helpers import get_pred_serials, get_succ_serials
 from d810.hexrays.mop_snapshot import MopSnapshot
 
 if TYPE_CHECKING:
@@ -34,7 +35,7 @@ except ImportError:
     _IDA_AVAILABLE = False
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class InsnSnapshot:
     """Snapshot of a single microcode instruction.
 
@@ -68,7 +69,7 @@ class InsnSnapshot:
         return f"InsnSnapshot(op=0x{self.opcode:x}, ea=0x{self.ea:x}, nops={len(self.operands)})"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BlockSnapshot:
     """Snapshot of a single basic block's topology and instructions.
 
@@ -133,7 +134,7 @@ class BlockSnapshot:
                 f"ninsns={len(self.insn_snapshots)})")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PortableCFG:
     """Complete snapshot of a control flow graph.
 
@@ -272,11 +273,11 @@ def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
     flags = blk.flags
     start_ea = blk.start
 
-    # Capture successors
-    succs = tuple(blk.succset[i] for i in range(blk.succset.size()))
+    # Capture successors (uses Cython-accelerated helper when speedups are available)
+    succs = get_succ_serials(blk)
 
-    # Capture predecessors
-    preds = tuple(blk.predset[i] for i in range(blk.predset.size()))
+    # Capture predecessors (uses Cython-accelerated helper when speedups are available)
+    preds = get_pred_serials(blk)
 
     # Capture instructions (walk linked list from head to tail)
     insn_snapshots = []
