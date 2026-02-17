@@ -88,18 +88,11 @@ jobs:
                   pip install --upgrade pip setuptools wheel uv
                   uv pip install --system Cython>=3.0.0
 
-            - name: Clone IDA SDK
-              run: |
-                  if [ -d ".ida-sdk/src/include" ]; then
-                    echo "IDA SDK already present, skipping clone"
-                  else
-                    rm -rf .ida-sdk
-                    git clone https://github.com/HexRaysSA/ida-sdk.git .ida-sdk
-                    cd .ida-sdk
-                    # This is the commit that last works on 9.2
-                    git checkout 7f8fd3100142295bffa5eabb2ce6f5b5ac163c6b
-                    cd ..
-                  fi
+            - name: Ensure IDA SDK
+              uses: ./.github/actions/ensure-ida-sdk
+              with:
+                sdk-dir: .ida-sdk
+                ref: 7f8fd3100142295bffa5eabb2ce6f5b5ac163c6b
 
             - name: Build with Cython speedups
               run: |

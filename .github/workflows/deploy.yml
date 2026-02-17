@@ -60,6 +60,8 @@ jobs:
     build_wheels:
         name: Build wheels for ${{ matrix.os }}
         runs-on: ${{ matrix.runs-on }}
+        env:
+            IDA_SDK: ${{ github.workspace }}/.ida-sdk
         strategy:
             matrix:
                 include:
@@ -76,6 +78,12 @@ jobs:
             - uses: actions/checkout@v4
               with:
                   persist-credentials: false
+
+            - name: Ensure IDA SDK
+              uses: ./.github/actions/ensure-ida-sdk
+              with:
+                sdk-dir: .ida-sdk
+                ref: 7f8fd3100142295bffa5eabb2ce6f5b5ac163c6b
 
             - name: Build wheels
               uses: pypa/cibuildwheel@v3.1
