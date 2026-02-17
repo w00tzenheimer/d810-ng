@@ -423,23 +423,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         allowed_rule_names = self._resolve_active_instruction_rule_names(blk)
         for ins_optimizer in self._active_optimizers:
             self._last_optimizer_tried = ins_optimizer
-            try:
-                new_ins = ins_optimizer.get_optimized_instruction(
-                    blk,
-                    ins,
-                    allowed_rule_names=allowed_rule_names,
-                )
-            except TypeError as exc:
-                if "allowed_rule_names" not in str(exc):
-                    raise
-                # Optimizer doesn't support scoped rules yet - fall back to unscoped.
-                # This should be a temporary shim until all optimizers support scoping.
-                optimizer_logger.warning(
-                    "%s does not support allowed_rule_names parameter - "
-                    "falling back to unscoped execution (all rules active)",
-                    ins_optimizer.name,
-                )
-                new_ins = ins_optimizer.get_optimized_instruction(blk, ins)
+            new_ins = ins_optimizer.get_optimized_instruction(
+                blk,
+                ins,
+                allowed_rule_names=allowed_rule_names,
+            )
 
             if new_ins is not None:
                 if not check_ins_mop_size_are_ok(new_ins):
@@ -793,8 +781,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
             for cfg_rule in phase_rules:
                 cfg_rule.current_maturity = self.current_maturity
-                if hasattr(cfg_rule, "set_flow_context"):
-                    cfg_rule.set_flow_context(flow_context)
+                cfg_rule.set_flow_context(flow_context)
                 guard = blk.mba is not None and blk.mba.entry_ea is not None
                 if active_rules is None:
                     guard &= self.check_if_rule_is_activated_for_address(

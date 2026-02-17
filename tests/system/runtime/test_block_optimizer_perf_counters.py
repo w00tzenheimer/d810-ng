@@ -29,6 +29,9 @@ class _DummyRule:
         self.blacklisted_function_ea_list = list(blacklist or [])
         self.calls = 0
 
+    def set_flow_context(self, flow_context) -> None:
+        pass
+
     def optimize(self, blk) -> int:
         self.calls += 1
         return self.patches
