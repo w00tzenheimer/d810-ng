@@ -7,11 +7,12 @@ name = "d810-ng"
 requires-python = ">= 3.10"
 dynamic = ["version"]
 authors = [
-    { name = "Boris Batteux", email = "boris.batteux@eshard.com" },
     { name = "w00tzenheimer", email = "w00tzenheimer@gmail.com" },
     { name = "Mahmoud Abdelkader", email = "mabdelkader@gmail.com" },
+    { name = "Boris Batteux", email = "boris.batteux@eshard.com" },
 ]
 description = "This is a next generation version of D-810, an IDA Pro plugin which can be used to deobfuscate code at decompilation time by modifying IDA Pro microcode."
+readme = "README.md"
 dependencies = ["typing-extensions"]
 
 [project.optional-dependencies]

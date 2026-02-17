@@ -1,4 +1,4 @@
-__version__ = "0.6.5"
+__version__ = "0.6.6"
 
 try:
     from d810.speedups.bootstrap import ensure_speedups_on_path
