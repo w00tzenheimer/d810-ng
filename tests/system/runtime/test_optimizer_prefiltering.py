@@ -138,3 +138,81 @@ def test_active_optimizer_list_filters_by_maturity():
 
     assert early_opt.calls == 0, f"EarlyOpt was called {early_opt.calls} times at LOCOPT"
     assert locopt_opt.calls == 1, f"LocoptOpt was not called at LOCOPT"
+
+
+from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
+    FoldReadonlyDataRule,
+    _has_potential_readonly_operand,
+)
+
+
+class _FakeMop:
+    """Minimal mop stub with type field."""
+
+    def __init__(self, t: int, size: int = 4):
+        self.t = t
+        self.size = size
+
+    def __bool__(self):
+        return self.t != ida_hexrays.mop_z
+
+
+class _FakeInsForFold:
+    """Minimal instruction stub for FoldReadonlyDataRule pre-check tests."""
+
+    def __init__(self, opcode: int, l_type: int, r_type: int, d_type: int = ida_hexrays.mop_r):
+        self.opcode = opcode
+        self.ea = 0x1000
+        self.l = _FakeMop(l_type)
+        self.r = _FakeMop(r_type)
+        self.d = _FakeMop(d_type)
+
+
+def test_has_potential_readonly_operand_rejects_pure_register():
+    """Layer 3: pure register instructions have no readonly operand potential."""
+    ins = _FakeInsForFold(
+        opcode=ida_hexrays.m_xor,
+        l_type=ida_hexrays.mop_r,
+        r_type=ida_hexrays.mop_r,
+    )
+    assert _has_potential_readonly_operand(ins) is False
+
+
+def test_has_potential_readonly_operand_rejects_constant():
+    """Layer 3: constant-only instructions have no readonly operand potential."""
+    ins = _FakeInsForFold(
+        opcode=ida_hexrays.m_mov,
+        l_type=ida_hexrays.mop_n,
+        r_type=ida_hexrays.mop_z,
+    )
+    assert _has_potential_readonly_operand(ins) is False
+
+
+def test_has_potential_readonly_operand_accepts_mop_v():
+    """Layer 3: mop_v (global variable) is a readonly candidate."""
+    ins = _FakeInsForFold(
+        opcode=ida_hexrays.m_xor,
+        l_type=ida_hexrays.mop_v,
+        r_type=ida_hexrays.mop_r,
+    )
+    assert _has_potential_readonly_operand(ins) is True
+
+
+def test_has_potential_readonly_operand_accepts_mop_d():
+    """Layer 3: mop_d (nested sub-instruction) may contain readonly refs."""
+    ins = _FakeInsForFold(
+        opcode=ida_hexrays.m_add,
+        l_type=ida_hexrays.mop_d,
+        r_type=ida_hexrays.mop_r,
+    )
+    assert _has_potential_readonly_operand(ins) is True
+
+
+def test_has_potential_readonly_operand_accepts_mop_S():
+    """Layer 3: mop_S (stack/segment) may reference readonly segment."""
+    ins = _FakeInsForFold(
+        opcode=ida_hexrays.m_mov,
+        l_type=ida_hexrays.mop_S,
+        r_type=ida_hexrays.mop_z,
+    )
+    assert _has_potential_readonly_operand(ins) is True
