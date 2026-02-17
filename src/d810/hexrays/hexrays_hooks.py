@@ -160,6 +160,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         # allow emitting DecompilationEvent.MATURITY_CHANGED events.
         self.event_emitter = None
 
+        # Optional ReconPhase — set via configure(recon_phase=...) when recon
+        # is enabled in the project config. None means recon is disabled (zero
+        # overhead: the guard below short-circuits immediately).
+        self._recon_phase = None  # ReconPhase | None
+
         self.instruction_optimizers = []
         self._active_optimizers: list = []
         # usage tracking moved to centralized statistics object
@@ -331,6 +336,19 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             self.reset_cycle_detection()
             self._active_instruction_rule_names_by_maturity.clear()
 
+            # Recon: fire microcode collectors at this maturity (no-op when
+            # recon is disabled — _recon_phase is None).
+            if self._recon_phase is not None:
+                try:
+                    mba_ea = int(getattr(mba, "entry_ea", 0) or 0)
+                    self._recon_phase.run_microcode_collectors(
+                        mba, func_ea=mba_ea, maturity=new_maturity
+                    )
+                except Exception:
+                    optimizer_logger.exception(
+                        "ReconPhase failed at maturity %d", new_maturity
+                    )
+
             for ins_optimizer in self.instruction_optimizers:
                 ins_optimizer.cur_maturity = self.current_maturity
 
@@ -358,6 +376,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         )
         self.generate_z3_code = generate_z3_code
         self.dump_intermediate_microcode = dump_intermediate_microcode
+        self._recon_phase = kwargs.get("recon_phase", self._recon_phase)
         self._rule_scope_service = kwargs.get(
             "rule_scope_service",
             self._rule_scope_service,
@@ -566,6 +585,9 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._pass_count = 0
         self._flow_context: FlowMaturityContext | None = None
         self._flow_context_key: tuple[int, int] | None = None
+        # Optional ReconPhase — set via configure(recon_phase=...). None means
+        # recon is disabled (zero overhead when not enabled).
+        self._recon_phase = None  # ReconPhase | None
         # usage tracking moved to centralized statistics object
 
     def reset_pass_counter(self) -> None:
@@ -660,6 +682,17 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self.current_maturity = mba.maturity
             self.reset_pass_counter()
             self._invalidate_flow_context("maturity changed")
+
+            # Recon: fire microcode collectors at this maturity (no-op when
+            # _recon_phase is None — guarded for zero overhead).
+            if self._recon_phase is not None:
+                try:
+                    mba_ea = int(getattr(mba, "entry_ea", 0) or 0)
+                    self._recon_phase.run_microcode_collectors(
+                        mba, func_ea=mba_ea, maturity=mba.maturity
+                    )
+                except Exception:
+                    optimizer_logger.exception("ReconPhase (block) failed")
 
     # statistics are managed centrally via the stats object
 
@@ -812,6 +845,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self.cfg_rules.append(cfg_rule)
 
     def configure(self, **kwargs):
+        self._recon_phase = kwargs.get("recon_phase", self._recon_phase)
         self._rule_scope_service = kwargs.get("rule_scope_service", self._rule_scope_service)
         self._rule_scope_project_name = str(
             kwargs.get("rule_scope_project_name", self._rule_scope_project_name)
