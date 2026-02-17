@@ -15,7 +15,7 @@ description = "This is a next generation version of D-810, an IDA Pro plugin whi
 dependencies = ["typing-extensions"]
 
 [project.optional-dependencies]
-speedups = ["Cython>=3.0.0", "z3-solver>=4.13,<4.15.5"]
+speedups = ["Cython>=3.0.0"]
 egraph = ["egglog>=12.0.0", "cloudpickle>=3.0.0"]
 dev = [
     "pyinstrument",
@@ -27,7 +27,7 @@ dev = [
 ]
 
 [project.scripts]
-install-speedups = "tools.install_speedups:main"
+install-speedups = "d810.speedups.install:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

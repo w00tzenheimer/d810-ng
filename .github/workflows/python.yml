@@ -54,7 +54,7 @@ jobs:
 
             - name: Install repo-local speedups helper
               run: |
-                  python -m tools.install_speedups
+                  python -m d810.speedups.install
             - name: Check import boundaries
               run: |
                   lint-imports
@@ -105,7 +105,7 @@ jobs:
 
             - name: Install repo-local speedups helper
               run: |
-                  python -m tools.install_speedups
+                  python -m d810.speedups.install
 
             - name: Verify speedups installed
               run: |
