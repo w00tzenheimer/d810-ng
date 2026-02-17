@@ -257,9 +257,16 @@ class D810Manager:
             ctree_rule.log_dir = self.log_dir
             self.ctree_optimizer.add_rule(ctree_rule)
 
+        # Build PassPipeline when feature flag is enabled (default OFF).
+        # Zero overhead when disabled — no imports of pass modules occur.
+        _pass_pipeline = None
+        if self.config.get("enable_pass_pipeline", False):
+            _pass_pipeline = self._build_pass_pipeline()
+
         self.hx_decompiler_hook = HexraysDecompilationHook(
             self.event_emitter.emit,
             ctree_optimizer_manager=self.ctree_optimizer,
+            pass_pipeline=_pass_pipeline,
         )
         self._compile_rule_scope()
         self._install_hooks()
@@ -522,6 +529,46 @@ class D810Manager:
         self.instruction_optimizer.install()
         self.block_optimizer.install()
         self.hx_decompiler_hook.hook()
+
+    def _build_pass_pipeline(self):
+        """Construct a PassPipeline with the 4 cleanup CFGPasses.
+
+        Only called when config["enable_pass_pipeline"] is True. Imports are
+        deferred here so that pass modules are never loaded when the flag is
+        disabled (zero overhead guarantee).
+
+        The following passes are included:
+        - SimplifyIdenticalBranchPass: 2-way blocks with identical targets → goto
+        - DeadBlockEliminationPass: unreachable blocks → nop
+        - GotoChainRemovalPass: consecutive goto chains → direct target
+        - BlockMergePass: single-succ/single-pred pairs → nop trailing goto
+
+        OpaqueJumpFixerPass and FakeJumpFixerPass are intentionally excluded —
+        they require pre-computed fix dicts from the legacy analysis side.
+
+        Returns:
+            PassPipeline instance with IDABackend and the 4 cleanup passes.
+        """
+        from d810.hexrays.backends.ida_backend import IDABackend
+        from d810.hexrays.pass_pipeline import PassPipeline
+        from d810.hexrays.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
+        from d810.hexrays.passes.dead_block_elimination import DeadBlockEliminationPass
+        from d810.hexrays.passes.goto_chain_removal import GotoChainRemovalPass
+        from d810.hexrays.passes.block_merge import BlockMergePass
+
+        backend = IDABackend()
+        passes = [
+            SimplifyIdenticalBranchPass(),
+            DeadBlockEliminationPass(),
+            GotoChainRemovalPass(),
+            BlockMergePass(),
+        ]
+        pipeline = PassPipeline(backend, passes)
+        logger.info(
+            "PassPipeline enabled: %s",
+            repr(pipeline),
+        )
+        return pipeline
 
     def configure_instruction_optimizer(self, rules, **kwargs):
         self.instruction_optimizer_rules = [rule for rule in rules]

@@ -848,10 +848,15 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         self,
         callback: typing.Callable,
         ctree_optimizer_manager: CtreeOptimizerManager | None = None,
+        pass_pipeline: typing.Any | None = None,
     ):
         super().__init__()
         self.callback = callback
         self.ctree_optimizer_manager = ctree_optimizer_manager
+        # Optional PassPipeline to run after legacy flow optimizers finish.
+        # Set to None when the feature flag "enable_pass_pipeline" is False (default).
+        # When set, it runs in glbopt() after IDA's global optimizer completes.
+        self.pass_pipeline = pass_pipeline
 
     def prolog(self, mba: ida_hexrays.mbl_array_t, fc, reachable_blocks, decomp_flags) -> "int":
         main_logger.info("Starting decompilation of function at %s", hex(mba.entry_ea))
@@ -870,6 +875,36 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
     def glbopt(self, mba: ida_hexrays.mbl_array_t) -> "int":
         main_logger.info("glbopt finished for function at %s", hex(mba.entry_ea))
         main_logger.reset_maturity()
+
+        # Run PassPipeline as post-processing after legacy flow optimizers.
+        # Only fires when "enable_pass_pipeline" config flag is True.
+        if self.pass_pipeline is not None:
+            try:
+                func_ea = hex(mba.entry_ea)
+                main_logger.info(
+                    "PassPipeline: running %d pass(es) on function %s",
+                    len(self.pass_pipeline.passes),
+                    func_ea,
+                )
+                total = self.pass_pipeline.run(mba)
+                if total > 0:
+                    main_logger.info(
+                        "PassPipeline: applied %d total modification(s) on function %s",
+                        total,
+                        func_ea,
+                    )
+                else:
+                    main_logger.debug(
+                        "PassPipeline: no modifications applied on function %s",
+                        func_ea,
+                    )
+            except Exception as e:
+                main_logger.error(
+                    "PassPipeline: error during post-processing of function %s: %s",
+                    hex(mba.entry_ea),
+                    e,
+                )
+
         return 0
 
     def structural(self, ct: "control_graph_t") -> int:  # type: ignore
