@@ -68,6 +68,7 @@ from d810.optimizers.microcode.flow.flattening.utils import (
     get_all_possibles_values,
 )
 from d810.core.registry import EventEmitter
+from d810.hexrays.deferred_events import DeferredEvent, EventEmitter as DeferredEventEmitter
 from d810.hexrays.deferred_modifier import DeferredGraphModifier, GraphModification
 from d810.optimizers.microcode.flow.flattening.abc_block_splitter import (
     ABCBlockSplitter,
@@ -896,6 +897,17 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self.non_significant_changes = 0
         # Track processed (source_block, target) pairs to prevent duplicates
         self._processed_dispatcher_fathers: set[tuple[int, int]] = set()
+        # Quarantine: function EAs where a deferred verify failure was observed.
+        # While quarantined, aggressive rewrites for that function/maturity are
+        # skipped to prevent compounding MBA corruption.
+        self._quarantined_function_eas: set[int] = set()
+        # Deferred event emitter shared with DeferredGraphModifier instances
+        # created by this rule, enabling lifecycle event subscriptions.
+        self.deferred_events: DeferredEventEmitter = DeferredEventEmitter()
+        self.deferred_events.subscribe(
+            DeferredEvent.DEFERRED_VERIFY_FAILED,
+            self._on_deferred_verify_failed,
+        )
         # Track deferred direct edge rewrites per dispatcher entry:
         # {dispatcher_entry_serial: {(source_serial, target_serial), ...}}
         # Used for post-apply jtbl overlap canonicalization.
@@ -912,10 +924,52 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         """Return the class of the dispatcher collector."""
         raise NotImplementedError
 
+    def _on_deferred_verify_failed(self, payload: dict) -> None:
+        """Handle DEFERRED_VERIFY_FAILED events from a DeferredGraphModifier.
+
+        Sets a quarantine flag on the function identified in *payload* so that
+        further aggressive rewrites are skipped for the current maturity level.
+        The quarantine is keyed by function EA (an int), which is stable and
+        primitive — no live IDA objects are stored.
+
+        Args:
+            payload: Event payload dict containing ``function_ea`` (int or None).
+        """
+        function_ea = payload.get("function_ea")
+        if isinstance(function_ea, int) and function_ea > 0:
+            self._quarantined_function_eas.add(function_ea)
+            unflat_logger.warning(
+                "Quarantining function 0x%x after deferred verify failure "
+                "(maturity=%s, optimizer=%s)",
+                function_ea,
+                payload.get("maturity"),
+                payload.get("optimizer_name", ""),
+            )
+
+    def _is_function_quarantined(self) -> bool:
+        """Return True if the current function is in the verify-failure quarantine.
+
+        Quarantined functions skip aggressive CFG rewrites within the current
+        maturity level to prevent compounding MBA corruption.
+        """
+        if not self._quarantined_function_eas:
+            return False
+        try:
+            func_ea = int(self.mba.entry_ea)
+        except Exception:
+            return False
+        return func_ea in self._quarantined_function_eas
+
     def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:
         if self._verify_failed:
             unflat_logger.debug(
                 "Skipping rule -- MBA verify previously failed"
+            )
+            return False
+        if self._is_function_quarantined():
+            unflat_logger.debug(
+                "Skipping rule -- function 0x%x is quarantined after verify failure",
+                int(self.mba.entry_ea) if self.mba else 0,
             )
             return False
         if not super().check_if_rule_should_be_used(blk):
