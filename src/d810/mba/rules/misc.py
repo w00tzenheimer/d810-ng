@@ -15,6 +15,11 @@ from d810.core.bits import AND_TABLE
 from d810.mba.dsl import Var, Const, DynamicConst, when
 from d810.mba.rules._base import VerifiableRule
 
+# Maturity constants (from ida_hexrays)
+# MMAT_PREOPTIMIZED=2, MMAT_LOCOPT=3, MMAT_CALLS=4, MMAT_GLBOPT1=5
+# MBA/HackersDelight patterns need to fire early (including MMAT_PREOPTIMIZED)
+_ALL_MATURITIES = [2, 3, 4, 5]
+
 # Define variables for pattern matching
 x, y, z = Var("x_0"), Var("x_1"), Var("x_2")
 bnot_x = Var("bnot_x_0")
@@ -36,6 +41,7 @@ class WeirdRule1(VerifiableRule):
 
     Complex algebraic identity involving subtraction and bitwise OR.
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = x - (x | y)
     REPLACEMENT = (x | ~y) + ONE
@@ -49,6 +55,7 @@ class WeirdRule2(VerifiableRule):
 
     Distributive property with bitwise operations.
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (TWO * x) - (x & ~y)
     REPLACEMENT = x + (x & y)
@@ -62,6 +69,7 @@ class WeirdRule3(VerifiableRule):
 
     Negative factorization with bitwise operations.
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x & ~y) - (TWO * x)
     REPLACEMENT = -((x + (x & y)))
@@ -75,6 +83,7 @@ class WeirdRule4(VerifiableRule):
 
     Requires bnot_x_1 is bitwise NOT of x_1.
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x & bnot_y) - (x & y)
     REPLACEMENT = (x ^ y) - y
@@ -93,6 +102,7 @@ class WeirdRule5(VerifiableRule):
     Highly complex three-variable identity with NOT, OR, AND operations.
     This is one of the most complex algebraic simplifications in d810.
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = ((bnot_x | (bnot_y & z)) + (x + (y & z))) - z
     REPLACEMENT = x | (y | ~z)
@@ -111,6 +121,7 @@ class WeirdRule6(VerifiableRule):
 
     Algebraic conversion to XOR form.
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x | y) + (x & ~y)
     REPLACEMENT = (x ^ y) + x

@@ -69,6 +69,8 @@ class _PatternRule:
         self.name = name
         self._replacement = replacement
         self.calls = 0
+        # Add maturities attribute for per-rule maturity checks
+        self.maturities = [2, 3, 4, 5]  # All maturities by default
 
     def check_pattern_and_replace(self, pattern, candidate):
         self.calls += 1

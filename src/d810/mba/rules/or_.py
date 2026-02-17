@@ -15,6 +15,11 @@ All rules are mathematically proven correct by Z3 SMT solver.
 from d810.mba.dsl import Var, Const, when
 from d810.mba.rules._base import VerifiableRule
 
+# Maturity constants (from ida_hexrays)
+# MMAT_PREOPTIMIZED=2, MMAT_LOCOPT=3, MMAT_CALLS=4, MMAT_GLBOPT1=5
+# MBA patterns need to fire early (including MMAT_PREOPTIMIZED)
+_ALL_MATURITIES = [2, 3, 4, 5]
+
 # Create symbolic variables
 x, y, z = Var("x_0"), Var("x_1"), Var("x_2")
 ONE = Const("1", 1)
@@ -31,6 +36,7 @@ class Or_HackersDelightRule_2(VerifiableRule):
     Example:
         (a + b) - (a & b) => a | b
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x + y) - (x & y)
     REPLACEMENT = x | y
@@ -49,6 +55,7 @@ class Or_HackersDelightRule_2_variant_1(VerifiableRule):
     Example:
         (a - b) - (a & -b) => a | -b
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x - y) - (x & -y)
     REPLACEMENT = x | -y
@@ -68,6 +75,7 @@ class Or_MbaRule_1(VerifiableRule):
     Example:
         (a & b) + (a ^ b) => a | b
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x & y) + (x ^ y)
     REPLACEMENT = x | y
@@ -88,6 +96,7 @@ class Or_MbaRule_1_Commuted(VerifiableRule):
     Example:
         (a ^ b) + (a & b) => a | b
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x ^ y) + (x & y)
     REPLACEMENT = x | y
@@ -110,6 +119,7 @@ class Or_MbaRule_2(VerifiableRule):
     Example:
         ((a + b) + 1) + ~(a & b) => a | b
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = ((x + y) + ONE) + ~(x & y)
     REPLACEMENT = x | y
@@ -129,6 +139,7 @@ class Or_MbaRule_3(VerifiableRule):
     Example:
         (a + (a ^ b)) - (a & ~b) => a | b
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x + (x ^ y)) - (x & ~y)
     REPLACEMENT = x | y
@@ -146,6 +157,7 @@ class Or_FactorRule_1(VerifiableRule):
     Example:
         (a & b) | (a ^ b) => a | b
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x & y) | (x ^ y)
     REPLACEMENT = x | y
@@ -165,6 +177,7 @@ class Or_FactorRule_2(VerifiableRule):
     Example:
         (a & (b ^ c)) | ((a ^ b) ^ c) => a | (b ^ c)
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x & (y ^ z)) | ((x ^ y) ^ z)
     REPLACEMENT = x | (y ^ z)
@@ -184,6 +197,7 @@ class Or_Rule_2(VerifiableRule):
     Example:
         (a ^ b) | b => a | b
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x ^ y) | y
     REPLACEMENT = x | y
@@ -202,6 +216,7 @@ class Or_Rule_4(VerifiableRule):
     Example:
         (a & b) ^ (a ^ b) => a | b
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x & y) ^ (x ^ y)
     REPLACEMENT = x | y
@@ -222,6 +237,7 @@ class OrBnot_FactorRule_1(VerifiableRule):
     Example:
         ~a ^ (a & b) => ~a | b
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = ~x ^ (x & y)
     REPLACEMENT = ~x | y
@@ -242,6 +258,7 @@ class OrBnot_FactorRule_2(VerifiableRule):
     Example:
         a ^ (~a & b) => a | b
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = x ^ (~x & y)
     REPLACEMENT = x | y
@@ -265,6 +282,7 @@ class Or_HackersDelightRule_1(VerifiableRule):
                      = x + y - (x & y)
                      = x | y [Hacker's Delight identity]
     """
+    maturities = _ALL_MATURITIES
 
     bnot_y = Var("bnot_x_1")
 
@@ -286,6 +304,7 @@ class Or_FactorRule_3(VerifiableRule):
         (x | y) | (~x ^ ~y) = (x | y) | XNOR(x, y)
                              = (x | y) [absorption]
     """
+    maturities = _ALL_MATURITIES
 
     bnot_x, bnot_y = Var("bnot_x_0"), Var("bnot_x_1")
 
@@ -311,6 +330,7 @@ class Or_OllvmRule_1(VerifiableRule):
                              = (x & y) | (x XOR y)  [XNOR negation]
                              = x | y  [OR identity]
     """
+    maturities = _ALL_MATURITIES
 
     bnot_x = Var("bnot_x_0")
 
@@ -332,6 +352,7 @@ class Or_Rule_1(VerifiableRule):
         (~x & y) | x = (NOT x AND y) OR x
                      = x | y [absorption: (~A & B) | A = A | B]
     """
+    maturities = _ALL_MATURITIES
 
     bnot_x = Var("bnot_x_0")
 
@@ -353,6 +374,7 @@ class Or_Rule_3(VerifiableRule):
         ~(~x | ~y) | (x ^ y) = (x & y) | (x ^ y)  [De Morgan]
                               = x | y  [OR identity]
     """
+    maturities = _ALL_MATURITIES
 
     bnot_x, bnot_y = Var("bnot_x_0"), Var("bnot_x_1")
 
@@ -377,6 +399,7 @@ class OrBnot_FactorRule_3(VerifiableRule):
         (x - y) + (~x | y) = x - y + ~x + (y & ~x)
                            = x | ~y [algebraic simplification]
     """
+    maturities = _ALL_MATURITIES
 
     bnot_x = Var("bnot_x_0")
 
@@ -398,6 +421,7 @@ class OrBnot_FactorRule_4(VerifiableRule):
         (~x | y) ^ (x ^ y) = [(~x | y) XOR x] XOR y
                            = (x | ~y) [XOR algebra]
     """
+    maturities = _ALL_MATURITIES
 
     bnot_x = Var("bnot_x_0")
 

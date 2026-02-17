@@ -10,6 +10,11 @@ from d810.core.bits import SUB_TABLE
 from d810.mba.dsl import Var, Const, when
 from d810.mba.rules._base import VerifiableRule
 
+# Maturity constants (from ida_hexrays)
+# MMAT_PREOPTIMIZED=2, MMAT_LOCOPT=3, MMAT_CALLS=4, MMAT_GLBOPT1=5
+# MBA/HackersDelight patterns need to fire early (including MMAT_PREOPTIMIZED)
+_ALL_MATURITIES = [2, 3, 4, 5]
+
 # Define variables for pattern matching
 x, y = Var("x_0"), Var("x_1")
 bnot_x, bnot_y = Var("bnot_x_0"), Var("bnot_x_1")
@@ -34,6 +39,7 @@ class Sub_HackersDelightRule_1(VerifiableRule):
         ~y + 1 = -y  [two's complement]
         x + (~y + 1) = x + (-y) = x - y
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = x + (~y + ONE)
     REPLACEMENT = x - y
@@ -51,6 +57,7 @@ class Sub_HackersDelightRule_2(VerifiableRule):
         x - y = (x ^ y) - 2*(~x & y)  [Hacker's Delight 2-19]
         This is an MBA obfuscation of simple subtraction.
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x ^ y) - TWO * (~x & y)
     REPLACEMENT = x - y
@@ -69,6 +76,7 @@ class Sub_HackersDelightRule_3(VerifiableRule):
         (~x & y) gives bits only in y
         Difference gives x - y
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x & bnot_y) - (bnot_x & y)
     REPLACEMENT = x - y
@@ -90,6 +98,7 @@ class Sub_HackersDelightRule_4(VerifiableRule):
     Proof:
         x - y = 2*(x & ~y) - (x ^ y)  [Hacker's Delight variant]
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = TWO * (x & bnot_y) - (x ^ y)
     REPLACEMENT = x - y
@@ -114,6 +123,7 @@ class Sub1_FactorRule_1(VerifiableRule):
         -x - 1 = ~x  [two's complement]
         (~x) - (-2 * x) = ~x + 2*x = x - 1  [algebraic simplification]
     """
+    maturities = _ALL_MATURITIES
 
     c_minus_2 = Const("c_minus_2")
 
@@ -133,6 +143,7 @@ class Sub1_FactorRule_2(VerifiableRule):
         2*x + ~x = 2*x - x - 1 = x - 1
         Using ~x = -x - 1
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = TWO * x + ~x
     REPLACEMENT = x - ONE
@@ -148,6 +159,7 @@ class Sub1Add_HackersDelightRule_1(VerifiableRule):
 
     Proof: Complex MBA obfuscation that reduces to (x + y) - 1.
     """
+    maturities = _ALL_MATURITIES
 
 
     PATTERN = TWO * (x | y) + (x ^ bnot_y)
@@ -169,6 +181,7 @@ class Sub1And_HackersDelightRule_1(VerifiableRule):
                      = x + (all 1s)
                      = (x & y) - 1  [algebraic simplification]
     """
+    maturities = _ALL_MATURITIES
 
 
     PATTERN = (x | bnot_y) + y
@@ -190,6 +203,7 @@ class Sub1Or_MbaRule_1(VerifiableRule):
         (x + y) + ~(x & y) = (x + y) - (x & y) - 1
                             = (x | y) - 1  [OR identity]
     """
+    maturities = _ALL_MATURITIES
 
 
     PATTERN = (x + y) + ~(x & y)
@@ -209,6 +223,7 @@ class Sub1And1_MbaRule_1(VerifiableRule):
                      = -1 + x + 1 [but only LSB matters]
                      = (x & 1) - 1
     """
+    maturities = _ALL_MATURITIES
 
 
     PATTERN = (~x | ONE) + x

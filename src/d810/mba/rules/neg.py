@@ -10,6 +10,11 @@ from d810.core.bits import AND_TABLE
 from d810.mba.dsl import Var, Const, when
 from d810.mba.rules._base import VerifiableRule
 
+# Maturity constants (from ida_hexrays)
+# MMAT_PREOPTIMIZED=2, MMAT_LOCOPT=3, MMAT_CALLS=4, MMAT_GLBOPT1=5
+# MBA/HackersDelight patterns need to fire early (including MMAT_PREOPTIMIZED)
+_ALL_MATURITIES = [2, 3, 4, 5]
+
 # Define variables for pattern matching
 x, y, z = Var("x_0"), Var("x_1"), Var("x_2")
 
@@ -35,6 +40,7 @@ class Neg_HackersDelightRule_1(VerifiableRule):
         1. Flip all bits (bitwise NOT)
         2. Add 1
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = ~x + ONE
     REPLACEMENT = -x
@@ -52,6 +58,7 @@ class Neg_HackersDelightRule_2(VerifiableRule):
         ~(x - 1) = ~x - ~(-1) = ~x + 1 = -x
         This uses De Morgan's laws and two's complement arithmetic.
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = ~(x - ONE)
     REPLACEMENT = -x
@@ -78,6 +85,7 @@ class NegSub_HackersDelightRule_1(VerifiableRule):
                                   = -(x ^ y) - 2*(x & y)
                                   = -(x + y)
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x ^ y) - TWO * (x | y)
     REPLACEMENT = -(x + y)
@@ -93,6 +101,7 @@ class NegAdd_HackersDelightRule_1(VerifiableRule):
 
     This validates that the constant is exactly -2 in two's complement.
     """
+    maturities = _ALL_MATURITIES
 
     val_fe = Const("val_fe")
 
@@ -113,6 +122,7 @@ class NegAdd_HackersDelightRule_2(VerifiableRule):
 
     Proof: Same logic as two-variable case, but with (y | z) as a single term.
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x ^ (y | z)) - TWO * ((x | y) | z)
     REPLACEMENT = -(x + (y | z))
@@ -136,6 +146,7 @@ class NegOr_HackersDelightRule_1(VerifiableRule):
         So: (x & y) - (x + y) = (x & y) - (x | y) - (x & y)
                                 = -(x | y)
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x & y) - (x + y)
     REPLACEMENT = -(x | y)
@@ -158,6 +169,7 @@ class NegXor_HackersDelightRule_1(VerifiableRule):
         x ^ y = (x | y) - (x & y)  [XOR identity]
         So: (x & y) - (x | y) = -((x | y) - (x & y)) = -(x ^ y)
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x & y) - (x | y)
     REPLACEMENT = -(x ^ y)
@@ -178,6 +190,7 @@ class NegXor_HackersDelightRule_2(VerifiableRule):
                                   = (x & y) - (x | y)
                                   = -(x ^ y)  [by NegXor_HackersDelight1]
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x + y) - TWO * (x | y)
     REPLACEMENT = -(x ^ y)

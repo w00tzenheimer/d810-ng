@@ -9,6 +9,11 @@ All rules are verified using Z3 SMT solver.
 from d810.mba.dsl import Var, Const, when
 from d810.mba.rules._base import VerifiableRule
 
+# Maturity constants (from ida_hexrays)
+# MMAT_PREOPTIMIZED=2, MMAT_LOCOPT=3, MMAT_CALLS=4, MMAT_GLBOPT1=5
+# MBA/HackersDelight patterns need to fire early (including MMAT_PREOPTIMIZED)
+_ALL_MATURITIES = [2, 3, 4, 5]
+
 # Define variables for pattern matching
 x, y = Var("x_0"), Var("x_1")
 bnot_x, bnot_y = Var("bnot_x_0"), Var("bnot_x_1")
@@ -41,6 +46,7 @@ class Mul_MBA_1(VerifiableRule):
     making it computationally very expensive for the SMT solver (6+ minutes per test).
     The pattern is mathematically sound but too complex for practical verification.
     """
+    maturities = _ALL_MATURITIES
 
     SKIP_VERIFICATION = True  # Too expensive: 4 multiplications make Z3 very slow
 
@@ -72,6 +78,7 @@ class Mul_MBA_2(VerifiableRule):
     This rule is included for completeness and test parity with main branch,
     but will be skipped during verification.
     """
+    maturities = _ALL_MATURITIES
 
     KNOWN_INCORRECT = True
 
@@ -103,6 +110,7 @@ class Mul_MBA_3(VerifiableRule):
     This rule is included for completeness and test parity with main branch,
     but will be skipped during verification.
     """
+    maturities = _ALL_MATURITIES
 
     KNOWN_INCORRECT = True
 
@@ -130,6 +138,7 @@ class Mul_MBA_4(VerifiableRule):
     making it computationally very expensive for the SMT solver (similar to Mul_MBA_1).
     The pattern is mathematically sound but too complex for practical verification.
     """
+    maturities = _ALL_MATURITIES
 
     SKIP_VERIFICATION = True  # Too expensive: 3 multiplications make Z3 very slow
 
@@ -164,6 +173,7 @@ class Mul_FactorRule_1(VerifiableRule):
 
     Now fully verifiable: Matches main branch behavior. Verifies in ~0.16s.
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = TWO + TWO * (y + (x | bnot_y))
     REPLACEMENT = TWO * (x & y)
@@ -182,6 +192,7 @@ class Mul_FactorRule_2(VerifiableRule):
     Proof:
         -(x & y) - (x & y) = -2*(x & y)
     """
+    maturities = _ALL_MATURITIES
 
     PATTERN = -(x & y) - (x & y)
     REPLACEMENT = NEG_TWO * (x & y)
