@@ -101,7 +101,7 @@ class IDABackend:
 
                 case RedirectBranch(from_serial=src, old_target=old, new_target=new):
                     # Map to BLOCK_TARGET_CHANGE — redirect one branch of a 2-way block
-                    modifier.queue_conditional_target_change(src, old, new, description=f"redirect branch {src}: {old}→{new}")
+                    modifier.queue_conditional_target_change(src, new, description=f"redirect branch {src}: {old}→{new}")
 
                 case ConvertToGoto(block_serial=serial, goto_target=target):
                     # Map to BLOCK_CONVERT_TO_GOTO
