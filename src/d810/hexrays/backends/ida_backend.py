@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING
 
 from d810.hexrays.graph_modification import (
     GraphModification,
-    RedirectEdge,
+    RedirectGoto,
+    RedirectBranch,
     ConvertToGoto,
     InsertBlock,
     RemoveEdge,
@@ -64,10 +65,11 @@ class IDABackend:
 
         Maps each GraphModification type to the corresponding DeferredGraphModifier
         queue method:
-        - RedirectEdge → queue_goto_change
-        - ConvertToGoto → queue_convert_to_goto
-        - InsertBlock → queue_create_and_redirect
-        - RemoveEdge → (not yet implemented, logs warning and skips)
+        - RedirectGoto   → queue_goto_change (1-way blocks)
+        - RedirectBranch → queue_target_change (2-way conditional blocks)
+        - ConvertToGoto  → queue_convert_to_goto
+        - InsertBlock    → queue_create_and_redirect
+        - RemoveEdge     → (not yet implemented, logs warning and skips)
         - NopInstructions → queue_insn_nop
 
         Args:
@@ -79,7 +81,7 @@ class IDABackend:
 
         Example:
             >>> mods = [
-            ...     RedirectEdge(from_serial=10, old_target=20, new_target=30),
+            ...     RedirectGoto(from_serial=10, old_target=20, new_target=30),
             ...     ConvertToGoto(block_serial=15, goto_target=25),
             ... ]
             >>> count = backend.lower(mods, mba)
@@ -93,13 +95,13 @@ class IDABackend:
 
         for mod in modifications:
             match mod:
-                case RedirectEdge(from_serial=src, old_target=old, new_target=new):
-                    # Map to BLOCK_GOTO_CHANGE — redirect edge from old to new target
-                    # Note: RedirectEdge doesn't distinguish between 1-way/2-way blocks,
-                    # so we use queue_goto_change which handles 1-way blocks.
-                    # For 2-way blocks, the pass should use ConvertToGoto or create
-                    # a more specific modification type.
-                    modifier.queue_goto_change(src, new, description=f"redirect {src}: {old}→{new}")
+                case RedirectGoto(from_serial=src, old_target=old, new_target=new):
+                    # Map to BLOCK_GOTO_CHANGE — redirect edge in a 1-way block
+                    modifier.queue_goto_change(src, new, description=f"redirect goto {src}: {old}→{new}")
+
+                case RedirectBranch(from_serial=src, old_target=old, new_target=new):
+                    # Map to BLOCK_TARGET_CHANGE — redirect one branch of a 2-way block
+                    modifier.queue_target_change(src, old, new, description=f"redirect branch {src}: {old}→{new}")
 
                 case ConvertToGoto(block_serial=serial, goto_target=target):
                     # Map to BLOCK_CONVERT_TO_GOTO

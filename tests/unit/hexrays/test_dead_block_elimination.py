@@ -16,8 +16,7 @@ from d810.hexrays.pass_pipeline import PassPipeline
 from d810.hexrays.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
 from d810.hexrays.passes.dead_block_elimination import DeadBlockEliminationPass
 
-# Import InMemoryBackend from test_cfg_pass
-from tests.unit.hexrays.test_cfg_pass import InMemoryBackend
+from tests.unit.hexrays.conftest import InMemoryBackend
 
 
 class TestDeadBlockEliminationPass:

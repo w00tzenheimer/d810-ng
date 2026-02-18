@@ -12,7 +12,8 @@ from __future__ import annotations
 import pytest
 
 from d810.hexrays.graph_modification import (
-    RedirectEdge,
+    RedirectGoto,
+    RedirectBranch,
     ConvertToGoto,
     InsertBlock,
     RemoveEdge,
@@ -28,9 +29,17 @@ from d810.hexrays.mop_snapshot import MopSnapshot
 # ============================================================================
 
 
-def test_redirect_edge_construction():
-    """Test RedirectEdge construction and field access."""
-    mod = RedirectEdge(from_serial=10, old_target=20, new_target=30)
+def test_redirect_goto_construction():
+    """Test RedirectGoto construction and field access."""
+    mod = RedirectGoto(from_serial=10, old_target=20, new_target=30)
+    assert mod.from_serial == 10
+    assert mod.old_target == 20
+    assert mod.new_target == 30
+
+
+def test_redirect_branch_construction():
+    """Test RedirectBranch construction and field access."""
+    mod = RedirectBranch(from_serial=10, old_target=20, new_target=30)
     assert mod.from_serial == 10
     assert mod.old_target == 20
     assert mod.new_target == 30
@@ -95,9 +104,16 @@ def test_nop_instructions_empty_eas():
 # ============================================================================
 
 
-def test_redirect_edge_frozen():
-    """Test RedirectEdge is frozen (immutable)."""
-    mod = RedirectEdge(from_serial=10, old_target=20, new_target=30)
+def test_redirect_goto_frozen():
+    """Test RedirectGoto is frozen (immutable)."""
+    mod = RedirectGoto(from_serial=10, old_target=20, new_target=30)
+    with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
+        mod.from_serial = 99  # type: ignore
+
+
+def test_redirect_branch_frozen():
+    """Test RedirectBranch is frozen (immutable)."""
+    mod = RedirectBranch(from_serial=10, old_target=20, new_target=30)
     with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
         mod.from_serial = 99  # type: ignore
 
@@ -154,15 +170,33 @@ def test_nop_instructions_eas_immutable():
 # ============================================================================
 
 
-def test_redirect_edge_equality():
-    """Test RedirectEdge equality semantics."""
-    mod1 = RedirectEdge(from_serial=10, old_target=20, new_target=30)
-    mod2 = RedirectEdge(from_serial=10, old_target=20, new_target=30)
-    mod3 = RedirectEdge(from_serial=10, old_target=20, new_target=99)
+def test_redirect_goto_equality():
+    """Test RedirectGoto equality semantics."""
+    mod1 = RedirectGoto(from_serial=10, old_target=20, new_target=30)
+    mod2 = RedirectGoto(from_serial=10, old_target=20, new_target=30)
+    mod3 = RedirectGoto(from_serial=10, old_target=20, new_target=99)
 
     assert mod1 == mod2
     assert mod1 != mod3
     assert hash(mod1) == hash(mod2)
+
+
+def test_redirect_branch_equality():
+    """Test RedirectBranch equality semantics."""
+    mod1 = RedirectBranch(from_serial=10, old_target=20, new_target=30)
+    mod2 = RedirectBranch(from_serial=10, old_target=20, new_target=30)
+    mod3 = RedirectBranch(from_serial=10, old_target=20, new_target=99)
+
+    assert mod1 == mod2
+    assert mod1 != mod3
+    assert hash(mod1) == hash(mod2)
+
+
+def test_redirect_goto_vs_redirect_branch_inequality():
+    """Test that RedirectGoto and RedirectBranch with same fields are not equal."""
+    goto = RedirectGoto(from_serial=10, old_target=20, new_target=30)
+    branch = RedirectBranch(from_serial=10, old_target=20, new_target=30)
+    assert goto != branch
 
 
 def test_convert_to_goto_equality():
@@ -214,7 +248,7 @@ def test_nop_instructions_equality():
 
 def test_cross_type_inequality():
     """Test that different modification types are not equal."""
-    mod1 = RedirectEdge(from_serial=10, old_target=20, new_target=30)
+    mod1 = RedirectGoto(from_serial=10, old_target=20, new_target=30)
     mod2 = ConvertToGoto(block_serial=10, goto_target=30)
     mod3 = RemoveEdge(from_serial=10, to_serial=20)
 
@@ -230,26 +264,31 @@ def test_cross_type_inequality():
 
 def test_isinstance_discrimination():
     """Test type discrimination via isinstance()."""
-    redirect = RedirectEdge(from_serial=10, old_target=20, new_target=30)
+    redirect_goto = RedirectGoto(from_serial=10, old_target=20, new_target=30)
+    redirect_branch = RedirectBranch(from_serial=10, old_target=20, new_target=30)
     convert = ConvertToGoto(block_serial=15, goto_target=25)
     insert = InsertBlock(pred_serial=5, succ_serial=10, instructions=())
     remove = RemoveEdge(from_serial=10, to_serial=20)
     nop = NopInstructions(block_serial=10, insn_eas=(0x1000,))
 
-    assert isinstance(redirect, RedirectEdge)
+    assert isinstance(redirect_goto, RedirectGoto)
+    assert isinstance(redirect_branch, RedirectBranch)
     assert isinstance(convert, ConvertToGoto)
     assert isinstance(insert, InsertBlock)
     assert isinstance(remove, RemoveEdge)
     assert isinstance(nop, NopInstructions)
 
     # Cross-type checks
-    assert not isinstance(redirect, ConvertToGoto)
+    assert not isinstance(redirect_goto, RedirectBranch)
+    assert not isinstance(redirect_branch, RedirectGoto)
+    assert not isinstance(redirect_goto, ConvertToGoto)
     assert not isinstance(convert, InsertBlock)
 
 
 def test_match_statement_discrimination():
     """Test type discrimination via match statement (Python 3.10+)."""
-    redirect = RedirectEdge(from_serial=10, old_target=20, new_target=30)
+    redirect_goto = RedirectGoto(from_serial=10, old_target=20, new_target=30)
+    redirect_branch = RedirectBranch(from_serial=10, old_target=20, new_target=30)
     convert = ConvertToGoto(block_serial=15, goto_target=25)
     insert = InsertBlock(pred_serial=5, succ_serial=10, instructions=())
     remove = RemoveEdge(from_serial=10, to_serial=20)
@@ -257,8 +296,10 @@ def test_match_statement_discrimination():
 
     def classify(mod: GraphModification) -> str:
         match mod:
-            case RedirectEdge():
-                return "redirect"
+            case RedirectGoto():
+                return "redirect_goto"
+            case RedirectBranch():
+                return "redirect_branch"
             case ConvertToGoto():
                 return "convert"
             case InsertBlock():
@@ -270,7 +311,8 @@ def test_match_statement_discrimination():
             case _:
                 return "unknown"
 
-    assert classify(redirect) == "redirect"
+    assert classify(redirect_goto) == "redirect_goto"
+    assert classify(redirect_branch) == "redirect_branch"
     assert classify(convert) == "convert"
     assert classify(insert) == "insert"
     assert classify(remove) == "remove"
@@ -279,14 +321,27 @@ def test_match_statement_discrimination():
 
 def test_match_statement_field_extraction():
     """Test field extraction via match statement patterns."""
-    mod = RedirectEdge(from_serial=10, old_target=20, new_target=30)
+    mod = RedirectGoto(from_serial=10, old_target=20, new_target=30)
 
     match mod:
-        case RedirectEdge(from_serial=src, new_target=dst):
+        case RedirectGoto(from_serial=src, new_target=dst):
             assert src == 10
             assert dst == 30
         case _:
-            pytest.fail("Should match RedirectEdge pattern")
+            pytest.fail("Should match RedirectGoto pattern")
+
+
+def test_match_statement_field_extraction_branch():
+    """Test field extraction via match statement patterns for RedirectBranch."""
+    mod = RedirectBranch(from_serial=5, old_target=10, new_target=20)
+
+    match mod:
+        case RedirectBranch(from_serial=src, old_target=old, new_target=new):
+            assert src == 5
+            assert old == 10
+            assert new == 20
+        case _:
+            pytest.fail("Should match RedirectBranch pattern")
 
 
 # ============================================================================
@@ -347,17 +402,17 @@ def test_nop_instructions_ordering_preserved():
     assert list(mod.insn_eas) == [0x1000, 0x1004, 0x1008, 0x100C, 0x1010]
 
 
-def test_redirect_edge_self_loop():
-    """Test RedirectEdge can represent self-loops (edge cases)."""
+def test_redirect_goto_self_loop():
+    """Test RedirectGoto can represent self-loops (edge cases)."""
     # Self-loop: block points to itself
-    mod = RedirectEdge(from_serial=10, old_target=20, new_target=10)
+    mod = RedirectGoto(from_serial=10, old_target=20, new_target=10)
     assert mod.from_serial == mod.new_target
 
 
-def test_redirect_edge_no_change():
-    """Test RedirectEdge can represent no-op changes (old_target == new_target)."""
+def test_redirect_goto_no_change():
+    """Test RedirectGoto can represent no-op changes (old_target == new_target)."""
     # No-op redirect (should be filtered out by optimizer, but valid construction)
-    mod = RedirectEdge(from_serial=10, old_target=20, new_target=20)
+    mod = RedirectGoto(from_serial=10, old_target=20, new_target=20)
     assert mod.old_target == mod.new_target
 
 
@@ -366,12 +421,23 @@ def test_redirect_edge_no_change():
 # ============================================================================
 
 
-def test_redirect_edge_repr():
-    """Test RedirectEdge has useful repr."""
-    mod = RedirectEdge(from_serial=10, old_target=20, new_target=30)
+def test_redirect_goto_repr():
+    """Test RedirectGoto has useful repr."""
+    mod = RedirectGoto(from_serial=10, old_target=20, new_target=30)
     repr_str = repr(mod)
 
-    assert "RedirectEdge" in repr_str
+    assert "RedirectGoto" in repr_str
+    assert "from_serial=10" in repr_str
+    assert "old_target=20" in repr_str
+    assert "new_target=30" in repr_str
+
+
+def test_redirect_branch_repr():
+    """Test RedirectBranch has useful repr."""
+    mod = RedirectBranch(from_serial=10, old_target=20, new_target=30)
+    repr_str = repr(mod)
+
+    assert "RedirectBranch" in repr_str
     assert "from_serial=10" in repr_str
     assert "old_target=20" in repr_str
     assert "new_target=30" in repr_str

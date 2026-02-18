@@ -24,13 +24,13 @@ Example:
     >>> mods = pass_instance.transform(cfg)
     >>> len(mods)
     1
-    >>> isinstance(mods[0], RedirectEdge)
+    >>> isinstance(mods[0], RedirectBranch)
     True
 """
 from __future__ import annotations
 
 from d810.hexrays.cfg_pass import CFGPass
-from d810.hexrays.graph_modification import GraphModification, RedirectEdge
+from d810.hexrays.graph_modification import GraphModification, RedirectBranch, RedirectGoto
 from d810.hexrays.portable_cfg import PortableCFG
 
 
@@ -102,13 +102,13 @@ class FakeJumpFixerPass(CFGPass):
         self._fixes = fixes or {}
 
     def transform(self, cfg: PortableCFG) -> list[GraphModification]:
-        """Analyze CFG and return RedirectEdge for fake/opaque jumps.
+        """Analyze CFG and return RedirectGoto/RedirectBranch for fake/opaque jumps.
 
         Args:
             cfg: Portable CFG snapshot to analyze.
 
         Returns:
-            List of RedirectEdge modifications for blocks where:
+            List of RedirectGoto or RedirectBranch modifications for blocks where:
             - Block serial exists in pre-computed fixes
             - Block exists in the CFG
             - Block has an edge that needs redirection
@@ -147,11 +147,11 @@ class FakeJumpFixerPass(CFGPass):
                 # 2-way: redirect the branch that doesn't match correct_target
                 for old_target in blk.succs:
                     if old_target != correct_target:
-                        mods.append(RedirectEdge(block_serial, old_target, correct_target))
+                        mods.append(RedirectBranch(block_serial, old_target, correct_target))
                         break
             elif blk.nsucc == 1 and blk.succs[0] != correct_target:
                 # 1-way: redirect if current target differs from correct_target
-                mods.append(RedirectEdge(block_serial, blk.succs[0], correct_target))
+                mods.append(RedirectGoto(block_serial, blk.succs[0], correct_target))
 
         return mods
 

@@ -3,7 +3,7 @@
 This module tests the CFGPass that collapses chains of goto-only blocks.
 Tests cover:
 - Detection of goto-only blocks (1-way, 0-1 instructions)
-- RedirectEdge emission for each predecessor
+- RedirectGoto emission for each predecessor
 - Self-loop handling
 - Multi-predecessor goto blocks
 - Integration with PassPipeline and InMemoryBackend
@@ -12,13 +12,12 @@ from __future__ import annotations
 
 import pytest
 
-from d810.hexrays.graph_modification import RedirectEdge
+from d810.hexrays.graph_modification import RedirectGoto
 from d810.hexrays.pass_pipeline import PassPipeline
 from d810.hexrays.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
 from d810.hexrays.passes.goto_chain_removal import GotoChainRemovalPass
 
-# Import InMemoryBackend from test_cfg_pass
-from tests.unit.hexrays.test_cfg_pass import InMemoryBackend
+from tests.unit.hexrays.conftest import InMemoryBackend
 
 
 class TestGotoChainRemovalPass:
@@ -47,7 +46,7 @@ class TestGotoChainRemovalPass:
         assert mods == []
 
     def test_single_goto_chain_returns_redirect_edge(self):
-        """Pass returns RedirectEdge to bypass single goto-only block."""
+        """Pass returns RedirectGoto to bypass single goto-only block."""
         # Create chain: 0 -> 10 (goto only) -> 20
         blk0 = BlockSnapshot(
             serial=0, block_type=1, succs=(10,), preds=(),
@@ -71,7 +70,7 @@ class TestGotoChainRemovalPass:
         mods = pass_instance.transform(cfg)
 
         assert len(mods) == 1
-        assert isinstance(mods[0], RedirectEdge)
+        assert isinstance(mods[0], RedirectGoto)
         assert mods[0].from_serial == 0
         assert mods[0].old_target == 10
         assert mods[0].new_target == 20
@@ -100,7 +99,7 @@ class TestGotoChainRemovalPass:
         assert mods == []
 
     def test_multi_predecessor_goto_block(self):
-        """Pass emits one RedirectEdge per predecessor."""
+        """Pass emits one RedirectGoto per predecessor."""
         # Create CFG: {0, 5} -> 10 (goto only) -> 20
         blk0 = BlockSnapshot(
             serial=0, block_type=2, succs=(5, 10), preds=(),
@@ -130,7 +129,7 @@ class TestGotoChainRemovalPass:
         pass_instance = GotoChainRemovalPass()
         mods = pass_instance.transform(cfg)
 
-        # 2 predecessors -> 2 RedirectEdge modifications
+        # 2 predecessors -> 2 RedirectGoto modifications
         assert len(mods) == 2
         from_serials = {mod.from_serial for mod in mods}
         assert from_serials == {0, 5}
@@ -259,6 +258,48 @@ class TestGotoChainRemovalPass:
         assert pass_instance.name == "goto_chain_removal"
         assert pass_instance.tags == frozenset({"cleanup", "topology"})
 
+    def test_entry_block_as_goto_only(self):
+        """Pass handles entry block (serial 0) that is itself a goto-only block.
+
+        When the entry block is a pure goto (1-way, 0-1 instructions) it should
+        be treated the same as any other goto-only block.  However, entry block
+        serial 0 has no predecessors in the snapshot, so the pass emits zero
+        RedirectEdge modifications for it (there is nothing to redirect *from*).
+        This test verifies the pass does not crash and correctly skips the entry
+        block when it has no predecessors, while still handling other goto-only
+        blocks in the same CFG.
+        """
+        # Entry block 0 is goto-only (0 instructions, single successor)
+        blk0_entry = BlockSnapshot(
+            serial=0, block_type=1, succs=(1,), preds=(),
+            flags=0, start_ea=0x1000, insn_snapshots=()
+        )
+        # Block 1 is also goto-only with a predecessor (block 0)
+        blk1_goto = BlockSnapshot(
+            serial=1, block_type=1, succs=(2,), preds=(0,),
+            flags=0, start_ea=0x1010, insn_snapshots=()
+        )
+        blk2 = BlockSnapshot(
+            serial=2, block_type=0, succs=(), preds=(1,),
+            flags=0, start_ea=0x1020, insn_snapshots=()
+        )
+        cfg = PortableCFG(
+            blocks={0: blk0_entry, 1: blk1_goto, 2: blk2},
+            entry_serial=0, func_ea=0x1000
+        )
+
+        pass_instance = GotoChainRemovalPass()
+        mods = pass_instance.transform(cfg)
+
+        # Entry block 0 has no predecessors → no redirect emitted for it.
+        # Block 1 is goto-only with predecessor 0 → one RedirectGoto(0→1 becomes 0→2).
+        assert len(mods) == 1
+        mod = mods[0]
+        assert isinstance(mod, RedirectGoto)
+        assert mod.from_serial == 0
+        assert mod.old_target == 1
+        assert mod.new_target == 2
+
     def test_multiple_goto_chains(self):
         """Pass handles multiple goto chains in same CFG."""
         # Create CFG with 2 goto chains:
@@ -331,7 +372,7 @@ class TestGotoChainRemovalPassIntegration:
         assert total_mods == 1
         assert len(backend.applied_modifications) == 1
         mod = backend.applied_modifications[0]
-        assert isinstance(mod, RedirectEdge)
+        assert isinstance(mod, RedirectGoto)
         assert mod.from_serial == 0
         assert mod.old_target == 10
         assert mod.new_target == 20

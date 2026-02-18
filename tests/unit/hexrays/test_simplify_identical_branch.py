@@ -15,8 +15,7 @@ from d810.hexrays.pass_pipeline import PassPipeline
 from d810.hexrays.portable_cfg import BlockSnapshot, PortableCFG
 from d810.hexrays.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
 
-# Import InMemoryBackend from test_cfg_pass
-from tests.unit.hexrays.test_cfg_pass import InMemoryBackend
+from tests.unit.hexrays.conftest import InMemoryBackend
 
 
 class TestSimplifyIdenticalBranchPass:

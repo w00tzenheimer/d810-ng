@@ -14,7 +14,7 @@ Example:
 from __future__ import annotations
 
 from d810.hexrays.cfg_pass import CFGPass
-from d810.hexrays.graph_modification import GraphModification, RedirectEdge
+from d810.hexrays.graph_modification import GraphModification, RedirectGoto
 from d810.hexrays.portable_cfg import PortableCFG
 
 
@@ -23,7 +23,7 @@ class GotoChainRemovalPass(CFGPass):
 
     This pass finds 1-way blocks that contain only a goto instruction
     (0-1 instructions total, since the goto itself is implicit in the
-    block's successor edge). For each such block, it emits RedirectEdge
+    block's successor edge). For each such block, it emits RedirectGoto
     modifications to update each predecessor to bypass the goto block.
 
     Self-loops are skipped to avoid infinite loops.
@@ -54,6 +54,8 @@ class GotoChainRemovalPass(CFGPass):
         1
         >>> mods[0].from_serial
         0
+        >>> isinstance(mods[0], RedirectGoto)
+        True
         >>> mods[0].old_target
         10
         >>> mods[0].new_target
@@ -63,14 +65,14 @@ class GotoChainRemovalPass(CFGPass):
     tags = frozenset({"cleanup", "topology"})
 
     def transform(self, cfg: PortableCFG) -> list[GraphModification]:
-        """Analyze CFG and return RedirectEdge for goto-only blocks.
+        """Analyze CFG and return RedirectGoto for goto-only blocks.
 
         Args:
             cfg: Portable CFG snapshot to analyze.
 
         Returns:
-            List of RedirectEdge modifications to bypass goto-only blocks.
-            Each predecessor of a goto-only block gets one RedirectEdge
+            List of RedirectGoto modifications to bypass goto-only blocks.
+            Each predecessor of a goto-only block gets one RedirectGoto
             modification. Empty list if no goto-only blocks exist.
 
         Example:
@@ -112,10 +114,12 @@ class GotoChainRemovalPass(CFGPass):
             if len(blk.insn_snapshots) > 1:
                 continue
 
-            # For each predecessor, emit RedirectEdge to bypass this goto block
+            # For each predecessor, emit RedirectGoto to bypass this goto block.
+            # Goto-only blocks are 1-way (single successor), so predecessors
+            # targeting them via unconditional goto use RedirectGoto.
             for pred_serial in blk.preds:
                 mods.append(
-                    RedirectEdge(
+                    RedirectGoto(
                         from_serial=pred_serial,
                         old_target=serial,
                         new_target=target,

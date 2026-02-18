@@ -16,7 +16,8 @@ Mapping to DeferredGraphModifier
 ---------------------------------
 These frozen types map to DeferredGraphModifier modification types:
 
-- RedirectEdge       → BLOCK_GOTO_CHANGE or BLOCK_TARGET_CHANGE
+- RedirectGoto       → BLOCK_GOTO_CHANGE (1-way blocks only)
+- RedirectBranch     → BLOCK_TARGET_CHANGE (2-way conditional blocks only)
 - ConvertToGoto      → BLOCK_CONVERT_TO_GOTO
 - InsertBlock        → BLOCK_CREATE_WITH_REDIRECT
 - RemoveEdge         → (future use, not yet in DeferredGraphModifier)
@@ -28,6 +29,8 @@ Design Notes
 - Serial numbers (int) are used instead of live block pointers
 - Tuple fields (instructions, insn_eas) enforce immutability
 - Union type (GraphModification) enables type discrimination via isinstance/match
+- RedirectGoto is for 1-way (unconditional goto) blocks
+- RedirectBranch is for 2-way (conditional branch) blocks
 """
 from __future__ import annotations
 
@@ -39,19 +42,43 @@ from d810.hexrays.portable_cfg import InsnSnapshot
 
 
 @dataclass(frozen=True)
-class RedirectEdge:
-    """Redirect an edge from one target to another.
+class RedirectGoto:
+    """Redirect an edge from a 1-way (unconditional goto) block.
 
-    Maps to DeferredGraphModifier's BLOCK_GOTO_CHANGE (1-way blocks) or
-    BLOCK_TARGET_CHANGE (2-way conditional blocks).
+    Maps to DeferredGraphModifier's BLOCK_GOTO_CHANGE.
+    Use this for blocks with exactly one successor (1-way blocks).
 
     Attributes:
-        from_serial: Source block serial number.
+        from_serial: Source block serial number (must be a 1-way block).
         old_target: Current target block serial (for verification).
         new_target: New target block serial.
 
     Example:
-        >>> mod = RedirectEdge(from_serial=10, old_target=20, new_target=30)
+        >>> mod = RedirectGoto(from_serial=10, old_target=20, new_target=30)
+        >>> mod.from_serial
+        10
+        >>> mod.new_target
+        30
+    """
+    from_serial: int
+    old_target: int
+    new_target: int
+
+
+@dataclass(frozen=True)
+class RedirectBranch:
+    """Redirect one branch edge of a 2-way (conditional) block.
+
+    Maps to DeferredGraphModifier's BLOCK_TARGET_CHANGE.
+    Use this for blocks with exactly two successors (2-way conditional blocks).
+
+    Attributes:
+        from_serial: Source block serial number (must be a 2-way block).
+        old_target: Current branch target block serial to be replaced.
+        new_target: New branch target block serial.
+
+    Example:
+        >>> mod = RedirectBranch(from_serial=10, old_target=20, new_target=30)
         >>> mod.from_serial
         10
         >>> mod.new_target
@@ -158,7 +185,8 @@ class NopInstructions:
 
 # Union type for type discrimination via isinstance() or match statement
 GraphModification = Union[
-    RedirectEdge,
+    RedirectGoto,
+    RedirectBranch,
     ConvertToGoto,
     InsertBlock,
     RemoveEdge,
@@ -167,7 +195,8 @@ GraphModification = Union[
 
 
 __all__ = [
-    "RedirectEdge",
+    "RedirectGoto",
+    "RedirectBranch",
     "ConvertToGoto",
     "InsertBlock",
     "RemoveEdge",

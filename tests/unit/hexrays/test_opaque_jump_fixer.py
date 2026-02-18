@@ -11,8 +11,7 @@ from d810.hexrays.graph_modification import ConvertToGoto
 from d810.hexrays.portable_cfg import BlockSnapshot, PortableCFG
 from d810.hexrays.pass_pipeline import PassPipeline
 
-# Import InMemoryBackend from test_cfg_pass
-from tests.unit.hexrays.test_cfg_pass import InMemoryBackend
+from tests.unit.hexrays.conftest import InMemoryBackend
 
 
 class TestOpaqueJumpFixerPass:
