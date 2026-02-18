@@ -179,7 +179,7 @@ def resolve_arch_config(config: dict, file_format: FileFormat | None = None) -> 
     for key in keys_to_check:
         if key in config and key != "default":
             override = config[key]
-            if isinstance(override, dict):  # ast-grep-ignore
+            if isinstance(override, dict):
                 result.update(override)
                 logger.debug(
                     "Applied arch-specific config for '%s': %s", key, override

@@ -254,7 +254,7 @@ class EqualityConstraint(ConstraintExpr):
         # This needs special handling because we compare AST structure, not values
         # Use Protocol for hot-reload safety
         if (
-            isinstance(self.right, SymbolicExpressionProtocol)  # ast-grep-ignore
+            isinstance(self.right, SymbolicExpressionProtocol)
             and self.right.operation == "bnot"
             and self.right.left is not None
         ):
@@ -298,7 +298,7 @@ class EqualityConstraint(ConstraintExpr):
         bnot_operand = self.right.left
         # Use Protocol for hot-reload safety
         if (
-            not isinstance(bnot_operand, SymbolicExpressionProtocol)  # ast-grep-ignore
+            not isinstance(bnot_operand, SymbolicExpressionProtocol)
             or not bnot_operand.is_leaf()
         ):
             logger.debug("_check_bnot_constraint: bnot_operand is not a leaf")
@@ -334,7 +334,7 @@ class EqualityConstraint(ConstraintExpr):
         """Check if expression is a simple constant (not compound)."""
 
         # Use Protocol for hot-reload safety
-        if isinstance(expr, SymbolicExpressionProtocol):  # ast-grep-ignore
+        if isinstance(expr, SymbolicExpressionProtocol):
             return expr.is_leaf() and expr.name is not None
 
         return False
@@ -343,7 +343,7 @@ class EqualityConstraint(ConstraintExpr):
         """Get the name of a constant."""
 
         # Use Protocol for hot-reload safety
-        if isinstance(expr, SymbolicExpressionProtocol):  # ast-grep-ignore
+        if isinstance(expr, SymbolicExpressionProtocol):
             if expr.name:
                 return expr.name
             raise ValueError(f"SymbolicExpression has no name: {expr}")
@@ -362,7 +362,7 @@ class EqualityConstraint(ConstraintExpr):
         """
 
         # Use Protocol for hot-reload safety
-        if isinstance(expr, SymbolicExpressionProtocol):  # ast-grep-ignore
+        if isinstance(expr, SymbolicExpressionProtocol):
             return self._eval_symbolic_expr(expr, candidate)
 
         raise ValueError(
@@ -564,4 +564,4 @@ def is_constraint_expr(obj: Any) -> bool:
     Uses ConstraintExprProtocol for hot-reload safety - survives class identity
     changes after plugin reload.
     """
-    return isinstance(obj, ConstraintExprProtocol)  # ast-grep-ignore
+    return isinstance(obj, ConstraintExprProtocol)

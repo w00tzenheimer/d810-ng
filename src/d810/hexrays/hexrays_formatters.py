@@ -429,7 +429,7 @@ def write_mc_to_file(
 def dump_microcode_for_debug(
     mba: ida_hexrays.mbl_array_t, log_dir_path: pathlib.Path, name: str = ""
 ):
-    if isinstance(log_dir_path, str):  # ast-grep-ignore
+    if isinstance(log_dir_path, str):
         log_dir_path = pathlib.Path(log_dir_path)
     mc_filename = log_dir_path / f"{mba.entry_ea:x}_maturity_{mba.maturity}_{name}.log"
     logger.info("Dumping microcode in file {0}...".format(mc_filename))

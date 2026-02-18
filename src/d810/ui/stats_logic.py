@@ -45,7 +45,7 @@ def get_fired_rule_names(stats: dict | None) -> list[str]:
     # Collect from cfg_patches (different structure: {name: {"uses": N, "total_patches": M}})
     cfg_patches = stats.get("cfg_patches", {})
     for rule_name, patch_info in cfg_patches.items():
-        if isinstance(patch_info, dict) and patch_info.get("uses", 0) > 0:  # ast-grep-ignore
+        if isinstance(patch_info, dict) and patch_info.get("uses", 0) > 0:
             fired_rules.add(rule_name)
 
     return sorted(fired_rules)

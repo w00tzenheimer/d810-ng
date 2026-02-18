@@ -24,6 +24,10 @@ message: |
 
 rule:
   pattern: isinstance($OBJ, $CLASS)
+constraints:
+  CLASS:
+    not:
+      regex: "\\b(int|str|float|bool|list|dict|tuple|set|bytes|type|Exception|BaseException|ABC|MappingProxyType)\\b|Protocol\\b|^Qt|^Q[A-Z]"
 
 note: |
   After hot reload, class identity changes between module load cycles.
@@ -33,3 +37,5 @@ note: |
   - *Protocol suffix (correct pattern)
   - Builtins: int, str, float, bool, list, dict, tuple, set, bytes
   - Abstract bases: Exception, BaseException, ABC
+  - Qt types: Qt*, Q<UpperCase>*
+  - MappingProxyType

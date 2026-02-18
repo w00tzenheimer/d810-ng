@@ -105,7 +105,7 @@ class OptimizationCache:
     def db_path(self) -> Path:
         """Get the database path."""
         path = getattr(self._storage, "db_path", None)
-        if isinstance(path, Path):  # ast-grep-ignore
+        if isinstance(path, Path):
             return path
         # Netnode backend (or custom backend) may not expose a filesystem path.
         target = getattr(self._storage, "node_name", "in-memory")

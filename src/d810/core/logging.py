@@ -337,7 +337,7 @@ class LoggerConfigurator:
         dyn = {
             name
             for name, logger in mgr.loggerDict.items()
-            if isinstance(logger, logging.Logger)  # ast-grep-ignore
+            if isinstance(logger, logging.Logger)
         }
         # 2) static ones from your dictConfig
         stat = set(conf["loggers"].keys())
@@ -347,7 +347,7 @@ class LoggerConfigurator:
         if prefix is None:
             return sorted(all_names)
 
-        if isinstance(prefix, str):  # ast-grep-ignore
+        if isinstance(prefix, str):
             prefixes = [prefix]
         else:
             prefixes = list(prefix)
@@ -442,7 +442,7 @@ def getLogger(name: str, default_level: int = logging.INFO) -> D810Logger:
     # grab (or create) the underlying Logger
     base = logging.getLogger(name)
     # if it’s already the right type, just return it
-    if isinstance(base, D810Logger):  # ast-grep-ignore
+    if isinstance(base, D810Logger):
         return base
     # otherwise wrap it in the subclass
     loglvl = base.level

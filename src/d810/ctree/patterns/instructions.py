@@ -129,12 +129,12 @@ class IfPat(InstructionPat):
         def wrap_pattern(pat: BasePat | None) -> BasePat:
             if pat is None:
                 return AnyPat()
-            if not should_wrap_in_block or isinstance(pat, AnyPat):  # ast-grep-ignore
+            if not should_wrap_in_block or isinstance(pat, AnyPat):
                 return pat
             if idaapi is not None and pat.op == idaapi.cit_block:
                 return pat
             # do not wrap expressions and abstracts
-            if not isinstance(pat, InstructionPat):  # ast-grep-ignore
+            if not isinstance(pat, InstructionPat):
                 return pat
             return BlockPat(pat)
 
@@ -310,9 +310,14 @@ class SwitchPat(InstructionPat):
         self.cases: list[BasePat] = []
         self.valued_cases: dict[int, BasePat] = {}
         for case in cases:
-            if isinstance(case, BasePat):  # ast-grep-ignore
+            if isinstance(case, BasePat):
                 self.cases.append(case)
-            elif isinstance(case, tuple) and len(case) == 2 and isinstance(case[0], int) and isinstance(case[1], BasePat):  # ast-grep-ignore
+            elif (
+                isinstance(case, tuple)
+                and len(case) == 2
+                and isinstance(case[0], int)
+                and isinstance(case[1], BasePat)
+            ):
                 if case[0] in self.valued_cases:
                     raise ValueError("Duplicate numbered case in switch")
                 self.valued_cases[case[0]] = case[1]

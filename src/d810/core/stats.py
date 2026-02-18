@@ -46,7 +46,7 @@ class RuleExecution:
     @classmethod
     def from_rule(cls, rule: type | object, **metadata) -> "RuleExecution":
         """Create a RuleExecution from a rule object."""
-        if isinstance(rule, type):  # ast-grep-ignore
+        if isinstance(rule, type):
             name = getattr(rule, "registrant_name", None) or rule.__name__
         else:
             name = getattr(rule, "name", None) or rule.__class__.__name__
@@ -220,9 +220,9 @@ class OptimizationStatistics:
         Args:
             rule: Either a rule class/instance or a rule name string
         """
-        if isinstance(rule, str):  # ast-grep-ignore
+        if isinstance(rule, str):
             return rule.lower() in self.rule_executions
-        elif isinstance(rule, type):  # ast-grep-ignore
+        elif isinstance(rule, type):
             name = getattr(rule, "registrant_name", None) or rule.__name__
             return name.lower() in self.rule_executions
         else:
@@ -231,9 +231,9 @@ class OptimizationStatistics:
 
     def get_rule_match_count(self, rule: type | str) -> int:
         """Get match count for a rule by class or name."""
-        if isinstance(rule, str):  # ast-grep-ignore
+        if isinstance(rule, str):
             name = rule.lower()
-        elif isinstance(rule, type):  # ast-grep-ignore
+        elif isinstance(rule, type):
             name = (getattr(rule, "registrant_name", None) or rule.__name__).lower()
         else:
             name = (getattr(rule, "name", None) or rule.__class__.__name__).lower()
@@ -266,12 +266,12 @@ class OptimizationStatistics:
         count = self.get_rule_match_count(rule)
         rule_name = (
             rule
-            if isinstance(rule, str)  # ast-grep-ignore
+            if isinstance(rule, str)
             else (
                 getattr(rule, "registrant_name", None)
                 or getattr(rule, "name", None)
                 or (
-                    rule.__name__ if isinstance(rule, type) else rule.__class__.__name__  # ast-grep-ignore
+                    rule.__name__ if isinstance(rule, type) else rule.__class__.__name__
                 )
             )
         )
@@ -462,7 +462,7 @@ class OptimizationStatistics:
         Raises:
             AssertionError: If statistics don't match expected values.
         """
-        if isinstance(expected, dict):  # ast-grep-ignore
+        if isinstance(expected, dict):
             expected = self.from_dict(expected)
 
         # Check optimizer matches

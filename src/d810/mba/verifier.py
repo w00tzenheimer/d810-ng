@@ -306,7 +306,7 @@ class ConstrainedMBARule(MBARule):
 
         # Skip verification if replacement is not a SymbolicExpression
         # Use Protocol for hot-reload safety
-        if not isinstance(self.replacement, SymbolicExpressionProtocol):  # ast-grep-ignore
+        if not isinstance(self.replacement, SymbolicExpressionProtocol):
             return True
 
         # Collect all variable names from pattern and replacement
@@ -410,7 +410,7 @@ def verify_transformation(
 def _collect_var_names(expr: SymbolicExpression, var_names: set) -> None:
     """Recursively collect variable and constant names from expression."""
     # Use Protocol for hot-reload safety
-    if expr is None or not isinstance(expr, SymbolicExpressionProtocol):  # ast-grep-ignore
+    if expr is None or not isinstance(expr, SymbolicExpressionProtocol):
         return
     if expr.is_leaf():
         if expr.name and expr.value is None:

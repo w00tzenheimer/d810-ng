@@ -246,7 +246,7 @@ class Netnode:
 
     @staticmethod
     def _coerce_int(value: bytes | str | int) -> int:
-        if isinstance(value, bytes):  # ast-grep-ignore
+        if isinstance(value, bytes):
             value = value.decode("utf-8", errors="strict")
         return int(value)
 
@@ -351,9 +351,9 @@ class Netnode:
         raise KeyError(f"{key!r} not found")
 
     def __getitem__(self, key: int | str) -> Any:
-        if isinstance(key, str):  # ast-grep-ignore
+        if isinstance(key, str):
             raw = self._strget(key)
-        elif isinstance(key, int):  # ast-grep-ignore
+        elif isinstance(key, int):
             raw = self._intget(key)
         else:
             raise TypeError(f"unsupported key type: {type(key)!r}")
@@ -363,19 +363,19 @@ class Netnode:
         if value is None:
             raise ValueError("netnode values must not be None")
         payload = self._compress(self._encode(value))
-        if isinstance(key, str):  # ast-grep-ignore
+        if isinstance(key, str):
             self._strset(key, payload)
             return
-        if isinstance(key, int):  # ast-grep-ignore
+        if isinstance(key, int):
             self._intset(key, payload)
             return
         raise TypeError(f"unsupported key type: {type(key)!r}")
 
     def __delitem__(self, key: int | str) -> None:
-        if isinstance(key, str):  # ast-grep-ignore
+        if isinstance(key, str):
             self._strdel(key)
             return
-        if isinstance(key, int):  # ast-grep-ignore
+        if isinstance(key, int):
             self._intdel(key)
             return
         raise TypeError(f"unsupported key type: {type(key)!r}")
@@ -387,7 +387,7 @@ class Netnode:
             return default
 
     def __contains__(self, key: object) -> bool:
-        if not isinstance(key, (str, int)):  # ast-grep-ignore
+        if not isinstance(key, (str, int)):
             return False
         try:
             self[key]
@@ -478,7 +478,7 @@ class NetnodeOptimizationStorage:
                 "function_rules": {},
                 "active_recipe": None,
             }
-        if not isinstance(payload, dict):  # ast-grep-ignore
+        if not isinstance(payload, dict):
             return {
                 "functions": {},
                 "results": {},
@@ -687,7 +687,7 @@ class NetnodeOptimizationStorage:
             "functions_cached": len(self._state["functions"]),
             "results_cached": len(self._state["results"]),
             "patches_stored": sum(
-                len(v) for v in self._state["patches"].values() if isinstance(v, list)  # ast-grep-ignore
+                len(v) for v in self._state["patches"].values() if isinstance(v, list)
             ),
             "functions_with_custom_rules": len(self._state["function_rules"]),
         }

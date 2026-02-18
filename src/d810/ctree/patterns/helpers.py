@@ -106,7 +106,7 @@ class StructFieldAccessPat(BasePat):
             return False
         if self.struct_type is None:
             return True
-        if isinstance(self.struct_type, str) and self.struct_type == str(stype):  # ast-grep-ignore
+        if isinstance(self.struct_type, str) and self.struct_type == str(stype):
             return True
         return self.struct_type == stype
 

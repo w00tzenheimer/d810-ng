@@ -319,7 +319,7 @@ class RuleScopeService:
     def _normalize_ea_list(values: Iterable[Any]) -> frozenset[int]:
         normalized: set[int] = set()
         for value in values:
-            if isinstance(value, str):  # ast-grep-ignore
+            if isinstance(value, str):
                 normalized.add(int(value, 16) if value.startswith("0x") else int(value))
             else:
                 normalized.add(int(value))

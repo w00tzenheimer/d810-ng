@@ -189,9 +189,10 @@ class VerifiableRule(SymbolicRule, Registrant):
             # These are typically test base classes that inherit VerifiableRule
             # but don't define PATTERN/REPLACEMENT
             # Use Protocol for hot-reload safety
-            _raw_pattern = rule_cls.__dict__.get("PATTERN")
-            _pattern_is_sym = isinstance(_raw_pattern, SymbolicExpressionProtocol)  # ast-grep-ignore
-            has_pattern = hasattr(rule_cls, "_dsl_pattern") or _pattern_is_sym
+            has_pattern = hasattr(rule_cls, "_dsl_pattern") or (
+                "PATTERN" in rule_cls.__dict__
+                and isinstance(rule_cls.__dict__["PATTERN"], SymbolicExpressionProtocol)
+            )
             if not has_pattern:
                 logger.debug(f"Skipping class without pattern: {rule_cls.__name__}")
                 continue
@@ -280,15 +281,17 @@ class VerifiableRule(SymbolicRule, Registrant):
         # triggering IDA imports at class definition time. The .node property
         # lazily imports IDA modules, which would break unit testing without IDA.
         # Use Protocol for hot-reload safety
-        _pattern_val = cls.__dict__.get("PATTERN")
-        if _pattern_val is not None and isinstance(_pattern_val, SymbolicExpressionProtocol):  # ast-grep-ignore
-            cls._dsl_pattern = _pattern_val
+        if "PATTERN" in cls.__dict__ and isinstance(
+            cls.__dict__["PATTERN"], SymbolicExpressionProtocol
+        ):
+            cls._dsl_pattern = cls.__dict__["PATTERN"]
             # Keep PATTERN as an alias for backward compatibility
 
         # Use Protocol for hot-reload safety
-        _replacement_val = cls.__dict__.get("REPLACEMENT")
-        if _replacement_val is not None and isinstance(_replacement_val, SymbolicExpressionProtocol):  # ast-grep-ignore
-            cls._dsl_replacement = _replacement_val
+        if "REPLACEMENT" in cls.__dict__ and isinstance(
+            cls.__dict__["REPLACEMENT"], SymbolicExpressionProtocol
+        ):
+            cls._dsl_replacement = cls.__dict__["REPLACEMENT"]
             # Keep REPLACEMENT as an alias for backward compatibility
 
     # Implement rule name property (required by OptimizationRule)

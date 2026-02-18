@@ -170,7 +170,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         # Check if rule inherits from one of RULE_CLASSES
         is_valid_rule_class = False
         for rule_class in self.RULE_CLASSES:
-            if isinstance(rule, rule_class):  # ast-grep-ignore
+            if isinstance(rule, rule_class):
                 is_valid_rule_class = True
                 break
 

@@ -75,8 +75,8 @@ class BlockComparison:
 
     def __repr__(self) -> str:
         """Return a human-readable representation."""
-        lhs_str = f"0x{self.lhs:x}" if isinstance(self.lhs, int) else str(self.lhs)  # ast-grep-ignore
-        rhs_str = f"0x{self.rhs:x}" if isinstance(self.rhs, int) else str(self.rhs)  # ast-grep-ignore
+        lhs_str = f"0x{self.lhs:x}" if isinstance(self.lhs, int) else str(self.lhs)
+        rhs_str = f"0x{self.rhs:x}" if isinstance(self.rhs, int) else str(self.rhs)
         return (
             f"BlockComparison(blk={self.block_serial}, "
             f"if {lhs_str} == {rhs_str} goto {self.true_target} "
@@ -253,11 +253,11 @@ class CompareChainResolver:
             constant: int | None = None
             var: VarRef | None = None
 
-            if isinstance(comp.lhs, VarRef) and isinstance(comp.rhs, int):  # ast-grep-ignore
+            if isinstance(comp.lhs, VarRef) and isinstance(comp.rhs, int):
                 # Pattern: state_var == constant
                 var = comp.lhs
                 constant = comp.rhs
-            elif isinstance(comp.lhs, int) and isinstance(comp.rhs, VarRef):  # ast-grep-ignore
+            elif isinstance(comp.lhs, int) and isinstance(comp.rhs, VarRef):
                 # Pattern: constant == state_var
                 constant = comp.lhs
                 var = comp.rhs

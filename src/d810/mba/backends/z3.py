@@ -490,7 +490,7 @@ class Z3VerificationVisitor:
         # (has op_name) than EqualityConstraintProtocol. Due to structural
         # typing, ComparisonConstraint matches both protocols since it has
         # left/right attributes.
-        if isinstance(constraint, ComparisonConstraintProtocol):  # ast-grep-ignore
+        if isinstance(constraint, ComparisonConstraintProtocol):
             left_z3 = self._expr_to_z3_helper(constraint.left)
             right_z3 = self._expr_to_z3_helper(constraint.right)
 
@@ -508,22 +508,22 @@ class Z3VerificationVisitor:
                 case _:
                     raise ValueError(f"Unsupported comparison operator: {constraint.op_name}")
 
-        if isinstance(constraint, EqualityConstraintProtocol):  # ast-grep-ignore
+        if isinstance(constraint, EqualityConstraintProtocol):
             left_z3 = self._expr_to_z3_helper(constraint.left)
             right_z3 = self._expr_to_z3_helper(constraint.right)
             return left_z3 == right_z3
 
-        if isinstance(constraint, AndConstraintProtocol):  # ast-grep-ignore
+        if isinstance(constraint, AndConstraintProtocol):
             left_bool = self._constraint_to_z3(constraint.left)
             right_bool = self._constraint_to_z3(constraint.right)
             return z3.And(left_bool, right_bool)
 
-        if isinstance(constraint, OrConstraintProtocol):  # ast-grep-ignore
+        if isinstance(constraint, OrConstraintProtocol):
             left_bool = self._constraint_to_z3(constraint.left)
             right_bool = self._constraint_to_z3(constraint.right)
             return z3.Or(left_bool, right_bool)
 
-        if isinstance(constraint, NotConstraintProtocol):  # ast-grep-ignore
+        if isinstance(constraint, NotConstraintProtocol):
             inner_bool = self._constraint_to_z3(constraint.operand)
             return z3.Not(inner_bool)
 
@@ -541,11 +541,11 @@ class Z3VerificationVisitor:
         from d810.mba.dsl import SymbolicExpressionProtocol
 
         # Use Protocol for hot-reload safety
-        if isinstance(expr, SymbolicExpressionProtocol):  # ast-grep-ignore
+        if isinstance(expr, SymbolicExpressionProtocol):
             return self.visit(expr)
 
         # Handle raw integer values (from constraint evaluation)
-        if isinstance(expr, int):  # ast-grep-ignore
+        if isinstance(expr, int):
             return z3.BitVecVal(expr, self.bit_width)
 
         # Fallback - try to visit as SymbolicExpression
@@ -727,7 +727,7 @@ def verify_rule(
         return True
 
     # Use Protocol for hot-reload safety
-    if not isinstance(replacement, SymbolicExpressionProtocol):  # ast-grep-ignore
+    if not isinstance(replacement, SymbolicExpressionProtocol):
         logger.debug(f"Skipping verification for {rule_name}: replacement is {type(replacement).__name__}, not SymbolicExpression")
         return True
 
@@ -858,7 +858,7 @@ def constraint_to_z3(constraint, z3_vars: dict[str, z3.BitVecRef]) -> z3.BoolRef
     # (has op_name) than EqualityConstraintProtocol. Due to structural
     # typing, ComparisonConstraint matches both protocols since it has
     # left/right attributes.
-    if isinstance(constraint, ComparisonConstraintProtocol):  # ast-grep-ignore
+    if isinstance(constraint, ComparisonConstraintProtocol):
         left_z3 = _constraint_expr_to_z3(constraint.left, z3_vars)
         right_z3 = _constraint_expr_to_z3(constraint.right, z3_vars)
 
@@ -876,22 +876,22 @@ def constraint_to_z3(constraint, z3_vars: dict[str, z3.BitVecRef]) -> z3.BoolRef
             case _:
                 raise ValueError(f"Unknown comparison: {constraint.op_name}")
 
-    elif isinstance(constraint, EqualityConstraintProtocol):  # ast-grep-ignore
+    elif isinstance(constraint, EqualityConstraintProtocol):
         left_z3 = _constraint_expr_to_z3(constraint.left, z3_vars)
         right_z3 = _constraint_expr_to_z3(constraint.right, z3_vars)
         return left_z3 == right_z3
 
-    elif isinstance(constraint, AndConstraintProtocol):  # ast-grep-ignore
+    elif isinstance(constraint, AndConstraintProtocol):
         left_z3 = constraint_to_z3(constraint.left, z3_vars)
         right_z3 = constraint_to_z3(constraint.right, z3_vars)
         return z3.And(left_z3, right_z3)
 
-    elif isinstance(constraint, OrConstraintProtocol):  # ast-grep-ignore
+    elif isinstance(constraint, OrConstraintProtocol):
         left_z3 = constraint_to_z3(constraint.left, z3_vars)
         right_z3 = constraint_to_z3(constraint.right, z3_vars)
         return z3.Or(left_z3, right_z3)
 
-    elif isinstance(constraint, NotConstraintProtocol):  # ast-grep-ignore
+    elif isinstance(constraint, NotConstraintProtocol):
         operand_z3 = constraint_to_z3(constraint.operand, z3_vars)
         return z3.Not(operand_z3)
 
@@ -915,7 +915,7 @@ def _constraint_expr_to_z3(expr, z3_vars: dict[str, z3.BitVecRef]) -> z3.BitVecR
     from d810.mba.dsl import SymbolicExpressionProtocol
 
     # Use Protocol for hot-reload safety
-    if isinstance(expr, SymbolicExpressionProtocol):  # ast-grep-ignore
+    if isinstance(expr, SymbolicExpressionProtocol):
         visitor = Z3VerificationVisitor(bit_width=32, var_map=z3_vars)
         return visitor.visit(expr)
 
@@ -942,17 +942,17 @@ def _collect_constraint_names(constraint, names: set) -> None:
         return
 
     # Binary constraints with left/right expressions
-    if isinstance(constraint, (EqualityConstraintProtocol, ComparisonConstraintProtocol)):  # ast-grep-ignore
+    if isinstance(constraint, (EqualityConstraintProtocol, ComparisonConstraintProtocol)):
         _collect_symbolic_names(constraint.left, names)
         _collect_symbolic_names(constraint.right, names)
 
     # Logical AND/OR with left/right constraints
-    elif isinstance(constraint, (AndConstraintProtocol, OrConstraintProtocol)):  # ast-grep-ignore
+    elif isinstance(constraint, (AndConstraintProtocol, OrConstraintProtocol)):
         _collect_constraint_names(constraint.left, names)
         _collect_constraint_names(constraint.right, names)
 
     # Logical NOT with single operand
-    elif isinstance(constraint, NotConstraintProtocol):  # ast-grep-ignore
+    elif isinstance(constraint, NotConstraintProtocol):
         _collect_constraint_names(constraint.operand, names)
 
 
@@ -966,7 +966,7 @@ def _collect_symbolic_names(expr, names: set) -> None:
     from d810.mba.dsl import SymbolicExpressionProtocol
 
     # Use Protocol for hot-reload safety
-    if expr is None or not isinstance(expr, SymbolicExpressionProtocol):  # ast-grep-ignore
+    if expr is None or not isinstance(expr, SymbolicExpressionProtocol):
         return
 
     if expr.is_leaf():
@@ -999,7 +999,7 @@ def _extract_constraints(rule, z3_vars: dict) -> list:
         try:
             custom_constraints = rule.get_constraints(z3_vars)
             if custom_constraints:
-                if isinstance(custom_constraints, list):  # ast-grep-ignore
+                if isinstance(custom_constraints, list):
                     z3_constraints.extend(custom_constraints)
                 else:
                     z3_constraints.append(custom_constraints)
@@ -1038,7 +1038,7 @@ def _extract_constraints(rule, z3_vars: dict) -> list:
             closure_vars = []
             for cell in constraint.__closure__:
                 content = cell.cell_contents
-                if isinstance(content, str):  # ast-grep-ignore
+                if isinstance(content, str):
                     closure_vars.append(content)
 
             if len(closure_vars) >= 2:

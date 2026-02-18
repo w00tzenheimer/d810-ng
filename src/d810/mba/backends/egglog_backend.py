@@ -502,11 +502,11 @@ if EGGLOG_AVAILABLE:
                 return None
 
             # Handle leaf nodes (variables) - use Protocols for hot-reload safety
-            if isinstance(ast_node, (AstLeafProtocol, AstConstantProtocol)) or ast_node.is_leaf():  # ast-grep-ignore
+            if isinstance(ast_node, (AstLeafProtocol, AstConstantProtocol)) or ast_node.is_leaf():
                 return self._convert_leaf(ast_node)
 
             # Handle AstNode - use Protocol for hot-reload safety
-            if isinstance(ast_node, AstNodeProtocol) or ast_node.is_node():  # ast-grep-ignore
+            if isinstance(ast_node, AstNodeProtocol) or ast_node.is_node():
                 return self._convert_node(ast_node)
 
             return None
