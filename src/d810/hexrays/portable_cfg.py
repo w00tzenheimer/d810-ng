@@ -62,7 +62,7 @@ class InsnSnapshot:
             raise ValueError(f"InsnSnapshot: opcode must be non-negative, got {self.opcode}")
         if self.ea < 0:
             raise ValueError(f"InsnSnapshot: ea must be non-negative, got {self.ea}")
-        if not isinstance(self.operands, tuple):  # ast-grep-ignore
+        if not isinstance(self.operands, tuple):
             raise TypeError(f"InsnSnapshot: operands must be tuple, got {type(self.operands)}")
 
     def __repr__(self) -> str:
@@ -111,11 +111,11 @@ class BlockSnapshot:
             raise ValueError(f"BlockSnapshot: block_type must be 0-3, got {self.block_type}")
         if self.start_ea < 0:
             raise ValueError(f"BlockSnapshot: start_ea must be non-negative, got {self.start_ea}")
-        if not isinstance(self.succs, tuple):  # ast-grep-ignore
+        if not isinstance(self.succs, tuple):
             raise TypeError(f"BlockSnapshot: succs must be tuple, got {type(self.succs)}")
-        if not isinstance(self.preds, tuple):  # ast-grep-ignore
+        if not isinstance(self.preds, tuple):
             raise TypeError(f"BlockSnapshot: preds must be tuple, got {type(self.preds)}")
-        if not isinstance(self.insn_snapshots, tuple):  # ast-grep-ignore
+        if not isinstance(self.insn_snapshots, tuple):
             raise TypeError(f"BlockSnapshot: insn_snapshots must be tuple, got {type(self.insn_snapshots)}")
 
     @property

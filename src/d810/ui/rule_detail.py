@@ -299,13 +299,13 @@ class RuleDetailPanel(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        current_values = value if isinstance(value, list) else []  # ast-grep-ignore
+        current_values = value if isinstance(value, list) else []
         buttons = []
 
         # Convert current values to strings for comparison (handles both enum ints and strings)
         current_values_as_strings = set()
         for v in current_values:
-            if isinstance(v, int):  # ast-grep-ignore
+            if isinstance(v, int):
                 # It's likely a maturity enum value - convert to string
                 try:
                     from d810.hexrays.hexrays_formatters import maturity_to_string
@@ -358,7 +358,7 @@ class RuleDetailPanel(QtWidgets.QWidget):
     ) -> QtWidgets.QLineEdit:
         """Comma-separated list editor."""
         le = QtWidgets.QLineEdit()
-        if isinstance(value, list):  # ast-grep-ignore
+        if isinstance(value, list):
             le.setText(", ".join(str(v) for v in value))
         else:
             le.setText(str(value) if value else "")
@@ -397,12 +397,10 @@ class RuleDetailPanel(QtWidgets.QWidget):
         self, obj: QtCore.QObject, event: QtCore.QEvent
     ) -> bool:
         """Intercept focus-out on JSON QTextEdits to emit changes."""
-        _is_qevent = isinstance(event, QtCore.QEvent)  # ast-grep-ignore
-        _is_textedit = isinstance(obj, QtWidgets.QTextEdit)  # ast-grep-ignore
         if (
-            _is_qevent
+            isinstance(event, QtCore.QEvent)
             and event.type() == QtCore.QEvent.FocusOut
-            and _is_textedit
+            and isinstance(obj, QtWidgets.QTextEdit)
         ):
             param_name = obj.property("_param_name")
             if param_name:

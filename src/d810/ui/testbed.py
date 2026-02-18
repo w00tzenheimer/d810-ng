@@ -451,13 +451,13 @@ class PyUnitUiMixin(object):
             yield logging.getLogger()
             for lg in logging.Logger.manager.loggerDict.values():
                 # Some entries in loggerDict can be placeholders (Loggers vs dict)
-                if isinstance(lg, logging.Logger):  # ast-grep-ignore
+                if isinstance(lg, logging.Logger):
                     yield lg
 
         for lg in _all_loggers():
             for hdlr in list(lg.handlers):
                 if (
-                    isinstance(hdlr, logging.StreamHandler)  # ast-grep-ignore
+                    isinstance(hdlr, logging.StreamHandler)
                     and hdlr.stream is self.stream
                 ):
                     hdlr.stream = self._original_std_out
@@ -525,7 +525,7 @@ class PyUnitTestRunnerWrapper(runner.TextTestRunner):
     def run(self, test):
         if self._partial_mode != RUN_TEST_FULL:
             test_case = test
-            while isinstance(test_case, suite.TestSuite):  # ast-grep-ignore
+            while isinstance(test_case, suite.TestSuite):
                 test_case = next(iter(test_case), None)
 
             if test_case:
@@ -651,7 +651,7 @@ class PyUnitRunner(BaseTestRunner):
         self._run_tests(partial_mode, test_id)
 
     def _collect_all_paths(self, tests):
-        if isinstance(tests, suite.TestSuite):  # ast-grep-ignore
+        if isinstance(tests, suite.TestSuite):
             for t in tests:
                 yield from self._collect_all_paths(t)
         else:

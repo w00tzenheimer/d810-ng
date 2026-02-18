@@ -309,11 +309,11 @@ def _collect_capture_blocks(*snapshots: dict | None) -> list[int]:
         if not snap:
             continue
         serial = snap.get("serial")
-        if isinstance(serial, int):  # ast-grep-ignore
+        if isinstance(serial, int):
             block_serials.add(serial)
         for key in ("succs", "preds"):
             for item in snap.get(key, []) or []:
-                if isinstance(item, int):  # ast-grep-ignore
+                if isinstance(item, int):
                     block_serials.add(item)
     return sorted(block_serials)
 

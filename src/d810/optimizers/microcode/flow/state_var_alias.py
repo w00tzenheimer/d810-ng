@@ -84,11 +84,11 @@ class Assignment:
 
     def is_var_to_var(self) -> bool:
         """Return True if this is a variable-to-variable assignment."""
-        return isinstance(self.source, VarRef)  # ast-grep-ignore
+        return isinstance(self.source, VarRef)
 
     def is_constant_write(self) -> bool:
         """Return True if this is a constant assignment."""
-        return isinstance(self.source, int)  # ast-grep-ignore
+        return isinstance(self.source, int)
 
     def __repr__(self) -> str:
         """Return a human-readable representation."""

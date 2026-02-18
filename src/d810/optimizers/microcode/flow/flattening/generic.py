@@ -936,7 +936,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             payload: Event payload dict containing ``function_ea`` (int or None).
         """
         function_ea = payload.get("function_ea")
-        if isinstance(function_ea, int) and function_ea > 0:  # ast-grep-ignore
+        if isinstance(function_ea, int) and function_ea > 0:
             self._quarantined_function_eas.add(function_ea)
             unflat_logger.warning(
                 "Quarantining function 0x%x after deferred verify failure "
@@ -1037,7 +1037,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     @staticmethod
     def _parse_function_ea(value: Any) -> int | None:
         try:
-            if isinstance(value, str):  # ast-grep-ignore
+            if isinstance(value, str):
                 text = value.strip()
                 if text.startswith(("0x", "0X")):
                     return int(text, 16)
@@ -1049,12 +1049,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     def _normalize_per_function_overrides(
         self, raw: Any
     ) -> tuple[dict[int, dict[str, Any]], dict[str, dict[str, Any]]]:
-        if not isinstance(raw, dict):  # ast-grep-ignore
+        if not isinstance(raw, dict):
             return {}, {}
         normalized_ea: dict[int, dict[str, Any]] = {}
         normalized_name: dict[str, dict[str, Any]] = {}
         for raw_ea, raw_override in raw.items():
-            if not isinstance(raw_override, dict):  # ast-grep-ignore
+            if not isinstance(raw_override, dict):
                 continue
             ea = self._parse_function_ea(raw_ea)
             if ea is not None:

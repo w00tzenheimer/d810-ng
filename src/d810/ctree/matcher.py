@@ -52,15 +52,15 @@ class Matcher:
                           function addresses, or function names.
         """
         for func in functions:
-            if idaapi is not None and isinstance(func, idaapi.cfunc_t):  # ast-grep-ignore
+            if idaapi is not None and isinstance(func, idaapi.cfunc_t):
                 self.match_cfunc(func)
-            elif isinstance(func, str):  # ast-grep-ignore
+            elif isinstance(func, str):
                 addr = idaapi.get_name_ea(idaapi.BADADDR, func)
                 cfunc = utils.get_cfunc(addr)
                 if cfunc is None:
                     continue
                 self.match_cfunc(cfunc)
-            elif isinstance(func, int):  # ast-grep-ignore
+            elif isinstance(func, int):
                 cfunc = utils.get_cfunc(func)
                 if cfunc is None:
                     continue
@@ -156,7 +156,7 @@ class Matcher:
                 continue
 
             # validate return type
-            if not isinstance(ast_patch, ASTPatch):  # ast-grep-ignore
+            if not isinstance(ast_patch, ASTPatch):
                 raise TypeError(
                     "Handler returned invalid return type, should be ASTPatch or None"
                 )

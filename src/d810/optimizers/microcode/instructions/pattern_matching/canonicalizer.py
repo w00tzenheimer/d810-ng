@@ -148,7 +148,7 @@ def _is_numeric_constant(node: AstBase | None) -> bool:
     if node is None:
         return False
     # Use Protocol for hot-reload safety
-    if isinstance(node, AstConstantProtocol):  # ast-grep-ignore
+    if isinstance(node, AstConstantProtocol):
         return node.expected_value is not None or (node.mop is not None and node.mop.t == ida_hexrays.mop_n)
     return False
 
@@ -156,7 +156,7 @@ def _is_numeric_constant(node: AstBase | None) -> bool:
 def _get_constant_value(node: AstBase) -> int | None:
     """Get the numeric value of a constant node."""
     # Use Protocol for hot-reload safety
-    if isinstance(node, AstConstantProtocol):  # ast-grep-ignore
+    if isinstance(node, AstConstantProtocol):
         if node.expected_value is not None:
             return node.expected_value
         if node.mop is not None and node.mop.t == ida_hexrays.mop_n:
