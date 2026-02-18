@@ -16,7 +16,6 @@ from d810.core.bits import (
     signed_to_unsigned,
     unsigned_to_signed,
 )
-from d810.core import bits as _rotate_helpers
 from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.hexrays.hexrays_formatters import (
     format_minsn_t,

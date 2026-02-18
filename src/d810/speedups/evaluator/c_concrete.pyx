@@ -2,16 +2,24 @@
 # cython: language_level=3, embedsignature=True
 # cython: cdivision=True
 # distutils: define_macros=__EA64__=1
-# DEPRECATED: This module has been superseded by
-# ``d810.speedups.evaluator.c_concrete`` (``CythonConcreteEvaluator``), which
-# follows the ``d810.speedups.<pkgname>`` convention and uses the
-# :class:`~d810.evaluator.helpers.HelperRegistry` for helper lookup.
-#
-# This file is kept for one release cycle to avoid breaking any direct
-# consumers of ``d810.speedups.expr.c_ast_evaluate.AstEvaluator``.
-# It will be removed in a future release.
-#
-# See ``docs/plans/2026-02-18-evaluator-package-refactor.md``, Phase 5.
+"""Cython fast path for the concrete microcode AST evaluator.
+
+This module mirrors :class:`d810.evaluator.concrete.ConcreteEvaluator` and
+exposes :class:`CythonConcreteEvaluator`, which implements the same interface
+but with Cython-optimised dispatch.
+
+It replaces ``d810.speedups.expr.c_ast_evaluate.AstEvaluator`` following
+the ``d810.speedups.<pkgname>`` convention established by the evaluator
+package refactor (Phase 5).
+
+See ``docs/plans/2026-02-18-evaluator-package-refactor.md``, section 4.6.
+
+Key differences from the deprecated ``c_ast_evaluate.pyx``:
+- Accepts plain Python ``AstBase`` objects from ``d810.expr.p_ast``
+  (not the Cython types from ``d810.speedups.expr.c_ast``).
+- Helper lookup goes through :func:`d810.evaluator.helpers.get_registry`
+  instead of ``getattr(d810.core.bits, helper_name, None)``.
+"""
 from __future__ import annotations
 
 import ida_hexrays
@@ -26,22 +34,25 @@ from d810.core.bits import (
     signed_to_unsigned,
     unsigned_to_signed,
 )
-from d810.core import bits as _rotate_helpers
 from d810.hexrays.hexrays_helpers import AND_TABLE
+from d810.evaluator.helpers import get_registry as _get_registry
 
 logger = getLogger(__name__)
 
-# Lazy import to avoid circular dependency with c_ast.pyx
-# These get populated on first use
+# Lazy-loaded Python AST types from d810.expr.p_ast.
+# Using plain Python types (not Cython c_ast types) so that
+# CythonConcreteEvaluator can be used with any AstBase instance,
+# including mock objects in unit tests.
 cdef object _AstNode = None
 cdef object _AstLeaf = None
 cdef object _AstConstant = None
 cdef object _AstProxy = None
 
+
 cdef inline void _ensure_types_loaded():
     global _AstNode, _AstLeaf, _AstConstant, _AstProxy
     if _AstNode is None:
-        from d810.speedups.expr.c_ast import AstNode, AstLeaf, AstConstant, AstProxy
+        from d810.expr.p_ast import AstNode, AstLeaf, AstConstant, AstProxy
         _AstNode = AstNode
         _AstLeaf = AstLeaf
         _AstConstant = AstConstant
@@ -79,20 +90,62 @@ cdef object _BINARY_OPCODES = frozenset((
 ))
 
 
-cdef class AstEvaluator:
-    """
-    Pure-Python evaluator for AST nodes. Extracted from AstNode/AstLeaf methods
-    to centralize evaluation logic.
+cdef class CythonConcreteEvaluator:
+    """Cython fast path for the concrete microcode AST evaluator.
+
+    Implements the same interface as
+    :class:`d810.evaluator.concrete.ConcreteEvaluator` and can be used as
+    a drop-in replacement.  The module-level singleton in
+    :mod:`d810.evaluator.concrete` swaps to this class when the extension
+    is available.
+
+    Accepts plain Python ``AstBase`` instances from ``d810.expr.p_ast``;
+    no dependency on the Cython AST types in ``d810.speedups.expr.c_ast``.
     """
 
-    cpdef object evaluate_with_leaf_info(self, object node, object leafs_info, object leafs_value):
-        dict_index_to_value = {}
+    cpdef object evaluate_with_leaf_info(
+        self,
+        object node,
+        object leafs_info,
+        object leafs_value,
+    ):
+        """Evaluate *node* using per-leaf info objects and a value list.
+
+        Convenience wrapper used by ``Z3ConstantOptimization`` and the
+        ``AstNode.evaluate_with_leaf_info`` shim.
+
+        Args:
+            node: Root of the AST to evaluate.
+            leafs_info: List of ``AstInfo``-like objects whose ``.ast``
+                attribute exposes an ``ast_index`` integer.
+            leafs_value: Parallel list of concrete integer values.
+
+        Returns:
+            Concrete integer result.
+        """
+        cdef dict dict_index_to_value = {}
         for leaf_info, leaf_value in zip(leafs_info, leafs_value):
             if leaf_info.ast.ast_index is not None:
                 dict_index_to_value[leaf_info.ast.ast_index] = leaf_value
         return self.evaluate(node, dict_index_to_value)
 
     cpdef object evaluate(self, object node, dict dict_index_to_value):
+        """Evaluate *node* given concrete leaf bindings.
+
+        Dispatches to :meth:`_eval_node` or :meth:`_eval_leaf` depending
+        on the node type.  Follows ``AstProxy`` transparently.
+
+        Args:
+            node: Root of the AST to evaluate (``AstBase`` instance).
+            dict_index_to_value: Mapping from ``ast_index`` to concrete
+                integer value for each variable leaf.
+
+        Returns:
+            Concrete integer result, masked to ``node.dest_size`` bits.
+
+        Raises:
+            AstEvaluationException: For unsupported node types or opcodes.
+        """
         _ensure_types_loaded()
         if isinstance(node, _AstNode):
             return self._eval_node(node, dict_index_to_value)
@@ -105,6 +158,12 @@ cdef class AstEvaluator:
         )
 
     cdef inline object _eval_leaf(self, object leaf, dict dict_index_to_value):
+        """Evaluate a leaf node (``AstLeaf`` / ``AstConstant``).
+
+        Returns the constant value stored in the mop for ``AstConstant``
+        nodes, or looks up the variable's value from *dict_index_to_value*
+        for ``AstLeaf`` nodes.
+        """
         # AstConstant: prefer concrete mop value, otherwise fall back to expected_value
         if isinstance(leaf, _AstConstant):
             if leaf.mop is not None and leaf.mop.t == ida_hexrays.mop_n:
@@ -117,6 +176,13 @@ cdef class AstEvaluator:
         return dict_index_to_value.get(leaf.ast_index)
 
     cdef inline object _eval_node(self, object node, dict dict_index_to_value):
+        """Evaluate an interior ``AstNode``.
+
+        Full opcode dispatch chain.  Helper lookup goes through
+        :func:`d810.evaluator.helpers.get_registry` so all registered
+        helpers (rotate, future bswap, etc.) are available without
+        touching this file.
+        """
         if node.ast_index in dict_index_to_value:
             return dict_index_to_value[node.ast_index]
         if node.dest_size is None:
@@ -356,14 +422,15 @@ cdef class AstEvaluator:
             # Attempt to evaluate rotate helper calls (__ROL*/__ROR*).
             # func_name is populated by mop_to_ast_internal when building
             # AST nodes for rotate helper calls.
-            helper_name = (node.func_name or "").lstrip("!")
+            helper_name = (getattr(node, "func_name", "") or "").lstrip("!")
             if (
                 helper_name
                 and (helper_name.startswith("__ROL") or helper_name.startswith("__ROR"))
                 and node.left is not None
                 and node.right is not None
             ):
-                helper_func = getattr(_rotate_helpers, helper_name, None)
+                # Use HelperRegistry instead of getattr(d810.core.bits, ...)
+                helper_func = _get_registry().lookup(helper_name)
                 if helper_func is not None:
                     val = self.evaluate(node.left, dict_index_to_value)
                     rot = self.evaluate(node.right, dict_index_to_value)
