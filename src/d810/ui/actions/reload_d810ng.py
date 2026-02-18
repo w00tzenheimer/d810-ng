@@ -37,32 +37,31 @@ class ReloadD810ng(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
-        ida_kernwin_mod = self.ida_module("ida_kernwin")
-        idaapi_mod = self.ida_module("idaapi")
-        if ida_kernwin_mod is None or idaapi_mod is None or QTimer is None:
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None or QTimer is None:
             return 0
 
         def _deferred_reload():
             """Deferred reload function executed after action handler returns."""
             try:
                 # Try to get the plugin instance directly
-                plugin = idaapi_mod.find_plugin("D810", True)
+                plugin = idaapi_shim.find_plugin("D810", True)
                 if plugin and hasattr(plugin, "reload"):
                     logger.info("Executing deferred reload of d810-ng plugin")
                     plugin.reload()
-                    ida_kernwin_mod.info("d810-ng reloaded successfully")
+                    idaapi_shim.info("d810-ng reloaded successfully")
                     logger.info("d810-ng reloaded via context menu action")
                 else:
                     # Fallback: try to trigger via action
-                    result = ida_kernwin_mod.process_ui_action("D810:reload_plugin")
+                    result = idaapi_shim.process_ui_action("D810:reload_plugin")
                     if result:
-                        ida_kernwin_mod.info("d810-ng reloaded successfully")
+                        idaapi_shim.info("d810-ng reloaded successfully")
                         logger.info("d810-ng reloaded via action")
                     else:
-                        ida_kernwin_mod.warning("Failed to trigger reload action")
+                        idaapi_shim.warning("Failed to trigger reload action")
                         logger.warning("Failed to trigger reload action")
             except Exception as e:
-                ida_kernwin_mod.warning(f"Failed to reload d810-ng: {e}")
+                idaapi_shim.warning(f"Failed to reload d810-ng: {e}")
                 logger.error("Failed to reload d810-ng: %s", e, exc_info=True)
 
         try:
@@ -72,7 +71,7 @@ class ReloadD810ng(D810ActionHandler):
             QTimer.singleShot(0, _deferred_reload)
             return 1
         except Exception as e:
-            ida_kernwin_mod.warning(f"Failed to schedule reload: {e}")
+            idaapi_shim.warning(f"Failed to schedule reload: {e}")
             logger.error("Failed to schedule reload: %s", e, exc_info=True)
             return 0
 

@@ -15,7 +15,7 @@ from d810.ui.actions_logic import (
 
 logger = getLogger("D810.ui")
 
-def _get_current_func_ea(ctx: typing.Any, ida_hexrays_mod: typing.Any) -> int | None:
+def _get_current_func_ea(ctx: typing.Any, idaapi_shim: typing.Any) -> int | None:
     """Extract the entry-point EA of the function from the context.
 
     Args:
@@ -24,7 +24,7 @@ def _get_current_func_ea(ctx: typing.Any, ida_hexrays_mod: typing.Any) -> int | 
     Returns:
         Function entry EA, or None if not in a function
     """
-    vdui = ida_hexrays_mod.get_widget_vdui(ctx.widget)
+    vdui = idaapi_shim.get_widget_vdui(ctx.widget)
     if vdui is not None:
         return vdui.cfunc.entry_ea
 
@@ -52,24 +52,22 @@ class DeobfuscationStats(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
-        ida_kernwin_mod = self.ida_module("ida_kernwin")
-        ida_hexrays_mod = self.ida_module("ida_hexrays")
-        ida_funcs_mod = self.ida_module("ida_funcs")
-        if ida_kernwin_mod is None or ida_hexrays_mod is None:
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None:
             return 0
 
         # Check if plugin is ready (manager initialized)
         if not hasattr(self._state, "manager") or self._state.manager is None:
-            ida_kernwin_mod.warning("d810-ng manager is not initialized.")
+            idaapi_shim.warning("d810-ng manager is not initialized.")
             return 0
 
         # Get the current function EA and name
-        func_ea = _get_current_func_ea(ctx, ida_hexrays_mod)
+        func_ea = _get_current_func_ea(ctx, idaapi_shim)
         func_name = None
-        if func_ea is not None and ida_funcs_mod is not None:
-            func = ida_funcs_mod.get_func(func_ea)
+        if func_ea is not None:
+            func = idaapi_shim.get_func(func_ea)
             if func is not None:
-                func_name = ida_funcs_mod.get_func_name(func_ea)
+                func_name = idaapi_shim.get_func_name(func_ea)
 
         # Get stats from manager
         stats = get_deobfuscation_stats(self._state.manager)
@@ -98,7 +96,7 @@ class DeobfuscationStats(D810ActionHandler):
             cls._panel.show()
         except ImportError:
             # Fallback to simple message if IDA not available
-            ida_kernwin_mod.info(formatted)
+            idaapi_shim.info(formatted)
 
         return 1
 
@@ -111,8 +109,8 @@ class DeobfuscationStats(D810ActionHandler):
         Returns:
             True if in pseudocode view, False otherwise
         """
-        ida_hexrays_mod = self.ida_module("ida_hexrays")
-        if ida_hexrays_mod is None:
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None:
             return False
 
-        return ida_hexrays_mod.get_widget_vdui(ctx.widget) is not None
+        return idaapi_shim.get_widget_vdui(ctx.widget) is not None

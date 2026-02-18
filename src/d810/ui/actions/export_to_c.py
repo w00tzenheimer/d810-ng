@@ -25,16 +25,6 @@ from d810.ui.actions_logic import get_deobfuscation_stats
 
 logger = getLogger("D810.ui")
 
-ida_funcs = None
-ida_hexrays = None
-ida_kernwin = None
-ida_lines = None
-ida_name = None
-ida_bytes = None
-ida_nalt = None
-ida_typeinf = None
-idaapi = None
-
 # ---------------------------------------------------------------------------
 # Qt imports -- optional, will fail gracefully if not in GUI mode
 # ---------------------------------------------------------------------------
@@ -136,19 +126,19 @@ def _get_collapse_lvars_restore_directive() -> str:
 
 @contextmanager
 def _temporary_hexrays_config(
-    idaapi_mod: typing.Any | None,
+    idaapi_shim: typing.Any | None,
     set_directive: str,
     restore_directive: str | None = None,
 ):
     """Temporarily override a Hex-Rays config directive and restore after use."""
-    if idaapi_mod is None or not hasattr(idaapi_mod, "change_hexrays_config"):
+    if idaapi_shim is None or not hasattr(idaapi_shim, "change_hexrays_config"):
         yield
         return
 
     effective_restore = restore_directive or _get_collapse_lvars_restore_directive()
     applied = False
     try:
-        idaapi_mod.change_hexrays_config(set_directive)
+        idaapi_shim.change_hexrays_config(set_directive)
         applied = True
     except Exception as exc:
         logger.debug("Could not apply Hex-Rays config '%s': %s", set_directive, exc)
@@ -159,7 +149,7 @@ def _temporary_hexrays_config(
         if not applied:
             return
         try:
-            idaapi_mod.change_hexrays_config(effective_restore)
+            idaapi_shim.change_hexrays_config(effective_restore)
         except Exception as exc:
             logger.debug(
                 "Could not restore Hex-Rays config '%s' after '%s': %s",
@@ -170,7 +160,7 @@ def _temporary_hexrays_config(
 
 
 def _get_qt_parent_for_dialog(
-    ctx: typing.Any, ida_kernwin_mod: typing.Any
+    ctx: typing.Any, idaapi_shim: typing.Any
 ) -> typing.Any:
     """Get a Qt parent widget from the action context so dialogs display properly in IDA."""
     import sys
@@ -178,10 +168,10 @@ def _get_qt_parent_for_dialog(
     # 1. Try converting ctx.widget (TWidget) to QWidget via IDA's converter
     if (
         ctx is not None
-        and ida_kernwin_mod is not None
+        and idaapi_shim is not None
         and getattr(ctx, "widget", None) is not None
     ):
-        plugin_form = getattr(ida_kernwin_mod, "PluginForm", None)
+        plugin_form = getattr(idaapi_shim, "PluginForm", None)
         if plugin_form is not None:
             # Pass our module as ctx so converter finds Qt bindings (PySide6/PyQt5)
             qt_ctx = sys.modules.get("d810.ui.actions.export_to_c") or sys.modules.get(
@@ -229,11 +219,11 @@ def _get_qt_parent_for_dialog(
     return None
 
 
-def _get_default_export_dir(idaapi_mod: typing.Any | None) -> str:
+def _get_default_export_dir(idaapi_shim: typing.Any | None) -> str:
     """Return a sensible default directory for C export (input file dir or cwd)."""
-    if idaapi_mod is not None and hasattr(idaapi_mod, "get_input_file_path"):
+    if idaapi_shim is not None and hasattr(idaapi_shim, "get_input_file_path"):
         try:
-            path = idaapi_mod.get_input_file_path()
+            path = idaapi_shim.get_input_file_path()
             if path:
                 return os.path.dirname(path)
         except Exception:
@@ -243,9 +233,7 @@ def _get_default_export_dir(idaapi_mod: typing.Any | None) -> str:
 
 def _get_current_func_ea(
     ctx: typing.Any,
-    ida_hexrays_mod: typing.Any,
-    ida_kernwin_mod: typing.Any,
-    ida_funcs_mod: typing.Any,
+    idaapi_shim: typing.Any,
 ) -> int | None:
     """Extract the entry-point EA of the function from the context.
 
@@ -258,13 +246,13 @@ def _get_current_func_ea(
         Function entry EA, or None if not in a function
     """
     # Try pseudocode view first
-    vdui = ida_hexrays_mod.get_widget_vdui(ctx.widget)
+    vdui = idaapi_shim.get_widget_vdui(ctx.widget)
     if vdui is not None:
         return vdui.cfunc.entry_ea
 
     # Fall back to disassembly view
-    ea = ida_kernwin_mod.get_screen_ea()
-    func = ida_funcs_mod.get_func(ea)
+    ea = idaapi_shim.get_screen_ea()
+    func = idaapi_shim.get_func(ea)
     if func is not None:
         return func.start_ea
 
@@ -273,10 +261,7 @@ def _get_current_func_ea(
 
 def _decompile_function(
     func_ea: int,
-    ida_hexrays_mod: typing.Any,
-    ida_funcs_mod: typing.Any,
-    ida_lines_mod: typing.Any,
-    idaapi_mod: typing.Any | None = None,
+    idaapi_shim: typing.Any,
     *,
     clear_decomp_cache: bool = False,
 ) -> tuple[str, list[str]] | None:
@@ -290,30 +275,30 @@ def _decompile_function(
     """
     try:
         # Initialize decompiler if needed
-        if not ida_hexrays_mod.init_hexrays_plugin():
+        if not idaapi_shim.init_hexrays_plugin():
             logger.error("Hex-Rays decompiler is not available")
             return None
 
-        with _temporary_hexrays_config(idaapi_mod, "COLLAPSE_LVARS = NO"):
-            if clear_decomp_cache and hasattr(ida_hexrays_mod, "mark_cfunc_dirty"):
+        with _temporary_hexrays_config(idaapi_shim, "COLLAPSE_LVARS = NO"):
+            if clear_decomp_cache and hasattr(idaapi_shim, "mark_cfunc_dirty"):
                 try:
-                    ida_hexrays_mod.mark_cfunc_dirty(func_ea, False)
+                    idaapi_shim.mark_cfunc_dirty(func_ea, False)
                 except Exception:
                     pass
             # Decompile the function
-            cfunc = ida_hexrays_mod.decompile(func_ea)
+            cfunc = idaapi_shim.decompile(func_ea)
             if cfunc is None:
                 logger.error("Failed to decompile function at %s", hex(func_ea))
                 return None
 
             # Get function name
-            func_name = ida_funcs_mod.get_func_name(func_ea)
+            func_name = idaapi_shim.get_func_name(func_ea)
             if not func_name:
                 func_name = f"sub_{func_ea:X}"
 
             # Get pseudocode as text and clean IDA color tags
             pseudocode = str(cfunc)
-            clean_code = ida_lines_mod.tag_remove(pseudocode)
+            clean_code = idaapi_shim.tag_remove(pseudocode)
             lines = clean_code.splitlines()
 
             return func_name, lines
@@ -331,13 +316,11 @@ def _extract_global_symbol_names(pseudocode_lines: list[str]) -> list[str]:
 
 def _extract_global_symbol_names_from_ida(
     pseudocode_lines: list[str],
-    ida_name_mod: typing.Any,
-    idaapi_mod: typing.Any,
-    ida_funcs_mod: typing.Any,
+    idaapi_shim: typing.Any,
     exclude_names: set[str] | None = None,
 ) -> list[str]:
     """Extract referenced global symbols by resolving identifiers through IDA."""
-    badaddr = idaapi_mod.BADADDR if idaapi_mod is not None else 0xFFFFFFFFFFFFFFFF
+    badaddr = idaapi_shim.BADADDR
     names: set[str] = set()
     excluded = exclude_names or set()
     code = "\n".join(pseudocode_lines)
@@ -355,13 +338,13 @@ def _extract_global_symbol_names_from_ida(
         if ident.startswith(("sub_", "loc_", "nullsub_", "j_")):
             continue
 
-        ea = ida_name_mod.get_name_ea(badaddr, ident)
+        ea = idaapi_shim.get_name_ea(badaddr, ident)
         if ea == badaddr:
             continue
 
         # Only keep data/global symbols; skip functions.
         try:
-            if ida_funcs_mod is not None and ida_funcs_mod.get_func(ea) is not None:
+            if idaapi_shim.get_func(ea) is not None:
                 continue
         except Exception:
             pass
@@ -380,79 +363,76 @@ def _guess_global_type(symbol_name: str) -> str:
 def _format_initializer(
     symbol_name: str,
     ea: int,
-    ida_bytes_mod: typing.Any,
+    idaapi_shim: typing.Any,
     c_type: str | None = None,
 ) -> str | None:
     """Read current IDB value and return an initializer literal when possible."""
     prefix = symbol_name.split("_", 1)[0].lower()
     if prefix == "byte":
-        val = ida_bytes_mod.get_byte(ea)
+        val = idaapi_shim.get_byte(ea)
         return f"0x{val:02X}u"
     if prefix == "word":
-        val = ida_bytes_mod.get_word(ea)
+        val = idaapi_shim.get_word(ea)
         return f"0x{val:04X}u"
     if prefix == "dword":
-        val = ida_bytes_mod.get_dword(ea)
+        val = idaapi_shim.get_dword(ea)
         return f"0x{val:08X}u"
     if prefix in {"xmmword", "ymmword", "zmmword"}:
-        raw = ida_bytes_mod.get_bytes(ea, 16)
+        raw = idaapi_shim.get_bytes(ea, 16)
         if raw is not None and len(raw) == 16:
             # D810_XMMWORD expects 32 hex chars, MSB first (byte 15..0)
             hex32 = "".join(f"{b:02X}" for b in reversed(raw))
             return f'D810_XMMWORD("{hex32}")'
         return None
     if prefix in {"qword", "off", "unk"}:
-        val = ida_bytes_mod.get_qword(ea)
+        val = idaapi_shim.get_qword(ea)
         return f"0x{val:016X}uLL"
     # Typed fallback for non-prefixed symbols (e.g. hThread, _security_cookie).
     cts = (c_type or "").strip().replace("const ", "")
     if cts in {"HANDLE", "LPVOID", "LPCVOID", "PVOID", "uintptr_t"}:
-        val = ida_bytes_mod.get_qword(ea)
+        val = idaapi_shim.get_qword(ea)
         if cts in {"HANDLE", "LPVOID", "LPCVOID", "PVOID"}:
             return f"({cts})0x{val:016X}uLL"
         return f"0x{val:016X}uLL"
 
     # Conservative scalar fallback by size.
     try:
-        item_size = int(ida_bytes_mod.get_item_size(ea))
+        item_size = int(idaapi_shim.get_item_size(ea))
     except Exception:
         item_size = 0
 
     if item_size == 1:
-        return f"0x{ida_bytes_mod.get_byte(ea):02X}u"
+        return f"0x{idaapi_shim.get_byte(ea):02X}u"
     if item_size == 2:
-        return f"0x{ida_bytes_mod.get_word(ea):04X}u"
+        return f"0x{idaapi_shim.get_word(ea):04X}u"
     if item_size == 4:
-        return f"0x{ida_bytes_mod.get_dword(ea):08X}u"
+        return f"0x{idaapi_shim.get_dword(ea):08X}u"
     if item_size == 8:
-        return f"0x{ida_bytes_mod.get_qword(ea):016X}uLL"
+        return f"0x{idaapi_shim.get_qword(ea):016X}uLL"
     return None
 
 
 def _get_type_str(
     ea: int,
-    idaapi_mod: typing.Any,
-    ida_nalt_mod: typing.Any = None,
-    ida_typeinf_mod: typing.Any = None,
+    idaapi_shim: typing.Any,
 ) -> str | None:
     """Get type declaration string for address using idaapi (ida_nalt + ida_typeinf).
 
     Uses ida_nalt.get_tinfo + ida_typeinf.print_type/print_tinfo when available;
     falls back to idc.get_type otherwise.
     """
-    nalt = ida_nalt_mod if ida_nalt_mod is not None else ida_nalt
-    tinf = ida_typeinf_mod if ida_typeinf_mod is not None else ida_typeinf
+    nalt = idaapi_shim
+    tinf = idaapi_shim
 
     # 1. idaapi.get_type (idaapi often exposes get_type)
-    if idaapi_mod is not None:
-        get_type = getattr(idaapi_mod, "get_type", None)
-        if callable(get_type):
-            try:
-                t = get_type(ea)
-                if t and str(t).strip():
-                    return str(t)
-            except Exception:
-                pass
+    get_type = getattr(idaapi_shim, "get_type", None)
+    if callable(get_type):
+        try:
+            t = get_type(ea)
+            if t and str(t).strip():
+                return str(t)
+        except Exception:
+            pass
 
     # 2. ida_nalt + ida_typeinf (no idc)
     if nalt is not None and tinf is not None:
@@ -477,7 +457,7 @@ def _get_type_str(
             pass
 
     # 3. Fallback: idc.get_type
-    idc_mod = getattr(idaapi_mod, "idc", None) if idaapi_mod else None
+    idc_mod = getattr(idaapi_shim, "idc", None)
     if idc_mod is None:
         try:
             idc_mod = __import__("idc")
@@ -495,10 +475,7 @@ def _get_type_str(
 def _get_typed_forward_declarations_from_ida(
     func_name: str,
     pseudocode_lines: list[str],
-    ida_name_mod: typing.Any,
-    idaapi_mod: typing.Any,
-    ida_nalt_mod: typing.Any = None,
-    ida_typeinf_mod: typing.Any = None,
+    idaapi_shim: typing.Any,
 ) -> list[str] | None:
     """Build forward declarations using IDA type info when available.
 
@@ -506,15 +483,13 @@ def _get_typed_forward_declarations_from_ida(
     or None if type info is not available.
     """
     callee_names = get_forward_declaration_names(func_name, pseudocode_lines)
-    badaddr = idaapi_mod.BADADDR if idaapi_mod else 0xFFFFFFFFFFFFFFFF
+    badaddr = idaapi_shim.BADADDR
     declarations: list[str] = []
     for name in sorted(callee_names):
-        ea = ida_name_mod.get_name_ea(badaddr, name)
+        ea = idaapi_shim.get_name_ea(badaddr, name)
         if ea == badaddr:
             continue
-        type_str = _get_type_str(
-            ea, idaapi_mod, ida_nalt_mod=ida_nalt_mod, ida_typeinf_mod=ida_typeinf_mod
-        )
+        type_str = _get_type_str(ea, idaapi_shim)
         if not type_str or not type_str.strip():
             continue
         s = type_str.strip()
@@ -533,10 +508,7 @@ def _get_typed_forward_declarations_from_ida(
 
 def _get_imported_function_declarations_from_ida(
     pseudocode_lines: list[str],
-    ida_name_mod: typing.Any,
-    idaapi_mod: typing.Any,
-    ida_nalt_mod: typing.Any = None,
-    ida_typeinf_mod: typing.Any = None,
+    idaapi_shim: typing.Any,
 ) -> list[str] | None:
     """Build function-pointer declarations for imported/API functions.
 
@@ -547,16 +519,14 @@ def _get_imported_function_declarations_from_ida(
     if not names:
         return None
 
-    badaddr = idaapi_mod.BADADDR if idaapi_mod else 0xFFFFFFFFFFFFFFFF
+    badaddr = idaapi_shim.BADADDR
     declarations: list[str] = []
 
     for name in names:
-        ea = ida_name_mod.get_name_ea(badaddr, name)
+        ea = idaapi_shim.get_name_ea(badaddr, name)
         if ea == badaddr:
             continue
-        type_str = _get_type_str(
-            ea, idaapi_mod, ida_nalt_mod=ida_nalt_mod, ida_typeinf_mod=ida_typeinf_mod
-        )
+        type_str = _get_type_str(ea, idaapi_shim)
         if not type_str or not type_str.strip():
             continue
         s = type_str.strip()
@@ -574,26 +544,22 @@ def _get_imported_function_declarations_from_ida(
 
 def _build_global_declarations_from_ida(
     symbol_names: list[str],
-    ida_name_mod: typing.Any,
-    ida_bytes_mod: typing.Any,
-    idaapi_mod: typing.Any,
-    ida_nalt_mod: typing.Any = None,
-    ida_typeinf_mod: typing.Any = None,
+    idaapi_shim: typing.Any,
 ) -> list[str]:
     """Build global declarations with initializers when IDA can resolve them."""
     declarations: list[str] = []
-    badaddr = idaapi_mod.BADADDR
+    badaddr = idaapi_shim.BADADDR
 
     for name in symbol_names:
         c_type = _guess_global_type(name)
-        ea = ida_name_mod.get_name_ea(badaddr, name)
+        ea = idaapi_shim.get_name_ea(badaddr, name)
         if ea == badaddr:
             declarations.append(f"extern volatile {c_type} {name};")
             continue
 
         prefix = name.split("_", 1)[0].lower()
         if prefix in {"xmmword", "ymmword", "zmmword"}:
-            initializer = _format_initializer(name, ea, ida_bytes_mod, c_type="_OWORD")
+            initializer = _format_initializer(name, ea, idaapi_shim, c_type="_OWORD")
             if initializer is not None:
                 declarations.append(
                     f"static volatile const _OWORD {name} = {initializer};"
@@ -602,16 +568,11 @@ def _build_global_declarations_from_ida(
                 declarations.append(f"extern volatile _OWORD {name};")
             continue
         else:
-            ida_type = _get_type_str(
-                ea,
-                idaapi_mod,
-                ida_nalt_mod=ida_nalt_mod,
-                ida_typeinf_mod=ida_typeinf_mod,
-            )
+            ida_type = _get_type_str(ea, idaapi_shim)
             if ida_type and ida_type.strip():
                 c_type = ida_type.strip()
 
-        initializer = _format_initializer(name, ea, ida_bytes_mod, c_type=c_type)
+        initializer = _format_initializer(name, ea, idaapi_shim, c_type=c_type)
         if initializer is None:
             declarations.append(f"extern volatile {c_type} {name};")
         else:
@@ -627,7 +588,7 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
         self,
         func_name: str,
         parent=None,
-        ida_kernwin_module: typing.Any | None = None,
+        idaapi_shim: typing.Any | None = None,
         default_output_path: str | None = None,
     ):
         """Initialize the export to C dialog.
@@ -639,7 +600,7 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
         """
         super().__init__(parent)
         self.func_name = func_name
-        self._ida_kernwin = ida_kernwin_module
+        self._idaapi_shim = idaapi_shim
         self._default_output_path = default_output_path
         self.setWindowTitle("Export to C")
         self.setup_ui()
@@ -720,10 +681,10 @@ class ExportToCDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc
 
     def browse_file(self):
         """Show file browser dialog."""
-        if self._ida_kernwin is None:
+        if self._idaapi_shim is None:
             return
 
-        file_path = self._ida_kernwin.ask_file(
+        file_path = self._idaapi_shim.ask_file(
             1, self.file_edit.text(), "Save C source as..."
         )
         if file_path:
@@ -765,56 +726,29 @@ class ExportFunctionToC(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
-
-        def _ensure_mod(name: str, default: typing.Any) -> typing.Any:
-            m = self.ida_module(name, default)
-            if m is None:
-                try:
-                    return __import__(name)
-                except ImportError:
-                    return None
-            return m
-
-        ida_hexrays_mod = _ensure_mod("ida_hexrays", ida_hexrays)
-        ida_kernwin_mod = _ensure_mod("ida_kernwin", ida_kernwin)
-        ida_funcs_mod = _ensure_mod("ida_funcs", ida_funcs)
-        ida_lines_mod = _ensure_mod("ida_lines", ida_lines)
-        ida_name_mod = _ensure_mod("ida_name", ida_name)
-        ida_bytes_mod = _ensure_mod("ida_bytes", ida_bytes)
-        idaapi_mod = _ensure_mod("idaapi", idaapi)
-        ida_nalt_mod = _ensure_mod("ida_nalt", ida_nalt)
-        ida_typeinf_mod = _ensure_mod("ida_typeinf", ida_typeinf)
-        if (
-            ida_hexrays_mod is None
-            or ida_kernwin_mod is None
-            or ida_funcs_mod is None
-            or ida_lines_mod is None
-        ):
-            msg = "Export to C: missing IDA modules (hexrays, kernwin, funcs, or lines)"
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None:
+            msg = "Export to C: idaapi shim not available"
             logger.warning(msg)
-            if ida_kernwin_mod:
-                ida_kernwin_mod.warning(msg)
             return 0
 
         # Get current function EA
-        func_ea = _get_current_func_ea(
-            ctx, ida_hexrays_mod, ida_kernwin_mod, ida_funcs_mod
-        )
+        func_ea = _get_current_func_ea(ctx, idaapi_shim)
         if func_ea is None:
             logger.warning("ExportFunctionToC: could not determine function EA")
-            ida_kernwin_mod.warning("No function at cursor")
+            idaapi_shim.warning("No function at cursor")
             return 0
 
-        func_name = ida_funcs_mod.get_func_name(func_ea) or f"sub_{func_ea:X}"
-        default_dir = _get_default_export_dir(idaapi_mod)
+        func_name = idaapi_shim.get_func_name(func_ea) or f"sub_{func_ea:X}"
+        default_dir = _get_default_export_dir(idaapi_shim)
         default_output_path = os.path.join(default_dir, suggest_filename(func_name))
 
-        parent_widget = _get_qt_parent_for_dialog(ctx, ida_kernwin_mod)
+        parent_widget = _get_qt_parent_for_dialog(ctx, idaapi_shim)
         if QT_AVAILABLE and parent_widget is not None:
             dialog = ExportToCDialog(
                 func_name,
                 parent=parent_widget,
-                ida_kernwin_module=ida_kernwin_mod,
+                idaapi_shim=idaapi_shim,
                 default_output_path=default_output_path,
             )
             if dialog.exec_() != QDialog.Accepted:
@@ -822,7 +756,7 @@ class ExportFunctionToC(D810ActionHandler):
                 return 0
             settings = dialog.get_settings()
         else:
-            save_path = ida_kernwin_mod.ask_file(
+            save_path = idaapi_shim.ask_file(
                 1, default_output_path, "Save C source as..."
             )
             if not save_path:
@@ -839,20 +773,20 @@ class ExportFunctionToC(D810ActionHandler):
 
         # Normal C = IDA's native Produce C file dialog
         if not settings.get("sample_compatible", True):
-            ida_kernwin_mod.jumpto(func_ea, -1, 0)
-            ok = ida_kernwin_mod.process_ui_action("hx:CreateCFile", 0)
+            idaapi_shim.jumpto(func_ea, -1, 0)
+            ok = idaapi_shim.process_ui_action("hx:CreateCFile", 0)
             if ok:
                 logger.info("Invoked IDA Produce C file dialog")
                 return 1
             logger.warning("Failed to invoke hx:CreateCFile")
-            ida_kernwin_mod.warning(
+            idaapi_shim.warning(
                 "Could not open Produce C file dialog. Ensure Hex-Rays decompiler is loaded."
             )
             return 0
 
         output_path = settings.get("output_path")
         if not output_path:
-            ida_kernwin_mod.warning("No output file specified")
+            idaapi_shim.warning("No output file specified")
             return 0
 
         # Resolve to absolute path so the file is written to an explicit location
@@ -864,14 +798,11 @@ class ExportFunctionToC(D810ActionHandler):
         # Decompile the function (deferred until we know Sample mode is selected)
         result = _decompile_function(
             func_ea,
-            ida_hexrays_mod,
-            ida_funcs_mod,
-            ida_lines_mod,
-            idaapi_mod,
+            idaapi_shim,
             clear_decomp_cache=settings.get("clear_decomp_cache", False),
         )
         if result is None:
-            ida_kernwin_mod.warning("Failed to decompile function")
+            idaapi_shim.warning("Failed to decompile function")
             return 0
 
         func_name, pseudocode_lines = result
@@ -891,50 +822,31 @@ class ExportFunctionToC(D810ActionHandler):
 
             # Collect global declarations if requested
             global_decls = None
-            if (
-                settings.get("export_globals", False)
-                and ida_name_mod is not None
-                and ida_bytes_mod is not None
-                and idaapi_mod is not None
-            ):
+            if settings.get("export_globals", False):
                 global_symbols = _extract_global_symbol_names_from_ida(
                     pseudocode_lines,
-                    ida_name_mod=ida_name_mod,
-                    idaapi_mod=idaapi_mod,
-                    ida_funcs_mod=ida_funcs_mod,
+                    idaapi_shim=idaapi_shim,
                     exclude_names=imported_names,
                 )
                 global_decls = _build_global_declarations_from_ida(
                     symbol_names=global_symbols,
-                    ida_name_mod=ida_name_mod,
-                    ida_bytes_mod=ida_bytes_mod,
-                    idaapi_mod=idaapi_mod,
-                    ida_nalt_mod=ida_nalt_mod,
-                    ida_typeinf_mod=ida_typeinf_mod,
+                    idaapi_shim=idaapi_shim,
                 )
 
             # Use IDA type info for forward declarations when available
             forward_decls = None
-            if ida_name_mod is not None and idaapi_mod is not None:
-                forward_decls = _get_typed_forward_declarations_from_ida(
-                    func_name=func_name,
-                    pseudocode_lines=pseudocode_lines,
-                    ida_name_mod=ida_name_mod,
-                    idaapi_mod=idaapi_mod,
-                    ida_nalt_mod=ida_nalt_mod,
-                    ida_typeinf_mod=ida_typeinf_mod,
-                )
+            forward_decls = _get_typed_forward_declarations_from_ida(
+                func_name=func_name,
+                pseudocode_lines=pseudocode_lines,
+                idaapi_shim=idaapi_shim,
+            )
 
             # Imported function pointers (ConvertThreadToFiber, TlsGetValue, etc.)
             imported_decls = None
-            if ida_name_mod is not None and idaapi_mod is not None:
-                imported_decls = _get_imported_function_declarations_from_ida(
-                    pseudocode_lines=pseudocode_lines,
-                    ida_name_mod=ida_name_mod,
-                    idaapi_mod=idaapi_mod,
-                    ida_nalt_mod=ida_nalt_mod,
-                    ida_typeinf_mod=ida_typeinf_mod,
-                )
+            imported_decls = _get_imported_function_declarations_from_ida(
+                pseudocode_lines=pseudocode_lines,
+                idaapi_shim=idaapi_shim,
+            )
 
             c_source = format_sample_compatible_c(
                 func_name=func_name,
@@ -968,10 +880,10 @@ class ExportFunctionToC(D810ActionHandler):
         # Post-process with clang to apply fixits and improve compilability.
         # libclang is required for supported IDA versions; fail hard if unavailable.
         try:
-            c_source = make_compilable(c_source, idaapi_mod=idaapi_mod)
+            c_source = make_compilable(c_source, idaapi_mod=idaapi_shim)
         except Exception as exc:
             logger.error("Clang post-process failed: %s", exc)
-            ida_kernwin_mod.warning(f"Clang post-process failed:\n{exc}")
+            idaapi_shim.warning(f"Clang post-process failed:\n{exc}")
             return 0
 
         # Save to file
@@ -979,11 +891,11 @@ class ExportFunctionToC(D810ActionHandler):
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(c_source)
             logger.info("Exported C source to %s", output_path)
-            ida_kernwin_mod.info(f"Function exported to:\n{output_path}")
+            idaapi_shim.info(f"Function exported to:\n{output_path}")
             return 1
         except Exception as exc:
             logger.error("Failed to write C file: %s", exc)
-            ida_kernwin_mod.warning(f"Failed to save file:\n{exc}")
+            idaapi_shim.warning(f"Failed to save file:\n{exc}")
             return 0
 
     def is_available(self, ctx: typing.Any) -> bool:
@@ -995,28 +907,20 @@ class ExportFunctionToC(D810ActionHandler):
         Returns:
             True if in a supported view with a function at cursor
         """
-        ida_hexrays_mod = self.ida_module("ida_hexrays", ida_hexrays)
-        ida_kernwin_mod = self.ida_module("ida_kernwin", ida_kernwin)
-        ida_funcs_mod = self.ida_module("ida_funcs", ida_funcs)
-        idaapi_mod = self.ida_module("idaapi", idaapi)
-        if (
-            ida_hexrays_mod is None
-            or ida_kernwin_mod is None
-            or ida_funcs_mod is None
-            or idaapi_mod is None
-        ):
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None:
             return False
 
         # Check if we're in pseudocode view
-        vdui = ida_hexrays_mod.get_widget_vdui(ctx.widget)
+        vdui = idaapi_shim.get_widget_vdui(ctx.widget)
         if vdui is not None:
             return True
 
         # Check if we're in disassembly view with a function at cursor
-        widget_type = idaapi_mod.get_widget_type(ctx.widget)
-        if widget_type == idaapi_mod.BWN_DISASM:
-            ea = ida_kernwin_mod.get_screen_ea()
-            func = ida_funcs_mod.get_func(ea)
+        widget_type = idaapi_shim.get_widget_type(ctx.widget)
+        if widget_type == idaapi_shim.BWN_DISASM:
+            ea = idaapi_shim.get_screen_ea()
+            func = idaapi_shim.get_func(ea)
             return func is not None
 
         return False

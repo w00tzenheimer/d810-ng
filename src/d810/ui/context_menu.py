@@ -173,7 +173,7 @@ class D810ContextMenu:
 
         for instance in self._action_instances:
             action_cls = type(instance)
-            ida_handler = make_ida_handler(instance, ida_kernwin_module=ida_kernwin)
+            ida_handler = make_ida_handler(instance, idaapi_module=idaapi)
             desc = ida_kernwin.action_desc_t(
                 action_cls.ACTION_ID,
                 action_cls.ACTION_TEXT,

@@ -40,8 +40,8 @@ class StopD810ng(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
-        ida_kernwin_mod = self.ida_module("ida_kernwin")
-        if ida_kernwin_mod is None or QTimer is None:
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None or QTimer is None:
             return 0
 
         def _deferred_stop():
@@ -51,10 +51,10 @@ class StopD810ng(D810ActionHandler):
                 self._state.stop_d810()
                 # Update UI status indicator to show "Stopped"
                 self._update_ui_after_stop()
-                ida_kernwin_mod.info("d810-ng stopped successfully")
+                idaapi_shim.info("d810-ng stopped successfully")
                 logger.info("d810-ng stopped via context menu action")
             except Exception as e:
-                ida_kernwin_mod.warning(f"Failed to stop d810-ng: {e}")
+                idaapi_shim.warning(f"Failed to stop d810-ng: {e}")
                 logger.error("Failed to stop d810-ng: %s", e, exc_info=True)
 
         try:
@@ -64,7 +64,7 @@ class StopD810ng(D810ActionHandler):
             QTimer.singleShot(0, _deferred_stop)
             return 1
         except Exception as e:
-            ida_kernwin_mod.warning(f"Failed to schedule stop: {e}")
+            idaapi_shim.warning(f"Failed to schedule stop: {e}")
             logger.error("Failed to schedule stop: %s", e, exc_info=True)
             return 0
 

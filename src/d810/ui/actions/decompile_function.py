@@ -30,17 +30,15 @@ class DecompileFunction(D810ActionHandler):
             1 on success, 0 on failure
         """
         # Get the current function from the disassembly cursor
-        ida_kernwin_mod = self.ida_module("ida_kernwin")
-        ida_funcs_mod = self.ida_module("ida_funcs")
-        ida_hexrays_mod = self.ida_module("ida_hexrays")
-        if ida_kernwin_mod is None or ida_funcs_mod is None or ida_hexrays_mod is None:
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None:
             return 0
 
-        ea = ida_kernwin_mod.get_screen_ea()
-        func = ida_funcs_mod.get_func(ea)
+        ea = idaapi_shim.get_screen_ea()
+        func = idaapi_shim.get_func(ea)
         if func is None:
             logger.warning("DecompileFunction: no function at cursor (%s)", hex(ea))
-            ida_kernwin_mod.warning("No function at cursor")
+            idaapi_shim.warning("No function at cursor")
             return 0
 
         func_ea = func.start_ea
@@ -49,12 +47,12 @@ class DecompileFunction(D810ActionHandler):
 
         # Trigger decompilation (D810ng hooks will run automatically)
         try:
-            ida_hexrays_mod.decompile(func_ea)
+            idaapi_shim.decompile(func_ea)
             # Open the pseudocode window
-            ida_hexrays_mod.open_pseudocode(func_ea, 0)
+            idaapi_shim.open_pseudocode(func_ea, 0)
         except Exception as exc:
             logger.error("Failed to decompile function: %s", exc)
-            ida_kernwin_mod.warning(f"Failed to decompile function:\n{exc}")
+            idaapi_shim.warning(f"Failed to decompile function:\n{exc}")
             return 0
 
         return 1
@@ -68,20 +66,18 @@ class DecompileFunction(D810ActionHandler):
         Returns:
             True if in disassembly view and cursor is in a function
         """
-        ida_kernwin_mod = self.ida_module("ida_kernwin")
-        ida_funcs_mod = self.ida_module("ida_funcs")
-        idaapi_mod = self.ida_module("idaapi")
-        if ida_kernwin_mod is None or ida_funcs_mod is None or idaapi_mod is None:
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None:
             return False
 
         # Check if we're in a disassembly view
-        widget_type = idaapi_mod.get_widget_type(ctx.widget)
-        if widget_type != idaapi_mod.BWN_DISASM:
+        widget_type = idaapi_shim.get_widget_type(ctx.widget)
+        if widget_type != idaapi_shim.BWN_DISASM:
             return False
 
         # Check if cursor is in a function
-        ea = ida_kernwin_mod.get_screen_ea()
-        func = ida_funcs_mod.get_func(ea)
+        ea = idaapi_shim.get_screen_ea()
+        func = idaapi_shim.get_func(ea)
         if func is None:
             return False
 

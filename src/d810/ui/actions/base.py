@@ -109,16 +109,16 @@ class D810ActionHandler(Registrant):
         if name in self._ida_modules:
             return self._ida_modules[name]
 
-        idaapi_mod = self._ida_modules.get("idaapi")
-        if idaapi_mod is None:
+        idaapi_shim = self._ida_modules.get("idaapi")
+        if idaapi_shim is None:
             return default
 
         # idaapi.py re-exports many ida_* modules; treat idaapi as the shim.
         if name.startswith("ida_") or name == "idc":
-            return idaapi_mod
+            return idaapi_shim
 
         # Try attribute access on idaapi shim (if present)
-        candidate = getattr(idaapi_mod, name, None)
+        candidate = getattr(idaapi_shim, name, None)
         if candidate is not None:
             return candidate
 
