@@ -29,7 +29,7 @@ from d810.core.rule_scope import (
     RuleScopeInvalidation,
     RuleScopeService,
 )
-from d810.core.singleton import SingletonMeta
+from d810.core.registry import SingletonMeta
 from d810.core.stats import OptimizationStatistics
 from d810.hexrays.ctree_hooks import CtreeOptimizerManager, CtreeOptimizationRule
 from d810.hexrays.hexrays_hooks import (

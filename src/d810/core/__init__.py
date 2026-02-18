@@ -63,7 +63,6 @@ from .cache import (
 from .registry import (
     Registrant,
     Registry,
-    EventEmitter,
     survives_reload,
     reify,
     deferred_property,
@@ -75,9 +74,25 @@ from .registry import (
     resolve_forward_ref,
     lazy_type,
     get_all_subclasses,
+    SingletonMeta,
+    singleton,
 )
 
-from .singleton import SingletonMeta, singleton
+# Events (split out of registry for lightweight import)
+from .events import EventEmitter
+
+# Descriptors (split out of registry for lightweight import)
+from .descriptors import (
+    CombineMeta,
+    combine_meta,
+    async_await,
+    coroutine,
+    timestamp,
+    Thunk,
+    Defer,
+    TypeRef,
+    DeferTypeRef,
+)
 
 # Project management
 from .project import ProjectManager, ProjectContext

@@ -1,327 +1,70 @@
+"""Registry metaclass, Registrant base, and supporting utilities.
+
+This module provides:
+    Registry      - ABCMeta subclass for auto-registering subclasses
+    Registrant    - Base class using Registry metaclass
+    FilterableGenerator - Lazy filterable view over registered classes
+    get_all_subclasses  - Recursive subclass enumeration
+    EventEmitter  - Re-exported from core.events for backward compat
+    SingletonMeta / singleton - Thread-safe singleton, merged from singleton.py
+
+All utility descriptors (NotGiven, survives_reload, reify, deferred_property,
+typename, typecheck, resolve_forward_ref, lazy_type, CombineMeta, async_await,
+coroutine, type aliases) live in core.descriptors and are re-exported here for
+backward compatibility.
+"""
 import collections
 import dataclasses
 import functools
-import importlib
-import sys
+import threading
 from abc import ABCMeta
-from functools import cache, wraps
-from types import GenericAlias, MappingProxyType
-from collections.abc import MutableMapping
-from weakref import WeakKeyDictionary
 
 from d810.core.typing import (
-    Annotated,
     Any,
-    AnyStr,
-    AsyncGenerator,
     Callable,
     ClassVar,
-    Coroutine,
-    ForwardRef,
-    Generator,
     Generic,
     Hashable,
     Iterable,
-    Literal,
-    LiteralString,
     Optional,
-    Self,
-    Sequence,
     TypeAlias,
-    TypeAliasType,
     TypeVar,
     cast,
-    get_args,
-    get_origin,
-    get_type_hints,
-    overload,
 )
 
 T = TypeVar("T")
 _R = TypeVar("_R", bound="Registrant")
-AnnotatedAny: TypeAlias = Annotated[Any, ...]  # safely parameterized
+
+# ---------------------------------------------------------------------------
+# Re-exports from descriptors (backward compat: importers of registry get these)
+# ---------------------------------------------------------------------------
+from d810.core.descriptors import (  # noqa: E402
+    NOT_GIVEN,
+    NotGiven,
+    Thunk,
+    Defer,
+    TypeRef,
+    DeferTypeRef,
+    survives_reload,
+    CombineMeta,
+    combine_meta,
+    async_await,
+    coroutine,
+    typename,
+    typecheck,
+    resolve_forward_ref,
+    deferred_property,
+    lazy_type,
+    reify,
+)
+
+# Re-export EventEmitter from core.events for backward compat
+from d810.core.events import EventEmitter  # noqa: E402
 
 
-class NotGiven:
-    """Placeholder for value which isn't given."""
-
-    def __init__(self):
-        raise NotImplementedError()
-
-    def __bool__(self):
-        return False
-
-    def __repr__(self):
-        return "NOT_GIVEN"
-
-    @staticmethod
-    def params(**kwargs):
-        """Return a dict of the given parameters which are not NOT_GIVEN."""
-        return {k: v for k, v in kwargs.items() if not isinstance(v, NotGiven)}
-
-
-# Using __new__ to implement singleton pattern
-NOT_GIVEN = object.__new__(NotGiven)
-"""Placeholder for value which isn't given."""
-
-# Pyright does not follow TypeVarType when passing type[T] to a function...
-timestamp: TypeAlias = int
-Thunk: TypeAlias = Callable[[], T]
-OnePlus: TypeAlias = T | Sequence[T]
-Defer: TypeAlias = T | Thunk[T]
-TypeRef: TypeAlias = str | ForwardRef | GenericAlias | TypeAliasType | AnnotatedAny
-DeferTypeRef: TypeAlias = Defer[type] | TypeRef
-"""A typelike reference which can be wrapped to be resolved later."""
-
-
-def survives_reload(cls=None, *, reload_key: str = ""):
-    """
-    Class decorator (optionally parameterized) that enables a class to survive reloads by storing a shared instance
-    on the module object, keyed by `reload_key` (or `_SHARED_<ClassName>`).
-
-    Usage:
-        @survives_reload
-        class MyClass: ...
-
-        @survives_reload()
-        class MyClass: ...
-
-        BLAH = survives_reload(MyClass, reload_key="FOO")
-    """
-    def decorator(inner_cls):
-        _reload_key = reload_key or f"_SHARED_{inner_cls.__name__}"
-        _module = sys.modules[inner_cls.__module__]
-
-        @functools.wraps(inner_cls)
-        def get_shared_instance(*args, **kwargs):
-            existing = getattr(_module, _reload_key, None)
-            if existing is not None:
-                return existing
-            inst = inner_cls.__new__(inner_cls, *args, **kwargs)
-            inner_cls.__init__(inst, *args, **kwargs)
-            setattr(_module, _reload_key, inst)
-            return inst
-
-        return get_shared_instance
-
-    # Handle all three cases:
-    # 1. @survives_reload
-    # 2. @survives_reload()
-    # 3. survives_reload(SomeClass, reload_key=...)
-    if cls is not None and callable(cls):
-        return decorator(cls)
-    return decorator
-
-
-class CombineMeta:
-    def __prepare__(
-        self,
-        name: str,
-        bases: tuple[type, ...],
-        **kwargs: Any
-    ) -> MutableMapping[str, Any]:
-        namespace: MutableMapping[str, Any] = {}
-        for metaclass in self._get_most_derived_metaclasses(bases):
-            ns = metaclass.__prepare__(name, bases, **kwargs)
-            if type(ns) in (dict, type(namespace)):
-                namespace.update(ns)
-            else:
-                if type(namespace) is not dict:
-                    raise TypeError(
-                        "metaclass conflict: " "multiple custom namespaces defined."
-                    )
-                ns.update(namespace)
-                namespace = ns
-        return namespace
-
-    def __call__(
-        self,
-        name: str,
-        bases: tuple[type, ...],
-        namespace: MutableMapping[str, Any],
-        **kwargs: Any
-    ) -> type:
-        metaclasses = self._get_most_derived_metaclasses(bases)
-        if len(metaclasses) > 1:
-            merged_name = "__".join(meta.__name__ for meta in metaclasses)
-            ns = self.__prepare__(merged_name, tuple(metaclasses))
-            metaclass = self(merged_name, tuple(metaclasses), ns, **kwargs)
-        else:
-            (metaclass,) = metaclasses or (type,)
-        return metaclass(name, bases, dict(namespace), **kwargs)
-
-    @staticmethod
-    def _get_most_derived_metaclasses(
-        bases: tuple[type, ...]
-    ) -> list[type]:
-        metaclasses: list[type] = []
-        for metaclass in map(type, bases):
-            if metaclass is not type:
-                metaclasses = [
-                    other for other in metaclasses if not issubclass(metaclass, other)
-                ]
-                if not any(issubclass(other, metaclass) for other in metaclasses):
-                    metaclasses.append(metaclass)
-        return metaclasses
-
-
-combine_meta = CombineMeta()
-
-def async_await(
-    fn: Callable[..., Coroutine[Any, Any, T]],
-) -> Callable[..., Generator[Any, None, T]]:
-    """
-    Decorator to convert an async function to a generator for use with a
-    more intuitive async __await__.
-    """
-
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        async_gen = fn(*args, **kwargs)
-        return async_gen.__await__()
-
-    return wrapper
-
-
-def coroutine(
-    fn: Callable[..., AsyncGenerator[None, T]],
-) -> Callable[..., Coroutine[Any, Any, AsyncGenerator[None, T]]]:
-    """Auto-starting coroutine decorator."""
-
-    @wraps(fn)
-    async def calls_asend(*args, **kwargs):
-        gen = fn(*args, **kwargs)
-        try:
-            await gen.asend(None)  # type: ignore
-        except StopAsyncIteration:
-            print("StopAsyncIteration")  # Doesn't print
-        return gen
-
-    return calls_asend
-
-
-def typename(t: TypeRef) -> str:
-    """Return the name of a type, or the name of a value's type."""
-
-    if get_origin(t) is None:
-        if not isinstance(t, type):
-            t = type(t)
-        return t.__name__  # type: ignore
-    return str(t)
-
-
-def typecheck(value: Any, t: TypeRef) -> bool:
-    """
-    More featureful type checking. Supports isinstance, but also the zoo of
-    `typing` types which are not supported by isinstance.
-    """
-
-    try:
-        # type, Optional, Union, @runtime_checkable
-        return isinstance(value, t)  # type: ignore
-    except TypeError:
-        pass
-
-    if t is Any:
-        return True
-    if t in {None, type(None)}:
-        return value is None
-    if t in {AnyStr, LiteralString}:
-        return isinstance(value, (str, bytes))
-
-    # Generic types
-
-    origin, args = get_origin(t), get_args(t)
-
-    if origin is Literal:
-        return value in args
-
-    if origin is Annotated:
-        return typecheck(value, args[0])
-
-    if isinstance(t, TypeAliasType):
-        return typecheck(value, t.__value__)  # type: ignore [attr-defined]
-
-    return False
-
-
-# Alternatively, could use ForwardRef._evaluate but that's private. This is at least public and legal.
-def resolve_forward_ref(
-    obj: TypeRef,
-    globalns: dict[str, Any] | None = None,
-    localns: dict[str, Any] | MappingProxyType[str, Any] | None = None,
-):
-    """Resolve a singular forward reference."""
-
-    def dummy(x: TypeRef):
-        pass
-
-    _localns: dict[str, Any] = (
-        cast(dict[str, Any], localns) if localns is not None else {}
-    )
-    return get_type_hints(dummy, globalns, _localns)["x"]
-
-
-class deferred_property(Generic[T]):
-    """A property which can be resolved later with minimal friction."""
-
-    deferral: WeakKeyDictionary[type, Thunk[T]]
-
-    def __init__(self):
-        self.deferral = WeakKeyDictionary()
-
-    def __set_name__(self, owner, name: str):
-        self.__name__ = name
-
-    @overload
-    def __get__(self, instance: None, owner) -> Self: ...
-    @overload
-    def __get__(self, instance, owner) -> T: ...
-
-    def __get__(self, instance, owner) -> Self | T:
-        if instance is None:
-            return self
-
-        value = instance.__dict__.get(self.__name__, NOT_GIVEN)
-        if value is not NOT_GIVEN:
-            return value
-
-        try:
-            value = self.deferral.pop(instance)()
-            setattr(instance, self.__name__, value)
-            return value
-        except KeyError:
-            raise AttributeError(
-                f"{typename(owner)}.{self.__name__} has no deferral"
-            ) from None
-
-    def __set__(self, instance, value: T):
-        instance.__dict__[self.__name__] = value
-        return value
-
-    def defer(self, instance, deferral: Defer[T]):
-        """Explicitly defer a value."""
-        if callable(deferral):
-            self.deferral[instance] = deferral
-        else:
-            setattr(instance, self.__name__, deferral)
-        return self
-
-
-def lazy_type(t: DeferTypeRef, cls: Optional[type] = None) -> Defer[type]:
-    """Return a lazy type which can be resolved later."""
-
-    if isinstance(t, (type, Callable)):
-        return cast(type | Callable, t)
-    if cls is None:
-        raise ValueError("cls must be given if t is unbound")
-
-    @cache
-    def factory():
-        global_ns = importlib.import_module(cls.__module__).__dict__
-        return resolve_forward_ref(t, global_ns, cls.__dict__)
-
-    return factory
+# ---------------------------------------------------------------------------
+# FilterableGenerator
+# ---------------------------------------------------------------------------
 
 
 class FilterableGenerator(Generic[T]):
@@ -350,6 +93,11 @@ class FilterableGenerator(Generic[T]):
     def __repr__(self):
         # avoid consuming the generator!
         return f"<FilterableGenerator preds={len(self._preds)} source={self._source!r}>"
+
+
+# ---------------------------------------------------------------------------
+# Registry metaclass & Registrant base
+# ---------------------------------------------------------------------------
 
 
 class Registry(ABCMeta):
@@ -412,12 +160,7 @@ class Registrant(metaclass=Registry):
     def keyof(kls: type) -> str:
         """Return the key of the resource."""
         key_attr = getattr(kls, "registrant_name", kls.__name__)
-        # # If someone defined `name` as a @property on the class we end up with a
-        # # `property` object - not the actual value.  Fallback to class-name in
-        # # that case.
-        # if isinstance(key_attr, property):
-        #     return cls.__name__
-        return key_attr  # or cls.__name__
+        return key_attr
 
     @classmethod
     def normalize_key(cls, key: str) -> str:
@@ -523,14 +266,6 @@ class Registrant(metaclass=Registry):
         You can then .filter(...) again and again, and finally iterate it:
             for C in Registry.filter(p1).filter(p2): ...
         """
-        # Exclude any classes earmarked for lazy loading so we don't trigger them
-        # exclude: set[type] = set()
-        # for load in cls.lazy_registry.values():
-        #     try:
-        #         exclude.add(load())
-        #     except Exception:
-        #         pass
-        # gen = (c for c in cls.registry.values() if c not in exclude)
         return FilterableGenerator(cls.registry.values(), [predicate])
 
 
@@ -555,74 +290,42 @@ def get_all_subclasses(python_class: type) -> list[type]:
     return sorted(subclasses, key=lambda x: x.__name__)
 
 
-class reify(Generic[T]):
+# ---------------------------------------------------------------------------
+# Singleton pattern (merged from singleton.py)
+# ---------------------------------------------------------------------------
+
+
+class SingletonMeta(type):
     """
-    Acts similar to a property, except the result will be
-    set as an attribute on the instance instead of recomputed
-    each access.
+    Thread-safe implementation of Singleton metaclass.
+    Can also be used as a decorator.
     """
 
-    def __init__(self, fn: Callable[..., T]) -> None:
-        self.fn = fn
-        # Copy function attributes to preserve metadata
-        self.__name__ = getattr(fn, "__name__", "<unknown>")
-        self.__doc__ = getattr(fn, "__doc__", None)
-        self.__module__ = getattr(fn, "__module__", "") or ""
-        self.__qualname__ = getattr(fn, "__qualname__", "") or ""
-        self.__annotations__ = getattr(fn, "__annotations__", {})
+    _instances: dict[type, object] = {}
+    _locks: dict[type, threading.Lock] = {}
 
-    @overload
-    def __get__(self, instance: None, owner: type) -> "reify[T]": ...
-
-    @overload
-    def __get__(self, instance: Any, owner: type) -> T: ...
-
-    def __get__(self, instance: Any, owner: type) -> "T | reify[T]":
-        if instance is None:
-            return self
-
-        fn = self.fn
-        val = fn(instance)
-        setattr(instance, fn.__name__, val)
-        return val
+    def __call__(cls: type[T], *args: Any, **kwargs: Any) -> T:
+        if cls not in SingletonMeta._instances:
+            # use class-level _lock if defined, else fallback to internal lock
+            lock: threading.Lock = getattr(
+                cls, "_lock", SingletonMeta._locks.setdefault(cls, threading.Lock())
+            )
+            with lock:
+                if cls not in SingletonMeta._instances:
+                    instance = type.__call__(cls, *args, **kwargs)
+                    SingletonMeta._instances[cls] = instance
+        return cast(T, SingletonMeta._instances[cls])
 
 
-E = TypeVar("E", bound=Hashable)
+def singleton(cls: type[T]) -> type[T]:
+    """
+    Decorator to apply SingletonMeta behavior to a class.
+    """
 
+    class SingletonWrapper(cls, metaclass=SingletonMeta):
+        pass
 
-@dataclasses.dataclass
-class EventEmitter(Generic[E]):
-    _listeners: collections.defaultdict[E, set[Callable]] = dataclasses.field(
-        default_factory=lambda: collections.defaultdict(set), init=False
-    )
-
-    def on(self, event: E, handler: Callable | None = None):
-        """Register an event handler for the given event."""
-        if handler:
-            self._listeners[event].add(handler)
-            return handler
-
-        @functools.wraps(self.on)
-        def decorator(func):
-            self.on(event, func)
-            return func
-
-        return decorator
-
-    def once(self, event: E, handler: Callable):
-        @functools.wraps(handler)
-        def once_handler(*args, **kwargs):
-            self.remove(event, once_handler)
-            return handler(*args, **kwargs)
-
-        self.on(event, once_handler)
-
-    def remove(self, event: E, handler: Callable):
-        self._listeners[event].discard(handler)
-
-    def clear(self):
-        self._listeners.clear()
-
-    def emit(self, event: E, *args, **kwargs):
-        for handler in self._listeners[event]:
-            handler(*args, **kwargs)
+    SingletonWrapper.__name__ = cls.__name__
+    SingletonWrapper.__doc__ = cls.__doc__
+    SingletonWrapper.__module__ = cls.__module__
+    return cast(type[T], SingletonWrapper)
