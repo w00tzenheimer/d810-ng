@@ -1895,6 +1895,33 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     if pred_serial_int in (dispatcher_serial, target_serial):
                         continue
                     if pred_serial_int not in case_targets:
+                        # Single-hop transitive check: pred is an intermediate
+                        # block (e.g. a trampoline) that is NOT itself a jtbl
+                        # case target.  If one of ITS predecessors IS a case
+                        # target and the recorded rewrite_edges says that case
+                        # pred was redirected toward target_serial, treat the
+                        # case pred as the overlap representative.
+                        pred_blk = self.mba.get_mblock(pred_serial_int)
+                        if pred_blk is None:
+                            continue
+                        if not self._serial_in_set(pred_blk.succset, target_serial):
+                            continue
+                        for pp_serial in pred_blk.predset:
+                            pp_serial_int = int(pp_serial)
+                            if pp_serial_int in (dispatcher_serial, target_serial):
+                                continue
+                            if pp_serial_int not in case_targets:
+                                continue
+                            if (pp_serial_int, target_serial) not in rewrite_edges:
+                                continue
+                            pp_blk = self.mba.get_mblock(pp_serial_int)
+                            if pp_blk is None:
+                                continue
+                            if not self._serial_in_set(pp_blk.succset, pred_serial_int):
+                                continue
+                            # pp is a case target that reaches target via
+                            # intermediate pred -- treat pp as the overlap pred.
+                            overlap_preds.append(pp_serial_int)
                         continue
                     pred_blk = self.mba.get_mblock(pred_serial_int)
                     if pred_blk is None:
@@ -2286,6 +2313,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY),
                         description=f"resolve_dispatcher_father {dispatcher_father.serial} -> {target_blk.serial}",
                     )
+                    # Record the edge so post-apply canonicalization catches
+                    # cross-case overlaps if deep cleaning later collapses the
+                    # intermediate block back into a direct edge.
+                    self._record_deferred_case_overlap_edge(
+                        dispatcher_info.entry_block.serial,
+                        dispatcher_father.serial,
+                        target_blk.serial,
+                    )
                     queued_change = True
             else:
                 if source_nsucc == 1:
@@ -2368,6 +2403,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                                 instructions_to_copy=[nop],
                                 is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY),
                                 description=f"resolve_dispatcher_father(trampoline) {dispatcher_father.serial} -> {target_blk.serial}",
+                            )
+                            # Record trampoline edge so post-apply canonicalization
+                            # can detect and fix cross-case overlaps introduced by
+                            # trampoline blocks whose final target is a jtbl case.
+                            self._record_deferred_case_overlap_edge(
+                                dispatcher_info.entry_block.serial,
+                                dispatcher_father.serial,
+                                target_blk.serial,
                             )
                             queued_change = True
                         else:
@@ -2642,9 +2685,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                             canonicalized_cases,
                         )
                         total_nb_change += canonicalized_cases
-                    # Non-fatal verify after canonicalization: logs corruption
-                    # signals for diagnostics but does NOT bail — mba_deep_cleaning
-                    # handles most cases. See commit 412a390 for context.
+                    # Verify after canonicalization: if it fails, skip deep
+                    # cleaning to prevent compounded corruption (segfault).
                     try:
                         safe_verify(
                             self.mba,
@@ -2653,12 +2695,34 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         )
                     except RuntimeError:
                         unflat_logger.warning(
-                            "MBA verify failed after jtbl canonicalization "
-                            "(non-fatal, proceeding to deep cleaning)"
+                            "MBA verify failed after jtbl canonicalization — "
+                            "skipping deep cleaning to prevent compounded corruption"
                         )
-                    # DeferredGraphModifier maintenance is deferred so we can
-                    # canonicalize switch-case overlaps first.
-                    mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                        self._verify_failed = True
+                    if self._verify_failed:
+                        unflat_logger.info(
+                            "Aborting post-apply maintenance due to verify failure"
+                        )
+                        # Skip deep cleaning and post-cleaning canonicalization
+                        # The retargets are preserved but we don't compound the corruption
+                    else:
+                        # DeferredGraphModifier maintenance is deferred so we can
+                        # canonicalize switch-case overlaps first.
+                        mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                        # Fixed-point: deep cleaning can collapse intermediate blocks
+                        # and create NEW direct cross-case edges that were not present
+                        # before (e.g. mba_remove_simple_goto_blocks merges trampolines).
+                        # Re-run canonicalization up to 3 times to converge.
+                        for _canon_iter in range(3):
+                            new_overlaps = self._canonicalize_jtbl_cross_case_overlaps()
+                            if not new_overlaps:
+                                break
+                            unflat_logger.info(
+                                "Post-cleaning canonicalization pass %d fixed %d overlap(s)",
+                                _canon_iter + 1,
+                                new_overlaps,
+                            )
+                            total_nb_change += new_overlaps
 
             if deferred_modifier.verify_failed:
                 self._verify_failed = True
