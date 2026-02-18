@@ -139,6 +139,48 @@ class TestConfiguration(unittest.TestCase):
             app_config.set("new_key", "new_value")
             self.assertEqual(app_config.get("new_key"), "new_value")
 
+    def test_additional_configuration_round_trip(self):
+        """Test that additional_configuration survives a save/load round-trip."""
+        with load_conf_classes() as (_, ProjectConfiguration, _):
+            # Write a project file that includes additional_configuration
+            project_path = Path("./project_additional.json")
+            project_data = {
+                "description": "Test additional_configuration",
+                "ins_rules": [],
+                "blk_rules": [],
+                "additional_configuration": {
+                    "enable_pass_pipeline": False,
+                    "enable_recon_pipeline": True,
+                },
+            }
+            with project_path.open("w") as f:
+                json.dump(project_data, f, indent=2)
+
+            try:
+                # Load and verify deserialization
+                config = ProjectConfiguration.from_file(project_path)
+                self.assertEqual(
+                    config.additional_configuration,
+                    {"enable_pass_pipeline": False, "enable_recon_pipeline": True},
+                )
+
+                # Mutate, save, and reload to verify serialization
+                config.additional_configuration["enable_pass_pipeline"] = True
+                config.save()
+
+                reloaded = ProjectConfiguration.from_file(project_path)
+                self.assertTrue(reloaded.additional_configuration["enable_pass_pipeline"])
+                self.assertTrue(reloaded.additional_configuration["enable_recon_pipeline"])
+            finally:
+                project_path.unlink(missing_ok=True)
+
+    def test_additional_configuration_defaults_to_empty(self):
+        """Test that missing additional_configuration defaults to empty dict."""
+        with load_conf_classes() as (_, ProjectConfiguration, _):
+            # The dummy_project_file has no additional_configuration key
+            config = ProjectConfiguration.from_file(self.dummy_project_file)
+            self.assertEqual(config.additional_configuration, {})
+
     def test_discover_projects(self):
         """Test project discovery, including user overrides and ignoring options.json."""
         with temp_ida_dir() as ida_dir:
