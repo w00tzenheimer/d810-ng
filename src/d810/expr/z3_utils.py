@@ -423,6 +423,21 @@ _Z3_ALWAYS_ZERO_CACHE: Dict[Tuple[int, int, int|str], bool] = {}
 _Z3_ALWAYS_NONZERO_CACHE: Dict[Tuple[int, int, int|str], bool] = {}
 
 
+def clear_z3_caches() -> None:
+    """Clear all module-level Z3 memoization caches.
+
+    Must be called on DecompilationEvent.STARTED to prevent stale cached
+    results from one decompilation being used in the next. Cache entries hold
+    structural hashes of mop_t objects; those hashes may collide across
+    decompilations if the same numeric key happens to recur for a different
+    operand.
+    """
+    _Z3_EQ_CACHE.clear()
+    _Z3_NEQ_CACHE.clear()
+    _Z3_ALWAYS_ZERO_CACHE.clear()
+    _Z3_ALWAYS_NONZERO_CACHE.clear()
+
+
 @requires_z3_installed
 def z3_check_mop_inequality(
     mop1: ida_hexrays.mop_t | None,

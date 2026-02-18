@@ -17,6 +17,7 @@ from d810.core.typing import TYPE_CHECKING
 from d810.core.config import D810Configuration, ProjectConfiguration
 from d810.core.logging import clear_logs, configure_loggers, getLogger
 from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
+from d810.expr.z3_utils import clear_z3_caches
 from d810.core.persistence import ActiveRuleRecipeConfig, create_optimization_storage
 from d810.core.platform import resolve_arch_config
 from d810.core.project import ProjectContext, ProjectManager
@@ -533,6 +534,7 @@ class D810Manager:
             self.stats.reset,
             MOP_CONSTANT_CACHE.clear,
             MOP_TO_AST_CACHE.clear,
+            clear_z3_caches,
             self.instruction_optimizer.reset_cycle_detection,
             self.block_optimizer.reset_pass_counter,
             self.block_optimizer.reset_pipeline_tracker,

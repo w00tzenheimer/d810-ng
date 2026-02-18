@@ -593,6 +593,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # at MMAT_GLBOPT2 (after the unflattener has finished at MMAT_GLBOPT1).
         self._pass_pipeline = None  # PassPipeline | None
         self._pipeline_last_maturity: int = -1
+        # When the PassPipeline fires and applies changes, we must skip all
+        # remaining block optimizer rule calls for the rest of this maturity.
+        # IDA will re-enter at the next maturity with fresh block pointers.
+        # Accessing stale mop_t pointers after pipeline mutations causes segfaults.
+        self._pipeline_just_fired: bool = False
         # usage tracking moved to centralized statistics object
 
     def reset_pass_counter(self) -> None:
@@ -609,6 +614,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         each new function decompilation.
         """
         self._pipeline_last_maturity = -1
+        self._pipeline_just_fired = False
 
     def _invalidate_flow_context(self, reason: str = "") -> None:
         if self._flow_context is not None and reason:
@@ -646,6 +652,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
 
     def func(self, blk: ida_hexrays.mblock_t):
         self.log_info_on_input(blk)
+
+        # Pipeline guard: after the PassPipeline fires and mutates the MBA,
+        # all mop_t pointers held by block optimizer rules are stale. Running
+        # them would cause a segfault. Skip rule execution for all remaining
+        # blocks in this maturity. The flag is cleared when maturity changes
+        # (in log_info_on_input) or at decompilation start (reset_pipeline_tracker).
+        if self._pipeline_just_fired:
+            return 0
 
         # Bug 3 fix: pass guard -- if the block optimizer has been called too
         # many times at the same maturity without a maturity change, bail out
@@ -693,6 +707,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 )
 
             self.current_maturity = mba.maturity
+            self._pipeline_just_fired = False
             self.reset_pass_counter()
             self._invalidate_flow_context("maturity changed")
 
@@ -730,6 +745,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             total,
                             func_ea_hex,
                         )
+                        # Mark that pipeline mutations happened. Block optimizer
+                        # rules must NOT run for the rest of this maturity —
+                        # their mop_t pointers are now stale and would segfault.
+                        self._pipeline_just_fired = True
                     else:
                         optimizer_logger.debug(
                             "PassPipeline: no modifications applied on function %s",
