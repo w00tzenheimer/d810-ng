@@ -95,9 +95,9 @@ class TestReconPhaseRunIfNeeded:
         phase.register(collector)
 
         fake_target = MagicMock()
-        # First call — should fire
+        # First call - should fire
         phase.run_microcode_collectors(fake_target, func_ea=0x401000, maturity=5)
-        # Second call same maturity — should NOT fire again
+        # Second call same maturity - should NOT fire again
         phase.run_microcode_collectors(fake_target, func_ea=0x401000, maturity=5)
 
         assert len(collector.call_log) == 1

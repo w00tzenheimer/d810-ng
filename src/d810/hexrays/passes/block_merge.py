@@ -147,7 +147,7 @@ class BlockMergePass(CFGPass):
             tail_insn = blk.insn_snapshots[-1]
 
             # Check 2: Tail instruction must be m_goto (opcode 55 / 0x37)
-            # If the tail is not a goto, it's a fall-through block — skip it.
+            # If the tail is not a goto, it's a fall-through block - skip it.
             if tail_insn.opcode != _M_GOTO_OPCODE:
                 continue
 

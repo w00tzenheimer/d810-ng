@@ -134,7 +134,7 @@ def test_active_optimizer_list_filters_by_maturity():
     ins = _make_ins()
     mgr.log_info_on_input(blk, ins)
 
-    # Now call optimize — only locopt_opt should be called
+    # Now call optimize - only locopt_opt should be called
     mgr.optimize(blk, ins)
 
     assert early_opt.calls == 0, f"EarlyOpt was called {early_opt.calls} times at LOCOPT"

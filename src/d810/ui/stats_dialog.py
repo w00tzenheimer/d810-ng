@@ -85,7 +85,7 @@ class StatsTreeWidget(QtWidgets.QTreeView):
         self.clear_btn.setFixedWidth(25)
         self.clear_btn.setToolTip("Clear filter")
 
-        # [▼] menu button (CTO pattern)
+        # [*] menu button (CTO pattern)
         self.menu_btn = QtWidgets.QPushButton("")
         self.menu_btn.setContentsMargins(0, 0, 0, 0)
         self.menu_btn.setFixedWidth(20)
@@ -179,7 +179,7 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
     - Qt table with sortable columns showing stats by category
     - Filter bar with regex/case-sensitive options (CTO pfilter)
     - [+] button to enable/disable rules per function
-    - [▼] menu for refresh and CSV export
+    - [*] menu for refresh and CSV export
     - Persistent docking (stays open between invocations)
 
     Lifecycle (CTO pattern):
@@ -208,7 +208,7 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
         self.model = self.tree.model
         self.proxy_model = self.tree.proxy_model
 
-        # Menu for [▼] button
+        # Menu for [*] button
         self.filter_menu = QtWidgets.QMenu("")
         refresh_action = self.filter_menu.addAction("Refresh")
         refresh_action.triggered.connect(self._refresh_data)
@@ -324,7 +324,7 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
             ida_kernwin.display_widget(self.GetWidget(), WOPN_NOT_CLOSED_BY_ESC, None)
             ida_kernwin.set_dock_pos(self.TITLE, "IDA View-A", ida_kernwin.DP_TAB)
 
-        # Resize columns after display (CTO pattern — only works after widget visible)
+        # Resize columns after display (CTO pattern - only works after widget visible)
         for i in range(self.model.columnCount()):
             self.tree.resizeColumnToContents(i)
 

@@ -22,7 +22,7 @@ class ReplaceMovHighContext(VerifiableRule):
         jz  r0.4, r6.4           ; IDA doesn't know r6 = 0x210F65A4
 
     This rule transforms:
-        mov #c, rX^2  →  mov ((rX & 0xFFFF) | (#c << 16)), rX
+        mov #c, rX^2  ->  mov ((rX & 0xFFFF) | (#c << 16)), rX
 
     By writing to the full register with the computed value, IDA's constant
     propagation can now track the full 32-bit value.

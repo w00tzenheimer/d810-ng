@@ -647,15 +647,15 @@ Combined Impact:
 Real-world binary with 10,000 blocks, 100 dispatchers:
 
 OLD approach:
-- Check all 10,000 blocks: 10,000 × expensive_analysis
-- Recompute def/use 5 times: 10,000 × 5 × def_use_cost
-- Always emulate: 100 × full_emulation_cost
+- Check all 10,000 blocks: 10,000 * expensive_analysis
+- Recompute def/use 5 times: 10,000 * 5 * def_use_cost
+- Always emulate: 100 * full_emulation_cost
 - Total: ~300 seconds
 
 NEW approach:
-- Heuristics skip 9,000 blocks: 1,000 × expensive_analysis
-- Cache def/use: 10,000 × def_use_cost (only first pass)
-- Early exit on 50 simple cases: 50 × fast_path + 50 × full_emulation
+- Heuristics skip 9,000 blocks: 1,000 * expensive_analysis
+- Cache def/use: 10,000 * def_use_cost (only first pass)
+- Early exit on 50 simple cases: 50 * fast_path + 50 * full_emulation
 - Total: ~30 seconds
 
 Result: 10x overall speedup!

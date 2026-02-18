@@ -57,7 +57,7 @@ class LoggingConfigDialog(QtWidgets.QDialog):
 
     def __init__(self, module_prefix: str, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle(f"Logging for {module_prefix}…")
+        self.setWindowTitle(f"Logging for {module_prefix}...")
         self.setMinimumSize(700, 500)
         self.resize(800, 500)
 
@@ -79,7 +79,7 @@ class LoggingConfigDialog(QtWidgets.QDialog):
         self._filter_edit.textChanged.connect(self._apply_filter)
         top_row.addWidget(self._filter_edit, stretch=1)
 
-        self._set_all_btn = QtWidgets.QPushButton("Set All ▼")
+        self._set_all_btn = QtWidgets.QPushButton("Set All *")
         self._set_all_btn.setToolTip("Set all visible loggers to the same level")
         self._set_all_menu = QMenu(self._set_all_btn)
         for level_name in self.LOG_LEVELS:
@@ -546,7 +546,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._status_indicator = QtWidgets.QLabel()
         self._status_indicator.setTextFormat(QtCore.Qt.RichText)
         self._status_indicator.setText(
-            '<span style="color: #D32F2F; font-size: 20px;">●</span>'
+            '<span style="color: #D32F2F; font-size: 20px;">*</span>'
         )
         self._status_indicator.setToolTip("D810 is stopped")
         config_row.addWidget(self._status_indicator)
@@ -570,7 +570,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         config_row.addWidget(self.btn_new_cfg)
 
         self.btn_duplicate_cfg = QToolButton()
-        self.btn_duplicate_cfg.setText("⧉")
+        self.btn_duplicate_cfg.setText("*")
         self.btn_duplicate_cfg.setToolTip("Duplicate current configuration")
         self.btn_duplicate_cfg.setFixedSize(32, 32)
         font = self.btn_duplicate_cfg.font()
@@ -580,7 +580,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         config_row.addWidget(self.btn_duplicate_cfg)
 
         self.btn_edit_cfg = QToolButton()
-        self.btn_edit_cfg.setText("✎")
+        self.btn_edit_cfg.setText("*")
         self.btn_edit_cfg.setToolTip("Edit current configuration")
         self.btn_edit_cfg.setFixedSize(32, 32)
         font = self.btn_edit_cfg.font()
@@ -590,7 +590,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         config_row.addWidget(self.btn_edit_cfg)
 
         self.btn_delele_cfg = QToolButton()
-        self.btn_delele_cfg.setText("🗑")
+        self.btn_delele_cfg.setText("*")
         self.btn_delele_cfg.setToolTip("Delete current configuration")
         self.btn_delele_cfg.setFixedSize(32, 32)
         font = self.btn_delele_cfg.font()
@@ -636,7 +636,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         rules_content_layout.setContentsMargins(0, 0, 0, 0)
         rules_content_layout.setSpacing(6)
 
-        # Edit header (name + description) — shown only for new/duplicate
+        # Edit header (name + description) - shown only for new/duplicate
         self._edit_header = QtWidgets.QWidget()
         rules_content_layout.addWidget(self._edit_header)
 
@@ -753,12 +753,12 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             return
         if loaded:
             self._status_indicator.setText(
-                '<span style="color: #4CAF50; font-size: 20px;">●</span>'
+                '<span style="color: #4CAF50; font-size: 20px;">*</span>'
             )
             self._status_indicator.setToolTip("D810 is running")
         else:
             self._status_indicator.setText(
-                '<span style="color: #D32F2F; font-size: 20px;">●</span>'
+                '<span style="color: #D32F2F; font-size: 20px;">*</span>'
             )
             self._status_indicator.setToolTip("D810 is stopped")
 

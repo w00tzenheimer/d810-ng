@@ -1,4 +1,4 @@
-"""CFGShapeCollector — microcode CFG topology metrics.
+"""CFGShapeCollector - microcode CFG topology metrics.
 
 Operates on either a live ``mba_t`` (at IDA runtime) or a ``PortableCFG``
 snapshot (for unit tests). Distinguishes the two by duck-typing: if the
@@ -14,7 +14,7 @@ from types import MappingProxyType
 
 from d810.recon.models import CandidateFlag, ReconResult
 
-# IDA maturity constants — duplicated here so this file has no IDA dependency.
+# IDA maturity constants - duplicated here so this file has no IDA dependency.
 _MMAT_CALLS = 3
 _MMAT_PREOPTIMIZED = 5
 
@@ -133,7 +133,7 @@ class CFGShapeCollector:
         - ``block_count``: total number of basic blocks
         - ``edge_count``: total number of CFG edges
         - ``max_in_degree``: maximum number of predecessors any block has
-        - ``flattening_score``: ``float`` in ``[0.0, 1.0]`` — fraction of
+        - ``flattening_score``: ``float`` in ``[0.0, 1.0]`` - fraction of
           reachable blocks dominated by the strongest hub with back-edges
 
     Candidates flagged:

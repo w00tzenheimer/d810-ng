@@ -456,7 +456,7 @@ def equal_mops_bypass_xdu(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t) -> bool:
 def equal_mops_ignore_size(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t) -> bool:
     if (lo is None) or (ro is None):
         return False
-    # Exact same SWIG object → equal
+    # Exact same SWIG object -> equal
     if lo is ro:
         return True
     # Cheap type check first
@@ -562,7 +562,7 @@ def check_ins_mop_size_are_ok(ins: ida_hexrays.minsn_t) -> bool:
     than letting an inconsistent instruction slip through).  However, for some
     micro-instructions such as *ida_hexrays.m_call* / *m_icall* the operand sizes are not
     required to match the result size  a function can legitimately take
-    1-byte, 2-byte … arguments and still return a 4-byte (or 8-byte) value.  In
+    1-byte, 2-byte ... arguments and still return a 4-byte (or 8-byte) value.  In
     that case the previous implementation rejected perfectly valid instructions
     created by the peephole optimizers and the optimiser framework would
     subsequently complain with the misleading message "Invalid original
@@ -578,7 +578,7 @@ def check_ins_mop_size_are_ok(ins: ida_hexrays.minsn_t) -> bool:
     Use it to avoid Hex-Rays decompilation errors when replacing instructions
     """
     # Calls / indirect calls: argument sizes may legitimately differ from the
-    # destination size – skip the strict size checks for them.
+    # destination size - skip the strict size checks for them.
     if ins.opcode in (ida_hexrays.m_call, ida_hexrays.m_icall, ida_hexrays.m_ret):
         return True
 
@@ -938,7 +938,7 @@ def extract_literal_from_mop(
     if mop.t == ida_hexrays.mop_n:
         return [(mop.nnn.value, mop.size)]
 
-    # ida_hexrays.m_ldc wrapper (ida_hexrays.mop_d → ida_hexrays.minsn_t(ldc …))
+    # ida_hexrays.m_ldc wrapper (ida_hexrays.mop_d -> ida_hexrays.minsn_t(ldc ...))
     if (
         mop.t == ida_hexrays.mop_d
         and mop.d is not None

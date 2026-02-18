@@ -108,7 +108,7 @@ def example_manual_capture():
         # Cleanup
         if db_path.exists():
             db_path.unlink()
-            print(f"\n✓ Cleaned up temporary database")
+            print(f"\n* Cleaned up temporary database")
 
 
 def example_pytest_usage():

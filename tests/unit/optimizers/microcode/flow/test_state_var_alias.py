@@ -3,7 +3,7 @@
 Tests the iterative fixed-point algorithm that discovers all aliases
 of a state variable by following assignment chains bidirectionally.
 
-No IDA dependency — uses synthetic VarRef/Assignment data.
+No IDA dependency - uses synthetic VarRef/Assignment data.
 """
 
 import pytest
@@ -109,7 +109,7 @@ class TestStateVarAliasExpander:
         assert aliases == frozenset([state_var])
 
     def test_single_alias(self):
-        """Simple case: state_var = reg1 → reg1 is alias."""
+        """Simple case: state_var = reg1 -> reg1 is alias."""
         state_var = VarRef("reg", 0, 8)
         reg1 = VarRef("reg", 1, 8)
         assignments = [
@@ -123,7 +123,7 @@ class TestStateVarAliasExpander:
         assert len(aliases) == 2
 
     def test_chain_alias(self):
-        """Transitive chain: state_var = reg1, reg1 = reg2 → both are aliases."""
+        """Transitive chain: state_var = reg1, reg1 = reg2 -> both are aliases."""
         state_var = VarRef("reg", 0, 8)
         reg1 = VarRef("reg", 1, 8)
         reg2 = VarRef("reg", 2, 8)
@@ -140,7 +140,7 @@ class TestStateVarAliasExpander:
         assert len(aliases) == 3
 
     def test_bidirectional_alias(self):
-        """Bidirectional: reg1 = state_var, state_var = reg1 → reg1 is alias."""
+        """Bidirectional: reg1 = state_var, state_var = reg1 -> reg1 is alias."""
         state_var = VarRef("reg", 0, 8)
         reg1 = VarRef("reg", 1, 8)
         assignments = [

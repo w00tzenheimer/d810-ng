@@ -6,7 +6,7 @@ multiple detection strategies for identifying state machine dispatcher blocks in
 control flow flattened code.
 
 Detection Strategies:
-1. High Fan-In: Blocks with ≥N predecessors (typical for dispatchers)
+1. High Fan-In: Blocks with >=N predecessors (typical for dispatchers)
 2. State Comparison: Blocks comparing a variable against large constants (>0x10000)
 3. Loop Header: Blocks that are natural loop headers (dominator-based)
 4. Predecessor Uniformity: Most predecessors are unconditional jumps
@@ -55,7 +55,7 @@ logger = getLogger("D810.dispatcher")
 class DispatcherStrategy(IntFlag):
     """Flags indicating which strategies detected a block as a dispatcher."""
     NONE = 0
-    HIGH_FAN_IN = 1 << 0           # ≥N predecessors
+    HIGH_FAN_IN = 1 << 0           # >=N predecessors
     STATE_COMPARISON = 1 << 1      # Compares against large constants
     LOOP_HEADER = 1 << 2           # Natural loop header
     PREDECESSOR_UNIFORM = 1 << 3   # Most preds are unconditional jumps

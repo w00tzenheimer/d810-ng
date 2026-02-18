@@ -418,7 +418,7 @@ Verification Example:
 --------------------
 When you define Add_HackersDelight2, Z3 automatically verifies:
 
-    ∀x,y: (x ^ y) + 2*(x & y) ≡ x + y
+    for allx,y: (x ^ y) + 2*(x & y) == x + y
 
 If the rule is incorrect, you get an error at definition time with a counterexample:
 

@@ -2,7 +2,7 @@
 
 Immutable value objects passed between ReconPhase, AnalysisPhase, and
 RuleScopeService. All public types are frozen dataclasses or NamedTuples.
-No IDA imports — this module is unit-testable without IDA.
+No IDA imports - this module is unit-testable without IDA.
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class ReconResult:
     """Per-collector, per-maturity observation result.
 
     Produced by a ``ReconCollector.collect()`` call and stored in
-    ``ReconStore``. All values are frozen — collectors must not modify
+    ``ReconStore``. All values are frozen - collectors must not modify
     results after creation.
 
     Attributes:

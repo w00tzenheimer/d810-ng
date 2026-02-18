@@ -121,16 +121,16 @@ class TestDispatcherDetectionWithRealMicrocode:
                         # SWITCH_TABLE has empty dispatchers due to early return
                         assert len(analysis.dispatchers) == 0, \
                             "SWITCH_TABLE should have empty dispatchers (early return)"
-                        print(f"      ✓ SWITCH_TABLE early-return as expected")
+                        print(f"      * SWITCH_TABLE early-return as expected")
                     elif expected_type == DispatcherType.CONDITIONAL_CHAIN:
                         assert analysis.is_conditional_chain
-                        print(f"      ✓ Detected CONDITIONAL_CHAIN at maturity {maturity}")
+                        print(f"      * Detected CONDITIONAL_CHAIN at maturity {maturity}")
                     detected_at_any_maturity = True
                     break
 
                 # For functions with no expected type, just check if dispatchers were found
                 if expected_type is None and len(analysis.dispatchers) > 0:
-                    print(f"      ✓ Found {len(analysis.dispatchers)} dispatcher(s) at maturity {maturity}")
+                    print(f"      * Found {len(analysis.dispatchers)} dispatcher(s) at maturity {maturity}")
                     detected_at_any_maturity = True
                     break
 
@@ -185,7 +185,7 @@ class TestDispatcherDetectionWithRealMicrocode:
             assert len(analysis.dispatchers) > 0, \
                 "Should detect at least one dispatcher block"
 
-            print(f"    ✓ Detected as CONDITIONAL_CHAIN with {len(analysis.dispatchers)} dispatcher(s)")
+            print(f"    * Detected as CONDITIONAL_CHAIN with {len(analysis.dispatchers)} dispatcher(s)")
 
     def test_detect_switch_table_in_ollvm_function(self, ida_setup):
         """Test SWITCH_TABLE detection in O-LLVM style dispatchers.
@@ -221,7 +221,7 @@ class TestDispatcherDetectionWithRealMicrocode:
         assert analysis.dispatcher_type == DispatcherType.SWITCH_TABLE, \
             f"dispatcher_type should be SWITCH_TABLE, got {analysis.dispatcher_type}"
 
-        print(f"    ✓ Detected as SWITCH_TABLE (O-LLVM style)")
+        print(f"    * Detected as SWITCH_TABLE (O-LLVM style)")
 
     def test_should_skip_dispatcher_with_real_blocks(self, ida_setup):
         """Test should_skip_dispatcher() integration with real dispatcher blocks.
@@ -274,7 +274,7 @@ class TestDispatcherDetectionWithRealMicrocode:
             assert result == expected_skip, \
                 f"{func_name}: should_skip_dispatcher returned {result}, expected {expected_skip}"
 
-            print(f"    ✓ should_skip_dispatcher={result} (correct)")
+            print(f"    * should_skip_dispatcher={result} (correct)")
 
 
 """

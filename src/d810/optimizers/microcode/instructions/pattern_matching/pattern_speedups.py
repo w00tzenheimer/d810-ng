@@ -200,7 +200,7 @@ class MatchBinding:
             try:
                 self.mop = MopSnapshot.from_mop(mop)
             except (AttributeError, TypeError):
-                # Mock/test object — store as-is (only non-mop_t objects reach here)
+                # Mock/test object - store as-is (only non-mop_t objects reach here)
                 self.mop = mop  # noqa: d810-no-borrowed-mop
         else:
             # Already a MopSnapshot - use ternary to satisfy ast-grep (safe pattern)

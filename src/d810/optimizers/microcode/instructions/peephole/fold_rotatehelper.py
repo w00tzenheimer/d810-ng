@@ -9,7 +9,7 @@ from d810.core import typing
 from d810.core import getLogger
 from d810.core import bits as rotate_helpers
 from d810.hexrays.hexrays_formatters import format_mop_t, opcode_to_string, sanitize_ea
-from d810.hexrays.hexrays_helpers import AND_TABLE  # already maps size→mask
+from d810.hexrays.hexrays_helpers import AND_TABLE  # already maps size->mask
 from d810.hexrays.hexrays_helpers import extract_literal_from_mop, is_rotate_helper_call
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
@@ -126,7 +126,7 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
             # args_list = call_ins.d.f.args
             args_list = extract_literal_from_mop(call_ins.d)
 
-        # Pattern C: compact helper – r is value, d is shift amount
+        # Pattern C: compact helper - r is value, d is shift amount
         elif call_ins.r is not None and call_ins.d is not None:
             # args_list = [call_ins.r, call_ins.d]
             args_list = extract_literal_from_mop(call_ins.r)

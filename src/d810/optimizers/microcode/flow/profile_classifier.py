@@ -86,8 +86,8 @@ class FlowProfile:
         ...     has_default_target=True,
         ...     max_block_successors=2,
         ... )
-        >>> # Characteristics: chain_length ≈ table_size, max_successors=2
-        >>> # → SIMPLE_COMPARE_CHAIN pattern
+        >>> # Characteristics: chain_length * table_size, max_successors=2
+        >>> # -> SIMPLE_COMPARE_CHAIN pattern
     """
 
     total_blocks: int
@@ -353,11 +353,11 @@ class FlowProfileClassifier:
         is verified independently and can be used for validation.
 
         Mapping:
-        - SIMPLE_COMPARE_CHAIN → "compare_chain_direct"
-        - NESTED_COMPARE_TREE → "symbolic_execution"
-        - SWITCH_TABLE → "switch_reconstruction"
-        - MIXED_DISPATCH → "hybrid"
-        - UNKNOWN → "conservative"
+        - SIMPLE_COMPARE_CHAIN -> "compare_chain_direct"
+        - NESTED_COMPARE_TREE -> "symbolic_execution"
+        - SWITCH_TABLE -> "switch_reconstruction"
+        - MIXED_DISPATCH -> "hybrid"
+        - UNKNOWN -> "conservative"
 
         Parameters
         ----------
@@ -411,7 +411,7 @@ class FlowProfileClassifier:
         compare_chain_length : length of longest compare chain
         state_alias_count : number of state variable aliases
         has_default : whether a default/fallthrough target exists
-        adj : adjacency dict (block_serial → successor serials)
+        adj : adjacency dict (block_serial -> successor serials)
 
         Returns
         -------

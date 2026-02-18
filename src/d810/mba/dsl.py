@@ -8,8 +8,8 @@ Example:
     >>> x, y = Var("x"), Var("y")
     >>> pattern = (x | y) - (x & y)  # Pure symbolic expression
     >>> # Can be converted to different representations by visitors:
-    >>> # - Z3VerificationVisitor → Z3 for proving
-    >>> # - IDAVisitor → AstNode for pattern matching
+    >>> # - Z3VerificationVisitor -> Z3 for proving
+    >>> # - IDAVisitor -> AstNode for pattern matching
 """
 
 from __future__ import annotations

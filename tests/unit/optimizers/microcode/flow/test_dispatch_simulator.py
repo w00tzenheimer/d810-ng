@@ -161,8 +161,8 @@ class TestSimulateHappyPath:
     """Test simulate() with valid inputs (happy path scenarios)."""
 
     def test_simple_linear_chain(self) -> None:
-        """Simulate simple linear chain: A→B→C→A."""
-        # Dispatch table: 0x42→20, 0x100→30, 0x200→10
+        """Simulate simple linear chain: A->B->C->A."""
+        # Dispatch table: 0x42->20, 0x100->30, 0x200->10
         entries = (
             CompareEntry(0x42, 20, 1),
             CompareEntry(0x100, 30, 2),
@@ -579,7 +579,7 @@ class TestLargeGraphs:
     def test_large_linear_chain(self) -> None:
         """Simulate large linear chain (50 cases)."""
         # Create chain with distinct state values: case i writes value (i*100)
-        # Dispatch table: 0→1, 100→2, 200→3, ..., 4900→50
+        # Dispatch table: 0->1, 100->2, 200->3, ..., 4900->50
         entries = tuple(CompareEntry(i * 100, i + 1, i) for i in range(50))
         table = DispatchTable(entries, default_serial=None)
         state_writes = {i: [i * 100] for i in range(50)}

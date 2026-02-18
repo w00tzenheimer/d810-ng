@@ -55,7 +55,7 @@ class TestReconStoreSaveLoad:
 
     def test_primary_key_upsert(self, store, sample_result):
         store.save_recon_result(sample_result)
-        # Save again with updated metrics — should replace
+        # Save again with updated metrics - should replace
         updated = ReconResult(
             collector_name="CFGShapeCollector",
             func_ea=0x401000,

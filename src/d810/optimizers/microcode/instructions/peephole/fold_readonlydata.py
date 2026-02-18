@@ -9,10 +9,10 @@ located in `.rdata` / `.rodata`) with an immediate load (`ldc`).
 It handles two microcode patterns Hex-Rays emits:
 
 1. Direct displacement load (array access)
-   ldx  &($sym).8, #off        ──▶  ldc  #value
+   ldx  &($sym).8, #off        ***  ldc  #value
 
 2. Direct global variable load (OLLVM opaque table reads)
-   mov  $dword_XXXX.4, tmp.4   ──▶  ldc  #value
+   mov  $dword_XXXX.4, tmp.4   ***  ldc  #value
 
 By eliminating the table look-up, we unlock many more constant-folding
 opportunities in later optimisation stages.
@@ -22,13 +22,13 @@ opportunities in later optimisation stages.
 
 Add support for indirect load through a temporary register
    mov  &($sym).8, rax.8
-   xdu  [ds:(rax.8+#off)].1 …   ──▶  ldc  #value
+   xdu  [ds:(rax.8+#off)].1 ...   ***  ldc  #value
    
 def _ea_from_indirect_load(
     self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
 ) -> Optional[int]:
     # Handle loads where base address is in a register that earlier got
-    # its value from   mov &sym → reg   inside the **same basic block**.
+    # its value from   mov &sym -> reg   inside the **same basic block**.
     # Expect operand of the form  [ reg + const ]  in DS segment.
     if ins.l.t != ida_hexrays.mop_b:
         return None
@@ -247,7 +247,7 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             # Try folding readonly globals used as plain values inside
             # expression trees (e.g., nested under mop_d). Do NOT fold top-level
             # mov of addresses (e.g., function pointers / IAT entries) into
-            # immediates – that breaks call-site rendering.
+            # immediates - that breaks call-site rendering.
             expr_folded = self._fold_readonly_operands_in_expr(ins)
             return expr_folded
 
@@ -346,7 +346,7 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                     adr_op, cnst_op = add_ins.r, add_ins.l
                 else:
                     return None
-            # adr_op is mop_a  →  resolve the inner symbol.
+            # adr_op is mop_a  ->  resolve the inner symbol.
             inner = adr_op.a
             if inner.t == ida_hexrays.mop_v:
                 base = inner.g

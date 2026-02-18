@@ -3,7 +3,7 @@
 This module provides:
 
 1. IDAPatternAdapter - Wraps a VerifiableRule for use with IDA pattern matching
-2. IDANodeVisitor - Converts SymbolicExpression → AstNode for IDA
+2. IDANodeVisitor - Converts SymbolicExpression -> AstNode for IDA
 
 All IDA-dependent code for rule execution should be in this module, keeping
 the rule definitions in d810.mba.rules pure and backend-agnostic.
@@ -312,10 +312,10 @@ class IDANodeVisitor:
 
             # Map comparison operators to IDA SET opcodes
             op_map = {
-                "ne": ida_hexrays.m_setnz,  # x != y → SETNZ(x - y)
-                "eq": ida_hexrays.m_setz,   # x == y → SETZ(x - y)
-                "lt": ida_hexrays.m_setb,   # x < y → SETB(x, y)
-                "ge": ida_hexrays.m_setae,  # x >= y → SETAE(x, y)
+                "ne": ida_hexrays.m_setnz,  # x != y -> SETNZ(x - y)
+                "eq": ida_hexrays.m_setz,   # x == y -> SETZ(x - y)
+                "lt": ida_hexrays.m_setb,   # x < y -> SETB(x, y)
+                "ge": ida_hexrays.m_setae,  # x >= y -> SETAE(x, y)
             }
 
             ida_opcode = op_map.get(constraint.op_name)
@@ -339,7 +339,7 @@ class IDANodeVisitor:
                 return AstNode(ida_opcode, left_node, right_node)
 
         if isinstance(constraint, EqualityConstraintProtocol):
-            # x == y → SETZ(x - y)
+            # x == y -> SETZ(x - y)
             left_node = self._visit_constraint_operand(constraint.left)
             right_node = self._visit_constraint_operand(constraint.right)
 

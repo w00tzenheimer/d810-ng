@@ -27,7 +27,7 @@ Example - in _negate_constant():
     new_const = AstConstant(f"neg_{node.name}", expected_value=-val)
     # ^^^ THIS IS THE PROBLEM - no mop reference!
 
-The moment you transform sub(a, b) → add(a, neg(b)) or sink a negation into a
+The moment you transform sub(a, b) -> add(a, neg(b)) or sink a negation into a
 constant, you create synthetic nodes with no connection to the original IDA
 microcode operands. Pattern matching requires mops to generate replacement
 instructions via _copy_mops_from_ast() - without them, replacement fails.
@@ -40,7 +40,7 @@ To preserve mop references through canonicalization, you'd need something like:
     class CanonicalNode:
         canonical_form: AstNode           # The transformed canonical AST
         original_node: AstNode            # Reference to original (for mop extraction)
-        operand_mapping: dict[str, AstBase]  # Map canonical leaf names → original mops
+        operand_mapping: dict[str, AstBase]  # Map canonical leaf names -> original mops
 
 This is essentially building:
 1. A **term rewriting system** (like what compilers use)
@@ -66,7 +66,7 @@ for each pattern at startup. For a pattern like (x | y) - (x & y), it generates:
 This is O(N!) in the number of commutative operands, but:
 - Most MBA rules have only 2-3 variables (manageable)
 - The cost is paid once at startup
-- Matching is still O(patterns × input_size)
+- Matching is still O(patterns * input_size)
 
 POTENTIAL FUTURE OPTIMIZATIONS (if needed)
 ==========================================

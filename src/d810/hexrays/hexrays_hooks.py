@@ -156,11 +156,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         # that EA, we have a cycle (Rule A: X->Y, Rule B: Y->X) and break it.
         self._rewrite_seen: dict[int, set[int]] = defaultdict(set)
 
-        # Optional event emitter — set by D810Manager after construction to
+        # Optional event emitter - set by D810Manager after construction to
         # allow emitting DecompilationEvent.MATURITY_CHANGED events.
         self.event_emitter = None
 
-        # Optional ReconPhase — set via configure(recon_phase=...) when recon
+        # Optional ReconPhase - set via configure(recon_phase=...) when recon
         # is enabled in the project config. None means recon is disabled (zero
         # overhead: the guard below short-circuits immediately).
         self._recon_phase = None  # ReconPhase | None
@@ -337,7 +337,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             self._active_instruction_rule_names_by_maturity.clear()
 
             # Recon: fire microcode collectors at this maturity (no-op when
-            # recon is disabled — _recon_phase is None).
+            # recon is disabled - _recon_phase is None).
             if self._recon_phase is not None:
                 try:
                     mba_ea = int(getattr(mba, "entry_ea", 0) or 0)
@@ -585,10 +585,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._pass_count = 0
         self._flow_context: FlowMaturityContext | None = None
         self._flow_context_key: tuple[int, int] | None = None
-        # Optional ReconPhase — set via configure(recon_phase=...). None means
+        # Optional ReconPhase - set via configure(recon_phase=...). None means
         # recon is disabled (zero overhead when not enabled).
         self._recon_phase = None  # ReconPhase | None
-        # Optional PassPipeline — set via configure(pass_pipeline=...). None
+        # Optional PassPipeline - set via configure(pass_pipeline=...). None
         # means the pipeline is disabled (zero overhead). When set, fires once
         # at MMAT_GLBOPT2 (after the unflattener has finished at MMAT_GLBOPT1).
         self._pass_pipeline = None  # PassPipeline | None
@@ -712,7 +712,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self._invalidate_flow_context("maturity changed")
 
             # Recon: fire microcode collectors at this maturity (no-op when
-            # _recon_phase is None — guarded for zero overhead).
+            # _recon_phase is None - guarded for zero overhead).
             if self._recon_phase is not None:
                 try:
                     mba_ea = int(getattr(mba, "entry_ea", 0) or 0)
@@ -746,7 +746,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             func_ea_hex,
                         )
                         # Mark that pipeline mutations happened. Block optimizer
-                        # rules must NOT run for the rest of this maturity —
+                        # rules must NOT run for the rest of this maturity -
                         # their mop_t pointers are now stale and would segfault.
                         self._pipeline_just_fired = True
                     else:

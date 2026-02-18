@@ -93,8 +93,8 @@ class GotoChainRemovalPass(CFGPass):
     For each such block it emits the appropriate modification for each
     predecessor:
 
-    - 1-way predecessor (block_type == 3)  → RedirectGoto
-    - 2-way predecessor (block_type == 4)  → RedirectBranch
+    - 1-way predecessor (block_type == 3)  -> RedirectGoto
+    - 2-way predecessor (block_type == 4)  -> RedirectBranch
 
     Safety guards (matching the legacy mba_remove_simple_goto_blocks()):
     - The last block (highest serial, IDA sentinel dummy) is never treated
@@ -220,8 +220,8 @@ class GotoChainRemovalPass(CFGPass):
                 continue
 
             # CRITICAL-2: For each predecessor emit the correct modification type:
-            # - 1-way predecessor (block_type == 1) → RedirectGoto
-            # - 2-way predecessor (block_type == 2) → RedirectBranch
+            # - 1-way predecessor (block_type == 1) -> RedirectGoto
+            # - 2-way predecessor (block_type == 2) -> RedirectBranch
             for pred_serial in blk.preds:
                 pred_blk = cfg.blocks.get(pred_serial)
                 if pred_blk is None:
@@ -236,7 +236,7 @@ class GotoChainRemovalPass(CFGPass):
                         )
                     )
                 else:
-                    # 1-way (and any other type) → RedirectGoto
+                    # 1-way (and any other type) -> RedirectGoto
                     mods.append(
                         RedirectGoto(
                             from_serial=pred_serial,

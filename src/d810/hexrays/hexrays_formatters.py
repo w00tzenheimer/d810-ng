@@ -242,16 +242,16 @@ class MopTreeLogger:
             result = f"{indent}{desc}\n"
             last_idx = len(children) - 1
             indents = (
-                {"├": "├─ ", "│": "│  ", "└": "└─ ", " ": "   "}
+                {"*": "** ", "*": "*  ", "*": "** ", " ": "   "}
                 if self.unicode
-                else {"├": "|- ", "│": "|  ", "└": "`- ", " ": "   "}
+                else {"*": "|- ", "*": "|  ", "*": "`- ", " ": "   "}
             )
             for i, (name, child) in enumerate(children):
                 if i < last_idx:
-                    c_indent = child_indent + indents["├"]
-                    cc_indent = child_indent + indents["│"]
+                    c_indent = child_indent + indents["*"]
+                    cc_indent = child_indent + indents["*"]
                 else:
-                    c_indent = child_indent + indents["└"]
+                    c_indent = child_indent + indents["*"]
                     cc_indent = child_indent + indents[" "]
                 # Show the field name for clarity
                 result += f"{c_indent}[{name}]\n"

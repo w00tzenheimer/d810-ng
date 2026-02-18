@@ -1,9 +1,9 @@
 """IDA-specific CFGBackend implementation.
 
 Wraps existing IDA infrastructure:
-- lift() → Phase 3's lift(mba) from portable_cfg
-- lower() → translates GraphModification → DeferredGraphModifier queue calls
-- verify() → calls safe_verify(mba)
+- lift() -> Phase 3's lift(mba) from portable_cfg
+- lower() -> translates GraphModification -> DeferredGraphModifier queue calls
+- verify() -> calls safe_verify(mba)
 """
 from __future__ import annotations
 
@@ -65,12 +65,12 @@ class IDABackend:
 
         Maps each GraphModification type to the corresponding DeferredGraphModifier
         queue method:
-        - RedirectGoto   → queue_goto_change (1-way blocks)
-        - RedirectBranch → queue_conditional_target_change (2-way conditional blocks)
-        - ConvertToGoto  → queue_convert_to_goto
-        - InsertBlock    → queue_create_and_redirect
-        - RemoveEdge     → (not yet implemented, logs warning and skips)
-        - NopInstructions → queue_insn_nop
+        - RedirectGoto   -> queue_goto_change (1-way blocks)
+        - RedirectBranch -> queue_conditional_target_change (2-way conditional blocks)
+        - ConvertToGoto  -> queue_convert_to_goto
+        - InsertBlock    -> queue_create_and_redirect
+        - RemoveEdge     -> (not yet implemented, logs warning and skips)
+        - NopInstructions -> queue_insn_nop
 
         Args:
             modifications: List of modification intents to apply.
@@ -96,12 +96,12 @@ class IDABackend:
         for mod in modifications:
             match mod:
                 case RedirectGoto(from_serial=src, old_target=old, new_target=new):
-                    # Map to BLOCK_GOTO_CHANGE — redirect edge in a 1-way block
-                    modifier.queue_goto_change(src, new, description=f"redirect goto {src}: {old}→{new}")
+                    # Map to BLOCK_GOTO_CHANGE - redirect edge in a 1-way block
+                    modifier.queue_goto_change(src, new, description=f"redirect goto {src}: {old}->{new}")
 
                 case RedirectBranch(from_serial=src, old_target=old, new_target=new):
-                    # Map to BLOCK_TARGET_CHANGE — redirect one branch of a 2-way block
-                    modifier.queue_conditional_target_change(src, new, description=f"redirect branch {src}: {old}→{new}")
+                    # Map to BLOCK_TARGET_CHANGE - redirect one branch of a 2-way block
+                    modifier.queue_conditional_target_change(src, new, description=f"redirect branch {src}: {old}->{new}")
 
                 case ConvertToGoto(block_serial=serial, goto_target=target):
                     # Map to BLOCK_CONVERT_TO_GOTO
@@ -112,9 +112,9 @@ class IDABackend:
                     # Note: DeferredGraphModifier expects a list of minsn_t, but InsertBlock
                     # has InsnSnapshot tuples. We need to convert them.
                     # For now, we log a warning and skip this modification type.
-                    # TODO: Implement InsnSnapshot → minsn_t conversion
+                    # TODO: Implement InsnSnapshot -> minsn_t conversion
                     logger.warning(
-                        "InsertBlock(%d→%d) requires InsnSnapshot→minsn_t conversion (not yet implemented), skipping",
+                        "InsertBlock(%d->%d) requires InsnSnapshot->minsn_t conversion (not yet implemented), skipping",
                         pred, succ,
                     )
                     continue
@@ -122,13 +122,13 @@ class IDABackend:
                 case RemoveEdge(from_serial=src, to_serial=dst):
                     # RemoveEdge not yet in DeferredGraphModifier
                     logger.warning(
-                        "RemoveEdge(%d→%d) not implemented in DeferredGraphModifier, skipping",
+                        "RemoveEdge(%d->%d) not implemented in DeferredGraphModifier, skipping",
                         src, dst,
                     )
                     continue
 
                 case NopInstructions(block_serial=serial, insn_eas=eas):
-                    # Map to INSN_NOP — queue_insn_nop processes one EA at a time
+                    # Map to INSN_NOP - queue_insn_nop processes one EA at a time
                     for ea in eas:
                         modifier.queue_insn_nop(serial, ea, description=f"nop {hex(ea)} in block {serial}")
 
@@ -141,7 +141,7 @@ class IDABackend:
 
         # If verify failed (even after rollback attempt), signal the pipeline
         # to stop by returning 0. A positive result with verify_failed=True
-        # means rollback also failed — the MBA may be corrupted.
+        # means rollback also failed - the MBA may be corrupted.
         if modifier.verify_failed:
             logger.warning(
                 "DeferredGraphModifier.verify_failed is set after apply; "

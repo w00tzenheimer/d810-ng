@@ -265,7 +265,7 @@ class D810Manager:
             self.block_optimizer.add_rule(cfg_rule)
 
         # Build PassPipeline when feature flag is enabled (default OFF).
-        # Zero overhead when disabled — no imports of pass modules occur.
+        # Zero overhead when disabled - no imports of pass modules occur.
         _pass_pipeline = None
         if self.config.get("enable_pass_pipeline", False):
             _pass_pipeline = self._build_pass_pipeline()
@@ -570,9 +570,9 @@ class D810Manager:
         disabled (zero overhead guarantee).
 
         The following passes are included:
-        - SimplifyIdenticalBranchPass: 2-way blocks with identical targets → goto
+        - SimplifyIdenticalBranchPass: 2-way blocks with identical targets -> goto
           (emits ConvertToGoto / RedirectBranch, handled correctly by deferred modifier)
-        - GotoChainRemovalPass: consecutive goto chains → direct target
+        - GotoChainRemovalPass: consecutive goto chains -> direct target
           (emits RedirectGoto / RedirectBranch, handled correctly by deferred modifier)
 
         The following passes are intentionally excluded at MMAT_GLBOPT2:
@@ -580,10 +580,10 @@ class D810Manager:
           make_nop() removes the goto but does not update block type or edges, so
           mba.verify(True) rejects the inconsistent state at MMAT_GLBOPT2.
           The legacy equivalent (BlockMerger) only runs at MMAT_CALLS/MMAT_GLBOPT1.
-        - BlockMergePass: same reason — emits NopInstructions on trailing gotos,
+        - BlockMergePass: same reason - emits NopInstructions on trailing gotos,
           which leaves dangling edges that fail verification at MMAT_GLBOPT2.
 
-        OpaqueJumpFixerPass and FakeJumpFixerPass are also excluded —
+        OpaqueJumpFixerPass and FakeJumpFixerPass are also excluded -
         they require pre-computed fix dicts from the legacy analysis side.
 
         Returns:
@@ -610,7 +610,7 @@ class D810Manager:
         """Construct a ReconPhase with all 4 collectors.
 
         Only called when config["enable_recon_pipeline"] is True (the default).
-        Imports are guarded at module level — if the recon package is unavailable
+        Imports are guarded at module level - if the recon package is unavailable
         this returns None and the plugin loads normally.
 
         Returns:

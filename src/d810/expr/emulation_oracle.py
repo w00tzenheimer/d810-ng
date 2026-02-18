@@ -536,11 +536,11 @@ class EmulationOracle:
                 for c in constraints:
                     self._triton.pushPathConstraint(c)
 
-            # Check validity: condition is valid iff ¬condition is unsat
+            # Check validity: condition is valid iff ~condition is unsat
             neg_cond = self._triton.getAstContext().lnot(condition_ast)
 
             if not self._triton.isSat(neg_cond):
-                # ¬condition is unsat → condition is always true
+                # ~condition is unsat -> condition is always true
                 return (True, {})
 
             # Check if condition is unsat

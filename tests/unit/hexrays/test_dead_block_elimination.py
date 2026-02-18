@@ -67,7 +67,7 @@ class TestDeadBlockEliminationPass:
             serial=2, block_type=2, succs=(),preds=(),
             flags=0, start_ea=0x2000, insn_snapshots=(insn2, insn3)
         )
-        # Sentinel block at highest serial — represents IDA's mba.qty-1 dummy block
+        # Sentinel block at highest serial - represents IDA's mba.qty-1 dummy block
         blk3_sentinel = BlockSnapshot(
             serial=3, block_type=2, succs=(),preds=(),
             flags=0, start_ea=0x3000, insn_snapshots=()
@@ -310,7 +310,7 @@ class TestDeadBlockEliminationPass:
             serial=2, block_type=2, succs=(),preds=(),
             flags=0, start_ea=0x2000, insn_snapshots=(insn2,)
         )
-        # Sentinel block 3 (highest serial) — unreachable but must NOT be removed
+        # Sentinel block 3 (highest serial) - unreachable but must NOT be removed
         insn3 = InsnSnapshot(opcode=0x03, ea=0x3000, operands=())
         blk3_sentinel = BlockSnapshot(
             serial=3, block_type=2, succs=(),preds=(),
@@ -343,7 +343,7 @@ class TestDeadBlockEliminationPass:
             serial=1, block_type=2, succs=(),preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
-        # Sentinel block 2 is unreachable and has instructions — still protected
+        # Sentinel block 2 is unreachable and has instructions - still protected
         insn2 = InsnSnapshot(opcode=0x02, ea=0x2000, operands=())
         blk2_sentinel = BlockSnapshot(
             serial=2, block_type=2, succs=(),preds=(),
@@ -357,7 +357,7 @@ class TestDeadBlockEliminationPass:
         pass_instance = DeadBlockEliminationPass()
         mods = pass_instance.transform(cfg)
 
-        # No modifications — block 2 is the last dummy and must not be touched
+        # No modifications - block 2 is the last dummy and must not be touched
         assert mods == []
 
     def test_last_dummy_block_protection_uses_max_serial(self):
@@ -371,7 +371,7 @@ class TestDeadBlockEliminationPass:
             serial=1, block_type=2, succs=(),preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
-        # Block at serial 50 is the highest — treated as sentinel
+        # Block at serial 50 is the highest - treated as sentinel
         insn50 = InsnSnapshot(opcode=0x50, ea=0x5000, operands=())
         blk50_sentinel = BlockSnapshot(
             serial=50, block_type=2, succs=(),preds=(),

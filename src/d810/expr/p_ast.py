@@ -689,7 +689,7 @@ class AstNode(AstBase):
                         self.left,
                         self.right,
                     )
-                # Unknown runtime value – treat as 0 to let constant evaluation proceed.
+                # Unknown runtime value - treat as 0 to let constant evaluation proceed.
                 return 0 & res_mask
             case _:
                 raise AstEvaluationException(
@@ -1306,7 +1306,7 @@ class AstProxy(AstBase):
         try:
             val = super().__getattribute__(name)
         except AttributeError:
-            # Attribute not present on proxy → delegate unconditionally.
+            # Attribute not present on proxy -> delegate unconditionally.
             return getattr(super().__getattribute__("_target"), name)
 
         # If the proxy's value is a meaningless placeholder (None) but the
@@ -1386,7 +1386,7 @@ class AstProxy(AstBase):
     # attribute defined in AstBase (value = None) and never triggers
     # __getattr__, so evaluators see a leaf with no mop.
 
-    # ‑-- Mop -------------------------------------------------------------
+    # --- Mop -------------------------------------------------------------
     @property
     def mop(self):  # type: ignore[override]
         return self._target.mop
@@ -1451,7 +1451,7 @@ def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
     # Hex-Rays assigns a new SSA value number (valnum) every time an operand is
     # produced, even when it represents the *same* memory/register location.
     # Including valnum in the cache key therefore forces the AST builder to
-    # create a distinct AstLeaf for each SSA instance (x_0, x_6, …), which
+    # create a distinct AstLeaf for each SSA instance (x_0, x_6, ...), which
     # breaks pattern rules that expect a single variable.
 
     # We drop valnum from the key for all operand kinds except plain numeric

@@ -248,7 +248,7 @@ class CstSimplificationRule10(VerifiableRule):
     PATTERN = (x & c_1) - (x & c_2)
     REPLACEMENT = -(x & c_and)
 
-    DESCRIPTION = "Simplify (x & c1) - (x & c2) to -(x & (~c1 & c2)) when c1 ⊆ c2"
+    DESCRIPTION = "Simplify (x & c1) - (x & c2) to -(x & (~c1 & c2)) when c1 * c2"
     REFERENCE = "AND subtraction folding"
 
 
@@ -653,7 +653,7 @@ Previously marked invalid (now re-enabled):
   with constraints c_2_1 == ~c_2_2 and c_res == (((c_1_1 ^ c_1_2) & c_2_1) ^ c_1_2).
   The complementary mask constraint makes the identity valid. Re-enabled.
 
-All 22 migrated rules are Z3-verified ✓
+All 22 migrated rules are Z3-verified *
 
 Code metrics:
 - Original: ~642 lines with imperative patterns

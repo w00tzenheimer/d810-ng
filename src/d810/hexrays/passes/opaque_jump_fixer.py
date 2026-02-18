@@ -9,7 +9,7 @@ This pass handles the **structural** CFG transformation: converting 2-way condit
 blocks to 1-way unconditional gotos when the condition is provably opaque.
 
 Two modes:
-1. **Pre-computed fixes**: Pass a dict mapping block_serial → correct_target_serial.
+1. **Pre-computed fixes**: Pass a dict mapping block_serial -> correct_target_serial.
    The pass emits ConvertToGoto for each entry.
 2. **Structural detection** (future): Detect constant-foldable conditions on PortableCFG.
 
@@ -85,7 +85,7 @@ class OpaqueJumpFixerPass(CFGPass):
     tags = frozenset({"deobfuscation", "jump"})
 
     def __init__(self, fixes: dict[int, int] | None = None):
-        """Initialize with pre-computed fixes mapping block_serial → correct target.
+        """Initialize with pre-computed fixes mapping block_serial -> correct target.
 
         Args:
             fixes: Mapping from block serial to target serial. When a 2-way

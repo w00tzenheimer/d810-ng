@@ -305,8 +305,8 @@ class JnzRuleModIdentity(JumpOptimizationRule):
     def check_candidate(self, opcode, left_candidate, right_candidate):
         # x*(x+1) % 2 == 0 is ALWAYS true (left operand always equals right operand 0).
         # Condition: left == right is TRUE
-        # - m_jnz (jump if NOT equal): condition FALSE → jump NOT taken → fallthrough (direct_block_serial)
-        # - m_jz (jump if equal): condition TRUE → jump taken → go to jump_original_block_serial
+        # - m_jnz (jump if NOT equal): condition FALSE -> jump NOT taken -> fallthrough (direct_block_serial)
+        # - m_jz (jump if equal): condition TRUE -> jump taken -> go to jump_original_block_serial
         if opcode == ida_hexrays.m_jnz:
             self.jump_replacement_block_serial = self.direct_block_serial
         else:

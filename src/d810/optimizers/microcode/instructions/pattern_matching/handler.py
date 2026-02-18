@@ -16,7 +16,7 @@ from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
 )
 
-# Pattern engine dispatcher (PR1) — normalized Cython/Python gate
+# Pattern engine dispatcher (PR1) - normalized Cython/Python gate
 from d810.optimizers.microcode.instructions.pattern_matching.engine import (
     BindingsProxy,
     MatchBindings,

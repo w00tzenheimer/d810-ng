@@ -248,7 +248,7 @@ Rule breakdown:
   - Lambda SUB_TABLE check: 1 rule
   - DynamicConst: 5 rules (for generating -1 constants)
 
-All 10 rules are Z3-verified ✓
+All 10 rules are Z3-verified *
 
 Code metrics:
 - Original: ~214 lines with imperative patterns

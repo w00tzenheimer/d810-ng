@@ -29,7 +29,7 @@ VarKind = Literal["reg", "stack", "temp"]
 class VarRef:
     """Abstract reference to a variable (register, stack slot, or temp).
 
-    This is a portable representation — no IDA dependency. Enables unit
+    This is a portable representation - no IDA dependency. Enables unit
     testing the alias expansion algorithm without IDA runtime.
 
     Attributes:
@@ -109,10 +109,10 @@ class StateVarAliasExpander:
     4. Repeats until no new aliases are found (fixed point reached)
 
     The algorithm handles:
-    - Simple copies: state_var = reg1 → reg1 is alias
-    - Chains: state_var = reg1, reg1 = reg2 → reg1, reg2 are aliases
-    - Bidirectional: reg1 = state_var, state_var = reg1 → reg1 is alias
-    - Memory-backed: state_var = stack_slot → stack_slot is alias
+    - Simple copies: state_var = reg1 -> reg1 is alias
+    - Chains: state_var = reg1, reg1 = reg2 -> reg1, reg2 are aliases
+    - Bidirectional: reg1 = state_var, state_var = reg1 -> reg1 is alias
+    - Memory-backed: state_var = stack_slot -> stack_slot is alias
 
     Example:
         >>> assignments = [
@@ -207,7 +207,7 @@ class StateVarAliasExpander:
 
         Returns
         -------
-        dict mapping block_serial → list of constant values written to
+        dict mapping block_serial -> list of constant values written to
         state variable aliases in that block
 
         Examples
@@ -231,7 +231,7 @@ class StateVarAliasExpander:
         >>> writes = StateVarAliasExpander.get_state_writes(assignments, aliases)
         >>> assert sorted(writes[5]) == [0x42, 0x100]
         """
-        # Map block_serial → list of constant values
+        # Map block_serial -> list of constant values
         state_writes: dict[int, list[int]] = {}
 
         for assignment in assignments:

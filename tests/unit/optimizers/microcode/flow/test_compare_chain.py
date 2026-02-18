@@ -235,7 +235,7 @@ class TestCompareChainResolver:
             assert mapping[expected_const] == expected_target
 
     def test_no_state_related_comparisons(self) -> None:
-        """All comparisons involve non-state variables → empty table."""
+        """All comparisons involve non-state variables -> empty table."""
         state_var = VarRef("reg", 0, 8)
         other_var1 = VarRef("reg", 1, 8)
         other_var2 = VarRef("reg", 2, 8)

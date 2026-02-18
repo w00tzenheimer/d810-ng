@@ -672,7 +672,7 @@ class SwitchInfo:
 
 class switch_state_collector_t(ida_hexrays.minsn_visitor_t):
     """
-    1) Records all m_xdu instructions (var → reg)
+    1) Records all m_xdu instructions (var -> reg)
     2) On m_jtbl, finds which reg is the index, then looks up any prior xdu to map
        that reg back to the original var.
     """
@@ -686,7 +686,7 @@ class switch_state_collector_t(ida_hexrays.minsn_visitor_t):
         ins = self.curins
 
         if ins.opcode == ida_hexrays.m_xdu:
-            # record dest_reg ← src_var
+            # record dest_reg * src_var
             self.xdu_map.append(MicroInstruction(ins))
 
         elif ins.opcode == ida_hexrays.m_jtbl:
@@ -1261,7 +1261,7 @@ class cf_flatten_info_t:
         # mba.for_all_topinsns(jzm)
 
         # Once we've found the "comparison" variable (op_max), also pull in
-        # the jump-table's own mapping of keys → blocks.
+        # the jump-table's own mapping of keys -> blocks.
         # for swi in switch_tbl_collector.switches:
         #     # only use the jump-table whose state_var matches our op_max
         #     if swi.state_var and swi.state_var.equal_mops(

@@ -227,8 +227,8 @@ Known incorrect rules (marked as "This is false" in original):
 These rules are included for test parity with main branch but are
 automatically skipped during Z3 verification due to KNOWN_INCORRECT flag.
 
-The 4 correct rules are Z3-verified ✓
-The 2 incorrect rules are properly marked and skipped ✓
+The 4 correct rules are Z3-verified *
+The 2 incorrect rules are properly marked and skipped *
 
 Code metrics:
 - Original: ~185 lines with imperative patterns

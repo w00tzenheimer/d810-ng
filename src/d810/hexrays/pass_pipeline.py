@@ -52,7 +52,7 @@ class PassPipeline:
 
             if not self.backend.verify(backend_state):
                 logger.warning("Pass %s failed verification, aborting pipeline", pass_.name)
-                break  # Stop all further passes — MBA may be corrupted
+                break  # Stop all further passes - MBA may be corrupted
 
             # Re-lift only when changes were applied successfully
             cfg = self.backend.lift(backend_state)

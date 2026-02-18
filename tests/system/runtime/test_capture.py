@@ -829,7 +829,7 @@ def main():
                     f"{run['timestamp']:<20} "
                     f"{run['test_suite']:<30} "
                     f"{run['function_name']:<30} "
-                    f"{'✓' if run['passed'] else '✗':<7} "
+                    f"{'*' if run['passed'] else 'x':<7} "
                     f"{run['test_duration']:.3f}s" if run['test_duration'] else ""
                 )
 

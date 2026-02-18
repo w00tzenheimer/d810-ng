@@ -219,16 +219,16 @@ class TestMixedDispatcherPattern:
 
         Expected behavior:
         - (10, 20): result=30, +10=40, result>100? NO, state=0x9ABCDEF0,
-                    -1=39, 39<50? YES, exit → 39
+                    -1=39, 39<50? YES, exit -> 39
 
         - (5, 5): result=10, +10=20, result>100? NO, state=0x9ABCDEF0,
-                  -1=19, 19<50? YES, exit → 19
+                  -1=19, 19<50? YES, exit -> 19
 
         - (0, 0): result=0, +10=10, result>100? NO, state=0x9ABCDEF0,
-                  -1=9, 9<50? YES, exit → 9
+                  -1=9, 9<50? YES, exit -> 9
 
         - (20, 20): result=40, +10=50, result>100? NO, state=0x9ABCDEF0,
-                    -1=49, 49<50? YES, exit → 49
+                    -1=49, 49<50? YES, exit -> 49
 
         Note: Inputs where (x+y+10) > 100 will enter the "heavy" path and may
         loop many times or infinitely depending on the specific values.

@@ -436,7 +436,7 @@ class PyUnitUiMixin(object):
         # Some third-party code (or the standard library itself when
         # `logging.basicConfig(stream=sys.stdout...` was invoked while the
         # tests were running) may have created new `logging.StreamHandler`
-        # instances bound to the *current* value of ``sys.stdout`` – i.e. the
+        # instances bound to the *current* value of ``sys.stdout`` - i.e. the
         # temporary `UiStream` (which is what we use to display the logs for the test).
         #
         # When we restore the original `sys.stdout`/`sys.stderr` above, those
@@ -505,7 +505,7 @@ class PyUnitTestRunnerWrapper(runner.TextTestRunner):
         self._partial_mode = partial_mode
 
         # Call the parent constructor without explicitly passing our custom
-        # ``resultclass``.  This avoids mypy’s type-checking complaint that
+        # ``resultclass``.  This avoids mypy's type-checking complaint that
         # ``PyUnitTestResult`` expects a ``UiStream`` rather than a ``TextIO``.
         super().__init__(
             stream=self.stream,

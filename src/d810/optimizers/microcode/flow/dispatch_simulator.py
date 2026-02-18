@@ -2,7 +2,7 @@
 
 This module implements the final Phase 2 algorithm: combining dispatch tables
 (Phase 2.3) with case block state writes (Phase 2.2) to produce a complete
-transition graph — the recovered CFG edges.
+transition graph - the recovered CFG edges.
 
 The DispatchSimulator simulates state machine transitions by following the
 logic: "When case block A writes state value V, the dispatcher routes to
@@ -12,7 +12,7 @@ Key insight from cadecff integration:
     State machine transitions = case writes + dispatch table lookups
         Case block A: state = 0x100
         Dispatcher: if (state == 0x100) goto case_B
-        → Transition: A → B
+        -> Transition: A -> B
 
 Usage:
     from d810.optimizers.microcode.flow.compare_chain import DispatchTable
@@ -83,7 +83,7 @@ class CaseTransition:
     def __repr__(self) -> str:
         """Return a human-readable representation with hex formatting."""
         return (
-            f"CaseTransition(blk={self.from_serial} → blk={self.to_serial}, "
+            f"CaseTransition(blk={self.from_serial} -> blk={self.to_serial}, "
             f"via 0x{self.assigned_value:x})"
         )
 
@@ -96,7 +96,7 @@ class TransitionGraph:
     plus any unresolved transitions (state writes with no dispatch target).
 
     Attributes:
-        transitions: All resolved transitions (from → to via value)
+        transitions: All resolved transitions (from -> to via value)
         unresolved: State writes that couldn't be resolved to a target
                    (from_serial, assigned_value) pairs
 
@@ -122,7 +122,7 @@ class TransitionGraph:
         """Return adjacency dictionary representation.
 
         Returns:
-            Dictionary mapping from_serial → set of to_serials.
+            Dictionary mapping from_serial -> set of to_serials.
             Only includes resolved transitions.
 
         Examples:
@@ -164,7 +164,7 @@ class TransitionGraph:
         ... )
         >>> graph = TransitionGraph(transitions, ())
         >>> graph.for_case(10)  # doctest: +ELLIPSIS
-        (CaseTransition(blk=10 → blk=20, via 0x42), CaseTransition(blk=10 → blk=30, via 0x100))
+        (CaseTransition(blk=10 -> blk=20, via 0x42), CaseTransition(blk=10 -> blk=30, via 0x100))
         """
         return tuple(t for t in self.transitions if t.from_serial == serial)
 
@@ -177,7 +177,7 @@ class DispatchSimulator:
     """Simulate state machine transitions through dispatch table lookups.
 
     This service combines dispatch tables (Phase 2.3) with case block state
-    writes (Phase 2.2) to produce the complete transition graph — the recovered
+    writes (Phase 2.2) to produce the complete transition graph - the recovered
     CFG edges between case blocks.
 
     All methods are static (no instance state required).
@@ -186,14 +186,14 @@ class DispatchSimulator:
         For each case block:
             For each state value it writes:
                 Look up target in dispatch table
-                If found → create transition
-                If not found → add to unresolved
+                If found -> create transition
+                If not found -> add to unresolved
 
     Example:
         >>> from d810.optimizers.microcode.flow.compare_chain import (
         ...     DispatchTable, CompareEntry
         ... )
-        >>> # Dispatch table: 0x42 → case 20, 0x100 → case 30
+        >>> # Dispatch table: 0x42 -> case 20, 0x100 -> case 30
         >>> entries = (CompareEntry(0x42, 20, 1), CompareEntry(0x100, 30, 2))
         >>> table = DispatchTable(entries, default_serial=99)
         >>> # Case 10 writes 0x42 and 0x100
@@ -221,7 +221,7 @@ class DispatchSimulator:
         ----------
         dispatch_table : DispatchTable from Phase 2.3
             Maps state values to target case blocks
-        state_writes : dict mapping case serial → list of state values
+        state_writes : dict mapping case serial -> list of state values
             State variable assignments from Phase 2.2
         case_blocks : set of case block serials to simulate
             Usually all non-dispatcher blocks in the function

@@ -125,7 +125,7 @@ class TestBuildPassPipeline:
 
 
 # ---------------------------------------------------------------------------
-# Tests: feature flag OFF — zero overhead
+# Tests: feature flag OFF - zero overhead
 # ---------------------------------------------------------------------------
 
 
@@ -266,7 +266,7 @@ class TestBlockOptimizerManagerPipelineIntegration:
         )
 
     def test_glbopt_does_not_run_pipeline(self):
-        """glbopt() must NOT reference pass_pipeline — pipeline moved to BlockOptimizerManager."""
+        """glbopt() must NOT reference pass_pipeline - pipeline moved to BlockOptimizerManager."""
         src = self._read_hook_source()
         # Extract only the glbopt method body
         glbopt_start = src.find("    def glbopt(")
@@ -275,7 +275,7 @@ class TestBlockOptimizerManagerPipelineIntegration:
         next_method = src.find("\n    def ", glbopt_start + 1)
         glbopt_body = src[glbopt_start:next_method] if next_method != -1 else src[glbopt_start:]
         assert "pass_pipeline" not in glbopt_body, (
-            "glbopt() must NOT reference pass_pipeline — pipeline runs in BlockOptimizerManager"
+            "glbopt() must NOT reference pass_pipeline - pipeline runs in BlockOptimizerManager"
         )
 
     def test_hexrays_hook_init_does_not_accept_pass_pipeline(self):
@@ -291,6 +291,6 @@ class TestBlockOptimizerManagerPipelineIntegration:
         init_end = src.find("        super().__init__()", init_start)
         init_signature = src[init_start:init_end]
         assert "pass_pipeline" not in init_signature, (
-            "HexraysDecompilationHook.__init__ must NOT declare pass_pipeline — "
+            "HexraysDecompilationHook.__init__ must NOT declare pass_pipeline - "
             "pipeline ownership moved to BlockOptimizerManager"
         )

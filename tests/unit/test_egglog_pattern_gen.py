@@ -142,8 +142,8 @@ def test_or_mba_rule_1_pattern_generation():
 
     assert (
         egraph.check(eq(base).to(commuted)) is None
-    ), f"\n✗ FAILED: Could not verify equivalence!"
-    print("\n✓ VERIFIED: (x & y) + (x ^ y) ≡ (x ^ y) + (x & y)")
+    ), f"\nx FAILED: Could not verify equivalence!"
+    print("\n* VERIFIED: (x & y) + (x ^ y) == (x ^ y) + (x & y)")
 
 
 def test_nested_commutativity():
@@ -169,8 +169,8 @@ def test_nested_commutativity():
 
     assert (
         egraph.check(eq(base).to(nested_commuted)) is None
-    ), f"\n✗ FAILED: Could not verify equivalence!"
-    print("✓ VERIFIED: (x & y) + (x ^ y) ≡ (y & x) + (x ^ y)")
+    ), f"\nx FAILED: Could not verify equivalence!"
+    print("* VERIFIED: (x & y) + (x ^ y) == (y & x) + (x ^ y)")
 
 
 def test_full_permutation():
@@ -196,8 +196,8 @@ def test_full_permutation():
 
     assert (
         egraph.check(eq(base).to(fully_permuted)) is None
-    ), f"\n✗ FAILED: Could not verify equivalence!"
-    print("✓ VERIFIED: (x & y) + (x ^ y) ≡ (y ^ x) + (y & x)")
+    ), f"\nx FAILED: Could not verify equivalence!"
+    print("* VERIFIED: (x & y) + (x ^ y) == (y ^ x) + (y & x)")
 
 
 def test_xor_not_equivalence():
@@ -245,8 +245,8 @@ def test_xor_not_equivalence():
 
     assert (
         egraph.check(eq(form1).to(form2)) is None
-    ), f"\n✗ FAILED: Could not verify x ^ ~y ≡ ~(x ^ y)!"
-    print("✓ VERIFIED: x ^ ~y ≡ ~(x ^ y)")
+    ), f"\nx FAILED: Could not verify x ^ ~y == ~(x ^ y)!"
+    print("* VERIFIED: x ^ ~y == ~(x ^ y)")
 
 
 def test_xor_not_equivalence_from_module():
@@ -269,8 +269,8 @@ def test_xor_not_equivalence_from_module():
     form2 = ~(x ^ y)
 
     result = verify_pattern_equivalence(form1, form2)
-    assert result, f"\n✗ FAILED: verify_pattern_equivalence returned False for x ^ ~y ≡ ~(x ^ y)"
-    print("✓ VERIFIED: verify_pattern_equivalence(x ^ ~y, ~(x ^ y)) == True")
+    assert result, f"\nx FAILED: verify_pattern_equivalence returned False for x ^ ~y == ~(x ^ y)"
+    print("* VERIFIED: verify_pattern_equivalence(x ^ ~y, ~(x ^ y)) == True")
 
 
 if __name__ == "__main__":
@@ -296,5 +296,5 @@ if __name__ == "__main__":
     print(f"\nTotal: {passed}/{len(results)} tests passed")
 
     if passed == len(results):
-        print("\n✓ Egglog can generate equivalent pattern variants!")
+        print("\n* Egglog can generate equivalent pattern variants!")
         print("  This approach can replace manual *_Commuted rule definitions.")
