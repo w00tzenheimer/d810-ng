@@ -563,7 +563,7 @@ class D810Manager:
         self.hx_decompiler_hook.hook()
 
     def _build_pass_pipeline(self):
-        """Construct a PassPipeline with the 4 cleanup CFGPasses.
+        """Construct a PassPipeline with the 2 safe cleanup CFGPasses for MMAT_GLBOPT2.
 
         Only called when config["enable_pass_pipeline"] is True. Imports are
         deferred here so that pass modules are never loaded when the flag is
@@ -571,29 +571,33 @@ class D810Manager:
 
         The following passes are included:
         - SimplifyIdenticalBranchPass: 2-way blocks with identical targets → goto
-        - DeadBlockEliminationPass: unreachable blocks → nop
+          (emits ConvertToGoto / RedirectBranch, handled correctly by deferred modifier)
         - GotoChainRemovalPass: consecutive goto chains → direct target
-        - BlockMergePass: single-succ/single-pred pairs → nop trailing goto
+          (emits RedirectGoto / RedirectBranch, handled correctly by deferred modifier)
 
-        OpaqueJumpFixerPass and FakeJumpFixerPass are intentionally excluded —
+        The following passes are intentionally excluded at MMAT_GLBOPT2:
+        - DeadBlockEliminationPass: emits NopInstructions which calls blk.make_nop().
+          make_nop() removes the goto but does not update block type or edges, so
+          mba.verify(True) rejects the inconsistent state at MMAT_GLBOPT2.
+          The legacy equivalent (BlockMerger) only runs at MMAT_CALLS/MMAT_GLBOPT1.
+        - BlockMergePass: same reason — emits NopInstructions on trailing gotos,
+          which leaves dangling edges that fail verification at MMAT_GLBOPT2.
+
+        OpaqueJumpFixerPass and FakeJumpFixerPass are also excluded —
         they require pre-computed fix dicts from the legacy analysis side.
 
         Returns:
-            PassPipeline instance with IDABackend and the 4 cleanup passes.
+            PassPipeline instance with IDABackend and the 2 safe cleanup passes.
         """
         from d810.hexrays.backends.ida_backend import IDABackend
         from d810.hexrays.pass_pipeline import PassPipeline
         from d810.hexrays.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
-        from d810.hexrays.passes.dead_block_elimination import DeadBlockEliminationPass
         from d810.hexrays.passes.goto_chain_removal import GotoChainRemovalPass
-        from d810.hexrays.passes.block_merge import BlockMergePass
 
         backend = IDABackend()
         passes = [
             SimplifyIdenticalBranchPass(),
-            DeadBlockEliminationPass(),
             GotoChainRemovalPass(),
-            BlockMergePass(),
         ]
         pipeline = PassPipeline(backend, passes)
         logger.info(

@@ -9,7 +9,7 @@ IDA's optimizer can merge the two blocks.
 
 Algorithm:
 1. For each block B:
-   - Check B is BLT_1WAY (block_type == 1)
+   - Check B is BLT_1WAY (block_type == 3)
    - Check B has exactly one successor S
    - Check B is not a self-loop (B != S)
    - Check B's tail instruction is m_goto (opcode == 55 / 0x37)
@@ -25,19 +25,17 @@ from __future__ import annotations
 
 from d810.hexrays.cfg_pass import CFGPass
 from d810.hexrays.graph_modification import GraphModification, NopInstructions
+from d810.hexrays.microcode_constants import BLT_1WAY as _BLT_1WAY
+from d810.hexrays.microcode_constants import M_GOTO as _M_GOTO_OPCODE
+from d810.hexrays.microcode_constants import MOP_B as _MOP_B_TYPE
 from d810.hexrays.portable_cfg import PortableCFG
-
-# IDA microcode constants (decimal values, no IDA import required)
-_M_GOTO_OPCODE = 55   # ida_hexrays.m_goto == 0x37
-_MOP_B_TYPE = 7       # ida_hexrays.mop_b  == MOPT.MBLOCK
-_BLT_1WAY = 1         # ida_hexrays.BLT_1WAY
 
 
 class BlockMergePass(CFGPass):
     """Merge artificially split basic blocks by NOPing redundant gotos.
 
     This pass detects block pairs where:
-    - Block B has block_type == 1 (BLT_1WAY)
+    - Block B has block_type == 3 (BLT_1WAY)
     - Block B has exactly one successor S
     - B is not a self-loop
     - B's tail instruction is m_goto (opcode 55 / 0x37)
@@ -61,15 +59,15 @@ class BlockMergePass(CFGPass):
         >>> dest_mop = MopSnapshot(t=7, size=4, block_num=1)  # mop_b -> block 1
         >>> goto_insn = InsnSnapshot(opcode=55, ea=0x1000, operands=(dest_mop,))
         >>> blk0 = BlockSnapshot(
-        ...     serial=0, block_type=1, succs=(1,), preds=(),
+        ...     serial=0, block_type=3, succs=(1,), preds=(),
         ...     flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
         ... )
         >>> blk1 = BlockSnapshot(
-        ...     serial=1, block_type=1, succs=(2,), preds=(0,),
+        ...     serial=1, block_type=3, succs=(2,), preds=(0,),
         ...     flags=0, start_ea=0x1010, insn_snapshots=()
         ... )
         >>> blk2 = BlockSnapshot(
-        ...     serial=2, block_type=0, succs=(), preds=(1,),
+        ...     serial=2, block_type=2, succs=(), preds=(1,),
         ...     flags=0, start_ea=0x1020, insn_snapshots=()
         ... )
         >>> cfg = PortableCFG(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
@@ -93,7 +91,7 @@ class BlockMergePass(CFGPass):
 
         Returns:
             List of NopInstructions modifications for blocks where:
-            - Block has block_type == 1 (BLT_1WAY)
+            - Block has block_type == 3 (BLT_1WAY)
             - Block has exactly 1 successor
             - Successor has exactly 1 predecessor (this block)
             - Block is not a self-loop
@@ -106,7 +104,7 @@ class BlockMergePass(CFGPass):
         Example:
             >>> # Block with multiple successors: no merge
             >>> blk = BlockSnapshot(
-            ...     serial=0, block_type=2, succs=(5, 10), preds=(),
+            ...     serial=0, block_type=4, succs=(5, 10), preds=(),
             ...     flags=0, start_ea=0x1000, insn_snapshots=()
             ... )
             >>> cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
@@ -118,7 +116,7 @@ class BlockMergePass(CFGPass):
         mods = []
         for serial, blk in cfg.blocks.items():
             # Check 1: Block must be BLT_1WAY (unconditional jump block)
-            # Reject BLT_0WAY (0), BLT_2WAY (2), BLT_NWAY (3)
+            # Reject BLT_0WAY (2), BLT_2WAY (4), BLT_NWAY (5)
             if blk.block_type != _BLT_1WAY:
                 continue
 

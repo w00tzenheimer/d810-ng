@@ -65,7 +65,7 @@ class MutatingBackend(InMemoryBackend):
             new_serial = 100 + self.mutation_count
             new_block = BlockSnapshot(
                 serial=new_serial,
-                block_type=0,
+                block_type=2,
                 succs=(),
                 preds=(),
                 flags=0,
@@ -189,11 +189,11 @@ class TestPassPipeline:
         """Pass with is_applicable=False should be skipped."""
         # Create small CFG (2 blocks)
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         blocks = {0: blk0, 1: blk1}
@@ -211,15 +211,15 @@ class TestPassPipeline:
         """Pass with is_applicable=True should run."""
         # Create large CFG (3 blocks)
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(1, 2), preds=(),
+            serial=0, block_type=4, succs=(1, 2), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=0, succs=(), preds=(0,),
+            serial=2, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
         blocks = {0: blk0, 1: blk1, 2: blk2}
@@ -275,11 +275,11 @@ class TestPassPipeline:
         """CFG should be re-lifted after successful modifications, subsequent passes see new state."""
         # Create initial CFG with 2 blocks
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         blocks = {0: blk0, 1: blk1}
@@ -328,11 +328,11 @@ class TestPassPipeline:
         """Pipeline with mix of applicable and non-applicable passes."""
         # Create 2-block CFG
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         blocks = {0: blk0, 1: blk1}

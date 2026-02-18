@@ -15,13 +15,11 @@ from __future__ import annotations
 
 from d810.hexrays.cfg_pass import CFGPass
 from d810.hexrays.graph_modification import GraphModification, RedirectBranch, RedirectGoto
+from d810.hexrays.microcode_constants import BLT_1WAY as _BLT_1WAY
+from d810.hexrays.microcode_constants import BLT_2WAY as _BLT_2WAY
+from d810.hexrays.microcode_constants import M_GOTO as _M_GOTO_OPCODE
+from d810.hexrays.microcode_constants import MOP_B as _MOP_B_TYPE
 from d810.hexrays.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
-
-# IDA microcode constants (decimal values, no IDA import required)
-_M_GOTO_OPCODE = 55   # ida_hexrays.m_goto == 0x37
-_MOP_B_TYPE = 7       # ida_hexrays.mop_b  == MOPT.MBLOCK
-_BLT_1WAY = 1         # ida_hexrays.BLT_1WAY
-_BLT_2WAY = 2         # ida_hexrays.BLT_2WAY
 
 
 def _goto_targets_successor(operands: tuple, succ_serial: int) -> bool:
@@ -95,8 +93,8 @@ class GotoChainRemovalPass(CFGPass):
     For each such block it emits the appropriate modification for each
     predecessor:
 
-    - 1-way predecessor (block_type == 1)  → RedirectGoto
-    - 2-way predecessor (block_type == 2)  → RedirectBranch
+    - 1-way predecessor (block_type == 3)  → RedirectGoto
+    - 2-way predecessor (block_type == 4)  → RedirectBranch
 
     Safety guards (matching the legacy mba_remove_simple_goto_blocks()):
     - The last block (highest serial, IDA sentinel dummy) is never treated
@@ -116,15 +114,15 @@ class GotoChainRemovalPass(CFGPass):
         >>> dest_mop = MopSnapshot(t=7, size=4, block_num=20)
         >>> goto_insn = InsnSnapshot(opcode=55, ea=0x1100, operands=(dest_mop,))
         >>> blk0 = BlockSnapshot(
-        ...     serial=0, block_type=1, succs=(10,), preds=(),
+        ...     serial=0, block_type=3, succs=(10,), preds=(),
         ...     flags=0, start_ea=0x1000, insn_snapshots=()
         ... )
         >>> blk10_goto = BlockSnapshot(
-        ...     serial=10, block_type=1, succs=(20,), preds=(0,),
+        ...     serial=10, block_type=3, succs=(20,), preds=(0,),
         ...     flags=0, start_ea=0x1100, insn_snapshots=(goto_insn,)
         ... )
         >>> blk20 = BlockSnapshot(
-        ...     serial=20, block_type=0, succs=(), preds=(10,),
+        ...     serial=20, block_type=2, succs=(), preds=(10,),
         ...     flags=0, start_ea=0x1200, insn_snapshots=()
         ... )
         >>> cfg = PortableCFG(blocks={0: blk0, 10: blk10_goto, 20: blk20}, entry_serial=0, func_ea=0x1000)
@@ -166,11 +164,11 @@ class GotoChainRemovalPass(CFGPass):
             >>> # No goto-only blocks: no modifications
             >>> from d810.hexrays.portable_cfg import BlockSnapshot, PortableCFG
             >>> blk0 = BlockSnapshot(
-            ...     serial=0, block_type=1, succs=(1,), preds=(),
+            ...     serial=0, block_type=3, succs=(1,), preds=(),
             ...     flags=0, start_ea=0x1000, insn_snapshots=()
             ... )
             >>> blk1 = BlockSnapshot(
-            ...     serial=1, block_type=0, succs=(), preds=(0,),
+            ...     serial=1, block_type=2, succs=(), preds=(0,),
             ...     flags=0, start_ea=0x1010, insn_snapshots=()
             ... )
             >>> cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)

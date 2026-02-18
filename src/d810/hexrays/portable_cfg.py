@@ -74,15 +74,18 @@ class BlockSnapshot:
     """Snapshot of a single basic block's topology and instructions.
 
     Captures block metadata, control flow edges, and instruction sequence.
-    Block type constants:
-        BLT_0WAY = 0  (no successors, e.g., return)
-        BLT_1WAY = 1  (unconditional jump)
-        BLT_2WAY = 2  (conditional branch)
-        BLT_NWAY = 3  (switch statement)
+    Block type constants (from IDA SDK mblock_type_t):
+        BLT_NONE = 0  (unknown)
+        BLT_STOP = 1  (stops execution, last block)
+        BLT_0WAY = 2  (no successors, noret)
+        BLT_1WAY = 3  (unconditional jump)
+        BLT_2WAY = 4  (conditional branch)
+        BLT_NWAY = 5  (switch statement)
+        BLT_XTRN = 6  (external block)
 
     Attributes:
         serial: Block serial number (unique within a function).
-        block_type: Block type (0=0WAY, 1=1WAY, 2=2WAY, 3=NWAY).
+        block_type: Block type (0=NONE, 1=STOP, 2=0WAY, 3=1WAY, 4=2WAY, 5=NWAY, 6=XTRN).
         succs: Tuple of successor block serials.
         preds: Tuple of predecessor block serials.
         flags: Block flags (e.g., MBL_FAKE, MBL_GOTO).
@@ -90,7 +93,7 @@ class BlockSnapshot:
         insn_snapshots: Tuple of instruction snapshots in block order.
 
     Example:
-        >>> blk = BlockSnapshot(serial=0, block_type=1, succs=(1,), preds=(),
+        >>> blk = BlockSnapshot(serial=0, block_type=3, succs=(1,), preds=(),
         ...                     flags=0, start_ea=0x401000, insn_snapshots=())
         >>> blk.nsucc
         1
@@ -107,8 +110,8 @@ class BlockSnapshot:
         """Validate block snapshot."""
         if self.serial < 0:
             raise ValueError(f"BlockSnapshot: serial must be non-negative, got {self.serial}")
-        if self.block_type < 0 or self.block_type > 3:
-            raise ValueError(f"BlockSnapshot: block_type must be 0-3, got {self.block_type}")
+        if self.block_type < 0 or self.block_type > 6:
+            raise ValueError(f"BlockSnapshot: block_type must be 0-6, got {self.block_type}")
         if self.start_ea < 0:
             raise ValueError(f"BlockSnapshot: start_ea must be non-negative, got {self.start_ea}")
         if not isinstance(self.succs, tuple):
@@ -149,9 +152,9 @@ class PortableCFG:
         metadata: Optional metadata dict for pass state tracking.
 
     Example:
-        >>> entry = BlockSnapshot(serial=0, block_type=1, succs=(1,), preds=(),
+        >>> entry = BlockSnapshot(serial=0, block_type=3, succs=(1,), preds=(),
         ...                       flags=0, start_ea=0x401000, insn_snapshots=())
-        >>> exit_blk = BlockSnapshot(serial=1, block_type=0, succs=(), preds=(0,),
+        >>> exit_blk = BlockSnapshot(serial=1, block_type=2, succs=(), preds=(0,),
         ...                          flags=0, start_ea=0x401010, insn_snapshots=())
         >>> cfg = PortableCFG(blocks={0: entry, 1: exit_blk}, entry_serial=0, func_ea=0x401000)
         >>> cfg.num_blocks

@@ -100,7 +100,7 @@ class TestModificationMapping:
             count = backend.lower(modifications, mock_mba)
 
             assert count == 1
-            mock_modifier.queue_target_change.assert_called_once_with(
+            mock_modifier.queue_conditional_target_change.assert_called_once_with(
                 10, 20, 30, description="redirect branch 10: 20→30"
             )
             mock_modifier.apply.assert_called_once_with(enable_snapshot_rollback=True)

@@ -66,7 +66,7 @@ class IDABackend:
         Maps each GraphModification type to the corresponding DeferredGraphModifier
         queue method:
         - RedirectGoto   → queue_goto_change (1-way blocks)
-        - RedirectBranch → queue_target_change (2-way conditional blocks)
+        - RedirectBranch → queue_conditional_target_change (2-way conditional blocks)
         - ConvertToGoto  → queue_convert_to_goto
         - InsertBlock    → queue_create_and_redirect
         - RemoveEdge     → (not yet implemented, logs warning and skips)
@@ -101,7 +101,7 @@ class IDABackend:
 
                 case RedirectBranch(from_serial=src, old_target=old, new_target=new):
                     # Map to BLOCK_TARGET_CHANGE — redirect one branch of a 2-way block
-                    modifier.queue_target_change(src, old, new, description=f"redirect branch {src}: {old}→{new}")
+                    modifier.queue_conditional_target_change(src, old, new, description=f"redirect branch {src}: {old}→{new}")
 
                 case ConvertToGoto(block_serial=serial, goto_target=target):
                     # Map to BLOCK_CONVERT_TO_GOTO

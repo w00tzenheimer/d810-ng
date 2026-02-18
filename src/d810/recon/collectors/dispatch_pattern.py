@@ -1,7 +1,7 @@
 """DispatchPatternCollector — dispatcher candidate detection.
 
 Fires at MMAT_CALLS (3) and MMAT_GLBOPT1 (14).
-Detects: NWAY (switch) blocks, high-fan-out 2WAY chains, back-edges.
+Detects: NWAY (switch, BLT_NWAY=5) blocks, high-fan-out 2WAY (BLT_2WAY=4) chains, back-edges.
 
 Metrics:
     - ``nway_block_count``: number of BLT_NWAY blocks
@@ -21,12 +21,11 @@ from types import MappingProxyType
 
 from d810.recon.models import CandidateFlag, ReconResult
 
+from d810.hexrays.microcode_constants import BLT_2WAY as _BLT_2WAY
+from d810.hexrays.microcode_constants import BLT_NWAY as _BLT_NWAY
+
 _MMAT_CALLS = 3
 _MMAT_GLBOPT1 = 14
-
-# BLT constants (IDA): 0=0WAY, 1=1WAY, 2=2WAY, 3=NWAY
-_BLT_2WAY = 2
-_BLT_NWAY = 3
 
 _SWITCH_FAN_OUT_MIN = 3
 
