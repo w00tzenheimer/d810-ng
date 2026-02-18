@@ -16,6 +16,9 @@ Modules:
     stats       - OptimizationStatistics tracking
     typing      - Cross-version typing compatibility imports
 
+Moved to d810.ctree:
+    ctree_snapshot - serialize_ctree, deserialize_ctree, save/load_ctree_snapshot
+
 Removed (dead code, 0 production consumers):
     merkle      - MerkleTree (deleted)
     patching    - PatchAction, PatchRecorder, BinaryPatcher (deleted)
@@ -126,8 +129,8 @@ from .bits import (
 # Re-export typing module contents for convenience
 from . import typing
 
-# Ctree snapshot helpers
-from .ctree_snapshot import (
+# Ctree snapshot helpers (moved to d810.ctree.ctree_snapshot)
+from d810.ctree.ctree_snapshot import (
     serialize_ctree,
     deserialize_ctree,
     save_ctree_snapshot,
