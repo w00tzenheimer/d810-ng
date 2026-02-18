@@ -6,6 +6,7 @@ NumPat, CallPat, IfPat, BlockPat, InstructionPat, and the base_check decorator.
 from __future__ import annotations
 
 import pytest
+import idaapi
 
 from d810.ctree.match_context import MatchContext
 from d810.ctree.patterns.base_pattern import BasePat
@@ -384,8 +385,8 @@ class MockNumExpr:
             self._value = val
 
     def __init__(self, value: int, op: int | None = None):
-        # Without IDA, NumPat.op is None, so check_op won't filter by op
-        self.op = op
+        # NumPat.check_op == idaapi.cot_num when IDA is available; mock must match.
+        self.op = op if op is not None else (idaapi.cot_num if idaapi is not None else None)
         self.ea = 0x1000
         self.opname = "cot_num"
         self.n = self._NumVal(value)
@@ -423,7 +424,8 @@ class MockCallExpr:
     """Mock call expression for CallPat testing."""
 
     def __init__(self, x_op: int, args: list | None = None, op: int | None = None):
-        self.op = op
+        # CallPat.check_op == idaapi.cot_call when IDA is available; mock must match.
+        self.op = op if op is not None else (idaapi.cot_call if idaapi is not None else None)
         self.ea = 0x1000
         self.opname = "cot_call"
         self.x = MockItem(op=x_op)
@@ -554,7 +556,8 @@ class MockIfItem:
             self.ielse = ielse
 
     def __init__(self, expr, ithen, ielse=None, op=None, label_num=-1):
-        self.op = op
+        # IfPat.check_op == idaapi.cit_if when IDA is available; mock must match.
+        self.op = op if op is not None else (idaapi.cit_if if idaapi is not None else None)
         self.ea = 0x1000
         self.opname = "cit_if"
         self.label_num = label_num
@@ -614,7 +617,8 @@ class MockBlockItem:
     """Mock for a block instruction item."""
 
     def __init__(self, block_items: list, op=None, label_num=-1):
-        self.op = op
+        # BlockPat.check_op == idaapi.cit_block when IDA is available; mock must match.
+        self.op = op if op is not None else (idaapi.cit_block if idaapi is not None else None)
         self.ea = 0x1000
         self.opname = "cit_block"
         self.label_num = label_num
