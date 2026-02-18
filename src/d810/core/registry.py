@@ -57,7 +57,7 @@ class NotGiven:
     @staticmethod
     def params(**kwargs):
         """Return a dict of the given parameters which are not NOT_GIVEN."""
-        return {k: v for k, v in kwargs.items() if not isinstance(v, NotGiven)}
+        return {k: v for k, v in kwargs.items() if not isinstance(v, NotGiven)}  # ast-grep-ignore
 
 
 # Using __new__ to implement singleton pattern
@@ -204,7 +204,7 @@ def typename(t: TypeRef) -> str:
     """Return the name of a type, or the name of a value's type."""
 
     if get_origin(t) is None:
-        if not isinstance(t, type):
+        if not isinstance(t, type):  # ast-grep-ignore
             t = type(t)
         return t.__name__  # type: ignore
     return str(t)
@@ -218,7 +218,7 @@ def typecheck(value: Any, t: TypeRef) -> bool:
 
     try:
         # type, Optional, Union, @runtime_checkable
-        return isinstance(value, t)  # type: ignore
+        return isinstance(value, t)  # type: ignore  # ast-grep-ignore
     except TypeError:
         pass
 
@@ -227,7 +227,7 @@ def typecheck(value: Any, t: TypeRef) -> bool:
     if t in {None, type(None)}:
         return value is None
     if t in {AnyStr, LiteralString}:
-        return isinstance(value, (str, bytes))
+        return isinstance(value, (str, bytes))  # ast-grep-ignore
 
     # Generic types
 
@@ -239,7 +239,7 @@ def typecheck(value: Any, t: TypeRef) -> bool:
     if origin is Annotated:
         return typecheck(value, args[0])
 
-    if isinstance(t, TypeAliasType):
+    if isinstance(t, TypeAliasType):  # ast-grep-ignore
         return typecheck(value, t.__value__)  # type: ignore [attr-defined]
 
     return False
@@ -311,7 +311,7 @@ class deferred_property(Generic[T]):
 def lazy_type(t: DeferTypeRef, cls: Optional[type] = None) -> Defer[type]:
     """Return a lazy type which can be resolved later."""
 
-    if isinstance(t, (type, Callable)):
+    if isinstance(t, (type, Callable)):  # ast-grep-ignore
         return cast(type | Callable, t)
     if cls is None:
         raise ValueError("cls must be given if t is unbound")

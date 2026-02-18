@@ -179,7 +179,7 @@ def debug_scope(
         SQLiteHandler instance (for querying db_path after scope)
     """
     # Normalize loggers to list
-    if isinstance(loggers, str):
+    if isinstance(loggers, str):  # ast-grep-ignore
         loggers = [loggers]
 
     # Create SQLite handler

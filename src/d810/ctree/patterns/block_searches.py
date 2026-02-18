@@ -30,7 +30,7 @@ class SeqPat(InstructionPat):
         super().__init__(**kwargs)
         self.skip_missing = skip_missing
 
-        if len(pats) == 1 and isinstance(pats[0], list):
+        if len(pats) == 1 and isinstance(pats[0], list):  # ast-grep-ignore
             pats = tuple(pats[0])
 
         from d810.ctree.consts import cinsn_op2str

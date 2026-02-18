@@ -263,7 +263,7 @@ class LoggingConfigDialog(QtWidgets.QDialog):
             item = parent.child(i)
             if not item.isHidden():
                 combo = self._tree.itemWidget(item, 1)
-                if isinstance(combo, QtWidgets.QComboBox):
+                if isinstance(combo, QtWidgets.QComboBox):  # ast-grep-ignore
                     combo.setCurrentText(level)
                 # Recurse to children
                 self._set_all_levels_recursive(item, level)

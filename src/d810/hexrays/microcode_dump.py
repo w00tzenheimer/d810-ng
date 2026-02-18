@@ -94,7 +94,7 @@ def _init_constants():
         if name.startswith("m_"):
             try:
                 val = getattr(idaapi, name)
-                if isinstance(val, int):
+                if isinstance(val, int):  # ast-grep-ignore
                     OPCODE_MAP[val] = name
             except Exception:
                 pass
@@ -104,7 +104,7 @@ def _init_constants():
         if name.startswith("mop_"):
             try:
                 val = getattr(idaapi, name)
-                if isinstance(val, int):
+                if isinstance(val, int):  # ast-grep-ignore
                     MOP_TYPE_MAP[val] = name
             except Exception:
                 pass

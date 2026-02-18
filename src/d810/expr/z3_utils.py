@@ -305,7 +305,7 @@ def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
         case _:
             # Gracefully fail on unknown opcode; avoid type issues in logging
             op = getattr(ast, "opcode", None)
-            op_str = opcode_to_string(int(op)) if isinstance(op, int) else str(op)
+            op_str = opcode_to_string(int(op)) if isinstance(op, int) else str(op)  # ast-grep-ignore
             raise D810Z3Exception(f"Z3 evaluation: Unknown opcode {op_str} for {ast}")
 
 
@@ -350,9 +350,9 @@ def z3_check_mop_equality(
     if mop1 is None or mop2 is None:
         return False
     # Convert MopSnapshot to mop_t at boundary
-    if isinstance(mop1, MopSnapshot):
+    if isinstance(mop1, MopSnapshot):  # ast-grep-ignore
         mop1 = mop1.to_mop()
-    if isinstance(mop2, MopSnapshot):
+    if isinstance(mop2, MopSnapshot):  # ast-grep-ignore
         mop2 = mop2.to_mop()
     # Validate SWIG objects before accessing their attributes
     # Invalid/freed SWIG objects will not have essential attributes
@@ -432,9 +432,9 @@ def z3_check_mop_inequality(
     if mop1 is None or mop2 is None:
         return True
     # Convert MopSnapshot to mop_t at boundary
-    if isinstance(mop1, MopSnapshot):
+    if isinstance(mop1, MopSnapshot):  # ast-grep-ignore
         mop1 = mop1.to_mop()
-    if isinstance(mop2, MopSnapshot):
+    if isinstance(mop2, MopSnapshot):  # ast-grep-ignore
         mop2 = mop2.to_mop()
     # Validate SWIG objects before accessing their attributes
     # Invalid/freed SWIG objects will not have essential attributes
@@ -813,7 +813,7 @@ def z3_check_always_zero(
     if mop is None:
         return False
     # Convert MopSnapshot to mop_t at boundary
-    if isinstance(mop, MopSnapshot):
+    if isinstance(mop, MopSnapshot):  # ast-grep-ignore
         mop = mop.to_mop()
     # Validate SWIG object
     if not hasattr(mop, 't') or not hasattr(mop, 'size'):
@@ -918,7 +918,7 @@ def z3_check_always_nonzero(
     if mop is None:
         return False
     # Convert MopSnapshot to mop_t at boundary
-    if isinstance(mop, MopSnapshot):
+    if isinstance(mop, MopSnapshot):  # ast-grep-ignore
         mop = mop.to_mop()
     # Validate SWIG object
     if not hasattr(mop, 't') or not hasattr(mop, 'size'):

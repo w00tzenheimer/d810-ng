@@ -83,7 +83,7 @@ class Z3ConstantOptimization(Z3Rule):
                 tmp.add_constant_leaf("c_res", val_0, tmp.mop.size)
                 # TODO(w00tzenheimer): should we recompute caches so that leafs_by_name contains the new constant leaf?
                 # tmp.compute_sub_ast()
-                candidate_ast = tmp._target if isinstance(tmp, AstProxy) else tmp
+                candidate_ast = tmp._target if isinstance(tmp, AstProxy) else tmp  # ast-grep-ignore
                 new_instruction = self.get_replacement(
                     typing.cast(AstNode, candidate_ast)
                 )

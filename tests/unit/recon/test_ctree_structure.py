@@ -5,7 +5,7 @@ The collector only walks the cfunc using duck-typed access.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any
+from d810.core.typing import Any
 import pytest
 from d810.recon.collectors.ctree_structure import CtreeStructureCollector
 

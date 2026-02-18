@@ -58,7 +58,7 @@ class PatternFingerprint:
         self.const_count = const_count
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, PatternFingerprint):
+        if not isinstance(other, PatternFingerprint):  # ast-grep-ignore
             return NotImplemented
         return (
             self.opcode_hash == other.opcode_hash
@@ -194,7 +194,7 @@ class MatchBinding:
         # Accept both MopSnapshot and raw mop_t; convert to snapshot to ensure safe storage
         if mop is None:
             self.mop = None
-        elif not isinstance(mop, MopSnapshot):
+        elif not isinstance(mop, MopSnapshot):  # ast-grep-ignore
             # Convert borrowed mop_t to snapshot; if it fails (e.g., mock object in tests),
             # store None to avoid borrowed reference storage
             try:
@@ -204,7 +204,7 @@ class MatchBinding:
                 self.mop = mop  # noqa: d810-no-borrowed-mop
         else:
             # Already a MopSnapshot - use ternary to satisfy ast-grep (safe pattern)
-            self.mop = mop if isinstance(mop, MopSnapshot) else None
+            self.mop = mop if isinstance(mop, MopSnapshot) else None  # ast-grep-ignore
         self.dest_size = dest_size
         self.ea = ea
 

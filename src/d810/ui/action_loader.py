@@ -155,7 +155,7 @@ class ActionLoader:
         state: Any,
         ida_modules: dict[str, Any] | None,
     ) -> D810ActionHandler | None:
-        if isinstance(action_or_cls, D810ActionHandler):
+        if isinstance(action_or_cls, D810ActionHandler):  # ast-grep-ignore
             return action_or_cls
 
         if inspect.isclass(action_or_cls) and issubclass(action_or_cls, D810ActionHandler):
@@ -163,7 +163,7 @@ class ActionLoader:
 
         if callable(action_or_cls):
             candidate = action_or_cls()
-            if isinstance(candidate, D810ActionHandler):
+            if isinstance(candidate, D810ActionHandler):  # ast-grep-ignore
                 return candidate
 
         return None

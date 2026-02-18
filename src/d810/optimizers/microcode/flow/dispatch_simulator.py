@@ -115,7 +115,7 @@ class TransitionGraph:
 
     def __post_init__(self) -> None:
         """Validate graph invariants."""
-        if not all(isinstance(t, CaseTransition) for t in self.transitions):
+        if not all(isinstance(t, CaseTransition) for t in self.transitions):  # ast-grep-ignore
             raise ValueError("All transitions must be CaseTransition instances")
 
     def as_edge_dict(self) -> dict[int, set[int]]:

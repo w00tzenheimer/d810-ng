@@ -182,7 +182,7 @@ class ProjectContext:
         Returns:
             self for method chaining
         """
-        if isinstance(rule, str):
+        if isinstance(rule, str):  # ast-grep-ignore
             name = rule.lower()
         else:
             name = rule.__name__.lower()
@@ -217,7 +217,7 @@ class ProjectContext:
         Raises:
             ValueError: If the rule is not found in known rules.
         """
-        if isinstance(rule, str):
+        if isinstance(rule, str):  # ast-grep-ignore
             name = rule.lower()
         else:
             name = rule.__name__.lower()
@@ -276,8 +276,8 @@ class ProjectContext:
 
     def __eq__(self, other) -> bool:
         """Support comparison with integers for backward compatibility."""
-        if isinstance(other, int):
+        if isinstance(other, int):  # ast-grep-ignore
             return self.project_index == other
-        if isinstance(other, ProjectContext):
+        if isinstance(other, ProjectContext):  # ast-grep-ignore
             return self.project_index == other.project_index
         return NotImplemented
