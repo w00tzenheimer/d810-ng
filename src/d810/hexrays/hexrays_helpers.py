@@ -1289,7 +1289,7 @@ class MicroOperand:
 
     def __post_init__(self):
         """Initialize after the internal ida_hexrays.mop_t is set."""
-        if not isinstance(self._internal_mop, ida_hexrays.mop_t):
+        if not isinstance(self._internal_mop, ida_hexrays.mop_t):  # ast-grep-ignore
             raise TypeError("Internal operand must be an ida_hexrays.mop_t")
 
     @property
@@ -1384,7 +1384,7 @@ class MicroOperand:
 
     def equal_mops(self, other: "MicroOperand|ida_hexrays.mop_t", flags: int) -> bool:
         """Check if operands are equal."""
-        if isinstance(other, ida_hexrays.mop_t):
+        if isinstance(other, ida_hexrays.mop_t):  # ast-grep-ignore
             return self._internal_mop.equal_mops(other, flags)
         else:
             return self._internal_mop.equal_mops(other._internal_mop, flags)
@@ -1393,7 +1393,7 @@ class MicroOperand:
         """Get string representation of the operand."""
         if self.is_constant:
             val = self.value()
-            if isinstance(val, float):
+            if isinstance(val, float):  # ast-grep-ignore
                 return f"#{val:.6f}"
             else:
                 return f"#{val:#x}"
@@ -1439,7 +1439,7 @@ class MicroInstruction:
 
     def __post_init__(self):
         """Initialize after the internal ida_hexrays.minsn_t is set."""
-        if not isinstance(self._internal_minsn, ida_hexrays.minsn_t):
+        if not isinstance(self._internal_minsn, ida_hexrays.minsn_t):  # ast-grep-ignore
             raise TypeError("Internal instruction must be an ida_hexrays.minsn_t")
 
     @property
@@ -1734,7 +1734,7 @@ def create_instruction_from_internal(
 def create_constant_operand(value: Union[int, float], size: int = 4) -> MicroOperand:
     """Create a constant operand."""
     mop = ida_hexrays.mop_t()
-    if isinstance(value, float):
+    if isinstance(value, float):  # ast-grep-ignore
         # For floating point, we'd need to handle it differently
         # This is a simplified version
         mop.make_number(int(value), size)

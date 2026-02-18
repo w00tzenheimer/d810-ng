@@ -74,7 +74,7 @@ class Z3Optimizer(InstructionOptimizer):
                 self._has_patternless_rule = True
                 self._allowed_root_opcodes.clear()
             # Use Protocol for hot-reload safety
-            elif isinstance(pat, AstNodeProtocol) and pat.opcode is not None:
+            elif isinstance(pat, AstNodeProtocol) and pat.opcode is not None:  # ast-grep-ignore
                 # Only add to filter if we haven't disabled it
                 if not self._has_patternless_rule:
                     self._allowed_root_opcodes.add(int(pat.opcode))

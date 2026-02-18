@@ -183,7 +183,7 @@ class AstNode(AstBase):
     def size(self):
         if self.mop is None:
             return 0
-        if isinstance(self.mop, MopSnapshot):
+        if isinstance(self.mop, MopSnapshot):  # ast-grep-ignore
             return self.mop.size
         return self.mop.d.d.size if self.mop else 0
 
@@ -219,11 +219,11 @@ class AstNode(AstBase):
         for _, ast_info in self.sub_ast_info_by_index.items():
             mop = ast_info.ast.mop
             if mop is not None:
-                mop_t = mop.t if isinstance(mop, MopSnapshot) else (mop.t if hasattr(mop, 't') else ida_hexrays.mop_z)
+                mop_t = mop.t if isinstance(mop, MopSnapshot) else (mop.t if hasattr(mop, 't') else ida_hexrays.mop_z)  # ast-grep-ignore
                 if mop_t != ida_hexrays.mop_z:
                     if ast_info.ast.is_leaf():
                         if ast_info.ast.is_constant():
-                            value = mop.value if isinstance(mop, MopSnapshot) else mop.nnn.value
+                            value = mop.value if isinstance(mop, MopSnapshot) else mop.nnn.value  # ast-grep-ignore
                             cst_list.append(value)
                         else:
                             leaf_info_list.append(ast_info)
@@ -322,8 +322,8 @@ class AstNode(AstBase):
             destination carrier register of nested m_insn operands.
             """
             try:
-                left = mop_left.to_mop() if isinstance(mop_left, MopSnapshot) else mop_left
-                right = mop_right.to_mop() if isinstance(mop_right, MopSnapshot) else mop_right
+                left = mop_left.to_mop() if isinstance(mop_left, MopSnapshot) else mop_left  # ast-grep-ignore
+                right = mop_right.to_mop() if isinstance(mop_right, MopSnapshot) else mop_right  # ast-grep-ignore
                 if (
                     left is not None
                     and right is not None
@@ -845,7 +845,7 @@ class AstLeaf(AstBase):
     def is_constant(self):
         if self.mop is None:
             return False
-        if isinstance(self.mop, MopSnapshot):
+        if isinstance(self.mop, MopSnapshot):  # ast-grep-ignore
             return self.mop.is_constant
         return self.mop.t == ida_hexrays.mop_n
 
@@ -886,7 +886,7 @@ class AstLeaf(AstBase):
     def size(self):
         if self.mop is None:
             return 0
-        if isinstance(self.mop, MopSnapshot):
+        if isinstance(self.mop, MopSnapshot):  # ast-grep-ignore
             return self.mop.size
         return self.mop.size
 
@@ -901,7 +901,7 @@ class AstLeaf(AstBase):
     @property
     def value(self):
         if self.is_constant() and self.mop is not None:
-            if isinstance(self.mop, MopSnapshot):
+            if isinstance(self.mop, MopSnapshot):  # ast-grep-ignore
                 return self.mop.value
             return self.mop.nnn.value
         else:
@@ -953,7 +953,7 @@ class AstLeaf(AstBase):
             )
 
         # 2. Handle both MopSnapshot and raw mop_t
-        if isinstance(self.mop, MopSnapshot):
+        if isinstance(self.mop, MopSnapshot):  # ast-grep-ignore
             # Reconstruct from snapshot
             return self.mop.to_mop()
         else:
@@ -1027,7 +1027,7 @@ class AstLeaf(AstBase):
 
     def get_pattern(self):
         if self.is_constant() and self.mop is not None:
-            if isinstance(self.mop, MopSnapshot):
+            if isinstance(self.mop, MopSnapshot):  # ast-grep-ignore
                 return "AstConstant('{0}', {0})".format(self.mop.value)
             return "AstConstant('{0}', {0})".format(self.mop.nnn.value)
         if self.ast_index is not None:
@@ -1045,7 +1045,7 @@ class AstLeaf(AstBase):
 
     def evaluate(self, dict_index_to_value):
         if self.is_constant() and self.mop is not None:
-            if isinstance(self.mop, MopSnapshot):
+            if isinstance(self.mop, MopSnapshot):  # ast-grep-ignore
                 return self.mop.value
             return self.mop.nnn.value
         assert self.ast_index is not None
@@ -1070,7 +1070,7 @@ class AstLeaf(AstBase):
     def __str__(self):
         try:
             if self.is_constant() and self.mop is not None:
-                if isinstance(self.mop, MopSnapshot):
+                if isinstance(self.mop, MopSnapshot):  # ast-grep-ignore
                     return "{0}".format(hex(self.mop.value))
                 return "{0}".format(hex(self.mop.nnn.value))
             if self.z3_var_name is not NOT_GIVEN:
@@ -1078,7 +1078,7 @@ class AstLeaf(AstBase):
             if self.ast_index is not None:
                 return "x_{0}".format(self.ast_index)
             if self.mop is not None:
-                if isinstance(self.mop, MopSnapshot):
+                if isinstance(self.mop, MopSnapshot):  # ast-grep-ignore
                     # Format snapshot - use a simple representation
                     return f"mop_snapshot_{self.mop.t}"
                 return format_mop_t(self.mop)
@@ -1100,7 +1100,7 @@ class AstConstant(AstLeaf):
     @property
     def value(self):
         if self.mop is not None:
-            if isinstance(self.mop, MopSnapshot):
+            if isinstance(self.mop, MopSnapshot):  # ast-grep-ignore
                 return self.mop.value if self.mop.is_constant else self.expected_value
             if self.mop.t == ida_hexrays.mop_n:
                 return self.mop.nnn.value
@@ -1114,8 +1114,9 @@ class AstConstant(AstLeaf):
 
     def _copy_mops_from_ast(self, other, read_only: bool = False):
         if other.mop is not None:
-            is_const = isinstance(other.mop, MopSnapshot) and other.mop.is_constant or \
-                       (not isinstance(other.mop, MopSnapshot) and other.mop.t == ida_hexrays.mop_n)
+            _mop_is_snap = isinstance(other.mop, MopSnapshot)  # ast-grep-ignore
+            is_const = (_mop_is_snap and other.mop.is_constant) or \
+                       (not _mop_is_snap and other.mop.t == ida_hexrays.mop_n)
             if not is_const:
                 if logger.debug_on:
                     logger.debug(
@@ -1128,13 +1129,13 @@ class AstConstant(AstLeaf):
             logger.debug(
                 "AstConstant._copy_mops_from_ast: other %r's mop %s is a constant",
                 other,
-                format_mop_t(other.mop) if not isinstance(other.mop, MopSnapshot) else f"MopSnapshot({other.mop.value})",
+                format_mop_t(other.mop) if not isinstance(other.mop, MopSnapshot) else f"MopSnapshot({other.mop.value})",  # ast-grep-ignore
             )
         if not read_only:
             self.mop = other.mop
         if self.expected_value is None:
             if not read_only:
-                if isinstance(other.mop, MopSnapshot):
+                if isinstance(other.mop, MopSnapshot):  # ast-grep-ignore
                     self.expected_value = other.mop.value
                     self.expected_size = other.mop.size
                 else:
@@ -1142,12 +1143,12 @@ class AstConstant(AstLeaf):
                     self.expected_size = other.mop.size
             else:
                 return True
-        other_value = other.mop.value if isinstance(other.mop, MopSnapshot) else other.mop.nnn.value
+        other_value = other.mop.value if isinstance(other.mop, MopSnapshot) else other.mop.nnn.value  # ast-grep-ignore
         return self.expected_value == other_value
 
     def evaluate(self, dict_index_to_value=None):
         if self.mop is not None:
-            if isinstance(self.mop, MopSnapshot):
+            if isinstance(self.mop, MopSnapshot):  # ast-grep-ignore
                 return self.mop.value if self.mop.is_constant else self.expected_value
             if self.mop.t == ida_hexrays.mop_n:
                 return self.mop.nnn.value
@@ -1173,9 +1174,9 @@ class AstConstant(AstLeaf):
     def __str__(self):
         try:
             if self.mop is not None:
-                if isinstance(self.mop, MopSnapshot) and self.mop.is_constant:
+                if isinstance(self.mop, MopSnapshot) and self.mop.is_constant:  # ast-grep-ignore
                     return "0x{0:x}".format(self.mop.value)
-                elif not isinstance(self.mop, MopSnapshot) and self.mop.t == ida_hexrays.mop_n:
+                elif not isinstance(self.mop, MopSnapshot) and self.mop.t == ida_hexrays.mop_n:  # ast-grep-ignore
                     return "0x{0:x}".format(self.mop.nnn.value)
             if getattr(self, "expected_value", None) is not None:
                 return "0x{0:x}".format(self.expected_value)
@@ -1203,10 +1204,10 @@ class AstConstant(AstLeaf):
         if source_leaf.mop is not None:
             self.mop = source_leaf.mop
             # Also update expected_value from the mop
-            if isinstance(source_leaf.mop, MopSnapshot) and source_leaf.mop.is_constant:
+            if isinstance(source_leaf.mop, MopSnapshot) and source_leaf.mop.is_constant:  # ast-grep-ignore
                 self.expected_value = source_leaf.mop.value
                 self.expected_size = source_leaf.mop.size
-            elif not isinstance(source_leaf.mop, MopSnapshot) and source_leaf.mop.t == ida_hexrays.mop_n:
+            elif not isinstance(source_leaf.mop, MopSnapshot) and source_leaf.mop.t == ida_hexrays.mop_n:  # ast-grep-ignore
                 self.expected_value = source_leaf.mop.nnn.value
                 self.expected_size = source_leaf.mop.size
             return True

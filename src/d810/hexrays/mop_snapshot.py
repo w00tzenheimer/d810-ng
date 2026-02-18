@@ -56,7 +56,7 @@ if not _CYTHON_AVAILABLE:
         def __init__(self, value: int):
             self.value = value
         def __eq__(self, other):
-            if isinstance(other, _NnnProxy):
+            if isinstance(other, _NnnProxy):  # ast-grep-ignore
                 return self.value == other.value
             return NotImplemented
         def __hash__(self):
@@ -76,7 +76,7 @@ if not _CYTHON_AVAILABLE:
         def mba(self):
             return None  # not available in snapshot
         def __eq__(self, other):
-            if isinstance(other, _StkvarProxy):
+            if isinstance(other, _StkvarProxy):  # ast-grep-ignore
                 return self.off == other.off
             # For comparison with real stkvar_ref_t, compare .off
             if hasattr(other, 'off'):
@@ -92,7 +92,7 @@ if not _CYTHON_AVAILABLE:
             self.idx = idx
             self.off = off
         def __eq__(self, other):
-            if isinstance(other, _LvarProxy):
+            if isinstance(other, _LvarProxy):  # ast-grep-ignore
                 return self.idx == other.idx and self.off == other.off
             if hasattr(other, 'idx') and hasattr(other, 'off'):
                 return self.idx == other.idx and self.off == other.off

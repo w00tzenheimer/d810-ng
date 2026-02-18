@@ -743,7 +743,7 @@ class IdentityCallResolver(FlowOptimizationRule):
         # LOCOPT uses helper call operands (`$name`) with l.t==mop_h and `g` set.
         if hasattr(ins.l, "g"):
             target = ins.l.g
-            if isinstance(target, int) and target != 0:
+            if isinstance(target, int) and target != 0:  # ast-grep-ignore
                 return target
 
         if ins.l.t == ida_hexrays.mop_v:

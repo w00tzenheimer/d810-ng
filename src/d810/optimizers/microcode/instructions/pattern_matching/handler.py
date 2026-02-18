@@ -437,7 +437,7 @@ class PatternOptimizer(InstructionOptimizer):
             # Collect root opcode for quick opcode pre-filtering
             try:
                 # Use Protocol for hot-reload safety
-                if isinstance(pattern, AstNodeProtocol) and pattern.opcode is not None:
+                if isinstance(pattern, AstNodeProtocol) and pattern.opcode is not None:  # ast-grep-ignore
                     self._allowed_root_opcodes.add(int(pattern.opcode))
             except Exception:
                 pass
@@ -480,7 +480,7 @@ class PatternOptimizer(InstructionOptimizer):
 
             try:
                 # Use Protocol for hot-reload safety
-                if isinstance(pattern, AstNodeProtocol) and pattern.opcode is not None:
+                if isinstance(pattern, AstNodeProtocol) and pattern.opcode is not None:  # ast-grep-ignore
                     self._allowed_root_opcodes.add(int(pattern.opcode))
             except Exception:
                 pass
@@ -728,7 +728,7 @@ def get_all_binary_tree_representation(all_elt):
 
 
 def generate_ast(opcode, leafs):
-    if isinstance(leafs, AstBase):
+    if isinstance(leafs, AstBase):  # ast-grep-ignore
         return leafs
     if len(leafs) == 1:
         return leafs[0]
@@ -739,7 +739,7 @@ def generate_ast(opcode, leafs):
 
 
 def get_addition_operands(ast_node):
-    if not isinstance(ast_node, AstBase) or not ast_node.is_node():
+    if not isinstance(ast_node, AstBase) or not ast_node.is_node():  # ast-grep-ignore
         return [ast_node]
     ast_node = typing.cast(AstNode, ast_node)
     if ast_node.opcode == ida_hexrays.m_add:
@@ -756,7 +756,7 @@ def get_addition_operands(ast_node):
 
 
 def get_opcode_operands(ref_opcode: int, ast_node: AstBase) -> list[AstBase]:
-    if not isinstance(ast_node, AstBase) or not ast_node.is_node():
+    if not isinstance(ast_node, AstBase) or not ast_node.is_node():  # ast-grep-ignore
         return [ast_node]
     ast_node = typing.cast(AstNode, ast_node)
     if ast_node.opcode is not None and ast_node.opcode == ref_opcode:

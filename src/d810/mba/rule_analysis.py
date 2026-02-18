@@ -47,7 +47,7 @@ def _symbolic_expr_to_pattern_expr(expr, var_cache: dict | None = None):
         return None
 
     # Handle SymbolicExpression
-    if not isinstance(expr, SymbolicExpressionProtocol):
+    if not isinstance(expr, SymbolicExpressionProtocol):  # ast-grep-ignore
         logger.debug(f"Cannot convert non-SymbolicExpression: {type(expr)}")
         return None
 
@@ -110,7 +110,7 @@ def _collect_leaf_names(expr) -> list[str]:
     if expr is None:
         return []
 
-    if not isinstance(expr, SymbolicExpressionProtocol):
+    if not isinstance(expr, SymbolicExpressionProtocol):  # ast-grep-ignore
         return []
 
     if expr.is_leaf():

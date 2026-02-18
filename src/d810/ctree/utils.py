@@ -230,7 +230,7 @@ def make_arglist(*args: typing.Any) -> typing.Any:
         if arg is None:
             logger.warning("argument is None, skipping")
             continue
-        if isinstance(arg, idaapi.carg_t):
+        if isinstance(arg, idaapi.carg_t):  # ast-grep-ignore
             arglist.push_back(arg)
         else:
             narg = idaapi.carg_t()

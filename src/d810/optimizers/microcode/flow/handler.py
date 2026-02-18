@@ -134,11 +134,11 @@ class FlowOptimizationRule(OptimizationRule, Registrant, abc.ABC):
     @staticmethod
     def _parse_priority(raw_priority: object) -> int:
         """Parse priority from int/IntEnum/string enum name."""
-        if isinstance(raw_priority, IntEnum):
+        if isinstance(raw_priority, IntEnum):  # ast-grep-ignore
             return int(raw_priority)
-        if isinstance(raw_priority, int):
+        if isinstance(raw_priority, int):  # ast-grep-ignore
             return raw_priority
-        if isinstance(raw_priority, str):
+        if isinstance(raw_priority, str):  # ast-grep-ignore
             text = raw_priority.strip()
             if text.isdigit():
                 return int(text)

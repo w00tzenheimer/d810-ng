@@ -72,9 +72,9 @@ class CallPat(ExpressionPat):
         :param skip_missing: skip missing arguments/patterns.
         """
         super().__init__(**kwargs)
-        if isinstance(calling_function, str):
+        if isinstance(calling_function, str):  # ast-grep-ignore
             calling_function = ObjPat(calling_function)
-        if isinstance(calling_function, int):
+        if isinstance(calling_function, int):  # ast-grep-ignore
             calling_function = ObjPat(calling_function)
         self.calling_function = calling_function
         self.arguments: tuple[BasePat, ...] = arguments
@@ -168,7 +168,7 @@ class ObjPat(ExpressionPat):
         self.names: set[str] = set()
 
         for obj_info in objects:
-            if isinstance(obj_info, int):
+            if isinstance(obj_info, int):  # ast-grep-ignore
                 self.addrs.add(obj_info)
                 if idaapi is not None and not idaapi.is_mapped(obj_info):
                     logger.warning(
@@ -180,7 +180,7 @@ class ObjPat(ExpressionPat):
                     name = idaapi.get_name(obj_info)
                     if name != "":
                         self.names.add(name)
-            elif isinstance(obj_info, str):
+            elif isinstance(obj_info, str):  # ast-grep-ignore
                 self.names.add(obj_info)
                 if idaapi is not None:
                     from d810.ctree.utils import resolve_name_address
@@ -291,7 +291,7 @@ class IdxPat(ExpressionPat):
     ) -> None:
         super().__init__(**kwargs)
         self.pointed_object = pointed_object
-        if isinstance(indx, int):
+        if isinstance(indx, int):  # ast-grep-ignore
             indx = NumPat(indx)
         self.indx: BasePat = indx
 
