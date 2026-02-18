@@ -15,6 +15,10 @@ Modules:
     singleton   - Thread-safe SingletonMeta metaclass
     stats       - OptimizationStatistics tracking
     typing      - Cross-version typing compatibility imports
+
+Removed (dead code, 0 production consumers):
+    merkle      - MerkleTree (deleted)
+    patching    - PatchAction, PatchRecorder, BinaryPatcher (deleted)
 """
 
 # Configuration
@@ -121,12 +125,6 @@ from .bits import (
 
 # Re-export typing module contents for convenience
 from . import typing
-
-# Merkle tree utilities
-from .merkle import MerkleTree
-
-# Binary patching helpers
-from .patching import PatchAction, PatchRecorder, BinaryPatcher
 
 # Ctree snapshot helpers
 from .ctree_snapshot import (
@@ -282,12 +280,6 @@ __all__ = [
     # MOP caches
     "MOP_CONSTANT_CACHE",
     "MOP_TO_AST_CACHE",
-    # merkle
-    "MerkleTree",
-    # patching
-    "PatchAction",
-    "PatchRecorder",
-    "BinaryPatcher",
     # ctree_snapshot
     "serialize_ctree",
     "deserialize_ctree",
