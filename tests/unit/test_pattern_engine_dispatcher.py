@@ -26,17 +26,17 @@ def _reload_engine():
     # 3. Clear any modules that import and cache CythonMode
     cymode_mod = "d810.core.cymode"
     if cymode_mod in sys.modules:
-        from d810.core.singleton import SingletonMeta
+        from d810.core.registry import SingletonMeta
         from d810.core.cymode import CythonMode
         # Clear singleton cache (correct location is SingletonMeta._instances)
         SingletonMeta._instances.pop(CythonMode, None)
         # Delete cymode module to force re-read of D810_NO_CYTHON env var
         del sys.modules[cymode_mod]
 
-    # Also clear singleton module in case it was imported
-    singleton_mod = "d810.core.singleton"
-    if singleton_mod in sys.modules:
-        del sys.modules[singleton_mod]
+    # NOTE: do NOT delete d810.core.registry — SingletonMeta is now merged into
+    # registry.py, and deleting the registry module would invalidate Registrant
+    # class identity for the rest of the test session.  The singleton state was
+    # already cleared above via SingletonMeta._instances.pop().
 
     return importlib.import_module(mod_name)
 

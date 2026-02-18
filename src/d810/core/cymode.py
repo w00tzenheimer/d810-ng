@@ -1,8 +1,7 @@
 import dataclasses
 import os
 
-from .registry import survives_reload
-from .singleton import SingletonMeta
+from .registry import survives_reload, SingletonMeta
 
 
 def _get_default_cython_enabled() -> bool:
