@@ -33,8 +33,8 @@ except ImportError:
     QT_AVAILABLE = False
 
 
-def _get_current_func_ea(ctx: typing.Any, ida_hexrays_mod: typing.Any) -> int | None:
-    vdui = ida_hexrays_mod.get_widget_vdui(ctx.widget)
+def _get_current_func_ea(ctx: typing.Any, idaapi_shim: typing.Any) -> int | None:
+    vdui = idaapi_shim.get_widget_vdui(ctx.widget)
     if vdui is None or getattr(vdui, "cfunc", None) is None:
         return None
     return int(vdui.cfunc.entry_ea)
@@ -207,17 +207,16 @@ class FunctionRules(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
-        ida_kernwin_mod = self.ida_module("ida_kernwin")
-        ida_hexrays_mod = self.ida_module("ida_hexrays")
-        if ida_kernwin_mod is None or ida_hexrays_mod is None or not QT_AVAILABLE:
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None or not QT_AVAILABLE:
             return 0
 
-        func_ea = _get_current_func_ea(ctx, ida_hexrays_mod)
+        func_ea = _get_current_func_ea(ctx, idaapi_shim)
         if func_ea is None:
-            ida_kernwin_mod.warning("d810-ng: no function available in current context.")
+            idaapi_shim.warning("d810-ng: no function available in current context.")
             return 0
 
-        vdui = ida_hexrays_mod.get_widget_vdui(ctx.widget)
+        vdui = idaapi_shim.get_widget_vdui(ctx.widget)
         func_name = f"sub_{func_ea:X}"
         try:
             if vdui is not None and getattr(vdui, "cfunc", None) is not None:
@@ -229,12 +228,12 @@ class FunctionRules(D810ActionHandler):
 
         available_rules = _collect_available_rules(self._state)
         if not available_rules:
-            ida_kernwin_mod.warning("d810-ng: no rules available for function override.")
+            idaapi_shim.warning("d810-ng: no rules available for function override.")
             return 0
 
         manager = getattr(self._state, "manager", None)
         if manager is None:
-            ida_kernwin_mod.warning("d810-ng manager is not initialized.")
+            idaapi_shim.warning("d810-ng manager is not initialized.")
             return 0
 
         override = None
@@ -282,7 +281,7 @@ class FunctionRules(D810ActionHandler):
                 )
             if vdui is not None:
                 vdui.refresh_view(True)
-            ida_kernwin_mod.msg(
+            idaapi_shim.msg(
                 f"d810-ng: Saved function rule override for {func_name} "
                 f"(enabled={len(enabled_names)}/{len(all_rule_names)})\n"
             )
@@ -299,8 +298,8 @@ class FunctionRules(D810ActionHandler):
         Returns:
             True if in pseudocode view, False otherwise
         """
-        ida_hexrays_mod = self.ida_module("ida_hexrays")
-        if ida_hexrays_mod is None:
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None:
             return False
 
-        return ida_hexrays_mod.get_widget_vdui(ctx.widget) is not None
+        return idaapi_shim.get_widget_vdui(ctx.widget) is not None

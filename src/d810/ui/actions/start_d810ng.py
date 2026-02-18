@@ -40,8 +40,8 @@ class StartD810ng(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
-        ida_kernwin_mod = self.ida_module("ida_kernwin")
-        if ida_kernwin_mod is None or QTimer is None:
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None or QTimer is None:
             return 0
 
         def _deferred_start():
@@ -51,10 +51,10 @@ class StartD810ng(D810ActionHandler):
                 self._state.start_d810()
                 # Update UI status indicator to show "Loaded"
                 self._update_ui_after_start()
-                ida_kernwin_mod.info("d810-ng started successfully")
+                idaapi_shim.info("d810-ng started successfully")
                 logger.info("d810-ng started via context menu action")
             except Exception as e:
-                ida_kernwin_mod.warning(f"Failed to start d810-ng: {e}")
+                idaapi_shim.warning(f"Failed to start d810-ng: {e}")
                 logger.error("Failed to start d810-ng: %s", e, exc_info=True)
 
         try:
@@ -64,7 +64,7 @@ class StartD810ng(D810ActionHandler):
             QTimer.singleShot(0, _deferred_start)
             return 1
         except Exception as e:
-            ida_kernwin_mod.warning(f"Failed to schedule start: {e}")
+            idaapi_shim.warning(f"Failed to schedule start: {e}")
             logger.error("Failed to schedule start: %s", e, exc_info=True)
             return 0
 

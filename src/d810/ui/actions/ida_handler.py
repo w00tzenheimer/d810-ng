@@ -16,7 +16,7 @@ logger = getLogger("D810.ui")
 
 def make_ida_handler(
     action: "D810ActionHandler",
-    ida_kernwin_module: typing.Any | None = None,
+    idaapi_module: typing.Any | None = None,
 ) -> typing.Any:
     """Create an IDA action_handler_t wrapper for a D810ActionHandler.
 
@@ -46,15 +46,15 @@ def make_ida_handler(
         ... )
         >>> ida_kernwin.register_action(desc)
     """
-    ida_kernwin_mod = ida_kernwin_module
-    if ida_kernwin_mod is None and hasattr(action, "ida_module"):
-        ida_kernwin_mod = action.ida_module("ida_kernwin")
+    idaapi_shim = idaapi_module
+    if idaapi_shim is None and hasattr(action, "ida_module"):
+        idaapi_shim = action.ida_module("idaapi")
 
-    if ida_kernwin_mod is None:
+    if idaapi_shim is None:
         # Return a stub when IDA is not available (e.g., during unit tests)
         return _StubIDAHandler()
 
-    class _IDAHandlerAdapter(ida_kernwin_mod.action_handler_t):
+    class _IDAHandlerAdapter(idaapi_shim.action_handler_t):
         """Adapter that wraps a D810ActionHandler for IDA's action system."""
 
         def __init__(self, handler: "D810ActionHandler") -> None:
@@ -92,8 +92,8 @@ def make_ida_handler(
                     exc,
                     exc_info=True,
                 )
-                if ida_kernwin_mod is not None:
-                    ida_kernwin_mod.warning(
+                if idaapi_shim is not None:
+                    idaapi_shim.warning(
                         f"Action failed:\n{exc}"
                     )
                 return 0
@@ -107,14 +107,14 @@ def make_ida_handler(
             Returns:
                 AST_ENABLE_FOR_WIDGET or AST_DISABLE
             """
-            if ida_kernwin_mod is None:
+            if idaapi_shim is None:
                 return 0
 
             # Check if action is available in this context
             if not self._handler.is_available(ctx):
-                return ida_kernwin_mod.AST_DISABLE
+                return idaapi_shim.AST_DISABLE
 
-            return ida_kernwin_mod.AST_ENABLE_FOR_WIDGET
+            return idaapi_shim.AST_ENABLE_FOR_WIDGET
 
         def _check_started(self) -> tuple[bool, str]:
             """Check if d810-ng is started.
@@ -141,7 +141,7 @@ def make_ida_handler(
             Returns:
                 True if d810-ng was started (or already running), False otherwise
             """
-            if ida_kernwin_mod is None:
+            if idaapi_shim is None:
                 return False
 
             state = self._handler._state
@@ -151,11 +151,11 @@ def make_ida_handler(
                 if hasattr(state, "manager") and state.manager is not None:
                     if not state.manager.started:
                         # Prompt user
-                        result = ida_kernwin_mod.ask_yn(
-                            ida_kernwin_mod.ASKBTN_YES,
+                        result = idaapi_shim.ask_yn(
+                            idaapi_shim.ASKBTN_YES,
                             "d810-ng is not running. Start d810-ng?"
                         )
-                        if result == ida_kernwin_mod.ASKBTN_YES:
+                        if result == idaapi_shim.ASKBTN_YES:
                             try:
                                 state.start_d810()
                                 logger.info("d810-ng started by user request")
@@ -164,7 +164,7 @@ def make_ida_handler(
                                 return True
                             except Exception as exc:
                                 logger.error("Failed to start d810-ng: %s", exc)
-                                ida_kernwin_mod.warning(f"Failed to start d810-ng:\n{exc}")
+                                idaapi_shim.warning(f"Failed to start d810-ng:\n{exc}")
                                 return False
                         else:
                             # User declined
@@ -176,7 +176,7 @@ def make_ida_handler(
             # Not loaded or manager not initialized
             is_ready, error_msg = self._check_started()
             if not is_ready:
-                ida_kernwin_mod.warning(error_msg)
+                idaapi_shim.warning(error_msg)
             return is_ready
 
         def _update_ui_after_start(self, state) -> None:

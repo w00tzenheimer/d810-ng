@@ -29,11 +29,11 @@ class MarkDeobfuscated(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
-        ida_kernwin_mod = self.ida_module("ida_kernwin")
-        if ida_kernwin_mod is None:
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None:
             return 0
 
-        ida_kernwin_mod.info("Not yet implemented: Mark as deobfuscated")
+        idaapi_shim.info("Not yet implemented: Mark as deobfuscated")
         return 1
 
     def is_available(self, ctx: typing.Any) -> bool:
@@ -45,8 +45,8 @@ class MarkDeobfuscated(D810ActionHandler):
         Returns:
             True if in pseudocode view, False otherwise
         """
-        ida_hexrays_mod = self.ida_module("ida_hexrays")
-        if ida_hexrays_mod is None:
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None:
             return False
 
-        return ida_hexrays_mod.get_widget_vdui(ctx.widget) is not None
+        return idaapi_shim.get_widget_vdui(ctx.widget) is not None

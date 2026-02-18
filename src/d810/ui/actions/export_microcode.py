@@ -14,10 +14,6 @@ from d810.ui.actions.base import D810ActionHandler
 
 logger = getLogger("D810.ui")
 
-ida_funcs = None
-ida_hexrays = None
-ida_kernwin = None
-
 # ---------------------------------------------------------------------------
 # Qt imports -- optional, will fail gracefully if not in GUI mode
 # ---------------------------------------------------------------------------
@@ -57,7 +53,7 @@ class ExportMicrocodeDialog(QDialog if QT_AVAILABLE else object):  # type: ignor
         self,
         func_name: str,
         parent=None,
-        ida_kernwin_module: typing.Any | None = None,
+        idaapi_shim: typing.Any | None = None,
     ):
         """Initialize the export microcode dialog.
 
@@ -67,7 +63,7 @@ class ExportMicrocodeDialog(QDialog if QT_AVAILABLE else object):  # type: ignor
         """
         super().__init__(parent)
         self.func_name = func_name
-        self._ida_kernwin = ida_kernwin_module
+        self._idaapi_shim = idaapi_shim
         self.setWindowTitle("Export Microcode")
         self.setup_ui()
 
@@ -122,10 +118,12 @@ class ExportMicrocodeDialog(QDialog if QT_AVAILABLE else object):  # type: ignor
 
     def browse_file(self):
         """Show file browser dialog."""
-        if self._ida_kernwin is None:
+        if self._idaapi_shim is None:
             return
 
-        file_path = self._ida_kernwin.ask_file(1, self.file_edit.text(), "Save microcode as...")
+        file_path = self._idaapi_shim.ask_file(
+            1, self.file_edit.text(), "Save microcode as..."
+        )
         if file_path:
             self.file_edit.setText(file_path)
 
@@ -165,26 +163,24 @@ class ExportMicrocode(D810ActionHandler):
         Returns:
             1 on success, 0 on failure
         """
-        ida_funcs_mod = self.ida_module("ida_funcs", ida_funcs)
-        ida_hexrays_mod = self.ida_module("ida_hexrays", ida_hexrays)
-        ida_kernwin_mod = self.ida_module("ida_kernwin", ida_kernwin)
-        if not QT_AVAILABLE or ida_funcs_mod is None or ida_hexrays_mod is None or ida_kernwin_mod is None:
+        idaapi_shim = self.ida_module("idaapi")
+        if not QT_AVAILABLE or idaapi_shim is None:
             return 0
 
         # Get current function EA from pseudocode context
-        vdui = ida_hexrays_mod.get_widget_vdui(ctx.widget)
+        vdui = idaapi_shim.get_widget_vdui(ctx.widget)
         if vdui is None:
             logger.warning("ExportMicrocode: not in pseudocode view")
-            ida_kernwin_mod.warning("Not in pseudocode view")
+            idaapi_shim.warning("Not in pseudocode view")
             return 0
 
         func_ea = vdui.cfunc.entry_ea
-        func_name = ida_funcs_mod.get_func_name(func_ea)
+        func_name = idaapi_shim.get_func_name(func_ea)
         if not func_name:
             func_name = f"sub_{func_ea:X}"
 
         # Show dialog
-        dialog = ExportMicrocodeDialog(func_name, ida_kernwin_module=ida_kernwin_mod)
+        dialog = ExportMicrocodeDialog(func_name, idaapi_shim=idaapi_shim)
         if dialog.exec_() != QDialog.Accepted:
             logger.info("Export microcode cancelled by user")
             return 0
@@ -192,7 +188,7 @@ class ExportMicrocode(D810ActionHandler):
         settings = dialog.get_settings()
         output_path = settings["output_path"]
         if not output_path:
-            ida_kernwin_mod.warning("No output file specified")
+            idaapi_shim.warning("No output file specified")
             return 0
 
         maturity_value = settings["maturity_value"]
@@ -217,12 +213,12 @@ class ExportMicrocode(D810ActionHandler):
                 json.dump(microcode_data, f, indent=2, ensure_ascii=False)
 
             logger.info("Exported microcode to %s", output_path)
-            ida_kernwin_mod.info(f"Microcode exported to:\n{output_path}")
+            idaapi_shim.info(f"Microcode exported to:\n{output_path}")
             return 1
 
         except Exception as exc:
             logger.error("Failed to export microcode: %s", exc, exc_info=True)
-            ida_kernwin_mod.warning(f"Failed to export microcode:\n{exc}")
+            idaapi_shim.warning(f"Failed to export microcode:\n{exc}")
             return 0
 
     def is_available(self, ctx: typing.Any) -> bool:
@@ -234,10 +230,10 @@ class ExportMicrocode(D810ActionHandler):
         Returns:
             True if in pseudocode view
         """
-        ida_hexrays_mod = self.ida_module("ida_hexrays", ida_hexrays)
-        if ida_hexrays_mod is None:
+        idaapi_shim = self.ida_module("idaapi")
+        if idaapi_shim is None:
             return False
 
         # Check if we're in pseudocode view
-        vdui = ida_hexrays_mod.get_widget_vdui(ctx.widget)
+        vdui = idaapi_shim.get_widget_vdui(ctx.widget)
         return vdui is not None
