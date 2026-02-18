@@ -323,6 +323,8 @@ class D810ContextMenu:
             "ida_lines",
             "ida_name",
             "ida_bytes",
+            "ida_auto",
+            "ida_problems",
             "idc",
         ):
             try:

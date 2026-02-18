@@ -42,6 +42,17 @@ from d810.mba.rules import VerifiableRule
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
 
+try:
+    from d810.recon.phase import ReconPhase
+    from d810.recon.store import ReconStore
+    from d810.recon.collectors.cfg_shape import CFGShapeCollector
+    from d810.recon.collectors.opcode_distribution import OpcodeDistributionCollector
+    from d810.recon.collectors.dispatch_pattern import DispatchPatternCollector
+    from d810.recon.collectors.ctree_structure import CtreeStructureCollector
+    _RECON_AVAILABLE = True
+except Exception:
+    _RECON_AVAILABLE = False
+
 if TYPE_CHECKING:
     from d810.ui.ida_ui import D810GUI
 
@@ -138,6 +149,7 @@ class D810Manager:
     _started: bool = dataclasses.field(default=False, init=False)
     _profiling_enabled: bool = dataclasses.field(default=False, init=False)
     _start_ts: float = dataclasses.field(default=0.0, init=False)
+    _recon_phase: typing.Any = dataclasses.field(default=None, init=False)
 
     @property
     def started(self):
@@ -243,8 +255,6 @@ class D810Manager:
             rule_scope_project_name=project_name,
             rule_scope_idb_key=idb_key,
         )
-        self.ctree_optimizer = CtreeOptimizerManager(self.stats)
-
         for rule in self.instruction_optimizer_rules:
             rule.log_dir = self.log_dir
             self.instruction_optimizer.add_rule(rule)
@@ -253,15 +263,30 @@ class D810Manager:
             cfg_rule.log_dir = self.log_dir
             self.block_optimizer.add_rule(cfg_rule)
 
-        for ctree_rule in self.ctree_optimizer_rules:
-            ctree_rule.log_dir = self.log_dir
-            self.ctree_optimizer.add_rule(ctree_rule)
-
         # Build PassPipeline when feature flag is enabled (default OFF).
         # Zero overhead when disabled — no imports of pass modules occur.
         _pass_pipeline = None
         if self.config.get("enable_pass_pipeline", False):
             _pass_pipeline = self._build_pass_pipeline()
+
+        # Build ReconPhase when feature flag is enabled (default ON).
+        # Passive collection with minimal overhead; disable with
+        # "enable_recon_pipeline": false in project config.
+        self._recon_phase = None
+        if self.config.get("enable_recon_pipeline", True):
+            self._recon_phase = self._build_recon_phase()
+
+        # Wire recon phase into microcode optimizers.
+        if self._recon_phase is not None:
+            self.instruction_optimizer.configure(recon_phase=self._recon_phase)
+            self.block_optimizer.configure(recon_phase=self._recon_phase)
+
+        # Build ctree optimizer with recon phase from the start.
+        self.ctree_optimizer = CtreeOptimizerManager(self.stats, recon_phase=self._recon_phase)
+
+        for ctree_rule in self.ctree_optimizer_rules:
+            ctree_rule.log_dir = self.log_dir
+            self.ctree_optimizer.add_rule(ctree_rule)
 
         self.hx_decompiler_hook = HexraysDecompilationHook(
             self.event_emitter.emit,
@@ -570,6 +595,41 @@ class D810Manager:
         )
         return pipeline
 
+    def _build_recon_phase(self) -> "ReconPhase | None":
+        """Construct a ReconPhase with all 4 collectors.
+
+        Only called when config["enable_recon_pipeline"] is True (the default).
+        Imports are guarded at module level — if the recon package is unavailable
+        this returns None and the plugin loads normally.
+
+        Returns:
+            ReconPhase instance with all collectors registered, or None on failure.
+        """
+        if not _RECON_AVAILABLE:
+            logger.warning("Recon package unavailable; recon pipeline disabled.")
+            return None
+        try:
+            db_path = (self.log_dir / "d810_recon.db") if self.log_dir else None
+            if db_path is None:
+                import tempfile
+                import pathlib
+                db_path = pathlib.Path(tempfile.gettempdir()) / "d810_recon.db"
+            store = ReconStore(db_path)
+            phase = ReconPhase(store=store)
+            phase.register(CFGShapeCollector())
+            phase.register(OpcodeDistributionCollector())
+            phase.register(DispatchPatternCollector())
+            phase.register(CtreeStructureCollector())
+            logger.info(
+                "ReconPhase enabled: %d collectors, db=%s",
+                phase.collector_count,
+                db_path,
+            )
+            return phase
+        except Exception as exc:
+            logger.warning("Failed to build recon pipeline: %s", exc)
+            return None
+
     def configure_instruction_optimizer(self, rules, **kwargs):
         self.instruction_optimizer_rules = [rule for rule in rules]
         self.instruction_optimizer_config = kwargs
@@ -599,6 +659,12 @@ class D810Manager:
             except Exception:
                 pass
             self.storage = None
+        if self._recon_phase is not None:
+            try:
+                self._recon_phase._store.close()
+            except Exception:
+                pass
+            self._recon_phase = None
 
 
 @contextlib.contextmanager
@@ -753,6 +819,11 @@ class D810State(metaclass=SingletonMeta):
                 rule_scope_idb_key=str(cfg.get("idb_key", self.current_project.path.name)),
             )
             self.manager._compile_rule_scope()
+        if getattr(self, "gui", None) is not None:
+            logger.info(
+                "d810-ng: Rules reconfigured for project %s",
+                self.current_project.path.name,
+            )
         logger.debug(
             "Loaded project %s (%s) from %s",
             self.current_project.path.name,
