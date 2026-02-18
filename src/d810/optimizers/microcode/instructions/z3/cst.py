@@ -56,13 +56,12 @@ class Z3ConstantOptimization(Z3Rule):
         if logger.debug_on:
             logger.debug("Found candidate: %s", format_minsn_t(instruction))
         try:
-            val_0 = tmp.evaluate_with_leaf_info(leaf_info_list, [0])  # * leaf_num)
-            val_1 = tmp.evaluate_with_leaf_info(
-                leaf_info_list, [0xFFFFFFFF]
-            )  # * leaf_num)
+            from d810.evaluator.symbolic import probe_is_constant
+
+            is_const, val_0 = probe_is_constant(tmp, leaf_info_list)
             if logger.debug_on:
-                logger.debug("  val_0: %s, val_1: %s", val_0, val_1)
-            if val_0 != val_1 or tmp.mop is None:
+                logger.debug("  is_const: %s, val_0: %s", is_const, val_0)
+            if not is_const or tmp.mop is None:
                 return None
 
             # TODO(w00tzenheimer): if we're evaluating (evaluate_with_leaf_info) and the results are equal,

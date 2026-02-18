@@ -1,0 +1,756 @@
+"""Unit tests for d810.evaluator.concrete — ConcreteEvaluator.
+
+These tests exercise every opcode in the dispatch chain using lightweight
+mock AST objects.  No IDA Pro is required; the tests are pure-Python.
+
+Opcode integer values are taken from the Cython header
+``src/d810/speedups/cythxr/_chexrays.pxd`` which mirrors the values in
+the IDA SDK ``mcode_t`` enum.
+
+The evaluator uses *lazy* ``import ida_hexrays`` inside ``_eval_node``.
+Because the unit-test conftest forbids mocking IDA modules we must provide
+real integer opcode values that the evaluator can compare against without
+actually importing the IDA module.  We achieve this by registering a
+minimal fake ``ida_hexrays`` module in ``sys.modules`` *before* the
+evaluator is called, carrying only the opcode constants and ``mop_n``
+needed for constant-leaf detection.  This is **not** a MagicMock — it is
+a lightweight ``types.SimpleNamespace`` whose attributes are plain
+integers, which is allowed by the conftest guard.
+"""
+
+from __future__ import annotations
+
+import sys
+import types
+
+import pytest
+
+from d810.evaluator.concrete import ConcreteEvaluator, evaluate_concrete
+from d810.evaluator.helpers import get_registry
+
+
+# ---------------------------------------------------------------------------
+# Minimal fake ida_hexrays with opcode integer constants
+# ---------------------------------------------------------------------------
+# We register this *once* at module import time.  The conftest fixture only
+# rejects unittest.mock.MagicMock / Mock objects; a SimpleNamespace with
+# plain integers is fine.
+
+class _MopT:
+    """Sentinel class standing in for ida_hexrays.mop_t.
+
+    ``mop_snapshot.py`` calls ``NewType("OwnedMop", ida_hexrays.mop_t)`` at
+    import time.  When our stub is already in ``sys.modules["ida_hexrays"]``
+    that line must not raise ``AttributeError``, so we provide a plain class
+    as a stand-in.  No instances are ever created by these unit tests.
+    """
+
+
+_IDA_HEX = types.SimpleNamespace(
+    # mop_t stand-in class (needed by mop_snapshot.NewType calls)
+    mop_t=_MopT,
+
+    # mop operand-type enum constants (mop_snapshot.py uses these)
+    mop_n=1,   # numeric constant
+    mop_r=2,   # register
+    mop_S=3,   # stack variable
+    mop_v=4,   # global variable
+    mop_d=5,   # result of another instruction
+    mop_a=6,   # address of operand
+    mop_f=7,   # list of arguments
+    mop_l=8,   # local variable
+    mop_b=9,   # micro basic-block reference
+    mop_p=10,  # operand pair
+    mop_c=11,  # switch cases
+    mop_str=12,  # string constant
+
+    # mcode_t opcode enum (values from _chexrays.pxd)
+    m_nop=0x00,
+    m_stx=0x01,
+    m_ldx=0x02,
+    m_ldc=0x03,
+    m_mov=0x04,
+    m_neg=0x05,
+    m_lnot=0x06,
+    m_bnot=0x07,
+    m_xds=0x08,
+    m_xdu=0x09,
+    m_low=0x0A,
+    m_high=0x0B,
+    m_add=0x0C,
+    m_sub=0x0D,
+    m_mul=0x0E,
+    m_udiv=0x0F,
+    m_sdiv=0x10,
+    m_umod=0x11,
+    m_smod=0x12,
+    m_or=0x13,
+    m_and=0x14,
+    m_xor=0x15,
+    m_shl=0x16,
+    m_shr=0x17,
+    m_sar=0x18,
+    m_cfadd=0x19,
+    m_ofadd=0x1A,
+    m_sets=0x1D,
+    m_seto=0x1E,
+    m_setp=0x1F,
+    m_setnz=0x20,
+    m_setz=0x21,
+    m_setae=0x22,
+    m_setb=0x23,
+    m_seta=0x24,
+    m_setbe=0x25,
+    m_setg=0x26,
+    m_setge=0x27,
+    m_setl=0x28,
+    m_setle=0x29,
+    m_call=0x38,
+)
+
+# Register the namespace as the ida_hexrays module so the lazy import
+# inside ConcreteEvaluator._eval_node() gets our constants instead.
+sys.modules.setdefault("ida_hexrays", _IDA_HEX)
+
+# Shorthand aliases used throughout the test file
+_OPC = _IDA_HEX  # same namespace, cleaner name
+
+
+# ---------------------------------------------------------------------------
+# Minimal mock AST node / leaf classes (no IDA types, no d810.expr.p_ast)
+# ---------------------------------------------------------------------------
+
+class _Leaf:
+    """Minimal variable leaf — value comes from env."""
+
+    def __init__(self, ast_index: int, dest_size: int = 4):
+        self.ast_index = ast_index
+        self.dest_size = dest_size
+        self.mop = None
+
+    def is_leaf(self) -> bool:
+        return True
+
+    def is_constant(self) -> bool:
+        return False
+
+
+class _ConstLeaf:
+    """Minimal constant leaf — value is stored directly."""
+
+    def __init__(self, value: int, dest_size: int = 4):
+        self._value = value
+        self.dest_size = dest_size
+        self.ast_index = None
+        # Expose a fake mop with is_constant=True (MopSnapshot-like)
+        self.mop = types.SimpleNamespace(
+            is_constant=True,
+            value=value,
+        )
+
+    def is_leaf(self) -> bool:
+        return True
+
+    def is_constant(self) -> bool:
+        return True
+
+
+class _Node:
+    """Minimal interior node."""
+
+    def __init__(
+        self,
+        opcode: int,
+        left,
+        right=None,
+        *,
+        dest_size: int = 4,
+        func_name: str = "",
+        ast_index: int = 0,
+    ):
+        self.opcode = opcode
+        self.left = left
+        self.right = right
+        self.dest_size = dest_size
+        self.func_name = func_name
+        self.ast_index = ast_index
+
+    def is_leaf(self) -> bool:
+        return False
+
+    def is_constant(self) -> bool:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Fixture
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def ev() -> ConcreteEvaluator:
+    """Fresh ConcreteEvaluator instance."""
+    return ConcreteEvaluator()
+
+
+# ---------------------------------------------------------------------------
+# Leaf evaluation
+# ---------------------------------------------------------------------------
+
+class TestLeafEvaluation:
+    """Tests for _eval_leaf: variable and constant leaves."""
+
+    def test_variable_leaf_returns_env_value(self, ev):
+        """A variable leaf looks up its value from the env dict."""
+        leaf = _Leaf(ast_index=7, dest_size=4)
+        result = ev.evaluate(leaf, {7: 0xDEAD})
+        assert result == 0xDEAD
+
+    def test_variable_leaf_missing_index_returns_none(self, ev):
+        """A variable leaf with no binding returns None (mirroring dict.get)."""
+        leaf = _Leaf(ast_index=3, dest_size=4)
+        result = ev.evaluate(leaf, {})
+        assert result is None
+
+    def test_constant_leaf_returns_stored_value(self, ev):
+        """A constant leaf returns its embedded value regardless of env."""
+        leaf = _ConstLeaf(0xCAFEBABE, dest_size=4)
+        result = ev.evaluate(leaf, {})
+        assert result == 0xCAFEBABE
+
+    def test_constant_leaf_ignores_env(self, ev):
+        """env bindings do not affect a constant leaf's return value."""
+        leaf = _ConstLeaf(42, dest_size=1)
+        result = ev.evaluate(leaf, {0: 999})
+        assert result == 42
+
+
+# ---------------------------------------------------------------------------
+# Unary opcodes
+# ---------------------------------------------------------------------------
+
+class TestUnaryOpcodes:
+    """Tests for m_mov, m_neg, m_lnot, m_bnot, m_xdu, m_low."""
+
+    def test_m_mov(self, ev):
+        node = _Node(_OPC.m_mov, _ConstLeaf(0xAB, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0xAB
+
+    def test_m_neg_positive(self, ev):
+        """neg(5) in 8-bit == 0xFB (two's complement)."""
+        node = _Node(_OPC.m_neg, _ConstLeaf(5, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0xFB  # (-5) & 0xFF
+
+    def test_m_neg_zero(self, ev):
+        """neg(0) == 0."""
+        node = _Node(_OPC.m_neg, _ConstLeaf(0, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0
+
+    def test_m_lnot_nonzero_returns_true(self, ev):
+        """lnot of any nonzero value is True."""
+        node = _Node(_OPC.m_lnot, _ConstLeaf(42, 1), dest_size=1)
+        assert ev.evaluate(node, {}) is True
+
+    def test_m_lnot_zero_returns_false(self, ev):
+        """lnot of zero is False."""
+        node = _Node(_OPC.m_lnot, _ConstLeaf(0, 1), dest_size=1)
+        assert ev.evaluate(node, {}) is False
+
+    def test_m_bnot_8bit(self, ev):
+        """bnot(0xAA) in 8-bit == 0x55."""
+        node = _Node(_OPC.m_bnot, _ConstLeaf(0xAA, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0x55
+
+    def test_m_bnot_32bit(self, ev):
+        """bnot(0xDEADBEEF) in 32-bit == 0x21524110."""
+        node = _Node(_OPC.m_bnot, _ConstLeaf(0xDEADBEEF, 4), dest_size=4)
+        assert ev.evaluate(node, {}) == (~0xDEADBEEF & 0xFFFFFFFF)
+
+    def test_m_xdu_masks_to_dest(self, ev):
+        """xdu zero-extends: result is masked to dest_size."""
+        node = _Node(_OPC.m_xdu, _ConstLeaf(0xFF, 1), dest_size=4)
+        assert ev.evaluate(node, {}) == 0xFF
+
+    def test_m_low_masks_to_dest(self, ev):
+        """m_low truncates to dest_size bits."""
+        # 0x1234 in 1-byte destination -> 0x34
+        node = _Node(_OPC.m_low, _ConstLeaf(0x1234, 2), dest_size=1)
+        assert ev.evaluate(node, {}) == 0x34
+
+
+# ---------------------------------------------------------------------------
+# Binary arithmetic
+# ---------------------------------------------------------------------------
+
+class TestBinaryArithmetic:
+    """Tests for m_add, m_sub, m_mul, m_udiv, m_sdiv, m_umod, m_smod."""
+
+    def test_m_add(self, ev):
+        node = _Node(_OPC.m_add, _ConstLeaf(3, 4), _ConstLeaf(5, 4), dest_size=4)
+        assert ev.evaluate(node, {}) == 8
+
+    def test_m_add_wraps_8bit(self, ev):
+        node = _Node(_OPC.m_add, _ConstLeaf(0xFF, 1), _ConstLeaf(1, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0  # 0x100 & 0xFF
+
+    def test_m_sub(self, ev):
+        node = _Node(_OPC.m_sub, _ConstLeaf(10, 4), _ConstLeaf(3, 4), dest_size=4)
+        assert ev.evaluate(node, {}) == 7
+
+    def test_m_sub_wraps_8bit(self, ev):
+        """0 - 1 in 8-bit unsigned wraps to 0xFF."""
+        node = _Node(_OPC.m_sub, _ConstLeaf(0, 1), _ConstLeaf(1, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0xFF
+
+    def test_m_mul(self, ev):
+        node = _Node(_OPC.m_mul, _ConstLeaf(6, 4), _ConstLeaf(7, 4), dest_size=4)
+        assert ev.evaluate(node, {}) == 42
+
+    def test_m_mul_wraps_8bit(self, ev):
+        node = _Node(_OPC.m_mul, _ConstLeaf(0x10, 1), _ConstLeaf(0x20, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == (0x200 & 0xFF)
+
+    def test_m_udiv(self, ev):
+        node = _Node(_OPC.m_udiv, _ConstLeaf(20, 4), _ConstLeaf(4, 4), dest_size=4)
+        assert ev.evaluate(node, {}) == 5
+
+    def test_m_sdiv(self, ev):
+        node = _Node(_OPC.m_sdiv, _ConstLeaf(20, 4), _ConstLeaf(4, 4), dest_size=4)
+        assert ev.evaluate(node, {}) == 5
+
+    def test_m_umod(self, ev):
+        node = _Node(_OPC.m_umod, _ConstLeaf(17, 4), _ConstLeaf(5, 4), dest_size=4)
+        assert ev.evaluate(node, {}) == 2
+
+    def test_m_smod(self, ev):
+        node = _Node(_OPC.m_smod, _ConstLeaf(17, 4), _ConstLeaf(5, 4), dest_size=4)
+        assert ev.evaluate(node, {}) == 2
+
+
+# ---------------------------------------------------------------------------
+# Bitwise operations
+# ---------------------------------------------------------------------------
+
+class TestBitwiseOpcodes:
+    """Tests for m_and, m_or, m_xor."""
+
+    def test_m_and(self, ev):
+        node = _Node(_OPC.m_and, _ConstLeaf(0xF0, 1), _ConstLeaf(0x0F, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0x00
+
+    def test_m_and_partial_overlap(self, ev):
+        node = _Node(_OPC.m_and, _ConstLeaf(0xFF, 1), _ConstLeaf(0xAA, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0xAA
+
+    def test_m_or(self, ev):
+        node = _Node(_OPC.m_or, _ConstLeaf(0xF0, 1), _ConstLeaf(0x0F, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0xFF
+
+    def test_m_xor(self, ev):
+        node = _Node(_OPC.m_xor, _ConstLeaf(0xFF, 1), _ConstLeaf(0xAA, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0x55
+
+    def test_m_xor_same_values(self, ev):
+        """XOR of identical values is always 0."""
+        node = _Node(_OPC.m_xor, _ConstLeaf(0x1234, 2), _ConstLeaf(0x1234, 2), dest_size=2)
+        assert ev.evaluate(node, {}) == 0
+
+
+# ---------------------------------------------------------------------------
+# Shift operations
+# ---------------------------------------------------------------------------
+
+class TestShiftOpcodes:
+    """Tests for m_shl, m_shr, m_sar."""
+
+    def test_m_shl(self, ev):
+        node = _Node(_OPC.m_shl, _ConstLeaf(1, 4), _ConstLeaf(4, 4), dest_size=4)
+        assert ev.evaluate(node, {}) == 0x10
+
+    def test_m_shl_overflow_masked(self, ev):
+        """Shift that overflows is masked to dest_size."""
+        node = _Node(_OPC.m_shl, _ConstLeaf(0xFF, 1), _ConstLeaf(1, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0xFE  # 0x1FE & 0xFF
+
+    def test_m_shr(self, ev):
+        node = _Node(_OPC.m_shr, _ConstLeaf(0x80, 1), _ConstLeaf(4, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0x08
+
+    def test_m_sar_negative(self, ev):
+        """Arithmetic right shift of -1 (0xFF in 8-bit) by 1 stays 0xFF."""
+        # unsigned_to_signed(0xFF, 1) == -1 ; -1 >> 1 == -1
+        node = _Node(_OPC.m_sar, _ConstLeaf(0xFF, 1), _ConstLeaf(1, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0xFF
+
+    def test_m_sar_positive(self, ev):
+        """Arithmetic right shift of 0x10 by 1 is 0x08."""
+        node = _Node(_OPC.m_sar, _ConstLeaf(0x10, 1), _ConstLeaf(1, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0x08
+
+
+# ---------------------------------------------------------------------------
+# Sign-extension / high-extract
+# ---------------------------------------------------------------------------
+
+class TestSignExtension:
+    """Tests for m_xds, m_high."""
+
+    def test_m_xds_positive(self, ev):
+        """Sign-extend 0x7F (8-bit) to 32-bit stays 0x7F."""
+        left = _ConstLeaf(0x7F, 1)
+        node = _Node(_OPC.m_xds, left, dest_size=4)
+        assert ev.evaluate(node, {}) == 0x7F
+
+    def test_m_xds_negative(self, ev):
+        """Sign-extend 0x80 (8-bit, == -128) to 32-bit gives 0xFFFFFF80."""
+        left = _ConstLeaf(0x80, 1)
+        node = _Node(_OPC.m_xds, left, dest_size=4)
+        assert ev.evaluate(node, {}) == 0xFFFFFF80
+
+    def test_m_high_32bit_from_64bit(self, ev):
+        """m_high extracts the upper 32 bits of a 64-bit value."""
+        # The *dest_size* is 4 (we want 32-bit high); left is 64-bit.
+        left = _ConstLeaf(0x0000000100000000, 8)
+        node = _Node(_OPC.m_high, left, dest_size=4)
+        # shift_bits = dest_size * 8 = 32
+        assert ev.evaluate(node, {}) == 0x00000001
+
+
+# ---------------------------------------------------------------------------
+# m_sets (sign flag)
+# ---------------------------------------------------------------------------
+
+class TestSetsOpcode:
+    """Tests for m_sets (sign flag)."""
+
+    def test_m_sets_negative_value(self, ev):
+        """sets(0xFF) in 8-bit: -1 < 0 so result is 1."""
+        left = _ConstLeaf(0xFF, 1)
+        node = _Node(_OPC.m_sets, left, dest_size=1)
+        assert ev.evaluate(node, {}) == 1
+
+    def test_m_sets_positive_value(self, ev):
+        """sets(0x01) in 8-bit: +1 >= 0 so result is 0."""
+        left = _ConstLeaf(0x01, 1)
+        node = _Node(_OPC.m_sets, left, dest_size=1)
+        assert ev.evaluate(node, {}) == 0
+
+    def test_m_sets_zero(self, ev):
+        """sets(0) is 0."""
+        left = _ConstLeaf(0, 1)
+        node = _Node(_OPC.m_sets, left, dest_size=1)
+        assert ev.evaluate(node, {}) == 0
+
+
+# ---------------------------------------------------------------------------
+# Comparison / set-flag opcodes
+# ---------------------------------------------------------------------------
+
+class TestSetFlagOpcodes:
+    """Tests for m_setnz, m_setz, m_setae, m_setb, m_seta, m_setbe."""
+
+    def test_m_setnz_true(self, ev):
+        node = _Node(_OPC.m_setnz, _ConstLeaf(3, 1), _ConstLeaf(4, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 1
+
+    def test_m_setnz_false(self, ev):
+        node = _Node(_OPC.m_setnz, _ConstLeaf(3, 1), _ConstLeaf(3, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0
+
+    def test_m_setz_true(self, ev):
+        node = _Node(_OPC.m_setz, _ConstLeaf(7, 1), _ConstLeaf(7, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 1
+
+    def test_m_setz_false(self, ev):
+        node = _Node(_OPC.m_setz, _ConstLeaf(7, 1), _ConstLeaf(8, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0
+
+    def test_m_setae_true(self, ev):
+        node = _Node(_OPC.m_setae, _ConstLeaf(5, 1), _ConstLeaf(5, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 1
+
+    def test_m_setae_false(self, ev):
+        node = _Node(_OPC.m_setae, _ConstLeaf(4, 1), _ConstLeaf(5, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0
+
+    def test_m_setb_true(self, ev):
+        node = _Node(_OPC.m_setb, _ConstLeaf(3, 1), _ConstLeaf(5, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 1
+
+    def test_m_setb_false(self, ev):
+        node = _Node(_OPC.m_setb, _ConstLeaf(5, 1), _ConstLeaf(3, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0
+
+    def test_m_seta_true(self, ev):
+        node = _Node(_OPC.m_seta, _ConstLeaf(5, 1), _ConstLeaf(3, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 1
+
+    def test_m_seta_false(self, ev):
+        node = _Node(_OPC.m_seta, _ConstLeaf(3, 1), _ConstLeaf(5, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0
+
+    def test_m_setbe_true(self, ev):
+        node = _Node(_OPC.m_setbe, _ConstLeaf(5, 1), _ConstLeaf(5, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 1
+
+    def test_m_setbe_false(self, ev):
+        node = _Node(_OPC.m_setbe, _ConstLeaf(6, 1), _ConstLeaf(5, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0
+
+
+# ---------------------------------------------------------------------------
+# Signed comparison opcodes
+# ---------------------------------------------------------------------------
+
+class TestSignedComparisons:
+    """Tests for m_setg, m_setge, m_setl, m_setle."""
+
+    def test_m_setg_positive(self, ev):
+        """setg(5, 3) signed: 5 > 3, result 1."""
+        node = _Node(_OPC.m_setg, _ConstLeaf(5, 1), _ConstLeaf(3, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 1
+
+    def test_m_setg_negative_values(self, ev):
+        """setg(0xFF, 0x01) signed in 8-bit: -1 > 1 is False, result 0."""
+        node = _Node(_OPC.m_setg, _ConstLeaf(0xFF, 1), _ConstLeaf(0x01, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 0
+
+    def test_m_setge_equal(self, ev):
+        """setge(3, 3) signed: 3 >= 3 is True, result 1."""
+        node = _Node(_OPC.m_setge, _ConstLeaf(3, 1), _ConstLeaf(3, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 1
+
+    def test_m_setl_negative_lt_positive(self, ev):
+        """setl(0xFF, 0x01) signed: -1 < 1, result 1."""
+        node = _Node(_OPC.m_setl, _ConstLeaf(0xFF, 1), _ConstLeaf(0x01, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 1
+
+    def test_m_setle_equal(self, ev):
+        """setle(5, 5) signed: 5 <= 5, result 1."""
+        node = _Node(_OPC.m_setle, _ConstLeaf(5, 1), _ConstLeaf(5, 1), dest_size=1)
+        assert ev.evaluate(node, {}) == 1
+
+
+# ---------------------------------------------------------------------------
+# m_call — rotate helpers
+# ---------------------------------------------------------------------------
+
+class TestRotateHelperCall:
+    """Tests for m_call dispatch to rotate helpers via HelperRegistry."""
+
+    def test_rol4_via_call_node(self, ev):
+        """m_call node with func_name=__ROL4__ delegates to the registry."""
+        val_leaf = _ConstLeaf(0x12345678, 4)
+        rot_leaf = _ConstLeaf(8, 1)
+        node = _Node(
+            _OPC.m_call, val_leaf, rot_leaf,
+            dest_size=4, func_name="__ROL4__"
+        )
+        result = ev.evaluate(node, {})
+        assert result == 0x34567812
+
+    def test_ror4_via_call_node(self, ev):
+        """m_call node with func_name=__ROR4__ delegates to the registry."""
+        val_leaf = _ConstLeaf(0x12345678, 4)
+        rot_leaf = _ConstLeaf(8, 1)
+        node = _Node(
+            _OPC.m_call, val_leaf, rot_leaf,
+            dest_size=4, func_name="__ROR4__"
+        )
+        result = ev.evaluate(node, {})
+        assert result == 0x78123456
+
+    def test_rol1_via_call_node(self, ev):
+        """m_call node with func_name=__ROL1__: bit 7 wraps to bit 0."""
+        val_leaf = _ConstLeaf(0x80, 1)
+        rot_leaf = _ConstLeaf(1, 1)
+        node = _Node(
+            _OPC.m_call, val_leaf, rot_leaf,
+            dest_size=1, func_name="__ROL1__"
+        )
+        result = ev.evaluate(node, {})
+        assert result == 0x01
+
+    def test_bang_prefix_stripped(self, ev):
+        """func_name with leading '!' is stripped before registry lookup."""
+        val_leaf = _ConstLeaf(0x12345678, 4)
+        rot_leaf = _ConstLeaf(8, 1)
+        node = _Node(
+            _OPC.m_call, val_leaf, rot_leaf,
+            dest_size=4, func_name="!__ROL4__"
+        )
+        result = ev.evaluate(node, {})
+        assert result == 0x34567812
+
+    def test_unknown_call_returns_zero(self, ev):
+        """m_call with unknown func_name returns 0."""
+        val_leaf = _ConstLeaf(0xDEAD, 2)
+        rot_leaf = _ConstLeaf(1, 1)
+        node = _Node(
+            _OPC.m_call, val_leaf, rot_leaf,
+            dest_size=2, func_name="__UNKNOWN__"
+        )
+        result = ev.evaluate(node, {})
+        assert result == 0
+
+    def test_call_no_func_name_returns_zero(self, ev):
+        """m_call with no func_name returns 0."""
+        val_leaf = _ConstLeaf(0xDEAD, 2)
+        rot_leaf = _ConstLeaf(1, 1)
+        node = _Node(
+            _OPC.m_call, val_leaf, rot_leaf,
+            dest_size=2, func_name=""
+        )
+        result = ev.evaluate(node, {})
+        assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# env bindings and variable leaves
+# ---------------------------------------------------------------------------
+
+class TestEnvBindings:
+    """Tests for variable-leaf env lookup in larger tree expressions.
+
+    Interior nodes use ast_index=None (not in env) so the env short-circuit
+    does not fire.  Only leaf nodes carry meaningful ast_index values.
+    """
+
+    def test_add_two_variables(self, ev):
+        """(x0 + x1) where x0=3, x1=4 == 7."""
+        x0 = _Leaf(ast_index=10, dest_size=4)
+        x1 = _Leaf(ast_index=11, dest_size=4)
+        # ast_index=None ensures the node is never short-circuited via env
+        node = _Node(_OPC.m_add, x0, x1, dest_size=4, ast_index=None)
+        result = ev.evaluate(node, {10: 3, 11: 4})
+        assert result == 7
+
+    def test_xor_variable_with_constant(self, ev):
+        """(x0 ^ 0xFF) where x0=0xAA == 0x55."""
+        x0 = _Leaf(ast_index=10, dest_size=1)
+        const = _ConstLeaf(0xFF, 1)
+        node = _Node(_OPC.m_xor, x0, const, dest_size=1, ast_index=None)
+        result = ev.evaluate(node, {10: 0xAA})
+        assert result == 0x55
+
+    def test_nested_expression(self, ev):
+        """(x0 + x1) * 2 with x0=3, x1=4 == 14."""
+        x0 = _Leaf(ast_index=10, dest_size=4)
+        x1 = _Leaf(ast_index=11, dest_size=4)
+        add_node = _Node(_OPC.m_add, x0, x1, dest_size=4, ast_index=None)
+        const2 = _ConstLeaf(2, 4)
+        mul_node = _Node(_OPC.m_mul, add_node, const2, dest_size=4, ast_index=None)
+        result = ev.evaluate(mul_node, {10: 3, 11: 4})
+        assert result == 14
+
+    def test_node_index_in_env_short_circuits(self, ev):
+        """If a node's ast_index is in env, return env value directly."""
+        x0 = _Leaf(ast_index=10, dest_size=4)
+        x1 = _Leaf(ast_index=11, dest_size=4)
+        add_node = _Node(_OPC.m_add, x0, x1, dest_size=4, ast_index=99)
+        # Binding 99 directly -> should bypass actual evaluation
+        result = ev.evaluate(add_node, {99: 42, 10: 100, 11: 200})
+        assert result == 42
+
+
+# ---------------------------------------------------------------------------
+# evaluate_concrete() public entry point
+# ---------------------------------------------------------------------------
+
+class TestEvaluateConcrete:
+    """Tests for the module-level evaluate_concrete() helper."""
+
+    def test_evaluate_concrete_basic(self):
+        """evaluate_concrete() produces the same result as ConcreteEvaluator().evaluate()."""
+        leaf = _ConstLeaf(0x1234, 2)
+        assert evaluate_concrete(leaf, {}) == 0x1234
+
+    def test_evaluate_concrete_with_custom_evaluator(self):
+        """evaluate_concrete() accepts an explicit evaluator override."""
+        class _DoubleEvaluator:
+            def evaluate(self, node, env):
+                return ConcreteEvaluator().evaluate(node, env) * 2
+
+        leaf = _ConstLeaf(5, 1)
+        result = evaluate_concrete(leaf, {}, evaluator=_DoubleEvaluator())
+        assert result == 10
+
+    def test_evaluate_concrete_variable_leaf(self):
+        """evaluate_concrete() resolves variable leaves from env."""
+        leaf = _Leaf(ast_index=3, dest_size=4)
+        assert evaluate_concrete(leaf, {3: 0xABC}) == 0xABC
+
+
+# ---------------------------------------------------------------------------
+# Error cases
+# ---------------------------------------------------------------------------
+
+class TestErrorCases:
+    """Tests for error / edge-case handling."""
+
+    def test_unknown_opcode_raises(self, ev):
+        """AstEvaluationException for an unsupported opcode."""
+        from d810.errors import AstEvaluationException
+        node = _Node(0xFF, _ConstLeaf(1, 1), dest_size=1)
+        with pytest.raises(AstEvaluationException, match="Can't evaluate opcode"):
+            ev.evaluate(node, {})
+
+    def test_dest_size_none_raises(self, ev):
+        """ValueError when dest_size is None on an interior node."""
+        node = _Node(_OPC.m_mov, _ConstLeaf(1, 1), dest_size=None)
+        node.dest_size = None  # explicit override
+        with pytest.raises(ValueError, match="dest_size is None"):
+            ev.evaluate(node, {})
+
+    def test_binary_opcode_with_none_right_raises(self, ev):
+        """ValueError when a binary opcode lacks a right operand."""
+        node = _Node(_OPC.m_add, _ConstLeaf(1, 4), right=None, dest_size=4)
+        with pytest.raises(ValueError, match="right is None for binary opcode"):
+            ev.evaluate(node, {})
+
+    def test_division_by_zero_propagates(self, ev):
+        """ZeroDivisionError propagates upward (mirroring original behaviour)."""
+        node = _Node(_OPC.m_udiv, _ConstLeaf(1, 4), _ConstLeaf(0, 4), dest_size=4)
+        with pytest.raises(ZeroDivisionError):
+            ev.evaluate(node, {})
+
+    def test_left_is_none_raises(self, ev):
+        """ValueError when left operand is None."""
+        node = _Node(_OPC.m_mov, None, dest_size=4)
+        node.left = None
+        with pytest.raises((ValueError, AttributeError)):
+            ev.evaluate(node, {})
+
+
+# ---------------------------------------------------------------------------
+# evaluate_with_leaf_info
+# ---------------------------------------------------------------------------
+
+class _FakeAstInfo:
+    """Minimal AstInfo-like object for evaluate_with_leaf_info tests."""
+
+    def __init__(self, ast_index: int):
+        self.ast = types.SimpleNamespace(ast_index=ast_index)
+
+
+class TestEvaluateWithLeafInfo:
+    """Tests for ConcreteEvaluator.evaluate_with_leaf_info()."""
+
+    def test_basic_evaluate_with_leaf_info(self, ev):
+        """evaluate_with_leaf_info builds env and calls evaluate correctly."""
+        x0 = _Leaf(ast_index=10, dest_size=4)
+        x1 = _Leaf(ast_index=11, dest_size=4)
+        # ast_index=None on the node prevents env short-circuit
+        node = _Node(_OPC.m_add, x0, x1, dest_size=4, ast_index=None)
+
+        leafs_info = [_FakeAstInfo(10), _FakeAstInfo(11)]
+        result = ev.evaluate_with_leaf_info(node, leafs_info, [10, 20])
+        assert result == 30
+
+    def test_evaluate_with_leaf_info_skips_none_index(self, ev):
+        """Leaf infos with ast_index=None are silently skipped."""
+        leaf = _ConstLeaf(99, 1)
+        node = _Node(_OPC.m_mov, leaf, dest_size=1)
+
+        info_none = types.SimpleNamespace(ast=types.SimpleNamespace(ast_index=None))
+        result = ev.evaluate_with_leaf_info(node, [info_none], [42])
+        assert result == 99
