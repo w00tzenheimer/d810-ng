@@ -54,7 +54,7 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Callable
+from d810.core.typing import Callable
 
 _logger = logging.getLogger("D810.deferred_events")
 

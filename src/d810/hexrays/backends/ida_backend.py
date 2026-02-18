@@ -8,7 +8,7 @@ Wraps existing IDA infrastructure:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING
 
 from d810.hexrays.graph_modification import (
     GraphModification,

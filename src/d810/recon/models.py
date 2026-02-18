@@ -76,9 +76,9 @@ class ReconResult:
     candidates: tuple[CandidateFlag, ...]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.metrics, MappingProxyType):
+        if not (hasattr(self.metrics, '__getitem__') and not hasattr(self.metrics, '__setitem__')):
             raise TypeError(
-                f"ReconResult.metrics must be MappingProxyType, got {type(self.metrics)!r}"
+                f"ReconResult.metrics must be a read-only mapping, got {type(self.metrics)!r}"
             )
 
 

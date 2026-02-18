@@ -35,7 +35,7 @@ Design Notes
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
+from d810.core.typing import Union
 
 # Import InsnSnapshot from Phase 3 (portable CFG layer)
 from d810.hexrays.portable_cfg import InsnSnapshot
