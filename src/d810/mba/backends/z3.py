@@ -19,7 +19,7 @@ There are TWO separate Z3 utility modules in d810, serving different purposes:
    Use:     Unit tests, CI, TDD rule development, mathematical verification
 
    Key exports:
-   - Z3VerificationVisitor: Converts SymbolicExpression → Z3 BitVec
+   - Z3VerificationVisitor: Converts SymbolicExpression -> Z3 BitVec
    - prove_equivalence(): Prove two SymbolicExpressions are equivalent
    - verify_rule(): Verify a rule's PATTERN equals its REPLACEMENT
 
@@ -37,7 +37,7 @@ There are TWO separate Z3 utility modules in d810, serving different purposes:
    Use:     Runtime verification inside IDA Pro plugin
 
    Key exports:
-   - ast_to_z3_expression(): Converts AstNode → Z3 BitVec
+   - ast_to_z3_expression(): Converts AstNode -> Z3 BitVec
    - z3_check_mop_equality(): Check if two mop_t are equivalent
    - z3_prove_equivalence(): Prove AstNode equivalence with mop_t context
 
@@ -48,7 +48,7 @@ WHY TWO MODULES?
 The separation enables:
 1. Unit testing rules WITHOUT IDA Pro license
 2. CI/CD pipeline verification (GitHub Actions)
-3. TDD workflow: write rule → verify with Z3 → integrate with IDA
+3. TDD workflow: write rule -> verify with Z3 -> integrate with IDA
 4. Clear dependency boundaries (mba/ never imports IDA modules)
 
 The d810.mba package is designed to be reusable outside of IDA Pro entirely.

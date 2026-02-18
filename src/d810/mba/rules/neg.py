@@ -213,7 +213,7 @@ Rule breakdown:
 - Negated OR: 1 rule
 - Negated XOR: 2 rules
 
-All 8 rules are Z3-verified ✓
+All 8 rules are Z3-verified *
 
 Code metrics:
 - Original: ~143 lines with imperative patterns

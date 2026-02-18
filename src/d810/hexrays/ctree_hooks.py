@@ -87,7 +87,7 @@ class CtreeOptimizerManager:
         logger.debug("Initializing CtreeOptimizerManager...")
         self.ctree_rules: list[CtreeOptimizationRule] = []
         self.stats: OptimizationStatistics = stats
-        # Optional ReconPhase — when set, fires ctree collectors at each
+        # Optional ReconPhase - when set, fires ctree collectors at each
         # maturity level before ctree rules run. None means recon is disabled.
         self._recon_phase = recon_phase  # ReconPhase | None
 
@@ -106,7 +106,7 @@ class CtreeOptimizerManager:
         :return: total number of patches applied
         """
         # Recon: fire ctree collectors at every maturity level (no-op when
-        # _recon_phase is None — guarded for zero overhead when disabled).
+        # _recon_phase is None - guarded for zero overhead when disabled).
         if self._recon_phase is not None:
             try:
                 self._recon_phase.run_ctree_collectors(

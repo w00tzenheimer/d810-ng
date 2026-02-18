@@ -40,7 +40,7 @@ class DispatchRegionDetector:
 
         Parameters
         ----------
-        adj : dict mapping serial → tuple of successor serials
+        adj : dict mapping serial -> tuple of successor serials
         dispatcher_serial : the known/suspected dispatcher block serial
 
         Returns
@@ -78,7 +78,7 @@ class DispatchRegionDetector:
 
         Parameters
         ----------
-        adj : dict mapping serial → tuple of successor serials
+        adj : dict mapping serial -> tuple of successor serials
 
         Returns
         -------
@@ -161,7 +161,7 @@ class DispatchRegionDetector:
 
         Parameters
         ----------
-        adj : dict mapping serial → tuple of successor serials
+        adj : dict mapping serial -> tuple of successor serials
         dispatch_region : the SCC containing the dispatcher
 
         Returns

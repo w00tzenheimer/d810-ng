@@ -1,4 +1,4 @@
-"""CtreeStructureCollector — ctree-level structural metrics.
+"""CtreeStructureCollector - ctree-level structural metrics.
 
 Fires at CMAT_FINAL (60). Walks the ctree using duck-typed iteration
 (``cfunc.body`` and child iteration). Works with both real ``cfunc_t``
@@ -26,7 +26,7 @@ from d810.recon.models import CandidateFlag, ReconResult
 
 _CMAT_FINAL = 60
 
-# cinsn_t op values (IDA SDK — duplicated to avoid IDA import)
+# cinsn_t op values (IDA SDK - duplicated to avoid IDA import)
 _CIT_IF = 1
 _CIT_SWITCH = 14
 _CIT_GOTO = 17

@@ -286,7 +286,7 @@ class ConstrainedMBARule(MBARule):
         options: VerificationOptions | None = None,
         engine: VerificationEngine | None = None,
     ) -> bool:
-        """Proves that pattern ≡ replacement under the defined constraints.
+        """Proves that pattern == replacement under the defined constraints.
 
         Args:
             options: Verification options (bit_width, timeout, etc.).

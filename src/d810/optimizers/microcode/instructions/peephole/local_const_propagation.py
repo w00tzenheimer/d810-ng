@@ -109,7 +109,7 @@ class LocalizedConstantPropagationRule(PeepholeSimplificationRule):
         #    if this particular instruction is not itself rewritten.--------
         if self._is_constant_stack_assignment(ins):
             self._record_stack_assignment(ins)
-            return  # This instruction is just an assignment – nothing to fold
+            return  # This instruction is just an assignment - nothing to fold
 
         if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
             return  # Skip instructions outside the allow-list
@@ -296,7 +296,7 @@ class LocalizedConstantPropagationRule(PeepholeSimplificationRule):
                 if stack_var_name is not None:
                     # For true stack variables (mop_S) we keep track of the offset, but for
                     # register based references (mop_r) the immediate that appears in an
-                    # expression like (rcx+#4) is not an offset into the *variable* – it's
+                    # expression like (rcx+#4) is not an offset into the *variable* - it's
                     # simply an arithmetic addition on a pointer register.  In that case we
                     # record the constant against the register itself so that later uses of
                     # the register (e.g. an `add rcx, #4`) can be folded correctly.

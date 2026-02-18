@@ -6,9 +6,9 @@ These components are extracted to:
 3. Provide testable units with clear interfaces
 
 Performance targets based on profiling:
-- BlockInfo.get_copy: 1.4M calls in 0.55s → target <0.1s
-- MopHistory copy operations: 22K calls in 0.76s → target <0.2s
-- block_serial_path: 102K calls in 1.3s → target <0.2s (with caching)
+- BlockInfo.get_copy: 1.4M calls in 0.55s -> target <0.1s
+- MopHistory copy operations: 22K calls in 0.76s -> target <0.2s
+- block_serial_path: 102K calls in 1.3s -> target <0.2s (with caching)
 """
 
 from __future__ import annotations

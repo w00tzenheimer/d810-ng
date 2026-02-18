@@ -393,9 +393,9 @@ class And1_MbaRule_1(VerifiableRule):
 
     Proof:
         For any integer x:
-        - x * x mod 4 ∈ {0, 1}
+        - x * x mod 4 in {0, 1}
         - (x * x) & 3 has the same parity as x
-        - Therefore (x * x) & 3 ≡ x & 1 (mod 2)
+        - Therefore (x * x) & 3 == x & 1 (mod 2)
 
     In practice, (x * x) & 3 simplifies to x & 1 for bit extraction.
     """
@@ -468,7 +468,7 @@ Code reduction:
 - Original: ~304 lines with imperative check_candidate
 - Refactored: ~435 lines with comprehensive documentation and proofs
 - Net increase due to mathematical proofs in docstrings
-- Actual pattern code: 47% reduction (15 lines → 8 lines per rule)
+- Actual pattern code: 47% reduction (15 lines -> 8 lines per rule)
 
 Verification:
 - All 19 rules verified by Z3
@@ -488,5 +488,5 @@ Benefits achieved:
 4. **Documentation**: Self-documenting with formal proofs
 5. **Knowledge base**: Patterns teach compiler optimization techniques
 
-Phase completion: AND rules 100% migrated! ✓
+Phase completion: AND rules 100% migrated! *
 """

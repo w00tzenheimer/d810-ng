@@ -1,7 +1,7 @@
-"""Hex‑Rays ctree snapshotting helpers.
+"""Hex-Rays ctree snapshotting helpers.
 
 Unflattening dispatchers and applying binary patches can simplify the
-decompiler’s output significantly.  To avoid running the unflattening
+decompiler's output significantly.  To avoid running the unflattening
 analysis and the decompiler repeatedly on subsequent sessions, this
 module provides helpers to serialise and deserialise the final ctree
 (C code representation) of a function.  The snapshot can be stored in
@@ -23,7 +23,7 @@ from d810.core.typing import Any, Dict, Optional
 
 
 def serialize_ctree(ctree: Any) -> Dict[str, Any]:
-    """Serialise a ctree object into a JSON‑serialisable dictionary.
+    """Serialise a ctree object into a JSON-serialisable dictionary.
 
     In a real IDA environment, this function should traverse the
     ``cinsn_t`` nodes and record the structure of the ctree.  In this
@@ -46,7 +46,7 @@ def serialize_ctree(ctree: Any) -> Dict[str, Any]:
         if hasattr(ctree, attr):
             try:
                 val = getattr(ctree, attr)
-                # Only store JSON‑serialisable values
+                # Only store JSON-serialisable values
                 json.dumps(val)
                 data[attr] = val
             except Exception:
@@ -57,7 +57,7 @@ def serialize_ctree(ctree: Any) -> Dict[str, Any]:
 def deserialize_ctree(data: Dict[str, Any]) -> Any:
     """Deserialize a ctree snapshot back into a Python object.
 
-    Without the Hex‑Rays SDK, this function simply returns the stored
+    Without the Hex-Rays SDK, this function simply returns the stored
     representation string.  In a real environment, one could recreate
     a ``cfunc_t`` or use the IDA decompiler API to inject the snapshot
     back into the decompiler.

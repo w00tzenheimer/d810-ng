@@ -15,7 +15,7 @@ from d810.hexrays.hexrays_formatters import (  # noqa: F401 - debug only
     opcode_to_string,
     sanitize_ea,
 )
-from d810.hexrays.hexrays_helpers import (  # already maps size→mask
+from d810.hexrays.hexrays_helpers import (  # already maps size->mask
     AND_TABLE,
     CONTROL_FLOW_OPCODES,
     OPCODES_INFO,
@@ -94,7 +94,7 @@ class TransparentCallUnwrapRule(PeepholeSimplificationRule):
         new_ins.ea = ins.ea
         if logger.debug_on:
             logger.debug(
-                "[transparent-call] 0x%X unwrap → %s",
+                "[transparent-call] 0x%X unwrap -> %s",
                 sanitize_ea(ins.ea),
                 opcode_to_string(new_ins.opcode),
             )
@@ -354,8 +354,8 @@ if mop.t == ida_hexrays.mop_d and _is_rotate_helper_call(mop.d):
 #         #     or_ins.d.erase()
 #         # or_ins.d.size = ins.d.size if ins.d else (bits // 8)
 
-#         # Destination: copy the mov‐dest (ins.r) into our new OR‐insn
-#         or_ins.r = shr_mop  # temporarily set to something of the right type…
+#         # Destination: copy the mov-dest (ins.r) into our new OR-insn
+#         or_ins.r = shr_mop  # temporarily set to something of the right type...
 #         or_ins.r.assign(ins.r)
 #         or_ins.r.size = ins.r.size
 
@@ -365,10 +365,10 @@ if mop.t == ida_hexrays.mop_d and _is_rotate_helper_call(mop.d):
 #         if or_ins.r.t != ida_hexrays.mop_d and or_ins.r.size == 0:
 #             or_ins.r.size = or_ins.d.size
 
-#         # Return brand-new instruction – do not modify *ins* in place.
+#         # Return brand-new instruction - do not modify *ins* in place.
 #         if logger.debug_on:
 #             logger.debug(
-#                 "[rotate-inline] 0x%X %s inlined into or/shl/shr → %s",
+#                 "[rotate-inline] 0x%X %s inlined into or/shl/shr -> %s",
 #                 sanitize_ea(ins.ea),
 #                 helper_name,
 #                 format_minsn_t(or_ins),
@@ -376,15 +376,15 @@ if mop.t == ida_hexrays.mop_d and _is_rotate_helper_call(mop.d):
 #         return or_ins
 
 
-# ────────────────────────────────────────────────────────────────────
-# Lightweight cache for expensive mop→str conversions (debug only).
+# ********************************************************************
+# Lightweight cache for expensive mop->str conversions (debug only).
 # Uses the generic, thread-safe CacheImpl already available in hexrays_helpers
 # (bounded LRU by default, max 256 entries).
 _MOP_STR_CACHE: CacheImpl[tuple[int, int], str] = CacheImpl(max_size=256)
 
-# ────────────────────────────────────────────────────────────────────
+# ********************************************************************
 # Debug helpers
-# ────────────────────────────────────────────────────────────────────
+# ********************************************************************
 
 
 def _mop_to_str(mop: "ida_hexrays.mop_t | None") -> str:  # noqa: ANN001
@@ -546,7 +546,7 @@ def _fold(op, a, b, bits):
             a -= 1 << bits
         return (a >> b) & mask
     if op == ida_hexrays.m_setp:
-        # Parity flag is set when low-byte of (a - b) has even parity (PF=1 → result 1)
+        # Parity flag is set when low-byte of (a - b) has even parity (PF=1 -> result 1)
         nb_bytes = bits // 8 if bits else 1
         return 1 if get_parity_flag(a, b, nb_bytes) else 0
 
@@ -582,7 +582,7 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
             return const_val
 
         # Hex-Rays sometimes represents a literal as a one-instruction
-        # subtree:   mop_d → m_ldc  ( ldc  #value , dst )
+        # subtree:   mop_d -> m_ldc  ( ldc  #value , dst )
         if (
             mop.t == ida_hexrays.mop_d
             and mop.d is not None
@@ -915,7 +915,7 @@ class FoldPureConstantRule:  # (PeepholeSimplificationRule):
                 new.opcode = ida_hexrays.m_ldc
 
                 # ------------------------------------------------------------------
-                # SAFETY: `make_number` expects a *valid* byte size (1,2,4,8,16…).
+                # SAFETY: `make_number` expects a *valid* byte size (1,2,4,8,16...).
                 # Some micro-instructions have their `d.size` field set to 0 which
                 # causes Hex-Rays to crash deep in the C++ layer when we pass it
                 # through blindly.  Guard against that by falling back to 4-byte
@@ -929,7 +929,7 @@ class FoldPureConstantRule:  # (PeepholeSimplificationRule):
                 cst.make_number(value, size_bytes)
                 new.l = cst
 
-                # Destination operand: keep the *original* one (register, stack var…)
+                # Destination operand: keep the *original* one (register, stack var...)
                 # but clone it to detach from the existing microcode tree.
                 if ins.d:
                     new.d = ida_hexrays.mop_t()
@@ -956,7 +956,7 @@ class FoldPureConstantRule:  # (PeepholeSimplificationRule):
                         new.d.erase()
                         new.d.size = size_bytes
                 else:
-                    # No destination provided → value-only operand (mop_z).
+                    # No destination provided -> value-only operand (mop_z).
                     new.d = ida_hexrays.mop_t()
                     new.d.erase()
                     new.d.size = size_bytes
@@ -1001,13 +1001,13 @@ class FoldPureConstantRule:  # (PeepholeSimplificationRule):
                                         ins2.verify(True)  # verifies one instruction
                                     except RuntimeError as e2:
                                         logger.error(
-                                            "[fold_const]  ↳ bad ins 0x%X %s : %s",
+                                            "[fold_const]  * bad ins 0x%X %s : %s",
                                             ins2.ea,
                                             opcode_to_string(ins2.opcode),
                                             e2,
                                             exc_info=True,
                                         )
-                            # Do NOT propagate the exception – it would abort the
+                            # Do NOT propagate the exception - it would abort the
                             # entire optimisation pass when DEBUG is enabled.  By
                             # returning None we instruct the peephole engine to
                             # keep the original instruction unchanged.

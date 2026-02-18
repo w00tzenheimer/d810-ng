@@ -1,10 +1,10 @@
-"""Pattern engine dispatcher — gates between Cython and Python backends.
+"""Pattern engine dispatcher - gates between Cython and Python backends.
 
 Follows CythonMode Pattern 1 (module-level gate) established in ast.py.
 Exports normalized names so consumers don't care which backend is active.
 
 Environment variables:
-    D810_NO_CYTHON=1  — Force Python backend even if Cython is available.
+    D810_NO_CYTHON=1  - Force Python backend even if Cython is available.
 
 Usage:
     from d810.optimizers.microcode.instructions.pattern_matching.engine import (

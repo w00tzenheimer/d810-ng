@@ -6,7 +6,7 @@ Schema follows the existing pattern in ``core/persistence.py``:
 - Composite primary key ``(func_ea, maturity, collector_name)`` for results
 - Single primary key ``func_ea`` for hints
 
-No IDA imports — fully unit-testable.
+No IDA imports - fully unit-testable.
 """
 from __future__ import annotations
 

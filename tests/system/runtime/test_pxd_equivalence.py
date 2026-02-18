@@ -110,7 +110,7 @@ def test_mop_t_field_equivalence():
             insn = insn.next
 
     assert found_mop, "Should have found at least one typed mop"
-    print("\n✅ All mop_t and minsn_t fields accessible!")
+    print("\n* All mop_t and minsn_t fields accessible!")
 
 
 @pytest.mark.xfail(reason="segfault in idapro.open_database - tracked in d81-kpem", run=False)
@@ -150,7 +150,7 @@ def test_minsn_methods():
             break  # Just test first instruction
         break
 
-    print("\n✅ minsn_t methods work!")
+    print("\n* minsn_t methods work!")
 
 
 if __name__ == "__main__":

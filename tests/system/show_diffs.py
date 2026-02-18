@@ -115,7 +115,7 @@ def show_function_diff(func_name: str, compact: bool = False):
 
     print(f"\nTested by test_libdeobfuscated_dsl.py:")
     for test_class in dsl_tests:
-        print(f"  → {test_class}::test_*[{func_name}]")
+        print(f"  -> {test_class}::test_*[{func_name}]")
 
     # Stats
     print(f"\nCode Changed: {bool(row['code_changed'])}")
@@ -123,13 +123,13 @@ def show_function_diff(func_name: str, compact: bool = False):
     if rules:
         print(f"Rules Fired ({len(rules)}):")
         for rule in rules:
-            print(f"  • {rule}")
+            print(f"  * {rule}")
 
     if compact:
         # Just show stats, no full code
         before_lines = len(strip_colors(row['code_before']).splitlines()) if row['code_before'] else 0
         after_lines = len(strip_colors(row['code_after']).splitlines()) if row['code_after'] else 0
-        print(f"\nCode size: {before_lines} lines → {after_lines} lines")
+        print(f"\nCode size: {before_lines} lines -> {after_lines} lines")
         conn.close()
         return
 
@@ -228,7 +228,7 @@ def show_summary_table():
         funcs = test_class_funcs[cls]
         print(f"\n{cls}:")
         for f in sorted(funcs):
-            print(f"  • {f}")
+            print(f"  * {f}")
 
     conn.close()
 

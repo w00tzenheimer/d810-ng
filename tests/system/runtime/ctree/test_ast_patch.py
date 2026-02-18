@@ -154,7 +154,7 @@ class TestRemoveInstr:
         item = MockItem(label_num=-1, opname="nop")
         ctx = MockASTContext(parent_block=block)
         # IDA is present, so remove_instruction_from_ast enforces the
-        # cinsn_t type assertion — MockItem triggers AssertionError.
+        # cinsn_t type assertion - MockItem triggers AssertionError.
         with pytest.raises(AssertionError, match="cinsn_t"):
             remove_instr(item, ctx)
 

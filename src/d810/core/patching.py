@@ -1,18 +1,18 @@
 """Binary patching helpers for dispatcher unflattening.
 
-This module provides data structures to record and apply control‑flow
+This module provides data structures to record and apply control-flow
 patches to the binary.  After a dispatcher has been identified and
-simplified, the plugin can either modify the micro‑code (which is
+simplified, the plugin can either modify the micro-code (which is
 ephemeral) or patch the actual binary instructions.  By converting
-micro‑code jumps back into assembly and rewriting the corresponding
+micro-code jumps back into assembly and rewriting the corresponding
 bytes, the control flow becomes permanently simplified and survives
 reanalysis.  Patch descriptions are stored in a simple serialisable
 format so that they can be persisted to disk and reapplied on future
 sessions.
 
-These helpers do not perform any IDA‑specific operations on their own.
+These helpers do not perform any IDA-specific operations on their own.
 Instead, they encapsulate patch actions which can later be executed
-when the Hex‑Rays/IDA environment is available.  The :class:`BinaryPatcher`
+when the Hex-Rays/IDA environment is available.  The :class:`BinaryPatcher`
 class shows how one might apply these actions using IDA APIs.
 """
 
@@ -32,7 +32,7 @@ class PatchAction:
     action : str
         The type of patch action (e.g. "replace", "delete", "rename").
     target_block_serial : int
-        The serial number of the micro‑code block to which the patch
+        The serial number of the micro-code block to which the patch
         applies.  When converting to assembly, this serial should be
         mapped to an address.
     params : dict

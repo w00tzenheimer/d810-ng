@@ -1,10 +1,10 @@
-"""AnalysisPhase — interprets ReconResults into DeobfuscationHints.
+"""AnalysisPhase - interprets ReconResults into DeobfuscationHints.
 
 Heuristics are deliberately simple in this first pass. The intent is to
 cover the common OLLVM control-flow flattening case and emit recipe names
 that ``RuleScopeService.apply_hints()`` can act on.
 
-No IDA imports — fully unit-testable.
+No IDA imports - fully unit-testable.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from d810.recon.store import ReconStore
 
 
 # ---------------------------------------------------------------------------
-# Signal weights — tunable without changing test expectations
+# Signal weights - tunable without changing test expectations
 # ---------------------------------------------------------------------------
 _FLAT_SCORE_THRESHOLD = 0.40
 _FLAT_INDEGREE_THRESHOLD = 4

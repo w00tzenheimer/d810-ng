@@ -116,7 +116,7 @@ if not _CYTHON_AVAILABLE:
         t: int
         size: int
         valnum: int = 0
-        # Type-specific fields — only the relevant one is set per type.
+        # Type-specific fields - only the relevant one is set per type.
         value: int | None = None        # mop_n: nnn.value
         reg: int | None = None          # mop_r: r
         stkoff: int | None = None       # mop_S: s.off (if s is not None)
@@ -186,7 +186,7 @@ if not _CYTHON_AVAILABLE:
             elif t == ida_hexrays.mop_str:
                 base["const_str"] = mop.cstr
             elif t == ida_hexrays.mop_d:
-                pass  # Sub-instruction — AST layer handles recursion
+                pass  # Sub-instruction - AST layer handles recursion
             elif t == ida_hexrays.mop_f:
                 pass  # Function call list
             elif t == ida_hexrays.mop_a:

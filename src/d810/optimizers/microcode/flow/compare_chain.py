@@ -88,7 +88,7 @@ class BlockComparison:
 class CompareEntry:
     """A single dispatch table entry discovered from a compare chain.
 
-    Represents one constant → target mapping extracted from a comparison.
+    Represents one constant -> target mapping extracted from a comparison.
 
     Attributes:
         constant: The state value being compared
@@ -107,7 +107,7 @@ class CompareEntry:
     def __repr__(self) -> str:
         """Return a human-readable representation."""
         return (
-            f"CompareEntry(0x{self.constant:x} → blk={self.target_serial}, "
+            f"CompareEntry(0x{self.constant:x} -> blk={self.target_serial}, "
             f"from blk={self.source_serial})"
         )
 
@@ -120,7 +120,7 @@ class DispatchTable:
     plus an optional default/fallthrough target.
 
     Attributes:
-        entries: Tuple of all dispatch entries (constant → target)
+        entries: Tuple of all dispatch entries (constant -> target)
         default_serial: Fallthrough/default target (if any)
 
     Examples:
@@ -154,8 +154,8 @@ class DispatchTable:
 
     def __repr__(self) -> str:
         """Return a human-readable representation."""
-        entries_str = ", ".join(f"0x{c:x}→{t}" for c, t in self.as_dict().items())
-        default_str = f", default→{self.default_serial}" if self.default_serial is not None else ""
+        entries_str = ", ".join(f"0x{c:x}->{t}" for c, t in self.as_dict().items())
+        default_str = f", default->{self.default_serial}" if self.default_serial is not None else ""
         return f"DispatchTable([{entries_str}]{default_str})"
 
 
@@ -245,7 +245,7 @@ class CompareChainResolver:
         0
         """
         entries: list[CompareEntry] = []
-        seen_constants: dict[int, int] = {}  # constant → target_serial
+        seen_constants: dict[int, int] = {}  # constant -> target_serial
         last_false_target: int | None = None
 
         for comp in comparisons:
@@ -348,7 +348,7 @@ class CompareChainResolver:
         {66: 10}
         """
         all_entries: list[CompareEntry] = []
-        seen_constants: dict[int, int] = {}  # constant → target_serial
+        seen_constants: dict[int, int] = {}  # constant -> target_serial
         last_default: int | None = None
 
         for table in tables:

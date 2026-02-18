@@ -4,7 +4,7 @@ This package contains different backend implementations for working with
 MBA expressions (d810.mba.dsl.SymbolicExpression):
 
 - z3: Z3 SMT solver backend for verification and equivalence checking
-- ida: IDA Pro integration (minsn_t ↔ SymbolicExpression conversion)
+- ida: IDA Pro integration (minsn_t * SymbolicExpression conversion)
 - egglog_backend: E-graph backend using egglog (optional)
 
 Each backend is optional and can be used independently based on available

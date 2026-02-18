@@ -117,7 +117,7 @@ class TestMatchParity:
                 if engine_result != py_result:
                     mismatches += 1
                 elif engine_result:
-                    # Both matched — verify bindings are equivalent
+                    # Both matched - verify bindings are equivalent
                     engine_leafs = bindings.get_leafs_by_name()
                     py_leafs = py_bindings.get_leafs_by_name()
                     assert set(engine_leafs.keys()) == set(py_leafs.keys()), (

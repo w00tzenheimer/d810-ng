@@ -1,14 +1,14 @@
 """
 This module replaces the original pattern matching optimizer with a
-canonicalisation and egraph‑style matcher.  The original implementation
+canonicalisation and egraph-style matcher.  The original implementation
 generated a potentially enormous number of fuzzy pattern permutations in
 order to handle commutative and associative operations.  This new
 implementation avoids that combinatorial explosion by canonicalising
 both the pattern and the candidate microcode AST before matching them.
 
 The canonicalisation step flattens and sorts operands of commutative
-and associative operators (addition, multiplication, bitwise‐or, bitwise‐and
-and bitwise‐xor).  Subtraction is rewritten into addition of a negated
+and associative operators (addition, multiplication, bitwise-or, bitwise-and
+and bitwise-xor).  Subtraction is rewritten into addition of a negated
 operand.  Negation is simplified where possible.  Once canonicalised
 both the pattern and the candidate instruction have a unique shape
 regardless of operand ordering, allowing a single match to succeed
@@ -22,7 +22,7 @@ additional candidate checks and build the replacement instruction.
 This approach is analogous to equality saturation (egraphs) in that
 equivalent trees collapse to a canonical representation.  It yields
 dramatically fewer pattern candidates to consider and therefore avoids
-the exponential blow‑up of the previous scheme.
+the exponential blow-up of the previous scheme.
 """
 
 from __future__ import annotations
@@ -110,7 +110,7 @@ def _build_balanced_tree(opcode: int, operands: list[AstBase]) -> AstBase:
     """Reconstruct a binary tree from a list of operands.
 
     Given a list of operands and an opcode, this helper builds
-    a left‑associative binary tree.  The ordering of the operands
+    a left-associative binary tree.  The ordering of the operands
     should already be normalised (e.g. sorted) by the caller.
 
     Args:
@@ -139,12 +139,12 @@ def canonicalize_ast(node: AstBase | None) -> AstBase | None:
       all nested occurrences of the operator are flattened into a list of
       operands, each operand is canonicalised recursively, the list is sorted
       by the textual pattern of each operand and finally rebuilt into a
-      left‑associative binary tree.
+      left-associative binary tree.
     * Subtraction is rewritten into addition of the left operand and the
-      negation of the right operand.  This allows x − y to be matched
-      against x + (−y) regardless of which representation appears in the
+      negation of the right operand.  This allows x - y to be matched
+      against x + (-y) regardless of which representation appears in the
       candidate.
-    * Negation of a negation collapses: −(−x) becomes x.
+    * Negation of a negation collapses: -(-x) becomes x.
     * All other nodes are canonicalised recursively on their children.
 
     Leaves (AstLeaf) and constants (AstConstant) are returned unchanged.
@@ -389,7 +389,7 @@ class CanonicalPatternRule(GenericPatternRule):
         method still accepts a `fuzz_pattern` argument for API
         compatibility but ignores it.
         """
-        # Do not generate any fuzzy patterns – the canonical pattern suffices
+        # Do not generate any fuzzy patterns - the canonical pattern suffices
         super().configure(kwargs)
         self.fuzz_pattern = self.FUZZ_PATTERN
         # Canonical pattern may depend on configuration; recompute
@@ -548,7 +548,7 @@ class PatternOptimizer2(InstructionOptimizer):  # type: ignore[misc]
 class Add_HackersDelightRule_1(CanonicalPatternRule):
     @property
     def PATTERN(self) -> AstNode:
-        # x - (~y + 1) → x + y
+        # x - (~y + 1) -> x + y
         return AstNode(
             ida_hexrays.m_sub,
             AstLeaf("x_0"),
@@ -567,7 +567,7 @@ class Add_HackersDelightRule_1(CanonicalPatternRule):
 class Add_HackersDelightRule_2(CanonicalPatternRule):
     @property
     def PATTERN(self) -> AstNode:
-        # (x XOR y) + 2*(x & y) → x + y
+        # (x XOR y) + 2*(x & y) -> x + y
         return AstNode(
             ida_hexrays.m_add,
             AstNode(ida_hexrays.m_xor, AstLeaf("x_0"), AstLeaf("x_1")),
@@ -586,7 +586,7 @@ class Add_HackersDelightRule_2(CanonicalPatternRule):
 class Add_HackersDelightRule_3(CanonicalPatternRule):
     @property
     def PATTERN(self) -> AstNode:
-        # (x OR y) + (x & y) → x + y
+        # (x OR y) + (x & y) -> x + y
         return AstNode(
             ida_hexrays.m_add,
             AstNode(ida_hexrays.m_or, AstLeaf("x_0"), AstLeaf("x_1")),
@@ -601,7 +601,7 @@ class Add_HackersDelightRule_3(CanonicalPatternRule):
 class Add_HackersDelightRule_4(CanonicalPatternRule):
     @property
     def PATTERN(self) -> AstNode:
-        # 2*(x OR y) - (x XOR y) → x + y
+        # 2*(x OR y) - (x XOR y) -> x + y
         return AstNode(
             ida_hexrays.m_sub,
             AstNode(
@@ -620,7 +620,7 @@ class Add_HackersDelightRule_4(CanonicalPatternRule):
 class Add_HackersDelightRule_5(CanonicalPatternRule):
     @property
     def PATTERN(self) -> AstNode:
-        # 2*( (x OR y) OR z ) - (x XOR (y OR z)) → x + (y OR z)
+        # 2*( (x OR y) OR z ) - (x XOR (y OR z)) -> x + (y OR z)
         return AstNode(
             ida_hexrays.m_sub,
             AstNode(
@@ -655,7 +655,7 @@ class Add_SpecialConstantRule_1(CanonicalPatternRule):
 
     @property
     def PATTERN(self) -> AstNode:
-        # (x XOR c1) + 2*(x & c2) → x + c1  where c1 == c2 ignoring size
+        # (x XOR c1) + 2*(x & c2) -> x + c1  where c1 == c2 ignoring size
         return AstNode(
             ida_hexrays.m_add,
             AstNode(ida_hexrays.m_xor, AstLeaf("x_0"), AstConstant("c_1")),
@@ -678,7 +678,7 @@ class Add_SpecialConstantRule_2(CanonicalPatternRule):
 
     @property
     def PATTERN(self) -> AstNode:
-        # ((x & 0xFF) XOR c1) + 2*(x & c2) → (x & 0xFF) + c1  with constraint above
+        # ((x & 0xFF) XOR c1) + 2*(x & c2) -> (x & 0xFF) + c1  with constraint above
         return AstNode(
             ida_hexrays.m_add,
             AstNode(
@@ -716,7 +716,7 @@ class Add_SpecialConstantRule_3(CanonicalPatternRule):
 
     @property
     def PATTERN(self) -> AstNode:
-        # (x XOR c1) + 2*(x OR c2) → x + (c2 - 1)  when c1 == ~c2
+        # (x XOR c1) + 2*(x OR c2) -> x + (c2 - 1)  when c1 == ~c2
         return AstNode(
             ida_hexrays.m_add,
             AstNode(ida_hexrays.m_xor, AstLeaf("x_0"), AstConstant("c_1")),
@@ -740,7 +740,7 @@ class Add_OllvmRule_1(CanonicalPatternRule):
 
     @property
     def PATTERN(self) -> AstNode:
-        # ~(x XOR y) + 2*(x OR y) → (x + y) - 1
+        # ~(x XOR y) + 2*(x OR y) -> (x + y) - 1
         return AstNode(
             ida_hexrays.m_add,
             AstNode(
@@ -773,7 +773,7 @@ class Add_OllvmRule_2(CanonicalPatternRule):
 
     @property
     def PATTERN(self) -> AstNode:
-        # ~(x XOR y) - val_fe*(x OR y) → (x + y) - 1  when constraint holds
+        # ~(x XOR y) - val_fe*(x OR y) -> (x + y) - 1  when constraint holds
         return AstNode(
             ida_hexrays.m_sub,
             AstNode(
@@ -799,7 +799,7 @@ class Add_OllvmRule_2(CanonicalPatternRule):
 class Add_OllvmRule_3(CanonicalPatternRule):
     @property
     def PATTERN(self) -> AstNode:
-        # (x XOR y) + 2*(x & y) → x + y
+        # (x XOR y) + 2*(x & y) -> x + y
         return AstNode(
             ida_hexrays.m_add,
             AstNode(ida_hexrays.m_xor, AstLeaf("x_0"), AstLeaf("x_1")),
@@ -818,7 +818,7 @@ class Add_OllvmRule_3(CanonicalPatternRule):
 class Add_OllvmRule_4(CanonicalPatternRule):
     @property
     def PATTERN(self) -> AstNode:
-        # (x XOR y) - val_fe*(x & y) → x + y
+        # (x XOR y) - val_fe*(x & y) -> x + y
         return AstNode(
             ida_hexrays.m_sub,
             AstNode(ida_hexrays.m_xor, AstLeaf("x_0"), AstLeaf("x_1")),
@@ -844,7 +844,7 @@ class AddXor_Rule_1(CanonicalPatternRule):
 
     @property
     def PATTERN(self) -> AstNode:
-        # (x0 - x1) - 2*(x0 OR ~x1) → (x0 XOR x1) + 2
+        # (x0 - x1) - 2*(x0 OR ~x1) -> (x0 XOR x1) + 2
         return AstNode(
             ida_hexrays.m_sub,
             AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstLeaf("x_1")),
@@ -874,7 +874,7 @@ class AddXor_Rule_2(CanonicalPatternRule):
 
     @property
     def PATTERN(self) -> AstNode:
-        # (x0 - x1) - 2*~( (~x0) & x1 ) → (x0 XOR x1) + 2
+        # (x0 - x1) - 2*~( (~x0) & x1 ) -> (x0 XOR x1) + 2
         return AstNode(
             ida_hexrays.m_sub,
             AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstLeaf("x_1")),

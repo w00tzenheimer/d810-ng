@@ -76,21 +76,21 @@ class RuleTreeWidget(QtWidgets.QWidget):
 
         # Enabled legend item
         enabled_label = QtWidgets.QLabel(
-            "<span style='color:#4CAF50'>●</span> Enabled", legend_widget
+            "<span style='color:#4CAF50'>*</span> Enabled", legend_widget
         )
         enabled_label.setStyleSheet("font-size: 10px")
         legend_layout.addWidget(enabled_label)
 
         # Disabled legend item
         disabled_label = QtWidgets.QLabel(
-            "<span style='color:#9E9E9E'>●</span> Disabled", legend_widget
+            "<span style='color:#9E9E9E'>*</span> Disabled", legend_widget
         )
         disabled_label.setStyleSheet("font-size: 10px")
         legend_layout.addWidget(disabled_label)
 
         # Configurable legend item
         configurable_label = QtWidgets.QLabel(
-            "⚙ Configurable", legend_widget
+            "* Configurable", legend_widget
         )
         configurable_label.setStyleSheet("font-size: 10px")
         legend_layout.addWidget(configurable_label)

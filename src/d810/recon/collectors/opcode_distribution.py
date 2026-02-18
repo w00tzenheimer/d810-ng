@@ -1,4 +1,4 @@
-"""OpcodeDistributionCollector — instruction opcode frequency histogram.
+"""OpcodeDistributionCollector - instruction opcode frequency histogram.
 
 Fires at MMAT_PREOPTIMIZED (5). Accepts PortableCFG (unit tests) or
 live mba_t (IDA runtime).

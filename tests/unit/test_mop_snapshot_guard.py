@@ -31,7 +31,7 @@ def test_mop_snapshot_has_all_fields():
         # Pure Python backend: keep original indentation-regression guard.
         assert len(dataclass_fields) >= len(expected_fields), (
             f"MopSnapshot has only {len(dataclass_fields)} fields, expected >= {len(expected_fields)}. "
-            "Check indentation in mop_snapshot.py — fields may have fallen outside class body."
+            "Check indentation in mop_snapshot.py - fields may have fallen outside class body."
         )
         return
 

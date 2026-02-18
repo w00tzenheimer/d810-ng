@@ -16,7 +16,7 @@ There are TWO separate Z3 utility modules in d810, serving different purposes:
    Use:     Unit tests, CI, TDD rule development, mathematical verification
 
    Key exports:
-   - Z3VerificationVisitor: Converts SymbolicExpression → Z3 BitVec
+   - Z3VerificationVisitor: Converts SymbolicExpression -> Z3 BitVec
    - prove_equivalence(): Prove two SymbolicExpressions are equivalent
    - verify_rule(): Verify a rule's PATTERN equals its REPLACEMENT
 
@@ -27,7 +27,7 @@ There are TWO separate Z3 utility modules in d810, serving different purposes:
    Use:     Runtime verification inside IDA Pro plugin
 
    Key exports:
-   - ast_to_z3_expression(): Converts AstNode → Z3 BitVec
+   - ast_to_z3_expression(): Converts AstNode -> Z3 BitVec
    - z3_check_mop_equality(): Check if two mop_t are semantically equivalent
    - z3_check_mop_inequality(): Check if two mop_t are NOT equivalent
    - log_z3_instructions(): Debug logging for Z3 verification
@@ -39,7 +39,7 @@ WHY TWO MODULES?
 The separation enables:
 1. Unit testing rules WITHOUT IDA Pro license
 2. CI/CD pipeline verification (GitHub Actions)
-3. TDD workflow: write rule → verify with Z3 → integrate with IDA
+3. TDD workflow: write rule -> verify with Z3 -> integrate with IDA
 4. Clear dependency boundaries (mba/ never imports IDA modules)
 
 If you need to verify a SymbolicExpression (from d810.mba.dsl), use:
@@ -140,7 +140,7 @@ def get_solver() -> z3.Solver:
         p.set("timeout", 50)  # milliseconds
         s.set(params=p)
     except Exception:
-        # Older z3 versions or API quirks – ignore and keep default settings.
+        # Older z3 versions or API quirks - ignore and keep default settings.
         pass
     return s
 
@@ -259,7 +259,7 @@ def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
         case ida_hexrays.m_setp:
             # 1) isolate the low byte
             lo_byte = typing.cast(z3.BitVecRef, z3.Extract(7, 0, left))
-            # 2) XOR-reduce the eight single-bit slices to get 1 → odd, 0 → even
+            # 2) XOR-reduce the eight single-bit slices to get 1 -> odd, 0 -> even
             bit0 = typing.cast(z3.BitVecRef, z3.Extract(0, 0, lo_byte))
             parity_bv = bit0  # 1-bit BitVec
             for i in range(1, 8):

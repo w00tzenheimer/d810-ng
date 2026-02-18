@@ -58,7 +58,7 @@ class TestFakeJumpFixerPass:
         assert len(mods) == 1
         assert isinstance(mods[0], RedirectBranch)
         assert mods[0].from_serial == 5
-        assert mods[0].old_target == 20  # Redirect 5→20 to 5→10
+        assert mods[0].old_target == 20  # Redirect 5->20 to 5->10
         assert mods[0].new_target == 10
 
     def test_single_1way_block_fix_emits_redirect_goto(self):
@@ -109,7 +109,7 @@ class TestFakeJumpFixerPass:
             blocks={10: blk10, 15: blk15, 20: blk20},
             entry_serial=10, func_ea=0x1000
         )
-        fixes = {10: 20, 15: 35}  # Block 10 → 20, Block 15 → 35
+        fixes = {10: 20, 15: 35}  # Block 10 -> 20, Block 15 -> 35
         pass_instance = FakeJumpFixerPass(fixes=fixes)
 
         mods = pass_instance.transform(cfg)

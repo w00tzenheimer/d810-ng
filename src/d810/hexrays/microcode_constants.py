@@ -7,7 +7,7 @@ This module exists so that portable_cfg, CFGPasses, and recon collectors
 can reference IDA enum values without importing ida_hexrays.
 """
 
-# mblock_type_t — block type classification
+# mblock_type_t - block type classification
 BLT_NONE = 0   # unknown
 BLT_STOP = 1   # stops execution (last block)
 BLT_0WAY = 2   # no successors (noret)
@@ -16,11 +16,11 @@ BLT_2WAY = 4   # conditional branch
 BLT_NWAY = 5   # switch statement
 BLT_XTRN = 6   # external block
 
-# mopt_t — operand type classification
-MOP_B = 7      # mop_b — block reference operand
+# mopt_t - operand type classification
+MOP_B = 7      # mop_b - block reference operand
 
 # Instruction opcodes
-M_GOTO = 55    # m_goto (0x37) — unconditional goto
+M_GOTO = 55    # m_goto (0x37) - unconditional goto
 
 __all__ = [
     "BLT_NONE",

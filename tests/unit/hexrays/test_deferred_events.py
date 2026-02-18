@@ -157,7 +157,7 @@ class TestEventEmitter:
 
 
 # ---------------------------------------------------------------------------
-# Event emission order — success path (simulated)
+# Event emission order - success path (simulated)
 # ---------------------------------------------------------------------------
 
 class TestEventEmissionOrder:
@@ -172,8 +172,8 @@ class TestEventEmissionOrder:
         return emitter, log
 
     def test_success_path_event_order(self):
-        """Success path: QUEUE_ADDED → COALESCE_* → APPLY_STARTED → MOD_STARTED
-        → MOD_APPLIED → APPLY_FINISHED."""
+        """Success path: QUEUE_ADDED -> COALESCE_* -> APPLY_STARTED -> MOD_STARTED
+        -> MOD_APPLIED -> APPLY_FINISHED."""
         emitter, log = self._make_emitter_and_log()
 
         # Simulate the events a DeferredGraphModifier would emit for one
@@ -197,9 +197,9 @@ class TestEventEmissionOrder:
         ]
 
     def test_verify_failure_rollback_path_event_order(self):
-        """Verify-fail + rollback path: QUEUE_ADDED → COALESCE_* → APPLY_STARTED
-        → MOD_STARTED → VERIFY_FAILED → ROLLBACK_STARTED → ROLLBACK_FINISHED
-        → APPLY_FINISHED."""
+        """Verify-fail + rollback path: QUEUE_ADDED -> COALESCE_* -> APPLY_STARTED
+        -> MOD_STARTED -> VERIFY_FAILED -> ROLLBACK_STARTED -> ROLLBACK_FINISHED
+        -> APPLY_FINISHED."""
         emitter, log = self._make_emitter_and_log()
 
         emitter.emit(DeferredEvent.DEFERRED_QUEUE_ADDED, {})

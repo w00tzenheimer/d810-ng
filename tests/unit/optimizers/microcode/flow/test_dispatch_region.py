@@ -37,9 +37,9 @@ class TestTarjanSCC:
         assert sccs[0] == frozenset({0, 1})
 
     def test_dispatcher_pattern_simple(self) -> None:
-        """OLLVM-style CFF: dispatcher → cases → dispatcher."""
-        # dispatcher(0) → case1(1), case2(2), case3(3)
-        # case1 → dispatcher, case2 → dispatcher, case3 → dispatcher
+        """OLLVM-style CFF: dispatcher -> cases -> dispatcher."""
+        # dispatcher(0) -> case1(1), case2(2), case3(3)
+        # case1 -> dispatcher, case2 -> dispatcher, case3 -> dispatcher
         adj = {
             0: (1, 2, 3),
             1: (0,),
@@ -54,8 +54,8 @@ class TestTarjanSCC:
 
     def test_dispatcher_with_glue(self) -> None:
         """Dispatcher with glue blocks and case blocks."""
-        # dispatcher(0) → glue(1) → case1(2)
-        # case1 → glue(1), case2(3) → dispatcher
+        # dispatcher(0) -> glue(1) -> case1(2)
+        # case1 -> glue(1), case2(3) -> dispatcher
         adj = {
             0: (1, 3),
             1: (2,),
@@ -65,8 +65,8 @@ class TestTarjanSCC:
         sccs = DispatchRegionDetector.tarjan_scc(adj)
 
         # Multiple SCCs based on cycles
-        # {0, 3} forms one SCC (cycle: 0 → 3 → 0)
-        # {1, 2} forms another SCC (cycle: 1 → 2 → 1)
+        # {0, 3} forms one SCC (cycle: 0 -> 3 -> 0)
+        # {1, 2} forms another SCC (cycle: 1 -> 2 -> 1)
         assert len(sccs) == 2
         scc_sets = [set(scc) for scc in sccs]
         assert {0, 3} in scc_sets
@@ -74,9 +74,9 @@ class TestTarjanSCC:
 
     def test_nested_dispatch(self) -> None:
         """Two separate SCCs representing nested dispatchers."""
-        # Outer dispatcher: 0 → 1, 1 → 0
-        # Inner dispatcher: 2 → 3, 3 → 2
-        # Bridge: 1 → 2
+        # Outer dispatcher: 0 -> 1, 1 -> 0
+        # Inner dispatcher: 2 -> 3, 3 -> 2
+        # Bridge: 1 -> 2
         adj = {
             0: (1,),
             1: (0, 2),
@@ -114,11 +114,11 @@ class TestTarjanSCC:
 
     def test_complex_dispatcher_pattern(self) -> None:
         """Complex OLLVM pattern with multiple glue blocks."""
-        # dispatcher(0) → glue1(1), glue2(2), case1(3), case2(4)
-        # glue1 → glue2
-        # glue2 → case1
-        # case1 → dispatcher
-        # case2 → dispatcher
+        # dispatcher(0) -> glue1(1), glue2(2), case1(3), case2(4)
+        # glue1 -> glue2
+        # glue2 -> case1
+        # case1 -> dispatcher
+        # case2 -> dispatcher
         adj = {
             0: (1, 2, 3, 4),
             1: (2,),
@@ -159,7 +159,7 @@ class TestDispatchRegionDetector:
     def test_detect_dispatcher_in_nested_scc(self) -> None:
         """Detect finds the correct SCC when multiple exist."""
         # Two SCCs: {0, 1} and {2, 3}
-        # Bridge from 1 → 2
+        # Bridge from 1 -> 2
         adj = {
             0: (1,),
             1: (0, 2),
@@ -186,10 +186,10 @@ class TestDispatchRegionDetector:
 
     def test_detect_complex_ollvm_pattern(self) -> None:
         """Real OLLVM pattern: dispatcher with multiple cases and glue."""
-        # dispatcher(0) → case1(1), case2(2), case3(3)
-        # case1 → glue1(4) → dispatcher
-        # case2 → glue2(5) → dispatcher
-        # case3 → dispatcher
+        # dispatcher(0) -> case1(1), case2(2), case3(3)
+        # case1 -> glue1(4) -> dispatcher
+        # case2 -> glue2(5) -> dispatcher
+        # case3 -> dispatcher
         adj = {
             0: (1, 2, 3),
             1: (4,),
@@ -206,10 +206,10 @@ class TestDispatchRegionDetector:
 
     def test_detect_with_external_blocks(self) -> None:
         """Dispatcher SCC with external blocks outside the cycle."""
-        # dispatcher(0) → case1(1), case2(2), exit(3)
-        # case1 → dispatcher
-        # case2 → dispatcher
-        # exit → external(4) → terminal(5)
+        # dispatcher(0) -> case1(1), case2(2), exit(3)
+        # case1 -> dispatcher
+        # case2 -> dispatcher
+        # exit -> external(4) -> terminal(5)
         adj = {
             0: (1, 2, 3),
             1: (0,),
@@ -324,8 +324,8 @@ class TestEdgeCases:
 
     def test_large_dispatcher_pattern(self) -> None:
         """Large dispatcher with many cases."""
-        # dispatcher(0) → case1..case99
-        # all cases → dispatcher
+        # dispatcher(0) -> case1..case99
+        # all cases -> dispatcher
         adj = {0: tuple(range(1, 100))}
         for i in range(1, 100):
             adj[i] = (0,)

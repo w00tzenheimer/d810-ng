@@ -123,7 +123,7 @@ class DeferredEvent(Enum):
 class DeferredEventPayload:
     """Snapshot payload carried by a DeferredEvent.
 
-    All fields are **primitives** — ints, strings, or None. No live IDA
+    All fields are **primitives** - ints, strings, or None. No live IDA
     pointers or objects are ever stored here.
 
     Required fields (present on all events)
@@ -165,14 +165,14 @@ class DeferredEventPayload:
         Error or exception message (nullable).
     """
 
-    # Required — all events
+    # Required - all events
     optimizer_name: str = ""
     function_ea: int | None = None
     maturity: int | None = None
     pass_id: int = 0
     session_id: str = ""
 
-    # Modification-specific — MOD_* events
+    # Modification-specific - MOD_* events
     mod_index: int | None = None
     mod_type: str | None = None
     block_serial: int | None = None
@@ -267,7 +267,7 @@ class EventEmitter:
     def emit(self, event: DeferredEvent, payload: dict) -> None:
         """Dispatch *payload* to all subscribers for *event*.
 
-        Handler exceptions are caught and logged — never propagated.
+        Handler exceptions are caught and logged - never propagated.
 
         Args:
             event: The lifecycle event being fired.

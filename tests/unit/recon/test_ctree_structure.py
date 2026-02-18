@@ -1,6 +1,6 @@
 """Tests for CtreeStructureCollector.
 
-Uses a stub cfunc-like object — no real IDA dependency for the logic layer.
+Uses a stub cfunc-like object - no real IDA dependency for the logic layer.
 The collector only walks the cfunc using duck-typed access.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ class StubCItem:
         return iter(self.children)
 
 
-# cinsn_t op constants (IDA values — duplicated here for test clarity)
+# cinsn_t op constants (IDA values - duplicated here for test clarity)
 _CIT_IF = 1
 _CIT_SWITCH = 14
 _CIT_GOTO = 17

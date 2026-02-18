@@ -3,7 +3,7 @@
 Manages a registry of ``ReconCollector`` instances and dispatches them to
 the appropriate maturities. Results are persisted via ``ReconStore``.
 
-No IDA imports at module level — collectors that need IDA guard their own
+No IDA imports at module level - collectors that need IDA guard their own
 imports. This module is fully unit-testable.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ logger = logging.getLogger("D810.recon.phase")
 class ReconCollector(Protocol):
     """Protocol for all recon collectors.
 
-    Implementations must be read-only — they observe but never modify
+    Implementations must be read-only - they observe but never modify
     the microcode (``mba_t``) or ctree (``cfunc_t``).
 
     Attributes:

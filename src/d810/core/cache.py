@@ -105,9 +105,9 @@ def LRI(cache: "Cache") -> None:
     Remove the *least-recently-inserted* (oldest) entry from *cache*.
 
     Unlike LRU, which is driven by access *time*, this eviction policy is
-    strictly FIFO: the element that has resided in the cache the longest—
-    independent of any subsequent accesses—is expelled first.  Internally the
-    cache keeps a second insertion-ordered linked list where the sentinel’s
+    strictly FIFO: the element that has resided in the cache the longest-
+    independent of any subsequent accesses-is expelled first.  Internally the
+    cache keeps a second insertion-ordered linked list where the sentinel's
     ``ins_next`` pointer refers to the oldest element.  Passing this link to
     :pymeth:`CacheImpl._kill` achieves the eviction.
 

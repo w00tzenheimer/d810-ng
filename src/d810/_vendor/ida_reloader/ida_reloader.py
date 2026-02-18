@@ -349,7 +349,7 @@ class DependencyGraph:
         adj: dict[str, set[str]] = {}
         for mod, deps in self._module_dependencies.items():
             dset = set(deps)
-            # Add implicit parent packages (pkg.sub → pkg)
+            # Add implicit parent packages (pkg.sub -> pkg)
             # Skip if parent already has explicit forward dependency on child (re-export pattern)
             parts = mod.split(".")
             for i in range(1, len(parts)):

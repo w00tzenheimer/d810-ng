@@ -344,7 +344,7 @@ class TestGotoChainRemovalPass:
         redirects = {(mod.old_target, mod.new_target) for mod in mods}
         assert redirects == {(10, 20), (30, 40)}
 
-    # ─── NEW TESTS FOR 4 SAFETY GAPS ─────────────────────────────────────────
+    # *** NEW TESTS FOR 4 SAFETY GAPS *****************************************
 
     # CRITICAL-1: non-goto single instruction must NOT be treated as goto block
     def test_single_non_goto_instruction_not_treated_as_goto(self):
@@ -391,7 +391,7 @@ class TestGotoChainRemovalPass:
             serial=0, block_type=3, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
-        # blk10 is empty (0 instructions) — must NOT qualify as simple goto
+        # blk10 is empty (0 instructions) - must NOT qualify as simple goto
         blk10_empty = BlockSnapshot(
             serial=10, block_type=3, succs=(20,), preds=(0,),
             flags=0, start_ea=0x1100, insn_snapshots=()
@@ -535,7 +535,7 @@ class TestGotoChainRemovalPass:
         )
 
     def test_only_block_in_cfg_is_sentinel_excluded(self):
-        """HIGH-1: Single-block CFG — that block IS the sentinel, nothing to do."""
+        """HIGH-1: Single-block CFG - that block IS the sentinel, nothing to do."""
         # Only one block -> it IS the max serial -> excluded
         goto_insn = _make_goto_insn(ea=0x1000, dest_serial=0)
         blk0 = BlockSnapshot(
@@ -615,7 +615,7 @@ class TestGotoChainRemovalPass:
         assert mods == [], (
             f"Expected no modifications but got {mods}. "
             "A m_goto whose mop_b operand points to a different block than succs[0] "
-            "must be rejected — the tail instruction destination does not match the CFG edge."
+            "must be rejected - the tail instruction destination does not match the CFG edge."
         )
 
 

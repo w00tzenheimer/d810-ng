@@ -46,7 +46,7 @@ class DeadBlockEliminationPass(CFGPass):
         ...     serial=2, block_type=0, succs=(), preds=(),
         ...     flags=0, start_ea=0x2000, insn_snapshots=(insn_dead,)
         ... )
-        >>> # Block 3 is the last dummy/sentinel block — never removed
+        >>> # Block 3 is the last dummy/sentinel block - never removed
         >>> blk3_dummy = BlockSnapshot(
         ...     serial=3, block_type=0, succs=(), preds=(),
         ...     flags=0, start_ea=0x3000, insn_snapshots=()
@@ -83,7 +83,7 @@ class DeadBlockEliminationPass(CFGPass):
             PortableCFG only captures normal successor/predecessor edges.
             Blocks that are reachable only via exception edges will be
             incorrectly classified as dead. This is a known limitation of
-            the portable representation — fixing it would require capturing
+            the portable representation - fixing it would require capturing
             exception edge data in the PortableCFG data model.
 
         Example:
@@ -107,7 +107,7 @@ class DeadBlockEliminationPass(CFGPass):
 
         # IDA's MBA has a sentinel (dummy) block at the highest serial number
         # (equivalent to mba.qty - 1 in the legacy code). This block must NEVER
-        # be removed — it is an internal IDA sentinel required for correct CFG
+        # be removed - it is an internal IDA sentinel required for correct CFG
         # structure. Always exclude the block with the maximum serial.
         last_dummy_serial = max(cfg.blocks.keys())
 

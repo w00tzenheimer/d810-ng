@@ -155,7 +155,7 @@ class ChainSimplification(object):
                     # keep first occurrence only
                     index_removed.update(idxs[1:])
 
-        # Cross-bucket bnot only when needed for AND → zero
+        # Cross-bucket bnot only when needed for AND -> zero
         if self.opcode == ida_hexrays.m_and and not is_always_0:
             keys = list(bucket_reps.keys())
             for i in range(len(keys)):

@@ -43,14 +43,14 @@ class LevelFlag:
     def __bool__(self) -> bool:
         current = self.get_config_version()
         if self._last_version != current:
-            # config changed (or first call) → re-compute once
+            # config changed (or first call) -> re-compute once
             self._cached = getLogger(self._logger_name).isEnabledFor(self._level)
             self._last_version = current
         return self._cached
 
     def __repr__(self):
         lvlname = logging.getLevelName(self._level)
-        return f"<LevelFlag {self._logger_name}≥{lvlname}>"
+        return f"<LevelFlag {self._logger_name}>={lvlname}>"
 
     @staticmethod
     def bump_config_version() -> None:
@@ -441,7 +441,7 @@ def getLogger(name: str, default_level: int = logging.INFO) -> D810Logger:
     name = name or __name__
     # grab (or create) the underlying Logger
     base = logging.getLogger(name)
-    # if it’s already the right type, just return it
+    # if it's already the right type, just return it
     if isinstance(base, D810Logger):
         return base
     # otherwise wrap it in the subclass

@@ -156,14 +156,14 @@ class Xor_Hodur_2(VerifiableRule):
     This rule handles HODUR's use of modular arithmetic where c_0 + c_1 = 256.
 
     BYTE-SPECIFIC VERIFICATION: This rule uses 8-bit Z3 bitvectors for verification.
-    In byte arithmetic: -c_0 ≡ c_1 (mod 256) when c_0 + c_1 = 256
-    Therefore: x - c_0 ≡ x + c_1 (mod 256)
+    In byte arithmetic: -c_0 == c_1 (mod 256) when c_0 + c_1 = 256
+    Therefore: x - c_0 == x + c_1 (mod 256)
 
     Mathematical proof (8-bit arithmetic):
-        c_0 + c_1 = 256 ≡ 0 (mod 256)
-        Therefore: c_1 ≡ -c_0 (mod 256)
-        So: x - c_0 ≡ x + c_1 (mod 256)
-        And: (x - c_0) ^ (y ^ c_1) ≡ (x + c_1) ^ (y ^ c_1)
+        c_0 + c_1 = 256 == 0 (mod 256)
+        Therefore: c_1 == -c_0 (mod 256)
+        So: x - c_0 == x + c_1 (mod 256)
+        And: (x - c_0) ^ (y ^ c_1) == (x + c_1) ^ (y ^ c_1)
 
     Example (HODUR pattern 5, with c_0=0x1D=29, c_1=0xE3=227):
         0x1D + 0xE3 = 256 = 0x100 (wraps to 0 in byte arithmetic)

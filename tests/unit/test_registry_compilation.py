@@ -4,7 +4,7 @@ This module tests the compiled registry view mechanism that caches
 expensive pattern storage structures and invalidates them only when
 rules change.
 
-IMPORTANT: Unit tests MUST be pure Python — no IDA imports, no mock IDA objects.
+IMPORTANT: Unit tests MUST be pure Python - no IDA imports, no mock IDA objects.
 """
 
 import dataclasses

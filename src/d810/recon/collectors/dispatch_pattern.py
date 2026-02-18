@@ -1,4 +1,4 @@
-"""DispatchPatternCollector — dispatcher candidate detection.
+"""DispatchPatternCollector - dispatcher candidate detection.
 
 Fires at MMAT_CALLS (3) and MMAT_GLBOPT1 (14).
 Detects: NWAY (switch, BLT_NWAY=5) blocks, high-fan-out 2WAY (BLT_2WAY=4) chains, back-edges.
@@ -112,7 +112,7 @@ class DispatchPatternCollector:
         max_fan_out = max((fo for _, fo in nway_blocks), default=0)
         back_total, back_per_target = _count_back_edges(nodes, succs, entry)
 
-        # Longest 2WAY chain (simple: count 2WAY blocks — full chain analysis is expensive)
+        # Longest 2WAY chain (simple: count 2WAY blocks - full chain analysis is expensive)
         tway_count = sum(
             1 for blk in block_iter
             if int(getattr(blk, "block_type", 0)) == _BLT_2WAY

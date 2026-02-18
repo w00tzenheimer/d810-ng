@@ -1,15 +1,15 @@
-"""Merkle tree utilities for micro‑code diffing.
+"""Merkle tree utilities for micro-code diffing.
 
 This module defines simple classes to build a Merkle tree from a list of
 leaf hashes and to compute differences between two trees.  A Merkle tree
-is a binary tree in which each non‑leaf node stores the hash of its two
+is a binary tree in which each non-leaf node stores the hash of its two
 children concatenated.  The root hash represents the entire collection
 and can be used to detect changes.  When comparing two trees, leaf
 indices whose hashes differ represent the modified elements.
 
 This implementation does not depend on IDA and can be used in unit
 tests to verify Merkle diff behaviour.  Real usage within the
-unflattening pipeline would compute block hashes for each micro‑code
+unflattening pipeline would compute block hashes for each micro-code
 block and build a Merkle tree per function.  The tree structure can
 then be stored persistently to avoid reprocessing unchanged blocks.
 """
@@ -83,7 +83,7 @@ class MerkleTree:
         return differing_indices
 
     def to_dict(self) -> dict:
-        """Serialise the Merkle tree to a JSON‑serialisable dictionary."""
+        """Serialise the Merkle tree to a JSON-serialisable dictionary."""
         return {"leaves": self.leaves, "levels": self.levels}
 
     @classmethod

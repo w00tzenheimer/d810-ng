@@ -16,12 +16,12 @@ Mapping to DeferredGraphModifier
 ---------------------------------
 These frozen types map to DeferredGraphModifier modification types:
 
-- RedirectGoto       → BLOCK_GOTO_CHANGE (1-way blocks only)
-- RedirectBranch     → BLOCK_TARGET_CHANGE (2-way conditional blocks only)
-- ConvertToGoto      → BLOCK_CONVERT_TO_GOTO
-- InsertBlock        → BLOCK_CREATE_WITH_REDIRECT
-- RemoveEdge         → (future use, not yet in DeferredGraphModifier)
-- NopInstructions    → BLOCK_NOP_INSNS
+- RedirectGoto       -> BLOCK_GOTO_CHANGE (1-way blocks only)
+- RedirectBranch     -> BLOCK_TARGET_CHANGE (2-way conditional blocks only)
+- ConvertToGoto      -> BLOCK_CONVERT_TO_GOTO
+- InsertBlock        -> BLOCK_CREATE_WITH_REDIRECT
+- RemoveEdge         -> (future use, not yet in DeferredGraphModifier)
+- NopInstructions    -> BLOCK_NOP_INSNS
 
 Design Notes
 ------------
@@ -117,7 +117,7 @@ class InsertBlock:
 
     Maps to DeferredGraphModifier's BLOCK_CREATE_WITH_REDIRECT.
     Creates a new intermediate block containing the specified instructions
-    and redirects pred → new_block → succ.
+    and redirects pred -> new_block -> succ.
 
     Attributes:
         pred_serial: Predecessor block serial (edge source).

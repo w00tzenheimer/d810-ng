@@ -108,7 +108,7 @@ Rule breakdown:
 - Constrained rules: 2 (using when.is_bnot)
 - Simple rules: 1
 
-All 3 rules are Z3-verified ✓
+All 3 rules are Z3-verified *
 
 Code metrics:
 - Original: ~62 lines with imperative patterns

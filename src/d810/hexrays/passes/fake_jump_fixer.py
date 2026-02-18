@@ -12,14 +12,14 @@ on pre-computed analysis results.
 Two types of redirects:
 1. **2-way blocks**: Redirect one branch of a conditional to the correct target
    (e.g., block 10 has succs (20, 30), analysis shows it always goes to 20,
-   so redirect edge 10→30 to 10→20)
+   so redirect edge 10->30 to 10->20)
 2. **1-way blocks**: Redirect unconditional goto to correct target
    (e.g., block 5 has succ (10), analysis shows it should go to 20,
-   so redirect edge 5→10 to 5→20)
+   so redirect edge 5->10 to 5->20)
 
 Example:
     >>> # Pre-computed mode: MopTracker determined block 10 always goes to 20
-    >>> fixes = {10: 20}  # block_serial → correct_target
+    >>> fixes = {10: 20}  # block_serial -> correct_target
     >>> pass_instance = FakeJumpFixerPass(fixes=fixes)
     >>> mods = pass_instance.transform(cfg)
     >>> len(mods)
@@ -85,7 +85,7 @@ class FakeJumpFixerPass(CFGPass):
     tags = frozenset({"unflattening", "cleanup"})
 
     def __init__(self, fixes: dict[int, int] | None = None):
-        """Initialize with pre-computed fixes mapping block_serial → correct target.
+        """Initialize with pre-computed fixes mapping block_serial -> correct target.
 
         Args:
             fixes: Mapping from block serial to correct target serial. When a

@@ -447,7 +447,7 @@ Rule breakdown:
 - Simple rules: 11 (no constraints)
 - Constrained rules: 7 (using when.is_bnot)
 
-Achievement: OR rules 100% migrated! ✓
+Achievement: OR rules 100% migrated! *
 
 Code Metrics:
 -------------
@@ -519,12 +519,12 @@ can be migrated to the declarative DSL!
 
 Benefits Realized:
 -----------------
-✅ Eliminated God Objects (Phase 2)
-✅ Centralized management (Phase 3)
-✅ Profiling & caching (Phase 4)
-✅ Selective scanning (Phase 5)
-✅ Parallel execution (Phase 6)
-✅ Declarative rules (Phase 7)
+* Eliminated God Objects (Phase 2)
+* Centralized management (Phase 3)
+* Profiling & caching (Phase 4)
+* Selective scanning (Phase 5)
+* Parallel execution (Phase 6)
+* Declarative rules (Phase 7)
 
 The d810-ng codebase is now:
 - **90% less code** in critical paths
@@ -532,5 +532,5 @@ The d810-ng codebase is now:
 - **100% verified** critical rules
 - **Maintainable** for years to come
 
-Mission accomplished! 🎉
+Mission accomplished! *
 """

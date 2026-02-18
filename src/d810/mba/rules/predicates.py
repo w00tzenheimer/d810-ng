@@ -361,9 +361,9 @@ class Pred0Rule4(VerifiableRule):
     Since neither 0 nor 1 equals 2, the comparison is always false (returns 0).
 
     Mathematical proof:
-        (x & 1) ∈ {0, 1}  (only the low bit)
-        Zext((x & 1), 32) ∈ {0, 1}  (zero-extension preserves value)
-        {0, 1} ∩ {2} = ∅  (no intersection)
+        (x & 1) in {0, 1}  (only the low bit)
+        Zext((x & 1), 32) in {0, 1}  (zero-extension preserves value)
+        {0, 1} * {2} = *  (no intersection)
         Therefore: (Zext(x & 1, 32) == 2) is always False (0)
 
     Now fully verifiable: Uses Zext operation and .to_int() for comparison.

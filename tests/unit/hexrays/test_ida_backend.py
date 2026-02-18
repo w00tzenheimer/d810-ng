@@ -50,13 +50,13 @@ class TestIDABackendBasics:
 
 
 class TestModificationMapping:
-    """Test GraphModification → DeferredGraphModifier mapping logic.
+    """Test GraphModification -> DeferredGraphModifier mapping logic.
 
     These tests use sys.modules patching to mock IDA-dependent modules.
     """
 
     def test_redirect_goto_maps_to_queue_goto_change(self):
-        """Test RedirectGoto → queue_goto_change mapping (1-way blocks)."""
+        """Test RedirectGoto -> queue_goto_change mapping (1-way blocks)."""
         mock_modifier = Mock()
         mock_modifier.apply.return_value = 1
         mock_modifier.verify_failed = False
@@ -75,7 +75,7 @@ class TestModificationMapping:
 
             assert count == 1
             mock_modifier.queue_goto_change.assert_called_once_with(
-                10, 30, description="redirect goto 10: 20→30"
+                10, 30, description="redirect goto 10: 20->30"
             )
             mock_modifier.apply.assert_called_once_with(enable_snapshot_rollback=True)
         finally:
@@ -83,7 +83,7 @@ class TestModificationMapping:
             sys.modules.pop('d810.hexrays.deferred_modifier', None)
 
     def test_redirect_branch_maps_to_queue_target_change(self):
-        """Test RedirectBranch → queue_target_change mapping (2-way blocks)."""
+        """Test RedirectBranch -> queue_target_change mapping (2-way blocks)."""
         mock_modifier = Mock()
         mock_modifier.apply.return_value = 1
         mock_modifier.verify_failed = False
@@ -101,14 +101,14 @@ class TestModificationMapping:
 
             assert count == 1
             mock_modifier.queue_conditional_target_change.assert_called_once_with(
-                10, 30, description="redirect branch 10: 20→30"
+                10, 30, description="redirect branch 10: 20->30"
             )
             mock_modifier.apply.assert_called_once_with(enable_snapshot_rollback=True)
         finally:
             sys.modules.pop('d810.hexrays.deferred_modifier', None)
 
     def test_convert_to_goto_maps_to_queue_convert_to_goto(self):
-        """Test ConvertToGoto → queue_convert_to_goto mapping."""
+        """Test ConvertToGoto -> queue_convert_to_goto mapping."""
         mock_modifier = Mock()
         mock_modifier.apply.return_value = 1
         mock_modifier.verify_failed = False
@@ -132,7 +132,7 @@ class TestModificationMapping:
             sys.modules.pop('d810.hexrays.deferred_modifier', None)
 
     def test_nop_instructions_maps_to_queue_insn_nop(self):
-        """Test NopInstructions → queue_insn_nop mapping (one call per EA)."""
+        """Test NopInstructions -> queue_insn_nop mapping (one call per EA)."""
         mock_modifier = Mock()
         mock_modifier.apply.return_value = 1
         mock_modifier.verify_failed = False
@@ -177,7 +177,7 @@ class TestModificationMapping:
                 count = backend.lower(modifications, mock_mba)
 
             assert count == 0
-            assert "InsertBlock(5→10) requires InsnSnapshot→minsn_t conversion" in caplog.text
+            assert "InsertBlock(5->10) requires InsnSnapshot->minsn_t conversion" in caplog.text
         finally:
             sys.modules.pop('d810.hexrays.deferred_modifier', None)
 
@@ -199,7 +199,7 @@ class TestModificationMapping:
                 count = backend.lower(modifications, mock_mba)
 
             assert count == 0
-            assert "RemoveEdge(10→20) not implemented" in caplog.text
+            assert "RemoveEdge(10->20) not implemented" in caplog.text
         finally:
             sys.modules.pop('d810.hexrays.deferred_modifier', None)
 
