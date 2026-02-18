@@ -137,7 +137,19 @@ class IDABackend:
                     continue
 
         # Apply all queued modifications with snapshot rollback enabled
-        return modifier.apply(enable_snapshot_rollback=True)
+        result_count = modifier.apply(enable_snapshot_rollback=True)
+
+        # If verify failed (even after rollback attempt), signal the pipeline
+        # to stop by returning 0. A positive result with verify_failed=True
+        # means rollback also failed — the MBA may be corrupted.
+        if modifier.verify_failed:
+            logger.warning(
+                "DeferredGraphModifier.verify_failed is set after apply; "
+                "returning 0 to prevent pipeline from treating changes as successful"
+            )
+            return 0
+
+        return result_count
 
     def verify(self, mba: "ida_hexrays.mba_t") -> bool:
         """Verify mba consistency after modifications.
