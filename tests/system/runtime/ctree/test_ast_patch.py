@@ -143,20 +143,20 @@ class TestRemoveInstr:
         assert result is False
 
     def test_remove_instr_sets_modified(self):
-        """Even though idaapi is None (so remove_instruction_from_ast returns
-        False), ctx.is_modified is set to True when the function reaches
-        the end without returning early."""
+        """When IDA is available, remove_instruction_from_ast asserts that the
+        item is a real cinsn_t. Passing a MockItem (not a cinsn_t) raises
+        AssertionError propagated from the IDA type-check guard."""
+        import idaapi as _idaapi
+        if _idaapi is None:
+            pytest.skip("IDA not available")
         parent_cinsn = MockItem()
         block = MockBlock(cinsn=parent_cinsn)
         item = MockItem(label_num=-1, opname="nop")
         ctx = MockASTContext(parent_block=block)
-        # Without IDA, remove_instruction_from_ast returns False.
-        # The function still sets ctx.is_modified = True at the end.
-        result = remove_instr(item, ctx)
-        # Without IDA, collect_gotos and collect_labels return empty,
-        # remove_instruction_from_ast returns False, rv stays False.
-        # But ctx.is_modified is set unconditionally before return.
-        assert ctx.is_modified is True
+        # IDA is present, so remove_instruction_from_ast enforces the
+        # cinsn_t type assertion — MockItem triggers AssertionError.
+        with pytest.raises(AssertionError, match="cinsn_t"):
+            remove_instr(item, ctx)
 
 
 # ---------------------------------------------------------------------------

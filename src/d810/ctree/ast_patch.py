@@ -24,7 +24,6 @@ def _replace_instr(item: typing.Any, new_item: typing.Any) -> bool:
     """Low-level instruction swap."""
     if idaapi is None:
         return False
-    new_item = idaapi.cinsn_t(new_item)
     try:
         idaapi.qswap(item, new_item)
         return True
@@ -157,9 +156,12 @@ def replace_expr(
     """Replace an expression in the ctree."""
     if idaapi is None:
         return False
-    new_expr = idaapi.cexpr_t(new_expr)
-    expr.replace_by(new_expr)
-    return True
+    try:
+        expr.replace_by(new_expr)
+        return True
+    except Exception as e:
+        logger.error("Got an exception during ctree expr replacing: %s", e)
+        return False
 
 
 class ASTPatch:
