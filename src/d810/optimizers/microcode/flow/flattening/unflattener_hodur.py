@@ -1278,6 +1278,11 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         candidate_blocks = self._collect_nearby_blocks(state_machine_blocks, depth=4)
 
+        # Reset the deferred modifier so it can accept a new round of queued
+        # changes (the earlier apply() call in optimize() has already flushed
+        # the transition-patch queue and set _applied=True).
+        self.deferred.reset()
+
         nb_fixed = 0
         for blk_serial in sorted(candidate_blocks):
             blk = self.mba.get_mblock(blk_serial)
@@ -1288,13 +1293,18 @@ class HodurUnflattener(GenericUnflatteningRule):
 
             succ = next(iter(blk.succset))
             if succ == blk.serial and blk.serial != exit_target:
-                if change_1way_block_successor(blk, exit_target, verify=False):
-                    nb_fixed += 1
-                    unflat_logger.info(
-                        "Redirected terminal self-loop block %d -> %d",
-                        blk.serial,
-                        exit_target,
-                    )
+                self.deferred.queue_goto_change(
+                    block_serial=blk.serial,
+                    new_target=exit_target,
+                    description="fix_degenerate_terminal_loop",
+                    rule_priority=50,
+                )
+                nb_fixed += 1
+                unflat_logger.info(
+                    "Queued redirect: terminal self-loop block %d -> %d",
+                    blk.serial,
+                    exit_target,
+                )
                 continue
 
             succ_blk = self.mba.get_mblock(succ)
@@ -1308,18 +1318,22 @@ class HodurUnflattener(GenericUnflatteningRule):
                 and blk.serial != exit_target
                 and succ != exit_target
             ):
-                if change_1way_block_successor(blk, exit_target, verify=False):
-                    nb_fixed += 1
-                    unflat_logger.info(
-                        "Redirected terminal 2-block loop %d<->%d via %d",
-                        blk.serial,
-                        succ,
-                        exit_target,
-                    )
+                self.deferred.queue_goto_change(
+                    block_serial=blk.serial,
+                    new_target=exit_target,
+                    description="fix_degenerate_terminal_loop",
+                    rule_priority=50,
+                )
+                nb_fixed += 1
+                unflat_logger.info(
+                    "Queued redirect: terminal 2-block loop %d<->%d via %d",
+                    blk.serial,
+                    succ,
+                    exit_target,
+                )
 
         if nb_fixed > 0:
-            self.mba.mark_chains_dirty()
-            self.mba.optimize_local(0)
+            self.deferred.apply(run_optimize_local=True)
 
         return nb_fixed
 
