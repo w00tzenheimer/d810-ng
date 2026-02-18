@@ -33,7 +33,7 @@ from .config import (
     DEFAULT_IDA_USER_DIR,
 )
 
-# Logging
+# Logging (includes SQLiteHandler backend, merged from structured_logging)
 from .logging import (
     D810Logger,
     getLogger,
@@ -41,6 +41,9 @@ from .logging import (
     clear_logs,
     LoggerConfigurator,
     LevelFlag,
+    SQLiteHandler,
+    debug_scope,
+    query_logs,
 )
 
 # Caching
@@ -205,6 +208,9 @@ __all__ = [
     "clear_logs",
     "LoggerConfigurator",
     "LevelFlag",
+    "SQLiteHandler",
+    "debug_scope",
+    "query_logs",
     # cache
     "Cache",
     "CacheImpl",

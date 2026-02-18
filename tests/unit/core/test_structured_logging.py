@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from d810.core.structured_logging import SQLiteHandler, debug_scope, query_logs
+from d810.core.logging import SQLiteHandler, debug_scope, query_logs
 
 
 class TestSQLiteHandler:
