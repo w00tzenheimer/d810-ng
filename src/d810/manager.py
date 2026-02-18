@@ -281,6 +281,11 @@ class D810Manager:
             self.instruction_optimizer.configure(recon_phase=self._recon_phase)
             self.block_optimizer.configure(recon_phase=self._recon_phase)
 
+        # Wire PassPipeline into BlockOptimizerManager so it fires at
+        # MMAT_GLBOPT2, after the unflattener has run at MMAT_GLBOPT1.
+        if _pass_pipeline is not None:
+            self.block_optimizer.configure(pass_pipeline=_pass_pipeline)
+
         # Build ctree optimizer with recon phase from the start.
         self.ctree_optimizer = CtreeOptimizerManager(self.stats, recon_phase=self._recon_phase)
 
@@ -291,7 +296,6 @@ class D810Manager:
         self.hx_decompiler_hook = HexraysDecompilationHook(
             self.event_emitter.emit,
             ctree_optimizer_manager=self.ctree_optimizer,
-            pass_pipeline=_pass_pipeline,
         )
         self._compile_rule_scope()
         self._install_hooks()
@@ -531,6 +535,7 @@ class D810Manager:
             MOP_TO_AST_CACHE.clear,
             self.instruction_optimizer.reset_cycle_detection,
             self.block_optimizer.reset_pass_counter,
+            self.block_optimizer.reset_pipeline_tracker,
             self.block_optimizer.reset_perf_counters,
             self._start_timer,
         ):
