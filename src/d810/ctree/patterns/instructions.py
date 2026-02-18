@@ -8,6 +8,8 @@ Ported from herast (herast/tree/patterns/instructions.py).
 """
 from __future__ import annotations
 
+import idaapi
+
 from d810.core import typing
 from d810.core import getLogger
 from d810.ctree.patterns.abstracts import AnyPat
@@ -15,14 +17,6 @@ from d810.ctree.patterns.base_pattern import BasePat
 from d810.ctree.match_context import MatchContext
 
 logger = getLogger("D810.ctree")
-
-# ---------------------------------------------------------------------------
-# IDA imports are optional for testing.
-# ---------------------------------------------------------------------------
-try:
-    import idaapi
-except ImportError:
-    idaapi = None  # type: ignore[assignment]
 
 
 class InstructionPat(BasePat):

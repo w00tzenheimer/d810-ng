@@ -7,6 +7,8 @@ Ported from herast (herast/tree/ast_patch.py).
 """
 from __future__ import annotations
 
+import idaapi
+
 from d810.core import typing
 from enum import Enum
 from collections import defaultdict
@@ -16,14 +18,6 @@ from d810.ctree.ast_iteration import collect_gotos, collect_labels
 from d810.ctree.ast_context import ASTContext
 
 logger = getLogger("D810.ctree")
-
-# ---------------------------------------------------------------------------
-# IDA imports are optional for testing.
-# ---------------------------------------------------------------------------
-try:
-    import idaapi
-except ImportError:
-    idaapi = None  # type: ignore[assignment]
 
 
 def _replace_instr(item: typing.Any, new_item: typing.Any) -> bool:

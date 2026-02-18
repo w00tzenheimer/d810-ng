@@ -7,20 +7,14 @@ Ported from herast (herast/tree/patterns/block_searches.py).
 """
 from __future__ import annotations
 
+import idaapi
+
 from d810.core import typing
 from d810.core import getLogger
 from d810.ctree.patterns.instructions import InstructionPat
 from d810.ctree.match_context import MatchContext
 
 logger = getLogger("D810.ctree")
-
-# ---------------------------------------------------------------------------
-# IDA imports are optional for testing.
-# ---------------------------------------------------------------------------
-try:
-    import idaapi
-except ImportError:
-    idaapi = None  # type: ignore[assignment]
 
 
 class SeqPat(InstructionPat):

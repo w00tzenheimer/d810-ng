@@ -8,6 +8,8 @@ Ported from herast (herast/tree/matcher.py).
 from __future__ import annotations
 
 import traceback
+import idaapi
+
 from d810.core import typing
 from d810.core import getLogger
 from d810.ctree.ast_context import ASTContext
@@ -18,16 +20,6 @@ from d810.ctree.scheme import Scheme
 from d810.ctree import utils
 
 logger = getLogger("D810.ctree")
-
-# ---------------------------------------------------------------------------
-# IDA imports are optional for testing.
-# ---------------------------------------------------------------------------
-try:
-    import idaapi
-    import idc
-except ImportError:
-    idaapi = None  # type: ignore[assignment]
-    idc = None  # type: ignore[assignment]
 
 
 class Matcher:
@@ -63,9 +55,7 @@ class Matcher:
             if idaapi is not None and isinstance(func, idaapi.cfunc_t):
                 self.match_cfunc(func)
             elif isinstance(func, str):
-                if idc is None:
-                    continue
-                addr = idc.get_name_ea_simple(func)
+                addr = idaapi.get_name_ea(idaapi.BADADDR, func)
                 cfunc = utils.get_cfunc(addr)
                 if cfunc is None:
                     continue

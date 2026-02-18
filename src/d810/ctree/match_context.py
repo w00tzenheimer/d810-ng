@@ -8,6 +8,8 @@ Ported from herast (herast/tree/match_context.py).
 """
 from __future__ import annotations
 
+import idaapi
+
 from d810.core import typing
 from d810.core import getLogger
 
@@ -15,14 +17,6 @@ if typing.TYPE_CHECKING:
     from d810.ctree.patterns.base_pattern import BasePat
 
 logger = getLogger("D810.ctree")
-
-# ---------------------------------------------------------------------------
-# IDA imports are optional so the module can be tested without IDA.
-# ---------------------------------------------------------------------------
-try:
-    import idaapi
-except ImportError:
-    idaapi = None  # type: ignore[assignment]
 
 
 class MatchContext:

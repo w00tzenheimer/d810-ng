@@ -7,19 +7,13 @@ Ported from herast (herast/tree/ast_context.py).
 """
 from __future__ import annotations
 
+import idaapi
+
 from d810.core import typing
 from d810.core import getLogger
 from d810.ctree.ast_iteration import collect_gotos, collect_labels
 
 logger = getLogger("D810.ctree")
-
-# ---------------------------------------------------------------------------
-# IDA imports are optional for testing.
-# ---------------------------------------------------------------------------
-try:
-    import idaapi
-except ImportError:
-    idaapi = None  # type: ignore[assignment]
 
 
 class ASTContext:

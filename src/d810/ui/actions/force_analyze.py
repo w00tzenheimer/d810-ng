@@ -30,14 +30,12 @@ class ForceAnalyze(D810ActionHandler):
         ida_bytes_mod = self.ida_module("ida_bytes")
         ida_hexrays_mod = self.ida_module("ida_hexrays")
         ida_problems_mod = self.ida_module("ida_problems")
-        idc_mod = self.ida_module("idc")
 
         if (
             idaapi_mod is None
             or ida_kernwin_mod is None
             or ida_funcs_mod is None
             or ida_bytes_mod is None
-            or idc_mod is None
         ):
             return 0
 
@@ -130,7 +128,7 @@ class ForceAnalyze(D810ActionHandler):
                 % (start_ea, end_ea)
             )
         finally:
-            idc_mod.jumpto(ea)
+            ida_kernwin_mod.jumpto(ea)
 
         return 1
 

@@ -7,43 +7,35 @@ Ported from herast (herast/tree/ast_iteration.py).
 """
 from __future__ import annotations
 
+import idaapi
+
 from d810.core import typing
 from d810.core import getLogger
+from d810.ctree.consts import binary_expressions_ops, unary_expressions_ops
 
 logger = getLogger("D810.ctree")
 
-# ---------------------------------------------------------------------------
-# IDA imports are optional for testing.
-# ---------------------------------------------------------------------------
-try:
-    import idaapi
-    from d810.ctree.consts import binary_expressions_ops, unary_expressions_ops
+# Handler mapping: item_op -> children_items_getter
+op2func: dict[int, typing.Callable] = {
+    idaapi.cit_expr: lambda x: (x.cexpr,),
+    idaapi.cit_return: lambda x: (x.creturn.expr,),
+    idaapi.cit_block: lambda x: tuple(i for i in x.cblock),
+    idaapi.cit_if: lambda x: (x.cif.ithen, x.cif.ielse, x.cif.expr),
+    idaapi.cit_switch: lambda x: tuple(i for i in x.cswitch.cases)
+    + (x.cswitch.expr,),
+    idaapi.cit_while: lambda x: (x.cwhile.body, x.cwhile.expr),
+    idaapi.cit_do: lambda x: (x.cdo.body, x.cdo.expr),
+    idaapi.cit_for: lambda x: (x.cfor.body, x.cfor.init, x.cfor.expr, x.cfor.step),
+    idaapi.cot_call: lambda x: (x.x,) + tuple(i for i in x.a),
+}
 
-    # Handler mapping: item_op -> children_items_getter
-    op2func: dict[int, typing.Callable] = {
-        idaapi.cit_expr: lambda x: (x.cexpr,),
-        idaapi.cit_return: lambda x: (x.creturn.expr,),
-        idaapi.cit_block: lambda x: tuple(i for i in x.cblock),
-        idaapi.cit_if: lambda x: (x.cif.ithen, x.cif.ielse, x.cif.expr),
-        idaapi.cit_switch: lambda x: tuple(i for i in x.cswitch.cases)
-        + (x.cswitch.expr,),
-        idaapi.cit_while: lambda x: (x.cwhile.body, x.cwhile.expr),
-        idaapi.cit_do: lambda x: (x.cdo.body, x.cdo.expr),
-        idaapi.cit_for: lambda x: (x.cfor.body, x.cfor.init, x.cfor.expr, x.cfor.step),
-        idaapi.cot_call: lambda x: (x.x,) + tuple(i for i in x.a),
-    }
+for _i in unary_expressions_ops:
+    op2func[_i] = lambda x: (x.x,)
 
-    for _i in unary_expressions_ops:
-        op2func[_i] = lambda x: (x.x,)
+for _i in binary_expressions_ops:
+    op2func[_i] = lambda x: (x.x, x.y)
 
-    for _i in binary_expressions_ops:
-        op2func[_i] = lambda x: (x.x, x.y)
-
-    op2func[idaapi.cot_tern] = lambda x: (x.x, x.y, x.z)
-
-except ImportError:
-    idaapi = None  # type: ignore[assignment]
-    op2func = {}
+op2func[idaapi.cot_tern] = lambda x: (x.x, x.y, x.z)
 
 
 def get_children(item: typing.Any) -> tuple:

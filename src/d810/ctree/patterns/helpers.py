@@ -7,6 +7,10 @@ Ported from herast (herast/tree/patterns/helpers.py).
 """
 from __future__ import annotations
 
+import idaapi
+import ida_bytes
+import ida_nalt
+
 from d810.core import typing
 from d810.core import getLogger
 from d810.ctree.patterns.base_pattern import BasePat
@@ -15,18 +19,6 @@ from d810.ctree.patterns.expressions import AsgPat, CallPat
 from d810.ctree.patterns.instructions import ExprInsPat
 
 logger = getLogger("D810.ctree")
-
-# ---------------------------------------------------------------------------
-# IDA imports are optional for testing.
-# ---------------------------------------------------------------------------
-try:
-    import idaapi
-    import ida_bytes
-    import ida_nalt
-except ImportError:
-    idaapi = None  # type: ignore[assignment]
-    ida_bytes = None  # type: ignore[assignment]
-    ida_nalt = None  # type: ignore[assignment]
 
 
 class IntPat(BasePat):

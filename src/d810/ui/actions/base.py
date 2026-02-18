@@ -101,8 +101,28 @@ class D810ActionHandler(Registrant):
         self._ida_modules = dict(ida_modules or {})
 
     def ida_module(self, name: str, default: typing.Any = None) -> typing.Any:
-        """Fetch an injected IDA module by name, falling back to default."""
-        return self._ida_modules.get(name, default)
+        """Fetch an injected IDA module by name, falling back to default.
+
+        When only the idaapi shim is injected, this will attempt to resolve
+        other modules via attributes on idaapi or by importing the module.
+        """
+        if name in self._ida_modules:
+            return self._ida_modules[name]
+
+        idaapi_mod = self._ida_modules.get("idaapi")
+        if idaapi_mod is None:
+            return default
+
+        # idaapi.py re-exports many ida_* modules; treat idaapi as the shim.
+        if name.startswith("ida_") or name == "idc":
+            return idaapi_mod
+
+        # Try attribute access on idaapi shim (if present)
+        candidate = getattr(idaapi_mod, name, None)
+        if candidate is not None:
+            return candidate
+
+        return default
 
     @abstractmethod
     def execute(self, ctx: typing.Any) -> int:

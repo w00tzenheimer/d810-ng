@@ -7,6 +7,8 @@ Ported from herast (herast/tree/consts.py).
 """
 from __future__ import annotations
 
+import idaapi
+
 from d810.core import getLogger
 
 logger = getLogger("D810.ctree")
@@ -17,8 +19,6 @@ logger = getLogger("D810.ctree")
 # constants become hollow -- tests can inject mock values.
 # ---------------------------------------------------------------------------
 try:
-    import idaapi
-
     cexpr_op2str: dict[int, str] = dict(idaapi.cexpr_t.op_to_typename)
     cinsn_op2str: dict[int, str] = dict(idaapi.cinsn_t.op_to_typename)
 
@@ -86,8 +86,7 @@ try:
         idaapi.cot_memref,
         idaapi.cot_memptr,
     ]
-except (ImportError, AttributeError):
-    idaapi = None  # type: ignore[assignment]
+except AttributeError:
     cexpr_op2str = {}
     cinsn_op2str = {}
     binary_expressions_ops = []
