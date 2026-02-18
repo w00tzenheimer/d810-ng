@@ -588,6 +588,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # Optional ReconPhase — set via configure(recon_phase=...). None means
         # recon is disabled (zero overhead when not enabled).
         self._recon_phase = None  # ReconPhase | None
+        # Optional PassPipeline — set via configure(pass_pipeline=...). None
+        # means the pipeline is disabled (zero overhead). When set, fires once
+        # at MMAT_GLBOPT2 (after the unflattener has finished at MMAT_GLBOPT1).
+        self._pass_pipeline = None  # PassPipeline | None
+        self._pipeline_last_maturity: int = -1
         # usage tracking moved to centralized statistics object
 
     def reset_pass_counter(self) -> None:
@@ -596,6 +601,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         Called when maturity changes so the guard does not carry over.
         """
         self._pass_count = 0
+
+    def reset_pipeline_tracker(self) -> None:
+        """Reset the pipeline-last-maturity tracker.
+
+        Called at decompilation start so the PassPipeline fires fresh for
+        each new function decompilation.
+        """
+        self._pipeline_last_maturity = -1
 
     def _invalidate_flow_context(self, reason: str = "") -> None:
         if self._flow_context is not None and reason:
@@ -693,6 +706,39 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     )
                 except Exception:
                     optimizer_logger.exception("ReconPhase (block) failed")
+
+            # PassPipeline: fire once at MMAT_GLBOPT2, after the unflattener
+            # has already run at MMAT_GLBOPT1.  Runs at most once per maturity
+            # level per decompilation.  No-op when _pass_pipeline is None.
+            if (
+                self._pass_pipeline is not None
+                and self.current_maturity == ida_hexrays.MMAT_GLBOPT2
+                and self._pipeline_last_maturity != self.current_maturity
+            ):
+                self._pipeline_last_maturity = self.current_maturity
+                try:
+                    func_ea_hex = hex(int(getattr(mba, "entry_ea", 0) or 0))
+                    optimizer_logger.info(
+                        "PassPipeline: running %d pass(es) on function %s at MMAT_GLBOPT2",
+                        len(self._pass_pipeline.passes),
+                        func_ea_hex,
+                    )
+                    total = self._pass_pipeline.run(mba)
+                    if total > 0:
+                        optimizer_logger.info(
+                            "PassPipeline: applied %d total modification(s) on function %s",
+                            total,
+                            func_ea_hex,
+                        )
+                    else:
+                        optimizer_logger.debug(
+                            "PassPipeline: no modifications applied on function %s",
+                            func_ea_hex,
+                        )
+                except Exception:
+                    optimizer_logger.exception(
+                        "PassPipeline: error during MMAT_GLBOPT2 processing"
+                    )
 
     # statistics are managed centrally via the stats object
 
@@ -846,6 +892,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
 
     def configure(self, **kwargs):
         self._recon_phase = kwargs.get("recon_phase", self._recon_phase)
+        self._pass_pipeline = kwargs.get("pass_pipeline", self._pass_pipeline)
         self._rule_scope_service = kwargs.get("rule_scope_service", self._rule_scope_service)
         self._rule_scope_project_name = str(
             kwargs.get("rule_scope_project_name", self._rule_scope_project_name)
@@ -882,15 +929,10 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         self,
         callback: typing.Callable,
         ctree_optimizer_manager: CtreeOptimizerManager | None = None,
-        pass_pipeline: typing.Any | None = None,
     ):
         super().__init__()
         self.callback = callback
         self.ctree_optimizer_manager = ctree_optimizer_manager
-        # Optional PassPipeline to run after legacy flow optimizers finish.
-        # Set to None when the feature flag "enable_pass_pipeline" is False (default).
-        # When set, it runs in glbopt() after IDA's global optimizer completes.
-        self.pass_pipeline = pass_pipeline
 
     def prolog(self, mba: ida_hexrays.mbl_array_t, fc, reachable_blocks, decomp_flags) -> "int":
         main_logger.info("Starting decompilation of function at %s", hex(mba.entry_ea))
@@ -909,36 +951,6 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
     def glbopt(self, mba: ida_hexrays.mbl_array_t) -> "int":
         main_logger.info("glbopt finished for function at %s", hex(mba.entry_ea))
         main_logger.reset_maturity()
-
-        # Run PassPipeline as post-processing after legacy flow optimizers.
-        # Only fires when "enable_pass_pipeline" config flag is True.
-        if self.pass_pipeline is not None:
-            try:
-                func_ea = hex(mba.entry_ea)
-                main_logger.info(
-                    "PassPipeline: running %d pass(es) on function %s",
-                    len(self.pass_pipeline.passes),
-                    func_ea,
-                )
-                total = self.pass_pipeline.run(mba)
-                if total > 0:
-                    main_logger.info(
-                        "PassPipeline: applied %d total modification(s) on function %s",
-                        total,
-                        func_ea,
-                    )
-                else:
-                    main_logger.debug(
-                        "PassPipeline: no modifications applied on function %s",
-                        func_ea,
-                    )
-            except Exception as e:
-                main_logger.error(
-                    "PassPipeline: error during post-processing of function %s: %s",
-                    hex(mba.entry_ea),
-                    e,
-                )
-
         return 0
 
     def structural(self, ct: "control_graph_t") -> int:  # type: ignore
