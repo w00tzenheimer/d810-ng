@@ -47,7 +47,7 @@ class Z3ConstantOptimization(Z3Rule):
         leaf_num = len(leaf_info_list)
 
         if (
-            leaf_num != 1
+            leaf_num > 1
             or len(opcodes) < self.min_nb_opcode
             or len(cst_leaf_values) < self.min_nb_constant
         ):
