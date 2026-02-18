@@ -5,12 +5,9 @@ import functools
 import threading
 
 from d810.core import typing
-from d810.core.typing import TYPE_CHECKING
+
 from .config import D810Configuration, ProjectConfiguration
 from .logging import getLogger
-
-if TYPE_CHECKING:
-    pass  # For future type hints
 
 logger = getLogger(__name__)
 
@@ -191,14 +188,12 @@ class ProjectContext:
 
         # Remove from current instruction rules
         self.state.current_ins_rules = [
-            r for r in self.state.current_ins_rules
-            if r.name.lower() != name
+            r for r in self.state.current_ins_rules if r.name.lower() != name
         ]
 
         # Remove from current block rules
         self.state.current_blk_rules = [
-            r for r in self.state.current_blk_rules
-            if r.name.lower() != name
+            r for r in self.state.current_blk_rules if r.name.lower() != name
         ]
 
         logger.info("Removed rule '%s' from active rules", name)
