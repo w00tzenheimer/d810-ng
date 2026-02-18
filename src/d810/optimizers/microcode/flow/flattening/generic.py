@@ -2046,15 +2046,15 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self,
         dispatcher_father: ida_hexrays.mblock_t,
         dispatcher_info: GenericDispatcherInfo,
-        deferred_modifier: DeferredGraphModifier | None = None,
+        deferred_modifier: DeferredGraphModifier,
     ) -> int:
         """Resolve a dispatcher father block by redirecting it to the target.
 
         Args:
             dispatcher_father: The predecessor block to resolve
             dispatcher_info: Information about the dispatcher
-            deferred_modifier: If provided, queue CFG modifications instead of
-                applying them directly. This enables safer deferred patching.
+            deferred_modifier: Queue CFG modifications instead of applying them
+                directly. This enables safer deferred patching.
 
         Returns:
             2 on success (for historical reasons)
@@ -2208,7 +2208,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             exit_type = classify_exit_block(dispatcher_father, dispatcher_blk_serials_set)
 
             # Handle conditional exit blocks (one path loops back, one exits)
-            if exit_type == ExitBlockType.CONDITIONAL_EXIT_WITH_LOOPBACK and deferred_modifier is not None:
+            if exit_type == ExitBlockType.CONDITIONAL_EXIT_WITH_LOOPBACK:
                 loopback_serial = get_loopback_successor(dispatcher_father, dispatcher_blk_serials_set)
                 exit_serial = get_exit_successor(dispatcher_father, dispatcher_blk_serials_set)
 
@@ -2254,212 +2254,170 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         dispatcher_father.serial
                     )
 
-            if deferred_modifier is not None:
-                queued_change = False
-                source_nsucc = dispatcher_father.nsucc()
-                tail_opcode = dispatcher_father.tail.opcode if dispatcher_father.tail else None
-                copy_insns = ins_to_copy
+            queued_change = False
+            source_nsucc = dispatcher_father.nsucc()
+            tail_opcode = dispatcher_father.tail.opcode if dispatcher_father.tail else None
+            copy_insns = ins_to_copy
 
-                # Use deferred CFG modifications
-                if len(copy_insns) > 0:
-                    if source_nsucc != 1:
-                        # create_and_redirect rewires a single outgoing edge.
-                        # Skip non-1way sources to avoid queuing invalid edits
-                        # that fail deferred apply and poison the pass.
-                        unflat_logger.warning(
-                            "Skipping create_and_redirect for non-1way father blk %d "
-                            "(nsucc=%d) toward blk %d",
-                            dispatcher_father.serial,
-                            source_nsucc,
-                            target_blk.serial,
-                        )
-                    else:
-                        unflat_logger.info(
-                            "Queuing create_and_redirect: %s instructions from block %s -> %s",
-                            len(copy_insns),
-                            dispatcher_father.serial,
-                            target_blk.serial,
-                        )
-                        deferred_modifier.queue_create_and_redirect(
-                            source_block_serial=dispatcher_father.serial,
-                            final_target_serial=target_blk.serial,
-                            instructions_to_copy=copy_insns,
-                            is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY),
-                            description=f"resolve_dispatcher_father {dispatcher_father.serial} -> {target_blk.serial}",
-                        )
-                        queued_change = True
+            # Use deferred CFG modifications
+            if len(copy_insns) > 0:
+                if source_nsucc != 1:
+                    # create_and_redirect rewires a single outgoing edge.
+                    # Skip non-1way sources to avoid queuing invalid edits
+                    # that fail deferred apply and poison the pass.
+                    unflat_logger.warning(
+                        "Skipping create_and_redirect for non-1way father blk %d "
+                        "(nsucc=%d) toward blk %d",
+                        dispatcher_father.serial,
+                        source_nsucc,
+                        target_blk.serial,
+                    )
                 else:
-                    if source_nsucc == 1:
-                        clone_conditional_targets = (
-                            os.environ.get("D810_UNFLAT_CLONE_COND_TARGET", "").strip().lower()
-                            in ("1", "true", "yes", "on")
-                        )
-                        # When the resolved target is itself a conditional 2-way
-                        # block, redirecting many new predecessors directly into
-                        # that shared block can produce unstable CFGs for some
-                        # large flattened functions (AntiDebug case). Instead,
-                        # clone the conditional shape and redirect the father to
-                        # the clone, following the same proven pattern used by
-                        # FixPredecessorOfConditionalJumpBlock.
-                        target_is_conditional = (
-                            target_blk.nsucc() == 2
-                            and target_blk.tail is not None
-                            and ida_hexrays.is_mcode_jcond(target_blk.tail.opcode)
-                            and target_blk.nextb is not None
-                        )
-                        if target_is_conditional and clone_conditional_targets:
-                            cond_target_serial = int(target_blk.tail.d.b)
-                            fallthrough_target_serial = int(target_blk.nextb.serial)
-                            unflat_logger.info(
-                                "Queuing conditional redirect clone: father %s via ref %s "
-                                "(jcc->%s, fallthrough->%s)",
-                                dispatcher_father.serial,
-                                target_blk.serial,
-                                cond_target_serial,
-                                fallthrough_target_serial,
-                            )
-                            deferred_modifier.queue_create_conditional_redirect(
-                                source_blk_serial=dispatcher_father.serial,
-                                ref_blk_serial=target_blk.serial,
-                                conditional_target_serial=cond_target_serial,
-                                fallthrough_target_serial=fallthrough_target_serial,
-                                description=(
-                                    "resolve_dispatcher_father(cond-clone) "
-                                    f"{dispatcher_father.serial} -> ref {target_blk.serial} "
-                                    f"(jcc:{cond_target_serial}, ft:{fallthrough_target_serial})"
-                                ),
-                            )
-                            queued_change = True
-                        else:
-                            # [SAFETY] Triangle check:
-                            # If target is conditional AND a direct dispatcher successor,
-                            # enforce a trampoline to break the "Switch Case -> Switch Case" edge.
-                            #
-                            # This prevents Hex-Rays crashes (INTERR/segfault) caused by
-                            # "Triangle with Shared Conditional Header" topology where a
-                            # conditional block is entered both from the switch (as a case)
-                            # and from another case block (via unflattening).
-                            is_target_in_dispatcher = False
-                            dispatcher_head = dispatcher_info.entry_block.blk
-                            if dispatcher_head:
-                                for i in range(dispatcher_head.nsucc()):
-                                    if dispatcher_head.succ(i) == target_blk.serial:
-                                        is_target_in_dispatcher = True
-                                        break
-
-                            # We use a relaxed definition of conditional here (ignoring nextb requirement)
-                            # because create_and_redirect works fine even for the last block.
-                            is_risky_conditional = (
-                                target_blk.nsucc() == 2
-                                and target_blk.tail is not None
-                                and ida_hexrays.is_mcode_jcond(target_blk.tail.opcode)
-                            )
-
-                            if is_risky_conditional and is_target_in_dispatcher:
-                                unflat_logger.info(
-                                    "Queuing trampoline for triangle edge: block %s -> %s",
-                                    dispatcher_father.serial,
-                                    target_blk.serial,
-                                )
-                                nop = ida_hexrays.minsn_t(dispatcher_father.tail.ea)
-                                nop.opcode = ida_hexrays.m_nop
-                                deferred_modifier.queue_create_and_redirect(
-                                    source_block_serial=dispatcher_father.serial,
-                                    final_target_serial=target_blk.serial,
-                                    instructions_to_copy=[nop],
-                                    is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY),
-                                    description=f"resolve_dispatcher_father(trampoline) {dispatcher_father.serial} -> {target_blk.serial}",
-                                )
-                                queued_change = True
-                            else:
-                                unflat_logger.info(
-                                    "Queuing goto change: block %s -> %s",
-                                    dispatcher_father.serial,
-                                    target_blk.serial,
-                                )
-                                self._record_deferred_case_overlap_edge(
-                                    dispatcher_info.entry_block.serial,
-                                    dispatcher_father.serial,
-                                    target_blk.serial,
-                                )
-                                deferred_modifier.queue_goto_change(
-                                    block_serial=dispatcher_father.serial,
-                                    new_target=target_blk.serial,
-                                    description=f"resolve_dispatcher_father {dispatcher_father.serial} -> {target_blk.serial}",
-                                    rule_priority=100,  # High priority - proven constant analysis
-                                )
-                                queued_change = True
-                    elif source_nsucc == 2 and tail_opcode in CONDITIONAL_JUMP_OPCODES:
+                    unflat_logger.info(
+                        "Queuing create_and_redirect: %s instructions from block %s -> %s",
+                        len(copy_insns),
+                        dispatcher_father.serial,
+                        target_blk.serial,
+                    )
+                    deferred_modifier.queue_create_and_redirect(
+                        source_block_serial=dispatcher_father.serial,
+                        final_target_serial=target_blk.serial,
+                        instructions_to_copy=copy_insns,
+                        is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY),
+                        description=f"resolve_dispatcher_father {dispatcher_father.serial} -> {target_blk.serial}",
+                    )
+                    queued_change = True
+            else:
+                if source_nsucc == 1:
+                    clone_conditional_targets = (
+                        os.environ.get("D810_UNFLAT_CLONE_COND_TARGET", "").strip().lower()
+                        in ("1", "true", "yes", "on")
+                    )
+                    # When the resolved target is itself a conditional 2-way
+                    # block, redirecting many new predecessors directly into
+                    # that shared block can produce unstable CFGs for some
+                    # large flattened functions (AntiDebug case). Instead,
+                    # clone the conditional shape and redirect the father to
+                    # the clone, following the same proven pattern used by
+                    # FixPredecessorOfConditionalJumpBlock.
+                    target_is_conditional = (
+                        target_blk.nsucc() == 2
+                        and target_blk.tail is not None
+                        and ida_hexrays.is_mcode_jcond(target_blk.tail.opcode)
+                        and target_blk.nextb is not None
+                    )
+                    if target_is_conditional and clone_conditional_targets:
+                        cond_target_serial = int(target_blk.tail.d.b)
+                        fallthrough_target_serial = int(target_blk.nextb.serial)
                         unflat_logger.info(
-                            "Queuing convert_to_goto for conditional father: block %s -> %s",
+                            "Queuing conditional redirect clone: father %s via ref %s "
+                            "(jcc->%s, fallthrough->%s)",
                             dispatcher_father.serial,
                             target_blk.serial,
+                            cond_target_serial,
+                            fallthrough_target_serial,
                         )
-                        self._record_deferred_case_overlap_edge(
-                            dispatcher_info.entry_block.serial,
-                            dispatcher_father.serial,
-                            target_blk.serial,
-                        )
-                        deferred_modifier.queue_convert_to_goto(
-                            block_serial=dispatcher_father.serial,
-                            goto_target=target_blk.serial,
+                        deferred_modifier.queue_create_conditional_redirect(
+                            source_blk_serial=dispatcher_father.serial,
+                            ref_blk_serial=target_blk.serial,
+                            conditional_target_serial=cond_target_serial,
+                            fallthrough_target_serial=fallthrough_target_serial,
                             description=(
-                                "resolve_dispatcher_father(convert) "
-                                f"{dispatcher_father.serial} -> {target_blk.serial}"
+                                "resolve_dispatcher_father(cond-clone) "
+                                f"{dispatcher_father.serial} -> ref {target_blk.serial} "
+                                f"(jcc:{cond_target_serial}, ft:{fallthrough_target_serial})"
                             ),
                         )
                         queued_change = True
                     else:
-                        unflat_logger.warning(
-                            "Skipping father rewrite for blk %d: nsucc=%d opcode=%s target=%d",
-                            dispatcher_father.serial,
-                            source_nsucc,
-                            tail_opcode,
-                            target_blk.serial,
+                        # [SAFETY] Triangle check:
+                        # If target is conditional AND a direct dispatcher successor,
+                        # enforce a trampoline to break the "Switch Case -> Switch Case" edge.
+                        #
+                        # This prevents Hex-Rays crashes (INTERR/segfault) caused by
+                        # "Triangle with Shared Conditional Header" topology where a
+                        # conditional block is entered both from the switch (as a case)
+                        # and from another case block (via unflattening).
+                        is_target_in_dispatcher = False
+                        dispatcher_head = dispatcher_info.entry_block.blk
+                        if dispatcher_head:
+                            for i in range(dispatcher_head.nsucc()):
+                                if dispatcher_head.succ(i) == target_blk.serial:
+                                    is_target_in_dispatcher = True
+                                    break
+
+                        # We use a relaxed definition of conditional here (ignoring nextb requirement)
+                        # because create_and_redirect works fine even for the last block.
+                        is_risky_conditional = (
+                            target_blk.nsucc() == 2
+                            and target_blk.tail is not None
+                            and ida_hexrays.is_mcode_jcond(target_blk.tail.opcode)
                         )
-                if not queued_change:
-                    return 0
-            else:
-                # Legacy direct CFG modifications
-                if len(ins_to_copy) > 0:
+
+                        if is_risky_conditional and is_target_in_dispatcher:
+                            unflat_logger.info(
+                                "Queuing trampoline for triangle edge: block %s -> %s",
+                                dispatcher_father.serial,
+                                target_blk.serial,
+                            )
+                            nop = ida_hexrays.minsn_t(dispatcher_father.tail.ea)
+                            nop.opcode = ida_hexrays.m_nop
+                            deferred_modifier.queue_create_and_redirect(
+                                source_block_serial=dispatcher_father.serial,
+                                final_target_serial=target_blk.serial,
+                                instructions_to_copy=[nop],
+                                is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY),
+                                description=f"resolve_dispatcher_father(trampoline) {dispatcher_father.serial} -> {target_blk.serial}",
+                            )
+                            queued_change = True
+                        else:
+                            unflat_logger.info(
+                                "Queuing goto change: block %s -> %s",
+                                dispatcher_father.serial,
+                                target_blk.serial,
+                            )
+                            self._record_deferred_case_overlap_edge(
+                                dispatcher_info.entry_block.serial,
+                                dispatcher_father.serial,
+                                target_blk.serial,
+                            )
+                            deferred_modifier.queue_goto_change(
+                                block_serial=dispatcher_father.serial,
+                                new_target=target_blk.serial,
+                                description=f"resolve_dispatcher_father {dispatcher_father.serial} -> {target_blk.serial}",
+                                rule_priority=100,  # High priority - proven constant analysis
+                            )
+                            queued_change = True
+                elif source_nsucc == 2 and tail_opcode in CONDITIONAL_JUMP_OPCODES:
                     unflat_logger.info(
-                        "Instruction copied: %s: %s",
-                        len(ins_to_copy),
-                        ", ".join(
-                            [format_minsn_t(ins_copied) for ins_copied in ins_to_copy]
+                        "Queuing convert_to_goto for conditional father: block %s -> %s",
+                        dispatcher_father.serial,
+                        target_blk.serial,
+                    )
+                    self._record_deferred_case_overlap_edge(
+                        dispatcher_info.entry_block.serial,
+                        dispatcher_father.serial,
+                        target_blk.serial,
+                    )
+                    deferred_modifier.queue_convert_to_goto(
+                        block_serial=dispatcher_father.serial,
+                        goto_target=target_blk.serial,
+                        description=(
+                            "resolve_dispatcher_father(convert) "
+                            f"{dispatcher_father.serial} -> {target_blk.serial}"
                         ),
                     )
-                    tail_serial = self.mba.qty - 1
-                    block_to_copy = self.mba.get_mblock(tail_serial)
-                    while block_to_copy.type == ida_hexrays.BLT_XTRN or block_to_copy.type == ida_hexrays.BLT_STOP:
-                        block_to_copy = self.mba.get_mblock(tail_serial)
-                        tail_serial -= 1
-                    dispatcher_side_effect_blk = create_block(
-                        block_to_copy, ins_to_copy, is_0_way=(target_blk.type == ida_hexrays.BLT_0WAY), verify=False
-                    )
-                    if dispatcher_father.nsucc() != 1:
-                        unflat_logger.warning(
-                            "Skipping legacy create_and_redirect for non-1way father blk %d (nsucc=%d)",
-                            dispatcher_father.serial,
-                            dispatcher_father.nsucc(),
-                        )
-                        return 0
-                    change_1way_block_successor(
-                        dispatcher_father, dispatcher_side_effect_blk.serial, verify=False
-                    )
-                    change_1way_block_successor(
-                        dispatcher_side_effect_blk, target_blk.serial, verify=False
-                    )
+                    queued_change = True
                 else:
-                    if dispatcher_father.nsucc() == 1:
-                        change_1way_block_successor(dispatcher_father, target_blk.serial, verify=False)
-                    else:
-                        unflat_logger.warning(
-                            "Skipping legacy rewrite for non-1way father blk %d (nsucc=%d)",
-                            dispatcher_father.serial,
-                            dispatcher_father.nsucc(),
-                        )
-                        return 0
+                    unflat_logger.warning(
+                        "Skipping father rewrite for blk %d: nsucc=%d opcode=%s target=%d",
+                        dispatcher_father.serial,
+                        source_nsucc,
+                        tail_opcode,
+                        target_blk.serial,
+                    )
+            if not queued_change:
+                return 0
             return 2
 
         raise NotResolvableFatherException(
@@ -2682,11 +2640,6 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         unflat_logger.info(
                             "Applied jtbl overlap canonicalization: %d case target retarget(s)",
                             canonicalized_cases,
-                        )
-                        safe_verify(
-                            self.mba,
-                            "after jtbl cross-case overlap canonicalization",
-                            logger_func=unflat_logger.error,
                         )
                         total_nb_change += canonicalized_cases
                     # DeferredGraphModifier maintenance is deferred so we can
