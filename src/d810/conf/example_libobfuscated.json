@@ -1037,5 +1037,8 @@
                 ]
             }
         }
-    ]
+    ],
+    "additional_configuration": {
+        "enable_pass_pipeline": false
+    }
 }
