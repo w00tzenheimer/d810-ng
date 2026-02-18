@@ -123,6 +123,7 @@ class ProjectConfiguration:
             blk_rules=[
                 RuleConfiguration.from_dict(r) for r in data.get("blk_rules", [])
             ],
+            additional_configuration=data.get("additional_configuration", {}),
         )
 
     def save(self) -> None:
@@ -132,6 +133,7 @@ class ProjectConfiguration:
             "description": self.description,
             "ins_rules": [rule.to_dict() for rule in self.ins_rules],
             "blk_rules": [rule.to_dict() for rule in self.blk_rules],
+            "additional_configuration": dict(self.additional_configuration),
         }
 
         try:
