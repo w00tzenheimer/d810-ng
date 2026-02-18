@@ -16,6 +16,7 @@ from d810.core.bits import (
     signed_to_unsigned,
     unsigned_to_signed,
 )
+from d810.core import bits as _rotate_helpers
 from d810.hexrays.hexrays_helpers import AND_TABLE
 
 logger = getLogger(__name__)
@@ -342,6 +343,23 @@ cdef class AstEvaluator:
                     node.left,
                     node.right,
                 )
+            # Attempt to evaluate rotate helper calls (__ROL*/__ROR*).
+            # func_name is populated by mop_to_ast_internal when building
+            # AST nodes for rotate helper calls.
+            helper_name = (node.func_name or "").lstrip("!")
+            if (
+                helper_name
+                and (helper_name.startswith("__ROL") or helper_name.startswith("__ROR"))
+                and node.left is not None
+                and node.right is not None
+            ):
+                helper_func = getattr(_rotate_helpers, helper_name, None)
+                if helper_func is not None:
+                    val = self.evaluate(node.left, dict_index_to_value)
+                    rot = self.evaluate(node.right, dict_index_to_value)
+                    result = helper_func(val, rot)
+                    return result & res_mask
+            # Unknown runtime value - treat as 0 to let constant evaluation proceed.
             return 0 & res_mask
         else:
             raise AstEvaluationException(

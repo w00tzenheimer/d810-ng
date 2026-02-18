@@ -79,6 +79,8 @@ import idaapi
 
 import d810.core.typing as typing
 from d810.core import getLogger
+from d810.errors import AstEvaluationException
+from d810.expr.p_ast import mop_to_ast
 from d810.hexrays.hexrays_helpers import extract_literal_from_mop
 from d810.hexrays.ida_utils import is_never_written_var
 from d810.optimizers.microcode.handler import ConfigParam
@@ -87,6 +89,52 @@ from d810.optimizers.microcode.instructions.peephole.handler import (
 )
 
 peephole_logger = getLogger(__name__)
+
+
+def _try_eval_pure_const_mop(mop: ida_hexrays.mop_t) -> Optional[int]:
+    """Try to evaluate *mop* as a pure-constant expression tree.
+
+    If *mop* is ``mop_n`` (an immediate constant), return its value directly.
+
+    If *mop* is ``mop_d`` (the result of a sub-instruction), convert it to an
+    AST via :func:`~d810.expr.p_ast.mop_to_ast` and verify that every leaf in
+    the tree is a constant.  When that holds, evaluate the tree with an empty
+    variable dict (constants evaluate without any variable bindings) and return
+    the resulting integer.
+
+    Returns *None* if evaluation is not possible (non-constant leaves, AST
+    build failure, or any other error).
+    """
+    if mop is None:
+        return None
+
+    # Fast path: already an immediate constant.
+    if mop.t == ida_hexrays.mop_n:
+        return mop.nnn.value
+
+    # Only attempt AST evaluation for computed sub-expressions.
+    if mop.t != ida_hexrays.mop_d:
+        return None
+
+    try:
+        ast = mop_to_ast(mop)
+        if ast is None:
+            return None
+
+        # Verify all leaves are constants — if any leaf is a non-constant
+        # (e.g. a register or stack variable), we cannot evaluate statically.
+        leaves = ast.get_leaf_list()
+        if not leaves:
+            return None
+        if not all(leaf.is_constant() for leaf in leaves):
+            return None
+
+        result = ast.evaluate({})
+        if result is None:
+            return None
+        return int(result)
+    except (AstEvaluationException, Exception):
+        return None
 
 
 # Operand types that may reference readonly global data.
@@ -312,6 +360,7 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         Supported forms::
 
             ldx  &sym , #off
+            ldx  &sym , <pure-const-expr>
             ldx  ds ,  add(&sym , #off)
         """
 
@@ -320,11 +369,20 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
 
         # ------------------------------------------------------------------
         #  Variant A:   ldx  &sym , #off
+        #  Variant A':  ldx  &sym , <pure-const-expr>
         # ------------------------------------------------------------------
-        if ins.l.t == ida_hexrays.mop_S and ins.r.t == ida_hexrays.mop_n:
-            base = ins.l.s.start_ea
-            off = ins.r.nnn.value
-            return base + off
+        if ins.l.t == ida_hexrays.mop_S:
+            if ins.r.t == ida_hexrays.mop_n:
+                base = ins.l.s.start_ea
+                off = ins.r.nnn.value
+                return base + off
+            # Variant A': index is a computed expression — try evaluating it
+            # as a pure-constant tree (all leaves are immediates).
+            if ins.r.t == ida_hexrays.mop_d:
+                off = _try_eval_pure_const_mop(ins.r)
+                if off is not None:
+                    base = ins.l.s.start_ea
+                    return base + off
 
         # ------------------------------------------------------------------
         #  Variant B:   ldx  ds , add(&sym , #off)
