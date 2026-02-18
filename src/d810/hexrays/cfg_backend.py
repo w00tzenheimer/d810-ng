@@ -14,7 +14,7 @@ Example:
 """
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from d810.core.typing import Any, Protocol, runtime_checkable
 
 from d810.hexrays.portable_cfg import PortableCFG
 from d810.hexrays.graph_modification import GraphModification

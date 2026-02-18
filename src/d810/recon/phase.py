@@ -9,7 +9,7 @@ imports. This module is fully unit-testable.
 from __future__ import annotations
 
 import logging
-from typing import Any, Protocol, runtime_checkable
+from d810.core.typing import Any, Protocol, runtime_checkable
 
 from d810.recon.models import ReconResult
 from d810.recon.store import ReconStore

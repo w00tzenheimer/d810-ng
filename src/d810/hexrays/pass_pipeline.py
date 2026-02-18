@@ -6,7 +6,7 @@ lowers the resulting modifications, verifies, and re-lifts if changes occurred.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from d810.core.typing import Any
 
 from d810.hexrays.cfg_pass import CFGPass
 from d810.hexrays.cfg_backend import CFGBackend
