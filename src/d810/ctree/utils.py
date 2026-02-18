@@ -8,23 +8,14 @@ Ported from herast (herast/tree/utils.py).
 """
 from __future__ import annotations
 
+import idaapi
+import idautils
+
 from d810.core import typing
 from d810.core import getLogger
 from d810.ctree.ast_iteration import get_children
 
 logger = getLogger("D810.ctree")
-
-# ---------------------------------------------------------------------------
-# IDA imports are optional for testing.
-# ---------------------------------------------------------------------------
-try:
-    import idaapi
-    import idc
-    import idautils
-except ImportError:
-    idaapi = None  # type: ignore[assignment]
-    idc = None  # type: ignore[assignment]
-    idautils = None  # type: ignore[assignment]
 
 
 def get_func_calls_to(fea: int) -> list[int]:
@@ -78,9 +69,7 @@ def get_following_instr(parent_block: typing.Any, item: typing.Any) -> typing.An
 
 def resolve_name_address(name: str) -> int:
     """Resolve a symbol name to its address."""
-    if idc is None:
-        return -1
-    return idc.get_name_ea_simple(name)
+    return idaapi.get_name_ea(idaapi.BADADDR, name)
 
 
 def remove_instruction_from_ast(unwanted_ins: typing.Any, parent: typing.Any) -> bool:

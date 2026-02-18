@@ -1,0 +1,50 @@
+# Forbid try/except ImportError around IDA imports in ctree.
+#
+# BAD:
+#   try:
+#       import idaapi
+#   except ImportError:
+#       idaapi = None
+#
+# Rationale:
+# - ctree code is IDA-dependent; unit tests should be system tests if needed.
+# - Import errors should surface early instead of being silently masked.
+
+id: no-ida-try-import
+language: python
+severity: error
+
+files:
+  - "src/d810/ctree/**/*.py"
+
+message: |
+  Do not wrap IDA imports in try/except ImportError in ctree modules.
+  ctree code assumes IDA is available; tests requiring IDA belong in system tests.
+
+rule:
+  any:
+    - pattern: |
+        try:
+          import idaapi
+        except ImportError:
+          $$$
+    - pattern: |
+        try:
+          from idaapi import $$$
+        except ImportError:
+          $$$
+    - pattern: |
+        try:
+          import idc
+        except ImportError:
+          $$$
+    - pattern: |
+        try:
+          import idautils
+        except ImportError:
+          $$$
+    - pattern: |
+        try:
+          import ida_$MODULE
+        except ImportError:
+          $$$

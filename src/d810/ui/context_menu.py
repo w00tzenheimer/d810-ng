@@ -313,22 +313,9 @@ class D810ContextMenu:
     @staticmethod
     def _collect_ida_modules() -> dict[str, typing.Any]:
         modules: dict[str, typing.Any] = {}
-        for module_name in (
-            "idaapi",
-            "ida_kernwin",
-            "ida_hexrays",
-            "ida_loader",
-            "ida_funcs",
-            "ida_fpro",
-            "ida_lines",
-            "ida_name",
-            "ida_bytes",
-            "ida_auto",
-            "ida_problems",
-            "idc",
-        ):
-            try:
-                modules[module_name] = __import__(module_name)
-            except ImportError:
-                continue
+        # Only inject the idaapi shim; other modules are resolved on-demand.
+        try:
+            modules["idaapi"] = __import__("idaapi")
+        except ImportError:
+            pass
         return modules
