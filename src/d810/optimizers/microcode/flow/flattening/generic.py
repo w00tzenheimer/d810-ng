@@ -2732,8 +2732,10 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     "IDA from continuing with a corrupted MBA",
                     len(deferred_modifier.modifications),
                 )
-                # Return what we have so IDA knows the MBA was modified,
-                # but skip further processing that would compound corruption.
+                # Return the patch count to the caller (optimize()) which will
+                # store it in last_pass_nb_patch_done.  optimize() will detect
+                # _verify_failed and return 0 to IDA -- returning non-zero to
+                # IDA triggers its own verify on a corrupted MBA (INTERR 50860).
                 total_nb_change += nb_flattened_branches
                 return total_nb_change
 
@@ -2897,14 +2899,18 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         # If deferred modifier verify failed, the MBA is in a suspect state.
         # Skip deep cleaning / optimize_local / safe_verify which would either
         # fail or compound the corruption, causing IDA to hang at later
-        # maturity levels.  Return the patch count so IDA knows the MBA was
-        # touched and doesn't silently reuse the bad state.
+        # maturity levels.  Return 0 (not the patch count) so IDA does NOT
+        # trigger its own internal verify on the corrupted MBA -- returning
+        # non-zero causes INTERR 50860 and permanent decompiler corruption.
         if self._verify_failed:
             unflat_logger.warning(
-                "Skipping post-unflattening cleanup because MBA verify "
-                "failed during deferred modifications"
+                "Returning 0 to IDA despite %d patches applied -- MBA verify "
+                "failed, returning non-zero would trigger IDA's own verify "
+                "on corrupted MBA causing INTERR 50860 and permanent "
+                "decompiler corruption",
+                self.last_pass_nb_patch_done + initial_changes,
             )
-            return self.last_pass_nb_patch_done + initial_changes
+            return 0
 
         nb_clean = mba_deep_cleaning(self.mba, False)
         if self.dump_intermediate_microcode:
