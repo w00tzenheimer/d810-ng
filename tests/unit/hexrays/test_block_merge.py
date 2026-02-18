@@ -8,8 +8,19 @@ from __future__ import annotations
 import pytest
 
 from d810.hexrays.graph_modification import NopInstructions
+from d810.hexrays.mop_snapshot import MopSnapshot
 from d810.hexrays.passes.block_merge import BlockMergePass
 from d810.hexrays.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+
+# IDA microcode constants (no IDA import required)
+_M_GOTO_OPCODE = 55   # ida_hexrays.m_goto == 0x37
+_MOP_B_TYPE = 7       # ida_hexrays.mop_b  == MOPT.MBLOCK
+
+
+def _make_goto_insn(ea: int, target_serial: int) -> InsnSnapshot:
+    """Create an m_goto InsnSnapshot with a mop_b operand pointing to target_serial."""
+    dest_mop = MopSnapshot(t=_MOP_B_TYPE, size=4, block_num=target_serial)
+    return InsnSnapshot(opcode=_M_GOTO_OPCODE, ea=ea, operands=(dest_mop,))
 
 
 class TestBlockMergePass:
@@ -38,7 +49,7 @@ class TestBlockMergePass:
 
     def test_simple_merge_candidate(self):
         """Simple A->B merge candidate should emit NopInstructions for tail goto."""
-        goto_insn = InsnSnapshot(opcode=0x2b, ea=0x1000, operands=())  # m_goto opcode
+        goto_insn = _make_goto_insn(ea=0x1000, target_serial=1)
         blk0 = BlockSnapshot(
             serial=0, block_type=1, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
@@ -59,8 +70,8 @@ class TestBlockMergePass:
 
     def test_multi_predecessor_successor_not_merged(self):
         """Successor with multiple predecessors should not be merged."""
-        goto_insn_a = InsnSnapshot(opcode=0x2b, ea=0x1000, operands=())
-        goto_insn_b = InsnSnapshot(opcode=0x2b, ea=0x2000, operands=())
+        goto_insn_a = _make_goto_insn(ea=0x1000, target_serial=2)
+        goto_insn_b = _make_goto_insn(ea=0x2000, target_serial=2)
         # Block A: 0 -> 2
         blk_a = BlockSnapshot(
             serial=0, block_type=1, succs=(2,), preds=(),
@@ -86,7 +97,7 @@ class TestBlockMergePass:
 
     def test_self_loop_not_merged(self):
         """Self-referencing goto (infinite loop) should not be merged."""
-        goto_insn = InsnSnapshot(opcode=0x2b, ea=0x1000, operands=())
+        goto_insn = _make_goto_insn(ea=0x1000, target_serial=0)
         # Block 0 -> 0 (self-loop)
         blk = BlockSnapshot(
             serial=0, block_type=1, succs=(0,), preds=(0,),
@@ -102,13 +113,13 @@ class TestBlockMergePass:
     def test_chain_of_mergeable_blocks(self):
         """Chain A->B->C where A,B are mergeable should detect both pairs."""
         # Block 0: -> 1
-        goto_insn_0 = InsnSnapshot(opcode=0x2b, ea=0x1000, operands=())
+        goto_insn_0 = _make_goto_insn(ea=0x1000, target_serial=1)
         blk0 = BlockSnapshot(
             serial=0, block_type=1, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn_0,)
         )
         # Block 1: 0 -> 1 -> 2
-        goto_insn_1 = InsnSnapshot(opcode=0x2b, ea=0x1010, operands=())
+        goto_insn_1 = _make_goto_insn(ea=0x1010, target_serial=2)
         blk1 = BlockSnapshot(
             serial=1, block_type=1, succs=(2,), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=(goto_insn_1,)
@@ -131,7 +142,8 @@ class TestBlockMergePass:
     def test_block_with_zero_ea_instruction_not_merged(self):
         """Block with tail instruction at EA=0 should not emit NOP."""
         # EA=0 is used for synthetic instructions without real addresses
-        goto_insn = InsnSnapshot(opcode=0x2b, ea=0, operands=())
+        dest_mop = MopSnapshot(t=_MOP_B_TYPE, size=4, block_num=1)
+        goto_insn = InsnSnapshot(opcode=_M_GOTO_OPCODE, ea=0, operands=(dest_mop,))
         blk0 = BlockSnapshot(
             serial=0, block_type=1, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
@@ -189,7 +201,7 @@ class TestBlockMergePass:
 
     def test_missing_successor_not_merged(self):
         """Block with successor not in CFG should not be merged."""
-        goto_insn = InsnSnapshot(opcode=0x2b, ea=0x1000, operands=())
+        goto_insn = _make_goto_insn(ea=0x1000, target_serial=99)
         # Block 0 -> 99 (99 doesn't exist)
         blk0 = BlockSnapshot(
             serial=0, block_type=1, succs=(99,), preds=(),
@@ -212,3 +224,79 @@ class TestBlockMergePass:
         cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
 
         assert pass_instance.is_applicable(cfg) is True
+
+    def test_non_goto_tail_not_merged(self):
+        """Block whose tail is not m_goto (e.g. fall-through) should not be merged."""
+        # opcode 1 is m_ldx, not m_goto
+        non_goto_insn = InsnSnapshot(opcode=1, ea=0x1000, operands=())
+        blk0 = BlockSnapshot(
+            serial=0, block_type=1, succs=(1,), preds=(),
+            flags=0, start_ea=0x1000, insn_snapshots=(non_goto_insn,)
+        )
+        blk1 = BlockSnapshot(
+            serial=1, block_type=0, succs=(), preds=(0,),
+            flags=0, start_ea=0x1010, insn_snapshots=()
+        )
+        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+
+        pass_instance = BlockMergePass()
+        mods = pass_instance.transform(cfg)
+
+        assert mods == []
+
+    def test_goto_wrong_destination_not_merged(self):
+        """Goto targeting a different block (wrong mop_b) should not be merged."""
+        # goto points to block 99, but successor is 1
+        wrong_dest_mop = MopSnapshot(t=_MOP_B_TYPE, size=4, block_num=99)
+        goto_insn = InsnSnapshot(opcode=_M_GOTO_OPCODE, ea=0x1000, operands=(wrong_dest_mop,))
+        blk0 = BlockSnapshot(
+            serial=0, block_type=1, succs=(1,), preds=(),
+            flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
+        )
+        blk1 = BlockSnapshot(
+            serial=1, block_type=0, succs=(), preds=(0,),
+            flags=0, start_ea=0x1010, insn_snapshots=()
+        )
+        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+
+        pass_instance = BlockMergePass()
+        mods = pass_instance.transform(cfg)
+
+        assert mods == []
+
+    def test_goto_no_mop_b_operand_not_merged(self):
+        """Goto with no mop_b operand (empty operands) should not be merged."""
+        goto_insn = InsnSnapshot(opcode=_M_GOTO_OPCODE, ea=0x1000, operands=())
+        blk0 = BlockSnapshot(
+            serial=0, block_type=1, succs=(1,), preds=(),
+            flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
+        )
+        blk1 = BlockSnapshot(
+            serial=1, block_type=0, succs=(), preds=(0,),
+            flags=0, start_ea=0x1010, insn_snapshots=()
+        )
+        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+
+        pass_instance = BlockMergePass()
+        mods = pass_instance.transform(cfg)
+
+        assert mods == []
+
+    def test_nway_block_not_merged(self):
+        """N-way blocks (switch) should not be merged even with single successor."""
+        goto_insn = _make_goto_insn(ea=0x1000, target_serial=1)
+        # block_type=3 is BLT_NWAY (switch)
+        blk0 = BlockSnapshot(
+            serial=0, block_type=3, succs=(1,), preds=(),
+            flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
+        )
+        blk1 = BlockSnapshot(
+            serial=1, block_type=0, succs=(), preds=(0,),
+            flags=0, start_ea=0x1010, insn_snapshots=()
+        )
+        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+
+        pass_instance = BlockMergePass()
+        mods = pass_instance.transform(cfg)
+
+        assert mods == []

@@ -9,9 +9,12 @@ IDA's optimizer can merge the two blocks.
 
 Algorithm:
 1. For each block B:
+   - Check B is BLT_1WAY (block_type == 1)
    - Check B has exactly one successor S
-   - Check S has exactly one predecessor (B)
    - Check B is not a self-loop (B != S)
+   - Check B's tail instruction is m_goto (opcode == 55 / 0x37)
+   - Check the goto destination operand (mop_b, type==7) matches S's serial
+   - Check S has exactly one predecessor (B)
    - If all conditions hold, emit NopInstructions for B's tail goto
 
 Example:
@@ -24,14 +27,22 @@ from d810.hexrays.cfg_pass import CFGPass
 from d810.hexrays.graph_modification import GraphModification, NopInstructions
 from d810.hexrays.portable_cfg import PortableCFG
 
+# IDA microcode constants (decimal values, no IDA import required)
+_M_GOTO_OPCODE = 55   # ida_hexrays.m_goto == 0x37
+_MOP_B_TYPE = 7       # ida_hexrays.mop_b  == MOPT.MBLOCK
+_BLT_1WAY = 1         # ida_hexrays.BLT_1WAY
+
 
 class BlockMergePass(CFGPass):
     """Merge artificially split basic blocks by NOPing redundant gotos.
 
     This pass detects block pairs where:
+    - Block B has block_type == 1 (BLT_1WAY)
     - Block B has exactly one successor S
-    - Block S has exactly one predecessor (B)
     - B is not a self-loop
+    - B's tail instruction is m_goto (opcode 55 / 0x37)
+    - The goto's destination operand has type mop_b (7) matching S's serial
+    - Block S has exactly one predecessor (this block)
 
     When detected, the trailing goto in B is NOPed via NopInstructions,
     signaling to IDA's optimizer that the blocks can be merged.
@@ -45,8 +56,10 @@ class BlockMergePass(CFGPass):
 
     Example:
         >>> from d810.hexrays.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+        >>> from d810.hexrays.mop_snapshot import MopSnapshot
         >>> # Create mergeable pair: block 0 -> block 1 (1:1 relationship)
-        >>> goto_insn = InsnSnapshot(opcode=0x2b, ea=0x1000, operands=())  # m_goto
+        >>> dest_mop = MopSnapshot(t=7, size=4, block_num=1)  # mop_b -> block 1
+        >>> goto_insn = InsnSnapshot(opcode=55, ea=0x1000, operands=(dest_mop,))
         >>> blk0 = BlockSnapshot(
         ...     serial=0, block_type=1, succs=(1,), preds=(),
         ...     flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
@@ -80,9 +93,12 @@ class BlockMergePass(CFGPass):
 
         Returns:
             List of NopInstructions modifications for blocks where:
+            - Block has block_type == 1 (BLT_1WAY)
             - Block has exactly 1 successor
             - Successor has exactly 1 predecessor (this block)
             - Block is not a self-loop
+            - Block tail is m_goto (opcode 55) with mop_b destination matching
+              the successor serial
             - Block has at least one instruction with a valid EA (tail goto)
 
             Empty list if no mergeable pairs exist.
@@ -101,6 +117,11 @@ class BlockMergePass(CFGPass):
         """
         mods = []
         for serial, blk in cfg.blocks.items():
+            # Check 1: Block must be BLT_1WAY (unconditional jump block)
+            # Reject BLT_0WAY (0), BLT_2WAY (2), BLT_NWAY (3)
+            if blk.block_type != _BLT_1WAY:
+                continue
+
             # Candidate: 1-way block with single successor
             if len(blk.succs) != 1:
                 continue
@@ -121,18 +142,54 @@ class BlockMergePass(CFGPass):
             if len(succ.preds) != 1 or succ.preds[0] != serial:
                 continue
 
-            # Emit NOP for the tail goto instruction
-            # The actual block merging is done by IDA's optimizer after NOPing
-            if blk.insn_snapshots:
-                tail_insn = blk.insn_snapshots[-1]
-                # Only NOP if the instruction has a valid EA (non-zero)
-                if tail_insn.ea != 0:
-                    mods.append(NopInstructions(
-                        block_serial=serial,
-                        insn_eas=(tail_insn.ea,)
-                    ))
+            # Must have instructions to NOP
+            if not blk.insn_snapshots:
+                continue
+
+            tail_insn = blk.insn_snapshots[-1]
+
+            # Check 2: Tail instruction must be m_goto (opcode 55 / 0x37)
+            # If the tail is not a goto, it's a fall-through block — skip it.
+            if tail_insn.opcode != _M_GOTO_OPCODE:
+                continue
+
+            # Only NOP if the instruction has a valid EA (non-zero)
+            if tail_insn.ea == 0:
+                continue
+
+            # Check 3: Goto destination must reference the successor block
+            # The destination operand has type mop_b (7) with block_num == succ_serial
+            if not self._goto_targets_successor(tail_insn.operands, succ_serial):
+                continue
+
+            mods.append(NopInstructions(
+                block_serial=serial,
+                insn_eas=(tail_insn.ea,)
+            ))
 
         return mods
+
+    @staticmethod
+    def _goto_targets_successor(operands: tuple, succ_serial: int) -> bool:
+        """Check whether any operand is a mop_b reference to succ_serial.
+
+        For m_goto the destination is stored in the ``l`` slot of the
+        instruction, which becomes operands[0] in InsnSnapshot.  However,
+        we scan all captured operands so the check is robust against
+        different lift implementations.
+
+        Args:
+            operands: Tuple of MopSnapshot instances from the tail instruction.
+            succ_serial: Expected target block serial number.
+
+        Returns:
+            True if an operand with type mop_b (7) and block_num == succ_serial
+            is found; False otherwise (including when operands is empty).
+        """
+        for op in operands:
+            if op.t == _MOP_B_TYPE and op.block_num == succ_serial:
+                return True
+        return False
 
 
 __all__ = ["BlockMergePass"]
