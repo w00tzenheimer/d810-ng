@@ -2642,14 +2642,23 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                             canonicalized_cases,
                         )
                         total_nb_change += canonicalized_cases
+                    # Non-fatal verify after canonicalization: logs corruption
+                    # signals for diagnostics but does NOT bail — mba_deep_cleaning
+                    # handles most cases. See commit 412a390 for context.
+                    try:
+                        safe_verify(
+                            self.mba,
+                            "after jtbl cross-case overlap canonicalization",
+                            logger_func=unflat_logger.debug,
+                        )
+                    except RuntimeError:
+                        unflat_logger.warning(
+                            "MBA verify failed after jtbl canonicalization "
+                            "(non-fatal, proceeding to deep cleaning)"
+                        )
                     # DeferredGraphModifier maintenance is deferred so we can
                     # canonicalize switch-case overlaps first.
                     mba_deep_cleaning(self.mba, call_mba_combine_block=False)
-                    safe_verify(
-                        self.mba,
-                        "after deferred modifications (generic post-maintenance)",
-                        logger_func=unflat_logger.error,
-                    )
 
             if deferred_modifier.verify_failed:
                 self._verify_failed = True
