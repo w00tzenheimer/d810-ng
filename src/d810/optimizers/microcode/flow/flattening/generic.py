@@ -100,14 +100,14 @@ class UnflatteningEvent:
     ----
     ::
 
-        MMAT_CALLS → optimize()
-            ├── _apply_scheduled_modifications()  # Apply anything queued for MMAT_CALLS
-            └── ... normal processing ...
-                 └── schedule_for_maturity(MMAT_GLBOPT1, mod)  # Queue cleanup
+        MMAT_CALLS -> optimize()
+            |-- _apply_scheduled_modifications()  # Apply anything queued for MMAT_CALLS
+            `-- ... normal processing ...
+                 `-- schedule_for_maturity(MMAT_GLBOPT1, mod)  # Queue cleanup
 
-        MMAT_GLBOPT1 → optimize()
-            ├── _apply_scheduled_modifications()  # Applies the queued mod
-            └── ... normal processing ...
+        MMAT_GLBOPT1 -> optimize()
+            |-- _apply_scheduled_modifications()  # Applies the queued mod
+            `-- ... normal processing ...
 
     Example: Scheduling modifications for a future maturity
     -------------------------------------------------------
@@ -930,7 +930,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         Sets a quarantine flag on the function identified in *payload* so that
         further aggressive rewrites are skipped for the current maturity level.
         The quarantine is keyed by function EA (an int), which is stable and
-        primitive — no live IDA objects are stored.
+        primitive -- no live IDA objects are stored.
 
         Args:
             payload: Event payload dict containing ``function_ea`` (int or None).
@@ -2695,7 +2695,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         )
                     except RuntimeError:
                         unflat_logger.warning(
-                            "MBA verify failed after jtbl canonicalization — "
+                            "MBA verify failed after jtbl canonicalization -- "
                             "skipping deep cleaning to prevent compounded corruption"
                         )
                         self._verify_failed = True
