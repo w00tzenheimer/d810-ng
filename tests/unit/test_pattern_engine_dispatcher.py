@@ -28,8 +28,8 @@ def _reload_engine():
     if cymode_mod in sys.modules:
         from d810.core.registry import SingletonMeta
         from d810.core.cymode import CythonMode
-        # Clear singleton cache (correct location is SingletonMeta._instances)
-        SingletonMeta._instances.pop(CythonMode, None)
+        # Clear singleton cache via the proper test helper
+        SingletonMeta._reset_for_test(CythonMode)
         # Delete cymode module to force re-read of D810_NO_CYTHON env var
         del sys.modules[cymode_mod]
 
