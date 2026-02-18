@@ -8,12 +8,11 @@ from __future__ import annotations
 import pytest
 
 from d810.hexrays.passes.fake_jump_fixer import FakeJumpFixerPass
-from d810.hexrays.graph_modification import RedirectEdge
+from d810.hexrays.graph_modification import RedirectBranch, RedirectGoto
 from d810.hexrays.portable_cfg import BlockSnapshot, PortableCFG
 from d810.hexrays.pass_pipeline import PassPipeline
 
-# Import InMemoryBackend from test_cfg_pass
-from tests.unit.hexrays.test_cfg_pass import InMemoryBackend
+from tests.unit.hexrays.conftest import InMemoryBackend
 
 
 class TestFakeJumpFixerPass:
@@ -45,8 +44,8 @@ class TestFakeJumpFixerPass:
         mods = pass_instance.transform(cfg)
         assert len(mods) == 0
 
-    def test_single_2way_block_fix_emits_redirect_edge(self):
-        """Pass with single 2-way block fix should emit one RedirectEdge."""
+    def test_single_2way_block_fix_emits_redirect_branch(self):
+        """Pass with single 2-way block fix should emit one RedirectBranch."""
         blk = BlockSnapshot(
             serial=5, block_type=2, succs=(10, 20), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
@@ -57,13 +56,13 @@ class TestFakeJumpFixerPass:
 
         mods = pass_instance.transform(cfg)
         assert len(mods) == 1
-        assert isinstance(mods[0], RedirectEdge)
+        assert isinstance(mods[0], RedirectBranch)
         assert mods[0].from_serial == 5
         assert mods[0].old_target == 20  # Redirect 5→20 to 5→10
         assert mods[0].new_target == 10
 
-    def test_single_1way_block_fix_emits_redirect_edge(self):
-        """Pass with single 1-way block fix should emit one RedirectEdge."""
+    def test_single_1way_block_fix_emits_redirect_goto(self):
+        """Pass with single 1-way block fix should emit one RedirectGoto."""
         blk = BlockSnapshot(
             serial=5, block_type=1, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
@@ -74,7 +73,7 @@ class TestFakeJumpFixerPass:
 
         mods = pass_instance.transform(cfg)
         assert len(mods) == 1
-        assert isinstance(mods[0], RedirectEdge)
+        assert isinstance(mods[0], RedirectGoto)
         assert mods[0].from_serial == 5
         assert mods[0].old_target == 10
         assert mods[0].new_target == 20
@@ -93,7 +92,7 @@ class TestFakeJumpFixerPass:
         assert len(mods) == 0
 
     def test_multiple_fixes_emit_all_modifications(self):
-        """Pass with multiple fixes should emit RedirectEdge for each."""
+        """Pass with multiple fixes should emit RedirectBranch/RedirectGoto for each."""
         blk10 = BlockSnapshot(
             serial=10, block_type=2, succs=(20, 30), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
@@ -205,7 +204,7 @@ class TestFakeJumpFixerPass:
         assert total_mods == 1
         assert len(backend.applied_modifications) == 1
         mod = backend.applied_modifications[0]
-        assert isinstance(mod, RedirectEdge)
+        assert isinstance(mod, RedirectBranch)
         assert mod.from_serial == 0
         assert mod.old_target == 2
         assert mod.new_target == 1

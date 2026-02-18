@@ -15,7 +15,8 @@ import pytest
 
 from d810.hexrays.backends.ida_backend import IDABackend
 from d810.hexrays.graph_modification import (
-    RedirectEdge,
+    RedirectGoto,
+    RedirectBranch,
     ConvertToGoto,
     InsertBlock,
     RemoveEdge,
@@ -54,8 +55,8 @@ class TestModificationMapping:
     These tests use sys.modules patching to mock IDA-dependent modules.
     """
 
-    def test_redirect_edge_maps_to_queue_goto_change(self):
-        """Test RedirectEdge → queue_goto_change mapping."""
+    def test_redirect_goto_maps_to_queue_goto_change(self):
+        """Test RedirectGoto → queue_goto_change mapping (1-way blocks)."""
         mock_modifier = Mock()
         mock_modifier.apply.return_value = 1
 
@@ -67,17 +68,41 @@ class TestModificationMapping:
         try:
             backend = IDABackend()
             mock_mba = Mock()
-            modifications = [RedirectEdge(from_serial=10, old_target=20, new_target=30)]
+            modifications = [RedirectGoto(from_serial=10, old_target=20, new_target=30)]
 
             count = backend.lower(modifications, mock_mba)
 
             assert count == 1
             mock_modifier.queue_goto_change.assert_called_once_with(
-                10, 30, description="redirect 10: 20→30"
+                10, 30, description="redirect goto 10: 20→30"
             )
             mock_modifier.apply.assert_called_once_with(enable_snapshot_rollback=True)
         finally:
             # Clean up mock module
+            sys.modules.pop('d810.hexrays.deferred_modifier', None)
+
+    def test_redirect_branch_maps_to_queue_target_change(self):
+        """Test RedirectBranch → queue_target_change mapping (2-way blocks)."""
+        mock_modifier = Mock()
+        mock_modifier.apply.return_value = 1
+
+        mock_deferred_module = Mock()
+        mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
+
+        sys.modules['d810.hexrays.deferred_modifier'] = mock_deferred_module
+        try:
+            backend = IDABackend()
+            mock_mba = Mock()
+            modifications = [RedirectBranch(from_serial=10, old_target=20, new_target=30)]
+
+            count = backend.lower(modifications, mock_mba)
+
+            assert count == 1
+            mock_modifier.queue_target_change.assert_called_once_with(
+                10, 20, 30, description="redirect branch 10: 20→30"
+            )
+            mock_modifier.apply.assert_called_once_with(enable_snapshot_rollback=True)
+        finally:
             sys.modules.pop('d810.hexrays.deferred_modifier', None)
 
     def test_convert_to_goto_maps_to_queue_convert_to_goto(self):
@@ -211,7 +236,7 @@ class TestModificationMapping:
             backend = IDABackend()
             mock_mba = Mock()
             modifications = [
-                RedirectEdge(from_serial=10, old_target=20, new_target=30),
+                RedirectGoto(from_serial=10, old_target=20, new_target=30),
                 ConvertToGoto(block_serial=15, goto_target=25),
                 NopInstructions(block_serial=20, insn_eas=(0x2000,)),
             ]
