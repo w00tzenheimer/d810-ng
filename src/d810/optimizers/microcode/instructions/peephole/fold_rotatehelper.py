@@ -7,7 +7,7 @@ import ida_hexrays
 
 from d810.core import typing
 from d810.core import getLogger
-from d810.core import bits as rotate_helpers
+from d810.evaluator.helpers import get_registry as _get_helper_registry
 from d810.hexrays.hexrays_formatters import format_mop_t, opcode_to_string, sanitize_ea
 from d810.hexrays.hexrays_helpers import AND_TABLE  # already maps size->mask
 from d810.hexrays.hexrays_helpers import extract_literal_from_mop, is_rotate_helper_call
@@ -152,10 +152,10 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
                 args_list,
             )
 
-        helper_func = getattr(rotate_helpers, helper_name, None)
+        helper_func = _get_helper_registry().lookup(helper_name)
         if helper_func is None:
             if logger.debug_on:
-                logger.debug("[RotateHelperInline] helper %s not found in rotate_helpers", helper_name)
+                logger.debug("[RotateHelperInline] helper %s not found in registry", helper_name)
             return None
 
         # Safely extract literal values from the two arguments.  If either is not a
