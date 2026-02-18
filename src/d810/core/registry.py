@@ -317,6 +317,12 @@ class SingletonMeta(type):
         return cast(T, SingletonMeta._instances[cls])
 
 
+    @classmethod
+    def _reset_for_test(cls, target_cls: type) -> None:
+        """Remove singleton instance for a specific class. For use in tests only."""
+        cls._instances.pop(target_cls, None)
+
+
 def singleton(cls: type[T]) -> type[T]:
     """
     Decorator to apply SingletonMeta behavior to a class.
