@@ -97,11 +97,11 @@ class TestInMemoryBackend:
         """Lift with blocks should return PortableCFG."""
         # Create synthetic blocks
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         blocks = {0: blk0, 1: blk1}
@@ -152,15 +152,15 @@ class TestCFGPass:
         """CountBlocksPass should return ConvertToGoto for terminal blocks."""
         # Create CFG: 0 -> 1, 2 (terminals)
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(1, 2), preds=(),
+            serial=0, block_type=4, succs=(1, 2), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=0, succs=(), preds=(0,),
+            serial=2, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
@@ -185,22 +185,22 @@ class TestCFGPass:
         """Custom is_applicable should be honored."""
         # Small CFG (2 blocks)
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         small_cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
         # Large CFG (3 blocks)
         blk2 = BlockSnapshot(
-            serial=2, block_type=0, succs=(), preds=(0,),
+            serial=2, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
         blk0_large = BlockSnapshot(
-            serial=0, block_type=2, succs=(1, 2), preds=(),
+            serial=0, block_type=4, succs=(1, 2), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         large_cfg = PortableCFG(
@@ -249,15 +249,15 @@ class TestIntegration:
         """Full cycle: lift CFG, run pass, lower modifications."""
         # Setup backend with 3 blocks
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(1, 2), preds=(),
+            serial=0, block_type=4, succs=(1, 2), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=0, succs=(), preds=(0,),
+            serial=2, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
         blocks = {0: blk0, 1: blk1, 2: blk2}

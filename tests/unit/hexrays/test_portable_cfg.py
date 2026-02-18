@@ -87,7 +87,7 @@ class TestBlockSnapshot:
         """Test basic creation with valid parameters."""
         blk = BlockSnapshot(
             serial=0,
-            block_type=1,
+            block_type=3,
             succs=(1,),
             preds=(),
             flags=0,
@@ -95,7 +95,7 @@ class TestBlockSnapshot:
             insn_snapshots=()
         )
         assert blk.serial == 0
-        assert blk.block_type == 1
+        assert blk.block_type == 3
         assert blk.succs == (1,)
         assert blk.preds == ()
         assert blk.flags == 0
@@ -106,7 +106,7 @@ class TestBlockSnapshot:
         """Test nsucc and npred computed properties."""
         blk = BlockSnapshot(
             serial=1,
-            block_type=2,
+            block_type=4,
             succs=(2, 3),
             preds=(0,),
             flags=0,
@@ -120,7 +120,7 @@ class TestBlockSnapshot:
         """Test __repr__ output format."""
         blk = BlockSnapshot(
             serial=5,
-            block_type=2,
+            block_type=4,
             succs=(6, 7),
             preds=(3, 4),
             flags=0x10,
@@ -130,7 +130,7 @@ class TestBlockSnapshot:
         r = repr(blk)
         assert "BlockSnapshot" in r
         assert "serial=5" in r
-        assert "type=2" in r
+        assert "type=4" in r
         assert "(6, 7)" in r
         assert "(3, 4)" in r
         assert "ninsns=0" in r
@@ -153,10 +153,10 @@ class TestBlockSnapshot:
                 flags=0, start_ea=0x1000, insn_snapshots=()
             )
 
-    @pytest.mark.parametrize("block_type", [-1, 4, 100])
+    @pytest.mark.parametrize("block_type", [-1, 7, 100])
     def test_invalid_block_type_validation(self, block_type: int) -> None:
         """Test that invalid block_type raises ValueError."""
-        with pytest.raises(ValueError, match="block_type must be 0-3"):
+        with pytest.raises(ValueError, match="block_type must be 0-6"):
             BlockSnapshot(
                 serial=0, block_type=block_type, succs=(), preds=(),
                 flags=0, start_ea=0x1000, insn_snapshots=()
@@ -170,9 +170,9 @@ class TestBlockSnapshot:
                 flags=0, start_ea=-1, insn_snapshots=()
             )
 
-    @pytest.mark.parametrize("block_type", [0, 1, 2, 3])
+    @pytest.mark.parametrize("block_type", [0, 1, 2, 3, 4, 5, 6])
     def test_valid_block_types(self, block_type: int) -> None:
-        """Test all valid block types (0-3)."""
+        """Test all valid block types (0-6)."""
         blk = BlockSnapshot(
             serial=0, block_type=block_type, succs=(), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
@@ -230,9 +230,9 @@ class TestPortableCFG:
     def test_linear_cfg(self) -> None:
         """Test linear 3-block CFG (0 -> 1 -> 2)."""
         blocks = {
-            0: BlockSnapshot(0, 1, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 1, succs=(2,), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
-            2: BlockSnapshot(2, 0, succs=(), preds=(1,), flags=0, start_ea=0x1200, insn_snapshots=()),
+            0: BlockSnapshot(0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
+            1: BlockSnapshot(1, 3, succs=(2,), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
+            2: BlockSnapshot(2, 2, succs=(), preds=(1,), flags=0, start_ea=0x1200, insn_snapshots=()),
         }
         cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)
         assert cfg.num_blocks == 3
@@ -246,10 +246,10 @@ class TestPortableCFG:
     def test_diamond_cfg(self) -> None:
         """Test diamond CFG (0 -> 1,2 -> 3)."""
         blocks = {
-            0: BlockSnapshot(0, 2, succs=(1, 2), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 1, succs=(3,), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
-            2: BlockSnapshot(2, 1, succs=(3,), preds=(0,), flags=0, start_ea=0x1200, insn_snapshots=()),
-            3: BlockSnapshot(3, 0, succs=(), preds=(1, 2), flags=0, start_ea=0x1300, insn_snapshots=()),
+            0: BlockSnapshot(0, 4, succs=(1, 2), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
+            1: BlockSnapshot(1, 3, succs=(3,), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
+            2: BlockSnapshot(2, 3, succs=(3,), preds=(0,), flags=0, start_ea=0x1200, insn_snapshots=()),
+            3: BlockSnapshot(3, 2, succs=(), preds=(1, 2), flags=0, start_ea=0x1300, insn_snapshots=()),
         }
         cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)
         assert cfg.num_blocks == 4
@@ -261,11 +261,11 @@ class TestPortableCFG:
     def test_complex_cfg_with_backedge(self) -> None:
         """Test complex 5-block CFG with loop (backedge 4 -> 1)."""
         blocks = {
-            0: BlockSnapshot(0, 1, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 2, succs=(2, 3), preds=(0, 4), flags=0, start_ea=0x1100, insn_snapshots=()),
-            2: BlockSnapshot(2, 1, succs=(4,), preds=(1,), flags=0, start_ea=0x1200, insn_snapshots=()),
-            3: BlockSnapshot(3, 0, succs=(), preds=(1,), flags=0, start_ea=0x1300, insn_snapshots=()),
-            4: BlockSnapshot(4, 1, succs=(1,), preds=(2,), flags=0, start_ea=0x1400, insn_snapshots=()),
+            0: BlockSnapshot(0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
+            1: BlockSnapshot(1, 4, succs=(2, 3), preds=(0, 4), flags=0, start_ea=0x1100, insn_snapshots=()),
+            2: BlockSnapshot(2, 3, succs=(4,), preds=(1,), flags=0, start_ea=0x1200, insn_snapshots=()),
+            3: BlockSnapshot(3, 2, succs=(), preds=(1,), flags=0, start_ea=0x1300, insn_snapshots=()),
+            4: BlockSnapshot(4, 3, succs=(1,), preds=(2,), flags=0, start_ea=0x1400, insn_snapshots=()),
         }
         cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)
         assert cfg.num_blocks == 5
@@ -293,9 +293,9 @@ class TestPortableCFG:
     def test_as_adjacency_dict(self) -> None:
         """Test as_adjacency_dict conversion."""
         blocks = {
-            0: BlockSnapshot(0, 2, succs=(1, 2), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 0, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
-            2: BlockSnapshot(2, 0, succs=(), preds=(0,), flags=0, start_ea=0x1200, insn_snapshots=()),
+            0: BlockSnapshot(0, 4, succs=(1, 2), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
+            1: BlockSnapshot(1, 2, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
+            2: BlockSnapshot(2, 2, succs=(), preds=(0,), flags=0, start_ea=0x1200, insn_snapshots=()),
         }
         cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)
         adj = cfg.as_adjacency_dict()
@@ -307,8 +307,8 @@ class TestPortableCFG:
     def test_repr(self) -> None:
         """Test __repr__ output format."""
         blocks = {
-            0: BlockSnapshot(0, 1, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 0, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
+            0: BlockSnapshot(0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
+            1: BlockSnapshot(1, 2, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
         }
         cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0xDEADBEEF)
         r = repr(cfg)
@@ -336,7 +336,7 @@ class TestPortableCFG:
 
     def test_dangling_successor_warning(self, caplog) -> None:
         """Test that dangling successor references log warnings."""
-        blk = BlockSnapshot(0, 1, succs=(99,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
+        blk = BlockSnapshot(0, 3, succs=(99,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
         with caplog.at_level(logging.WARNING):
             cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         assert "non-existent successor 99" in caplog.text
@@ -368,7 +368,7 @@ class TestPortableCFG:
 
     def test_blocks_immutable(self) -> None:
         """PortableCFG.blocks should not allow mutation after construction."""
-        blk = BlockSnapshot(serial=0, block_type=1, succs=(), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
+        blk = BlockSnapshot(serial=0, block_type=2, succs=(), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
         cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         with pytest.raises(TypeError):
             cfg.blocks[99] = blk  # type: ignore
@@ -398,10 +398,10 @@ class TestPortableCFGIntegration:
         insn3 = InsnSnapshot(opcode=0x40, ea=0x1300, operands=())
 
         blocks = {
-            0: BlockSnapshot(0, 2, succs=(1, 2), preds=(), flags=0, start_ea=0x1000, insn_snapshots=(insn0,)),
-            1: BlockSnapshot(1, 1, succs=(3,), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=(insn1,)),
-            2: BlockSnapshot(2, 1, succs=(3,), preds=(0,), flags=0, start_ea=0x1200, insn_snapshots=(insn2,)),
-            3: BlockSnapshot(3, 0, succs=(), preds=(1, 2), flags=0, start_ea=0x1300, insn_snapshots=(insn3,)),
+            0: BlockSnapshot(0, 4, succs=(1, 2), preds=(), flags=0, start_ea=0x1000, insn_snapshots=(insn0,)),
+            1: BlockSnapshot(1, 3, succs=(3,), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=(insn1,)),
+            2: BlockSnapshot(2, 3, succs=(3,), preds=(0,), flags=0, start_ea=0x1200, insn_snapshots=(insn2,)),
+            3: BlockSnapshot(3, 2, succs=(), preds=(1, 2), flags=0, start_ea=0x1300, insn_snapshots=(insn3,)),
         }
         cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)
 
@@ -425,10 +425,10 @@ class TestPortableCFGIntegration:
         """Test loop with proper backedge tracking."""
         # Simple loop: 0 -> 1 -> 2 -> 1, 2 -> 3
         blocks = {
-            0: BlockSnapshot(0, 1, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 1, succs=(2,), preds=(0, 2), flags=0, start_ea=0x1100, insn_snapshots=()),
-            2: BlockSnapshot(2, 2, succs=(1, 3), preds=(1,), flags=0, start_ea=0x1200, insn_snapshots=()),
-            3: BlockSnapshot(3, 0, succs=(), preds=(2,), flags=0, start_ea=0x1300, insn_snapshots=()),
+            0: BlockSnapshot(0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
+            1: BlockSnapshot(1, 3, succs=(2,), preds=(0, 2), flags=0, start_ea=0x1100, insn_snapshots=()),
+            2: BlockSnapshot(2, 4, succs=(1, 3), preds=(1,), flags=0, start_ea=0x1200, insn_snapshots=()),
+            3: BlockSnapshot(3, 2, succs=(), preds=(2,), flags=0, start_ea=0x1300, insn_snapshots=()),
         }
         cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)
 
@@ -446,9 +446,9 @@ class TestPortableCFGIntegration:
     def test_multi_entry_warning(self, caplog) -> None:
         """Test CFG with unreachable blocks (partial snapshot scenario)."""
         blocks = {
-            0: BlockSnapshot(0, 1, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 0, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
-            99: BlockSnapshot(99, 0, succs=(), preds=(88,), flags=0, start_ea=0x9900, insn_snapshots=()),
+            0: BlockSnapshot(0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
+            1: BlockSnapshot(1, 2, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
+            99: BlockSnapshot(99, 2, succs=(), preds=(88,), flags=0, start_ea=0x9900, insn_snapshots=()),
         }
         with caplog.at_level(logging.WARNING):
             cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)

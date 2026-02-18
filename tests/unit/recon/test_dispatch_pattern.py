@@ -7,9 +7,9 @@ from d810.recon.collectors.dispatch_pattern import DispatchPatternCollector
 def _make_switch_cfg(func_ea: int = 0x401000) -> PortableCFG:
     """CFG with one NWAY (switch) block fanning out to 5 targets."""
     blocks = {
-        0: BlockSnapshot(serial=0, block_type=1, succs=(1,), preds=(), flags=0,
+        0: BlockSnapshot(serial=0, block_type=3, succs=(1,), preds=(), flags=0,
                          start_ea=func_ea, insn_snapshots=()),
-        1: BlockSnapshot(serial=1, block_type=3, succs=(2, 3, 4, 5, 6), preds=(0,),
+        1: BlockSnapshot(serial=1, block_type=5, succs=(2, 3, 4, 5, 6), preds=(0,),
                          flags=0, start_ea=func_ea + 0x10, insn_snapshots=()),
     }
     for i in range(2, 7):
@@ -66,7 +66,7 @@ class TestDispatchPatternCollector:
         """Detect back-edges (loops/flattening feedback) via DFS."""
         # flat cfg: 0->1->(2,3,4), 2->1, 3->1, 4->1
         blocks = {
-            0: BlockSnapshot(serial=0, block_type=1, succs=(1,), preds=(), flags=0,
+            0: BlockSnapshot(serial=0, block_type=3, succs=(1,), preds=(), flags=0,
                              start_ea=0x401000, insn_snapshots=()),
             1: BlockSnapshot(serial=1, block_type=3, succs=(2, 3, 4), preds=(0, 2, 3, 4),
                              flags=0, start_ea=0x401010, insn_snapshots=()),

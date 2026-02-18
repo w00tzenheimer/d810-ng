@@ -37,7 +37,7 @@ class TestBlockMergePass:
         """No merge candidates should return empty modification list."""
         # Single block with no successors (0-way)
         blk = BlockSnapshot(
-            serial=0, block_type=0, succs=(), preds=(),
+            serial=0, block_type=2, succs=(), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
@@ -51,11 +51,11 @@ class TestBlockMergePass:
         """Simple A->B merge candidate should emit NopInstructions for tail goto."""
         goto_insn = _make_goto_insn(ea=0x1000, target_serial=1)
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
@@ -74,17 +74,17 @@ class TestBlockMergePass:
         goto_insn_b = _make_goto_insn(ea=0x2000, target_serial=2)
         # Block A: 0 -> 2
         blk_a = BlockSnapshot(
-            serial=0, block_type=1, succs=(2,), preds=(),
+            serial=0, block_type=3, succs=(2,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn_a,)
         )
         # Block B: 1 -> 2
         blk_b = BlockSnapshot(
-            serial=1, block_type=1, succs=(2,), preds=(),
+            serial=1, block_type=3, succs=(2,), preds=(),
             flags=0, start_ea=0x2000, insn_snapshots=(goto_insn_b,)
         )
         # Block C: 2 has two predecessors (A and B)
         blk_c = BlockSnapshot(
-            serial=2, block_type=0, succs=(), preds=(0, 1),
+            serial=2, block_type=2, succs=(), preds=(0, 1),
             flags=0, start_ea=0x3000, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk_a, 1: blk_b, 2: blk_c}, entry_serial=0, func_ea=0x1000)
@@ -100,7 +100,7 @@ class TestBlockMergePass:
         goto_insn = _make_goto_insn(ea=0x1000, target_serial=0)
         # Block 0 -> 0 (self-loop)
         blk = BlockSnapshot(
-            serial=0, block_type=1, succs=(0,), preds=(0,),
+            serial=0, block_type=3, succs=(0,), preds=(0,),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
         )
         cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
@@ -115,18 +115,18 @@ class TestBlockMergePass:
         # Block 0: -> 1
         goto_insn_0 = _make_goto_insn(ea=0x1000, target_serial=1)
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn_0,)
         )
         # Block 1: 0 -> 1 -> 2
         goto_insn_1 = _make_goto_insn(ea=0x1010, target_serial=2)
         blk1 = BlockSnapshot(
-            serial=1, block_type=1, succs=(2,), preds=(0,),
+            serial=1, block_type=3, succs=(2,), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=(goto_insn_1,)
         )
         # Block 2: 1 -> (no successors)
         blk2 = BlockSnapshot(
-            serial=2, block_type=0, succs=(), preds=(1,),
+            serial=2, block_type=2, succs=(), preds=(1,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
@@ -145,11 +145,11 @@ class TestBlockMergePass:
         dest_mop = MopSnapshot(t=_MOP_B_TYPE, size=4, block_num=1)
         goto_insn = InsnSnapshot(opcode=_M_GOTO_OPCODE, ea=0, operands=(dest_mop,))
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
@@ -163,11 +163,11 @@ class TestBlockMergePass:
     def test_block_with_no_instructions_not_merged(self):
         """Block with no instructions should not emit NOP."""
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
@@ -181,15 +181,15 @@ class TestBlockMergePass:
         """2-way blocks (conditional branches) should not be merged."""
         # Conditional branch to two different targets
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(1, 2), preds=(),
+            serial=0, block_type=4, succs=(1, 2), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=0, succs=(), preds=(0,),
+            serial=2, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
@@ -204,7 +204,7 @@ class TestBlockMergePass:
         goto_insn = _make_goto_insn(ea=0x1000, target_serial=99)
         # Block 0 -> 99 (99 doesn't exist)
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(99,), preds=(),
+            serial=0, block_type=3, succs=(99,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
         )
         cfg = PortableCFG(blocks={0: blk0}, entry_serial=0, func_ea=0x1000)
@@ -218,7 +218,7 @@ class TestBlockMergePass:
         """is_applicable should return True (default implementation)."""
         pass_instance = BlockMergePass()
         blk = BlockSnapshot(
-            serial=0, block_type=0, succs=(), preds=(),
+            serial=0, block_type=2, succs=(), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
@@ -230,11 +230,11 @@ class TestBlockMergePass:
         # opcode 1 is m_ldx, not m_goto
         non_goto_insn = InsnSnapshot(opcode=1, ea=0x1000, operands=())
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(non_goto_insn,)
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
@@ -250,11 +250,11 @@ class TestBlockMergePass:
         wrong_dest_mop = MopSnapshot(t=_MOP_B_TYPE, size=4, block_num=99)
         goto_insn = InsnSnapshot(opcode=_M_GOTO_OPCODE, ea=0x1000, operands=(wrong_dest_mop,))
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
@@ -268,11 +268,11 @@ class TestBlockMergePass:
         """Goto with no mop_b operand (empty operands) should not be merged."""
         goto_insn = InsnSnapshot(opcode=_M_GOTO_OPCODE, ea=0x1000, operands=())
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
@@ -285,13 +285,13 @@ class TestBlockMergePass:
     def test_nway_block_not_merged(self):
         """N-way blocks (switch) should not be merged even with single successor."""
         goto_insn = _make_goto_insn(ea=0x1000, target_serial=1)
-        # block_type=3 is BLT_NWAY (switch)
+        # block_type=5 is BLT_NWAY (switch)
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
+            serial=0, block_type=5, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)

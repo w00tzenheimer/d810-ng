@@ -45,13 +45,13 @@ class TestGotoChainRemovalPass:
         insn0a = InsnSnapshot(opcode=0x01, ea=0x1000, operands=())
         insn0b = InsnSnapshot(opcode=0x02, ea=0x1004, operands=())
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(insn0a, insn0b)
         )
         insn1a = InsnSnapshot(opcode=0x03, ea=0x1010, operands=())
         insn1b = InsnSnapshot(opcode=0x04, ea=0x1014, operands=())
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=(insn1a, insn1b)
         )
         cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
@@ -66,16 +66,16 @@ class TestGotoChainRemovalPass:
         # Create chain: 0 -> 10 (goto only, has m_goto insn) -> 20
         # blk0 is a 1-way predecessor
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(10,), preds=(),
+            serial=0, block_type=3, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         goto_insn = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
-            serial=10, block_type=1, succs=(20,), preds=(0,),
+            serial=10, block_type=3, succs=(20,), preds=(0,),
             flags=0, start_ea=0x1100, insn_snapshots=(goto_insn,)
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -96,13 +96,13 @@ class TestGotoChainRemovalPass:
         """Pass skips self-loop goto blocks."""
         # Create self-loop: 0 -> 10 (goto to itself)
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(10,), preds=(),
+            serial=0, block_type=3, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         # Self-loop goto block (would pass _is_simple_goto_block but self-loop guard fires first)
         self_goto_insn = _make_goto_insn(ea=0x1100, dest_serial=10)
         blk10_selfloop = BlockSnapshot(
-            serial=10, block_type=1, succs=(10,), preds=(0, 10),
+            serial=10, block_type=3, succs=(10,), preds=(0, 10),
             flags=0, start_ea=0x1100, insn_snapshots=(self_goto_insn,)
         )
         cfg = PortableCFG(
@@ -122,23 +122,23 @@ class TestGotoChainRemovalPass:
         # blk0 is a 2-way block so it gets RedirectBranch (tested separately)
         # blk5 is 1-way so it gets RedirectGoto
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(5, 10), preds=(),
+            serial=0, block_type=4, succs=(5, 10), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         # Block 5 with instructions (not goto-only, 1-way predecessor of 10)
         insn5a = InsnSnapshot(opcode=0x01, ea=0x1050, operands=())
         insn5b = InsnSnapshot(opcode=0x02, ea=0x1054, operands=())
         blk5 = BlockSnapshot(
-            serial=5, block_type=1, succs=(10,), preds=(0,),
+            serial=5, block_type=3, succs=(10,), preds=(0,),
             flags=0, start_ea=0x1050, insn_snapshots=(insn5a, insn5b)
         )
         goto_insn = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
-            serial=10, block_type=1, succs=(20,), preds=(0, 5),
+            serial=10, block_type=3, succs=(20,), preds=(0, 5),
             flags=0, start_ea=0x1100, insn_snapshots=(goto_insn,)
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -168,18 +168,18 @@ class TestGotoChainRemovalPass:
         """Block with >1 instructions is not simplified."""
         # Create CFG: 0 -> 10 (2 instructions) -> 20
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(10,), preds=(),
+            serial=0, block_type=3, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         # Block with 2 instructions (not goto-only)
         insn10a = InsnSnapshot(opcode=0x01, ea=0x1100, operands=())
         insn10b = InsnSnapshot(opcode=0x02, ea=0x1104, operands=())
         blk10 = BlockSnapshot(
-            serial=10, block_type=1, succs=(20,), preds=(0,),
+            serial=10, block_type=3, succs=(20,), preds=(0,),
             flags=0, start_ea=0x1100, insn_snapshots=(insn10a, insn10b)
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -197,15 +197,15 @@ class TestGotoChainRemovalPass:
         """2-way blocks are not eligible as simple goto blocks (2 succs, nsucc != 1)."""
         # Create CFG: 0 (2-way) -> {1, 2}
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(1, 2), preds=(),
+            serial=0, block_type=4, succs=(1, 2), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=0, succs=(), preds=(0,),
+            serial=2, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -223,11 +223,11 @@ class TestGotoChainRemovalPass:
         """0-way blocks (terminals) are ignored."""
         # Create CFG: 0 -> 1 (0-way terminal)
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
@@ -268,17 +268,17 @@ class TestGotoChainRemovalPass:
         # Entry block 0 is goto-only (1 m_goto instruction, single successor)
         goto0 = _make_goto_insn(ea=0x1000, dest_serial=1)
         blk0_entry = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto0,)
         )
         # Block 1 is also goto-only with a predecessor (block 0)
         goto1 = _make_goto_insn(ea=0x1010, dest_serial=2)
         blk1_goto = BlockSnapshot(
-            serial=1, block_type=1, succs=(2,), preds=(0,),
+            serial=1, block_type=3, succs=(2,), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=(goto1,)
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=0, succs=(), preds=(1,),
+            serial=2, block_type=2, succs=(), preds=(1,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -306,27 +306,27 @@ class TestGotoChainRemovalPass:
         # 0 -> 10 (goto only) -> 20
         # 0 -> 30 (goto only) -> 40
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(10, 30), preds=(),
+            serial=0, block_type=4, succs=(10, 30), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         # First goto chain
         goto10 = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
-            serial=10, block_type=1, succs=(20,), preds=(0,),
+            serial=10, block_type=3, succs=(20,), preds=(0,),
             flags=0, start_ea=0x1100, insn_snapshots=(goto10,)
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         # Second goto chain
         goto30 = _make_goto_insn(ea=0x3000, dest_serial=40)
         blk30_goto = BlockSnapshot(
-            serial=30, block_type=1, succs=(40,), preds=(0,),
+            serial=30, block_type=3, succs=(40,), preds=(0,),
             flags=0, start_ea=0x3000, insn_snapshots=(goto30,)
         )
         blk40 = BlockSnapshot(
-            serial=40, block_type=0, succs=(), preds=(30,),
+            serial=40, block_type=2, succs=(), preds=(30,),
             flags=0, start_ea=0x4000, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -356,15 +356,15 @@ class TestGotoChainRemovalPass:
         # blk10 has exactly 1 instruction but it's a m_mov (opcode 0x03), not m_goto
         non_goto_insn = InsnSnapshot(opcode=0x03, ea=0x1100, operands=())
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(10,), preds=(),
+            serial=0, block_type=3, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk10 = BlockSnapshot(
-            serial=10, block_type=1, succs=(20,), preds=(0,),
+            serial=10, block_type=3, succs=(20,), preds=(0,),
             flags=0, start_ea=0x1100, insn_snapshots=(non_goto_insn,)
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -388,16 +388,16 @@ class TestGotoChainRemovalPass:
         An empty block has no tail instruction at all and must be rejected.
         """
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(10,), preds=(),
+            serial=0, block_type=3, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         # blk10 is empty (0 instructions) — must NOT qualify as simple goto
         blk10_empty = BlockSnapshot(
-            serial=10, block_type=1, succs=(20,), preds=(0,),
+            serial=10, block_type=3, succs=(20,), preds=(0,),
             flags=0, start_ea=0x1100, insn_snapshots=()
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -416,24 +416,24 @@ class TestGotoChainRemovalPass:
     # CRITICAL-2: 2-way predecessor must get RedirectBranch, not RedirectGoto
     def test_2way_predecessor_emits_redirect_branch(self):
         """CRITICAL-2: A 2-way predecessor of a goto block gets RedirectBranch."""
-        # blk0 is a 2-way conditional block (block_type=2) with succs=(10, 30).
+        # blk0 is a 2-way conditional block (block_type=4) with succs=(10, 30).
         # blk10 is a simple goto block pointing to blk20.
         # blk0 -> blk10 edge must produce RedirectBranch(from=0, old=10, new=20).
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(10, 30), preds=(),
+            serial=0, block_type=4, succs=(10, 30), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         goto_insn = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
-            serial=10, block_type=1, succs=(20,), preds=(0,),
+            serial=10, block_type=3, succs=(20,), preds=(0,),
             flags=0, start_ea=0x1100, insn_snapshots=(goto_insn,)
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         blk30 = BlockSnapshot(
-            serial=30, block_type=0, succs=(), preds=(0,),
+            serial=30, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1300, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -457,16 +457,16 @@ class TestGotoChainRemovalPass:
     def test_1way_predecessor_emits_redirect_goto(self):
         """CRITICAL-2 (complement): A 1-way predecessor gets RedirectGoto."""
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(10,), preds=(),
+            serial=0, block_type=3, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         goto_insn = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
-            serial=10, block_type=1, succs=(20,), preds=(0,),
+            serial=10, block_type=3, succs=(20,), preds=(0,),
             flags=0, start_ea=0x1100, insn_snapshots=(goto_insn,)
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -498,22 +498,22 @@ class TestGotoChainRemovalPass:
         # Serials: 0 (pred), 10 (goto-ish, max serial = sentinel), 20 (target)
         # Note: 20 > 10 so blk20 is the actual sentinel here.
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(10,), preds=(),
+            serial=0, block_type=3, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk10 = BlockSnapshot(
-            serial=10, block_type=0, succs=(), preds=(0,),
+            serial=10, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1100, insn_snapshots=()
         )
         # blk99 is the highest-serial block and looks like a simple goto
         goto_insn = _make_goto_insn(ea=0x9900, dest_serial=10)
         blk99_sentinel = BlockSnapshot(
-            serial=99, block_type=1, succs=(10,), preds=(0,),
+            serial=99, block_type=3, succs=(10,), preds=(0,),
             flags=0, start_ea=0x9900, insn_snapshots=(goto_insn,)
         )
         # blk0 also has blk99 as a successor (contrived but valid for testing)
         blk0_with_sentinel = BlockSnapshot(
-            serial=0, block_type=2, succs=(10, 99), preds=(),
+            serial=0, block_type=4, succs=(10, 99), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -539,7 +539,7 @@ class TestGotoChainRemovalPass:
         # Only one block -> it IS the max serial -> excluded
         goto_insn = _make_goto_insn(ea=0x1000, dest_serial=0)
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(0,), preds=(),
+            serial=0, block_type=3, succs=(0,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
         )
         cfg = PortableCFG(blocks={0: blk0}, entry_serial=0, func_ea=0x1000)
@@ -560,15 +560,15 @@ class TestGotoChainRemovalPass:
         # m_goto with no operands at all (no mop_b -> destination unverifiable)
         goto_no_mop_b = InsnSnapshot(opcode=_M_GOTO_OPCODE, ea=0x1100, operands=())
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(10,), preds=(),
+            serial=0, block_type=3, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk10 = BlockSnapshot(
-            serial=10, block_type=1, succs=(20,), preds=(0,),
+            serial=10, block_type=3, succs=(20,), preds=(0,),
             flags=0, start_ea=0x1100, insn_snapshots=(goto_no_mop_b,)
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -593,15 +593,15 @@ class TestGotoChainRemovalPass:
             opcode=_M_GOTO_OPCODE, ea=0x1100, operands=(wrong_dest_mop,)
         )
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(10,), preds=(),
+            serial=0, block_type=3, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk10 = BlockSnapshot(
-            serial=10, block_type=1, succs=(20,), preds=(0,),
+            serial=10, block_type=3, succs=(20,), preds=(0,),
             flags=0, start_ea=0x1100, insn_snapshots=(goto_wrong_dest,)
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -625,16 +625,16 @@ class TestGotoChainRemovalPassIntegration:
     def test_pipeline_with_single_goto_chain(self):
         """PassPipeline integration: single goto chain."""
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(10,), preds=(),
+            serial=0, block_type=3, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         goto_insn = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
-            serial=10, block_type=1, succs=(20,), preds=(0,),
+            serial=10, block_type=3, succs=(20,), preds=(0,),
             flags=0, start_ea=0x1100, insn_snapshots=(goto_insn,)
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         blocks = {0: blk0, 10: blk10_goto, 20: blk20}
@@ -656,12 +656,12 @@ class TestGotoChainRemovalPassIntegration:
         insn0 = InsnSnapshot(opcode=0x01, ea=0x1000, operands=())
         insn1 = InsnSnapshot(opcode=0x02, ea=0x1004, operands=())
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(insn0, insn1)
         )
         insn2 = InsnSnapshot(opcode=0x03, ea=0x1010, operands=())
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=(insn2,)
         )
         blocks = {0: blk0, 1: blk1}
@@ -676,20 +676,20 @@ class TestGotoChainRemovalPassIntegration:
     def test_pipeline_2way_pred_emits_redirect_branch(self):
         """PassPipeline integration: 2-way predecessor gets RedirectBranch."""
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(10, 30), preds=(),
+            serial=0, block_type=4, succs=(10, 30), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         goto_insn = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
-            serial=10, block_type=1, succs=(20,), preds=(0,),
+            serial=10, block_type=3, succs=(20,), preds=(0,),
             flags=0, start_ea=0x1100, insn_snapshots=(goto_insn,)
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         blk30 = BlockSnapshot(
-            serial=30, block_type=0, succs=(), preds=(0,),
+            serial=30, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1300, insn_snapshots=()
         )
         blocks = {0: blk0, 10: blk10_goto, 20: blk20, 30: blk30}
@@ -712,22 +712,22 @@ class TestGotoChainRemovalPassIntegration:
         """PassPipeline integration: mixed 1-way and 2-way predecessors."""
         # blk0 (2-way) -> blk10 (goto) and blk5 (1-way) -> blk10 (goto)
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(5, 10), preds=(),
+            serial=0, block_type=4, succs=(5, 10), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         insn5a = InsnSnapshot(opcode=0x01, ea=0x1050, operands=())
         insn5b = InsnSnapshot(opcode=0x02, ea=0x1054, operands=())
         blk5 = BlockSnapshot(
-            serial=5, block_type=1, succs=(10,), preds=(0,),
+            serial=5, block_type=3, succs=(10,), preds=(0,),
             flags=0, start_ea=0x1050, insn_snapshots=(insn5a, insn5b)
         )
         goto_insn = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
-            serial=10, block_type=1, succs=(20,), preds=(0, 5),
+            serial=10, block_type=3, succs=(20,), preds=(0, 5),
             flags=0, start_ea=0x1100, insn_snapshots=(goto_insn,)
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         blocks = {0: blk0, 5: blk5, 10: blk10_goto, 20: blk20}

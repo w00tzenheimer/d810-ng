@@ -25,11 +25,11 @@ class TestSimplifyIdenticalBranchPass:
         """Pass returns empty list when no 2-way blocks exist."""
         # Create CFG with only 1-way and 0-way blocks
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
@@ -43,15 +43,15 @@ class TestSimplifyIdenticalBranchPass:
         """Pass returns empty list when 2-way block has different successors."""
         # Create 2-way block with different targets
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(1, 2), preds=(),
+            serial=0, block_type=4, succs=(1, 2), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=0, succs=(), preds=(0,),
+            serial=2, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -68,11 +68,11 @@ class TestSimplifyIdenticalBranchPass:
         """Pass returns ConvertToGoto when 2-way block has identical successors."""
         # Create 2-way block with identical targets (both go to block 5)
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(5, 5), preds=(),
+            serial=0, block_type=4, succs=(5, 5), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk5 = BlockSnapshot(
-            serial=5, block_type=0, succs=(), preds=(0,),
+            serial=5, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1050, insn_snapshots=()
         )
         cfg = PortableCFG(blocks={0: blk0, 5: blk5}, entry_serial=0, func_ea=0x1000)
@@ -91,31 +91,31 @@ class TestSimplifyIdenticalBranchPass:
         # Block 3: 2-way with identical targets (5, 5) - MATCH
         # Block 10: 2-way with identical targets (20, 20) - MATCH
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(1, 2), preds=(),
+            serial=0, block_type=4, succs=(1, 2), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=1, succs=(3,), preds=(0,),
+            serial=1, block_type=3, succs=(3,), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=1, succs=(3,), preds=(0,),
+            serial=2, block_type=3, succs=(3,), preds=(0,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
         blk3 = BlockSnapshot(
-            serial=3, block_type=2, succs=(5, 5), preds=(1, 2),
+            serial=3, block_type=4, succs=(5, 5), preds=(1, 2),
             flags=0, start_ea=0x1030, insn_snapshots=()
         )
         blk5 = BlockSnapshot(
-            serial=5, block_type=1, succs=(10,), preds=(3,),
+            serial=5, block_type=3, succs=(10,), preds=(3,),
             flags=0, start_ea=0x1050, insn_snapshots=()
         )
         blk10 = BlockSnapshot(
-            serial=10, block_type=2, succs=(20, 20), preds=(5,),
+            serial=10, block_type=4, succs=(20, 20), preds=(5,),
             flags=0, start_ea=0x1100, insn_snapshots=()
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=0, succs=(), preds=(10,),
+            serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -140,16 +140,16 @@ class TestSimplifyIdenticalBranchPass:
         """1-way and 0-way blocks are ignored by the pass."""
         # Mix of block types, none matching the pattern
         blk0 = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
+            serial=0, block_type=3, succs=(1,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         # Even a 1-way block with "duplicate" successor (only 1 entry)
         blk2 = BlockSnapshot(
-            serial=2, block_type=1, succs=(5,), preds=(),
+            serial=2, block_type=3, succs=(5,), preds=(),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
         cfg = PortableCFG(
@@ -186,11 +186,11 @@ class TestSimplifyIdenticalBranchPassIntegration:
         """PassPipeline integration: single matching block."""
         # Create 2-way block with identical successors
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(5, 5), preds=(),
+            serial=0, block_type=4, succs=(5, 5), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk5 = BlockSnapshot(
-            serial=5, block_type=0, succs=(), preds=(0,),
+            serial=5, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1050, insn_snapshots=()
         )
         blocks = {0: blk0, 5: blk5}
@@ -211,15 +211,15 @@ class TestSimplifyIdenticalBranchPassIntegration:
         """PassPipeline integration: no matching blocks returns 0."""
         # Create 2-way block with different successors
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(1, 2), preds=(),
+            serial=0, block_type=4, succs=(1, 2), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=0, succs=(), preds=(0,),
+            serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=0, succs=(), preds=(0,),
+            serial=2, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
         blocks = {0: blk0, 1: blk1, 2: blk2}
@@ -237,19 +237,19 @@ class TestSimplifyIdenticalBranchPassIntegration:
         # Block 3: identical successors (10, 10)
         # Block 7: identical successors (10, 10)
         blk0 = BlockSnapshot(
-            serial=0, block_type=2, succs=(3, 7), preds=(),
+            serial=0, block_type=4, succs=(3, 7), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
         blk3 = BlockSnapshot(
-            serial=3, block_type=2, succs=(10, 10), preds=(0,),
+            serial=3, block_type=4, succs=(10, 10), preds=(0,),
             flags=0, start_ea=0x1030, insn_snapshots=()
         )
         blk7 = BlockSnapshot(
-            serial=7, block_type=2, succs=(10, 10), preds=(0,),
+            serial=7, block_type=4, succs=(10, 10), preds=(0,),
             flags=0, start_ea=0x1070, insn_snapshots=()
         )
         blk10 = BlockSnapshot(
-            serial=10, block_type=0, succs=(), preds=(3, 7),
+            serial=10, block_type=2, succs=(), preds=(3, 7),
             flags=0, start_ea=0x1100, insn_snapshots=()
         )
         blocks = {0: blk0, 3: blk3, 7: blk7, 10: blk10}
