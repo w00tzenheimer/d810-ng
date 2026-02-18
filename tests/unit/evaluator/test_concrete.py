@@ -46,11 +46,25 @@ class _MopT:
     """
 
 
+class _VdPrinterT:
+    """Sentinel class standing in for ida_hexrays.vd_printer_t.
+
+    ``hexrays_formatters.py`` defines ``mba_printer`` and ``block_printer``
+    that inherit from ``vd_printer_t`` at class-definition time (module
+    level).  When our stub is already in ``sys.modules["ida_hexrays"]`` that
+    line must not raise ``AttributeError``.  No instances are ever created
+    by these unit tests.
+    """
+
+
 _IDA_HEX = types.SimpleNamespace(
     # mop_t stand-in class (needed by mop_snapshot.NewType calls)
     mop_t=_MopT,
+    # vd_printer_t stand-in class (needed by hexrays_formatters class defs)
+    vd_printer_t=_VdPrinterT,
 
     # mop operand-type enum constants (mop_snapshot.py uses these)
+    mop_z=0,   # undefined / zero
     mop_n=1,   # numeric constant
     mop_r=2,   # register
     mop_S=3,   # stack variable
@@ -63,6 +77,9 @@ _IDA_HEX = types.SimpleNamespace(
     mop_p=10,  # operand pair
     mop_c=11,  # switch cases
     mop_str=12,  # string constant
+    mop_h=13,  # helper function name
+    mop_fn=14,  # floating point constant
+    mop_sc=15,  # scattered operand
 
     # mcode_t opcode enum (values from _chexrays.pxd)
     m_nop=0x00,
@@ -92,6 +109,8 @@ _IDA_HEX = types.SimpleNamespace(
     m_sar=0x18,
     m_cfadd=0x19,
     m_ofadd=0x1A,
+    m_cfshl=0x1B,
+    m_cfshr=0x1C,
     m_sets=0x1D,
     m_seto=0x1E,
     m_setp=0x1F,
@@ -105,7 +124,48 @@ _IDA_HEX = types.SimpleNamespace(
     m_setge=0x27,
     m_setl=0x28,
     m_setle=0x29,
+    m_jcnd=0x2A,
+    m_jnz=0x2B,
+    m_jz=0x2C,
+    m_jae=0x2D,
+    m_jb=0x2E,
+    m_ja=0x2F,
+    m_jbe=0x30,
+    m_jg=0x31,
+    m_jge=0x32,
+    m_jl=0x33,
+    m_jle=0x34,
+    m_jtbl=0x35,
+    m_ijmp=0x36,
+    m_goto=0x37,
     m_call=0x38,
+    m_icall=0x39,
+    m_ret=0x3A,
+    m_push=0x3B,
+    m_pop=0x3C,
+    m_und=0x3D,
+    m_ext=0x3E,
+    m_f2i=0x3F,
+    m_f2u=0x40,
+    m_i2f=0x41,
+    m_u2f=0x42,
+    m_f2f=0x43,
+    m_fneg=0x44,
+    m_fadd=0x45,
+    m_fsub=0x46,
+    m_fmul=0x47,
+    m_fdiv=0x48,
+
+    # mba_maturity_t constants
+    MMAT_ZERO=0,
+    MMAT_GENERATED=1,
+    MMAT_PREOPTIMIZED=2,
+    MMAT_LOCOPT=3,
+    MMAT_CALLS=4,
+    MMAT_GLBOPT1=5,
+    MMAT_GLBOPT2=6,
+    MMAT_GLBOPT3=7,
+    MMAT_LVARS=8,
 )
 
 # Register the namespace as the ida_hexrays module so the lazy import
