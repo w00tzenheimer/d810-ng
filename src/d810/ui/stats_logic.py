@@ -5,12 +5,11 @@ IDA/Qt dependencies to enable unit testing.
 
 All functions in this module can be imported and tested without IDA Pro.
 """
+
 from __future__ import annotations
 
-from d810.core.typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from d810.core.persistence import FunctionRuleConfig
+# Import here to avoid circular imports and IDA dependencies at module level
+from d810.core.persistence import FunctionRuleConfig
 
 
 def get_fired_rule_names(stats: dict | None) -> list[str]:
@@ -68,9 +67,6 @@ def save_fired_rules_for_function(
     Returns:
         New FunctionRuleConfig with enabled_rules populated from fired rules
     """
-    # Import here to avoid circular imports and IDA dependencies at module level
-    from d810.core.persistence import FunctionRuleConfig
-
     # Build notes string if func_name provided and notes is empty
     if not notes and func_name:
         notes = f"Rules that fired during deobfuscation of {func_name}"
