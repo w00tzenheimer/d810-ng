@@ -44,7 +44,9 @@ def test_temporary_hexrays_config_no_restore_if_apply_fails():
 
 
 def test_decompile_function_temporarily_disables_lvar_collapse(monkeypatch):
-    class _FakeHexrays:
+    class _FakeIdaApiShim(_FakeIdaApi):
+        """Unified idaapi shim combining hexrays, funcs, lines, and idaapi methods."""
+
         @staticmethod
         def init_hexrays_plugin():
             return True
@@ -57,17 +59,15 @@ def test_decompile_function_temporarily_disables_lvar_collapse(monkeypatch):
 
             return _Cfunc()
 
-    class _FakeFuncs:
         @staticmethod
         def get_func_name(_func_ea):
             return "demo"
 
-    class _FakeLines:
         @staticmethod
         def tag_remove(text: str):
             return text
 
-    fake_idaapi = _FakeIdaApi()
+    fake_idaapi = _FakeIdaApiShim()
     monkeypatch.setattr(
         export_to_c,
         "_get_collapse_lvars_restore_directive",
@@ -76,9 +76,6 @@ def test_decompile_function_temporarily_disables_lvar_collapse(monkeypatch):
 
     result = export_to_c._decompile_function(
         0x1000,
-        _FakeHexrays(),
-        _FakeFuncs(),
-        _FakeLines(),
         fake_idaapi,
     )
 

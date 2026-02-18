@@ -59,6 +59,7 @@ class TestModificationMapping:
         """Test RedirectGoto → queue_goto_change mapping (1-way blocks)."""
         mock_modifier = Mock()
         mock_modifier.apply.return_value = 1
+        mock_modifier.verify_failed = False
 
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
@@ -85,6 +86,7 @@ class TestModificationMapping:
         """Test RedirectBranch → queue_target_change mapping (2-way blocks)."""
         mock_modifier = Mock()
         mock_modifier.apply.return_value = 1
+        mock_modifier.verify_failed = False
 
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
@@ -109,6 +111,7 @@ class TestModificationMapping:
         """Test ConvertToGoto → queue_convert_to_goto mapping."""
         mock_modifier = Mock()
         mock_modifier.apply.return_value = 1
+        mock_modifier.verify_failed = False
 
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
@@ -132,6 +135,7 @@ class TestModificationMapping:
         """Test NopInstructions → queue_insn_nop mapping (one call per EA)."""
         mock_modifier = Mock()
         mock_modifier.apply.return_value = 1
+        mock_modifier.verify_failed = False
 
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
@@ -227,6 +231,7 @@ class TestModificationMapping:
         """Test multiple modifications are batched in one DeferredGraphModifier."""
         mock_modifier = Mock()
         mock_modifier.apply.return_value = 3
+        mock_modifier.verify_failed = False
 
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier

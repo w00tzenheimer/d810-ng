@@ -40,13 +40,21 @@ class DeadBlockEliminationPass(CFGPass):
         ...     serial=1, block_type=0, succs=(), preds=(0,),
         ...     flags=0, start_ea=0x1010, insn_snapshots=()
         ... )
-        >>> # Dead block 2 (unreachable)
+        >>> # Dead block 2 (unreachable, has instructions)
         >>> insn_dead = InsnSnapshot(opcode=0x01, ea=0x2000, operands=())
         >>> blk2 = BlockSnapshot(
         ...     serial=2, block_type=0, succs=(), preds=(),
         ...     flags=0, start_ea=0x2000, insn_snapshots=(insn_dead,)
         ... )
-        >>> cfg = PortableCFG(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
+        >>> # Block 3 is the last dummy/sentinel block — never removed
+        >>> blk3_dummy = BlockSnapshot(
+        ...     serial=3, block_type=0, succs=(), preds=(),
+        ...     flags=0, start_ea=0x3000, insn_snapshots=()
+        ... )
+        >>> cfg = PortableCFG(
+        ...     blocks={0: blk0, 1: blk1, 2: blk2, 3: blk3_dummy},
+        ...     entry_serial=0, func_ea=0x1000
+        ... )
         >>> pass_instance = DeadBlockEliminationPass()
         >>> mods = pass_instance.transform(cfg)
         >>> len(mods)
@@ -70,6 +78,14 @@ class DeadBlockEliminationPass(CFGPass):
             from entry. Each modification contains all instruction EAs
             in the dead block. Empty list if all blocks are reachable.
 
+        Note:
+            Exception edges are NOT considered during reachability analysis.
+            PortableCFG only captures normal successor/predecessor edges.
+            Blocks that are reachable only via exception edges will be
+            incorrectly classified as dead. This is a known limitation of
+            the portable representation — fixing it would require capturing
+            exception edge data in the PortableCFG data model.
+
         Example:
             >>> # All blocks reachable: no modifications
             >>> blk0 = BlockSnapshot(
@@ -86,12 +102,24 @@ class DeadBlockEliminationPass(CFGPass):
             >>> len(mods)
             0
         """
+        if not cfg.blocks:
+            return []
+
+        # IDA's MBA has a sentinel (dummy) block at the highest serial number
+        # (equivalent to mba.qty - 1 in the legacy code). This block must NEVER
+        # be removed — it is an internal IDA sentinel required for correct CFG
+        # structure. Always exclude the block with the maximum serial.
+        last_dummy_serial = max(cfg.blocks.keys())
+
         # Find all reachable blocks from entry
         reachable = self._find_reachable(cfg)
 
         # Build modification list for unreachable blocks
         mods = []
         for serial, blk in cfg.blocks.items():
+            # Never touch the last dummy/sentinel block, even if unreachable
+            if serial == last_dummy_serial:
+                continue
             if serial not in reachable:
                 # Collect all instruction EAs in this dead block
                 # Skip instructions with ea=0 (synthesized/placeholder)
