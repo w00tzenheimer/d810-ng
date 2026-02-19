@@ -8,7 +8,7 @@ evaluation paths; no IDA types are imported here.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from d810.core.typing import Protocol, runtime_checkable
 
 
 @runtime_checkable

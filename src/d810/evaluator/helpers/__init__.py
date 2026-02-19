@@ -20,7 +20,7 @@ import time via :meth:`HelperRegistry.auto_register_rotate_helpers`.
 from __future__ import annotations
 
 import threading
-from typing import Callable
+from d810.core.typing import Callable
 
 
 class HelperRegistry:

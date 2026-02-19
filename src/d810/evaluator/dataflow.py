@@ -11,7 +11,7 @@ and is excluded from the evaluator refactor (see plan section 2.3).
 
 from __future__ import annotations
 
-from typing import TypeAlias
+from d810.core.typing import TypeAlias
 
 #: Maps a variable identifier (e.g. stack-variable offset as ``int``) to a
 #: ``(value, byte_size)`` pair representing a proven-constant binding.
