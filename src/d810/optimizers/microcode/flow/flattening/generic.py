@@ -2405,7 +2405,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                             and ida_hexrays.is_mcode_jcond(target_blk.tail.opcode)
                         )
 
-                        if is_risky_conditional and is_target_in_dispatcher:
+                        if is_risky_conditional and is_target_in_dispatcher and source_nsucc == 1:
                             unflat_logger.info(
                                 "Queuing trampoline for triangle edge: block %s -> %s",
                                 dispatcher_father.serial,
