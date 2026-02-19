@@ -361,6 +361,8 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
 
             ldx  &sym , #off
             ldx  &sym , <pure-const-expr>
+            ldx  $global_var , #off
+            ldx  $global_var , <pure-const-expr>
             ldx  ds ,  add(&sym , #off)
         """
 
@@ -382,6 +384,27 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                 off = _try_eval_pure_const_mop(ins.r)
                 if off is not None:
                     base = ins.l.s.start_ea
+                    return base + off
+
+        # ------------------------------------------------------------------
+        #  Variant A'': ldx  $global_var , #off
+        #  Variant A''': ldx  $global_var , <pure-const-expr>
+        #
+        #  Handles table lookups like g_encDataRandomTable[constant_index]
+        #  where the base address comes from a direct global variable (mop_v).
+        #  The .g attribute of a mop_v operand holds the global EA directly.
+        # ------------------------------------------------------------------
+        if ins.l.t == ida_hexrays.mop_v:
+            if ins.r.t == ida_hexrays.mop_n:
+                base = ins.l.g
+                off = ins.r.nnn.value
+                return base + off
+            # Variant A''': index is a computed expression — try evaluating it
+            # as a pure-constant tree (all leaves are immediates).
+            if ins.r.t == ida_hexrays.mop_d:
+                off = _try_eval_pure_const_mop(ins.r)
+                if off is not None:
+                    base = ins.l.g
                     return base + off
 
         # ------------------------------------------------------------------
