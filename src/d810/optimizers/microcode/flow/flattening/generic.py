@@ -2912,18 +2912,20 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         # If deferred modifier verify failed, the MBA is in a suspect state.
         # Skip deep cleaning / optimize_local / safe_verify which would either
         # fail or compound the corruption, causing IDA to hang at later
-        # maturity levels.  Return 0 (not the patch count) so IDA does NOT
-        # trigger its own internal verify on the corrupted MBA -- returning
-        # non-zero causes INTERR 50860 and permanent decompiler corruption.
+        # maturity levels.  Return the actual patch count (non-zero) so IDA
+        # knows the MBA was modified and re-runs its own optimization chain.
+        # Returning 0 when the MBA was partially modified causes IDA to
+        # decompile a changed-but-unfinished MBA without re-optimizing, leading
+        # to a segfault in decompile_func (AntiDebug_ExceptionFilter, 363 mods).
         if self._verify_failed:
+            patch_count = self.last_pass_nb_patch_done + initial_changes
             unflat_logger.warning(
-                "Returning 0 to IDA despite %d patches applied -- MBA verify "
-                "failed, returning non-zero would trigger IDA's own verify "
-                "on corrupted MBA causing INTERR 50860 and permanent "
-                "decompiler corruption",
-                self.last_pass_nb_patch_done + initial_changes,
+                "MBA verify failed; returning patch count %d to IDA so it "
+                "re-runs optimization on the partially-modified MBA "
+                "(skipping deep cleaning to prevent compounded corruption)",
+                patch_count,
             )
-            return 0
+            return patch_count
 
         nb_clean = mba_deep_cleaning(self.mba, False)
         if self.dump_intermediate_microcode:
