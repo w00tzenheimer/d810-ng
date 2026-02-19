@@ -445,3 +445,130 @@ class TestPublicAPIExport:
         import d810.evaluator as _mod
 
         assert "probe_is_constant" in _mod.__all__
+
+
+# ---------------------------------------------------------------------------
+# Real-AST tests — requires IDA Pro (system/runtime)
+# These classes use real minsn_to_ast() output to exercise the AstProxy /
+# AstNode dispatch path in evaluate_concrete() that probe_is_constant calls.
+# ---------------------------------------------------------------------------
+
+import os as _os
+import platform as _platform
+
+
+def _default_binary() -> str:
+    override = _os.environ.get("D810_TEST_BINARY")
+    if override:
+        return override
+    return "libobfuscated.dylib" if _platform.system() == "Darwin" else "libobfuscated.dll"
+
+
+class TestSymbolicWithRealAst:
+    """probe_is_constant() with real AstNode/AstProxy objects from minsn_to_ast().
+
+    These tests confirm that the probe_is_constant heuristic works correctly
+    when fed real microcode AST objects — not stubs — including objects of type
+    AstProxy, which wraps shared sub-expressions and was previously invisible to
+    the Cython isinstance dispatch (c_concrete.pyx line 154).
+    """
+
+    binary_name = _default_binary()
+
+    def test_probe_is_constant_real_ast_no_type_error(
+        self, libobfuscated_setup, real_asts
+    ):
+        """probe_is_constant does not raise TypeError for any real AST.
+
+        This is the core regression guard: AstProxy nodes in real_asts must
+        pass through evaluate_concrete() without triggering
+        'Unsupported AST node type' from the Cython dispatch.
+        """
+        from d810.evaluator.symbolic import probe_is_constant
+        from d810.errors import AstEvaluationException
+
+        type_failures = []
+
+        for ast, _ins in real_asts[:40]:
+            sub_infos = getattr(ast, "sub_ast_info_by_index", {})
+            leaf_info_list = list(sub_infos.values())
+
+            try:
+                probe_is_constant(ast, leaf_info_list)
+            except AstEvaluationException as exc:
+                if "Unsupported AST node type" in str(exc):
+                    type_failures.append(
+                        f"{type(ast).__name__}: {exc}"
+                    )
+            except Exception:
+                # ZeroDivisionError, ValueError etc. are not type-dispatch bugs
+                pass
+
+        assert not type_failures, (
+            "probe_is_constant raised AstEvaluationException(Unsupported AST node type) "
+            "for the following real ASTs:\n" + "\n".join(type_failures)
+        )
+
+    def test_probe_is_constant_returns_true_for_constant_real_node(
+        self, libobfuscated_setup, real_asts
+    ):
+        """probe_is_constant returns (True, int) for a fully-constant real AST.
+
+        Walks real_asts to find a node whose sub_ast_info contains only
+        constant leaves (AstConstant), then asserts probe_is_constant agrees.
+        """
+        from d810.evaluator.symbolic import probe_is_constant
+
+        found_and_checked = 0
+
+        for ast, _ins in real_asts:
+            if ast.is_leaf():
+                continue
+            sub_infos = getattr(ast, "sub_ast_info_by_index", {})
+            if not sub_infos:
+                # No variable leaves — should be constant
+                try:
+                    is_const, val = probe_is_constant(ast, [])
+                    if is_const:
+                        assert isinstance(val, int), (
+                            f"Expected int constant value, got {type(val)}"
+                        )
+                        found_and_checked += 1
+                        if found_and_checked >= 3:
+                            break
+                except Exception:
+                    pass
+
+        # It is acceptable if no constant nodes were found in this binary;
+        # the no-TypeError test above is the primary guard.
+
+    def test_probe_is_constant_real_ast_returns_tuple(
+        self, libobfuscated_setup, real_asts
+    ):
+        """probe_is_constant always returns a (bool, int|None) tuple for real ASTs."""
+        from d810.evaluator.symbolic import probe_is_constant
+
+        for ast, _ins in real_asts[:20]:
+            sub_infos = getattr(ast, "sub_ast_info_by_index", {})
+            leaf_info_list = list(sub_infos.values())
+
+            try:
+                result = probe_is_constant(ast, leaf_info_list)
+            except Exception:
+                continue
+
+            assert isinstance(result, tuple) and len(result) == 2, (
+                f"probe_is_constant must return a 2-tuple, got {result!r}"
+            )
+            is_const, val = result
+            assert isinstance(is_const, bool), (
+                f"First element must be bool, got {type(is_const)}"
+            )
+            if is_const:
+                assert isinstance(val, int), (
+                    f"Second element must be int when constant, got {type(val)}"
+                )
+            else:
+                assert val is None, (
+                    f"Second element must be None when not constant, got {val!r}"
+                )

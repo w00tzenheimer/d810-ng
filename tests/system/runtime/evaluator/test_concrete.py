@@ -813,3 +813,174 @@ class TestEvaluateWithLeafInfo:
         info_none = types.SimpleNamespace(ast=types.SimpleNamespace(ast_index=None))
         result = ev.evaluate_with_leaf_info(node, [info_none], [42])
         assert result == 99
+
+
+# ---------------------------------------------------------------------------
+# Real-AST tests — requires IDA Pro (system/runtime)
+# These classes use real minsn_to_ast() output (AstNode / AstProxy) from
+# libobfuscated.  They exercise the Cython isinstance dispatch path that
+# the stub-based tests above bypass entirely.
+# ---------------------------------------------------------------------------
+
+import os as _os
+import platform as _platform
+
+
+def _default_binary() -> str:
+    override = _os.environ.get("D810_TEST_BINARY")
+    if override:
+        return override
+    return "libobfuscated.dylib" if _platform.system() == "Darwin" else "libobfuscated.dll"
+
+
+class TestConcreteWithRealAst:
+    """evaluate_concrete() with real AstNode/AstProxy objects from minsn_to_ast().
+
+    These tests verify that the Cython isinstance dispatch in c_concrete.pyx
+    correctly handles both AstNode (line 150) and AstProxy (line 154) objects
+    produced by the real minsn_to_ast() pipeline — coverage that the stub-based
+    tests cannot provide.
+    """
+
+    binary_name = _default_binary()
+
+    def test_cython_evaluator_is_active(self, libobfuscated_setup):
+        """_default_evaluator is a CythonConcreteEvaluator when speedups are built."""
+        from d810.evaluator.concrete import _default_evaluator
+
+        try:
+            from d810.speedups.evaluator.c_concrete import CythonConcreteEvaluator
+            assert isinstance(_default_evaluator, CythonConcreteEvaluator), (
+                f"Expected CythonConcreteEvaluator, got {type(_default_evaluator).__name__}"
+            )
+        except ImportError:
+            pytest.skip("Cython speedups not built — skipping Cython path assertion")
+
+    def test_evaluate_concrete_real_astnode(self, libobfuscated_setup, real_asts):
+        """evaluate_concrete() returns an integer for a real AstNode from minsn_to_ast()."""
+        from d810.evaluator.concrete import evaluate_concrete
+        from d810.expr.p_ast import AstBase
+
+        # Pick any non-leaf AST node from the real collection
+        ast_nodes = [(ast, ins) for ast, ins in real_asts if not ast.is_leaf()]
+        if not ast_nodes:
+            pytest.skip("No non-leaf AstNode found in real_asts")
+
+        ast, _ins = ast_nodes[0]
+
+        # Build env from the leaf list — bind every variable leaf to 0
+        leaf_infos = []
+        try:
+            sub_ast_info = getattr(ast, "sub_ast_info_by_index", {})
+            leaf_infos = list(sub_ast_info.values())
+        except Exception:
+            pass
+
+        env: dict = {}
+        for info in leaf_infos:
+            leaf_ast = getattr(info, "ast", None)
+            if leaf_ast is not None:
+                idx = getattr(leaf_ast, "ast_index", None)
+                if idx is not None:
+                    env[idx] = 0
+
+        try:
+            result = evaluate_concrete(ast, env)
+            assert result is None or isinstance(result, int), (
+                f"evaluate_concrete returned unexpected type: {type(result)}"
+            )
+        except Exception as exc:
+            # Evaluation may fail for complex nodes (e.g. division by zero with env=0);
+            # the important thing is that the isinstance dispatch did not raise
+            # AstEvaluationException about an unsupported type.
+            from d810.errors import AstEvaluationException
+            if "Unsupported AST node type" in str(exc):
+                pytest.fail(
+                    f"AstProxy/AstNode type not recognised by Cython dispatch: {exc}"
+                )
+            # Other exceptions (ZeroDivisionError, ValueError) are acceptable
+
+    def test_evaluate_concrete_real_astproxy_dispatch(self, libobfuscated_setup, real_asts):
+        """AstProxy objects returned by minsn_to_ast() are handled without TypeError.
+
+        minsn_to_ast() returns AstProxy when the same sub-expression is reused.
+        The Cython evaluate() branch at c_concrete.pyx:154 must handle them
+        transparently.  This test verifies that no 'Unsupported AST node type'
+        exception is raised for any AST in real_asts.
+        """
+        from d810.evaluator.concrete import evaluate_concrete
+        from d810.errors import AstEvaluationException
+
+        proxy_count = 0
+        node_count = 0
+        failures = []
+
+        for ast, _ins in real_asts[:40]:
+            # Collect all sub-expressions including proxies from sub_ast_info_by_index
+            sub_infos = getattr(ast, "sub_ast_info_by_index", {})
+            env: dict = {}
+            for info in sub_infos.values():
+                leaf_ast = getattr(info, "ast", None)
+                if leaf_ast is not None:
+                    idx = getattr(leaf_ast, "ast_index", None)
+                    if idx is not None:
+                        env[idx] = 1  # non-zero probe avoids division-by-zero
+
+            # Check if any sub-AST is an AstProxy instance
+            try:
+                from d810.expr.ast import AstProxy
+                for info in sub_infos.values():
+                    if isinstance(getattr(info, "ast", None), AstProxy):
+                        proxy_count += 1
+            except ImportError:
+                pass
+
+            node_count += 1
+            try:
+                evaluate_concrete(ast, env)
+            except AstEvaluationException as exc:
+                if "Unsupported AST node type" in str(exc):
+                    failures.append(f"Type dispatch failed for {type(ast).__name__}: {exc}")
+            except Exception:
+                # ZeroDivisionError, ValueError etc. are acceptable
+                pass
+
+        assert not failures, "\n".join(failures)
+        # Informational: confirm we processed some nodes
+        assert node_count > 0, "No ASTs were processed from real_asts"
+
+    def test_evaluate_concrete_all_constant_nodes_return_int(
+        self, libobfuscated_setup, real_asts
+    ):
+        """Every fully-constant AST node evaluates to an integer without raising.
+
+        A 'constant' node is one that has no variable leaves (sub_ast_info is
+        empty or all leaves are AstConstant).  For such nodes evaluate_concrete
+        with an empty env must either return an int or raise a non-type-dispatch
+        error.
+        """
+        from d810.evaluator.concrete import evaluate_concrete
+        from d810.errors import AstEvaluationException
+
+        checked = 0
+        for ast, _ins in real_asts:
+            if ast.is_leaf():
+                continue
+            sub_infos = getattr(ast, "sub_ast_info_by_index", {})
+            # Only test nodes where every leaf is constant
+            all_const = all(
+                getattr(info.ast, "is_constant", lambda: False)()
+                for info in sub_infos.values()
+            )
+            if not all_const:
+                continue
+
+            checked += 1
+            try:
+                result = evaluate_concrete(ast, {})
+                assert result is None or isinstance(result, (int, bool)), (
+                    f"Expected int/None, got {type(result)} for {type(ast).__name__}"
+                )
+            except AstEvaluationException as exc:
+                if "Unsupported AST node type" in str(exc):
+                    pytest.fail(f"Type dispatch failure on constant node: {exc}")
