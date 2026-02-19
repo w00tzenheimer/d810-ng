@@ -30,6 +30,48 @@ source_modules =
     tests.unit
 forbidden_modules =
     d810.optimizers
+[importlinter:contract:layered-architecture]
+name = Layered architecture prevents upward imports
+type = layers
+layers =
+    d810.ui
+    d810.optimizers
+    d810.recon
+    d810.hexrays
+    d810.mba
+    d810.ctree
+    d810.evaluator
+    d810.expr
+    d810.core
+    d810.errors
+ignore_imports =
+    # hexrays hooks import optimizers at runtime (plugin wiring — legitimate inversion)
+    d810.hexrays.hexrays_hooks -> d810.optimizers.microcode.flow.context
+    d810.hexrays.hexrays_hooks -> d810.optimizers.microcode.flow.handler
+    d810.hexrays.hexrays_hooks -> d810.optimizers.microcode.instructions.handler
+    d810.hexrays.hexrays_hooks -> d810.optimizers.microcode.instructions.pattern_matching.experimental
+    d810.hexrays.hexrays_hooks -> d810.optimizers.microcode.instructions.egraph.egglog_handler
+    # expr.p_ast uses evaluator for concrete evaluation (bidirectional dependency)
+    d810.expr.p_ast -> d810.evaluator.concrete
+    d810.hexrays.ctree_hooks -> d810.optimizers.microcode.handler
+    # evaluator uses hexrays mop snapshot (IDA type wrapper)
+    d810.evaluator.concrete -> d810.hexrays.mop_snapshot
+    # expr layer depends on hexrays helpers/formatters (hexrays wraps IDA types)
+    d810.expr.p_ast -> d810.hexrays.hexrays_formatters
+    d810.expr.p_ast -> d810.hexrays.hexrays_helpers
+    d810.expr.p_ast -> d810.hexrays.mop_snapshot
+    d810.expr.emulator -> d810.hexrays.cfg_utils
+    d810.expr.emulator -> d810.hexrays.hexrays_formatters
+    d810.expr.emulator -> d810.hexrays.hexrays_helpers
+    d810.expr.emulator -> d810.hexrays.ida_utils
+    d810.expr.utils -> d810.hexrays.hexrays_helpers
+    d810.expr.z3_utils -> d810.hexrays.hexrays_formatters
+    d810.expr.z3_utils -> d810.hexrays.hexrays_helpers
+    d810.expr.z3_utils -> d810.hexrays.mop_snapshot
+    d810.expr.z3_utils -> d810.hexrays.tracker
+    # mba IDA backend uses hexrays mop snapshot
+    d810.mba.backends.ida -> d810.hexrays.mop_snapshot
+
 [importlinter:contract:actions-no-direct-ida-imports]
 name = Actions modules must not directly import IDA packages
 type = forbidden

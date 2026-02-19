@@ -18,7 +18,9 @@ Exports (Phase 3):
 
 Example::
 
-    from d810.evaluator import evaluate_concrete, get_registry, probe_is_constant
+    from d810.evaluator.concrete import evaluate_concrete
+    from d810.evaluator.helpers import get_registry
+    from d810.evaluator.symbolic import probe_is_constant
 
     fn = get_registry().lookup("__ROL4__")
     assert fn is not None
@@ -28,19 +30,3 @@ Example::
 """
 
 from __future__ import annotations
-
-from d810.evaluator.concrete import ConcreteEvaluator, evaluate_concrete
-from d810.evaluator.helpers import HelperRegistry, get_registry
-from d810.evaluator.protocol import EvaluatorProtocol, HelperCallable, HelperProtocol
-from d810.evaluator.symbolic import probe_is_constant
-
-__all__ = [
-    "ConcreteEvaluator",
-    "evaluate_concrete",
-    "probe_is_constant",
-    "HelperRegistry",
-    "get_registry",
-    "EvaluatorProtocol",
-    "HelperCallable",
-    "HelperProtocol",
-]

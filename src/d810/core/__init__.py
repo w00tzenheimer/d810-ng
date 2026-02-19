@@ -147,14 +147,6 @@ from .bits import (
 # Re-export typing module contents for convenience
 from . import typing
 
-# Ctree snapshot helpers (moved to d810.ctree.ctree_snapshot)
-from d810.ctree.ctree_snapshot import (
-    serialize_ctree,
-    deserialize_ctree,
-    save_ctree_snapshot,
-    load_ctree_snapshot,
-)
-
 # Platform and file format detection
 from .platform import (
     FileFormat,
