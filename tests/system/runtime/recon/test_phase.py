@@ -1,7 +1,6 @@
 from __future__ import annotations
 import time
 from types import MappingProxyType
-from unittest.mock import MagicMock
 import pytest
 from d810.recon.models import CandidateFlag, ReconResult
 from d810.recon.phase import ReconPhase, ReconCollector
@@ -62,8 +61,7 @@ class TestReconPhaseRunIfNeeded:
         collector = FakeCollector()
         phase.register(collector)
 
-        fake_target = MagicMock()
-        phase.run_microcode_collectors(fake_target, func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
 
         assert len(collector.call_log) == 1
         assert collector.call_log[0] == (0x401000, 5)
@@ -73,8 +71,7 @@ class TestReconPhaseRunIfNeeded:
         collector = FakeCollector()  # maturities = {5, 10}
         phase.register(collector)
 
-        fake_target = MagicMock()
-        phase.run_microcode_collectors(fake_target, func_ea=0x401000, maturity=99)
+        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=99)
 
         assert len(collector.call_log) == 0
 
@@ -83,7 +80,7 @@ class TestReconPhaseRunIfNeeded:
         collector = FakeCollector({"block_count": 7})
         phase.register(collector)
 
-        phase.run_microcode_collectors(MagicMock(), func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
 
         loaded = store.load_recon_results(func_ea=0x401000, maturity=5)
         assert len(loaded) == 1
@@ -94,11 +91,10 @@ class TestReconPhaseRunIfNeeded:
         collector = FakeCollector()
         phase.register(collector)
 
-        fake_target = MagicMock()
         # First call - should fire
-        phase.run_microcode_collectors(fake_target, func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
         # Second call same maturity - should NOT fire again
-        phase.run_microcode_collectors(fake_target, func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
 
         assert len(collector.call_log) == 1
 
@@ -107,10 +103,9 @@ class TestReconPhaseRunIfNeeded:
         collector = FakeCollector()
         phase.register(collector)
 
-        fake_target = MagicMock()
-        phase.run_microcode_collectors(fake_target, func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
         phase.reset(func_ea=0x401000)
-        phase.run_microcode_collectors(fake_target, func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
 
         assert len(collector.call_log) == 2
 
@@ -129,5 +124,5 @@ class TestReconPhaseRunIfNeeded:
         phase.register(good)
 
         # Should not raise; broken collector is skipped, good one fires
-        phase.run_microcode_collectors(MagicMock(), func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
         assert len(good.call_log) == 1

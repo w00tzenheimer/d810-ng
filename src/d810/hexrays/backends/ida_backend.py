@@ -7,7 +7,7 @@ Wraps existing IDA infrastructure:
 """
 from __future__ import annotations
 
-import logging
+from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING
 
 from d810.hexrays.graph_modification import (
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from d810.hexrays.deferred_modifier import DeferredGraphModifier as DeferredGraphModifierType
     from d810.hexrays.cfg_verify import safe_verify as safe_verify_type
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 
 
 class IDABackend:

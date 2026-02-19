@@ -8,8 +8,8 @@ Protocol-based interfaces instead of deep inheritance hierarchies.
 from __future__ import annotations
 
 import abc
-import logging
 from dataclasses import dataclass
+from d810.core.logging import D810Logger
 from d810.core.typing import Any, Dict, Protocol
 
 import ida_hexrays
@@ -33,7 +33,7 @@ class OptimizationContext:
     mba: ida_hexrays.mba_t
     maturity: int
     config: Dict[str, Any]
-    logger: logging.Logger
+    logger: D810Logger
     log_dir: str
 
 

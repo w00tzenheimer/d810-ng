@@ -5,14 +5,14 @@ lowers the resulting modifications, verifies, and re-lifts if changes occurred.
 """
 from __future__ import annotations
 
-import logging
+from d810.core.logging import getLogger
 from d810.core.typing import Any
 
 from d810.hexrays.cfg_pass import CFGPass
 from d810.hexrays.cfg_backend import CFGBackend
 from d810.hexrays.portable_cfg import PortableCFG
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__, default_level=0)  # NOTSET: inherit from parent
 
 
 class PassPipeline:

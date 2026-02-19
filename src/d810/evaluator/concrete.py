@@ -21,7 +21,10 @@ Usage::
 
 from __future__ import annotations
 
+import ida_hexrays
+
 from d810.core.logging import getLogger
+from d810.hexrays.mop_snapshot import MopSnapshot
 
 logger = getLogger(__name__)
 
@@ -57,7 +60,7 @@ class ConcreteEvaluator:
         Args:
             node: Root of the AST to evaluate.  In practice an
                 ``AstBase`` instance, but typed as ``object`` here to
-                avoid a mandatory IDA import at module level.
+                keep the signature generic.
             env: Mapping from ``ast_index`` to concrete integer value for
                 each variable leaf.  Constant leaves do not need an
                 entry.
@@ -120,11 +123,9 @@ class ConcreteEvaluator:
             mop = node.mop  # type: ignore[union-attr]
             if mop is not None:
                 # MopSnapshot exposes .value directly
-                from d810.hexrays.mop_snapshot import MopSnapshot
                 if isinstance(mop, MopSnapshot):
                     return mop.value
-                # Raw mop_t — import ida_hexrays lazily
-                import ida_hexrays
+                # Raw mop_t
                 if mop.t == ida_hexrays.mop_n:
                     return mop.nnn.value
             # Fall back to expected_value (AstConstant computed-constant path)

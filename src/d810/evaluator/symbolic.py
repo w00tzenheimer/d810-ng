@@ -30,9 +30,11 @@ Usage::
 
 from __future__ import annotations
 
-import logging
+from d810.core.logging import getLogger
+from d810.errors import AstEvaluationException
+from d810.evaluator.concrete import evaluate_concrete
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 
 
 def probe_is_constant(
@@ -79,9 +81,6 @@ def probe_is_constant(
         >>> # probe_is_constant(x_plus_3_node, [x_info]) == (False, None)
         ...
     """
-    # Lazy import keeps this module importable without IDA (unit tests).
-    from d810.errors import AstEvaluationException
-    from d810.evaluator.concrete import evaluate_concrete
 
     if probe_values is None:
         probe_values = [0, 0xFFFFFFFF]

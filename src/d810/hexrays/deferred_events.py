@@ -50,13 +50,13 @@ Consumer (inside GenericDispatcherUnflatteningRule)::
 """
 from __future__ import annotations
 
-import logging
+from d810.core.logging import getLogger
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from d810.core.typing import Callable
 
-_logger = logging.getLogger("D810.deferred_events")
+_logger = getLogger("D810.deferred_events")
 
 
 class DeferredEvent(Enum):

@@ -8,13 +8,13 @@ imports. This module is fully unit-testable.
 """
 from __future__ import annotations
 
-import logging
+from d810.core.logging import getLogger
 from d810.core.typing import Any, Protocol, runtime_checkable
 
 from d810.recon.models import ReconResult
 from d810.recon.store import ReconStore
 
-logger = logging.getLogger("D810.recon.phase")
+logger = getLogger("D810.recon.phase")
 
 
 @runtime_checkable
