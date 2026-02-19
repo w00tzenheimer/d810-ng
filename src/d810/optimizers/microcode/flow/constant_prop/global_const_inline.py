@@ -29,7 +29,6 @@ from __future__ import annotations
 
 from d810.core.typing import Callable, Optional
 
-import ida_bytes
 import ida_hexrays
 import ida_segment
 import ida_xref
@@ -135,8 +134,8 @@ class GlobalConstantInliner(FlowOptimizationRule):
             return 0
 
         # Must reference data, not code.
-        flags = ida_bytes.get_flags(ea)
-        if ida_bytes.is_code(flags):
+        flags = idaapi.get_flags(ea)
+        if idaapi.is_code(flags):
             return 0
 
         if not _is_constant_global(ea):
@@ -208,7 +207,7 @@ def _read_constant_value(ea: int, size: int) -> int:
     if size == 8:
         return idaapi.get_qword(ea)
     # Fallback for unusual sizes -- read raw bytes, little-endian.
-    raw = ida_bytes.get_bytes(ea, size)
+    raw = idaapi.get_bytes(ea, size)
     if raw is None:
         return 0
     return int.from_bytes(raw, byteorder="little")
