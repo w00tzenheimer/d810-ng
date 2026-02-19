@@ -8,7 +8,7 @@ so that module remains free of any evaluator framework dependency.
 
 from __future__ import annotations
 
-from typing import Callable
+from d810.core.typing import Callable
 
 from d810.core.bits import (
     __ROL1__,
