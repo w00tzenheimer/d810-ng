@@ -1,0 +1,62 @@
+# Forbid print() in production source — use the d810 logger instead
+#
+# BAD:  print("debug value:", x)
+# BAD:  print(f"result = {result}")
+# GOOD: logger.debug("debug value: %s", x)
+# GOOD: logger.info("result = %s", result)
+#
+# Rationale:
+# - print() bypasses d810's MDC-aware logging entirely
+# - Output goes to stdout with no maturity/phase context
+# - IDA's output window may not capture stdout reliably
+# - Logger output goes through D810Logger with structured context
+#
+# See: src/d810/core/logging.py
+
+id: no-print-statement
+language: python
+severity: warning
+
+files:
+  - "src/d810/**/*.py"
+
+ignores:
+  - "src/d810/_vendor/**"
+  - "src/d810/ui/testbed.py"
+  - "src/d810/hexrays/hexrays_helpers.py"   # demo/example function with showcase prints
+  - "src/d810/core/tracker_components.py"   # __main__ benchmark runner
+  - "src/d810/core/descriptors.py"          # dead code marker (print never reached)
+  - "src/d810/mba/backends/egglog_backend.py"  # __main__ dev runner
+  - "src/d810/core/cymode.py"                  # startup messages before logging is initialized
+  - "src/d810/hexrays/microcode_dump.py"       # CLI dump tool — intentional stdout/stderr output
+  - "src/d810/qt_shim.py"                      # pre-logging startup error (before logger available)
+
+message: |
+  print() is forbidden in production source. Use the d810 logger instead:
+
+    from d810.core import getLogger
+    logger = getLogger(__name__)
+
+    logger.debug("value: %s", x)   # replaces print("value:", x)
+    logger.info("done")             # replaces print("done")
+
+  print() bypasses MDC context and may not appear in IDA's output window.
+  Exception: print(..., file=sys.stderr) is allowed for CLI error output.
+
+rule:
+  pattern: print($$$)
+  not:
+    # Allow: print(..., file=<stream>) for CLI tools writing to stderr/stdout explicitly
+    pattern: print($$$, file=$FD)
+
+note: |
+  Standard replacement:
+
+    # Before
+    print("processing block", blk.serial)
+
+    # After
+    logger.debug("processing block %s", blk.serial)
+
+  Use % formatting (not f-strings) in logger calls for lazy evaluation —
+  the string is only formatted if the log level is active.

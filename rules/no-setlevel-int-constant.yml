@@ -1,0 +1,52 @@
+# Forbid setLevel() with stdlib logging integer constants
+#
+# BAD:  logger.setLevel(logging.DEBUG)
+# BAD:  logger.setLevel(logging.ERROR)
+# GOOD: logger.setLevel("DEBUG")
+# GOOD: logger.setLevel("ERROR")
+#
+# Rationale:
+# - String form requires no stdlib logging import
+# - stdlib logging accepts string level names in setLevel() natively
+# - Integer constants (logging.DEBUG=10, etc.) require importing stdlib logging
+#
+# See: rules/no-stdlib-logging-import.yml
+
+id: no-setlevel-int-constant
+language: python
+severity: error
+
+files:
+  - "src/d810/**/*.py"
+
+ignores:
+  - "src/d810/core/logging.py"
+  - "src/d810/_vendor/**"
+  - "src/d810/mba/backends/egglog_backend.py"  # suppresses third-party egglog logger noise
+
+message: |
+  setLevel() with a stdlib logging constant is forbidden.
+  Use the string form instead — no import required:
+
+    logger.setLevel("DEBUG")
+    logger.setLevel("INFO")
+    logger.setLevel("WARNING")
+    logger.setLevel("ERROR")
+    logger.setLevel("CRITICAL")
+
+  stdlib logging.setLevel() accepts string level names natively.
+
+rule:
+  pattern: $LOGGER.setLevel(logging.$LEVEL)
+
+note: |
+  Standard replacement:
+
+    # Before
+    logger.setLevel(logging.ERROR)
+
+    # After
+    logger.setLevel("ERROR")
+
+  Python's logging.Logger.setLevel() accepts both int and string arguments.
+  String form avoids the stdlib logging import entirely.
