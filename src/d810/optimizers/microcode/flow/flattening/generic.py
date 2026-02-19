@@ -1863,7 +1863,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         MAX_JTBL_CANON_OVERLAPS = 64
         _total_overlaps = sum(len(v) for v in self._deferred_case_overlap_edges.values())
         if _total_overlaps > MAX_JTBL_CANON_OVERLAPS:
-            logger.warning(
+            unflat_logger.warning(
                 "Skipping jtbl canonicalization: %d overlap entries exceeds limit %d "
                 "(dispatcher too large; unflattening proceeds without case deduplication)",
                 _total_overlaps, MAX_JTBL_CANON_OVERLAPS,
