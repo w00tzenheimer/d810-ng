@@ -1404,11 +1404,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             dispatcher_father.serial,
             father_histories_cst,
         )
-        _dup_seconds = max(10.0, len(father_histories) * 0.2)
         nb_duplication, nb_change = duplicate_histories(
-            father_histories,
-            max_nb_pass=self.max_duplication_passes,
-            max_seconds=_dup_seconds,
+            father_histories, max_nb_pass=self.max_duplication_passes
         )
         unflat_logger.info(
             "Dispatcher %s predecessor %s duplication: %s blocks created, %s changes made",
@@ -2617,18 +2614,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 current_block_count = self.mba.qty
                 total_duplications += max(0, current_block_count - previous_block_count)
                 previous_block_count = current_block_count
-                _max_dup = max(
-                    self.MAX_CUMULATIVE_DUPLICATIONS,
-                    int(self._last_layout_signals.get("max_exit_blocks", 0) * 5)
-                    if self._last_layout_signals
-                    else 0,
-                )
-                if total_duplications > _max_dup:
+                if total_duplications > self.MAX_CUMULATIVE_DUPLICATIONS:
                     unflat_logger.warning(
                         "Cumulative duplication budget exceeded (%d blocks created, "
                         "limit %d), stopping further duplication",
                         total_duplications,
-                        _max_dup,
+                        self.MAX_CUMULATIVE_DUPLICATIONS,
                     )
                     duplication_budget_exceeded = True
                     break
