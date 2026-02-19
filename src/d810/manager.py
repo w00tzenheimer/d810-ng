@@ -5,23 +5,21 @@ import dataclasses
 import inspect
 import pathlib
 import pstats
+import tempfile
+import time
 
 try:
     import cProfile
 except ImportError:
     cProfile = None  # type: ignore[assignment]
-import time
-from d810.core import typing
-from d810.core.typing import TYPE_CHECKING
 
+from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE, typing
 from d810.core.config import D810Configuration, ProjectConfiguration
 from d810.core.logging import clear_logs, configure_loggers, getLogger
-from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
-from d810.expr.z3_utils import clear_z3_caches
 from d810.core.persistence import ActiveRuleRecipeConfig, create_optimization_storage
 from d810.core.platform import resolve_arch_config
 from d810.core.project import ProjectContext, ProjectManager
-from d810.core.registry import EventEmitter
+from d810.core.registry import EventEmitter, SingletonMeta
 from d810.core.rule_scope import (
     FunctionRuleOverlay,
     RuleRecipeOverlay,
@@ -29,9 +27,10 @@ from d810.core.rule_scope import (
     RuleScopeInvalidation,
     RuleScopeService,
 )
-from d810.core.registry import SingletonMeta
 from d810.core.stats import OptimizationStatistics
-from d810.hexrays.ctree_hooks import CtreeOptimizerManager, CtreeOptimizationRule
+from d810.core.typing import TYPE_CHECKING
+from d810.expr.z3_utils import clear_z3_caches
+from d810.hexrays.ctree_hooks import CtreeOptimizationRule, CtreeOptimizerManager
 from d810.hexrays.hexrays_hooks import (
     BlockOptimizerManager,
     DecompilationEvent,
@@ -42,25 +41,21 @@ from d810.mba.backends.ida import adapt_rules
 from d810.mba.rules import VerifiableRule
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
-
-try:
-    from d810.recon.phase import ReconPhase
-    from d810.recon.store import ReconStore
-    from d810.recon.collectors.cfg_shape import CFGShapeCollector
-    from d810.recon.collectors.opcode_distribution import OpcodeDistributionCollector
-    from d810.recon.collectors.dispatch_pattern import DispatchPatternCollector
-    from d810.recon.collectors.ctree_structure import CtreeStructureCollector
-    _RECON_AVAILABLE = True
-except Exception:
-    _RECON_AVAILABLE = False
-
-if TYPE_CHECKING:
-    from d810.ui.ida_ui import D810GUI
+from d810.recon.collectors.cfg_shape import CFGShapeCollector
+from d810.recon.collectors.ctree_structure import CtreeStructureCollector
+from d810.recon.collectors.dispatch_pattern import DispatchPatternCollector
+from d810.recon.collectors.opcode_distribution import OpcodeDistributionCollector
+from d810.recon.phase import ReconPhase
+from d810.recon.store import ReconStore
 
 try:
     import pyinstrument  # type: ignore
 except ImportError:
     pyinstrument = None
+
+if TYPE_CHECKING:
+    from d810.ui.ida_ui import D810GUI
+
 
 D810_LOG_DIR_NAME = "d810_logs"
 
@@ -106,6 +101,7 @@ def _maturity_name(maturity: int) -> str:
     """Map IDA maturity integer to a human-readable name for file labels."""
     try:
         import ida_hexrays
+
         _names = {
             ida_hexrays.MMAT_ZERO: "MMAT_ZERO",
             ida_hexrays.MMAT_GENERATED: "MMAT_GENERATED",
@@ -125,7 +121,9 @@ def _maturity_name(maturity: int) -> str:
 @dataclasses.dataclass
 class D810Manager:
     log_dir: pathlib.Path
-    stats: OptimizationStatistics = dataclasses.field(default_factory=OptimizationStatistics)
+    stats: OptimizationStatistics = dataclasses.field(
+        default_factory=OptimizationStatistics
+    )
     instruction_optimizer_rules: list = dataclasses.field(default_factory=list)
     instruction_optimizer_config: dict = dataclasses.field(default_factory=dict)
     block_optimizer_rules: list = dataclasses.field(default_factory=list)
@@ -134,9 +132,13 @@ class D810Manager:
     ctree_optimizer_config: dict = dataclasses.field(default_factory=dict)
     config: dict = dataclasses.field(default_factory=dict)
     event_emitter: EventEmitter = dataclasses.field(default_factory=EventEmitter)
-    rule_scope_service: RuleScopeService = dataclasses.field(default_factory=RuleScopeService)
+    rule_scope_service: RuleScopeService = dataclasses.field(
+        default_factory=RuleScopeService
+    )
     storage: typing.Any = None
-    _active_rule_recipe: RuleRecipeOverlay | None = dataclasses.field(default=None, init=False)
+    _active_rule_recipe: RuleRecipeOverlay | None = dataclasses.field(
+        default=None, init=False
+    )
     profiler: typing.Any = dataclasses.field(
         default_factory=lambda: pyinstrument.Profiler() if pyinstrument else None
     )
@@ -240,7 +242,9 @@ class D810Manager:
         self.rule_scope_service.set_active_recipe(self._active_rule_recipe)
 
         # Instantiate core manager classes from registry
-        self.instruction_optimizer = InstructionOptimizerManager(self.stats, self.log_dir)
+        self.instruction_optimizer = InstructionOptimizerManager(
+            self.stats, self.log_dir
+        )
         project_name = str(self.config.get("project_name", ""))
         idb_key = str(self.config.get("idb_key", project_name))
         self.instruction_optimizer.configure(
@@ -288,7 +292,9 @@ class D810Manager:
             self.block_optimizer.configure(pass_pipeline=_pass_pipeline)
 
         # Build ctree optimizer with recon phase from the start.
-        self.ctree_optimizer = CtreeOptimizerManager(self.stats, recon_phase=self._recon_phase)
+        self.ctree_optimizer = CtreeOptimizerManager(
+            self.stats, recon_phase=self._recon_phase
+        )
 
         for ctree_rule in self.ctree_optimizer_rules:
             ctree_rule.log_dir = self.log_dir
@@ -304,7 +310,9 @@ class D810Manager:
 
     def _init_storage(self) -> None:
         old_storage = self.storage
-        backend = str(self.config.get("function_rules_backend", "sqlite")).strip().lower()
+        backend = (
+            str(self.config.get("function_rules_backend", "sqlite")).strip().lower()
+        )
         target = self.config.get("function_rules_storage")
         if target is None:
             if backend == "sqlite":
@@ -353,10 +361,14 @@ class D810Manager:
             disabled_rules=frozenset(str(rule) for rule in persisted.disabled_rules),
             target_func_eas=frozenset(int(ea) for ea in persisted.target_func_eas),
             target_tags_any=frozenset(
-                str(tag).strip() for tag in persisted.target_tags_any if str(tag).strip()
+                str(tag).strip()
+                for tag in persisted.target_tags_any
+                if str(tag).strip()
             ),
             target_tags_all=frozenset(
-                str(tag).strip() for tag in persisted.target_tags_all if str(tag).strip()
+                str(tag).strip()
+                for tag in persisted.target_tags_all
+                if str(tag).strip()
             ),
             notes=str(persisted.notes),
         )
@@ -411,7 +423,9 @@ class D810Manager:
             RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
             project_name=str(self.config.get("project_name", "")),
             func_eas=frozenset({int(function_addr)}),
-            changed_rules=frozenset((enabled_rules or set()) | (disabled_rules or set())),
+            changed_rules=frozenset(
+                (enabled_rules or set()) | (disabled_rules or set())
+            ),
         )
 
     def get_function_tags(self, function_addr: int) -> set[str]:
@@ -437,7 +451,9 @@ class D810Manager:
         if not hasattr(self.storage, "set_function_tags"):
             logger.warning("Function-rules storage does not support function tags")
             return
-        normalized_tags = {str(tag).strip() for tag in (tags or set()) if str(tag).strip()}
+        normalized_tags = {
+            str(tag).strip() for tag in (tags or set()) if str(tag).strip()
+        }
         self.storage.set_function_tags(function_addr, normalized_tags)
         self.emit_rule_scope_invalidation(
             RuleScopeEvent.FUNCTION_TAGS_UPDATED,
@@ -464,10 +480,14 @@ class D810Manager:
             disabled_rules=frozenset(disabled_rules or set()),
             target_func_eas=frozenset(int(ea) for ea in (target_func_eas or set())),
             target_tags_any=frozenset(
-                str(tag).strip() for tag in (target_tags_any or set()) if str(tag).strip()
+                str(tag).strip()
+                for tag in (target_tags_any or set())
+                if str(tag).strip()
             ),
             target_tags_all=frozenset(
-                str(tag).strip() for tag in (target_tags_all or set()) if str(tag).strip()
+                str(tag).strip()
+                for tag in (target_tags_all or set())
+                if str(tag).strip()
             ),
             notes=notes,
         )
@@ -488,7 +508,9 @@ class D810Manager:
         self.emit_rule_scope_invalidation(
             RuleScopeEvent.RECIPE_APPLIED,
             project_name=str(self.config.get("project_name", "")),
-            changed_rules=frozenset((enabled_rules or set()) | (disabled_rules or set())),
+            changed_rules=frozenset(
+                (enabled_rules or set()) | (disabled_rules or set())
+            ),
         )
 
     def clear_active_rule_recipe(self) -> None:
@@ -496,7 +518,9 @@ class D810Manager:
             self._init_storage()
         self._active_rule_recipe = None
         self.rule_scope_service.set_active_recipe(None)
-        if self.storage is not None and hasattr(self.storage, "clear_active_rule_recipe"):
+        if self.storage is not None and hasattr(
+            self.storage, "clear_active_rule_recipe"
+        ):
             self.storage.clear_active_rule_recipe()
         self.emit_rule_scope_invalidation(
             RuleScopeEvent.RECIPE_CLEARED,
@@ -555,7 +579,9 @@ class D810Manager:
         ):
             self.event_emitter.on(DecompilationEvent.FINISHED, _subscriber)
 
-        self.event_emitter.on(DecompilationEvent.MATURITY_CHANGED, self.dump_profiling_segment)
+        self.event_emitter.on(
+            DecompilationEvent.MATURITY_CHANGED, self.dump_profiling_segment
+        )
 
         self.instruction_optimizer.event_emitter = self.event_emitter
         self.instruction_optimizer.install()
@@ -591,8 +617,10 @@ class D810Manager:
         """
         from d810.hexrays.backends.ida_backend import IDABackend
         from d810.hexrays.pass_pipeline import PassPipeline
-        from d810.hexrays.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
         from d810.hexrays.passes.goto_chain_removal import GotoChainRemovalPass
+        from d810.hexrays.passes.simplify_identical_branch import (
+            SimplifyIdenticalBranchPass,
+        )
 
         backend = IDABackend()
         passes = [
@@ -616,14 +644,9 @@ class D810Manager:
         Returns:
             ReconPhase instance with all collectors registered, or None on failure.
         """
-        if not _RECON_AVAILABLE:
-            logger.warning("Recon package unavailable; recon pipeline disabled.")
-            return None
         try:
             db_path = (self.log_dir / "d810_recon.db") if self.log_dir else None
             if db_path is None:
-                import tempfile
-                import pathlib
                 db_path = pathlib.Path(tempfile.gettempdir()) / "d810_recon.db"
             store = ReconStore(db_path)
             phase = ReconPhase(store=store)
@@ -642,15 +665,15 @@ class D810Manager:
             return None
 
     def configure_instruction_optimizer(self, rules, **kwargs):
-        self.instruction_optimizer_rules = [rule for rule in rules]
+        self.instruction_optimizer_rules = list(rules)
         self.instruction_optimizer_config = kwargs
 
     def configure_block_optimizer(self, rules, **kwargs):
-        self.block_optimizer_rules = [rule for rule in rules]
+        self.block_optimizer_rules = list(rules)
         self.block_optimizer_config = kwargs
 
     def configure_ctree_optimizer(self, rules, **kwargs):
-        self.ctree_optimizer_rules = [rule for rule in rules]
+        self.ctree_optimizer_rules = list(rules)
         self.ctree_optimizer_config = kwargs
 
     def stop(self):
@@ -739,7 +762,7 @@ class D810State(metaclass=SingletonMeta):
     @property
     def stats(self) -> OptimizationStatistics:
         """Forward stats access to the manager."""
-        if hasattr(self, 'manager') and self.manager is not None:
+        if hasattr(self, "manager") and self.manager is not None:
             return self.manager.stats
         # Return a fresh stats object if manager not yet initialized
         return OptimizationStatistics()
@@ -822,12 +845,16 @@ class D810State(metaclass=SingletonMeta):
                 **self.manager.instruction_optimizer_config,
                 rule_scope_service=self.manager.rule_scope_service,
                 rule_scope_project_name=self.current_project.path.name,
-                rule_scope_idb_key=str(cfg.get("idb_key", self.current_project.path.name)),
+                rule_scope_idb_key=str(
+                    cfg.get("idb_key", self.current_project.path.name)
+                ),
             )
             self.manager.block_optimizer.configure(
                 rule_scope_service=self.manager.rule_scope_service,
                 rule_scope_project_name=self.current_project.path.name,
-                rule_scope_idb_key=str(cfg.get("idb_key", self.current_project.path.name)),
+                rule_scope_idb_key=str(
+                    cfg.get("idb_key", self.current_project.path.name)
+                ),
             )
             self.manager._compile_rule_scope()
         if getattr(self, "gui", None) is not None:
@@ -916,6 +943,7 @@ class D810State(metaclass=SingletonMeta):
         if gui and self._is_loaded:
             # Lazy import to avoid Qt dependency in headless mode
             from d810.ui.ida_ui import D810GUI
+
             self.gui = D810GUI(self)
             self.gui.show_windows()
 
