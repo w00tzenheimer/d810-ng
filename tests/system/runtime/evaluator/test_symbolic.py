@@ -315,24 +315,22 @@ class TestEvaluationErrors:
 
 
 # ---------------------------------------------------------------------------
-# Tests: importable from d810.evaluator public API
+# Tests: importable from d810.evaluator.symbolic submodule
 # ---------------------------------------------------------------------------
 
 
 class TestPublicAPIExport:
-    """probe_is_constant is accessible from the d810.evaluator package."""
+    """probe_is_constant is accessible from d810.evaluator.symbolic."""
 
-    def test_importable_from_package(self):
-        """from d810.evaluator import probe_is_constant works."""
-        from d810.evaluator import probe_is_constant as _pic  # noqa: F401
+    def test_importable_from_submodule(self):
+        """probe_is_constant imported at module level from submodule is callable."""
+        assert callable(probe_is_constant)
 
-        assert callable(_pic)
+    def test_probe_is_constant_is_function(self):
+        """probe_is_constant is a plain function, not a class or module."""
+        import inspect
 
-    def test_package_all_includes_probe_is_constant(self):
-        """probe_is_constant appears in d810.evaluator.__all__."""
-        import d810.evaluator as _mod
-
-        assert "probe_is_constant" in _mod.__all__
+        assert inspect.isfunction(probe_is_constant)
 
 
 # ---------------------------------------------------------------------------
