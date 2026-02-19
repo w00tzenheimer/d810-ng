@@ -1342,16 +1342,6 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     # becomes prohibitively expensive (exponential block creation).
     MAX_HISTORIES_PER_FATHER = 100
 
-    @property
-    def _max_histories_per_father(self) -> int:
-        """Dynamic limit: max(default, max_exit_blocks * 1.1)."""
-        max_exit = (
-            self._last_layout_signals.get("max_exit_blocks", 0)
-            if self._last_layout_signals
-            else 0
-        )
-        return max(self.MAX_HISTORIES_PER_FATHER, int(max_exit * 1.1))
-
     def _is_past_deadline(self) -> bool:
         """Check if the current optimize() call has exceeded its time budget."""
         import time as _time
@@ -1374,12 +1364,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             dispatcher_father, dispatcher_entry_block, dispatcher_info
         )
 
-        if len(father_histories) > self._max_histories_per_father:
+        if len(father_histories) > self.MAX_HISTORIES_PER_FATHER:
             unflat_logger.warning(
                 "Skipping father blk %d: %d histories exceed limit %d",
                 dispatcher_father.serial,
                 len(father_histories),
-                self._max_histories_per_father,
+                self.MAX_HISTORIES_PER_FATHER,
             )
             return 0
 
@@ -2520,12 +2510,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             dispatcher_father, dispatcher_entry_block, dispatcher_info
         )
 
-        if len(father_histories) > self._max_histories_per_father:
+        if len(father_histories) > self.MAX_HISTORIES_PER_FATHER:
             unflat_logger.warning(
                 "fix_fathers: skipping father blk %d: %d histories exceed limit %d",
                 dispatcher_father.serial,
                 len(father_histories),
-                self._max_histories_per_father,
+                self.MAX_HISTORIES_PER_FATHER,
             )
             return 0
 
