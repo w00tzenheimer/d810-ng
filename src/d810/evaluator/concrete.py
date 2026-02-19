@@ -164,7 +164,7 @@ class ConcreteEvaluator:
             AstEvaluationException: For unsupported opcodes.
             ValueError: If required operands are missing.
         """
-        from d810.evaluator.helpers import get_registry
+        from d810.evaluator.helpers.rotate import _RotateHelper
 
         # ------------------------------------------------------------------
         # Short-circuit: if this node's index is directly in env, return it.
@@ -226,23 +226,32 @@ class ConcreteEvaluator:
 
         match opcode:
             case ida_hexrays.m_mov:
-                return _ev(left) & res_mask
+                lv = _ev(left)
+                return None if lv is None else lv & res_mask
             case ida_hexrays.m_neg:
-                return (-_ev(left)) & res_mask
+                lv = _ev(left)
+                return None if lv is None else (-lv) & res_mask
             case ida_hexrays.m_lnot:
-                return _ev(left) != 0
+                lv = _ev(left)
+                return None if lv is None else lv != 0
             case ida_hexrays.m_bnot:
-                return (_ev(left) ^ res_mask) & res_mask
+                lv = _ev(left)
+                return None if lv is None else (lv ^ res_mask) & res_mask
             case ida_hexrays.m_xds:
-                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
+                lv = _ev(left)
+                if lv is None:
+                    return None
+                left_value_signed = unsigned_to_signed(lv, left.dest_size)
                 return (
                     signed_to_unsigned(left_value_signed, node.dest_size)  # type: ignore[union-attr]
                     & res_mask
                 )
             case ida_hexrays.m_xdu:
-                return _ev(left) & res_mask
+                lv = _ev(left)
+                return None if lv is None else lv & res_mask
             case ida_hexrays.m_low:
-                return _ev(left) & res_mask
+                lv = _ev(left)
+                return None if lv is None else lv & res_mask
             case ida_hexrays.m_high:
                 if left.dest_size is None:
                     raise ValueError("left.dest_size is None for m_high")
@@ -251,59 +260,79 @@ class ConcreteEvaluator:
                     if node.dest_size is not None  # type: ignore[union-attr]
                     else 0
                 )
-                return (_ev(left) >> shift_bits) & res_mask
+                lv = _ev(left)
+                return None if lv is None else (lv >> shift_bits) & res_mask
             case ida_hexrays.m_add if right is not None:
-                return (_ev(left) + _ev(right)) & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (lv + rv) & res_mask
             case ida_hexrays.m_sub if right is not None:
-                return (_ev(left) - _ev(right)) & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (lv - rv) & res_mask
             case ida_hexrays.m_mul if right is not None:
-                return (_ev(left) * _ev(right)) & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (lv * rv) & res_mask
             case ida_hexrays.m_udiv if right is not None:
-                return (_ev(left) // _ev(right)) & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (lv // rv) & res_mask
             case ida_hexrays.m_sdiv if right is not None:
-                return (_ev(left) // _ev(right)) & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (lv // rv) & res_mask
             case ida_hexrays.m_umod if right is not None:
-                return (_ev(left) % _ev(right)) & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (lv % rv) & res_mask
             case ida_hexrays.m_smod if right is not None:
-                return (_ev(left) % _ev(right)) & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (lv % rv) & res_mask
             case ida_hexrays.m_or if right is not None:
-                return (_ev(left) | _ev(right)) & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (lv | rv) & res_mask
             case ida_hexrays.m_and if right is not None:
-                return (_ev(left) & _ev(right)) & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (lv & rv) & res_mask
             case ida_hexrays.m_xor if right is not None:
-                return (_ev(left) ^ _ev(right)) & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (lv ^ rv) & res_mask
             case ida_hexrays.m_shl if right is not None:
-                return (_ev(left) << _ev(right)) & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (lv << rv) & res_mask
             case ida_hexrays.m_shr if right is not None:
-                return (_ev(left) >> _ev(right)) & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (lv >> rv) & res_mask
             case ida_hexrays.m_sar if right is not None:
-                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
-                res_signed = left_value_signed >> _ev(right)
+                lv, rv = _ev(left), _ev(right)
+                if lv is None or rv is None:
+                    return None
+                left_value_signed = unsigned_to_signed(lv, left.dest_size)
+                res_signed = left_value_signed >> rv
                 return (
                     signed_to_unsigned(res_signed, node.dest_size)  # type: ignore[union-attr]
                     & res_mask
                 )
             case ida_hexrays.m_cfadd if right is not None:
-                tmp = get_add_cf(
-                    _ev(left),
-                    _ev(right),
-                    left.dest_size,
-                )
+                lv, rv = _ev(left), _ev(right)
+                if lv is None or rv is None:
+                    return None
+                tmp = get_add_cf(lv, rv, left.dest_size)
                 return tmp & res_mask
             case ida_hexrays.m_ofadd if right is not None:
-                tmp = get_add_of(
-                    _ev(left),
-                    _ev(right),
-                    left.dest_size,
-                )
+                lv, rv = _ev(left), _ev(right)
+                if lv is None or rv is None:
+                    return None
+                tmp = get_add_of(lv, rv, left.dest_size)
                 return tmp & res_mask
             case ida_hexrays.m_sets:
-                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
+                lv = _ev(left)
+                if lv is None:
+                    return None
+                left_value_signed = unsigned_to_signed(lv, left.dest_size)
                 res = 1 if left_value_signed < 0 else 0
                 return res & res_mask
             case ida_hexrays.m_seto if right is not None:
-                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
-                right_value_signed = unsigned_to_signed(_ev(right), right.dest_size)
+                lv, rv = _ev(left), _ev(right)
+                if lv is None or rv is None:
+                    return None
+                left_value_signed = unsigned_to_signed(lv, left.dest_size)
+                right_value_signed = unsigned_to_signed(rv, right.dest_size)
                 sub_overflow = get_sub_of(
                     left_value_signed,
                     right_value_signed,
@@ -311,49 +340,60 @@ class ConcreteEvaluator:
                 )
                 return sub_overflow & res_mask
             case ida_hexrays.m_setnz if right is not None:
-                res = 1 if _ev(left) != _ev(right) else 0
-                return res & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (1 if lv != rv else 0) & res_mask
             case ida_hexrays.m_setz if right is not None:
-                res = 1 if _ev(left) == _ev(right) else 0
-                return res & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (1 if lv == rv else 0) & res_mask
             case ida_hexrays.m_setae if right is not None:
-                res = 1 if _ev(left) >= _ev(right) else 0
-                return res & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (1 if lv >= rv else 0) & res_mask
             case ida_hexrays.m_setb if right is not None:
-                res = 1 if _ev(left) < _ev(right) else 0
-                return res & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (1 if lv < rv else 0) & res_mask
             case ida_hexrays.m_seta if right is not None:
-                res = 1 if _ev(left) > _ev(right) else 0
-                return res & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (1 if lv > rv else 0) & res_mask
             case ida_hexrays.m_setbe if right is not None:
-                res = 1 if _ev(left) <= _ev(right) else 0
-                return res & res_mask
+                lv, rv = _ev(left), _ev(right)
+                return None if lv is None or rv is None else (1 if lv <= rv else 0) & res_mask
             case ida_hexrays.m_setg if right is not None:
-                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
-                right_value_signed = unsigned_to_signed(_ev(right), right.dest_size)
+                lv, rv = _ev(left), _ev(right)
+                if lv is None or rv is None:
+                    return None
+                left_value_signed = unsigned_to_signed(lv, left.dest_size)
+                right_value_signed = unsigned_to_signed(rv, right.dest_size)
                 res = 1 if left_value_signed > right_value_signed else 0
                 return res & res_mask
             case ida_hexrays.m_setge if right is not None:
-                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
-                right_value_signed = unsigned_to_signed(_ev(right), right.dest_size)
+                lv, rv = _ev(left), _ev(right)
+                if lv is None or rv is None:
+                    return None
+                left_value_signed = unsigned_to_signed(lv, left.dest_size)
+                right_value_signed = unsigned_to_signed(rv, right.dest_size)
                 res = 1 if left_value_signed >= right_value_signed else 0
                 return res & res_mask
             case ida_hexrays.m_setl if right is not None:
-                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
-                right_value_signed = unsigned_to_signed(_ev(right), right.dest_size)
+                lv, rv = _ev(left), _ev(right)
+                if lv is None or rv is None:
+                    return None
+                left_value_signed = unsigned_to_signed(lv, left.dest_size)
+                right_value_signed = unsigned_to_signed(rv, right.dest_size)
                 res = 1 if left_value_signed < right_value_signed else 0
                 return res & res_mask
             case ida_hexrays.m_setle if right is not None:
-                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
-                right_value_signed = unsigned_to_signed(_ev(right), right.dest_size)
+                lv, rv = _ev(left), _ev(right)
+                if lv is None or rv is None:
+                    return None
+                left_value_signed = unsigned_to_signed(lv, left.dest_size)
+                right_value_signed = unsigned_to_signed(rv, right.dest_size)
                 res = 1 if left_value_signed <= right_value_signed else 0
                 return res & res_mask
             case ida_hexrays.m_setp if right is not None:
-                res = get_parity_flag(
-                    _ev(left),
-                    _ev(right),
-                    left.dest_size,
-                )
+                lv, rv = _ev(left), _ev(right)
+                if lv is None or rv is None:
+                    return None
+                res = get_parity_flag(lv, rv, left.dest_size)
                 return res & res_mask
             case ida_hexrays.m_call:
                 if logger.debug_on:
@@ -376,7 +416,7 @@ class ConcreteEvaluator:
                     and left is not None
                     and right is not None
                 ):
-                    helper_func = get_registry().lookup(helper_name)
+                    helper_func = _RotateHelper.lookup(helper_name)
                     if helper_func is not None:
                         val = _ev(left)
                         rot = _ev(right)

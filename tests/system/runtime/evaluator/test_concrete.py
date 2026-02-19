@@ -26,7 +26,6 @@ import types
 import pytest
 
 from d810.evaluator.concrete import ConcreteEvaluator, evaluate_concrete
-from d810.evaluator.helpers import get_registry
 from d810.hexrays.mop_snapshot import MopSnapshot
 
 

@@ -5,7 +5,7 @@
 # DEPRECATED: This module has been superseded by
 # ``d810.speedups.evaluator.c_concrete`` (``CythonConcreteEvaluator``), which
 # follows the ``d810.speedups.<pkgname>`` convention and uses the
-# :class:`~d810.evaluator.helpers.HelperRegistry` for helper lookup.
+# :meth:`~d810.evaluator.helpers.rotate._RotateHelper.lookup` for helper lookup.
 #
 # This file is kept for one release cycle to avoid breaking any direct
 # consumers of ``d810.speedups.expr.c_ast_evaluate.AstEvaluator``.
