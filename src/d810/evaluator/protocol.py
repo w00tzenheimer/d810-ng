@@ -52,8 +52,8 @@ class HelperCallable(Protocol):
 
     Plain functions or lambdas satisfy this protocol; they do **not** need
     to carry ``name`` or ``bit_width`` attributes.  When registering such a
-    callable with :class:`~d810.evaluator.helpers.HelperRegistry`, the
-    caller must supply the *name* argument explicitly.
+    callable with :meth:`~d810.evaluator.helpers.rotate._RotateHelper.lookup`,
+    the name must match a registered ``registrant_name``.
 
     Examples:
         >>> def my_fn(value: int, count: int) -> int:

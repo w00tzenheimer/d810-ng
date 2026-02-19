@@ -1,13 +1,16 @@
 """Thin wrappers around the rotate helpers in :mod:`d810.core.bits`.
 
-Each wrapper satisfies :class:`~d810.evaluator.protocol.HelperProtocol`
-by attaching ``name`` and ``bit_width`` metadata to the underlying
-pure-Python function.  The actual arithmetic stays in ``d810.core.bits``
-so that module remains free of any evaluator framework dependency.
+Each concrete subclass satisfies the rotate helper interface by
+registering itself via :class:`~d810.core.registry.Registrant`.
+The actual arithmetic stays in ``d810.core.bits`` so that module
+remains free of any evaluator framework dependency.
 """
 
 from __future__ import annotations
 
+from d810.core.typing import ClassVar
+
+from d810.core.registry import Registrant
 from d810.core.typing import Callable
 
 from d810.core.bits import (
@@ -22,25 +25,20 @@ from d810.core.bits import (
 )
 
 
-class _RotateHelper:
-    """Wraps a rotate function with :class:`HelperProtocol`-compatible metadata.
+class _RotateHelper(Registrant):
+    """Base class for rotate helper functions.
 
-    Args:
-        fn: The underlying rotate callable from :mod:`d810.core.bits`.
-        name: The canonical helper name (e.g. ``"__ROL4__"``).
-        bit_width: The integer bit width this helper operates on.
+    Subclasses register themselves automatically via :class:`Registrant`.
+    Each subclass must set :attr:`registrant_name` (the canonical helper
+    name, e.g. ``"__ROL4__"``) and :attr:`bit_width`.
     """
 
-    def __init__(self, fn: Callable[[int, int], int], name: str, bit_width: int) -> None:
-        self._fn = fn
-        self.name = name
-        self.bit_width = bit_width
-        # Preserve introspection attributes for debugging
-        self.__name__ = name
-        self.__doc__ = fn.__doc__
+    registrant_name: ClassVar[str]
+    bit_width: ClassVar[int]
 
-    def __call__(self, value: int, count: int) -> int:
-        """Delegate to the wrapped rotate function.
+    @classmethod
+    def evaluate(cls, value: int, count: int) -> int:
+        """Perform the rotation.
 
         Args:
             value: Integer operand to rotate.
@@ -49,39 +47,103 @@ class _RotateHelper:
         Returns:
             Rotated value masked to :attr:`bit_width` bits.
         """
-        return self._fn(value, count)
+        raise NotImplementedError
 
-    def __repr__(self) -> str:
-        return f"_RotateHelper(name={self.name!r}, bit_width={self.bit_width})"
+    @classmethod
+    def lookup(cls, name: str) -> Callable[[int, int], int] | None:
+        """Return the ``evaluate`` classmethod for *name*, or ``None``.
+
+        Drop-in replacement for the old singleton registry lookup pattern.
+
+        Args:
+            name: Canonical helper name (e.g. ``"__ROL4__"``).
+
+        Returns:
+            Bound classmethod callable, or ``None`` if not registered.
+        """
+        klass = cls.find(name)
+        return klass.evaluate if klass is not None else None
 
 
 # ---------------------------------------------------------------------------
-# Pre-built instances for each rotate variant
+# Concrete rotate helpers — 8 variants
 # ---------------------------------------------------------------------------
 
-ROL1: _RotateHelper = _RotateHelper(__ROL1__, "__ROL1__", 8)
-ROL2: _RotateHelper = _RotateHelper(__ROL2__, "__ROL2__", 16)
-ROL4: _RotateHelper = _RotateHelper(__ROL4__, "__ROL4__", 32)
-ROL8: _RotateHelper = _RotateHelper(__ROL8__, "__ROL8__", 64)
 
-ROR1: _RotateHelper = _RotateHelper(__ROR1__, "__ROR1__", 8)
-ROR2: _RotateHelper = _RotateHelper(__ROR2__, "__ROR2__", 16)
-ROR4: _RotateHelper = _RotateHelper(__ROR4__, "__ROR4__", 32)
-ROR8: _RotateHelper = _RotateHelper(__ROR8__, "__ROR8__", 64)
+class ROL1(_RotateHelper):
+    registrant_name = "__ROL1__"
+    bit_width = 8
 
-#: All eight standard rotate helpers in registration order.
-ALL_ROTATE_HELPERS: tuple[_RotateHelper, ...] = (
-    ROL1,
-    ROL2,
-    ROL4,
-    ROL8,
-    ROR1,
-    ROR2,
-    ROR4,
-    ROR8,
-)
+    @classmethod
+    def evaluate(cls, value: int, count: int) -> int:
+        return __ROL1__(value, count)
+
+
+class ROL2(_RotateHelper):
+    registrant_name = "__ROL2__"
+    bit_width = 16
+
+    @classmethod
+    def evaluate(cls, value: int, count: int) -> int:
+        return __ROL2__(value, count)
+
+
+class ROL4(_RotateHelper):
+    registrant_name = "__ROL4__"
+    bit_width = 32
+
+    @classmethod
+    def evaluate(cls, value: int, count: int) -> int:
+        return __ROL4__(value, count)
+
+
+class ROL8(_RotateHelper):
+    registrant_name = "__ROL8__"
+    bit_width = 64
+
+    @classmethod
+    def evaluate(cls, value: int, count: int) -> int:
+        return __ROL8__(value, count)
+
+
+class ROR1(_RotateHelper):
+    registrant_name = "__ROR1__"
+    bit_width = 8
+
+    @classmethod
+    def evaluate(cls, value: int, count: int) -> int:
+        return __ROR1__(value, count)
+
+
+class ROR2(_RotateHelper):
+    registrant_name = "__ROR2__"
+    bit_width = 16
+
+    @classmethod
+    def evaluate(cls, value: int, count: int) -> int:
+        return __ROR2__(value, count)
+
+
+class ROR4(_RotateHelper):
+    registrant_name = "__ROR4__"
+    bit_width = 32
+
+    @classmethod
+    def evaluate(cls, value: int, count: int) -> int:
+        return __ROR4__(value, count)
+
+
+class ROR8(_RotateHelper):
+    registrant_name = "__ROR8__"
+    bit_width = 64
+
+    @classmethod
+    def evaluate(cls, value: int, count: int) -> int:
+        return __ROR8__(value, count)
+
 
 __all__ = [
+    "_RotateHelper",
     "ROL1",
     "ROL2",
     "ROL4",
@@ -90,5 +152,4 @@ __all__ = [
     "ROR2",
     "ROR4",
     "ROR8",
-    "ALL_ROTATE_HELPERS",
 ]

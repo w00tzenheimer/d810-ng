@@ -1,10 +1,9 @@
-"""Unit tests: peephole rules route helper lookup through HelperRegistry.
+"""Unit tests: peephole rules route helper lookup through _RotateHelper.
 
 Phase 4 of the evaluator refactor replaces ``getattr(rotate_helpers, name, None)``
 in :class:`RotateHelperInlineRule` and :class:`ConstantCallResultFoldRule` with
-``get_registry().lookup(name)``.  These tests verify that the lookup is driven
-by the registry so that injecting a custom helper is sufficient to change rule
-behaviour — no monkey-patching of ``d810.core.bits`` needed.
+``_RotateHelper.lookup(name)``.  These tests verify that the lookup is driven
+by the class-based Registrant registry.
 
 No IDA dependencies.  The peephole rule classes import ``ida_hexrays`` at the
 top level; we therefore mock that module so the import succeeds without an IDA
@@ -13,81 +12,41 @@ installation.  The actual ``check_and_replace`` methods are NOT exercised here
 """
 from __future__ import annotations
 
-from d810.core.typing import Callable
-
 import pytest
 
-from d810.evaluator.helpers import HelperRegistry, get_registry
+from d810.evaluator.helpers.rotate import _RotateHelper
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _make_spy_helper(name: str) -> Callable[[int, int], int]:
-    """Return a callable that records calls and has a ``name`` attribute."""
-    calls: list[tuple[int, int]] = []
-
-    def spy(value: int, count: int) -> int:
-        calls.append((value, count))
-        return value ^ count  # arbitrary but deterministic result
-
-    spy.name = name  # type: ignore[attr-defined]
-    spy.calls = calls  # type: ignore[attr-defined]
-    return spy
-
-
-# ---------------------------------------------------------------------------
-# Tests: registry is used, not getattr(bits, …)
+# Tests: registry is used via _RotateHelper.lookup
 # ---------------------------------------------------------------------------
 
 
 class TestHelperRoutingViaRegistry:
-    """Verify that peephole lookup goes through the HelperRegistry."""
+    """Verify that peephole lookup goes through _RotateHelper."""
 
-    def test_get_registry_provides_rol4(self) -> None:
-        """The singleton registry exposes __ROL4__ to callers."""
-        reg = get_registry()
-        fn = reg.lookup("__ROL4__")
+    def test_rotate_helper_provides_rol4(self) -> None:
+        """The class registry exposes __ROL4__ to callers."""
+        fn = _RotateHelper.lookup("__ROL4__")
         assert fn is not None
         assert callable(fn)
 
-    def test_get_registry_returns_none_for_unknown(self) -> None:
+    def test_rotate_helper_returns_none_for_unknown(self) -> None:
         """Looking up an unregistered name returns None."""
-        reg = get_registry()
-        assert reg.lookup("__NONEXISTENT_HELPER__") is None
-
-    def test_injected_helper_is_returned_by_lookup(self) -> None:
-        """A helper injected into a fresh registry is immediately visible."""
-        reg = HelperRegistry()
-        spy = _make_spy_helper("__ROL4__")
-        reg.register("__ROL4__", spy)
-        result = reg.lookup("__ROL4__")
-        assert result is spy
-
-    def test_injected_helper_is_callable_and_records_invocation(self) -> None:
-        """The injected spy can be called and tracks its invocations."""
-        reg = HelperRegistry()
-        spy = _make_spy_helper("__ROL4__")
-        reg.register("__ROL4__", spy)
-        fn = reg.lookup("__ROL4__")
-        assert fn is not None
-        fn(0xDEADBEEF, 8)
-        assert spy.calls == [(0xDEADBEEF, 8)]  # type: ignore[attr-defined]
+        assert _RotateHelper.lookup("__NONEXISTENT_HELPER__") is None
 
     @pytest.mark.parametrize("helper_name", [
         "__ROL1__", "__ROL2__", "__ROL4__", "__ROL8__",
         "__ROR1__", "__ROR2__", "__ROR4__", "__ROR8__",
     ])
-    def test_all_rotate_helpers_present_in_singleton(self, helper_name: str) -> None:
-        """The singleton registry is pre-populated with all 8 ROL/ROR helpers."""
-        reg = get_registry()
-        fn = reg.lookup(helper_name)
-        assert fn is not None, f"singleton registry missing {helper_name}"
+    def test_all_rotate_helpers_present(self, helper_name: str) -> None:
+        """The class registry is pre-populated with all 8 ROL/ROR helpers."""
+        fn = _RotateHelper.lookup(helper_name)
+        assert fn is not None, f"_RotateHelper registry missing {helper_name}"
         assert callable(fn), f"{helper_name} is not callable"
 
-    def test_fold_rotatehelper_imports_get_registry(self) -> None:
-        """fold_rotatehelper.py source uses get_registry, not bits directly.
+    def test_fold_rotatehelper_imports_rotate_helper(self) -> None:
+        """fold_rotatehelper.py source uses _RotateHelper.lookup, not bits directly.
 
         Verified via source-level grep so no IDA runtime is required.
         """
@@ -95,21 +54,21 @@ class TestHelperRoutingViaRegistry:
         src = pathlib.Path(
             "src/d810/optimizers/microcode/instructions/peephole/fold_rotatehelper.py"
         ).read_text()
-        assert "get_registry" in src, (
-            "fold_rotatehelper.py must import/use get_registry from evaluator.helpers"
+        assert "_RotateHelper" in src, (
+            "fold_rotatehelper.py must import/use _RotateHelper from evaluator.helpers.rotate"
         )
         assert "from d810.core import bits as rotate_helpers" not in src, (
             "fold_rotatehelper.py must not import 'd810.core.bits as rotate_helpers'"
         )
 
-    def test_constant_call_imports_get_registry(self) -> None:
-        """constant_call.py source uses get_registry, not bits directly."""
+    def test_constant_call_imports_rotate_helper(self) -> None:
+        """constant_call.py source uses _RotateHelper.lookup, not bits directly."""
         import pathlib
         src = pathlib.Path(
             "src/d810/optimizers/microcode/instructions/peephole/constant_call.py"
         ).read_text()
-        assert "get_registry" in src, (
-            "constant_call.py must import/use get_registry from evaluator.helpers"
+        assert "_RotateHelper" in src, (
+            "constant_call.py must import/use _RotateHelper from evaluator.helpers.rotate"
         )
         assert "from d810.core import bits as rotate_helpers" not in src, (
             "constant_call.py must not import 'd810.core.bits as rotate_helpers'"
