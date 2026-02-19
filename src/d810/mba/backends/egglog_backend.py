@@ -33,13 +33,15 @@ EGGLOG_AVAILABLE = True
 try:
     import egglog  # import EGraph, Expr, StringLike, eq, i64Like, rewrite, vars_
 
-    import idaapi  # we put this here such that it is only imported when egglog is available
 except ImportError:
     EGGLOG_AVAILABLE = False
 
     class egglog:
         class Expr:
             pass
+
+
+import idaapi
 
 
 def check_egglog_available() -> bool:
