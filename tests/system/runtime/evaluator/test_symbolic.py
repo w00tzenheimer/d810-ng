@@ -160,6 +160,7 @@ _OPC = _IDA_HEX
 # ---------------------------------------------------------------------------
 
 from d810.evaluator.symbolic import probe_is_constant  # noqa: E402
+from d810.hexrays.mop_snapshot import MopSnapshot  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -183,13 +184,15 @@ class _Leaf:
 
 
 class _ConstLeaf:
-    """Constant leaf — value is embedded in a MopSnapshot-like object."""
+    """Constant leaf — value is embedded in a real MopSnapshot."""
 
     def __init__(self, value: int, dest_size: int = 4) -> None:
         self._value = value
         self.ast_index = None
         self.dest_size = dest_size
-        self.mop = types.SimpleNamespace(is_constant=True, value=value)
+        # Use a real MopSnapshot so _eval_leaf takes the isinstance branch.
+        # t=1 == mop_n (numeric constant), size=dest_size.
+        self.mop = MopSnapshot(t=1, size=dest_size, value=value)
 
     def is_leaf(self) -> bool:
         return True
