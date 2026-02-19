@@ -146,6 +146,13 @@ class GenericPatternRule(InstructionOptimizationRule):
 
 T_Rule = typing.TypeVar("T_Rule", bound=InstructionOptimizationRule)
 
+#: Maximum number of fixpoint passes over a block's instruction list before
+#: we stop iterating.  Each pass re-scans every instruction in the block; if
+#: no rule fires during a full scan we break early.  The ceiling prevents
+#: infinite loops when two rules produce a rewrite cycle that the higher-level
+#: cycle-detection guard (in InstructionOptimizerManager) has not yet caught.
+MAX_FIXPOINT_PASSES = 20
+
 
 class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
     RULE_CLASSES: list[typing.Type[T_Rule]] = []
@@ -248,6 +255,38 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                     e,
                 )
         return None
+
+    def optimize_block(
+        self,
+        blk: "ida_hexrays.mblock_t",
+        *,
+        allowed_rule_names: "frozenset[str] | None" = None,
+    ) -> int:
+        """Apply rules to every instruction in *blk* until no rule fires.
+
+        Iterates over the block's instruction list repeatedly (up to
+        ``MAX_FIXPOINT_PASSES`` times).  Each full scan checks every live
+        instruction; if at least one rule fired during the scan the block is
+        re-scanned from the head so that downstream rules can act on the
+        freshly rewritten instructions (e.g. constant-propagation after a
+        fold).  Returns the total number of rewrites applied.
+        """
+        total_changes = 0
+        for _pass in range(MAX_FIXPOINT_PASSES):
+            changed = False
+            ins = blk.head
+            while ins is not None:
+                next_ins = ins.next  # save before potential swap/replacement
+                new_ins = self.get_optimized_instruction(
+                    blk, ins, allowed_rule_names=allowed_rule_names
+                )
+                if new_ins is not None and new_ins is not ins:
+                    changed = True
+                    total_changes += 1
+                ins = next_ins
+            if not changed:
+                break
+        return total_changes
 
     @property
     def name(self):
