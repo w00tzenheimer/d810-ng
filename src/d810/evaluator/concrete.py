@@ -120,8 +120,9 @@ class ConcreteEvaluator:
             mop = node.mop  # type: ignore[union-attr]
             if mop is not None:
                 # MopSnapshot exposes .value directly
-                if hasattr(mop, "is_constant"):
-                    return mop.value  # MopSnapshot
+                from d810.hexrays.mop_snapshot import MopSnapshot
+                if isinstance(mop, MopSnapshot):
+                    return mop.value
                 # Raw mop_t — import ida_hexrays lazily
                 import ida_hexrays
                 if mop.t == ida_hexrays.mop_n:

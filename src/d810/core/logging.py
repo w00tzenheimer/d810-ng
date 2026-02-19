@@ -4,6 +4,7 @@ import functools
 import json
 import logging
 import logging.config
+from logging import CRITICAL, DEBUG, ERROR, INFO, NOTSET, WARNING
 import pathlib
 import shutil
 import sqlite3
@@ -12,7 +13,16 @@ from contextlib import contextmanager
 from datetime import datetime
 
 from d810.core import typing
-from d810.core.typing import Any, Dict, List, Optional, Union
+from d810.core.typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    Union,
+    cast,
+    runtime_checkable,
+)
 
 LOG_FILENAME = "d810.log"
 Z3_TEST_FILENAME = "z3_check_instructions_substitution.py"
@@ -64,6 +74,58 @@ class LevelFlag:
     @staticmethod
     def get_config_version() -> int:
         return _config["version"]
+
+
+@runtime_checkable
+class D810LoggerProtocol(Protocol):
+    """Structural contract for logger instances with D810 MDC extensions."""
+
+    name: str
+    level: int
+    handlers: list[logging.Handler]
+    filters: list[logging.Filter]
+    propagate: bool
+    disabled: bool
+    parent: logging.Logger | None
+
+    @property
+    def debug_on(self) -> LevelFlag: ...
+
+    @property
+    def info_on(self) -> LevelFlag: ...
+
+    @property
+    def warning_on(self) -> LevelFlag: ...
+
+    @property
+    def error_on(self) -> LevelFlag: ...
+
+    @property
+    def critical_on(self) -> LevelFlag: ...
+
+    @classmethod
+    def mdc(cls) -> typing.Mapping[str, typing.Any]: ...
+
+    @classmethod
+    def set_mdc(cls, d: dict[str, typing.Any]) -> None: ...
+
+    @classmethod
+    def add_mdc(cls, key: str, value: typing.Any) -> None: ...
+
+    @classmethod
+    def get_mdc(cls, key: str, default: typing.Any | None = None): ...
+
+    @classmethod
+    def remove_mdc(cls, key: str) -> None: ...
+
+    @classmethod
+    def clean_mdc(cls) -> None: ...
+
+    @classmethod
+    def update_maturity(cls, maturity: str) -> None: ...
+
+    @classmethod
+    def reset_maturity(cls) -> None: ...
 
 
 class D810Logger(logging.Logger):
@@ -305,7 +367,7 @@ conf: dict[str, typing.Any] = {
 #         # Fetch MDC from the logger instance if available; else empty dict.
 #         try:
 #             logger_obj = logging.getLogger(record.name)
-#             if isinstance(logger_obj, D810Logger):
+#             if isinstance(logger_obj, D810LoggerProtocol):
 #                 record.mdc = (
 #                     logger_obj._get_mdc()
 #                 )  # pylint: disable=protected-access
@@ -342,6 +404,7 @@ class LoggerConfigurator:
         dyn = {
             name
             for name, logger in mgr.loggerDict.items()
+            # ast-grep-ignore: no-concrete-isinstance
             if isinstance(logger, logging.Logger)
         }
         # 2) static ones from your dictConfig
@@ -447,8 +510,8 @@ def getLogger(name: str, default_level: int = logging.INFO) -> D810Logger:
     # grab (or create) the underlying Logger
     base = logging.getLogger(name)
     # if it's already the right type, just return it
-    if isinstance(base, D810Logger):
-        return base
+    if isinstance(base, D810LoggerProtocol):
+        return cast(D810Logger, base)
     # otherwise wrap it in the subclass
     loglvl = base.level
     if loglvl == logging.NOTSET or loglvl < default_level:
@@ -487,10 +550,28 @@ class SQLiteHandler(logging.Handler):
 
     # Standard LogRecord attributes to exclude from extra field
     STANDARD_ATTRS = {
-        'name', 'msg', 'args', 'created', 'msecs', 'levelname', 'levelno',
-        'pathname', 'filename', 'module', 'lineno', 'funcName', 'thread',
-        'threadName', 'processName', 'process', 'message', 'relativeCreated',
-        'exc_info', 'exc_text', 'stack_info', 'asctime'
+        "name",
+        "msg",
+        "args",
+        "created",
+        "msecs",
+        "levelname",
+        "levelno",
+        "pathname",
+        "filename",
+        "module",
+        "lineno",
+        "funcName",
+        "thread",
+        "threadName",
+        "processName",
+        "process",
+        "message",
+        "relativeCreated",
+        "exc_info",
+        "exc_text",
+        "stack_info",
+        "asctime",
     }
 
     def __init__(self, db_path: str, test_id: str = None):
@@ -518,7 +599,8 @@ class SQLiteHandler(logging.Handler):
             conn = sqlite3.connect(self.db_path)
             try:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS logs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         timestamp TEXT NOT NULL,
@@ -532,13 +614,22 @@ class SQLiteHandler(logging.Handler):
                         extra JSON,
                         test_id TEXT
                     )
-                """)
+                """
+                )
 
                 # Create indexes for common queries
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_logger ON logs(logger)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_test_id ON logs(test_id)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)")
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_logs_logger ON logs(logger)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_logs_test_id ON logs(test_id)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)"
+                )
 
                 conn.commit()
             finally:
@@ -553,7 +644,9 @@ class SQLiteHandler(logging.Handler):
         """
         try:
             # Format timestamp as ISO 8601
-            timestamp = datetime.fromtimestamp(record.created).strftime('%Y-%m-%dT%H:%M:%S.%f')
+            timestamp = datetime.fromtimestamp(record.created).strftime(
+                "%Y-%m-%dT%H:%M:%S.%f"
+            )
 
             # Extract extra fields
             extra = {}
@@ -578,23 +671,26 @@ class SQLiteHandler(logging.Handler):
                 conn = sqlite3.connect(self.db_path)
                 try:
                     cursor = conn.cursor()
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         INSERT INTO logs (
                             timestamp, logger, level, levelno, function,
                             lineno, pathname, message, extra, test_id
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        timestamp,
-                        record.name,
-                        record.levelname,
-                        record.levelno,
-                        record.funcName,
-                        record.lineno,
-                        record.pathname,
-                        msg,
-                        extra_json,
-                        self.test_id
-                    ))
+                    """,
+                        (
+                            timestamp,
+                            record.name,
+                            record.levelname,
+                            record.levelno,
+                            record.funcName,
+                            record.lineno,
+                            record.pathname,
+                            msg,
+                            extra_json,
+                            self.test_id,
+                        ),
+                    )
                     conn.commit()
                 finally:
                     conn.close()
@@ -610,10 +706,10 @@ class SQLiteHandler(logging.Handler):
 
 @contextmanager
 def debug_scope(
-    loggers: Union[List[str], str] = 'd810',
-    db_path: str = '.d810_debug.db',
+    loggers: Union[List[str], str] = "d810",
+    db_path: str = ".d810_debug.db",
     test_id: str = None,
-    level: int = logging.DEBUG
+    level: int = logging.DEBUG,
 ):
     """
     Context manager that temporarily enables DEBUG logging to SQLite.
@@ -655,12 +751,14 @@ def debug_scope(
             logger = logging.getLogger(logger_name)
 
             # Store original state
-            original_state.append({
-                'logger': logger,
-                'level': logger.level,
-                'propagate': logger.propagate,
-                'handlers': logger.handlers.copy()
-            })
+            original_state.append(
+                {
+                    "logger": logger,
+                    "level": logger.level,
+                    "propagate": logger.propagate,
+                    "handlers": logger.handlers.copy(),
+                }
+            )
 
             # Set new level and add handler
             logger.setLevel(level)
@@ -672,8 +770,8 @@ def debug_scope(
     finally:
         # Restore original state
         for state in original_state:
-            logger = state['logger']
-            logger.setLevel(state['level'])
+            logger = state["logger"]
+            logger.setLevel(state["level"])
             logger.removeHandler(handler)
 
         # Close the handler
@@ -685,7 +783,7 @@ def query_logs(
     logger: str = None,
     test_id: str = None,
     level: str = None,
-    limit: int = 100
+    limit: int = 100,
 ) -> List[Dict[str, Any]]:
     """
     Query logs from SQLite database.
@@ -732,9 +830,9 @@ def query_logs(
         for row in cursor.fetchall():
             record = dict(row)
             # Deserialize extra field if present
-            if record.get('extra'):
+            if record.get("extra"):
                 try:
-                    record['extra'] = json.loads(record['extra'])
+                    record["extra"] = json.loads(record["extra"])
                 except json.JSONDecodeError:
                     pass  # Leave as string if not valid JSON
             results.append(record)
