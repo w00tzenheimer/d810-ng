@@ -23,7 +23,17 @@ from __future__ import annotations
 
 import ida_hexrays
 
+from d810.core.bits import (
+    AND_TABLE,
+    get_add_cf,
+    get_add_of,
+    get_parity_flag,
+    get_sub_of,
+    signed_to_unsigned,
+    unsigned_to_signed,
+)
 from d810.core.logging import getLogger
+from d810.errors import AstEvaluationException
 from d810.hexrays.mop_snapshot import MopSnapshot
 
 logger = getLogger(__name__)
@@ -154,19 +164,6 @@ class ConcreteEvaluator:
             AstEvaluationException: For unsupported opcodes.
             ValueError: If required operands are missing.
         """
-        # Lazy IDA import — keeps module importable without IDA
-        import ida_hexrays
-
-        from d810.core.bits import (
-            AND_TABLE,
-            get_add_cf,
-            get_add_of,
-            get_parity_flag,
-            get_sub_of,
-            signed_to_unsigned,
-            unsigned_to_signed,
-        )
-        from d810.errors import AstEvaluationException
         from d810.evaluator.helpers import get_registry
 
         # ------------------------------------------------------------------

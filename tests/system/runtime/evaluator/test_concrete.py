@@ -27,6 +27,7 @@ import pytest
 
 from d810.evaluator.concrete import ConcreteEvaluator, evaluate_concrete
 from d810.evaluator.helpers import get_registry
+from d810.hexrays.mop_snapshot import MopSnapshot
 
 
 # ---------------------------------------------------------------------------
@@ -202,11 +203,9 @@ class _ConstLeaf:
         self._value = value
         self.dest_size = dest_size
         self.ast_index = None
-        # Expose a fake mop with is_constant=True (MopSnapshot-like)
-        self.mop = types.SimpleNamespace(
-            is_constant=True,
-            value=value,
-        )
+        # Use a real MopSnapshot so _eval_leaf takes the isinstance branch.
+        # t=1 == mop_n (numeric constant), size=dest_size.
+        self.mop = MopSnapshot(t=1, size=dest_size, value=value)
 
     def is_leaf(self) -> bool:
         return True
