@@ -159,7 +159,7 @@ cdef inline qstring _get_written_var_name(minsn_t* ins):
         mop_off_pair_t result
         qstring empty
 
-    if d.t in (MOPT.STACK, MOPT.REGISTER):
+    if d.t == MOPT.STACK:
         return _stack_var_name(d)
 
 
@@ -183,7 +183,7 @@ cdef inline bint _is_constant_stack_assignment(minsn_t* ins):
 
     if ins.l.t != MOPT.NUMBER:
         return <bint>False
-    if ins.opcode == mcode_t.m_mov and ins.d.t in (MOPT.STACK, MOPT.REGISTER):
+    if ins.opcode == mcode_t.m_mov and ins.d.t == MOPT.STACK:
         return <bint>True
     if ins.opcode == mcode_t.m_stx:
         if ins.d.t == MOPT.STACK:
@@ -279,7 +279,7 @@ cdef inline void _transfer_insn(mblock_t* blk, minsn_t* ins, CppConstMap& env):
     cdef qstring var_name
     cdef mop_off_pair_t pair
 
-    if ins.opcode == mcode_t.m_mov or ins.d.t in (MOPT.STACK, MOPT.REGISTER):
+    if ins.opcode == mcode_t.m_mov or ins.d.t == MOPT.STACK:
         var_name = _stack_var_name(&ins.d)
     else:
         pair = _extract_base_and_offset(&ins.d)
@@ -318,7 +318,7 @@ cdef void _transfer_block(mblock_t* blk, const CppConstMap& INb, CppConstMap& OU
         else:
             if ins.opcode == mcode_t.m_mov:
                 var_name = _stack_var_name(&ins.d)
-            elif ins.d.t in (MOPT.STACK, MOPT.REGISTER):
+            elif ins.d.t == MOPT.STACK:
                 var_name = _stack_var_name(&ins.d)
             else:
                 res_pair = _extract_base_and_offset(&ins.d)
@@ -391,7 +391,7 @@ cpdef cy_extract_assignment(object ins_py):
     cdef int size = ins.l.size
     if ins.opcode == mcode_t.m_mov:
         var_name = _stack_var_name(&ins.d)
-    elif ins.d.t in {MOPT.STACK, MOPT.REGISTER}:
+    elif ins.d.t == MOPT.STACK:
         var_name = _stack_var_name(&ins.d)
     else:
         result = _extract_base_and_offset(&ins.d)
@@ -425,7 +425,7 @@ cdef bint _cy_process_operand(mop_t* op, CppConstMap& consts):
         qstring full_name
         bint const_info_found
 
-    if op.t == MOPT.STACK or op.t == MOPT.REGISTER:
+    if op.t == MOPT.STACK:
         name = _stack_var_name(op)
         if not name.empty():
             it = consts.find(name)
@@ -442,7 +442,7 @@ cdef bint _cy_process_operand(mop_t* op, CppConstMap& consts):
             addr = &op.d.r
             const_info_found = <bint>False
 
-            if addr.t == MOPT.STACK or addr.t == MOPT.REGISTER:
+            if addr.t == MOPT.STACK:
                 name = _stack_var_name(addr)
                 it = consts.find(name)
                 if it != consts.end():
@@ -520,7 +520,7 @@ cpdef int cy_rewrite_instruction(object ins_py, dict consts_py):
         ins.optimize_solo(0)
 
     # If both operands are immediates for a pure binary op, fold to MOV
-    if ins.d.t in (MOPT.STACK, MOPT.REGISTER) and ins.l.t == MOPT.NUMBER and ins.r.t == MOPT.NUMBER:
+    if ins.d.t == MOPT.STACK and ins.l.t == MOPT.NUMBER and ins.r.t == MOPT.NUMBER:
         lval = ins.l.nnn.value
         rval = ins.r.nnn.value
         res = 0
