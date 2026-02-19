@@ -438,10 +438,13 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             reg_key = (ins.d.r, ins.d.size)
             reg_consts[reg_key] = ins.l.nnn.value
         elif ins.d is not None and ins.d.t == ida_hexrays.mop_r:
-            # KILL: register written with a non-constant value
-            reg_key = (ins.d.r, ins.d.size)
-            if reg_key in reg_consts:
-                del reg_consts[reg_key]
+            # Kill ALL size variants of this register — partial writes (e.g. eax)
+            # zero-extend to the full register (rax), invalidating cached values
+            # for all views of the same register number.
+            reg_num = ins.d.r
+            keys_to_kill = [k for k in reg_consts if k[0] == reg_num]
+            for k in keys_to_kill:
+                del reg_consts[k]
 
     def _slow_rewrite_instruction(
         self,
