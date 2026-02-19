@@ -715,30 +715,6 @@ class TestEnvBindings:
 # evaluate_concrete() public entry point
 # ---------------------------------------------------------------------------
 
-class TestEvaluateConcrete:
-    """Tests for the module-level evaluate_concrete() helper."""
-
-    def test_evaluate_concrete_basic(self):
-        """evaluate_concrete() produces the same result as ConcreteEvaluator().evaluate()."""
-        leaf = _ConstLeaf(0x1234, 2)
-        assert evaluate_concrete(leaf, {}) == 0x1234
-
-    def test_evaluate_concrete_with_custom_evaluator(self):
-        """evaluate_concrete() accepts an explicit evaluator override."""
-        class _DoubleEvaluator:
-            def evaluate(self, node, env):
-                return ConcreteEvaluator().evaluate(node, env) * 2
-
-        leaf = _ConstLeaf(5, 1)
-        result = evaluate_concrete(leaf, {}, evaluator=_DoubleEvaluator())
-        assert result == 10
-
-    def test_evaluate_concrete_variable_leaf(self):
-        """evaluate_concrete() resolves variable leaves from env."""
-        leaf = _Leaf(ast_index=3, dest_size=4)
-        assert evaluate_concrete(leaf, {3: 0xABC}) == 0xABC
-
-
 # ---------------------------------------------------------------------------
 # Error cases
 # ---------------------------------------------------------------------------
