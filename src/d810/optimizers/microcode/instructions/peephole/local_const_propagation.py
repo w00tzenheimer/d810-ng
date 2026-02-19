@@ -70,10 +70,6 @@ class LocalizedConstantPropagationRule(PeepholeSimplificationRule):
         super().__init__()
         # Map to track stack variable assignments: {var_name: (value, size)}
         self.stack_var_map = {}
-        # Map to track register constant assignments: {(reg_off, size): (value, size)}
-        # Keyed by (reg_off, size) to distinguish sub-registers (e.g. al vs rax).
-        # Populated when m_ldc #N -> reg or m_mov #N -> reg is observed.
-        self._reg_constants: dict[tuple[int, int], tuple[int, int]] = {}
         # Track the current function being processed
         self.current_func = None
         # self.maturities = [ida_hexrays.MMAT_CALLS]
@@ -89,7 +85,6 @@ class LocalizedConstantPropagationRule(PeepholeSimplificationRule):
             and blk.mba.entry_ea != self.current_func
         ):
             self.stack_var_map = {}
-            self._reg_constants = {}
             self.current_func = blk.mba.entry_ea
 
         if logger.debug_on:
@@ -116,12 +111,6 @@ class LocalizedConstantPropagationRule(PeepholeSimplificationRule):
             self._record_stack_assignment(ins)
             return  # This instruction is just an assignment - nothing to fold
 
-        # Track register-constant assignments: m_ldc #N -> reg
-        # or m_mov #N -> reg.  These arise when a prior folding step
-        # (e.g. ConstantCallResultFoldRule) rewrites a call result to a
-        # literal and stores it in a register.
-        self._update_reg_constants(ins)
-
         if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
             return  # Skip instructions outside the allow-list
 
@@ -142,46 +131,6 @@ class LocalizedConstantPropagationRule(PeepholeSimplificationRule):
                 sanitize_ea(ins.ea),
             )
         return new_ins
-
-    def _update_reg_constants(self, ins: ida_hexrays.minsn_t) -> None:
-        """Update the register-constant map based on *ins*.
-
-        * If *ins* is ``m_ldc #N -> reg`` or ``m_mov #N -> reg``, record the
-          constant so that later uses of *reg* can be substituted.
-        * If *ins* writes to a register via any other opcode, evict that
-          register from the map so stale values are never propagated.
-        """
-        dest = ins.d
-        if dest is None or dest.t != ida_hexrays.mop_r:
-            return
-
-        reg_off = dest.r
-        size = dest.size
-
-        if ins.opcode in (ida_hexrays.m_ldc, ida_hexrays.m_mov):
-            src = ins.l
-            if src is not None and src.t == ida_hexrays.mop_n:
-                value = src.nnn.value
-                self._reg_constants[(reg_off, size)] = (value, size)
-                if logger.debug_on:
-                    logger.debug(
-                        "[reg-const-fold] recorded reg%d = 0x%X (size=%d) from %s",
-                        reg_off,
-                        value,
-                        size,
-                        opcode_to_string(ins.opcode),
-                    )
-                return
-
-        # Non-constant write: evict the register so we don't propagate a stale value.
-        if (reg_off, size) in self._reg_constants:
-            del self._reg_constants[(reg_off, size)]
-            if logger.debug_on:
-                logger.debug(
-                    "[reg-const-fold] evicted reg%d (overwritten by %s)",
-                    reg_off,
-                    opcode_to_string(ins.opcode),
-                )
 
     def _is_constant_stack_assignment(self, ins: ida_hexrays.minsn_t) -> bool:
         """Check if instruction is a constant assignment to a stack variable."""
@@ -453,27 +402,11 @@ class LocalizedConstantPropagationRule(PeepholeSimplificationRule):
 
         # If this is a register that represents a stack variable, try to replace it
         elif op.t == ida_hexrays.mop_r:
-            # First, check the lightweight register-constant map populated by
-            # _update_reg_constants (handles m_ldc / m_mov #N -> reg patterns).
-            if (op.r, op.size) in self._reg_constants:
-                value, _ = self._reg_constants[(op.r, op.size)]
-                truncated_value = value & ((1 << (op.size * 8)) - 1)
-                op.make_number(truncated_value, op.size)
-                changed = True
-
-                if logger.debug_on:
-                    logger.debug(
-                        "[reg-const-fold] replaced reg%d with 0x%X (size=%d)",
-                        op.r,
-                        truncated_value,
-                        op.size,
-                    )
-            elif self._is_stack_var_register(op):
+            if self._is_stack_var_register(op):
                 reg_name = ida_hexrays.get_mreg_name(op.r, op.size)
                 reg_name += f".{op.size}{{{op.valnum}}}"
                 if reg_name in self.stack_var_map:
                     value, _ = self.stack_var_map[reg_name]
-                    value = value & ((1 << (op.size * 8)) - 1)
                     op.make_number(value, op.size)
                     changed = True
 
