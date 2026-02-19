@@ -31,8 +31,7 @@ logger = logging.getLogger(__name__)
 
 EGGLOG_AVAILABLE = True
 try:
-    import egglog  # import EGraph, Expr, StringLike, eq, i64Like, rewrite, vars_
-
+    import egglog
 except ImportError:
     EGGLOG_AVAILABLE = False
 
