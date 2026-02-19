@@ -108,7 +108,7 @@
       true,
       true
     ],
-    "StackVariableConstantPropagationRule": [
+    "ForwardConstantPropagationRule": [
       9
     ]
   },

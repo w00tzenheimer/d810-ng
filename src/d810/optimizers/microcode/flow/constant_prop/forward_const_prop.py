@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-"""Global forward constant-propagation of stack / frame variables.
+"""Global forward constant-propagation of stack / frame variables and registers.
 
 This pass is a *function-level* optimisation implemented as a
 ``FlowOptimizationRule`` (triggered by ``BlockOptimizerManager``).
 It performs a forward data-flow analysis to discover stack variables
-that hold a *unique* constant along every path and folds those
-constants back into the micro-code.
+and registers that hold a *unique* constant along every path and folds
+those constants back into the micro-code.
 
 Compared with the former peephole rule this implementation is
 function-wide and therefore safe at control-flow merge points.
@@ -31,10 +31,12 @@ from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRul
 logger = getLogger(__name__)
 
 ConstMap = dict[str, tuple[int, int]]  # var  -> (value, size)
+# Register constant map: (reg.r, reg.size) -> value
+RegConstMap = dict[tuple[int, int], int]
 
 
-class StackVariableConstantPropagationRule(FlowOptimizationRule):
-    """Forward constant propagation for stack variables (whole function)."""
+class ForwardConstantPropagationRule(FlowOptimizationRule):
+    """Forward constant propagation for stack variables and registers (whole function)."""
 
     CATEGORY = "Constant Propagation"
     PRIORITY = FlowRulePriority.PREPARE_CONSTANTS
@@ -42,7 +44,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         ConfigParam("cython_enabled", bool, False, "Use Cython fast path for propagation"),
     )
 
-    DESCRIPTION = "Fold stack variables that are assigned constant values across the whole function"
+    DESCRIPTION = "Fold stack variables and registers that are assigned constant values across the whole function"
 
     # Opcodes whose *operands* we are willing to fold to constants.  The list is
     # **not** used for KILL/GEN decisions - those depend on the actual destination
@@ -224,9 +226,10 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                 # fixed-point loop. A destructive rewrite invalidates the
                 # previous local dataflow analysis, so we must start fresh.
                 consts: ConstMap = IN[curr_blk.serial].copy()
+                reg_consts: RegConstMap = {}
                 if logger.debug_on and consts:
                     logger.debug(
-                        "[stack-var-cprop] constant map before blk %d: %s",
+                        "[forward-cprop] constant map before blk %d: %s",
                         curr_blk.serial,
                         consts,
                     )
@@ -235,7 +238,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                 ins = curr_blk.head
                 while ins:
                     # Attempt to rewrite the current instruction.
-                    if self._slow_rewrite_instruction(mba, ins, consts) > 0:
+                    if self._slow_rewrite_instruction(mba, ins, consts, reg_consts) > 0:
                         total_changes += 1
                         made_change_this_pass = True
                         block_was_changed = True
@@ -246,7 +249,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
 
                     # If no rewrite happened, update the local constant map
                     # with the effects of the current instruction.
-                    self._slow_transfer_single(mba, ins, consts)
+                    self._slow_transfer_single(mba, ins, consts, reg_consts)
                     ins = ins.next
 
                 if not made_change_this_pass:
@@ -277,7 +280,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         if self.cython_enabled:
             return self._fast_rewrite_instruction(mba, ins, env)
         else:
-            return self._slow_rewrite_instruction(mba, ins, env)
+            return self._slow_rewrite_instruction(mba, ins, env, {})
 
     def _transfer_single(
         self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
@@ -286,7 +289,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         if self.cython_enabled:
             self._fast_transfer_single(mba, ins, env)
         else:
-            self._slow_transfer_single(mba, ins, env)
+            self._slow_transfer_single(mba, ins, env, {})
 
     def _fast_rewrite_instruction(
         self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
@@ -303,7 +306,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                 "Cython module `_fast_dataflow` not available. Falling back to slow rewrite."
             )
             self.cython_enabled = False
-            return self._slow_rewrite_instruction(mba, ins, env)
+            return self._slow_rewrite_instruction(mba, ins, env, {})
 
     def _fast_transfer_single(
         self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
@@ -333,7 +336,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                 "Cython module `_fast_dataflow` not available. Falling back to slow transfer."
             )
             self.cython_enabled = False
-            self._slow_transfer_single(mba, ins, env)
+            self._slow_transfer_single(mba, ins, env, {})
 
     def _slow_dataflow(self, mba: ida_hexrays.mba_t):
         nb = mba.qty
@@ -382,16 +385,21 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
     # transfer over whole block
     def _transfer_block(self, blk: ida_hexrays.mblock_t, in_map: ConstMap) -> ConstMap:
         env = dict(in_map)
+        reg_consts: RegConstMap = {}
         ins = blk.head
         mba = blk.mba
         while ins:
-            self._slow_transfer_single(mba, ins, env)
+            self._slow_transfer_single(mba, ins, env, reg_consts)
             ins = ins.next
         return env
 
     # transfer for a single instruction (GEN/KILL)
     def _slow_transfer_single(
-        self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
+        self,
+        mba: ida_hexrays.mba_t,
+        ins: ida_hexrays.minsn_t,
+        env: ConstMap,
+        reg_consts: RegConstMap,
     ):
         # 1. Side-effects handling - for *imprecise* side-effecting instructions
         # (e.g. calls) we must drop every tracked constant.
@@ -400,6 +408,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         # so we exclude it from the blanket kill.
         if ins.has_side_effects() and ins.opcode != ida_hexrays.m_stx:
             env.clear()
+            reg_consts.clear()
             # Nothing more to learn from this instruction.
             return
 
@@ -407,18 +416,39 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         written_var = self._get_written_var_name(ins)
         is_const_assign = self._is_constant_stack_assignment(ins)
 
-        # KILL when variable overwritten by non-constant value
+        # KILL stack var when overwritten by non-constant value
         if written_var and not is_const_assign and written_var in env:
             del env[written_var]
 
-        # 3. GEN - introduce new constant
+        # 3. GEN stack var constant
         if is_const_assign:
             res = self._extract_assignment(ins)
             if res and res[0]:
                 env[res[0]] = res[1]
 
+        # 4. Register GEN/KILL
+        # GEN: m_ldc #N -> reg  or  m_mov #N -> reg
+        if (
+            ins.opcode in {ida_hexrays.m_ldc, ida_hexrays.m_mov}
+            and ins.l is not None
+            and ins.l.t == ida_hexrays.mop_n
+            and ins.d is not None
+            and ins.d.t == ida_hexrays.mop_r
+        ):
+            reg_key = (ins.d.r, ins.d.size)
+            reg_consts[reg_key] = ins.l.nnn.value
+        elif ins.d is not None and ins.d.t == ida_hexrays.mop_r:
+            # KILL: register written with a non-constant value
+            reg_key = (ins.d.r, ins.d.size)
+            if reg_key in reg_consts:
+                del reg_consts[reg_key]
+
     def _slow_rewrite_instruction(
-        self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
+        self,
+        mba: ida_hexrays.mba_t,
+        ins: ida_hexrays.minsn_t,
+        env: ConstMap,
+        reg_consts: RegConstMap,
     ) -> int:
         if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
             return 0
@@ -429,16 +459,16 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         # `ins.r`.
         changed = False
         # left operand
-        if ins.l and self._slow_process_operand(ins.l, env):
+        if ins.l and self._slow_process_operand(ins.l, env, reg_consts):
             changed = True
         # right operand for binary ops
-        if ins.r and self._slow_process_operand(ins.r, env):
+        if ins.r and self._slow_process_operand(ins.r, env, reg_consts):
             changed = True
         # stx destination address is also an input
         if (
             ins.opcode == ida_hexrays.m_stx
             and ins.d
-            and self._slow_process_operand(ins.d, env)
+            and self._slow_process_operand(ins.d, env, reg_consts)
         ):
             changed = True
         if not changed:
@@ -447,9 +477,11 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
         ins.optimize_solo()
         return 1
 
-    def _slow_process_operand(self, op: ida_hexrays.mop_t, consts: ConstMap) -> bool:
+    def _slow_process_operand(
+        self, op: ida_hexrays.mop_t, consts: ConstMap, reg_consts: RegConstMap
+    ) -> bool:
         changed = False
-        if op.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
+        if op.t == ida_hexrays.mop_S:
             name = get_stack_var_name(op)
             if name and name in consts:
                 val, _ = consts[name]
@@ -461,9 +493,22 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                     return False
                 op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
                 return True
+        elif op.t == ida_hexrays.mop_r:
+            # Register substitution
+            reg_key = (op.r, op.size)
+            if reg_key in reg_consts:
+                val = reg_consts[reg_key]
+                if op.size not in _VALID_MOP_SIZES:
+                    logger.warning(
+                        "Skipping constprop rewrite: invalid op.size %d for reg (%d, %d)",
+                        op.size, op.r, op.size,
+                    )
+                    return False
+                op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
+                return True
         elif op.t == ida_hexrays.mop_f and op.f is not None:
             for a in op.f.args:
-                if a and self._slow_process_operand(a, consts):
+                if a and self._slow_process_operand(a, consts, reg_consts):
                     changed = True
         elif op.t == ida_hexrays.mop_d and op.d is not None:
             if op.d.opcode == ida_hexrays.m_ldx:
@@ -494,7 +539,7 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
                     return True
             for attr in ("l", "r"):
                 sub = getattr(op.d, attr, None)
-                if sub and self._slow_process_operand(sub, consts):
+                if sub and self._slow_process_operand(sub, consts, reg_consts):
                     changed = True
             if changed:
                 op.d.optimize_solo()
@@ -552,3 +597,8 @@ class StackVariableConstantPropagationRule(FlowOptimizationRule):
             if base and (base_name := get_stack_var_name(base)):
                 var = f"{base_name}+{off:X}" if off else base_name
         return (var, (value, size)) if var else None
+
+
+# Backwards-compatibility alias so existing configs that reference the old name
+# still load without error during any transition period.
+StackVariableConstantPropagationRule = ForwardConstantPropagationRule

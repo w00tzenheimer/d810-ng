@@ -116,7 +116,7 @@ class TestProjectContextIntegration:
 
                 # Chain multiple removals
                 ctx.remove_rule("FixPredecessorOfConditionalJumpBlock") \
-                   .remove_rule("StackVariableConstantPropagationRule")
+                   .remove_rule("ForwardConstantPropagationRule")
 
                 # Should have removed 2 rules
                 assert len(ctx.active_blk_rules) <= original_count - 2
