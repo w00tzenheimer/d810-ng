@@ -1,0 +1,52 @@
+# Forbid logger.isEnabledFor() - use LevelFlag properties instead
+#
+# BAD:  if logger.isEnabledFor(logging.DEBUG):
+# BAD:  if logger.isEnabledFor(logging.WARNING):
+# GOOD: if logger.debug_on:
+# GOOD: if logger.warning_on:
+# GOOD: if logger.error_on:
+#
+# Rationale:
+# - D810Logger provides cached LevelFlag properties (debug_on, warning_on, etc.)
+# - LevelFlag avoids repeated isEnabledFor() calls on every hot path
+# - isEnabledFor() also requires a stdlib logging import for the integer constants
+#
+# See: src/d810/core/logging.py (LevelFlag, D810Logger)
+
+id: no-isenabledfor-logging
+language: python
+severity: error
+
+files:
+  - "src/d810/**/*.py"
+
+ignores:
+  - "src/d810/core/logging.py"
+  - "src/d810/_vendor/**"
+
+message: |
+  logger.isEnabledFor() is forbidden. Use the LevelFlag properties instead:
+
+    logger.debug_on    (replaces isEnabledFor(logging.DEBUG))
+    logger.info_on     (replaces isEnabledFor(logging.INFO))
+    logger.warning_on  (replaces isEnabledFor(logging.WARNING))
+    logger.error_on    (replaces isEnabledFor(logging.ERROR))
+
+  LevelFlag properties are cached booleans — no stdlib import needed.
+
+rule:
+  pattern: $LOGGER.isEnabledFor($$$)
+
+note: |
+  Standard replacement:
+
+    # Before
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("expensive %s", compute())
+
+    # After
+    if logger.debug_on:
+        logger.debug("expensive %s", compute())
+
+  D810Logger.debug_on is a LevelFlag descriptor (src/d810/core/logging.py:48).
+  It caches the level check and updates automatically when the level changes.
