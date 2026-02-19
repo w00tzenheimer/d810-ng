@@ -234,9 +234,7 @@ class ConcreteEvaluator:
             case ida_hexrays.m_bnot:
                 return (_ev(left) ^ res_mask) & res_mask
             case ida_hexrays.m_xds:
-                left_value_signed = unsigned_to_signed(
-                    _ev(left), left.dest_size
-                )
+                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
                 return (
                     signed_to_unsigned(left_value_signed, node.dest_size)  # type: ignore[union-attr]
                     & res_mask
@@ -279,9 +277,7 @@ class ConcreteEvaluator:
             case ida_hexrays.m_shr if right is not None:
                 return (_ev(left) >> _ev(right)) & res_mask
             case ida_hexrays.m_sar if right is not None:
-                left_value_signed = unsigned_to_signed(
-                    _ev(left), left.dest_size
-                )
+                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
                 res_signed = left_value_signed >> _ev(right)
                 return (
                     signed_to_unsigned(res_signed, node.dest_size)  # type: ignore[union-attr]
@@ -302,18 +298,12 @@ class ConcreteEvaluator:
                 )
                 return tmp & res_mask
             case ida_hexrays.m_sets:
-                left_value_signed = unsigned_to_signed(
-                    _ev(left), left.dest_size
-                )
+                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
                 res = 1 if left_value_signed < 0 else 0
                 return res & res_mask
             case ida_hexrays.m_seto if right is not None:
-                left_value_signed = unsigned_to_signed(
-                    _ev(left), left.dest_size
-                )
-                right_value_signed = unsigned_to_signed(
-                    _ev(right), right.dest_size
-                )
+                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
+                right_value_signed = unsigned_to_signed(_ev(right), right.dest_size)
                 sub_overflow = get_sub_of(
                     left_value_signed,
                     right_value_signed,
@@ -339,39 +329,23 @@ class ConcreteEvaluator:
                 res = 1 if _ev(left) <= _ev(right) else 0
                 return res & res_mask
             case ida_hexrays.m_setg if right is not None:
-                left_value_signed = unsigned_to_signed(
-                    _ev(left), left.dest_size
-                )
-                right_value_signed = unsigned_to_signed(
-                    _ev(right), right.dest_size
-                )
+                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
+                right_value_signed = unsigned_to_signed(_ev(right), right.dest_size)
                 res = 1 if left_value_signed > right_value_signed else 0
                 return res & res_mask
             case ida_hexrays.m_setge if right is not None:
-                left_value_signed = unsigned_to_signed(
-                    _ev(left), left.dest_size
-                )
-                right_value_signed = unsigned_to_signed(
-                    _ev(right), right.dest_size
-                )
+                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
+                right_value_signed = unsigned_to_signed(_ev(right), right.dest_size)
                 res = 1 if left_value_signed >= right_value_signed else 0
                 return res & res_mask
             case ida_hexrays.m_setl if right is not None:
-                left_value_signed = unsigned_to_signed(
-                    _ev(left), left.dest_size
-                )
-                right_value_signed = unsigned_to_signed(
-                    _ev(right), right.dest_size
-                )
+                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
+                right_value_signed = unsigned_to_signed(_ev(right), right.dest_size)
                 res = 1 if left_value_signed < right_value_signed else 0
                 return res & res_mask
             case ida_hexrays.m_setle if right is not None:
-                left_value_signed = unsigned_to_signed(
-                    _ev(left), left.dest_size
-                )
-                right_value_signed = unsigned_to_signed(
-                    _ev(right), right.dest_size
-                )
+                left_value_signed = unsigned_to_signed(_ev(left), left.dest_size)
+                right_value_signed = unsigned_to_signed(_ev(right), right.dest_size)
                 res = 1 if left_value_signed <= right_value_signed else 0
                 return res & res_mask
             case ida_hexrays.m_setp if right is not None:
@@ -428,6 +402,7 @@ try:
     from d810.speedups.evaluator.c_concrete import (  # type: ignore[import]
         CythonConcreteEvaluator,
     )
+
     _default_evaluator = CythonConcreteEvaluator()
 except ImportError:
     pass
