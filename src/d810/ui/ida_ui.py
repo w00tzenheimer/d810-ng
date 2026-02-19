@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import logging
+from d810.core import logging
 import pathlib
 
 import ida_kernwin
@@ -774,7 +774,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
     def _on_rule_toggled(self, rule, is_enabled: bool) -> None:
         """Track rule enable/disable state (already handled by the tree)."""
-        if logger.isEnabledFor(logging.DEBUG):
+        if logger.debug_on:
             logger.debug("Rule toggled: %s -> %s", rule.name, is_enabled)
 
     def _on_config_changed(self, param_name: str, value) -> None:
@@ -784,7 +784,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             return
         cfg = self._rule_configs.setdefault(rule.name, {})
         cfg[param_name] = value
-        if logger.isEnabledFor(logging.DEBUG):
+        if logger.debug_on:
             logger.debug("Config stored: %s.%s = %s", rule.name, param_name, value)
 
     def update_cfg_select(self):

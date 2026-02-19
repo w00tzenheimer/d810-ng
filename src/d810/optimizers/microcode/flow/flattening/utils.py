@@ -1,5 +1,3 @@
-import logging
-
 from d810.core import getLogger
 
 # TODO: this doesn't belong in this module, move it a different module
@@ -28,8 +26,8 @@ def configure_mop_tracker_log_verbosity(verbose=False):
     tracker_log_level = tracker_logger.getEffectiveLevel()
     emulator_log_level = emulator_logger.getEffectiveLevel()
     if not verbose:
-        tracker_logger.setLevel(logging.ERROR)
-        emulator_logger.setLevel(logging.ERROR)
+        tracker_logger.setLevel("ERROR")
+        emulator_logger.setLevel("ERROR")
     return [tracker_log_level, emulator_log_level]
 
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 from d810.core.typing import TYPE_CHECKING
 import ida_hexrays
 
@@ -45,7 +43,7 @@ if TYPE_CHECKING:
 # the searched mops have only one possible values. For instance, this is a preliminary step used in code unflattening.
 
 
-logger = getLogger(__name__, logging.WARNING)
+logger = getLogger(__name__, "WARNING")
 
 
 class InstructionDefUseCollector(ida_hexrays.mop_visitor_t):
