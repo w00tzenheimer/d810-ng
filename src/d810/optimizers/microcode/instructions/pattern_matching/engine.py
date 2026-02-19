@@ -18,11 +18,11 @@ Usage:
 """
 from __future__ import annotations
 
-import logging
+from d810.core.logging import getLogger
 
 from d810.core.cymode import CythonMode
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 
 # Always import Python data containers (no perf benefit from Cython for these)
 from d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups import (

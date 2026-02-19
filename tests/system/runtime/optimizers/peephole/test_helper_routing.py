@@ -13,47 +13,11 @@ installation.  The actual ``check_and_replace`` methods are NOT exercised here
 """
 from __future__ import annotations
 
-import sys
-import types
-import unittest.mock as mock
-from typing import Callable
+from d810.core.typing import Callable
 
 import pytest
 
-
-# ---------------------------------------------------------------------------
-# Lightweight IDA stubs so the peephole modules can be imported without IDA.
-# ---------------------------------------------------------------------------
-
-def _install_ida_stubs() -> None:
-    """Insert minimal stub modules for ida_hexrays and idaapi."""
-    for mod_name in ("ida_hexrays", "idaapi"):
-        if mod_name not in sys.modules:
-            stub = types.ModuleType(mod_name)
-            # Provide integer constants the peephole modules reference at
-            # import time (e.g. MMAT_LOCOPT, m_mov, m_call, m_ldc, mop_r …).
-            for attr in (
-                "MMAT_LOCOPT", "MMAT_CALLS", "MMAT_GLBOPT1",
-                "m_mov", "m_call", "m_ldc",
-                "mop_r", "mop_l", "mop_S", "mop_v", "mop_d", "mop_h",
-                "mop_f", "mop_n", "mop_z",
-                "EQ_IGNSIZE",
-            ):
-                setattr(stub, attr, mock.MagicMock())
-            # minsn_t and mop_t need to be instantiatable
-            stub.minsn_t = mock.MagicMock  # type: ignore[attr-defined]
-            stub.mop_t = mock.MagicMock  # type: ignore[attr-defined]
-            sys.modules[mod_name] = stub
-
-
-_install_ida_stubs()
-
-
-# ---------------------------------------------------------------------------
-# Import the modules under test AFTER stubs are in place.
-# ---------------------------------------------------------------------------
-
-from d810.evaluator.helpers import HelperRegistry, get_registry  # noqa: E402
+from d810.evaluator.helpers import HelperRegistry, get_registry
 
 
 # ---------------------------------------------------------------------------

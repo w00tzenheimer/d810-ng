@@ -344,7 +344,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         )
 
         # Lazy logging - only format if enabled
-        if unflat_logger.isEnabledFor(20):  # INFO level
+        if unflat_logger.info_on:
             unflat_logger.info(
                 "Pred %d has %d possible paths (%d different cst): %s",
                 pred_serial, len(values), len(set(values)), values
@@ -376,7 +376,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         analysis = self._get_dispatcher_analysis(blk)
 
         if analysis.dispatcher_type == DispatcherType.CONDITIONAL_CHAIN:
-            if unflat_logger.isEnabledFor(10):  # DEBUG level
+            if unflat_logger.debug_on:
                 unflat_logger.debug(
                     "CONDITIONAL_CHAIN dispatcher detected - using dispatcher_info=None "
                     "to prevent cascading unreachability"
@@ -400,7 +400,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
 
             if is_jmp_always_taken and is_jmp_never_taken:
                 # Should never happen
-                if unflat_logger.isEnabledFor(40):  # ERROR level
+                if unflat_logger.error_on:
                     unflat_logger.error(
                         "Logic error: '%s' is always taken and never taken from %d: %s",
                         format_minsn_t(blk.tail), pred_serial, pred_values
@@ -409,7 +409,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                 continue
 
             if is_jmp_always_taken:
-                if unflat_logger.isEnabledFor(20):  # INFO level
+                if unflat_logger.info_on:
                     unflat_logger.info(
                         "Jump '%s' always taken from pred %d: %s",
                         format_minsn_t(blk.tail), pred_serial, pred_values
@@ -417,7 +417,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                 pred_jmp_always_taken.append(pred_blk)
 
             if is_jmp_never_taken:
-                if unflat_logger.isEnabledFor(20):  # INFO level
+                if unflat_logger.info_on:
                     unflat_logger.info(
                         "Jump '%s' never taken from pred %d: %s",
                         format_minsn_t(blk.tail), pred_serial, pred_values
@@ -452,7 +452,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         # NOTE: For CONDITIONAL_CHAIN dispatchers (nested jnz/jz comparisons),
         # this rule uses dispatcher_info=None to avoid cascading unreachability.
         # See sort_predecessors() for details on why this is necessary.
-        if unflat_logger.isEnabledFor(20):  # INFO level
+        if unflat_logger.info_on:
             unflat_logger.info(
                 "Checking if block %d can be simplified: %s",
                 blk.serial, format_minsn_t(blk.tail)
@@ -462,7 +462,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             self.sort_predecessors(blk)
         )
 
-        if unflat_logger.isEnabledFor(20):  # INFO level
+        if unflat_logger.info_on:
             unflat_logger.info(
                 "Block %d has %d preds: %d always jmp, %d never jmp, %d unk",
                 blk.serial, blk.npred(),
@@ -485,7 +485,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             ))
             nb_queued += 1
 
-            if unflat_logger.isEnabledFor(10):  # DEBUG level
+            if unflat_logger.debug_on:
                 unflat_logger.debug(
                     "Queued ALWAYS_TAKEN: pred %d -> cond block %d -> target %d",
                     pred_blk.serial, blk.serial, blk.tail.d.b
@@ -503,7 +503,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             ))
             nb_queued += 1
 
-            if unflat_logger.isEnabledFor(10):  # DEBUG level
+            if unflat_logger.debug_on:
                 unflat_logger.debug(
                     "Queued NEVER_TAKEN: pred %d -> cond block %d -> fallthrough %d",
                     pred_blk.serial, blk.serial, blk.nextb.serial
@@ -521,7 +521,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
 
         self._critical_apply_failure = False
 
-        if unflat_logger.isEnabledFor(20):  # INFO level
+        if unflat_logger.info_on:
             unflat_logger.info(
                 "Applying %d queued predecessor modifications",
                 len(self._pending_modifications)
@@ -575,7 +575,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         # Clear pending modifications after applying
         self._pending_modifications.clear()
 
-        if unflat_logger.isEnabledFor(20):  # INFO level
+        if unflat_logger.info_on:
             unflat_logger.info(
                 "Applied %d predecessor modifications successfully",
                 applied_count
@@ -693,7 +693,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             )
             return False
 
-        if unflat_logger.isEnabledFor(10):  # DEBUG level
+        if unflat_logger.debug_on:
             unflat_logger.debug(
                 "Applying modification: %s (pred %d -> cond %d -> target %d)",
                 mod.mod_type.name, mod.pred_serial,
@@ -742,7 +742,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                 self._orphan_block(new_jmp_block, "update_blk_successor failure")
                 return False
 
-            if unflat_logger.isEnabledFor(10):  # DEBUG level
+            if unflat_logger.debug_on:
                 unflat_logger.debug(
                     "Successfully applied: created block %d, redirected pred %d",
                     new_jmp_block.serial, mod.pred_serial

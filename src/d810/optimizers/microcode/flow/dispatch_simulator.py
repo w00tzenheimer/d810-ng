@@ -37,7 +37,7 @@ References:
 
 from __future__ import annotations
 
-import logging
+from d810.core.logging import getLogger
 from collections import deque
 from dataclasses import dataclass
 
@@ -49,7 +49,7 @@ __all__ = [
     "DispatchSimulator",
 ]
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 
 
 @dataclass(frozen=True)

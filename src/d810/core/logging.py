@@ -4,7 +4,6 @@ import functools
 import json
 import logging
 import logging.config
-from logging import CRITICAL, DEBUG, ERROR, INFO, NOTSET, WARNING
 import pathlib
 import shutil
 import sqlite3
@@ -13,19 +12,18 @@ from contextlib import contextmanager
 from datetime import datetime
 
 from d810.core import typing
-from d810.core.typing import (
-    Any,
-    Dict,
-    List,
-    Optional,
-    Protocol,
-    Union,
-    cast,
-    runtime_checkable,
-)
+from d810.core.typing import Any, Dict, List, Protocol, Union, cast, runtime_checkable
 
 LOG_FILENAME = "d810.log"
 Z3_TEST_FILENAME = "z3_check_instructions_substitution.py"
+DEBUG = logging.DEBUG
+INFO = logging.INFO
+WARNING = logging.WARNING
+WARN = logging.WARN
+ERROR = logging.ERROR
+CRITICAL = logging.CRITICAL
+NOTSET = logging.NOTSET
+FATAL = logging.FATAL
 
 _config = collections.Counter(version=0)
 

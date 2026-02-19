@@ -2883,7 +2883,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         dispatcher_info,
                     )
                 except Exception as e:
-                    print(e)
+                    unflat_logger.error("%s", e)
             unflat_logger.info(
                 "Fixed %s instructions in father history",
                 total_fixed_father_block,

@@ -19,7 +19,7 @@ Usage (from IDA Python or via headless script):
 from __future__ import annotations
 
 import json
-import logging
+from d810.core.logging import getLogger
 from dataclasses import dataclass, field, asdict
 from enum import IntEnum
 
@@ -55,7 +55,7 @@ def _ensure_ida_imports():
 # -----------------------------------------------------------------------------
 # Configuration & Logging
 # -----------------------------------------------------------------------------
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Constants & Enums (lazily initialized)

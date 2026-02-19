@@ -33,7 +33,7 @@ EGGLOG_AVAILABLE = True
 try:
     import egglog  # import EGraph, Expr, StringLike, eq, i64Like, rewrite, vars_
 
-    import idaapi
+    import idaapi  # we put this here such that it is only imported when egglog is available
 except ImportError:
     EGGLOG_AVAILABLE = False
 
@@ -477,38 +477,37 @@ class MBAEGraph:
         return BitExpr(value)
 
 
-# IDA opcode to BitExpr operation mapping
-# Only populated when ida_hexrays is available (inside IDA)
-_OPCODE_TO_BITEXPR_BINARY = {
-    idaapi.m_add: lambda l, r: l + r,
-    idaapi.m_sub: lambda l, r: l - r,
-    idaapi.m_mul: lambda l, r: l * r,
-    idaapi.m_and: lambda l, r: l & r,
-    idaapi.m_or: lambda l, r: l | r,
-    idaapi.m_xor: lambda l, r: l ^ r,
-}
-
-_OPCODE_TO_BITEXPR_UNARY = {
-    idaapi.m_neg: lambda x: -x,
-    idaapi.m_bnot: lambda x: ~x,
-}
-
-# BitExpr operation to IDA opcode mapping (for extraction)
-# Note: These are string representations from egglog
-_BITEXPR_OP_TO_OPCODE = {
-    "__add__": idaapi.m_add,
-    "__sub__": idaapi.m_sub,
-    "__mul__": idaapi.m_mul,
-    "__and__": idaapi.m_and,
-    "__or__": idaapi.m_or,
-    "__xor__": idaapi.m_xor,
-    "__neg__": idaapi.m_neg,
-    "__invert__": idaapi.m_bnot,
-}
-
-
 class AstToBitExprConverter:
     """Converts IDA AstNode to egglog BitExpr."""
+
+    # IDA opcode to BitExpr operation mapping
+    # Only populated when ida_hexrays is available (inside IDA)
+    OPCODE_TO_BITEXPR_BINARY = {
+        idaapi.m_add: lambda l, r: l + r,
+        idaapi.m_sub: lambda l, r: l - r,
+        idaapi.m_mul: lambda l, r: l * r,
+        idaapi.m_and: lambda l, r: l & r,
+        idaapi.m_or: lambda l, r: l | r,
+        idaapi.m_xor: lambda l, r: l ^ r,
+    }
+
+    OPCODE_TO_BITEXPR_UNARY = {
+        idaapi.m_neg: lambda x: -x,
+        idaapi.m_bnot: lambda x: ~x,
+    }
+
+    # BitExpr operation to IDA opcode mapping (for extraction)
+    # Note: These are string representations from egglog
+    BITEXPR_OP_TO_OPCODE = {
+        "__add__": idaapi.m_add,
+        "__sub__": idaapi.m_sub,
+        "__mul__": idaapi.m_mul,
+        "__and__": idaapi.m_and,
+        "__or__": idaapi.m_or,
+        "__xor__": idaapi.m_xor,
+        "__neg__": idaapi.m_neg,
+        "__invert__": idaapi.m_bnot,
+    }
 
     def __init__(self):
         self._var_counter = 0
@@ -579,19 +578,19 @@ class AstToBitExprConverter:
         opcode = node.opcode
 
         # Binary operations
-        if opcode in _OPCODE_TO_BITEXPR_BINARY:
+        if opcode in self.OPCODE_TO_BITEXPR_BINARY:
             left = self.convert(node.left)
             right = self.convert(node.right)
             if left is None or right is None:
                 return None
-            return _OPCODE_TO_BITEXPR_BINARY[opcode](left, right)
+            return self.OPCODE_TO_BITEXPR_BINARY[opcode](left, right)
 
         # Unary operations
-        if opcode in _OPCODE_TO_BITEXPR_UNARY:
+        if opcode in self.OPCODE_TO_BITEXPR_UNARY:
             operand = self.convert(node.left)
             if operand is None:
                 return None
-            return _OPCODE_TO_BITEXPR_UNARY[opcode](operand)
+            return self.OPCODE_TO_BITEXPR_UNARY[opcode](operand)
 
         # Unsupported opcode - treat as leaf
         return self._convert_leaf(node)

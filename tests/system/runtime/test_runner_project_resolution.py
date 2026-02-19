@@ -1,22 +1,13 @@
-"""Unit tests for deterministic project resolution in test runner."""
+"""System/runtime tests for deterministic project resolution in test runner."""
 
 from __future__ import annotations
 
-import importlib
 import pathlib
-import sys
 from types import SimpleNamespace
-from unittest.mock import patch
 
+import pytest
 
-def _load_runner_module():
-    """Import d810.testing.runner with minimal fake IDA modules."""
-    fake_idaapi = SimpleNamespace(BADADDR=0xFFFFFFFF, DECOMP_NO_CACHE=0)
-    fake_idc = SimpleNamespace(get_name_ea_simple=lambda _name: 0)
-
-    sys.modules.pop("d810.testing.runner", None)
-    with patch.dict("sys.modules", {"idaapi": fake_idaapi, "idc": fake_idc}):
-        return importlib.import_module("d810.testing.runner")
+import d810.testing.runner as runner
 
 
 class _FakeProjectManager:
@@ -42,7 +33,6 @@ class _FakeProjectManager:
 
 
 def test_resolve_test_project_index_updates_user_override():
-    runner = _load_runner_module()
     state = SimpleNamespace(
         project_manager=_FakeProjectManager(
             current_path=pathlib.Path("/tmp/user/default_instruction_only.json"),
@@ -61,7 +51,6 @@ def test_resolve_test_project_index_updates_user_override():
 
 
 def test_resolve_test_project_index_falls_back_for_unknown_project():
-    runner = _load_runner_module()
     state = SimpleNamespace(
         project_manager=_FakeProjectManager(
             current_path=pathlib.Path("/tmp/user/custom.json"),
@@ -74,4 +63,3 @@ def test_resolve_test_project_index_falls_back_for_unknown_project():
     assert idx == 3
     assert state.project_manager.updated is None
     assert state.project_manager.added is None
-

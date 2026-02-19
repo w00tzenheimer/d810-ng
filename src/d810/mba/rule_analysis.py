@@ -9,13 +9,13 @@ These utilities help identify redundant rules and potential optimization loops.
 
 from __future__ import annotations
 
-import logging
+from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from d810.mba.rules._base import VerifiableRule
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 
 
 def _check_egglog_available() -> bool:

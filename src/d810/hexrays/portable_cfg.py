@@ -13,7 +13,7 @@ All types are frozen (immutable) to ensure snapshot integrity.
 """
 from __future__ import annotations
 
-import logging
+from d810.core.logging import getLogger
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -25,7 +25,7 @@ from d810.hexrays.mop_snapshot import MopSnapshot
 if TYPE_CHECKING:
     import ida_hexrays
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 
 # IDA availability guard for lift() functions
 try:

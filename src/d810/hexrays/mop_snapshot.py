@@ -10,7 +10,7 @@ pure Python implementation otherwise.
 """
 from __future__ import annotations
 
-import logging
+from d810.core.logging import getLogger
 from dataclasses import dataclass, field
 
 from d810.core.typing import NewType, TYPE_CHECKING
@@ -18,7 +18,7 @@ from d810.core.typing import NewType, TYPE_CHECKING
 if TYPE_CHECKING:
     import ida_hexrays
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 
 # Type aliases for documentation and static analysis.
 # OwnedMop: a mop_t created by our code (via mop_t(), make_number, dup_mop).

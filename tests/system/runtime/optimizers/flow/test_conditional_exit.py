@@ -4,8 +4,8 @@ Unit tests for conditional exit block detection.
 These tests verify the classification logic for dispatcher exit blocks,
 which is critical for proper control flow reconstruction during unflattening.
 """
+import types
 import unittest
-from unittest.mock import Mock
 
 from d810.optimizers.microcode.flow.flattening.conditional_exit import (
     ExitBlockType,
@@ -15,15 +15,19 @@ from d810.optimizers.microcode.flow.flattening.conditional_exit import (
 )
 
 
+def _make_blk(nsucc: int, succs: list[int]):
+    blk = types.SimpleNamespace()
+    blk.nsucc = lambda: nsucc
+    blk.succ = lambda i: succs[i]
+    return blk
+
+
 class TestClassifyExitBlock(unittest.TestCase):
     """Test cases for exit block classification."""
 
     def test_one_way_exit_block(self):
         """Test that a block with nsucc=1 is classified as ONE_WAY_EXIT."""
-        # Create a mock block with one successor
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 1
-        mock_blk.succ.return_value = 10  # Single successor serial
+        mock_blk = _make_blk(1, [10])
 
         dispatcher_serials = {1, 2, 3, 4}
 
@@ -33,10 +37,8 @@ class TestClassifyExitBlock(unittest.TestCase):
 
     def test_conditional_exit_with_loopback_succ0_in_dispatcher(self):
         """Test 2-way block where succ(0) is in dispatcher, succ(1) is exit."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
         # succ(0) -> 2 (in dispatcher), succ(1) -> 10 (exit)
-        mock_blk.succ.side_effect = lambda i: 2 if i == 0 else 10
+        mock_blk = _make_blk(2, [2, 10])
 
         dispatcher_serials = {1, 2, 3, 4}
 
@@ -46,10 +48,8 @@ class TestClassifyExitBlock(unittest.TestCase):
 
     def test_conditional_exit_with_loopback_succ1_in_dispatcher(self):
         """Test 2-way block where succ(1) is in dispatcher, succ(0) is exit."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
         # succ(0) -> 10 (exit), succ(1) -> 3 (in dispatcher)
-        mock_blk.succ.side_effect = lambda i: 10 if i == 0 else 3
+        mock_blk = _make_blk(2, [10, 3])
 
         dispatcher_serials = {1, 2, 3, 4}
 
@@ -59,10 +59,8 @@ class TestClassifyExitBlock(unittest.TestCase):
 
     def test_normal_exit_both_outside_dispatcher(self):
         """Test 2-way block where both successors are outside dispatcher."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
         # Both successors outside dispatcher
-        mock_blk.succ.side_effect = lambda i: 10 if i == 0 else 11
+        mock_blk = _make_blk(2, [10, 11])
 
         dispatcher_serials = {1, 2, 3, 4}
 
@@ -77,10 +75,8 @@ class TestClassifyExitBlock(unittest.TestCase):
         it as NORMAL_EXIT since it doesn't match the conditional-with-loopback
         pattern.
         """
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
         # Both successors inside dispatcher
-        mock_blk.succ.side_effect = lambda i: 2 if i == 0 else 3
+        mock_blk = _make_blk(2, [2, 3])
 
         dispatcher_serials = {1, 2, 3, 4}
 
@@ -90,8 +86,7 @@ class TestClassifyExitBlock(unittest.TestCase):
 
     def test_zero_way_block(self):
         """Test that a block with nsucc=0 is classified as ONE_WAY_EXIT."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 0
+        mock_blk = _make_blk(0, [])
 
         dispatcher_serials = {1, 2, 3}
 
@@ -105,8 +100,7 @@ class TestClassifyExitBlock(unittest.TestCase):
         Multi-way blocks (nsucc > 2) are treated as ONE_WAY_EXIT since they
         don't match the 2-way conditional pattern.
         """
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 3
+        mock_blk = _make_blk(3, [1, 2, 3])
 
         dispatcher_serials = {1, 2, 3}
 
@@ -120,10 +114,8 @@ class TestGetLoopbackSuccessor(unittest.TestCase):
 
     def test_get_loopback_successor_from_succ0(self):
         """Test retrieving loopback when it's succ(0)."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
         # succ(0) -> 2 (in dispatcher), succ(1) -> 10 (exit)
-        mock_blk.succ.side_effect = lambda i: 2 if i == 0 else 10
+        mock_blk = _make_blk(2, [2, 10])
 
         dispatcher_serials = {1, 2, 3, 4}
 
@@ -133,10 +125,8 @@ class TestGetLoopbackSuccessor(unittest.TestCase):
 
     def test_get_loopback_successor_from_succ1(self):
         """Test retrieving loopback when it's succ(1)."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
         # succ(0) -> 10 (exit), succ(1) -> 3 (in dispatcher)
-        mock_blk.succ.side_effect = lambda i: 10 if i == 0 else 3
+        mock_blk = _make_blk(2, [10, 3])
 
         dispatcher_serials = {1, 2, 3, 4}
 
@@ -146,8 +136,7 @@ class TestGetLoopbackSuccessor(unittest.TestCase):
 
     def test_get_loopback_successor_none_for_one_way(self):
         """Test that one-way blocks return None."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 1
+        mock_blk = _make_blk(1, [5])
 
         dispatcher_serials = {1, 2, 3}
 
@@ -157,10 +146,8 @@ class TestGetLoopbackSuccessor(unittest.TestCase):
 
     def test_get_loopback_successor_none_when_both_outside(self):
         """Test that blocks with both successors outside return None."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
         # Both successors outside dispatcher
-        mock_blk.succ.side_effect = lambda i: 10 if i == 0 else 11
+        mock_blk = _make_blk(2, [10, 11])
 
         dispatcher_serials = {1, 2, 3}
 
@@ -173,10 +160,8 @@ class TestGetLoopbackSuccessor(unittest.TestCase):
 
         In this case, we return the first one found (succ(0)).
         """
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
         # Both successors inside dispatcher
-        mock_blk.succ.side_effect = lambda i: 2 if i == 0 else 3
+        mock_blk = _make_blk(2, [2, 3])
 
         dispatcher_serials = {1, 2, 3}
 
@@ -191,10 +176,8 @@ class TestGetExitSuccessor(unittest.TestCase):
 
     def test_get_exit_successor_from_succ0(self):
         """Test retrieving exit when it's succ(0)."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
         # succ(0) -> 10 (exit), succ(1) -> 2 (in dispatcher)
-        mock_blk.succ.side_effect = lambda i: 10 if i == 0 else 2
+        mock_blk = _make_blk(2, [10, 2])
 
         dispatcher_serials = {1, 2, 3, 4}
 
@@ -204,10 +187,8 @@ class TestGetExitSuccessor(unittest.TestCase):
 
     def test_get_exit_successor_from_succ1(self):
         """Test retrieving exit when it's succ(1)."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
         # succ(0) -> 2 (in dispatcher), succ(1) -> 10 (exit)
-        mock_blk.succ.side_effect = lambda i: 2 if i == 0 else 10
+        mock_blk = _make_blk(2, [2, 10])
 
         dispatcher_serials = {1, 2, 3, 4}
 
@@ -217,8 +198,7 @@ class TestGetExitSuccessor(unittest.TestCase):
 
     def test_get_exit_successor_none_for_one_way(self):
         """Test that one-way blocks return None."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 1
+        mock_blk = _make_blk(1, [5])
 
         dispatcher_serials = {1, 2, 3}
 
@@ -228,10 +208,8 @@ class TestGetExitSuccessor(unittest.TestCase):
 
     def test_get_exit_successor_none_when_both_inside(self):
         """Test that blocks with both successors inside return None."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
         # Both successors inside dispatcher
-        mock_blk.succ.side_effect = lambda i: 2 if i == 0 else 3
+        mock_blk = _make_blk(2, [2, 3])
 
         dispatcher_serials = {1, 2, 3}
 
@@ -245,10 +223,8 @@ class TestGetExitSuccessor(unittest.TestCase):
         In this case, we return None since there's no clear "loopback"
         to distinguish which is the "exit".
         """
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
         # Both successors outside dispatcher
-        mock_blk.succ.side_effect = lambda i: 10 if i == 0 else 11
+        mock_blk = _make_blk(2, [10, 11])
 
         dispatcher_serials = {1, 2, 3}
 
@@ -262,9 +238,7 @@ class TestEdgeCases(unittest.TestCase):
 
     def test_empty_dispatcher_serials_set(self):
         """Test behavior with empty dispatcher set."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
-        mock_blk.succ.side_effect = lambda i: 2 if i == 0 else 10
+        mock_blk = _make_blk(2, [2, 10])
 
         # Empty dispatcher set - all successors are "outside"
         dispatcher_serials = set()
@@ -276,9 +250,7 @@ class TestEdgeCases(unittest.TestCase):
 
     def test_large_dispatcher_serials_set(self):
         """Test with a large dispatcher internal blocks set."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
-        mock_blk.succ.side_effect = lambda i: 50 if i == 0 else 1000
+        mock_blk = _make_blk(2, [50, 1000])
 
         # Large set with succ(0) = 50 inside
         dispatcher_serials = set(range(1, 100))
@@ -290,10 +262,8 @@ class TestEdgeCases(unittest.TestCase):
 
     def test_consistency_between_functions(self):
         """Test that classify/get_loopback/get_exit are consistent."""
-        mock_blk = Mock()
-        mock_blk.nsucc.return_value = 2
         # succ(0) -> 3 (in dispatcher), succ(1) -> 15 (exit)
-        mock_blk.succ.side_effect = lambda i: 3 if i == 0 else 15
+        mock_blk = _make_blk(2, [3, 15])
 
         dispatcher_serials = {1, 2, 3, 4}
 

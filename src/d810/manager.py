@@ -857,12 +857,12 @@ class D810State(metaclass=SingletonMeta):
             **self.current_project.additional_configuration,
         )
         self.manager.start()
-        print("D-810 ready to deobfuscate...")
+        logger.info("D-810 ready to deobfuscate...")
         self.d810_config.set("last_project_index", self.current_project_index)
         self.d810_config.save()
 
     def stop_d810(self):
-        print("Stopping D-810...")
+        logger.info("Stopping D-810...")
         self.manager.stop()
 
     def load(self, gui: bool = True):

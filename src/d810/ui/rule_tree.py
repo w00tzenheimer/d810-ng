@@ -7,7 +7,7 @@ text-based filtering and emits signals when the user selects a rule.
 """
 from __future__ import annotations
 
-import logging
+from d810.core.logging import getLogger
 from d810.core import typing
 
 from d810.qt_shim import QtCore, QtWidgets, qt_flag_or, QColor, QBrush
@@ -15,7 +15,7 @@ from d810.qt_shim import QtCore, QtWidgets, qt_flag_or, QColor, QBrush
 if typing.TYPE_CHECKING:
     from d810.optimizers.microcode.handler import OptimizationRule
 
-logger = logging.getLogger("D810.ui.rule_tree")
+logger = getLogger("D810.ui.rule_tree")
 
 # Qt role used to store the rule object reference on tree items.
 try:
