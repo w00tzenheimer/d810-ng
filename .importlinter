@@ -14,6 +14,13 @@ forbidden_modules =
     d810.hexrays
 ignore_imports =
     tests.unit.test_mop_snapshot_guard -> d810.hexrays.mop_snapshot
+    # portable_cfg and microcode_constants are IDA-free at module level (guarded try/except)
+    tests.unit.recon.test_cfg_shape -> d810.hexrays.portable_cfg
+    tests.unit.recon.test_dispatch_pattern -> d810.hexrays.portable_cfg
+    tests.unit.recon.test_dispatch_pattern -> d810.recon.collectors.dispatch_pattern
+    tests.unit.recon.test_opcode_distribution -> d810.hexrays.portable_cfg
+    # test_hook_integration uses ast.parse / inspect.getsource only (no IDA runtime)
+    tests.unit.recon.test_hook_integration -> d810.hexrays.ctree_hooks
 
 [importlinter:contract:unit-tests-no-ui]
 name = Unit tests must not import ui modules
@@ -30,6 +37,9 @@ source_modules =
     tests.unit
 forbidden_modules =
     d810.optimizers
+ignore_imports =
+    # test_hook_integration uses AST inspection; ctree_hooks -> handler is guarded
+    tests.unit.recon.test_hook_integration -> d810.hexrays.ctree_hooks
 
 [importlinter:contract:actions-no-direct-ida-imports]
 name = Actions modules must not directly import IDA packages
