@@ -220,7 +220,7 @@ class TestResizeBufferCFFIncremental:
         """Step 3: Decompile with full flatfold.json config.
 
         Uses flatfold.json which adds block rules on top of instruction rules:
-        - StackVariableConstantPropagationRule
+        - ForwardConstantPropagationRule
         - UnflattenerSwitchCase
         - GlobalConstantInliner
         - JumpFixer (with CompareConstant, Jnz, Jae, Jb rules)

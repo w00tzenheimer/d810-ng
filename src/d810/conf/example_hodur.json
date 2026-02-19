@@ -932,7 +932,7 @@
     ],
     "blk_rules": [
         {
-            "name": "StackVariableConstantPropagationRule",
+            "name": "ForwardConstantPropagationRule",
             "is_activated": true,
             "config": {}
         },

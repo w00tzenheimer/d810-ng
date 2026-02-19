@@ -945,7 +945,7 @@
       "config": {}
     },
     {
-      "name": "StackVariableConstantPropagationRule",
+      "name": "ForwardConstantPropagationRule",
       "is_activated": true,
       "config": {}
     },

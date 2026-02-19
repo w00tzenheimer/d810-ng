@@ -12,11 +12,6 @@
       "config": {}
     },
     {
-      "name": "LocalizedConstantPropagationRule",
-      "is_activated": false,
-      "config": {}
-    },
-    {
       "name": "RotateHelperInlineRule",
       "is_activated": true,
       "config": {
@@ -1085,7 +1080,7 @@
   ],
   "blk_rules": [
     {
-      "name": "StackVariableConstantPropagationRule",
+      "name": "ForwardConstantPropagationRule",
       "is_activated": true,
       "config": {
         "dump_intermediate_microcode": null

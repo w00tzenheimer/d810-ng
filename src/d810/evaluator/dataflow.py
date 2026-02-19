@@ -5,7 +5,7 @@ Will be populated when d810.analysis.dataflow is implemented.
 
 This module intentionally contains only type aliases and documentation.
 The concrete GEN/KILL dataflow logic remains in
-:class:`d810.optimizers.microcode.flow.constant_prop.stackvars_constprop.StackVariableConstantPropagationRule`
+:class:`d810.optimizers.microcode.flow.constant_prop.forward_const_prop.ForwardConstantPropagationRule`
 and is excluded from the evaluator refactor (see plan section 2.3).
 """
 
