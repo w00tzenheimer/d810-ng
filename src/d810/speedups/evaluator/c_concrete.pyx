@@ -52,7 +52,7 @@ cdef object _AstProxy = None
 cdef inline void _ensure_types_loaded():
     global _AstNode, _AstLeaf, _AstConstant, _AstProxy
     if _AstNode is None:
-        from d810.expr.p_ast import AstNode, AstLeaf, AstConstant, AstProxy
+        from d810.expr.ast import AstNode, AstLeaf, AstConstant, AstProxy
         _AstNode = AstNode
         _AstLeaf = AstLeaf
         _AstConstant = AstConstant
@@ -173,7 +173,12 @@ cdef class CythonConcreteEvaluator:
         if leaf.is_constant() and leaf.mop is not None:
             return leaf.mop.nnn.value
         assert leaf.ast_index is not None
-        return dict_index_to_value.get(leaf.ast_index)
+        val = dict_index_to_value.get(leaf.ast_index)
+        if val is None:
+            raise AstEvaluationException(
+                f"Variable leaf ast_index={leaf.ast_index} not found in env"
+            )
+        return val
 
     cdef inline object _eval_node(self, object node, dict dict_index_to_value):
         """Evaluate an interior ``AstNode``.

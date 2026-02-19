@@ -95,6 +95,8 @@ def probe_is_constant(
                 if li.ast.ast_index is not None
             }
             val = evaluate_concrete(node, env)
+            if val is None:
+                return False, None
             results.add(val)
     except (AstEvaluationException, ZeroDivisionError):
         logger.debug(
