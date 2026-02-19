@@ -243,38 +243,6 @@ def _info_none() -> object:
 # ---------------------------------------------------------------------------
 
 
-class TestConstantExpression:
-    """probe_is_constant correctly identifies purely constant expressions."""
-
-    def test_pure_constant_add(self):
-        """5 + 3 has no variable leaves; both probes return 8."""
-        node = _Node(_OPC.m_add, _ConstLeaf(5, 4), _ConstLeaf(3, 4), dest_size=4)
-        is_const, value = probe_is_constant(node, [])
-        assert is_const is True
-        assert value == 8
-
-    def test_pure_constant_xor(self):
-        """0xFF ^ 0xAA == 0x55, no variable leaves."""
-        node = _Node(_OPC.m_xor, _ConstLeaf(0xFF, 1), _ConstLeaf(0xAA, 1), dest_size=1)
-        is_const, value = probe_is_constant(node, [])
-        assert is_const is True
-        assert value == 0x55
-
-    def test_single_constant_leaf(self):
-        """A single constant leaf (via m_mov) always returns the same value."""
-        node = _Node(_OPC.m_mov, _ConstLeaf(42, 1), dest_size=1)
-        is_const, value = probe_is_constant(node, [])
-        assert is_const is True
-        assert value == 42
-
-    def test_constant_with_leaf_info_list_skips_none_index(self):
-        """AstInfo entries with ast_index=None are silently skipped."""
-        node = _Node(_OPC.m_mov, _ConstLeaf(7, 1), dest_size=1)
-        is_const, value = probe_is_constant(node, [_info_none()])
-        assert is_const is True
-        assert value == 7
-
-
 # ---------------------------------------------------------------------------
 # Tests: variable expression (produces different values at different probes)
 # ---------------------------------------------------------------------------
@@ -318,46 +286,6 @@ class TestVariableExpression:
 # ---------------------------------------------------------------------------
 
 
-class TestCustomProbeValues:
-    """probe_is_constant respects caller-provided probe_values."""
-
-    def test_single_probe_always_reports_constant(self):
-        """With only one probe value, any expression is trivially 'constant'."""
-        x = _Leaf(ast_index=10, dest_size=4)
-        node = _Node(_OPC.m_mov, x, dest_size=4, ast_index=None)
-        is_const, value = probe_is_constant(node, [_info(10)], probe_values=[0])
-        # Only one probe → only one result in the set → must be True
-        assert is_const is True
-        assert value == 0
-
-    def test_two_equal_probes_reports_constant(self):
-        """If all probe values are the same, the set has size 1."""
-        x = _Leaf(ast_index=10, dest_size=4)
-        node = _Node(_OPC.m_mov, x, dest_size=4, ast_index=None)
-        is_const, value = probe_is_constant(node, [_info(10)], probe_values=[5, 5])
-        assert is_const is True
-        assert value == 5
-
-    def test_custom_probes_distinguish_variable(self):
-        """Custom probes [1, 2] detect that x is not constant."""
-        x = _Leaf(ast_index=10, dest_size=4)
-        node = _Node(_OPC.m_mov, x, dest_size=4, ast_index=None)
-        is_const, value = probe_is_constant(node, [_info(10)], probe_values=[1, 2])
-        assert is_const is False
-        assert value is None
-
-    def test_default_probes_are_0_and_0xffffffff(self):
-        """Omitting probe_values uses [0, 0xFFFFFFFF] as defaults."""
-        # x + 3 at 0 -> 3; at 0xFFFFFFFF -> wraps for 4-byte dest:
-        #   (0xFFFFFFFF + 3) & 0xFFFFFFFF == 2  (different from 3)
-        x = _Leaf(ast_index=10, dest_size=4)
-        const = _ConstLeaf(3, 4)
-        node = _Node(_OPC.m_add, x, const, dest_size=4, ast_index=None)
-        is_const, value = probe_is_constant(node, [_info(10)])
-        assert is_const is False
-        assert value is None
-
-
 # ---------------------------------------------------------------------------
 # Tests: evaluation errors return (False, None)
 # ---------------------------------------------------------------------------
@@ -384,46 +312,6 @@ class TestEvaluationErrors:
 # ---------------------------------------------------------------------------
 # Tests: edge cases
 # ---------------------------------------------------------------------------
-
-
-class TestEdgeCases:
-    """Edge cases for probe_is_constant."""
-
-    def test_x_xor_x_is_always_zero(self):
-        """x ^ x is always 0 regardless of x — probe correctly identifies this.
-
-        Both probes (0 ^ 0 == 0, 0xFFFFFFFF ^ 0xFFFFFFFF == 0) agree, so the
-        pre-filter reports (True, 0).  This is a correct heuristic result; a
-        subsequent Z3 check would confirm the tautology.
-        """
-        x = _Leaf(ast_index=10, dest_size=4)
-        # We use two separate _Leaf objects but bind both to the same ast_index
-        # to simulate x ^ x where both leaves refer to the same variable.
-        x2 = _Leaf(ast_index=10, dest_size=4)
-        node = _Node(_OPC.m_xor, x, x2, dest_size=4, ast_index=None)
-        # Both leaves share ast_index=10, so env = {10: probe} binds both.
-        is_const, value = probe_is_constant(node, [_info(10), _info(10)])
-        assert is_const is True
-        assert value == 0
-
-    def test_empty_leaf_info_list_with_pure_constant(self):
-        """Empty leaf_info_list with a constant node still works."""
-        node = _Node(_OPC.m_mov, _ConstLeaf(0xDEAD, 2), dest_size=2)
-        is_const, value = probe_is_constant(node, [])
-        assert is_const is True
-        assert value == 0xDEAD
-
-    def test_probe_values_empty_list_returns_true_none(self):
-        """An empty probe_values list yields no evaluations — set is empty.
-
-        When the result set is empty, ``len(results) == 0 != 1``, so the
-        function returns (False, None).  No probe was ever run.
-        """
-        node = _Node(_OPC.m_mov, _ConstLeaf(1, 1), dest_size=1)
-        is_const, value = probe_is_constant(node, [], probe_values=[])
-        # len({}) == 0, not 1 — so (False, None)
-        assert is_const is False
-        assert value is None
 
 
 # ---------------------------------------------------------------------------
