@@ -190,7 +190,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-import logging
 import uuid
 
 from d810.core.typing import TYPE_CHECKING
@@ -779,7 +778,7 @@ class DeferredGraphModifier:
             old_succs = [s for s in current_succs if s not in target_succs]
             new_succs = [s for s in target_succs if s not in current_succs]
 
-            if logger.isEnabledFor(logging.DEBUG):
+            if logger.debug_on:
                 logger.debug(
                     "Restoring block %d: type %d->%d, succs %s->%s",
                     serial, blk.type, snap_blk.block_type, current_succs, target_succs

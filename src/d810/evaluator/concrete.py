@@ -21,9 +21,9 @@ Usage::
 
 from __future__ import annotations
 
-import logging
+from d810.core.logging import getLogger
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 
 
 class ConcreteEvaluator:
@@ -383,7 +383,7 @@ class ConcreteEvaluator:
                 )
                 return res & res_mask
             case ida_hexrays.m_call:
-                if logger.isEnabledFor(logging.DEBUG):
+                if logger.debug_on:
                     logger.debug(
                         "evaluate m_call: ast_index=%s, dest_size=%s, func_name=%s",
                         node.ast_index,  # type: ignore[union-attr]

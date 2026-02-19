@@ -3,7 +3,6 @@ from __future__ import annotations
 import dataclasses
 import enum
 import hashlib
-import logging
 from d810.core import typing
 import weakref
 
@@ -559,7 +558,7 @@ class CfUnflattenModifier:
             return 0
 
         # Log modifications with cfi context if available
-        if logger.isEnabledFor(logging.DEBUG) and cfi:
+        if logger.debug_on and cfi:
             for mod in self._deferred.modifications:
                 block_serial = mod.block_serial
                 old_target = None  # We don't track old target in the new API

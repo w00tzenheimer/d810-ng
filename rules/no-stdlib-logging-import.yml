@@ -1,0 +1,50 @@
+# Forbid direct stdlib logging imports - use d810.core.logging instead
+#
+# BAD:  import logging
+# BAD:  from logging import getLogger, DEBUG
+# GOOD: from d810.core import logging
+# GOOD: from d810.core.logging import getLogger
+# GOOD: from d810.core import getLogger
+#
+# Rationale:
+# - d810.core.logging provides MDC (Mapped Diagnostic Context) support
+# - D810Logger subclass adds maturity/phase context to every log record
+# - Direct stdlib logging bypasses the d810 formatter and MDC injection
+#
+# See: src/d810/core/logging.py
+
+id: no-stdlib-logging-import
+language: python
+severity: error
+
+files:
+  - "src/d810/**/*.py"
+
+ignores:
+  - "src/d810/core/logging.py"
+  - "src/d810/_vendor/**"
+  - "src/d810/mba/backends/egglog_backend.py"  # suppresses third-party egglog logger
+  - "src/d810/ui/testbed.py"  # extends logging.Handler for UI log capture
+
+message: |
+  Direct stdlib logging imports are forbidden.
+  Use `from d810.core import logging` or `from d810.core.logging import getLogger` instead.
+
+  d810.core.logging wraps stdlib logging with MDC (Mapped Diagnostic Context)
+  support, adding maturity/phase metadata to every log record automatically.
+
+rule:
+  any:
+    - pattern: import logging
+    - pattern: from logging import $$$
+
+note: |
+  Standard pattern:
+
+    from d810.core import logging
+    logger = logging.getLogger(__name__)
+
+  Or import getLogger directly:
+
+    from d810.core.logging import getLogger
+    logger = getLogger(__name__)

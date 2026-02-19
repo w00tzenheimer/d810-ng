@@ -30,8 +30,8 @@ References:
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Sequence
+from d810.core.logging import getLogger
 from dataclasses import dataclass
 
 from d810.optimizers.microcode.flow.state_var_alias import VarRef
@@ -43,7 +43,7 @@ __all__ = [
     "CompareChainResolver",
 ]
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -277,7 +277,7 @@ class CompareChainResolver:
                 existing_target = seen_constants[constant]
                 if existing_target != comp.true_target:
                     # Conflicting mapping: same constant, different targets
-                    if logger.isEnabledFor(logging.WARNING):
+                    if logger.warning_on:
                         logger.warning(
                             "Conflicting dispatch entry: 0x%x maps to both %d and %d. "
                             "Keeping first mapping.",
@@ -358,7 +358,7 @@ class CompareChainResolver:
                     existing_target = seen_constants[entry.constant]
                     if existing_target != entry.target_serial:
                         # Conflicting mapping
-                        if logger.isEnabledFor(logging.WARNING):
+                        if logger.warning_on:
                             logger.warning(
                                 "Conflicting dispatch entry during merge: 0x%x maps to "
                                 "both %d and %d. Keeping first mapping.",
