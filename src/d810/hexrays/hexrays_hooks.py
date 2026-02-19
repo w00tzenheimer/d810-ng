@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import contextlib
 import enum
 import pathlib
 import time
 from collections import defaultdict
 
-from d810.core import typing
 import ida_hexrays
+import idaapi
 
-from d810.core import getLogger
+from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
 from d810.core.rule_scope import PIPELINE_FLOW, PIPELINE_INSTRUCTION
 from d810.errors import D810Exception
@@ -62,21 +63,28 @@ def hash_minsn(ins: ida_hexrays.minsn_t, func_entry_ea: int = 0) -> int:
         except Exception:
             pass
     return _hash_minsn_fallback(ins, func_entry_ea)
+
+
 # Note: VerifiableRule and adapt_rules are loaded/filtered in manager.py
 # Rules are added to PatternOptimizer via add_rule() based on project config
 
 # Import experimental rules that depend on optimizer extensions
 # These rules use context-aware features and can't be in mba.rules
-from d810.optimizers.microcode.instructions.pattern_matching import experimental  # noqa: F401
+from d810.optimizers.microcode.instructions.pattern_matching import (  # noqa: F401
+    experimental,
+)
 
 # Try to import egglog-based optimizer (optional dependency)
 try:
     from d810.mba.backends.egglog_backend import EGGLOG_AVAILABLE
+
     if EGGLOG_AVAILABLE:
         # Import to trigger auto-registration of EgglogOptimizer
-        from d810.optimizers.microcode.instructions.egraph import egglog_handler  # noqa: F401
         # Import to trigger auto-registration of BlockLevelEgglogOptimizer
         from d810.optimizers.microcode.flow.egraph import block_optimizer  # noqa: F401
+        from d810.optimizers.microcode.instructions.egraph import (  # noqa: F401
+            egglog_handler,
+        )
 except ImportError:
     EGGLOG_AVAILABLE = False
 from d810.hexrays.ctree_hooks import CtreeOptimizerManager
@@ -102,8 +110,16 @@ DEFAULT_OPTIMIZATION_CHAIN_MATURITIES = [
     ida_hexrays.MMAT_CALLS,
     ida_hexrays.MMAT_GLBOPT1,
 ]
-DEFAULT_OPTIMIZATION_Z3_MATURITIES = [ida_hexrays.MMAT_PREOPTIMIZED, ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1]
-DEFAULT_OPTIMIZATION_EARLY_MATURITIES = [ida_hexrays.MMAT_GENERATED, ida_hexrays.MMAT_PREOPTIMIZED]
+DEFAULT_OPTIMIZATION_Z3_MATURITIES = [
+    ida_hexrays.MMAT_PREOPTIMIZED,
+    ida_hexrays.MMAT_LOCOPT,
+    ida_hexrays.MMAT_CALLS,
+    ida_hexrays.MMAT_GLBOPT1,
+]
+DEFAULT_OPTIMIZATION_EARLY_MATURITIES = [
+    ida_hexrays.MMAT_GENERATED,
+    ida_hexrays.MMAT_PREOPTIMIZED,
+]
 DEFAULT_OPTIMIZATION_PEEPHOLE_MATURITIES = [
     ida_hexrays.MMAT_PREOPTIMIZED,
     ida_hexrays.MMAT_LOCOPT,
@@ -111,7 +127,12 @@ DEFAULT_OPTIMIZATION_PEEPHOLE_MATURITIES = [
     ida_hexrays.MMAT_GLBOPT1,
     ida_hexrays.MMAT_GLBOPT2,
 ]
-DEFAULT_ANALYZER_MATURITIES = [ida_hexrays.MMAT_PREOPTIMIZED, ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1]
+DEFAULT_ANALYZER_MATURITIES = [
+    ida_hexrays.MMAT_PREOPTIMIZED,
+    ida_hexrays.MMAT_LOCOPT,
+    ida_hexrays.MMAT_CALLS,
+    ida_hexrays.MMAT_GLBOPT1,
+]
 
 
 if typing.TYPE_CHECKING:
@@ -225,7 +246,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             else:
                 optimizer_logger.debug("[EgglogOptimizer] Not registered - skipping")
         elif EGGLOG_AVAILABLE:
-            optimizer_logger.debug("[EgglogOptimizer] Disabled (set ENABLE_EGGLOG_OPTIMIZER=True to enable)")
+            optimizer_logger.debug(
+                "[EgglogOptimizer] Disabled (set ENABLE_EGGLOG_OPTIMIZER=True to enable)"
+            )
         else:
             optimizer_logger.debug("[EgglogOptimizer] egglog not installed - skipping")
 
@@ -322,7 +345,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             self.current_maturity = new_maturity
             main_logger.update_maturity(maturity_to_string(self.current_maturity))
             if self.event_emitter is not None:
-                self.event_emitter.emit(DecompilationEvent.MATURITY_CHANGED, new_maturity)
+                self.event_emitter.emit(
+                    DecompilationEvent.MATURITY_CHANGED, new_maturity
+                )
             if main_logger.debug_on:
                 main_logger.debug(
                     "Instruction optimization function called at maturity: %s",
@@ -354,7 +379,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
 
             # Pre-compute which optimizers are active at this maturity
             self._active_optimizers = [
-                opt for opt in self.instruction_optimizers
+                opt
+                for opt in self.instruction_optimizers
                 if self.current_maturity in opt.maturities
             ]
 
@@ -397,7 +423,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             self._active_instruction_rule_names_by_maturity.clear()
             # Invalidate compiled rule views on scope change (PR3)
             for optimizer in self.instruction_optimizers:
-                if hasattr(optimizer, 'invalidate'):
+                if hasattr(optimizer, "invalidate"):
                     optimizer.invalidate()
 
     @staticmethod
@@ -859,17 +885,25 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         rules = active_rules if active_rules is not None else tuple(self.cfg_rules)
         rules = self._order_rules_for_execution(rules)
         phases = self._group_rules_by_priority(rules)
-        func_ea = int(blk.mba.entry_ea) if (blk.mba is not None and blk.mba.entry_ea is not None) else 0
+        func_ea = (
+            int(blk.mba.entry_ea)
+            if (blk.mba is not None and blk.mba.entry_ea is not None)
+            else 0
+        )
 
         if active_rules is not None:
             self._perf_counters["scoped_calls"] += 1
             self._perf_counters["scoped_candidates_total"] += len(rules)
             if self._perf_compare_rule_scope and func_ea != 0:
-                self._perf_counters["legacy_candidates_total"] += self._legacy_candidate_count(func_ea)
+                self._perf_counters[
+                    "legacy_candidates_total"
+                ] += self._legacy_candidate_count(func_ea)
         else:
             self._perf_counters["legacy_calls"] += 1
             if func_ea != 0:
-                self._perf_counters["legacy_candidates_total"] += self._legacy_candidate_count(func_ea)
+                self._perf_counters[
+                    "legacy_candidates_total"
+                ] += self._legacy_candidate_count(func_ea)
             else:
                 self._perf_counters["legacy_candidates_total"] += len(rules)
 
@@ -892,7 +926,9 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     nb_patch = cfg_rule.optimize(blk)
                     if nb_patch > 0:
                         optimizer_logger.info(
-                            "Rule {0} matched: {1} patches".format(cfg_rule.name, nb_patch)
+                            "Rule {0} matched: {1} patches".format(
+                                cfg_rule.name, nb_patch
+                            )
                         )
                         if self.stats is not None:
                             self.stats.record_cfg_rule_patches(cfg_rule.name, nb_patch)
@@ -912,7 +948,9 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     def configure(self, **kwargs):
         self._recon_phase = kwargs.get("recon_phase", self._recon_phase)
         self._pass_pipeline = kwargs.get("pass_pipeline", self._pass_pipeline)
-        self._rule_scope_service = kwargs.get("rule_scope_service", self._rule_scope_service)
+        self._rule_scope_service = kwargs.get(
+            "rule_scope_service", self._rule_scope_service
+        )
         self._rule_scope_project_name = str(
             kwargs.get("rule_scope_project_name", self._rule_scope_project_name)
         )
@@ -953,8 +991,14 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         self.callback = callback
         self.ctree_optimizer_manager = ctree_optimizer_manager
 
-    def prolog(self, mba: ida_hexrays.mbl_array_t, fc, reachable_blocks, decomp_flags) -> "int":
-        main_logger.info("Starting decompilation of function at %s", hex(mba.entry_ea))
+    def prolog(
+        self, mba: ida_hexrays.mbl_array_t, fc, reachable_blocks, decomp_flags
+    ) -> "int":
+        fn_name = ""
+        with contextlib.suppress(BaseException):
+            fn_name = idaapi.get_func_name(mba.entry_ea)
+        prologue = f"{fn_name} @ {hex(mba.entry_ea)}"
+        main_logger.info("Starting decompilation of function %s", prologue)
         self.callback(DecompilationEvent.STARTED)
         # self.manager.start_profiling()
         # self.manager.instruction_optimizer.reset_rule_usage_statistic()
