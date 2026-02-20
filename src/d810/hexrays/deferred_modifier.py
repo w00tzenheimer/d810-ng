@@ -192,7 +192,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 import uuid
 
-from d810.core.typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING, Callable
 import os
 
 import ida_hexrays
@@ -983,6 +983,7 @@ class DeferredGraphModifier:
         continue_on_verify_failure: bool = False,
         defer_post_apply_maintenance: bool = False,
         enable_snapshot_rollback: bool = False,
+        post_apply_hook: Callable[[], None] | None = None,
     ) -> int:
         """
         Apply all queued modifications in priority order.
@@ -1005,6 +1006,10 @@ class DeferredGraphModifier:
             enable_snapshot_rollback: If True, capture a pre-modification snapshot
                 and restore from it on post-apply verify failure. This provides
                 full-topology rollback at the cost of snapshot overhead.
+            post_apply_hook: Optional callback executed after queued
+                modifications are applied and before cleanup/verify. Use this
+                to run post-apply canonicalization inside the same transactional
+                boundary as deferred rewrites.
 
         Returns:
             Number of successful modifications applied.
@@ -1403,6 +1408,42 @@ class DeferredGraphModifier:
             return _finish(successful)
 
         if successful > 0:
+            if post_apply_hook is not None:
+                try:
+                    post_apply_hook()
+                except Exception as e:
+                    self.verify_failed = True
+                    logger.error("post_apply_hook raised: %s", e, exc_info=True)
+                    capture_failure_artifact(
+                        self.mba,
+                        "exception during deferred post-apply hook",
+                        e,
+                        logger_func=logger.error,
+                        capture_metadata={
+                            "phase": "post_apply_hook_exception",
+                            "applied_modifications": successful,
+                            "queued_modifications": len(sorted_mods),
+                            "recent_modifications": list(recent_modifications),
+                        },
+                    )
+
+                    if enable_snapshot_rollback and self._pre_snapshot is not None:
+                        logger.warning(
+                            "Attempting snapshot rollback after post_apply_hook failure "
+                            "(nblocks=%d)",
+                            self._pre_snapshot.num_blocks,
+                        )
+                        if self._restore_from_snapshot(self._pre_snapshot):
+                            self.verify_failed = False
+                            logger.warning(
+                                "Successfully restored MBA from snapshot after "
+                                "post_apply_hook failure"
+                            )
+                            return _finish(0)
+                        logger.error("Snapshot rollback failed after post_apply_hook failure")
+
+                    return _finish(successful)
+
             if defer_post_apply_maintenance:
                 return _finish(successful)
 
