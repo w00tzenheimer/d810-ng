@@ -1882,8 +1882,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             if not old_target_set:
                 continue
 
-            dispatcher_changed = False
             case_targets = set(old_target_set)
+
+            # Pass 1: build retarget_map from the original targets[] state.
+            # Do NOT mutate targets[] here — compute all (old -> new) mappings
+            # first so that no entry depends on a previously mutated value.
+            retarget_map: dict[int, int] = {}
             for target_serial in sorted(old_target_set):
                 target_blk = self.mba.get_mblock(target_serial)
                 if target_blk is None:
@@ -1943,27 +1947,30 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     continue
 
                 chosen_pred = min(rewritten_overlap_preds)
-                rewired_count = 0
-                for idx in target_to_indices.get(target_serial, []):
-                    if int(targets[idx]) == chosen_pred:
-                        continue
-                    targets[idx] = chosen_pred
-                    rewired_count += 1
-
-                if rewired_count == 0:
-                    continue
-
-                dispatcher_changed = True
-                total_case_retargets += rewired_count
+                retarget_map[target_serial] = chosen_pred
                 unflat_logger.warning(
                     "Canonicalized jtbl overlap in dispatcher %d: "
-                    "retargeted %d case(s) %d -> %d (overlap_preds=%s)",
+                    "will retarget case(s) %d -> %d (overlap_preds=%s)",
                     dispatcher_serial,
-                    rewired_count,
                     target_serial,
                     chosen_pred,
                     sorted(overlap_preds),
                 )
+
+            # Pass 2: apply all retargets atomically from the pre-computed map.
+            # Because retarget_map was built from the original targets[] state,
+            # no retarget can cascade into a previously mutated value.
+            dispatcher_changed = False
+            for idx in range(targets.size()):
+                old_serial = int(targets[idx])
+                if old_serial not in retarget_map:
+                    continue
+                new_serial = retarget_map[old_serial]
+                if old_serial == new_serial:
+                    continue
+                targets[idx] = new_serial
+                dispatcher_changed = True
+                total_case_retargets += 1
 
             if not dispatcher_changed:
                 continue
