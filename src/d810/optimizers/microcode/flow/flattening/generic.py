@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import abc
 import os
+from collections import Counter
 from d810.core.typing import Any
 
 import idaapi
@@ -33,6 +34,7 @@ import idc
 
 from d810.core import getLogger
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
+from d810.hexrays.cfg_mutations import create_standalone_block
 from d810.hexrays.cfg_utils import (
     change_1way_block_successor,
     create_block,
@@ -2025,6 +2027,42 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 if cur != key:
                     retarget_map[key] = cur
 
+            # ── Pass 1c: insert trampolines for would-be-duplicate destinations ──
+            # After retargeting, the final target set is:
+            #   (old_target_set - retarget_map.keys()) | retarget_map.values()
+            # If any retarget destination is in the non-retargeted remainder OR
+            # appears multiple times as a value, duplicate targets would trigger
+            # INTERR 50753. We break duplicates by inserting a goto-only
+            # trampoline block per destination.
+            final_kept = old_target_set - set(retarget_map.keys())
+            dest_counts: Counter[int] = Counter(retarget_map.values())
+            trampoline_cache: dict[int, int] = {}  # real_dest → trampoline serial
+
+            for key in list(retarget_map.keys()):
+                dest = retarget_map[key]
+                needs_trampoline = dest in final_kept or dest_counts[dest] > 1
+                if not needs_trampoline:
+                    continue
+                if dest not in trampoline_cache:
+                    tramp = create_standalone_block(
+                        ref_blk=self.mba.get_mblock(dispatcher_serial),
+                        blk_ins=[],
+                        target_serial=dest,
+                        verify=False,
+                    )
+                    trampoline_cache[dest] = tramp.serial
+                    unflat_logger.debug(
+                        "jtbl canon: created trampoline blk %d -> %d to avoid duplicate target",
+                        tramp.serial,
+                        dest,
+                    )
+                retarget_map[key] = trampoline_cache[dest]
+
+            if trampoline_cache:
+                # Re-fetch dispatcher_blk after MBA reallocation caused by
+                # copy_block inside create_standalone_block.
+                dispatcher_blk = self.mba.get_mblock(dispatcher_serial)
+
             # Pass 2: execute retarget + succ/pred sync via
             # the central CFG mutation gateway.
             retargeted_cases = retarget_jtbl_block_cases(
@@ -2707,38 +2745,45 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     "Applying %d deferred CFG modifications from resolve_dispatcher_father",
                     len(deferred_modifier.modifications),
                 )
-                post_apply_canonicalized_cases = 0
-
-                def _post_apply_maintenance() -> None:
-                    nonlocal post_apply_canonicalized_cases
-                    unflat_logger.info(
-                        "Post-apply jtbl overlap scan: %d dispatcher edge-set(s)",
-                        len(self._deferred_case_overlap_edges),
-                    )
-                    canonicalized_cases = self._canonicalize_jtbl_cross_case_overlaps()
-                    if canonicalized_cases > 0:
-                        unflat_logger.info(
-                            "Applied jtbl overlap canonicalization: %d case target retarget(s)",
-                            canonicalized_cases,
-                        )
-                        safe_verify(
-                            self.mba,
-                            "after jtbl cross-case overlap canonicalization",
-                            logger_func=unflat_logger.error,
-                        )
-                        post_apply_canonicalized_cases += canonicalized_cases
-
                 deferred_modifier.apply(
                     run_optimize_local=False,
                     run_deep_cleaning=False,
                     verify_each_mod=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
                     rollback_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
                     continue_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
-                    defer_post_apply_maintenance=False,
+                    defer_post_apply_maintenance=True,
                     enable_snapshot_rollback=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
-                    post_apply_hook=_post_apply_maintenance,
                 )
-                total_nb_change += post_apply_canonicalized_cases
+                if not deferred_modifier.verify_failed and self._deferred_case_overlap_edges:
+                    try:
+                        unflat_logger.info(
+                            "Post-apply jtbl overlap scan: %d dispatcher edge-set(s)",
+                            len(self._deferred_case_overlap_edges),
+                        )
+                        canonicalized_cases = self._canonicalize_jtbl_cross_case_overlaps()
+                        if canonicalized_cases > 0:
+                            unflat_logger.info(
+                                "Applied jtbl overlap canonicalization: %d case target retarget(s)",
+                                canonicalized_cases,
+                            )
+                        safe_verify(
+                            self.mba,
+                            "after jtbl cross-case overlap canonicalization",
+                            logger_func=unflat_logger.error,
+                        )
+                        mba_deep_cleaning(self.mba, True)
+                        safe_verify(
+                            self.mba,
+                            "after post-canonicalization deep clean",
+                            logger_func=unflat_logger.error,
+                        )
+                        total_nb_change += canonicalized_cases
+                    except RuntimeError:
+                        unflat_logger.warning(
+                            "verify failed during post-apply canonicalization; "
+                            "discarding modifications for this function"
+                        )
+                        self._verify_failed = True
 
             if deferred_modifier.verify_failed:
                 self._verify_failed = True
