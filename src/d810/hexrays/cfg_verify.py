@@ -20,6 +20,24 @@ from d810.hexrays.hexrays_formatters import block_printer
 helper_logger = getLogger(__name__)
 
 
+class _InterrCatcher(ida_hexrays.Hexrays_Hooks):
+    """Temporary hook that captures the INTERR code fired by hxe_interr.
+
+    mba.verify(True) throws RuntimeError("Unknown exception") because the
+    interr_exc_t doesn't match SWIG's typed catch blocks.  The hxe_interr
+    event fires *before* the exception propagates and carries the numeric
+    error code, so we capture it here for precise failure identification.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_code: int | None = None
+
+    def interr(self, errcode: int) -> int:  # type: ignore[override]
+        self.last_code = errcode
+        return 0  # 0 = don't suppress; let exception propagate normally
+
+
 def log_block_info(blk: ida_hexrays.mblock_t, logger_func=helper_logger.info, ctx: str = ""):
     if blk is None:
         logger_func("Block is None")
@@ -45,17 +63,34 @@ def safe_verify(
     capture_metadata: dict[str, Any] | None = None,
 ) -> None:
     """Run mba.verify(True) and produce helpful diagnostics on failure."""
+    catcher = _InterrCatcher()
+    catcher.hook()
     try:
         mba.verify(True)
     except RuntimeError as e:
-        logger_func("verify failed after %s: %s", ctx, e, exc_info=True)
+        interr_code = catcher.last_code
+        if interr_code is not None:
+            logger_func(
+                "verify failed after %s (INTERR %d / 0x%X): %s",
+                ctx,
+                interr_code,
+                interr_code,
+                e,
+                exc_info=True,
+            )
+        else:
+            logger_func("verify failed after %s: %s", ctx, e, exc_info=True)
+        meta = dict(capture_metadata or {})
+        if interr_code is not None:
+            meta["interr_code"] = interr_code
+            meta["interr_code_hex"] = hex(interr_code)
         capture_failure_artifact(
             mba,
             f"verify failure after {ctx}",
             e,
             logger_func=logger_func,
             capture_blocks=capture_blocks,
-            capture_metadata=capture_metadata,
+            capture_metadata=meta if meta else None,
         )
         # attempt to locate problematic blocks: dump the last two blocks if possible
         with contextlib.suppress(Exception):
@@ -76,6 +111,8 @@ def safe_verify(
                     mba.get_mblock(0), logger_func, f"{divider}[blk 0]{divider}"
                 )
         raise
+    finally:
+        catcher.unhook()
 
 
 def _snapshot_insn(insn: ida_hexrays.minsn_t | None) -> dict[str, Any] | None:
@@ -234,6 +271,7 @@ def capture_failure_artifact(
 
 
 __all__ = [
+    "_InterrCatcher",
     "safe_verify",
     "capture_failure_artifact",
     "snapshot_block_for_capture",
