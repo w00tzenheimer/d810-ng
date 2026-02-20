@@ -39,6 +39,7 @@ from d810.hexrays.cfg_utils import (
     ensure_child_has_an_unconditional_father,
     ensure_last_block_is_goto,
     mba_deep_cleaning,
+    retarget_jtbl_block_cases,
     safe_verify,
 )
 from d810.hexrays.hexrays_formatters import (
@@ -1874,11 +1875,9 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 continue
 
             old_target_set: set[int] = set()
-            target_to_indices: dict[int, list[int]] = {}
             for i in range(targets.size()):
                 target_serial = int(targets[i])
                 old_target_set.add(target_serial)
-                target_to_indices.setdefault(target_serial, []).append(i)
             if not old_target_set:
                 continue
 
@@ -1957,59 +1956,16 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     sorted(overlap_preds),
                 )
 
-            # Pass 2: apply all retargets atomically from the pre-computed map.
-            # Because retarget_map was built from the original targets[] state,
-            # no retarget can cascade into a previously mutated value.
-            dispatcher_changed = False
-            for idx in range(targets.size()):
-                old_serial = int(targets[idx])
-                if old_serial not in retarget_map:
-                    continue
-                new_serial = retarget_map[old_serial]
-                if old_serial == new_serial:
-                    continue
-                targets[idx] = new_serial
-                dispatcher_changed = True
-                total_case_retargets += 1
-
-            if not dispatcher_changed:
+            # Pass 2/3: execute retarget + deduplicate + succ/pred sync via
+            # the central CFG mutation gateway.
+            retargeted_cases = retarget_jtbl_block_cases(
+                dispatcher_blk,
+                retarget_map,
+                deduplicate=True,
+            )
+            if retargeted_cases <= 0:
                 continue
-
-            # Rebuild succset to exactly mirror the jtbl targets[] vector,
-            # preserving duplicates and order.  The SDK verifier at
-            # verify.cpp:1155-1193 does a strict vector comparison:
-            #   outs = tail->r.c->targets; if (outs != succset) INTERR(50860)
-            # Using a set() deduplicates, producing [5,7,9] when targets has
-            # [5,5,7,7,9] — which triggers the INTERR.  We must copy targets
-            # element-by-element.
-            old_unique_succs: set[int] = set(int(s) for s in dispatcher_blk.succset)
-
-            # Clear succset and copy targets[] verbatim (duplicates included).
-            dispatcher_blk.succset.clear()
-            for i in range(targets.size()):
-                dispatcher_blk.succset.push_back(int(targets[i]))
-
-            new_unique_succs: set[int] = set(int(targets[i]) for i in range(targets.size()))
-
-            # Update predsets for blocks that were removed from succset.
-            for removed_target in sorted(old_unique_succs - new_unique_succs):
-                removed_blk = self.mba.get_mblock(removed_target)
-                if removed_blk is not None and self._serial_in_set(
-                    removed_blk.predset, dispatcher_serial
-                ):
-                    removed_blk.predset._del(dispatcher_serial)
-                    removed_blk.mark_lists_dirty()
-
-            # Update predsets for blocks newly added to succset.
-            for added_target in sorted(new_unique_succs - old_unique_succs):
-                added_blk = self.mba.get_mblock(added_target)
-                if added_blk is not None and not self._serial_in_set(
-                    added_blk.predset, dispatcher_serial
-                ):
-                    added_blk.predset.push_back(dispatcher_serial)
-                    added_blk.mark_lists_dirty()
-
-            dispatcher_blk.mark_lists_dirty()
+            total_case_retargets += retargeted_cases
 
         if total_case_retargets > 0:
             self.mba.mark_chains_dirty()
@@ -2701,45 +2657,20 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                             "Applied jtbl overlap canonicalization: %d case target retarget(s)",
                             canonicalized_cases,
                         )
-                        total_nb_change += canonicalized_cases
-                    # Verify after canonicalization: if it fails, skip deep
-                    # cleaning to prevent compounded corruption (segfault).
-                    try:
                         safe_verify(
                             self.mba,
                             "after jtbl cross-case overlap canonicalization",
-                            logger_func=unflat_logger.debug,
+                            logger_func=unflat_logger.error,
                         )
-                    except RuntimeError:
-                        unflat_logger.warning(
-                            "MBA verify failed after jtbl canonicalization -- "
-                            "skipping deep cleaning to prevent compounded corruption"
-                        )
-                        self._verify_failed = True
-                    if self._verify_failed:
-                        unflat_logger.info(
-                            "Aborting post-apply maintenance due to verify failure"
-                        )
-                        # Skip deep cleaning and post-cleaning canonicalization
-                        # The retargets are preserved but we don't compound the corruption
-                    else:
-                        # DeferredGraphModifier maintenance is deferred so we can
-                        # canonicalize switch-case overlaps first.
-                        mba_deep_cleaning(self.mba, call_mba_combine_block=False)
-                        # Fixed-point: deep cleaning can collapse intermediate blocks
-                        # and create NEW direct cross-case edges that were not present
-                        # before (e.g. mba_remove_simple_goto_blocks merges trampolines).
-                        # Re-run canonicalization up to 3 times to converge.
-                        for _canon_iter in range(3):
-                            new_overlaps = self._canonicalize_jtbl_cross_case_overlaps()
-                            if not new_overlaps:
-                                break
-                            unflat_logger.info(
-                                "Post-cleaning canonicalization pass %d fixed %d overlap(s)",
-                                _canon_iter + 1,
-                                new_overlaps,
-                            )
-                            total_nb_change += new_overlaps
+                        total_nb_change += canonicalized_cases
+                    # DeferredGraphModifier maintenance is deferred so we can
+                    # canonicalize switch-case overlaps first.
+                    mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                    safe_verify(
+                        self.mba,
+                        "after deferred modifications (generic post-maintenance)",
+                        logger_func=unflat_logger.error,
+                    )
 
             if deferred_modifier.verify_failed:
                 self._verify_failed = True

@@ -599,6 +599,114 @@ def _update_jtbl_case_targets(
     return updated
 
 
+def retarget_jtbl_block_cases(
+    blk: "ida_hexrays.mblock_t",
+    retarget_map: dict[int, int],
+    *,
+    deduplicate: bool = True,
+) -> int:
+    """Retarget one m_jtbl block's case targets and synchronize CFG edges.
+
+    This is the central gateway for jump-table target rewrites. It updates
+    ``mcases_t.targets[]`` from *retarget_map*, optionally deduplicates case
+    entries, then mirrors the resulting target vector into ``succset`` and
+    fixes affected ``predset`` memberships.
+
+    Args:
+        blk: Dispatcher block whose tail must be ``m_jtbl``.
+        retarget_map: Mapping ``old_target_serial -> new_target_serial``.
+        deduplicate: Merge duplicate targets after retargeting when True.
+
+    Returns:
+        Number of individual case entries rewritten in ``targets[]``.
+    """
+    if not retarget_map:
+        return 0
+
+    tail = getattr(blk, "tail", None)
+    if tail is None or tail.opcode != ida_hexrays.m_jtbl:
+        return 0
+    if tail.r is None or tail.r.t != ida_hexrays.mop_c or tail.r.c is None:
+        return 0
+
+    cases = tail.r.c
+    targets = cases.targets
+    if targets is None:
+        return 0
+
+    old_unique_succs: set[int] = set(int(s) for s in blk.succset)
+    rewritten = 0
+
+    for idx in range(targets.size()):
+        old_serial = int(targets[idx])
+        new_serial = int(retarget_map.get(old_serial, old_serial))
+        if old_serial == new_serial:
+            continue
+        targets[idx] = new_serial
+        rewritten += 1
+
+    if rewritten == 0:
+        return 0
+
+    if deduplicate:
+        n_entries = cases.targets.size()
+        merged: dict[int, list[int]] = {}
+        entry_order: list[int] = []
+
+        for i in range(n_entries):
+            tgt = int(cases.targets[i])
+            vals: list[int] = []
+            for j in range(cases.values[i].size()):
+                vals.append(int(cases.values[i][j]))
+            if tgt not in merged:
+                merged[tgt] = vals
+                entry_order.append(tgt)
+            else:
+                merged[tgt].extend(vals)
+
+        if len(entry_order) < n_entries:
+            helper_logger.info(
+                "Deduplicating jtbl block %d: %d entries -> %d unique targets",
+                int(blk.serial),
+                n_entries,
+                len(entry_order),
+            )
+            cases.resize(len(entry_order))
+            for i, tgt in enumerate(entry_order):
+                cases.targets[i] = int(tgt)
+                cases.values[i].clear()
+                for v in merged[tgt]:
+                    cases.values[i].push_back(int(v))
+
+    blk.succset.clear()
+    for i in range(cases.targets.size()):
+        blk.succset.push_back(int(cases.targets[i]))
+
+    mba = blk.mba
+    blk_serial = int(blk.serial)
+    new_unique_succs: set[int] = set(int(cases.targets[i]) for i in range(cases.targets.size()))
+
+    for removed_target in sorted(old_unique_succs - new_unique_succs):
+        removed_blk = mba.get_mblock(removed_target)
+        if removed_blk is None:
+            continue
+        if _serial_in_predset(removed_blk, blk_serial):
+            removed_blk.predset._del(blk_serial)
+            removed_blk.mark_lists_dirty()
+
+    for added_target in sorted(new_unique_succs - old_unique_succs):
+        added_blk = mba.get_mblock(added_target)
+        if added_blk is None:
+            continue
+        if not _serial_in_predset(added_blk, blk_serial):
+            added_blk.predset.push_back(blk_serial)
+            added_blk.mark_lists_dirty()
+
+    blk.mark_lists_dirty()
+    mba.mark_chains_dirty()
+    return rewritten
+
+
 def convert_jtbl_to_goto(
     blk: "ida_hexrays.mblock_t",
     new_target_serial: int,
@@ -1014,6 +1122,7 @@ __all__ = [
     "create_standalone_block",
     "update_block_successors",
     "_update_jtbl_case_targets",
+    "retarget_jtbl_block_cases",
     "convert_jtbl_to_goto",
     "_get_fallthrough_successor_serial",
     "insert_nop_blk",
