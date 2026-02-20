@@ -2638,15 +2638,10 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     "Applying %d deferred CFG modifications from resolve_dispatcher_father",
                     len(deferred_modifier.modifications),
                 )
-                deferred_modifier.apply(
-                    run_optimize_local=False,
-                    run_deep_cleaning=False,
-                    verify_each_mod=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
-                    rollback_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
-                    continue_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
-                    defer_post_apply_maintenance=True,
-                )
-                if not deferred_modifier.verify_failed:
+                post_apply_canonicalized_cases = 0
+
+                def _post_apply_maintenance() -> None:
+                    nonlocal post_apply_canonicalized_cases
                     unflat_logger.info(
                         "Post-apply jtbl overlap scan: %d dispatcher edge-set(s)",
                         len(self._deferred_case_overlap_edges),
@@ -2662,15 +2657,19 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                             "after jtbl cross-case overlap canonicalization",
                             logger_func=unflat_logger.error,
                         )
-                        total_nb_change += canonicalized_cases
-                    # DeferredGraphModifier maintenance is deferred so we can
-                    # canonicalize switch-case overlaps first.
-                    mba_deep_cleaning(self.mba, call_mba_combine_block=False)
-                    safe_verify(
-                        self.mba,
-                        "after deferred modifications (generic post-maintenance)",
-                        logger_func=unflat_logger.error,
-                    )
+                        post_apply_canonicalized_cases += canonicalized_cases
+
+                deferred_modifier.apply(
+                    run_optimize_local=False,
+                    run_deep_cleaning=False,
+                    verify_each_mod=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
+                    rollback_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
+                    continue_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
+                    defer_post_apply_maintenance=False,
+                    enable_snapshot_rollback=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
+                    post_apply_hook=_post_apply_maintenance,
+                )
+                total_nb_change += post_apply_canonicalized_cases
 
             if deferred_modifier.verify_failed:
                 self._verify_failed = True

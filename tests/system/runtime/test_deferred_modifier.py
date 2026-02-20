@@ -176,6 +176,65 @@ def test_apply_attempts_verify_recovery(monkeypatch):
     assert modifier.verify_failed is False
 
 
+def test_apply_executes_post_apply_hook(monkeypatch):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+    ]
+
+    hook_calls = {"count": 0}
+
+    monkeypatch.setattr(modifier, "_apply_single", lambda _m: True)
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        dm,
+        "mba_deep_cleaning",
+        lambda *_a, **_k: setattr(mba, "cleaned", mba.cleaned + 1),
+    )
+
+    def _hook():
+        hook_calls["count"] += 1
+
+    applied = modifier.apply(
+        run_optimize_local=False,
+        run_deep_cleaning=False,
+        post_apply_hook=_hook,
+    )
+
+    assert applied == 1
+    assert hook_calls["count"] == 1
+    assert mba.cleaned == 1
+    assert modifier.verify_failed is False
+
+
+def test_apply_marks_verify_failed_on_post_apply_hook_exception(monkeypatch):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+    ]
+
+    monkeypatch.setattr(modifier, "_apply_single", lambda _m: True)
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "capture_failure_artifact", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+
+    def _hook():
+        raise RuntimeError("hook failure")
+
+    applied = modifier.apply(
+        run_optimize_local=False,
+        run_deep_cleaning=False,
+        post_apply_hook=_hook,
+    )
+
+    assert applied == 1
+    assert modifier.verify_failed is True
+
+
 def test_apply_rolls_back_failed_mod_and_continues(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
