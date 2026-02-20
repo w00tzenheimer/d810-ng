@@ -603,19 +603,22 @@ def retarget_jtbl_block_cases(
     blk: "ida_hexrays.mblock_t",
     retarget_map: dict[int, int],
     *,
-    deduplicate: bool = True,
+    deduplicate: bool = False,
 ) -> int:
     """Retarget one m_jtbl block's case targets and synchronize CFG edges.
 
     This is the central gateway for jump-table target rewrites. It updates
-    ``mcases_t.targets[]`` from *retarget_map*, optionally deduplicates case
-    entries, then mirrors the resulting target vector into ``succset`` and
-    fixes affected ``predset`` memberships.
+    ``mcases_t.targets[]`` from *retarget_map*, then mirrors the resulting
+    target vector into ``succset`` and fixes affected ``predset`` memberships.
+
+    Note: deduplication of case entries was removed. Duplicate targets after
+    retargeting are left as-is so that IDA's internal verify catches structural
+    inconsistencies (INTERR 50753) rather than silently masking them.
 
     Args:
         blk: Dispatcher block whose tail must be ``m_jtbl``.
         retarget_map: Mapping ``old_target_serial -> new_target_serial``.
-        deduplicate: Merge duplicate targets after retargeting when True.
+        deduplicate: Unused; kept for API compatibility.
 
     Returns:
         Number of individual case entries rewritten in ``targets[]``.
@@ -647,36 +650,6 @@ def retarget_jtbl_block_cases(
 
     if rewritten == 0:
         return 0
-
-    if deduplicate:
-        n_entries = cases.targets.size()
-        merged: dict[int, list[int]] = {}
-        entry_order: list[int] = []
-
-        for i in range(n_entries):
-            tgt = int(cases.targets[i])
-            vals: list[int] = []
-            for j in range(cases.values[i].size()):
-                vals.append(int(cases.values[i][j]))
-            if tgt not in merged:
-                merged[tgt] = vals
-                entry_order.append(tgt)
-            else:
-                merged[tgt].extend(vals)
-
-        if len(entry_order) < n_entries:
-            helper_logger.info(
-                "Deduplicating jtbl block %d: %d entries -> %d unique targets",
-                int(blk.serial),
-                n_entries,
-                len(entry_order),
-            )
-            cases.resize(len(entry_order))
-            for i, tgt in enumerate(entry_order):
-                cases.targets[i] = int(tgt)
-                cases.values[i].clear()
-                for v in merged[tgt]:
-                    cases.values[i].push_back(int(v))
 
     blk.succset.clear()
     for i in range(cases.targets.size()):
