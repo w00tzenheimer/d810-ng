@@ -1956,12 +1956,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     sorted(overlap_preds),
                 )
 
-            # Pass 2/3: execute retarget + deduplicate + succ/pred sync via
+            # Pass 2: execute retarget + succ/pred sync via
             # the central CFG mutation gateway.
             retargeted_cases = retarget_jtbl_block_cases(
                 dispatcher_blk,
                 retarget_map,
-                deduplicate=True,
+                deduplicate=False,
             )
             if retargeted_cases <= 0:
                 continue
