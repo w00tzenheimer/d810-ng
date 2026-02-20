@@ -1975,23 +1975,24 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             if not dispatcher_changed:
                 continue
 
-            # Rebuild the true successor set from the jtbl targets[] array
-            # after all retargets.  A simple set-diff can miss updates when
-            # many retargets occur (e.g. 363 for AntiDebug), leaving succset
-            # out of sync with targets[] and triggering INTERR 50860.
-            new_target_set = set(int(targets[i]) for i in range(targets.size()))
+            # Rebuild succset to exactly mirror the jtbl targets[] vector,
+            # preserving duplicates and order.  The SDK verifier at
+            # verify.cpp:1155-1193 does a strict vector comparison:
+            #   outs = tail->r.c->targets; if (outs != succset) INTERR(50860)
+            # Using a set() deduplicates, producing [5,7,9] when targets has
+            # [5,5,7,7,9] — which triggers the INTERR.  We must copy targets
+            # element-by-element.
+            old_unique_succs: set[int] = set(int(s) for s in dispatcher_blk.succset)
 
-            # Also preserve the fallthrough successor (block serial+1) if it
-            # is currently in succset but not in the jtbl targets array; some
-            # jtbl blocks have an implicit fallthrough edge.
-            fallthrough_serial = dispatcher_serial + 1
-            current_succset: set[int] = set(int(s) for s in dispatcher_blk.succset)
-            if fallthrough_serial in current_succset:
-                new_target_set.add(fallthrough_serial)
+            # Clear succset and copy targets[] verbatim (duplicates included).
+            dispatcher_blk.succset.clear()
+            for i in range(targets.size()):
+                dispatcher_blk.succset.push_back(int(targets[i]))
 
-            removed_targets = sorted(current_succset - new_target_set)
-            for removed_target in removed_targets:
-                dispatcher_blk.succset._del(removed_target)
+            new_unique_succs: set[int] = set(int(targets[i]) for i in range(targets.size()))
+
+            # Update predsets for blocks that were removed from succset.
+            for removed_target in sorted(old_unique_succs - new_unique_succs):
                 removed_blk = self.mba.get_mblock(removed_target)
                 if removed_blk is not None and self._serial_in_set(
                     removed_blk.predset, dispatcher_serial
@@ -1999,9 +2000,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     removed_blk.predset._del(dispatcher_serial)
                     removed_blk.mark_lists_dirty()
 
-            added_targets = sorted(new_target_set - current_succset)
-            for added_target in added_targets:
-                dispatcher_blk.succset.push_back(added_target)
+            # Update predsets for blocks newly added to succset.
+            for added_target in sorted(new_unique_succs - old_unique_succs):
                 added_blk = self.mba.get_mblock(added_target)
                 if added_blk is not None and not self._serial_in_set(
                     added_blk.predset, dispatcher_serial
