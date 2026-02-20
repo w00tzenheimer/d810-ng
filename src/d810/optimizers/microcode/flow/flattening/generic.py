@@ -1854,19 +1854,6 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         if not self._deferred_case_overlap_edges:
             return 0
 
-        # Skip canonicalization for large overlap sets to prevent MBA corruption.
-        # The retarget cascade uses stale target_to_indices data, causing
-        # succset/predset inconsistencies when there are too many cases.
-        MAX_JTBL_CANON_OVERLAPS = 64
-        _total_overlaps = sum(len(v) for v in self._deferred_case_overlap_edges.values())
-        if _total_overlaps > MAX_JTBL_CANON_OVERLAPS:
-            unflat_logger.warning(
-                "Skipping jtbl canonicalization: %d overlap entries exceeds limit %d "
-                "(dispatcher too large; unflattening proceeds without case deduplication)",
-                _total_overlaps, MAX_JTBL_CANON_OVERLAPS,
-            )
-            return 0
-
         total_case_retargets = 0
         for dispatcher_serial, rewrite_edges in self._deferred_case_overlap_edges.items():
             dispatcher_blk = self.mba.get_mblock(dispatcher_serial)
