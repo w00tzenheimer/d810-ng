@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import enum
+import math
 import pathlib
 import time
 from collections import defaultdict
@@ -584,10 +585,11 @@ class InstructionVisitorManager(ida_hexrays.minsn_visitor_t):
 
 
 class BlockOptimizerManager(ida_hexrays.optblock_t):
-    # Maximum number of block-optimizer passes allowed at a single maturity
-    # level before we bail out.  This is a safety net against infinite loops
-    # where the optimizer keeps matching but never converges.
-    _MAX_PASSES_PER_MATURITY = 500
+    # Base pass limit for a small function (<=32 blocks). For larger functions
+    # the limit scales as: base * (1 + log2(block_count / 32)).
+    # This is a safety net against infinite loops where the optimizer keeps
+    # matching but never converges.
+    _BASE_PASSES_PER_MATURITY = 500
 
     def __init__(self, stats: OptimizationStatistics, log_dir: pathlib.Path):
         optimizer_logger.debug("Initializing {0}...".format(self.__class__.__name__))
@@ -609,6 +611,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
 
         self.current_maturity = None
         self._pass_count = 0
+        self._max_passes_current = self._BASE_PASSES_PER_MATURITY
         self._flow_context: FlowMaturityContext | None = None
         self._flow_context_key: tuple[int, int] | None = None
         # Optional ReconPhase - set via configure(recon_phase=...). None means
@@ -632,6 +635,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         Called when maturity changes so the guard does not carry over.
         """
         self._pass_count = 0
+        self._max_passes_current = self._BASE_PASSES_PER_MATURITY
 
     def reset_pipeline_tracker(self) -> None:
         """Reset the pipeline-last-maturity tracker.
@@ -690,13 +694,38 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # Bug 3 fix: pass guard -- if the block optimizer has been called too
         # many times at the same maturity without a maturity change, bail out
         # to prevent infinite-loop hangs.
+        #
+        # The limit scales with function size so that large functions (e.g.
+        # AntiDebug_ExceptionFilter, ~370 blocks) get enough budget for both
+        # instruction rules and flow rules (e.g. ForwardConstPropRule) to fire.
+        # Formula: base * (1 + log2(block_count / 32)) for block_count > 32.
+        mba = blk.mba
+        if self._pass_count == 0 and mba is not None:
+            mba_qty = int(mba.qty) if mba.qty else 32
+            if mba_qty > 32:
+                scaled = int(
+                    self._BASE_PASSES_PER_MATURITY
+                    * (1 + math.log2(mba_qty / 32))
+                )
+                if scaled != self._max_passes_current:
+                    self._max_passes_current = scaled
+                    optimizer_logger.debug(
+                        "BlockOptimizer pass limit scaled to %d "
+                        "(block_count=%d, maturity=%s)",
+                        self._max_passes_current,
+                        mba_qty,
+                        maturity_to_string(self.current_maturity),
+                    )
+            else:
+                self._max_passes_current = self._BASE_PASSES_PER_MATURITY
+
         self._pass_count += 1
-        if self._pass_count > self._MAX_PASSES_PER_MATURITY:
-            if self._pass_count == self._MAX_PASSES_PER_MATURITY + 1:
+        if self._pass_count > self._max_passes_current:
+            if self._pass_count == self._max_passes_current + 1:
                 optimizer_logger.warning(
                     "BlockOptimizer exceeded %d passes at maturity %s; "
                     "suppressing further optimizations until maturity changes",
-                    self._MAX_PASSES_PER_MATURITY,
+                    self._max_passes_current,
                     maturity_to_string(self.current_maturity),
                 )
             return 0
@@ -714,12 +743,12 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # Disable remaining passes for this maturity after a runtime failure.
             # Continuing to call block rules in the same maturity after an
             # unknown IDA exception often re-enters with stale state.
-            self._pass_count = self._MAX_PASSES_PER_MATURITY + 1
+            self._pass_count = self._max_passes_current + 1
         except D810Exception as e:
             optimizer_logger.warning(
                 "D810Exception in block optimizer on blk %d: %s", blk.serial, e
             )
-            self._pass_count = self._MAX_PASSES_PER_MATURITY + 1
+            self._pass_count = self._max_passes_current + 1
         return 0
 
     def log_info_on_input(self, blk: ida_hexrays.mblock_t):
