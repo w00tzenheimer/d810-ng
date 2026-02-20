@@ -1946,6 +1946,48 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     continue
 
                 chosen_pred = min(rewritten_overlap_preds)
+
+                # Validate the overlap edge is still live in the
+                # post-modification CFG before committing the retarget.
+                # Deferred goto retargets may have rewired the graph such that
+                # chosen_pred no longer reaches target_serial, or such that
+                # retargeting the jtbl entry would create a cycle.
+                chosen_pred_blk = self.mba.get_mblock(chosen_pred)
+                if chosen_pred_blk is None:
+                    unflat_logger.info(
+                        "Skipping stale jtbl overlap in dispatcher %d: "
+                        "chosen_pred %d no longer exists",
+                        dispatcher_serial,
+                        chosen_pred,
+                    )
+                    continue
+                if not self._serial_in_set(chosen_pred_blk.succset, target_serial):
+                    unflat_logger.info(
+                        "Skipping stale jtbl overlap in dispatcher %d: "
+                        "chosen_pred %d is no longer a predecessor of target %d "
+                        "(stale edge from pre-modification analysis)",
+                        dispatcher_serial,
+                        chosen_pred,
+                        target_serial,
+                    )
+                    continue
+                # Cycle guard: if chosen_pred is already a successor of
+                # target_serial, retargeting jtbl→chosen_pred would create a
+                # back-edge and a cycle (e.g. 144↔145).
+                target_blk_check = self.mba.get_mblock(target_serial)
+                if target_blk_check is not None and self._serial_in_set(
+                    target_blk_check.succset, chosen_pred
+                ):
+                    unflat_logger.info(
+                        "Skipping jtbl overlap retarget in dispatcher %d: "
+                        "retargeting %d -> %d would create a cycle "
+                        "(target already reaches chosen_pred)",
+                        dispatcher_serial,
+                        target_serial,
+                        chosen_pred,
+                    )
+                    continue
+
                 retarget_map[target_serial] = chosen_pred
                 unflat_logger.warning(
                     "Canonicalized jtbl overlap in dispatcher %d: "
@@ -1955,6 +1997,33 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     chosen_pred,
                     sorted(overlap_preds),
                 )
+
+            # Pass 1b: resolve transitive chains in retarget_map.
+            # If retarget_map has {9:8, 8:7}, applying both creates a jtbl
+            # entry pointing to 8 that is no longer the canonical entry (since
+            # 8 itself is retargeted to 7). IDA's verify sees block 8 reachable
+            # from two different paths and flags a dominator cycle (INTERR 50753).
+            # Collapse chains so each entry maps directly to its chain root.
+            for key in list(retarget_map.keys()):
+                visited: set[int] = {key}
+                cur = retarget_map[key]
+                while cur in retarget_map:
+                    nxt = retarget_map[cur]
+                    if nxt in visited:
+                        # Detected a cycle in the retarget_map itself — skip.
+                        unflat_logger.info(
+                            "Skipping jtbl overlap retarget in dispatcher %d: "
+                            "transitive chain from %d reached cycle at %d",
+                            dispatcher_serial,
+                            key,
+                            nxt,
+                        )
+                        cur = key  # signal: leave this entry unchanged
+                        break
+                    visited.add(cur)
+                    cur = nxt
+                if cur != key:
+                    retarget_map[key] = cur
 
             # Pass 2: execute retarget + succ/pred sync via
             # the central CFG mutation gateway.
