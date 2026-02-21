@@ -599,6 +599,93 @@ def _update_jtbl_case_targets(
     return updated
 
 
+def coalesce_jtbl_cases(blk: "ida_hexrays.mblock_t") -> int:
+    """Coalesce duplicate target entries in a jtbl block's mcases_t.
+
+    IDA's mba.verify() (INTERR 50753) requires each target block serial to
+    appear at most once in ``cases.targets[]``.  In the valid IDA representation,
+    multiple case values for the same target go into a single ``values[]`` entry.
+
+    This function can be called independently of any retargeting — it fixes
+    pre-existing duplicates introduced by the unflattener or other passes.
+
+    Args:
+        blk: Dispatcher block whose tail must be ``m_jtbl``.
+
+    Returns:
+        Number of duplicate target entries coalesced (0 if already unique).
+    """
+    tail = getattr(blk, "tail", None)
+    if tail is None or tail.opcode != ida_hexrays.m_jtbl:
+        return 0
+    if tail.r is None or tail.r.t != ida_hexrays.mop_c or tail.r.c is None:
+        return 0
+
+    cases = tail.r.c
+    if cases.targets is None:
+        return 0
+
+    old_unique_succs: set[int] = set(int(s) for s in blk.succset)
+
+    n = cases.targets.size()
+
+    # Phase 1: Extract ALL data to pure Python (no SWIG proxies held)
+    from collections import defaultdict
+    groups: dict[int, list[int]] = defaultdict(list)
+    for i in range(n):
+        tgt = int(cases.targets[i])
+        for val in cases.values[i]:
+            groups[tgt].append(int(val))
+
+    coalesced = n - len(groups)
+    if coalesced == 0:
+        return 0
+
+    # Phase 2: Rebuild mcases_t from pure Python data.
+    # Use ida_hexrays.uint64vec_t() for casevec_t entries (qvector<uint64>).
+    new_mc = ida_hexrays.mcases_t()
+    for tgt in sorted(groups):
+        new_mc.targets.push_back(tgt)
+        uv = ida_hexrays.uint64vec_t()
+        for val in groups[tgt]:
+            uv.push_back(val)
+        new_mc.values.push_back(uv)
+    cases.swap(new_mc)
+
+    helper_logger.debug(
+        "Coalesced %d -> %d unique jtbl entries in block %d",
+        n, len(groups), blk.serial,
+    )
+
+    blk.succset.clear()
+    for i in range(cases.targets.size()):
+        blk.succset.add_unique(int(cases.targets[i]))
+
+    mba = blk.mba
+    blk_serial = int(blk.serial)
+    new_unique_succs: set[int] = set(int(cases.targets[i]) for i in range(cases.targets.size()))
+
+    for removed_target in sorted(old_unique_succs - new_unique_succs):
+        removed_blk = mba.get_mblock(removed_target)
+        if removed_blk is None:
+            continue
+        if _serial_in_predset(removed_blk, blk_serial):
+            removed_blk.predset._del(blk_serial)
+            removed_blk.mark_lists_dirty()
+
+    for added_target in sorted(new_unique_succs - old_unique_succs):
+        added_blk = mba.get_mblock(added_target)
+        if added_blk is None:
+            continue
+        if not _serial_in_predset(added_blk, blk_serial):
+            added_blk.predset.push_back(blk_serial)
+            added_blk.mark_lists_dirty()
+
+    blk.mark_lists_dirty()
+    mba.mark_chains_dirty()
+    return coalesced
+
+
 def retarget_jtbl_block_cases(
     blk: "ida_hexrays.mblock_t",
     retarget_map: dict[int, int],
@@ -614,6 +701,7 @@ def retarget_jtbl_block_cases(
     Note: deduplication of case entries was removed. Duplicate targets after
     retargeting are left as-is so that IDA's internal verify catches structural
     inconsistencies (INTERR 50753) rather than silently masking them.
+    Use :func:`coalesce_jtbl_cases` explicitly when deduplication is needed.
 
     Args:
         blk: Dispatcher block whose tail must be ``m_jtbl``.
@@ -1095,6 +1183,7 @@ __all__ = [
     "create_standalone_block",
     "update_block_successors",
     "_update_jtbl_case_targets",
+    "coalesce_jtbl_cases",
     "retarget_jtbl_block_cases",
     "convert_jtbl_to_goto",
     "_get_fallthrough_successor_serial",
