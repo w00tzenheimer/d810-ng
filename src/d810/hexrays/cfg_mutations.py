@@ -7,6 +7,7 @@ as part of the CFG Pass Pipeline refactor (Phase 1).
 from __future__ import annotations
 
 import ida_hexrays
+import ida_pro
 import idaapi
 
 from d810.core import getLogger
@@ -642,11 +643,12 @@ def coalesce_jtbl_cases(blk: "ida_hexrays.mblock_t") -> int:
         return 0
 
     # Phase 2: Rebuild mcases_t from pure Python data.
-    # Use ida_hexrays.uint64vec_t() for casevec_t entries (qvector<uint64>).
+    # casevec_t is qvector<svalvec_t>; each entry is an svalvec_t (svalvec_t =
+    # qvector<sval_t>).  In IDA Python 9.x this is ida_pro.svalvec_t().
     new_mc = ida_hexrays.mcases_t()
     for tgt in sorted(groups):
         new_mc.targets.push_back(tgt)
-        uv = ida_hexrays.uint64vec_t()
+        uv = ida_pro.svalvec_t()
         for val in groups[tgt]:
             uv.push_back(val)
         new_mc.values.push_back(uv)
@@ -741,7 +743,7 @@ def retarget_jtbl_block_cases(
 
     blk.succset.clear()
     for i in range(cases.targets.size()):
-        blk.succset.push_back(int(cases.targets[i]))
+        blk.succset.add_unique(int(cases.targets[i]))
 
     mba = blk.mba
     blk_serial = int(blk.serial)
