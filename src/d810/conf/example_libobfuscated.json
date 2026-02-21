@@ -25,6 +25,11 @@
       "config": {}
     },
     {
+      "name": "ConstantSubtreeFoldRule",
+      "is_activated": true,
+      "config": {}
+    },
+    {
       "name": "ReplaceReadonlyAddressOfWithImmediate",
       "is_activated": true,
       "config": {}
