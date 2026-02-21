@@ -44,9 +44,9 @@ logger = getLogger("D810.loop_prover")
 try:
     import z3
     Z3_AVAILABLE = True
-except ImportError:
+except (ImportError, AttributeError, OSError) as e:
     Z3_AVAILABLE = False
-    logger.warning("Z3 not available, using simple comparison for loop proving")
+    logger.warning("Z3 import failed (%s). Using simple comparison for loop proving.", e)
 
 
 @dataclass

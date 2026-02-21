@@ -28,5 +28,13 @@ def ensure_speedups_on_path() -> bool:
     if path_str in sys.path:
         return True
     sys.path.insert(0, path_str)
+    import builtins
+    speedups_z3_lib = speedups_dir / "z3" / "lib"
+    if speedups_z3_lib.is_dir():
+        # Force z3core.py to search our isolated lib dir first,
+        # before falling back to cwd (which is IDA's install dir) or PATH.
+        # z3core.py checks builtins.Z3_LIB_DIRS and uses it to override
+        # the default search order when loading libz3.{dll,dylib,so}.
+        builtins.Z3_LIB_DIRS = [str(speedups_z3_lib)]
     return True
 

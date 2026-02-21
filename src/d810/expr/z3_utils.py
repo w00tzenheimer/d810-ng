@@ -112,8 +112,8 @@ try:
     except AttributeError:
         logger.debug("Couldn't find sys.stdout.encoding, setting it to utf-8")
         sys.stdout.encoding = "utf-8"  # type: ignore
-except ImportError:
-    logger.info("Z3 features disabled. Install Z3 to enable them")
+except (ImportError, AttributeError, OSError) as e:
+    logger.warning("Z3 import failed (%s). Z3 features disabled.", e)
     Z3_INSTALLED = False
 
 
