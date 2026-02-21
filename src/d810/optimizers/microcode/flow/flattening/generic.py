@@ -936,6 +936,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self._verify_failed: bool = False
         # Track the last function EA seen in optimize() to detect new functions.
         self._last_function_ea: int = -1
+        self._last_maturity: int = -1
         # Last collected dispatcher layout signals (for debug tooling/tests).
         self._last_layout_signals: dict[str, Any] = {}
 
@@ -2886,8 +2887,10 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self._apply_function_overrides()
         # Reset per-function state when a new function begins decompilation.
         func_ea = blk.mba.entry_ea
-        if func_ea != self._last_function_ea:
+        cur_mat = blk.mba.maturity
+        if func_ea != self._last_function_ea or cur_mat != self._last_maturity:
             self._last_function_ea = func_ea
+            self._last_maturity = cur_mat
             self._verify_failed = False
         if not self.check_if_rule_should_be_used(blk):
             return 0

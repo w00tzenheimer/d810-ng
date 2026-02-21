@@ -977,7 +977,9 @@
         "per_function_overrides": {
           "AntiDebug_ExceptionFilter": {
             "max_calls_exit_blocks": 500,
-            "min_cfg_edges_required": 256
+            "min_cfg_edges_required": 256,
+            "max_calls_entry_preds": 500,
+            "defer_calls_on_conditional_entry_father": false
           }
         }
       }
