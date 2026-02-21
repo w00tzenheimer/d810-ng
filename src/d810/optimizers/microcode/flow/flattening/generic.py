@@ -919,6 +919,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         # Set when deferred modifier verify fails -- prevents further
         # processing on a corrupted MBA that would cause IDA hangs.
         self._verify_failed: bool = False
+        # Track the last function EA seen in optimize() to detect new functions.
+        self._last_function_ea: int = -1
         # Last collected dispatcher layout signals (for debug tooling/tests).
         self._last_layout_signals: dict[str, Any] = {}
 
@@ -2867,14 +2869,10 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         import time as _time
         self.mba = blk.mba
         self._apply_function_overrides()
-        # Reset per-function state at the start of each new decompilation.
-        # Detected by: we're at the first maturity level AND cur_maturity hasn't
-        # been updated to that level yet (meaning this is a fresh function, not
-        # a subsequent pass within the same function).
-        if (
-            blk.mba.maturity == self.maturities[0]
-            and self.cur_maturity != blk.mba.maturity
-        ):
+        # Reset per-function state when a new function begins decompilation.
+        func_ea = blk.mba.entry_ea
+        if func_ea != self._last_function_ea:
+            self._last_function_ea = func_ea
             self._verify_failed = False
         if not self.check_if_rule_should_be_used(blk):
             return 0
