@@ -3064,10 +3064,25 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         )
         # Safety: detect cross-case topology that crashes IDA's structurer
         if not self._verify_failed and self._has_cross_case_hazard():
-            unflat_logger.warning(
-                "Cross-case jtbl topology detected — returning 0 to prevent structurer crash"
-            )
             self._verify_failed = True
+            if self.last_pass_nb_patch_done > 0:
+                # Patches were applied this pass -- IDA needs a non-zero return
+                # to trigger its own optimizers (constant folding, etc.) so the
+                # user sees the unflattened+folded output.  _verify_failed=True
+                # prevents d810 from running further passes on this function.
+                unflat_logger.warning(
+                    "Cross-case jtbl topology detected after %d patches -- "
+                    "disabling further d810 passes but reporting changes to IDA",
+                    self.last_pass_nb_patch_done,
+                )
+                return self.last_pass_nb_patch_done + initial_changes
+            else:
+                # No patches this pass -- MBA is already in the bad state;
+                # returning 0 keeps IDA from re-running its structurer on it.
+                unflat_logger.warning(
+                    "Cross-case jtbl topology detected -- returning 0 to prevent structurer crash",
+                )
+                return 0
         if self._verify_failed:
             return 0
         return self.last_pass_nb_patch_done + initial_changes
