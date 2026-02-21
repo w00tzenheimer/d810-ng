@@ -561,7 +561,10 @@ class GenericUnflatteningRule(FlowOptimizationRule):
     # Practical maturities - MMAT_GLBOPT3 is rarely/never called by Hex-Rays.
     # Keep unflattening out of MMAT_CALLS by default because large CFG rewrite
     # batches at that maturity are the most crash-prone in practice.
+    # MMAT_LOCOPT (3) is included because optblock_t callbacks fire here; without
+    # it the rule scope service filters the unflattener out at that maturity.
     DEFAULT_UNFLATTENING_MATURITIES = [
+        ida_hexrays.MMAT_LOCOPT,
         ida_hexrays.MMAT_GLBOPT1,
         ida_hexrays.MMAT_GLBOPT2,
     ]
