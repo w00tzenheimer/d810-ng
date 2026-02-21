@@ -37,6 +37,7 @@ from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
 from d810.hexrays.cfg_mutations import create_standalone_block
 from d810.hexrays.cfg_utils import (
     change_1way_block_successor,
+    coalesce_jtbl_cases,
     create_block,
     ensure_child_has_an_unconditional_father,
     ensure_last_block_is_goto,
@@ -2070,7 +2071,17 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 retarget_map,
                 deduplicate=False,
             )
-            if retargeted_cases <= 0:
+            # Always coalesce duplicate jtbl targets on the dispatcher block,
+            # including pre-existing duplicates introduced by the unflattener
+            # that were never retargeted (would cause INTERR 50753).
+            coalesced = coalesce_jtbl_cases(dispatcher_blk)
+            if coalesced > 0:
+                unflat_logger.debug(
+                    "jtbl canon: coalesced %d pre-existing duplicate targets on blk %d",
+                    coalesced,
+                    dispatcher_serial,
+                )
+            if retargeted_cases <= 0 and coalesced <= 0:
                 continue
             total_case_retargets += retargeted_cases
 
