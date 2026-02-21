@@ -2867,6 +2867,15 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         import time as _time
         self.mba = blk.mba
         self._apply_function_overrides()
+        # Reset per-function state at the start of each new decompilation.
+        # Detected by: we're at the first maturity level AND cur_maturity hasn't
+        # been updated to that level yet (meaning this is a fresh function, not
+        # a subsequent pass within the same function).
+        if (
+            blk.mba.maturity == self.maturities[0]
+            and self.cur_maturity != blk.mba.maturity
+        ):
+            self._verify_failed = False
         if not self.check_if_rule_should_be_used(blk):
             return 0
 
