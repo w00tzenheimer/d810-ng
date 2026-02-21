@@ -1847,6 +1847,44 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 return True
         return False
 
+    def _has_cross_case_hazard(self) -> bool:
+        """Detect cross-case edges that crash IDA's structurer.
+
+        Returns True if any jtbl case target has a predecessor that is
+        also a case target of the same dispatcher (cross-case edge).
+        """
+        blt_nway = getattr(ida_hexrays, "BLT_NWAY", None)
+        for serial in range(self.mba.qty):
+            blk = self.mba.get_mblock(serial)
+            if blk is None:
+                continue
+            if blt_nway is not None and blk.type != blt_nway:
+                continue
+            tail = blk.tail
+            if tail is None or tail.opcode != ida_hexrays.m_jtbl:
+                continue
+            if tail.r is None or tail.r.t != ida_hexrays.mop_c or tail.r.c is None:
+                continue
+            cases = tail.r.c
+            if cases is None:
+                continue
+            case_targets: set[int] = set()
+            for i in range(cases.targets.size()):
+                case_targets.add(int(cases.targets[i]))
+            # Check if any case target has a non-dispatcher predecessor
+            # that is also a case target
+            for tgt in case_targets:
+                tgt_blk = self.mba.get_mblock(tgt)
+                if tgt_blk is None:
+                    continue
+                for pred in tgt_blk.predset:
+                    p = int(pred)
+                    if p == serial:  # dispatcher predecessor is expected
+                        continue
+                    if p in case_targets:
+                        return True
+        return False
+
     def _canonicalize_jtbl_cross_case_overlaps(self) -> int:
         """Retarget overlapping jtbl entries to avoid shared case-entry headers.
 
@@ -2999,4 +3037,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             "optimizing GenericDispatcherUnflatteningRule.optimize",
             logger_func=unflat_logger.error,
         )
+        # Safety: detect cross-case topology that crashes IDA's structurer
+        if not self._verify_failed and self._has_cross_case_hazard():
+            unflat_logger.warning(
+                "Cross-case jtbl topology detected — returning 0 to prevent structurer crash"
+            )
+            self._verify_failed = True
+        if self._verify_failed:
+            return 0
         return self.last_pass_nb_patch_done + initial_changes
