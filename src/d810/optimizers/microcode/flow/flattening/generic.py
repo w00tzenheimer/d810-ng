@@ -778,15 +778,20 @@ class GenericUnflatteningRule(FlowOptimizationRule):
             self.cur_maturity_pass = 0
         if self.cur_maturity not in self.maturities:
             return False
-        if self.flow_context is not None:
-            gate = self.flow_context.evaluate_unflattening_gate()
-            if not gate.allowed:
-                unflat_logger.debug(
-                    "Skipping %s via flow context gate: %s",
-                    self.__class__.__name__,
-                    gate.reason,
-                )
-                return False
+        # Rules with their own dispatcher collector (i.e. GenericDispatcherUnflatteningRule
+        # subclasses) perform their own structural detection and must not be pre-screened
+        # by the lightweight flow-context heuristic, which can produce false negatives for
+        # patterns like OLLVM whose CFG signatures differ from what the gate expects.
+        if not getattr(self, "HAS_OWN_DISPATCHER_COLLECTOR", False):
+            if self.flow_context is not None:
+                gate = self.flow_context.evaluate_unflattening_gate()
+                if not gate.allowed:
+                    unflat_logger.debug(
+                        "Skipping %s via flow context gate: %s",
+                        self.__class__.__name__,
+                        gate.reason,
+                    )
+                    return False
         return True
 
     @abc.abstractmethod
@@ -796,6 +801,13 @@ class GenericUnflatteningRule(FlowOptimizationRule):
 
 
 class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
+    # Signals that this rule uses its own dispatcher collector for structural
+    # detection.  The flow-context pre-screening gate in
+    # GenericUnflatteningRule.check_if_rule_should_be_used() checks this flag
+    # and skips the lightweight heuristic for these rules so that patterns
+    # whose CFG signatures differ from the gate's expectations (e.g. OLLVM
+    # functions classified as UNKNOWN) are not incorrectly blocked.
+    HAS_OWN_DISPATCHER_COLLECTOR: bool = True
 
     CONFIG_SCHEMA = GenericUnflatteningRule.CONFIG_SCHEMA + (
         ConfigParam("max_passes", int, 5, "Maximum optimization passes"),
