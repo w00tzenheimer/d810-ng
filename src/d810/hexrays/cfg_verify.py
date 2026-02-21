@@ -63,12 +63,17 @@ def safe_verify(
     capture_metadata: dict[str, Any] | None = None,
 ) -> None:
     """Run mba.verify(True) and produce helpful diagnostics on failure."""
-    catcher = _InterrCatcher()
-    catcher.hook()
+    catcher = None
+    try:
+        catcher = _InterrCatcher()
+        catcher.hook()
+    except Exception:
+        catcher = None
+
     try:
         mba.verify(True)
     except RuntimeError as e:
-        interr_code = catcher.last_code
+        interr_code = catcher.last_code if catcher is not None else None
         if interr_code is not None:
             logger_func(
                 "verify failed after %s (INTERR %d / 0x%X): %s",
@@ -112,7 +117,8 @@ def safe_verify(
                 )
         raise
     finally:
-        catcher.unhook()
+        if catcher is not None:
+            catcher.unhook()
 
 
 def _snapshot_insn(insn: ida_hexrays.minsn_t | None) -> dict[str, Any] | None:
