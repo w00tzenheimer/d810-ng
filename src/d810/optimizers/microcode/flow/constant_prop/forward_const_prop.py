@@ -410,6 +410,15 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         #
         # A plain store (stx) is a *precise* write that we interpret below,
         # so we exclude it from the blanket kill.
+        #
+        # Known pure helpers (ROL/ROR) are m_call with mop_h operand but have
+        # no observable side effects on memory/stack — skip the blanket kill.
+        if (ins.opcode == ida_hexrays.m_call
+                and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_h):
+            helper_name: str = ins.l.helper
+            if helper_name.startswith(("__ROL", "__ROR")):
+                return  # pure helper — preserve env
         if ins.has_side_effects() and ins.opcode != ida_hexrays.m_stx:
             env.clear()
             # Nothing more to learn from this instruction.
