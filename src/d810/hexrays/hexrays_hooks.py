@@ -612,6 +612,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self.current_maturity = None
         self._pass_count = 0
         self._max_passes_current = self._BASE_PASSES_PER_MATURITY
+        self._generation: int = 0
         self._flow_context: FlowMaturityContext | None = None
         self._flow_context_key: tuple[int, int] | None = None
         # Optional ReconPhase - set via configure(recon_phase=...). None means
@@ -630,12 +631,22 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # usage tracking moved to centralized statistics object
 
     def reset_pass_counter(self) -> None:
-        """Reset the per-maturity pass counter.
+        """Reset the per-maturity pass counter and generation counter.
 
         Called when maturity changes so the guard does not carry over.
         """
         self._pass_count = 0
         self._max_passes_current = self._BASE_PASSES_PER_MATURITY
+        self._generation = 0
+
+    @property
+    def generation(self) -> int:
+        """Monotonically increasing counter incremented whenever any rule applies patches.
+
+        Rules can use this (via ``self.current_generation``) to detect that the CFG
+        has changed since they last ran, allowing them to re-run within the same maturity.
+        """
+        return self._generation
 
     def reset_pipeline_tracker(self) -> None:
         """Reset the pipeline-last-maturity tracker.
@@ -945,6 +956,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
             for cfg_rule in phase_rules:
                 cfg_rule.current_maturity = self.current_maturity
+                cfg_rule.current_generation = self._generation
                 cfg_rule.set_flow_context(flow_context)
                 guard = blk.mba is not None and blk.mba.entry_ea is not None
                 if active_rules is None:
@@ -961,6 +973,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         )
                         if self.stats is not None:
                             self.stats.record_cfg_rule_patches(cfg_rule.name, nb_patch)
+                        self._generation += 1
                         # Rebuild analysis context after any CFG write so lower
                         # priorities see fresh facts on the next callback pass.
                         self._invalidate_flow_context(
