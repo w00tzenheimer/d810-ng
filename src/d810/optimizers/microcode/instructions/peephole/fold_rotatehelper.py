@@ -8,14 +8,73 @@ import ida_hexrays
 from d810.core import typing
 from d810.core import getLogger
 from d810.evaluator.helpers.rotate import _RotateHelper as _HelperLookup
+from d810.expr.ast import mop_to_ast
 from d810.hexrays.hexrays_formatters import format_mop_t, opcode_to_string, sanitize_ea
 from d810.hexrays.hexrays_helpers import AND_TABLE  # already maps size->mask
 from d810.hexrays.hexrays_helpers import extract_literal_from_mop, is_rotate_helper_call
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
+from d810.optimizers.microcode.instructions.peephole.normalise_helpers import (
+    _eval_subtree,
+)
 
 logger = getLogger(__name__)
+
+
+def _try_eval_mop(mop: "ida_hexrays.mop_t | None", bits: int) -> "tuple[int, int] | None":
+    """Try to evaluate *mop* as a constant, returning (value, size_bytes) or None.
+
+    First tries the fast path via ``extract_literal_from_mop`` (handles plain
+    mop_n and simple wrappers).  If that fails, falls back to building a full
+    AST and evaluating it with ``_eval_subtree``, which handles nested constant
+    expression trees such as ``__ROL4__(0x6EBCBAA1, 4) + 0x6B9F6F9A``.
+    """
+    if mop is None:
+        return None
+
+    # Fast path: plain literal or simple wrapper.
+    lit = extract_literal_from_mop(mop)
+    if lit and len(lit) == 1:
+        return lit[0]  # (value, size_bytes)
+
+    # Slow path: full AST evaluation for nested constant expressions.
+    try:
+        ast = mop_to_ast(mop)
+        if ast is not None:
+            val = _eval_subtree(ast, bits)
+            if val is not None:
+                return (val, mop.size)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            "[RotateHelperInline] _try_eval_mop AST fallback failed for mop=%s: %s",
+            format_mop_t(mop),
+            exc,
+        )
+    return None
+
+
+def _extract_args_from_mop_f(
+    mop_f: "ida_hexrays.mop_t", bits: int
+) -> "list[tuple[int, int]] | None":
+    """Extract two (value, size) pairs from an mop_f argument list.
+
+    Each argument is evaluated via :func:`_try_eval_mop` so that nested
+    constant expression trees are handled in addition to plain literals.
+    Returns a 2-element list or None if any argument cannot be evaluated.
+    """
+    if mop_f is None or mop_f.t != ida_hexrays.mop_f or getattr(mop_f, "f", None) is None:
+        return None
+    args = mop_f.f.args
+    if not args or len(args) < 2:
+        return None
+    result: list[tuple[int, int]] = []
+    for arg in args[:2]:
+        ev = _try_eval_mop(arg, bits)
+        if ev is None:
+            return None
+        result.append(ev)
+    return result
 
 
 def example(msg: str) -> typing.Callable:
@@ -106,6 +165,9 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
         # must guard against both variants to avoid AttributeErrors.
         call_ins = left.d  # the inner m_call instruction
 
+        # Bit-width of the destination (used for AST evaluation fallback).
+        _bits: int = dest.size * 8 if dest.size else 32
+
         # Pattern A: arguments packed in a mop_f stored in call_ins.r
         if (
             call_ins.r is not None
@@ -113,8 +175,8 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
             and hasattr(call_ins.r, "f")
             and call_ins.r.f is not None
         ):
-            # args_list = call_ins.r.f.args
-            args_list = extract_literal_from_mop(call_ins.r)
+            # Try the fast literal path first; fall back to per-arg AST eval.
+            args_list = extract_literal_from_mop(call_ins.r) or _extract_args_from_mop_f(call_ins.r, _bits)
 
         # Pattern B: arguments packed in a mop_f stored in call_ins.d (observed when call_ins.r is mop_z)
         elif (
@@ -123,17 +185,14 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
             and hasattr(call_ins.d, "f")
             and call_ins.d.f is not None
         ):
-            # args_list = call_ins.d.f.args
-            args_list = extract_literal_from_mop(call_ins.d)
+            args_list = extract_literal_from_mop(call_ins.d) or _extract_args_from_mop_f(call_ins.d, _bits)
 
         # Pattern C: compact helper - r is value, d is shift amount
         elif call_ins.r is not None and call_ins.d is not None:
-            # args_list = [call_ins.r, call_ins.d]
-            args_list = extract_literal_from_mop(call_ins.r)
-            if args_list:
-                shift_list = extract_literal_from_mop(call_ins.d)
-                if shift_list:
-                    args_list.extend(shift_list)
+            val_ev = _try_eval_mop(call_ins.r, _bits)
+            shift_ev = _try_eval_mop(call_ins.d, _bits)
+            if val_ev is not None and shift_ev is not None:
+                args_list = [val_ev, shift_ev]
         else:
             logger.debug(
                 "[RotateHelperInline] unable to determine helper arguments (call_ins.l=%s r=%s d=%s), bail out",
