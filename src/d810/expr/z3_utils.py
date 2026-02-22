@@ -302,6 +302,19 @@ def ast_to_z3_expression(ast: AstNode | AstLeaf | None, use_bitvecval=False):
                     z3.BitVecRef, z3.ZeroExt(32 - extracted.size(), extracted)
                 )
             return extracted
+        case ida_hexrays.m_call:
+            # Handle rotate helper calls (__ROL*/__ROR*) emitted by mop_to_ast.
+            # These AstNodes carry a func_name attribute set during AST construction.
+            func_name = getattr(ast, "func_name", "")
+            if func_name.startswith("__ROL"):
+                # z3.RotateLeft accepts either a Python int or a BitVec shift.
+                return z3.RotateLeft(left, right)
+            elif func_name.startswith("__ROR"):
+                return z3.RotateRight(left, right)
+            else:
+                raise D810Z3Exception(
+                    f"Z3 evaluation: Unknown m_call helper '{func_name}' for {ast}"
+                )
         case _:
             # Gracefully fail on unknown opcode; avoid type issues in logging
             op = getattr(ast, "opcode", None)
