@@ -43,6 +43,27 @@ _SKIP_OPCODES: frozenset[int] = frozenset({
     ida_hexrays.m_stx,
 })
 
+# Set/comparison opcodes: their destination is always 1 byte (the flag),
+# but the source operands can be wider.  Replacing the whole instruction
+# with ``m_ldc #value, dst`` would use ``dst_size`` (1) for the constant
+# but the folded value was computed from wider operands, producing a
+# size mismatch that causes INTERR 50832 in IDA's verifier.
+# These opcodes must fall through to the partial-fold path which
+# reconstructs the instruction from the folded AST, preserving sizes.
+_SET_OPCODES: frozenset[int] = frozenset({
+    ida_hexrays.m_setz,
+    ida_hexrays.m_setnz,
+    ida_hexrays.m_setae,
+    ida_hexrays.m_setb,
+    ida_hexrays.m_seta,
+    ida_hexrays.m_setbe,
+    ida_hexrays.m_setg,
+    ida_hexrays.m_setge,
+    ida_hexrays.m_setl,
+    ida_hexrays.m_setle,
+    ida_hexrays.m_setp,
+})
+
 
 class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
     """Fold constant subtrees bottom-up (handles nested ROL/XOR/SBox chains).
@@ -62,11 +83,13 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
     def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
         super().__init__(*args, **kwargs)
         # Run after FoldReadonlyDataRule (MMAT_PREOPTIMIZED) has turned
-        # read-only table loads into immediates.
+        # read-only table loads into immediates. GLBOPT3 is safe — the
+        # unflattener does not run there (uses CALLS/GLBOPT1/GLBOPT2).
         self.maturities = [
             ida_hexrays.MMAT_LOCOPT,
             ida_hexrays.MMAT_CALLS,
             getattr(ida_hexrays, "MMAT_GLBOPT1", ida_hexrays.MMAT_CALLS),
+            getattr(ida_hexrays, "MMAT_GLBOPT3", ida_hexrays.MMAT_CALLS),
         ]
 
     @typing.override
@@ -117,7 +140,7 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
         # Check whether the entire expression collapsed to a constant.
         value: int | None = _eval_subtree(folded, bits)
 
-        if value is not None:
+        if value is not None and ins.opcode not in _SET_OPCODES:
             # Whole expression is constant — emit m_ldc #value, dst
             mask = AND_TABLE[dst_size]
             value &= mask
@@ -152,6 +175,15 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
         # from the partially-folded AST so that subsequent passes see a
         # simpler expression (e.g., a plain constant operand instead of a deep
         # ROL/XOR chain).
+        #
+        # Safety: skip partial folding for xdu/xds wrapping SET/comparison
+        # opcodes.  create_minsn on such trees produces size-mismatched
+        # instructions that trigger INTERR 50832.  The outer instruction's
+        # opcode is checked in _SET_OPCODES above; here we additionally guard
+        # against xdu/xds whose folded child is a SET node.
+        if ins.opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds):
+            return None
+
         if not folded.is_node():
             # Folded to a leaf but _eval_subtree said non-constant — shouldn't
             # happen, but bail out safely to avoid corrupting the CFG.

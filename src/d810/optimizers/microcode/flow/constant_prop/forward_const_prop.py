@@ -93,8 +93,12 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
 
     def __init__(self):
         super().__init__()
-        # run when SSA names are fixed but before aggressive global opts
-        self.maturities = [ida_hexrays.MMAT_CALLS]
+        # Run at CALLS and GLBOPT3. GLBOPT3 is safe — the unflattener only
+        # runs at CALLS/GLBOPT1/GLBOPT2, so there is no interference.
+        self.maturities = [
+            ida_hexrays.MMAT_CALLS,
+            getattr(ida_hexrays, "MMAT_GLBOPT3", ida_hexrays.MMAT_CALLS),
+        ]
         self._seen = weakref.WeakKeyDictionary()  # mba -> last_maturity_run
         self.cython_enabled = CythonMode().is_enabled()
 

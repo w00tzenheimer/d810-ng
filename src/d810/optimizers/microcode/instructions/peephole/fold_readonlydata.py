@@ -185,6 +185,7 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             ida_hexrays.MMAT_LOCOPT,
             ida_hexrays.MMAT_CALLS,
             getattr(ida_hexrays, "MMAT_GLBOPT1", ida_hexrays.MMAT_CALLS),
+            getattr(ida_hexrays, "MMAT_GLBOPT3", ida_hexrays.MMAT_CALLS),
         ]
         # Configuration for segment permission checking
         # On Mach-O binaries (macOS/iOS), __const segments often have R+X
