@@ -224,7 +224,7 @@ cdef inline bint _map_equals(const CppConstMap& a, const CppConstMap& b):
 cdef inline void _map_assign(CppConstMap& dst, const CppConstMap& src):
     dst = src  # C++ copy
 
-# Intersect OUT of predecessors into 'inm'
+# Union meet: keep vars where all *defining* predecessors agree
 cdef void _meet_preds(
     size_t b,
     qvector[intvec_t]& preds,
@@ -235,33 +235,43 @@ cdef void _meet_preds(
     if preds[b].empty():
         return
 
-    # Seed with first predecessor's OUT (copy if present)
-    cdef unsigned int p0 = preds[b][0]
-    if p0 < OUT_cpp.size():
-        inm = OUT_cpp[p0]
-    else:
-        inm.clear()
-
-    # Intersect with remaining predecessors
-    cdef size_t i
+    # candidates: CppConstMap holds agreed values; killed: tracks conflicts
+    cdef CppConstMap candidates
+    cdef CppConstMap killed   # entries present here have been killed (conflict)
     cdef unsigned int p
-    cdef CppConstMap.iterator it
-    cdef CppConstMap.iterator f
+    cdef size_t i
+    cdef CppConstMap.const_iterator it
+    cdef CppConstMap.iterator kit
+    cdef CppConstMap.iterator cit
     cdef const_val_t v, w
 
-    for i in range(1, preds[b].size()):
+    # Iterate over all predecessors and union-merge their OUT maps
+    for i in range(preds[b].size()):
         p = preds[b][i]
-        it = inm.begin()
-        while it != inm.end():
-            if p < OUT_cpp.size():
-                f = OUT_cpp[p].find(deref(it).first)
-                if f != OUT_cpp[p].end():
-                    v = deref(it).second
-                    w = deref(f).second
-                    if v.first == w.first and v.second == w.second:
-                        inc(it)
-                        continue
-            it = inm.erase(it)
+        if p >= OUT_cpp.size():
+            continue
+        it = OUT_cpp[p].begin()
+        while it != OUT_cpp[p].end():
+            v = deref(it).second
+            # Skip if already killed
+            kit = killed.find(deref(it).first)
+            if kit != killed.end():
+                inc(it)
+                continue
+            cit = candidates.find(deref(it).first)
+            if cit == candidates.end():
+                # First time we see this var: record it
+                candidates[deref(it).first] = v
+            else:
+                # Already seen: check agreement
+                w = deref(cit).second
+                if w.first != v.first or w.second != v.second:
+                    # Conflict: kill it
+                    candidates.erase(cit)
+                    killed[deref(it).first] = v
+            inc(it)
+
+    inm = candidates
 
 cdef inline void _transfer_insn(mblock_t* blk, minsn_t* ins, CppConstMap& env):
     # conservative side-effects handling

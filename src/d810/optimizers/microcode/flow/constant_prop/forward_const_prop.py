@@ -365,28 +365,23 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                         worklist.append(succ)
         return IN, OUT
 
-    # meet = intersection of keys where all values agree
+    # meet = union with conflict kill
     @staticmethod
     def _meet(pred_outs: list[ConstMap]) -> ConstMap:
-        """
-        Compute the meet (intersection) of constant maps coming from the
-        predecessors.
-
-        This optimised version avoids most overhead:
-        1. Early-out when there are 0 or 1 predecessors.
-        2. Iterate only over the keys of the *first* predecessor and compare the
-           value in the remaining maps.
-        """
+        """Union meet: keep vars where all *defining* predecessors agree."""
         if not pred_outs:
             return {}
         if len(pred_outs) == 1:
-            # Fast-path: single predecessor - just copy its map.
             return dict(pred_outs[0])
-        first, res = pred_outs[0], {}
-        for k, v in first.items():
-            if all(other.get(k) == v for other in pred_outs[1:]):
-                res[k] = v
-        return res
+        # Collect all definitions; mark conflicts with None sentinel
+        candidates: dict[str, tuple[int, int] | None] = {}
+        for out_map in pred_outs:
+            for var, val in out_map.items():
+                if var not in candidates:
+                    candidates[var] = val
+                elif candidates[var] is not None and candidates[var] != val:
+                    candidates[var] = None  # conflict → kill
+        return {var: val for var, val in candidates.items() if val is not None}
 
     # transfer over whole block
     def _transfer_block(self, blk: ida_hexrays.mblock_t, in_map: ConstMap) -> ConstMap:
