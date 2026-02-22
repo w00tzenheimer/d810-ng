@@ -523,6 +523,9 @@ cpdef int cy_rewrite_instruction(object ins_py, dict consts_py):
         changed = <bint>True
     if ins.opcode == mcode_t.m_stx and _cy_process_operand(&ins.d, consts):
         changed = <bint>True
+    # m_call: args live in ins.d (mop_f); substitute constants into them
+    if ins.opcode == mcode_t.m_call and _cy_process_operand(&ins.d, consts):
+        changed = <bint>True
 
     # Let Hex-Rays perform local simplifications before folding whole instruction
     if changed:

@@ -89,6 +89,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         ida_hexrays.m_setge,
         ida_hexrays.m_setl,
         ida_hexrays.m_setle,
+        ida_hexrays.m_call,
     }
 
     def __init__(self):
@@ -461,6 +462,13 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         # stx destination address is also an input
         if (
             ins.opcode == ida_hexrays.m_stx
+            and ins.d
+            and self._slow_process_operand(ins.d, env)
+        ):
+            changed = True
+        # m_call: args are in ins.d (mop_f); substitute constants into them
+        if (
+            ins.opcode == ida_hexrays.m_call
             and ins.d
             and self._slow_process_operand(ins.d, env)
         ):
