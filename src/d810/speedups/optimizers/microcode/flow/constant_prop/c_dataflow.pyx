@@ -293,6 +293,15 @@ cdef inline void _transfer_insn(mblock_t* blk, minsn_t* ins, CppConstMap& env):
 
 
 cdef inline void _clear_on_side_effect(minsn_t* ins, CppConstMap& env):
+    # Known pure helpers (ROL/ROR) are m_call with mop_h (HELPER) operand but
+    # have no observable side effects on memory/stack — skip the blanket kill.
+    if ins.opcode == mcode_t.m_call and ins.l.t == MOPT.HELPER:
+        cdef const char* helper_name = ins.l.helper
+        if (helper_name[0] == b'_' and helper_name[1] == b'_'
+                and (helper_name[2] == b'R')
+                and (helper_name[3] == b'O')
+                and (helper_name[4] == b'L' or helper_name[4] == b'R')):
+            return  # pure ROL/ROR helper — preserve env
     if ins.has_side_effects(False) and ins.opcode != mcode_t.m_stx:
         env.clear()
 
