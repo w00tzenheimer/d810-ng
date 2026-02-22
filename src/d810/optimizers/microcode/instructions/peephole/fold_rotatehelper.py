@@ -133,6 +133,81 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
                 format_mop_t(ins.d),
             )
 
+        # Broader path: for arithmetic opcodes, scan l and r for mop_d
+        # sub-operands containing ROL/ROR calls with constant args, and
+        # replace them in-place with mop_n constants.
+        _ARITH_OPCODES = frozenset({
+            ida_hexrays.m_add,
+            ida_hexrays.m_sub,
+            ida_hexrays.m_xor,
+            ida_hexrays.m_or,
+            ida_hexrays.m_and,
+            ida_hexrays.m_mul,
+        })
+
+        if ins.opcode in _ARITH_OPCODES:
+            changed = False
+            _bits_arith: int = ins.d.size * 8 if (ins.d is not None and ins.d.size) else 32
+            for slot in (ins.l, ins.r):
+                if (
+                    slot is None
+                    or slot.t != ida_hexrays.mop_d
+                    or slot.d is None
+                    or slot.d.opcode != ida_hexrays.m_call
+                    or not is_rotate_helper_call(slot.d)
+                ):
+                    continue
+                call_ins = slot.d
+                insn_helper_mop: ida_hexrays.mop_t = call_ins.l
+                helper_name = (insn_helper_mop.helper or "").lstrip("!")
+                if not helper_name:
+                    continue
+                # Extract args using same patterns as m_mov path
+                args_list = None
+                if (
+                    call_ins.r is not None
+                    and call_ins.r.t == ida_hexrays.mop_f
+                    and hasattr(call_ins.r, "f")
+                    and call_ins.r.f is not None
+                ):
+                    args_list = extract_literal_from_mop(call_ins.r) or _extract_args_from_mop_f(call_ins.r, _bits_arith)
+                elif (
+                    call_ins.d is not None
+                    and call_ins.d.t == ida_hexrays.mop_f
+                    and hasattr(call_ins.d, "f")
+                    and call_ins.d.f is not None
+                ):
+                    args_list = extract_literal_from_mop(call_ins.d) or _extract_args_from_mop_f(call_ins.d, _bits_arith)
+                elif call_ins.r is not None and call_ins.d is not None:
+                    val_ev = _try_eval_mop(call_ins.r, _bits_arith)
+                    shift_ev = _try_eval_mop(call_ins.d, _bits_arith)
+                    if val_ev is not None and shift_ev is not None:
+                        args_list = [val_ev, shift_ev]
+                if not args_list or len(args_list) != 2:
+                    continue
+                helper_func = _HelperLookup.lookup(helper_name)
+                if helper_func is None:
+                    continue
+                lhs_val, _ = args_list[0]
+                rhs_val, _ = args_list[1]
+                slot_size = slot.size if slot.size else (ins.d.size if ins.d else 4)
+                mask = AND_TABLE.get(slot_size, 0xFFFFFFFF)
+                result = helper_func(lhs_val, rhs_val) & mask
+                if logger.debug_on:
+                    logger.debug(
+                        "[RotateHelperInline] arith ea=%X opcode=%s: folding %s(%s,%s) -> 0x%X in sub-operand",
+                        sanitize_ea(ins.ea),
+                        opcode_to_string(ins.opcode),
+                        helper_name,
+                        lhs_val,
+                        rhs_val,
+                        result,
+                    )
+                slot.make_number(result, slot_size)
+                changed = True
+            if changed:
+                return ins
+
         # mov call, register
         if ins.opcode != ida_hexrays.m_mov:
             return None
