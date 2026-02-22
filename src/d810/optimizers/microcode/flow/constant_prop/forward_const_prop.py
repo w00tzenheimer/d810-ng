@@ -99,7 +99,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             ida_hexrays.MMAT_CALLS,
             getattr(ida_hexrays, "MMAT_GLBOPT3", ida_hexrays.MMAT_CALLS),
         ]
-        self._seen = weakref.WeakKeyDictionary()  # mba -> last_maturity_run
+        self._seen: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # mba -> (maturity, generation)
         self.cython_enabled = CythonMode().is_enabled()
 
     @typing.override
@@ -124,15 +124,20 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                 logger.debug("Block %d has no mba", blk.serial)
             return 0
 
-        # Run once per function per maturity; only from block 0
+        # Run once per function per (maturity, generation); only from block 0.
+        # Using a (maturity, generation) key means the rule re-runs when the
+        # generation counter advances (i.e. another rule patched the CFG),
+        # allowing constant propagation to pick up newly reachable constants
+        # after the unflattener reshapes control flow.
         last = self._seen.get(mba)
-        if last == self.current_maturity:
+        if last == (self.current_maturity, self.current_generation):
             if logger.debug_on:
                 logger.debug(
-                    "Skipping previous run of block %d, maturity %s (%d)",
+                    "Skipping previous run of block %d, maturity %s (%d), generation %d",
                     blk.serial,
                     maturity_to_string(self.current_maturity),
                     self.current_maturity,
+                    self.current_generation,
                 )
             return 0
         if blk.serial != 1:
@@ -153,7 +158,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                 self.current_maturity,
             )
         nb_changes = self._run_on_function(mba)
-        self._seen[mba] = self.current_maturity  # remember we've run
+        self._seen[mba] = (self.current_maturity, self.current_generation)  # remember we've run
         return nb_changes
 
     def _run_on_function(self, mba: ida_hexrays.mba_t) -> int:

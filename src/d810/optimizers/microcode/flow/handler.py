@@ -72,6 +72,7 @@ class FlowOptimizationRule(OptimizationRule, Registrant, abc.ABC):
     def __init__(self):
         super().__init__()
         self._current_maturity = ida_hexrays.MMAT_ZERO
+        self.current_generation: int = 0
         self.maturities = DEFAULT_FLOW_MATURITIES
         self.priority = self.PRIORITY
         self.flow_context: FlowMaturityContext | None = None
