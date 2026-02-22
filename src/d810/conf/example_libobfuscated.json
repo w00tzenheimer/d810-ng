@@ -950,6 +950,11 @@
       "config": {}
     },
     {
+      "name": "GlobalConstantInliner",
+      "is_activated": true,
+      "config": {}
+    },
+    {
       "name": "ForwardConstantPropagationRule",
       "is_activated": true,
       "config": {}

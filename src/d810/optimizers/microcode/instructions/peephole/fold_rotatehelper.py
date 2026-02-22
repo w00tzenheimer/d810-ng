@@ -69,7 +69,11 @@ def _extract_args_from_mop_f(
     if not args or len(args) < 2:
         return None
     result: list[tuple[int, int]] = []
-    for arg in args[:2]:
+    for i in range(2):
+        try:
+            arg = args[i]
+        except (IndexError, TypeError):
+            return None
         ev = _try_eval_mop(arg, bits)
         if ev is None:
             return None
@@ -105,8 +109,12 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
 
     def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
         super().__init__(*args, **kwargs)
-        # Run *very* early so that the AST builder never sees the wrapper.
-        self.maturities = [ida_hexrays.MMAT_LOCOPT]
+        # Run at LOCOPT (early) and GLBOPT3 (safe — unflattener does not run
+        # at GLBOPT3, only at CALLS/GLBOPT1/GLBOPT2).
+        self.maturities = [
+            ida_hexrays.MMAT_LOCOPT,
+            getattr(ida_hexrays, "MMAT_GLBOPT3", ida_hexrays.MMAT_CALLS),
+        ]
 
     @typing.override
     def check_and_replace(

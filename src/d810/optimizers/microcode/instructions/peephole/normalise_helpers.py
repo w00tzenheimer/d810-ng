@@ -8,6 +8,7 @@ from d810.core import typing
 from d810.core import CacheImpl
 from d810.core import getLogger
 from d810.core.bits import get_parity_flag
+from d810.evaluator.helpers.rotate import _RotateHelper as _HelperLookup
 from d810.expr.ast import AstBase, AstLeaf, AstNode, mop_to_ast
 from d810.hexrays.hexrays_formatters import (  # noqa: F401 - debug only
     format_mop_t,
@@ -488,6 +489,24 @@ def _fold_bottom_up(ast: AstBase, bits) -> tuple[AstBase, bool]:
         return ast, False
     ast = typing.cast(AstNode, ast)
 
+    # For m_call nodes, never recurse into children — partial folding of
+    # m_call sub-operands produces malformed instructions that fail IDA's
+    # verifier (INTERR 50832).
+    # - For rotate-helper calls (__ROL*/__ROR*, func_name non-empty): attempt
+    #   whole-node evaluation via _eval_subtree and replace with a constant.
+    # - For all other m_calls (func_name empty/None): return unchanged.
+    #   The unflattener's m_call nodes must not be modified here.
+    if ast.opcode == ida_hexrays.m_call:
+        func_name = getattr(ast, "func_name", None)
+        if func_name and bits > 0:
+            val = _eval_subtree(ast, bits)
+            if val is not None:
+                leaf = AstLeaf(val)
+                leaf.mop = ida_hexrays.mop_t()
+                leaf.mop.make_number(val, bits // 8)
+                return leaf, True
+        return ast, False
+
     # recurse first
     if ast.left is not None:
         new_left, ch_left = _fold_bottom_up(ast.left, bits)
@@ -513,10 +532,11 @@ def _fold_bottom_up(ast: AstBase, bits) -> tuple[AstBase, bool]:
         rval = _eval_subtree(ast.right, bits)
         if lval is not None and rval is not None:
             val = _fold(ast.opcode, lval, rval, bits)
-            leaf = AstLeaf(val)
-            leaf.mop = ida_hexrays.mop_t()
-            leaf.mop.make_number(val, bits // 8)
-            return leaf, True
+            if val is not None:
+                leaf = AstLeaf(val)
+                leaf.mop = ida_hexrays.mop_t()
+                leaf.mop.make_number(val, bits // 8)
+                return leaf, True
 
     return ast, changed
 
