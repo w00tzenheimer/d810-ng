@@ -146,9 +146,14 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
         })
 
         if ins.opcode in _ARITH_OPCODES:
-            changed = False
+            # Collect mutations to apply: list of (slot_index, result, slot_size)
+            # where slot_index 0 = l, 1 = r.  We do NOT mutate `ins` in-place
+            # because check_and_replace's contract requires returning a *new*
+            # minsn_t so the caller can do ins.swap(new_ins) without it
+            # becoming a self-swap (which corrupts the instruction, INTERR 50835).
             _bits_arith: int = ins.d.size * 8 if (ins.d is not None and ins.d.size) else 32
-            for slot in (ins.l, ins.r):
+            pending: list[tuple[int, int, int]] = []  # (slot_index, result, slot_size)
+            for slot_index, slot in enumerate((ins.l, ins.r)):
                 if (
                     slot is None
                     or slot.t != ida_hexrays.mop_d
@@ -203,10 +208,15 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
                         rhs_val,
                         result,
                     )
-                slot.make_number(result, slot_size)
-                changed = True
-            if changed:
-                return ins
+                pending.append((slot_index, result, slot_size))
+            if pending:
+                # Build a fresh copy so the caller's ins.swap(new_ins) is not a
+                # self-swap.  Apply the folded constants to the copy's slots.
+                new_ins = ida_hexrays.minsn_t(ins)
+                copy_slots = (new_ins.l, new_ins.r)
+                for slot_index, result, slot_size in pending:
+                    copy_slots[slot_index].make_number(result, slot_size)
+                return new_ins
 
         # mov call, register
         if ins.opcode != ida_hexrays.m_mov:
