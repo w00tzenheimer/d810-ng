@@ -116,34 +116,64 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
 
         # Check whether the entire expression collapsed to a constant.
         value: int | None = _eval_subtree(folded, bits)
-        if value is None:
+
+        if value is not None:
+            # Whole expression is constant — emit m_ldc #value, dst
+            mask = AND_TABLE[dst_size]
+            value &= mask
+
+            if logger.debug_on:
+                logger.debug(
+                    "[fold-subtree] 0x%X %s -> ldc 0x%X (size=%d)",
+                    sanitize_ea(ins.ea),
+                    opcode_to_string(ins.opcode),
+                    value,
+                    dst_size,
+                )
+
+            new_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
+            new_ins.opcode = ida_hexrays.m_ldc
+
+            cst = ida_hexrays.mop_t()
+            cst.make_number(value, dst_size)
+            new_ins.l = cst
+
+            new_ins.d = ida_hexrays.mop_t()
+            new_ins.d.assign(ins.d)
+            new_ins.d.size = dst_size
+
+            new_ins.r = ida_hexrays.mop_t()
+            new_ins.r.erase()
+
+            return new_ins
+
+        # Partial fold: a sub-expression was simplified to a constant but the
+        # outer expression still contains variables.  Rebuild the instruction
+        # from the partially-folded AST so that subsequent passes see a
+        # simpler expression (e.g., a plain constant operand instead of a deep
+        # ROL/XOR chain).
+        if not folded.is_node():
+            # Folded to a leaf but _eval_subtree said non-constant — shouldn't
+            # happen, but bail out safely to avoid corrupting the CFG.
             return None
 
-        mask = AND_TABLE[dst_size]
-        value &= mask
-
-        if logger.debug_on:
-            logger.debug(
-                "[fold-subtree] 0x%X %s -> ldc 0x%X (size=%d)",
-                sanitize_ea(ins.ea),
-                opcode_to_string(ins.opcode),
-                value,
-                dst_size,
-            )
-
-        # Emit  m_ldc  #value , dst
-        new_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
-        new_ins.opcode = ida_hexrays.m_ldc
-
-        cst = ida_hexrays.mop_t()
-        cst.make_number(value, dst_size)
-        new_ins.l = cst
-
-        new_ins.d = ida_hexrays.mop_t()
-        new_ins.d.assign(ins.d)
-        new_ins.d.size = dst_size
-
-        new_ins.r = ida_hexrays.mop_t()
-        new_ins.r.erase()
-
-        return new_ins
+        try:
+            dst_mop = ida_hexrays.mop_t()
+            dst_mop.assign(ins.d)
+            dst_mop.size = dst_size
+            new_ins = folded.create_minsn(sanitize_ea(ins.ea), dst_mop)
+            if logger.debug_on:
+                logger.debug(
+                    "[fold-subtree] 0x%X %s -> partial fold (some subtrees constant)",
+                    sanitize_ea(ins.ea),
+                    opcode_to_string(ins.opcode),
+                )
+            return new_ins
+        except Exception as exc:
+            if logger.debug_on:
+                logger.debug(
+                    "[fold-subtree] partial-fold create_minsn failed at 0x%X: %s",
+                    sanitize_ea(ins.ea),
+                    exc,
+                )
+            return None
