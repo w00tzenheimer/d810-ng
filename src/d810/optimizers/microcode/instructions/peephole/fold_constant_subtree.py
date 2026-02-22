@@ -180,8 +180,10 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
         # opcodes.  create_minsn on such trees produces size-mismatched
         # instructions that trigger INTERR 50832.  The outer instruction's
         # opcode is checked in _SET_OPCODES above; here we additionally guard
-        # against xdu/xds whose folded child is a SET node.
-        if ins.opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds):
+        # against xdu/xds whose folded child is a SET node, and against
+        # _SET_OPCODES themselves — create_minsn on partially-folded set/cmp
+        # trees produces size-mismatched instructions (INTERR 50832).
+        if ins.opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds) or ins.opcode in _SET_OPCODES:
             return None
 
         if not folded.is_node():
