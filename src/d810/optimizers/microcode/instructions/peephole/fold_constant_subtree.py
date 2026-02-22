@@ -89,6 +89,7 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
             ida_hexrays.MMAT_LOCOPT,
             ida_hexrays.MMAT_CALLS,
             getattr(ida_hexrays, "MMAT_GLBOPT1", ida_hexrays.MMAT_CALLS),
+            getattr(ida_hexrays, "MMAT_GLBOPT2", ida_hexrays.MMAT_CALLS),
             getattr(ida_hexrays, "MMAT_GLBOPT3", ida_hexrays.MMAT_CALLS),
         ]
 
