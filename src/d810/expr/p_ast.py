@@ -510,7 +510,7 @@ class AstNode(AstBase):
         new_node.opcodes = []
         new_node.sub_ast_info_by_index = {}  # Start fresh
         new_node._depth_sig_cache = {}  # Fresh cache for cloned object
-        new_node.func_name = ""
+        new_node.func_name = self.func_name
 
         # Cloned objects start mutable
         new_node._is_frozen = False

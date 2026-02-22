@@ -807,6 +807,7 @@ def _recursively_resolve_ast(
         new_ast.dst_mop = ast_node.dst_mop
         new_ast.dest_size = ast_node.dest_size
         new_ast.ea = ast_node.ea
+        new_ast.func_name = ast_node.func_name
         if logger.debug_on:
             logger.debug(
                 "_recursively_resolve_ast: Rebuilt AST node: %s -> %s",
