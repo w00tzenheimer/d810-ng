@@ -348,7 +348,7 @@ class PatternOptimizer(InstructionOptimizer):
         self._trace_tracker_resolution = (
             os.environ.get("D810_PATTERN_TRACE_TRACKER", "0") == "1"
         )
-        self._tracker_resolution_opcodes = {ida_hexrays.m_sub}
+        self._tracker_resolution_opcodes = {ida_hexrays.m_sub, ida_hexrays.m_add}
 
         # Register verifiable rules passed at construction time.
         # These rules (from RULE_REGISTRY) implement check_pattern_and_replace
