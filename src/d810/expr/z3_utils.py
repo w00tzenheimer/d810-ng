@@ -655,12 +655,13 @@ def _resolve_mop_to_ast_via_tracker(
         logger.debug("_resolve_mop_to_ast_via_tracker: MopTracker not available")
         return None
 
-    # Create tracker for this mop with limited scope (block-local only)
-    # max_nb_block=1 ensures we only search within the current block
-    # max_path=1 limits to a single path (no branching)
+    # Create tracker with limited block depth. IDA decomposes compound MBA
+    # expressions into separate instructions with temporary registers;
+    # max_nb_block=3 covers typical intra-procedure lowerings while avoiding
+    # incorrect cross-block definitions. max_path=1 limits to single path.
     try:
         MopTracker.reset()  # Reset global path counter
-        tracker = MopTracker([mop], max_nb_block=1, max_path=1)
+        tracker = MopTracker([mop], max_nb_block=3, max_path=1)
         histories = tracker.search_backward(blk, ins)
     except Exception as e:
         logger.debug("_resolve_mop_to_ast_via_tracker: Tracker failed: %s", e)
