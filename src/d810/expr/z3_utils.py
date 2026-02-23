@@ -75,6 +75,7 @@ Low priority since this code works and is only used at runtime inside IDA.
 from __future__ import annotations
 
 import functools
+import os
 from d810.core import typing
 from d810.core.typing import TYPE_CHECKING, Dict, Tuple
 
@@ -95,6 +96,10 @@ from d810.speedups.bootstrap import ensure_speedups_on_path
 
 logger = getLogger(__name__)
 z3_file_logger = getLogger("D810.z3_test")
+
+# Feature flag: use native predecessor-walk def-search as primary resolution path.
+# Set D810_PATTERN_USE_NATIVE_DEF_SEARCH=0 to disable and fall back to MopTracker only.
+_USE_NATIVE_DEF_SEARCH = os.environ.get("D810_PATTERN_USE_NATIVE_DEF_SEARCH", "1") != "0"
 
 ensure_speedups_on_path()
 
@@ -596,6 +601,123 @@ def _resolve_memory_load_via_store(
     return None
 
 
+def _find_def_in_block(
+    mop: ida_hexrays.mop_t,
+    blk: ida_hexrays.mblock_t,
+    before_ins: ida_hexrays.minsn_t | None,
+) -> "ida_hexrays.minsn_t | None":
+    """Scan backward within a single block for the instruction defining *mop*.
+
+    Args:
+        mop: The register or stack-variable operand to find a definition for.
+        blk: The block to search within.
+        before_ins: Start scanning from the instruction *before* this one.
+                    Pass None to start from the block tail.
+
+    Returns:
+        The most-recent instruction in the block that writes to *mop*, or None.
+    """
+    # Build the use-list for mop so we can test against instruction def-lists.
+    ml = ida_hexrays.mlist_t()
+    blk.append_use_list(ml, mop, ida_hexrays.MUST_ACCESS)
+    if ml.empty():
+        return None
+
+    # Walk backwards from before_ins (or from the tail if before_ins is None).
+    cur_ins = before_ins.prev if before_ins is not None else blk.tail
+    while cur_ins is not None:
+        def_ml = blk.build_def_list(cur_ins, ida_hexrays.MAY_ACCESS | ida_hexrays.FULL_XDSU)
+        if ml.has_common(def_ml):
+            return cur_ins
+        cur_ins = cur_ins.prev
+    return None
+
+
+def _resolve_mop_via_predecessors(
+    mop: ida_hexrays.mop_t,
+    blk: ida_hexrays.mblock_t,
+    ins: ida_hexrays.minsn_t,
+) -> "AstNode | AstLeaf | None":
+    """Resolve *mop* to an AST by following single-predecessor chains.
+
+    Only follows predecessor blocks when there is exactly one predecessor,
+    guaranteeing a single execution path from definition to use (path-sensitive
+    by construction).  Tries the current block first as a fast path.
+
+    Args:
+        mop: The register or stack-variable mop to resolve.
+        blk: The block containing *ins*.
+        ins: The instruction at which *mop* is used.
+
+    Returns:
+        The AST of the defining instruction, or None if resolution failed.
+    """
+    _MAX_PRED_DEPTH = 8
+
+    # Fast path: try the current block first.
+    def_ins = _find_def_in_block(mop, blk, ins)
+    if def_ins is not None:
+        ast = minsn_to_ast(def_ins)
+        if ast is not None:
+            ast.ea = def_ins.ea
+            ast.ins = def_ins
+        if logger.debug_on:
+            logger.debug(
+                "_resolve_mop_via_predecessors: resolved %s in current block via %s",
+                format_mop_t(mop),
+                format_minsn_t(def_ins),
+            )
+        return ast
+
+    # Walk single-predecessor chain.
+    cur_blk = blk
+    for _ in range(_MAX_PRED_DEPTH):
+        # Bail out if there is not exactly one predecessor (ambiguous path).
+        if cur_blk.npred() != 1:
+            if logger.debug_on:
+                logger.debug(
+                    "_resolve_mop_via_predecessors: %s has %d predecessors, stopping",
+                    cur_blk.serial,
+                    cur_blk.npred(),
+                )
+            return None
+
+        pred_serial = cur_blk.pred(0)
+        try:
+            pred_blk = cur_blk.mba.get_mblock(pred_serial)
+        except Exception as exc:
+            logger.debug(
+                "_resolve_mop_via_predecessors: get_mblock(%d) failed: %s",
+                pred_serial,
+                exc,
+            )
+            return None
+
+        # Search from the tail of the predecessor (no before_ins restriction).
+        def_ins = _find_def_in_block(mop, pred_blk, None)
+        if def_ins is not None:
+            ast = minsn_to_ast(def_ins)
+            if ast is not None:
+                ast.ea = def_ins.ea
+                ast.ins = def_ins
+            if logger.debug_on:
+                logger.debug(
+                    "_resolve_mop_via_predecessors: resolved %s in block %d via %s",
+                    format_mop_t(mop),
+                    pred_serial,
+                    format_minsn_t(def_ins),
+                )
+            return ast
+
+        cur_blk = pred_blk
+
+    logger.debug(
+        "_resolve_mop_via_predecessors: depth limit reached for %s",
+        format_mop_t(mop),
+    )
+    return None
+
+
 def _resolve_mop_to_ast_via_tracker(
     mop: ida_hexrays.mop_t,
     blk: ida_hexrays.mblock_t,
@@ -649,6 +771,15 @@ def _resolve_mop_to_ast_via_tracker(
     if mop.t not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
         return None
 
+    # PRIMARY: Native predecessor walk (path-sensitive).
+    # Only follows single-predecessor chains — guarantees one execution path
+    # from definition to use, so no wrong definitions from CFF dispatchers.
+    if _USE_NATIVE_DEF_SEARCH:
+        result = _resolve_mop_via_predecessors(mop, blk, ins)
+        if result is not None:
+            return result
+
+    # FALLBACK: MopTracker for multi-predecessor cases or early maturity.
     try:
         from d810.hexrays.tracker import MopTracker
     except ImportError:
@@ -657,11 +788,11 @@ def _resolve_mop_to_ast_via_tracker(
 
     # Create tracker with limited block depth. IDA decomposes compound MBA
     # expressions into separate instructions with temporary registers;
-    # max_nb_block=3 covers typical intra-procedure lowerings while avoiding
-    # incorrect cross-block definitions. max_path=1 limits to single path.
+    # max_nb_block=1 restricts to single-block lookups to avoid incorrect
+    # cross-block definitions. max_path=1 limits to single path.
     try:
         MopTracker.reset()  # Reset global path counter
-        tracker = MopTracker([mop], max_nb_block=3, max_path=1)
+        tracker = MopTracker([mop], max_nb_block=1, max_path=1)
         histories = tracker.search_backward(blk, ins)
     except Exception as e:
         logger.debug("_resolve_mop_to_ast_via_tracker: Tracker failed: %s", e)
