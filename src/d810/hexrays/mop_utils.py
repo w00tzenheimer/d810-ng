@@ -87,7 +87,6 @@ def get_stack_var_name(mop: ida_hexrays.mop_t) -> str | None:
         name = _cached_stack_var_name(id(mop), mop.t, mop.r, mop.size, mop.valnum, None)
     else:
         return None
-    _VALNUM_NAME_CACHE[mop.valnum] = name
     return name
 
 
