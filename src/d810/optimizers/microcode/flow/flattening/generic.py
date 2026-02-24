@@ -2890,37 +2890,54 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         total_nb_change += nb_flattened_branches
         return total_nb_change
 
+    MAX_POST_APPLY_ITERATIONS = 10
+
     def _post_apply_instruction_sweep(self) -> None:
-        """Run ForwardConstProp + targeted peephole rules on freshly unflattened blocks."""
-        const_prop_changes = 0
-        # Phase 1: Propagate constants into newly unflattened blocks
-        if self.post_apply_const_prop:
-            from d810.optimizers.microcode.flow.constant_prop.forward_const_prop import ForwardConstantPropagationRule
-            from d810.optimizers.microcode.flow.constant_prop.lattice import LatticeMeet, BOTTOM
+        """Run ForwardConstProp + targeted peephole rules on freshly unflattened blocks.
+
+        Iterates FCP -> peephole in a fixpoint loop so that constants produced
+        by folding ROL/XOR chains are immediately re-propagated by FCP, enabling
+        further folds (e.g. readonly-data table lookups).  Loop terminates when
+        no phase produces changes or after MAX_POST_APPLY_ITERATIONS rounds.
+        """
+        if not self.post_apply_const_prop:
+            return
+
+        from d810.optimizers.microcode.flow.constant_prop.forward_const_prop import ForwardConstantPropagationRule
+        from d810.optimizers.microcode.flow.constant_prop.lattice import LatticeMeet, BOTTOM
+        from d810.optimizers.microcode.instructions.peephole.fold_rotatehelper import RotateHelperInlineRule
+        from d810.optimizers.microcode.instructions.peephole.fold_constant_subtree import ConstantSubtreeFoldRule
+        from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import FoldReadonlyDataRule
+
+        peephole_rules = [ConstantSubtreeFoldRule(), RotateHelperInlineRule(), FoldReadonlyDataRule()]
+        total_changes = 0
+
+        for generation in range(self.MAX_POST_APPLY_ITERATIONS):
+            iter_changes = 0
+
+            # Phase A: FCP — propagate constants into newly unflattened blocks
             const_prop = ForwardConstantPropagationRule(meet_strategy=LatticeMeet(default_missing=BOTTOM))
             try:
-                const_prop_changes = const_prop._run_on_function(self.mba)
+                fcp_changes = const_prop._run_on_function(self.mba)
             except Exception as exc:
                 unflat_logger.warning(
-                    "Post-apply ForwardConstProp failed (aborting sweep, will skip "
-                    "further passes to avoid operating on corrupted MBA): %s", exc
+                    "Post-apply ForwardConstProp failed at generation %d (aborting sweep, "
+                    "will skip further passes to avoid operating on corrupted MBA): %s",
+                    generation, exc,
                 )
+                if total_changes > 0:
+                    self.mba.mark_chains_dirty()
+                    try:
+                        self.mba.optimize_local(0)
+                    except Exception:
+                        pass
                 self._verify_failed = True
-                return
+                break
 
-            if const_prop_changes > 0:
-                unflat_logger.info(
-                    "Post-apply ForwardConstProp: %d substitution(s)", const_prop_changes
-                )
+            iter_changes += fcp_changes
 
-        # Phase 2: Run peephole folds on freshly propagated constants
-        if self.post_apply_const_prop:
-            from d810.optimizers.microcode.instructions.peephole.fold_rotatehelper import RotateHelperInlineRule
-            from d810.optimizers.microcode.instructions.peephole.fold_constant_subtree import ConstantSubtreeFoldRule
-
-            peephole_rules = [ConstantSubtreeFoldRule(), RotateHelperInlineRule()]
+            # Phase B: Peephole folds with per-block fixpoint
             peephole_changes = 0
-
             for blk_serial in range(self.mba.qty):
                 blk = self.mba.get_mblock(blk_serial)
                 changed_in_block = True
@@ -2940,12 +2957,26 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                             break
                         ins = next_ins
 
-            if peephole_changes > 0:
-                self.mba.mark_chains_dirty()
-                self.mba.optimize_local(0)
-                unflat_logger.info(
-                    "Post-apply peephole sweep: %d fold(s)", peephole_changes
+            iter_changes += peephole_changes
+            total_changes += iter_changes
+
+            if unflat_logger.debug_on:
+                unflat_logger.debug(
+                    "Post-apply sweep generation %d: fcp=%d peephole=%d total_iter=%d",
+                    generation, fcp_changes, peephole_changes, iter_changes,
                 )
+
+            if iter_changes == 0:
+                break
+
+            # Let IDA re-optimize before next round
+            self.mba.mark_chains_dirty()
+            self.mba.optimize_local(0)
+
+        if total_changes > 0:
+            unflat_logger.info(
+                "Post-apply sweep complete: %d total change(s)", total_changes
+            )
 
     # Maximum wall-clock seconds for a single optimize() call.
     MAX_OPTIMIZE_SECONDS = 30.0
