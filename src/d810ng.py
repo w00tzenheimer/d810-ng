@@ -12,22 +12,22 @@ D810_VERSION = d810.__version__
 
 def init_hexrays() -> bool:
     ALL_DECOMPILERS = {
-        idaapi.PLFM_386: "hexx64",
-        idaapi.PLFM_ARM: "hexarm",
-        idaapi.PLFM_PPC: "hexppc",
-        idaapi.PLFM_MIPS: "hexmips",
-        idaapi.PLFM_RISCV: "hexrv",
+        idaapi.PLFM_386: ["hexx64", "hexcx64"],
+        idaapi.PLFM_ARM: ["hexarm", "hexcarm"],
+        idaapi.PLFM_PPC: ["hexppc", "hexcppc"],
+        idaapi.PLFM_MIPS: ["hexmips", "hexcmips"],
+        idaapi.PLFM_RISCV: ["hexrv", "hexcrv"],
     }
     cpu = idaapi.ph.id
-    decompiler = ALL_DECOMPILERS.get(cpu, None)
-    if not decompiler:
+    candidates = ALL_DECOMPILERS.get(cpu, None)
+    if not candidates:
         print("No known decompilers for architecture with ID: %d" % idaapi.ph.id)
         return False
-    if idaapi.load_plugin(decompiler) and idaapi.init_hexrays_plugin():
-        return True
-    else:
-        print(f"Couldn't load or initialize decompiler: {decompiler}")
-        return False
+    for decompiler in candidates:
+        if idaapi.load_plugin(decompiler) and idaapi.init_hexrays_plugin():
+            return True
+    print(f"Couldn't load or initialize decompiler, tried: {candidates}")
+    return False
 
 
 class _UIHooks(idaapi.UI_Hooks):
