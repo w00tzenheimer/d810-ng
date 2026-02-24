@@ -57,7 +57,6 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         ida_hexrays.m_xdu,
         ida_hexrays.m_low,
         ida_hexrays.m_high,
-        ida_hexrays.m_ldx,
         ida_hexrays.m_ldc,
         ida_hexrays.m_add,
         ida_hexrays.m_sub,
@@ -425,7 +424,15 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             # Nothing more to learn from this instruction.
             return
 
-        # 2. Determine written variable & apply precise KILL / GEN.
+        # 2. ldx is a memory load whose result is unknown at analysis time.
+        # Kill the destination variable and do not GEN a constant for it.
+        if ins.opcode == ida_hexrays.m_ldx:
+            written_var = self._get_written_var_name(ins)
+            if written_var and written_var in env:
+                del env[written_var]
+            return
+
+        # 3. Determine written variable & apply precise KILL / GEN.
         written_var = self._get_written_var_name(ins)
         is_const_assign = self._is_constant_stack_assignment(ins)
 
@@ -446,6 +453,11 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         env: ConstMap,
     ) -> int:
         if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
+            return 0
+        # ldx is a memory load: we must NOT fold the address computation into
+        # the destination as if it were the loaded value.  The address is an
+        # *input* to the load, not the result.
+        if ins.opcode == ida_hexrays.m_ldx:
             return 0
 
         # We must process one operand, and if it changes, optimize and exit
