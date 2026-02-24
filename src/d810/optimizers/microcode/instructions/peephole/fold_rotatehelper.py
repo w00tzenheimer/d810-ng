@@ -133,19 +133,40 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
                 format_mop_t(ins.d),
             )
 
-        # Broader path: for arithmetic opcodes, scan l and r for mop_d
-        # sub-operands containing ROL/ROR calls with constant args, and
-        # replace them in-place with mop_n constants.
-        _ARITH_OPCODES = frozenset({
+        # Broader path: for arithmetic, comparison, and conditional-jump
+        # opcodes, scan l and r for mop_d sub-operands containing ROL/ROR
+        # calls with constant args, and replace them in-place with mop_n
+        # constants.
+        _SCAN_OPCODES = frozenset({
+            # Arithmetic
             ida_hexrays.m_add,
             ida_hexrays.m_sub,
             ida_hexrays.m_xor,
             ida_hexrays.m_or,
             ida_hexrays.m_and,
             ida_hexrays.m_mul,
+            # Comparisons (set-cc)
+            ida_hexrays.m_setnz,
+            ida_hexrays.m_setz,
+            ida_hexrays.m_setl,
+            ida_hexrays.m_setle,
+            ida_hexrays.m_setae,
+            ida_hexrays.m_seta,
+            ida_hexrays.m_setb,
+            ida_hexrays.m_setbe,
+            ida_hexrays.m_sets,
+            # Conditional jumps
+            ida_hexrays.m_jnz,
+            ida_hexrays.m_jz,
+            ida_hexrays.m_jl,
+            ida_hexrays.m_jle,
+            ida_hexrays.m_jae,
+            ida_hexrays.m_ja,
+            ida_hexrays.m_jb,
+            ida_hexrays.m_jbe,
         })
 
-        if ins.opcode in _ARITH_OPCODES:
+        if ins.opcode in _SCAN_OPCODES:
             # Collect mutations to apply: list of (slot_index, result, slot_size)
             # where slot_index 0 = l, 1 = r.  We do NOT mutate `ins` in-place
             # because check_and_replace's contract requires returning a *new*
