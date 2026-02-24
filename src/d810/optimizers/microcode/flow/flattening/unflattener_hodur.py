@@ -56,7 +56,7 @@ unflat_logger = getLogger("D810.unflat.hodur")
 
 # State values must exceed this threshold to be considered dispatcher constants.
 # Real obfuscators use values from 0x1000+ (hardened OLLVM) to 0xDEAD0000+ (Hodur).
-MIN_STATE_CONSTANT = 0x100
+MIN_STATE_CONSTANT = 0x10000000
 # Minimum number of unique state constants to consider it a state machine
 MIN_STATE_CONSTANTS = 3
 # Maximum number of state constants - if more, it's likely OLLVM FLA not Hodur
@@ -170,7 +170,7 @@ class HodurStateMachineDetector:
                     len(analysis.state_constants),
                     analysis.nested_loop_depth,
                 )
-                return None
+                pass
             else:
                 unflat_logger.debug(
                     "Dispatcher cache confirms Hodur-style: %d state constants, initial=%s",
