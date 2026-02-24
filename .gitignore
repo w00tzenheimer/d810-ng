@@ -58,3 +58,4 @@ _indexable
 
 # docs
 docs/
+.tmp/
