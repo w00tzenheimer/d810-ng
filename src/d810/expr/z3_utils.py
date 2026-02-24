@@ -617,6 +617,10 @@ def _find_def_in_block(
     Returns:
         The most-recent instruction in the block that writes to *mop*, or None.
     """
+    # Convert MopSnapshot (frozen dataclass) to a real mop_t for SWIG compatibility.
+    if hasattr(mop, 'to_mop'):
+        mop = mop.to_mop()
+
     # Build the use-list for mop so we can test against instruction def-lists.
     ml = ida_hexrays.mlist_t()
     blk.append_use_list(ml, mop, ida_hexrays.MUST_ACCESS)
