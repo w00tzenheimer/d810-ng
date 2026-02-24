@@ -47,6 +47,7 @@ from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
     DispatcherStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
+from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.flattening.safeguards import (
     should_apply_cfg_modifications,
 )
@@ -144,11 +145,21 @@ class HodurStateMachine:
 class HodurStateMachineDetector:
     """Detects Hodur-style while-loop state machines in microcode."""
 
-    def __init__(self, mba: ida_hexrays.mba_t, use_cache: bool = True):
+    def __init__(
+        self,
+        mba: ida_hexrays.mba_t,
+        use_cache: bool = True,
+        min_state_constant: int = MIN_STATE_CONSTANT,
+        min_state_constants: int = MIN_STATE_CONSTANTS,
+        max_state_constants: int = MAX_STATE_CONSTANTS_HODUR,
+    ):
         self.mba = mba
         self.state_machine: HodurStateMachine | None = None
         self.use_cache = use_cache
         self._cache: DispatcherCache | None = None
+        self.min_state_constant = min_state_constant
+        self.min_state_constants = min_state_constants
+        self.max_state_constants = max_state_constants
 
     def detect(self) -> HodurStateMachine | None:
         """
@@ -184,22 +195,22 @@ class HodurStateMachineDetector:
 
         # Step 1: Find all state comparison blocks (jnz with large constants)
         state_check_blocks = self._find_state_check_blocks()
-        if len(state_check_blocks) < MIN_STATE_CONSTANTS:
+        if len(state_check_blocks) < self.min_state_constants:
             unflat_logger.debug(
                 "Not enough state check blocks found: %d < %d",
                 len(state_check_blocks),
-                MIN_STATE_CONSTANTS,
+                self.min_state_constants,
             )
             return None
 
         # Step 1.5: Check if this looks more like OLLVM FLA than Hodur
         # OLLVM FLA typically has many more state constants (50+)
         # Hodur typically has ~10-20 states
-        if len(state_check_blocks) > MAX_STATE_CONSTANTS_HODUR:
+        if len(state_check_blocks) > self.max_state_constants:
             unflat_logger.info(
                 "Too many state check blocks (%d > %d) - likely OLLVM FLA, not Hodur",
                 len(state_check_blocks),
-                MAX_STATE_CONSTANTS_HODUR,
+                self.max_state_constants,
             )
             return None
 
@@ -289,7 +300,7 @@ class HodurStateMachineDetector:
             if blk.tail and blk.tail.opcode in HODUR_STATE_CHECK_OPCODES:
                 if blk.tail.r.t == ida_hexrays.mop_n:
                     const_val = blk.tail.r.nnn.value
-                    if const_val > MIN_STATE_CONSTANT:
+                    if const_val > self.min_state_constant:
                         state_blocks.append((blk.serial, blk.tail.opcode, const_val))
         return state_blocks
 
@@ -673,11 +684,52 @@ class HodurUnflattener(GenericUnflatteningRule):
     MOP_TRACKER_MAX_NB_BLOCK = 100
     MOP_TRACKER_MAX_NB_PATH = 100
 
+    CONFIG_SCHEMA = GenericUnflatteningRule.CONFIG_SCHEMA + (
+        ConfigParam(
+            "min_state_constant",
+            int,
+            MIN_STATE_CONSTANT,
+            "Minimum value to qualify as a state constant",
+        ),
+        ConfigParam(
+            "min_state_constants",
+            int,
+            MIN_STATE_CONSTANTS,
+            "Minimum unique state constants for state machine detection",
+        ),
+        ConfigParam(
+            "max_state_constants",
+            int,
+            MAX_STATE_CONSTANTS_HODUR,
+            "Maximum state constants before classifying as OLLVM-style",
+        ),
+        ConfigParam(
+            "max_passes",
+            int,
+            DEFAULT_MAX_PASSES,
+            "Maximum unflattening passes",
+        ),
+    )
+
     def __init__(self):
         super().__init__()
         self.state_machine: HodurStateMachine | None = None
         self.max_passes = self.DEFAULT_MAX_PASSES
+        self.min_state_constant = MIN_STATE_CONSTANT
+        self.min_state_constants = MIN_STATE_CONSTANTS
+        self.max_state_constants = MAX_STATE_CONSTANTS_HODUR
         self.deferred: DeferredGraphModifier | None = None
+
+    def configure(self, kwargs):
+        super().configure(kwargs)
+        if "min_state_constant" in self.config:
+            self.min_state_constant = int(self.config["min_state_constant"])
+        if "min_state_constants" in self.config:
+            self.min_state_constants = int(self.config["min_state_constants"])
+        if "max_state_constants" in self.config:
+            self.max_state_constants = int(self.config["max_state_constants"])
+        if "max_passes" in self.config:
+            self.max_passes = int(self.config["max_passes"])
 
     def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:
         """Check if this rule should be applied."""
@@ -710,7 +762,12 @@ class HodurUnflattener(GenericUnflatteningRule):
         )
 
         # Detect state machine
-        detector = HodurStateMachineDetector(self.mba)
+        detector = HodurStateMachineDetector(
+            self.mba,
+            min_state_constant=self.min_state_constant,
+            min_state_constants=self.min_state_constants,
+            max_state_constants=self.max_state_constants,
+        )
         self.state_machine = detector.detect()
 
         if self.state_machine is None:
