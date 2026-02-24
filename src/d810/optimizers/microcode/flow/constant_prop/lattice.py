@@ -99,14 +99,16 @@ def lattice_meet(a: LatticeValue, b: LatticeValue) -> LatticeValue:
 # env_meet
 # ---------------------------------------------------------------------------
 
-def env_meet(a: LatticeEnv, b: LatticeEnv) -> LatticeEnv:
+def env_meet(a: LatticeEnv, b: LatticeEnv, *, default_missing: LatticeValue = BOTTOM) -> LatticeEnv:
     """Pointwise meet over the union of keys in two LatticeEnvs.
-
-    Missing keys are treated as BOTTOM (identity for meet).
 
     Args:
         a: First environment.
         b: Second environment.
+        default_missing: Lattice value used for keys absent from one side.
+            ``BOTTOM`` (default) is aggressive — missing keys are treated as
+            the identity for meet, so a constant present in one env survives.
+            ``TOP`` is conservative — missing keys kill the constant.
 
     Returns:
         A new LatticeEnv that is the pointwise meet of a and b.
@@ -114,8 +116,8 @@ def env_meet(a: LatticeEnv, b: LatticeEnv) -> LatticeEnv:
     result: LatticeEnv = {}
     all_keys = a.keys() | b.keys()
     for key in all_keys:
-        va = a.get(key, BOTTOM)
-        vb = b.get(key, BOTTOM)
+        va = a.get(key, default_missing)
+        vb = b.get(key, default_missing)
         met = lattice_meet(va, vb)
         result[key] = met
     return result
@@ -128,11 +130,25 @@ def env_meet(a: LatticeEnv, b: LatticeEnv) -> LatticeEnv:
 class LatticeMeet:
     """Meet strategy that folds a list of predecessor OUT environments.
 
+    Args:
+        default_missing: Lattice value used for keys absent from one predecessor.
+            ``BOTTOM`` (default) is aggressive — missing keys are identity for
+            meet, so constants present in only one predecessor survive.  This is
+            suitable for post-apply sweeps where unreachable blocks have empty
+            (all-BOTTOM) OUT environments.
+            ``TOP`` is conservative — missing keys kill the constant, equivalent
+            to the old IntersectionMeet behaviour.  Use this for standalone FCP
+            passes to avoid unsound propagation.
+
     Usage::
 
-        strategy = LatticeMeet()
+        strategy = LatticeMeet()                          # aggressive (BOTTOM)
+        conservative = LatticeMeet(default_missing=TOP)   # conservative
         in_env = strategy.meet(pred_out_envs)
     """
+
+    def __init__(self, *, default_missing: LatticeValue = BOTTOM):
+        self._default_missing = default_missing
 
     def meet(self, pred_outs: list[LatticeEnv]) -> LatticeEnv:
         """Compute the meet over all predecessor OUT environments.
@@ -150,5 +166,5 @@ class LatticeMeet:
             return {}
         result: LatticeEnv = dict(pred_outs[0])
         for env in pred_outs[1:]:
-            result = env_meet(result, env)
+            result = env_meet(result, env, default_missing=self._default_missing)
         return result

@@ -155,7 +155,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         ]
         self._seen: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # mba -> (maturity, generation)
         self.cython_enabled = CythonMode().is_enabled()
-        self._meet_strategy: MeetStrategy = meet_strategy or LatticeMeet()
+        self._meet_strategy: MeetStrategy = meet_strategy or LatticeMeet(default_missing=TOP)
 
     @typing.override
     def configure(self, kwargs):
