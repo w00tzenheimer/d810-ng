@@ -170,8 +170,7 @@ class HodurStateMachineDetector:
                     len(analysis.state_constants),
                     analysis.nested_loop_depth,
                 )
-                # Fall back to manual detection anyway
-                pass
+                return None
             else:
                 unflat_logger.debug(
                     "Dispatcher cache confirms Hodur-style: %d state constants, initial=%s",
