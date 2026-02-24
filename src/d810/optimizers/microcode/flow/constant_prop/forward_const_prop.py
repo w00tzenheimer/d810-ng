@@ -17,7 +17,7 @@ import ida_hexrays
 import ida_segment
 import idaapi
 
-from d810.core import CythonMode, getLogger, logging, typing
+from d810.core import CythonMode, getLogger, typing
 from d810.hexrays.cfg_utils import (
     _VALID_MOP_SIZES,
     extract_base_and_offset,
@@ -33,7 +33,7 @@ from d810.optimizers.microcode.flow.handler import (
 )
 from d810.optimizers.microcode.handler import ConfigParam
 
-logger = getLogger(__name__, logging.DEBUG)
+logger = getLogger(__name__)
 
 from d810.optimizers.microcode.flow.constant_prop.lattice import (
     BOTTOM,
