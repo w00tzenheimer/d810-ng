@@ -866,6 +866,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             True,
             "Run safe_verify() after each pre-unflatten optimize_local() round",
         ),
+        ConfigParam(
+            "post_apply_const_prop",
+            bool,
+            False,
+            "Run ForwardConstantPropagationRule after each unflattening pass",
+        ),
     )
 
     MOP_TRACKER_MAX_NB_BLOCK = 100
@@ -913,6 +919,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             self.DEFAULT_PRE_UNFLATTEN_OPTIMIZE_LOCAL_ROUNDS
         )
         self.pre_unflatten_verify = self.DEFAULT_PRE_UNFLATTEN_VERIFY
+        self.post_apply_const_prop = False
         self.non_significant_changes = 0
         # Track processed (source_block, target) pairs to prevent duplicates
         self._processed_dispatcher_fathers: set[tuple[int, int]] = set()
@@ -1034,6 +1041,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             )
         if "pre_unflatten_verify" in self.config.keys():
             self.pre_unflatten_verify = bool(self.config["pre_unflatten_verify"])
+        if "post_apply_const_prop" in self.config.keys():
+            self.post_apply_const_prop = bool(self.config["post_apply_const_prop"])
         self._snapshot_base_override_values()
         self.dispatcher_collector.configure(kwargs)
 
@@ -2874,9 +2883,34 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 "Found %d provable single-iteration loops after unflattening", loops_found
             )
 
+        # Post-apply instruction sweep (const prop, peephole, etc.)
+        self._post_apply_instruction_sweep()
+
         unflat_logger.info("Unflattening removed %s branch", nb_flattened_branches)
         total_nb_change += nb_flattened_branches
         return total_nb_change
+
+    def _post_apply_instruction_sweep(self) -> None:
+        """Run ForwardConstProp + targeted peephole rules on freshly unflattened blocks."""
+        const_prop_changes = 0
+        # Phase 1: Propagate constants into newly unflattened blocks
+        if self.post_apply_const_prop:
+            from d810.optimizers.microcode.flow.constant_prop.forward_const_prop import ForwardConstantPropagationRule
+            const_prop = ForwardConstantPropagationRule()
+            try:
+                const_prop_changes = const_prop._run_on_function(self.mba)
+            except Exception as exc:
+                unflat_logger.warning(
+                    "Post-apply ForwardConstProp failed (aborting sweep, will skip "
+                    "further passes to avoid operating on corrupted MBA): %s", exc
+                )
+                self._verify_failed = True
+                return
+
+            if const_prop_changes > 0:
+                unflat_logger.info(
+                    "Post-apply ForwardConstProp: %d substitution(s)", const_prop_changes
+                )
 
     # Maximum wall-clock seconds for a single optimize() call.
     MAX_OPTIMIZE_SECONDS = 30.0
