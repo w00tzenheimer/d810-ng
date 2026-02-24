@@ -392,20 +392,21 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             # Side-effects handling - for *imprecise* side-effecting instructions
             # (e.g. calls) we must drop every tracked constant.
             if ins.is_unknown_call():
-                env.clear()
+                for k in list(env):
+                    env[k] = TOP
                 return
             written_var = _fast_dataflow.cy_get_written_var_name(ins)
             is_const_assign = _fast_dataflow.cy_is_constant_stack_assignment(ins)
             # KILL when variable overwritten by non-constant value
-            if written_var and not is_const_assign and written_var in env:
-                del env[written_var]
+            if written_var and not is_const_assign:
+                env[written_var] = TOP
             # GEN - introduce new constant
             if is_const_assign:
                 res = _fast_dataflow.cy_extract_assignment(ins)
                 if res:
                     var, val_size = res
                     if var:
-                        env[var] = val_size
+                        env[var] = Const(val_size[0], val_size[1])
         except (ImportError, AttributeError, TypeError):
             logger.warning(
                 "Cython module `_fast_dataflow` not available. Falling back to slow transfer."
@@ -437,7 +438,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         while worklist:
             iteration += 1
             idx = worklist.pop()
-            inm = self._meet([OUT[p] for p in preds[idx]]) if preds[idx] else {}
+            inm = self._meet([OUT[p] for p in preds[idx]]) if preds[idx] else IN[idx]
             if logger.isEnabledFor(logging.DEBUG):
                 total_vars = sum(len(v) for v in IN.values())
                 logger.debug(
