@@ -979,6 +979,7 @@
         "max_calls_exit_blocks": 24,
         "defer_calls_on_conditional_entry_father": true,
         "log_calls_layout_signals": true,
+        "post_apply_const_prop": true,
         "per_function_overrides": {
           "AntiDebug_ExceptionFilter": {
             "max_calls_exit_blocks": 500,
