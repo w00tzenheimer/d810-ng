@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+
 from d810.core.typing import Any, Literal, Union, cast
 
 
@@ -117,6 +118,18 @@ if not _QT_AVAILABLE:
 
         class QTimer(ProxyClass): ...
 
+        class QSortFilterProxyModel(ProxyClass):
+            def __init__(self, parent: Any = ...) -> None: ...
+            def setSourceModel(self, model: Any) -> None: ...
+            def sourceModel(self) -> Any: ...
+            def setFilterKeyColumn(self, column: int) -> None: ...
+            def setFilterCaseSensitivity(self, cs: int) -> None: ...
+            def setFilterRegularExpression(self, pattern: Any) -> None: ...
+            def setFilterFixedString(self, pattern: str) -> None: ...
+            def mapToSource(self, proxyIndex: Any) -> Any: ...
+            def mapFromSource(self, sourceIndex: Any) -> Any: ...
+            def sort(self, column: int, order: int = ...) -> None: ...
+
         # Signal/Slot compatibility (will be set up by _setup_compatibility)
         @staticmethod
         def pyqtSignal(*args, **kwargs):  # type: ignore[misc]
@@ -126,11 +139,19 @@ if not _QT_AVAILABLE:
             This allows class-level signal definitions to work without errors
             in headless/test environments.
             """
+
             class _StubSignal:
                 """Stub signal that can be assigned and called without errors."""
-                def emit(self, *args, **kwargs): pass
-                def connect(self, *args, **kwargs): pass
-                def disconnect(self, *args, **kwargs): pass
+
+                def emit(self, *args, **kwargs):
+                    pass
+
+                def connect(self, *args, **kwargs):
+                    pass
+
+                def disconnect(self, *args, **kwargs):
+                    pass
+
             return _StubSignal()
 
     class QtGui(ProxyNamespace):
@@ -376,6 +397,26 @@ if not _QT_AVAILABLE:
             def font(self) -> Any: ...
             def setFont(self, font: Any) -> None: ...
 
+        class QTreeView(QAbstractItemView):
+            def __init__(self, parent: Any = ...) -> None: ...
+            def setModel(self, model: Any) -> None: ...
+            def model(self) -> Any: ...
+            def header(self) -> Any: ...
+            def setRootIsDecorated(self, show: bool) -> None: ...
+            def setAlternatingRowColors(self, enable: bool) -> None: ...
+            def setExpandsOnDoubleClick(self, enable: bool) -> None: ...
+            def setSelectionMode(self, mode: int) -> None: ...
+            def setSelectionBehavior(self, behavior: int) -> None: ...
+            def setEditTriggers(self, triggers: int) -> None: ...
+            def setSortingEnabled(self, enable: bool) -> None: ...
+            def setContextMenuPolicy(self, policy: int) -> None: ...
+            def customContextMenuRequested(self): ...  # Signal
+            def selectionModel(self) -> Any: ...
+            def viewport(self) -> Any: ...
+            def indexAt(self, pos: Any) -> Any: ...
+            def expandAll(self) -> None: ...
+            def resizeColumnToContents(self, column: int) -> None: ...
+
         class QTreeWidget(QWidget):
             def __init__(self, parent: Any = ...) -> None: ...
             def setColumnCount(self, columns: int) -> None: ...
@@ -497,10 +538,12 @@ if not _QT_AVAILABLE:
     QTextBrowser = QtWidgets.QTextBrowser
     QTextEdit = QtWidgets.QTextEdit
     QToolButton = QtWidgets.QToolButton
+    QTreeView = QtWidgets.QTreeView
     QTreeWidget = QtWidgets.QTreeWidget
     QTreeWidgetItem = QtWidgets.QTreeWidgetItem
     QVBoxLayout = QtWidgets.QVBoxLayout
     QWidget = QtWidgets.QWidget
+    QSortFilterProxyModel = QtCore.QSortFilterProxyModel
     _QT_MODULE = None
 
     # Pre-combined TextInteractionFlag constant for headless mode
@@ -550,9 +593,9 @@ else:
             QSplitter,
             QStatusBar,
             QStyleFactory,
-            QTabWidget,
             QTableWidget,
             QTableWidgetItem,
+            QTabWidget,
             QTextBrowser,
             QTextEdit,
             QToolButton,
@@ -570,7 +613,8 @@ else:
 
         # Pre-combined TextInteractionFlag for text selection (PySide6)
         TEXT_SELECTABLE = QtCore.Qt.TextInteractionFlag(
-            QtCore.Qt.TextSelectableByMouse.value | QtCore.Qt.TextSelectableByKeyboard.value
+            QtCore.Qt.TextSelectableByMouse.value
+            | QtCore.Qt.TextSelectableByKeyboard.value
         )
     except ImportError:
         # Fall back to PyQt5 (IDA 9.1, Qt5)
@@ -616,9 +660,9 @@ else:
                 QSplitter,
                 QStatusBar,
                 QStyleFactory,
-                QTabWidget,
                 QTableWidget,
                 QTableWidgetItem,
+                QTabWidget,
                 QTextBrowser,
                 QTextEdit,
                 QToolButton,
@@ -635,7 +679,9 @@ else:
             _QT_MODULE = "PyQt5"
 
             # Pre-combined TextInteractionFlag for text selection (PyQt5)
-            TEXT_SELECTABLE = QtCore.Qt.TextSelectableByMouse | QtCore.Qt.TextSelectableByKeyboard
+            TEXT_SELECTABLE = (
+                QtCore.Qt.TextSelectableByMouse | QtCore.Qt.TextSelectableByKeyboard
+            )
         except ImportError:
             raise ImportError(
                 "Neither PySide6 nor PyQt5 could be imported. "
@@ -906,11 +952,13 @@ __all__ = [
     "QTextBrowser",
     "QTextEdit",
     "QToolButton",
+    "QTreeView",
     "QTreeWidget",
     "QTreeWidgetItem",
     "QVBoxLayout",
     "QWidget",
     "QSizePolicy",
+    "QSortFilterProxyModel",
     # Utility functions
     "set_high_dpi_attributes",
     "get_text_margins_as_tuple",
