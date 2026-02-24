@@ -83,12 +83,13 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
     def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
         super().__init__(*args, **kwargs)
         # Run after FoldReadonlyDataRule (MMAT_PREOPTIMIZED) has turned
-        # read-only table loads into immediates. GLBOPT3 is safe — the
-        # unflattener does not run there (uses CALLS/GLBOPT1/GLBOPT2).
+        # read-only table loads into immediates. GLBOPT2/GLBOPT3 are safe —
+        # the unflattener does not run there (uses CALLS/GLBOPT1/GLBOPT2).
         self.maturities = [
             ida_hexrays.MMAT_LOCOPT,
             ida_hexrays.MMAT_CALLS,
             getattr(ida_hexrays, "MMAT_GLBOPT1", ida_hexrays.MMAT_CALLS),
+            getattr(ida_hexrays, "MMAT_GLBOPT2", ida_hexrays.MMAT_CALLS),
             getattr(ida_hexrays, "MMAT_GLBOPT3", ida_hexrays.MMAT_CALLS),
         ]
 

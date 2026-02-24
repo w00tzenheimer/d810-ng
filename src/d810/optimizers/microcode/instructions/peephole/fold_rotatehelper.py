@@ -216,10 +216,12 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
 
     def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
         super().__init__(*args, **kwargs)
-        # Run at LOCOPT (early) and GLBOPT3 (safe — unflattener does not run
-        # at GLBOPT3, only at CALLS/GLBOPT1/GLBOPT2).
+        # Run at LOCOPT (early), GLBOPT1/GLBOPT2 (where IDA has already
+        # propagated constants into helper call args), and GLBOPT3.
         self.maturities = [
             ida_hexrays.MMAT_LOCOPT,
+            getattr(ida_hexrays, "MMAT_GLBOPT1", ida_hexrays.MMAT_CALLS),
+            getattr(ida_hexrays, "MMAT_GLBOPT2", ida_hexrays.MMAT_CALLS),
             getattr(ida_hexrays, "MMAT_GLBOPT3", ida_hexrays.MMAT_CALLS),
         ]
 
