@@ -10,6 +10,7 @@ from d810.core import getLogger
 from d810.core.bits import get_parity_flag
 from d810.evaluator.helpers.rotate import _RotateHelper as _HelperLookup
 from d810.expr.ast import AstBase, AstLeaf, AstNode, mop_to_ast
+from d810.expr.z3_utils import _find_def_in_block
 from d810.hexrays.hexrays_formatters import (  # noqa: F401 - debug only
     format_mop_t,
     mop_type_to_string,
@@ -477,10 +478,18 @@ def _get_mask(bits):
     return AND_TABLE[byte_size]
 
 
-def _fold_bottom_up(ast: AstBase, bits) -> tuple[AstBase, bool]:
+def _fold_bottom_up(
+    ast: AstBase,
+    bits,
+    blk: "ida_hexrays.mblock_t | None" = None,
+    ins: "ida_hexrays.minsn_t | None" = None,
+) -> tuple[AstBase, bool]:
     """
     Constant-fold every binary/unary node whose children are constants.
     Returns (new_node, changed?).
+
+    When *blk* and *ins* are provided, non-constant leaf operands (mop_S,
+    mop_r, mop_l) are resolved via def-search before attempting folding.
     """
     changed = False
 
@@ -499,7 +508,7 @@ def _fold_bottom_up(ast: AstBase, bits) -> tuple[AstBase, bool]:
     if ast.opcode == ida_hexrays.m_call:
         func_name = getattr(ast, "func_name", None)
         if func_name and bits > 0:
-            val = _eval_subtree(ast, bits)
+            val = _eval_subtree(ast, bits, blk=blk, ins=ins)
             if val is not None:
                 leaf = AstLeaf(val)
                 leaf.mop = ida_hexrays.mop_t()
@@ -509,27 +518,27 @@ def _fold_bottom_up(ast: AstBase, bits) -> tuple[AstBase, bool]:
 
     # recurse first
     if ast.left is not None:
-        new_left, ch_left = _fold_bottom_up(ast.left, bits)
+        new_left, ch_left = _fold_bottom_up(ast.left, bits, blk=blk, ins=ins)
         if ch_left:
             ast.left = new_left
             changed = True
     if ast.right is not None:
-        new_right, ch_right = _fold_bottom_up(ast.right, bits)
+        new_right, ch_right = _fold_bottom_up(ast.right, bits, blk=blk, ins=ins)
         if ch_right:
             ast.right = new_right
             changed = True
 
     # now try to collapse this node
     if ast.right is None:
-        val = _eval_subtree(ast, bits)
+        val = _eval_subtree(ast, bits, blk=blk, ins=ins)
         if val is not None:
             leaf = AstLeaf(val)  # tiny helper; see below
             leaf.mop = ida_hexrays.mop_t()
             leaf.mop.make_number(val, bits // 8)
             return leaf, True
     elif ast.left is not None and ast.right is not None:
-        lval = _eval_subtree(ast.left, bits)
-        rval = _eval_subtree(ast.right, bits)
+        lval = _eval_subtree(ast.left, bits, blk=blk, ins=ins)
+        rval = _eval_subtree(ast.right, bits, blk=blk, ins=ins)
         if lval is not None and rval is not None:
             val = _fold(ast.opcode, lval, rval, bits)
             if val is not None:
@@ -581,8 +590,17 @@ def _fold(op, a, b, bits):
     return None
 
 
-def _eval_subtree(ast: AstBase | None, bits) -> int | None:
-    """returns an int if subtree is constant, else None"""
+def _eval_subtree(
+    ast: AstBase | None,
+    bits,
+    blk: "ida_hexrays.mblock_t | None" = None,
+    ins: "ida_hexrays.minsn_t | None" = None,
+) -> int | None:
+    """returns an int if subtree is constant, else None.
+
+    When *blk* and *ins* are provided, non-constant leaf operands (mop_S,
+    mop_r, mop_l) are resolved to constants via def-search before giving up.
+    """
     if ast is None:
         if logger.debug_on:
             logger.debug("[fold_const] [_eval_subtree] ast is None - cannot evaluate")
@@ -622,6 +640,53 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
             dst_mop = getattr(mop.d, "d", None)
             if dst_mop is not None and dst_mop.t == ida_hexrays.mop_n:
                 return dst_mop.nnn.value & _get_mask(bits)
+
+        # Def-search: resolve non-constant leaf (mop_S, mop_r, mop_l) via the
+        # defining instruction in the current block.  Only attempted when block
+        # context is available and the operand type is a variable-like mop.
+        if (
+            blk is not None
+            and ins is not None
+            and mop.t in (ida_hexrays.mop_S, ida_hexrays.mop_r, ida_hexrays.mop_l)
+        ):
+            try:
+                def_ins = _find_def_in_block(mop, blk, ins)
+                if def_ins is not None:
+                    # Case 1: simple mov #const -> var
+                    if (
+                        def_ins.opcode == ida_hexrays.m_mov
+                        and def_ins.l is not None
+                        and def_ins.l.t == ida_hexrays.mop_n
+                    ):
+                        if logger.debug_on:
+                            logger.debug(
+                                "[fold_const] [_eval_subtree] resolved %s via def-search: mov #0x%X",
+                                format_mop_t(mop),
+                                def_ins.l.nnn.value,
+                            )
+                        return def_ins.l.nnn.value & _get_mask(bits)
+
+                    # Case 2: mov <foldable-expr> -> var — build AST and recurse
+                    if def_ins.opcode == ida_hexrays.m_mov and def_ins.l is not None:
+                        src_ast = mop_to_ast(def_ins.l)
+                        if src_ast is not None:
+                            resolved = _eval_subtree(src_ast, bits, blk=blk, ins=def_ins)
+                            if resolved is not None:
+                                if logger.debug_on:
+                                    logger.debug(
+                                        "[fold_const] [_eval_subtree] resolved %s via def-search AST: 0x%X",
+                                        format_mop_t(mop),
+                                        resolved,
+                                    )
+                                return resolved
+            except Exception as exc:
+                if logger.debug_on:
+                    logger.debug(
+                        "[fold_const] [_eval_subtree] def-search failed for %s: %s",
+                        format_mop_t(mop),
+                        exc,
+                    )
+
         return None
 
     # unary
@@ -629,7 +694,7 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
     ast = typing.cast(AstNode, ast)
     if ast.right is None:
         ast = typing.cast(AstNode, ast)
-        val = _eval_subtree(ast.left, bits)
+        val = _eval_subtree(ast.left, bits, blk=blk, ins=ins)
         if val is None:
             return None
         if ast.opcode == ida_hexrays.m_neg:
@@ -644,7 +709,7 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
         if ast.left and ast.left.dest_size:
             if ast.opcode == ida_hexrays.m_xds:
                 left_bits = ast.left.dest_size * 8
-                val = _eval_subtree(ast.left, left_bits)
+                val = _eval_subtree(ast.left, left_bits, blk=blk, ins=ins)
                 if val is None:
                     return None
                 mask = _get_mask(bits)
@@ -659,15 +724,15 @@ def _eval_subtree(ast: AstBase | None, bits) -> int | None:
                     if getattr(ast.left, "dest_size", None)
                     else bits
                 )
-                val = _eval_subtree(ast.left, left_bits)
+                val = _eval_subtree(ast.left, left_bits, blk=blk, ins=ins)
                 if val is None:
                     return None
                 return val & _get_mask(bits)
         return None
 
     # binary
-    l = _eval_subtree(ast.left, bits)  # type: ignore
-    r = _eval_subtree(ast.right, bits)  # type: ignore
+    l = _eval_subtree(ast.left, bits, blk=blk, ins=ins)  # type: ignore
+    r = _eval_subtree(ast.right, bits, blk=blk, ins=ins)  # type: ignore
     if l is None or r is None:
         if logger.debug_on:
             logger.debug(
