@@ -123,7 +123,7 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
 
         # Attempt bottom-up constant folding.
         try:
-            folded, changed = _fold_bottom_up(ast, bits)
+            folded, changed = _fold_bottom_up(ast, bits, blk=blk, ins=ins)
         except Exception as exc:
             if logger.debug_on:
                 logger.debug(
@@ -138,7 +138,7 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
             return None
 
         # Check whether the entire expression collapsed to a constant.
-        value: int | None = _eval_subtree(folded, bits)
+        value: int | None = _eval_subtree(folded, bits, blk=blk, ins=ins)
 
         if value is not None and ins.opcode not in _SET_OPCODES:
             # Whole expression is constant — emit m_ldc #value, dst
