@@ -46,6 +46,10 @@ from d810.optimizers.microcode.flow.constant_prop.lattice import (
 
 ConstMap = LatticeEnv  # backward-compat alias
 
+# Opcodes where the right operand (shift amount) must be size == 1.
+# Folding a constant into ins.r with a larger size triggers INTERR 50835.
+_SHIFT_OPCODES = frozenset({ida_hexrays.m_shl, ida_hexrays.m_shr, ida_hexrays.m_sar})
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers for readonly-segment ldx resolution
@@ -358,9 +362,13 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
 
             curr_blk = curr_blk.nextb
 
-        if total_changes > 0:
-            mba.mark_chains_dirty()
-            mba.optimize_local(0)
+        # NOTE: Do NOT call mba.optimize_local(0) here.
+        # When running inside optblock_t callback, calling optimize_local re-enters
+        # IDA's optimizer pipeline causing INTERR 50835 (shift operand size verification
+        # failure on partially-transformed MBA).
+        # IDA automatically re-runs optimization when optblock_t.func returns non-zero.
+        # When running from _post_apply_instruction_sweep, the sweep handles
+        # mark_chains_dirty() + optimize_local(0) between generations.
         return total_changes
 
     # ------------------------------------------------------------------
@@ -596,8 +604,16 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         # left operand
         if ins.l and self._slow_process_operand(ins.l, env):
             changed = True
-        # right operand for binary ops
-        if ins.r and self._slow_process_operand(ins.r, env):
+        # right operand for binary ops.
+        # For shift instructions (m_shl/m_shr/m_sar) the shift-amount operand
+        # (ins.r) must have size == 1; IDA's verifier raises INTERR 50835 if it
+        # does not.  Pass is_shift_amount=True so _slow_process_operand forces
+        # the rewrite size to 1.
+        if ins.r and self._slow_process_operand(
+            ins.r,
+            env,
+            is_shift_amount=(ins.opcode in _SHIFT_OPCODES),
+        ):
             changed = True
         # stx destination address is also an input
         if (
@@ -625,7 +641,12 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         ins.optimize_solo()
         return 1
 
-    def _slow_process_operand(self, op: ida_hexrays.mop_t, consts: ConstMap) -> bool:
+    def _slow_process_operand(
+        self,
+        op: ida_hexrays.mop_t,
+        consts: ConstMap,
+        is_shift_amount: bool = False,
+    ) -> bool:
         changed = False
         if op.t == ida_hexrays.mop_S:
             name = get_stack_var_name(op)
@@ -641,7 +662,11 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                         name,
                     )
                     return False
-                op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
+                # Shift instructions require r.size == 1 (INTERR 50835).
+                # When folding a constant into the shift-amount operand, force
+                # the rewrite size to 1 regardless of what the stack var says.
+                rewrite_size = 1 if is_shift_amount else op.size
+                op.make_number(val & ((1 << (rewrite_size * 8)) - 1), rewrite_size)
                 return True
         elif op.t == ida_hexrays.mop_f and op.f is not None:
             for a in op.f.args:

@@ -769,6 +769,14 @@ cpdef int cy_run_full_pass(object mba_py):
         curr_blk = curr_blk.nextb
 
     if total_changes > 0:
+        # TODO: remove mba.mark_chains_dirty() + mba.optimize_local() here.
+        # The pure-Python path (_slow_run_on_function) no longer calls these
+        # because calling optimize_local inside an optblock_t callback re-enters
+        # IDA's optimizer pipeline and triggers INTERR 50835 (shift operand size
+        # verification failure on partially-transformed MBA).  This Cython path
+        # needs the same fix, but .pyx edits require a Cython rebuild which is
+        # currently disabled.  Safe to leave for now since Cython is disabled by
+        # default (cython_enabled=False).
         mba.mark_chains_dirty()
         mba.optimize_local(LOCOPT_FLAGS.LOCOPT_ALL)
 
