@@ -30,6 +30,9 @@ source_modules =
     tests.unit
 forbidden_modules =
     d810.optimizers
+ignore_imports =
+    # lattice.py is pure Python (no IDA imports) — legitimate unit test
+    tests.unit.optimizers.microcode.flow.constant_prop.test_lattice -> d810.optimizers.microcode.flow.constant_prop.lattice
 [importlinter:contract:layered-architecture]
 name = Layered architecture prevents upward imports
 type = layers
