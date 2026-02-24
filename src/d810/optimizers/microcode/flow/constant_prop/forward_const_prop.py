@@ -89,50 +89,6 @@ class MeetStrategy(typing.Protocol):
         ...
 
 
-class IntersectionMeet:
-    """Keep only vars where ALL predecessors agree on value. Sound."""
-
-    __slots__ = ()
-
-    def meet(self, pred_outs: list[ConstMap]) -> ConstMap:
-        """Intersection meet: conservative, sound at all CFG merge points."""
-        if not pred_outs:
-            return {}
-        if len(pred_outs) == 1:
-            return dict(pred_outs[0])
-        first = pred_outs[0]
-        res = {}
-        for k, v in first.items():
-            if all(other.get(k) == v for other in pred_outs[1:]):
-                res[k] = v
-        return res
-
-
-class UnionKillMeet:
-    """Keep vars from ANY predecessor; kill only on value conflict.
-
-    WARNING: Unsound with partial-state OUT maps — use only in
-    post-apply context where linearized CFG makes it practically safe.
-    """
-
-    __slots__ = ()
-
-    def meet(self, pred_outs: list[ConstMap]) -> ConstMap:
-        """Union-kill meet: aggressive, safe only in post-apply linearized context."""
-        if not pred_outs:
-            return {}
-        if len(pred_outs) == 1:
-            return dict(pred_outs[0])
-        candidates: dict[str, tuple[int, int] | None] = {}
-        for out_map in pred_outs:
-            for var, val in out_map.items():
-                if var not in candidates:
-                    candidates[var] = val
-                elif candidates[var] is not None and candidates[var] != val:
-                    candidates[var] = None
-        return {var: val for var, val in candidates.items() if val is not None}
-
-
 class ForwardConstantPropagationRule(FlowOptimizationRule):
     """Forward constant propagation for stack variables and registers (whole function)."""
 
@@ -199,7 +155,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         ]
         self._seen: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # mba -> (maturity, generation)
         self.cython_enabled = CythonMode().is_enabled()
-        self._meet_strategy: MeetStrategy = meet_strategy or IntersectionMeet()
+        self._meet_strategy: MeetStrategy = meet_strategy or LatticeMeet()
 
     @typing.override
     def configure(self, kwargs):
@@ -505,9 +461,8 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
     def _meet(self, pred_outs: list[ConstMap]) -> ConstMap:
         """Delegate meet computation to the configured MeetStrategy.
 
-        The default strategy (IntersectionMeet) is sound at all CFG merge
-        points.  Callers may inject UnionKillMeet for a more aggressive pass
-        in post-apply contexts where the CFG is effectively linearized.
+        The default strategy (LatticeMeet) is sound at all CFG merge
+        points via lattice join semantics.
         """
         result = self._meet_strategy.meet(pred_outs)
         if logger.isEnabledFor(logging.DEBUG):
