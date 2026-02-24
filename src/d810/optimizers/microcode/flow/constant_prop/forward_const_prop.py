@@ -166,7 +166,9 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         super().__init__()
         self.maturities = [
             ida_hexrays.MMAT_CALLS,
-            getattr(ida_hexrays, "MMAT_GLBOPT3", ida_hexrays.MMAT_CALLS),
+            getattr(ida_hexrays, "MMAT_GLBOPT1", ida_hexrays.MMAT_CALLS),
+            getattr(ida_hexrays, "MMAT_GLBOPT2", ida_hexrays.MMAT_CALLS),
+            ida_hexrays.MMAT_GLBOPT3,
         ]
         self._seen: weakref.WeakKeyDictionary = (
             weakref.WeakKeyDictionary()
