@@ -27,13 +27,21 @@ from d810.hexrays.cfg_utils import (
 )
 from d810.hexrays.hexrays_formatters import maturity_to_string
 from d810.hexrays.hexrays_helpers import AND_TABLE
+from d810.optimizers.microcode.flow.handler import (
+    FlowOptimizationRule,
+    FlowRulePriority,
+)
 from d810.optimizers.microcode.handler import ConfigParam
-from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRulePriority
 
 logger = getLogger(__name__, logging.DEBUG)
 
 from d810.optimizers.microcode.flow.constant_prop.lattice import (
-    BOTTOM, TOP, Const, LatticeValue, LatticeEnv, LatticeMeet,
+    BOTTOM,
+    TOP,
+    Const,
+    LatticeEnv,
+    LatticeMeet,
+    LatticeValue,
 )
 
 ConstMap = LatticeEnv  # backward-compat alias
@@ -42,6 +50,7 @@ ConstMap = LatticeEnv  # backward-compat alias
 # ---------------------------------------------------------------------------
 # Module-level helpers for readonly-segment ldx resolution
 # ---------------------------------------------------------------------------
+
 
 def _ro_segment_is_read_only(addr: int) -> bool:
     """Return True if *addr* is in a readable, non-writable, non-executable segment.
@@ -95,7 +104,9 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
     CATEGORY = "Constant Propagation"
     PRIORITY = FlowRulePriority.PREPARE_CONSTANTS
     CONFIG_SCHEMA = FlowOptimizationRule.CONFIG_SCHEMA + (
-        ConfigParam("cython_enabled", bool, False, "Use Cython fast path for propagation"),
+        ConfigParam(
+            "cython_enabled", bool, False, "Use Cython fast path for propagation"
+        ),
     )
 
     DESCRIPTION = "Fold stack variables and registers that are assigned constant values across the whole function"
@@ -153,9 +164,13 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             ida_hexrays.MMAT_CALLS,
             getattr(ida_hexrays, "MMAT_GLBOPT3", ida_hexrays.MMAT_CALLS),
         ]
-        self._seen: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # mba -> (maturity, generation)
+        self._seen: weakref.WeakKeyDictionary = (
+            weakref.WeakKeyDictionary()
+        )  # mba -> (maturity, generation)
         self.cython_enabled = CythonMode().is_enabled()
-        self._meet_strategy: MeetStrategy = meet_strategy or LatticeMeet(default_missing=TOP)
+        self._meet_strategy: MeetStrategy = meet_strategy or LatticeMeet(
+            default_missing=TOP
+        )
 
     @typing.override
     def configure(self, kwargs):
@@ -164,7 +179,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
 
     @typing.override
     def optimize(self, blk: ida_hexrays.mblock_t):
-        if logger.isEnabledFor(logging.DEBUG):
+        if logger.debug_on:
             logger.debug(
                 "[FCP] optimize() called at maturity=%d (%s) blk=%d",
                 blk.mba.maturity if blk.mba else -1,
@@ -220,7 +235,10 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                 self.current_maturity,
             )
         nb_changes = self._run_on_function(mba)
-        self._seen[mba] = (self.current_maturity, self.current_generation)  # remember we've run
+        self._seen[mba] = (
+            self.current_maturity,
+            self.current_generation,
+        )  # remember we've run
         return nb_changes
 
     def _run_on_function(self, mba: ida_hexrays.mba_t) -> int:
@@ -279,7 +297,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         Phase B: Iterate over each block and apply optimizations until the
         block is stable (reaches a fixed point).
         """
-        if logger.isEnabledFor(logging.DEBUG):
+        if logger.debug_on:
             logger.debug(
                 "[FCP] _slow_run_on_function: %d blocks, maturity=%d (%s)",
                 mba.qty,
@@ -439,7 +457,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             iteration += 1
             idx = worklist.pop()
             inm = self._meet([OUT[p] for p in preds[idx]]) if preds[idx] else IN[idx]
-            if logger.isEnabledFor(logging.DEBUG):
+            if logger.debug_on:
                 total_vars = sum(len(v) for v in IN.values())
                 logger.debug(
                     "[FCP] dataflow iteration %d: worklist=%d blk=%d %d vars in constant map",
@@ -466,7 +484,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         points via lattice join semantics.
         """
         result = self._meet_strategy.meet(pred_outs)
-        if logger.isEnabledFor(logging.DEBUG):
+        if logger.debug_on:
             logger.debug(
                 "[FCP] meet: %d predecessors -> %d vars in result",
                 len(pred_outs),
@@ -499,9 +517,11 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         #
         # Known pure helpers (ROL/ROR) are m_call with mop_h operand but have
         # no observable side effects on memory/stack — skip the blanket kill.
-        if (ins.opcode == ida_hexrays.m_call
-                and ins.l is not None
-                and ins.l.t == ida_hexrays.mop_h):
+        if (
+            ins.opcode == ida_hexrays.m_call
+            and ins.l is not None
+            and ins.l.t == ida_hexrays.mop_h
+        ):
             helper_name: str = ins.l.helper
             if helper_name.startswith(("__ROL", "__ROR")):
                 return  # pure helper — preserve env
@@ -519,10 +539,12 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             if readonly_val is not None and written_var:
                 value, size = readonly_val
                 env[written_var] = Const(value, size)  # GEN: readonly constant
-                if logger.isEnabledFor(logging.DEBUG):
+                if logger.debug_on:
                     logger.debug(
                         "[forward-cprop] readonly ldx at %#x -> %s = %r",
-                        ins.ea, written_var, env[written_var],
+                        ins.ea,
+                        written_var,
+                        env[written_var],
                     )
                 return
             # Writable or unresolvable: KILL
@@ -544,7 +566,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             if res and res[0]:
                 var_name, (value, size) = res[0], res[1]
                 env[var_name] = Const(value, size)
-                if logger.isEnabledFor(logging.DEBUG):
+                if logger.debug_on:
                     logger.debug(
                         "[FCP] transfer: blk=? ins_ea=0x%x gen %s = %r",
                         ins.ea,
@@ -593,7 +615,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             changed = True
         if not changed:
             return 0
-        if logger.isEnabledFor(logging.DEBUG):
+        if logger.debug_on:
             logger.debug(
                 "[FCP] rewrite: ea=0x%x opcode=%d (substitution applied)",
                 ins.ea,
@@ -603,9 +625,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         ins.optimize_solo()
         return 1
 
-    def _slow_process_operand(
-        self, op: ida_hexrays.mop_t, consts: ConstMap
-    ) -> bool:
+    def _slow_process_operand(self, op: ida_hexrays.mop_t, consts: ConstMap) -> bool:
         changed = False
         if op.t == ida_hexrays.mop_S:
             name = get_stack_var_name(op)
@@ -617,7 +637,8 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                 if op.size not in _VALID_MOP_SIZES:
                     logger.warning(
                         "Skipping constprop rewrite: invalid op.size %d for var %s",
-                        op.size, name,
+                        op.size,
+                        name,
                     )
                     return False
                 op.make_number(val & ((1 << (op.size * 8)) - 1), op.size)
@@ -701,6 +722,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                 from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
                     _try_eval_pure_const_mop,
                 )
+
                 off = _try_eval_pure_const_mop(ins.r)
                 if off is not None:
                     ea = ins.l.g + off
@@ -710,6 +732,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                 from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
                     _try_eval_pure_const_mop,
                 )
+
                 off = _try_eval_pure_const_mop(ins.r)
                 if off is not None:
                     ea = ins.l.s.start_ea + off
