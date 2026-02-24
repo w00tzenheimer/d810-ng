@@ -418,7 +418,24 @@ cpdef cy_extract_assignment(object ins_py):
 
 
 cdef bint _cy_process_operand(mop_t* op, CppConstMap& consts):
-    """C-level recursive function to replace variables with constants."""
+    """C-level recursive function to replace variables with constants.
+
+    TODO: Add is_shift_amount guard (INTERR 50835 prevention).
+    The callers _rewrite_instruction_c and cy_rewrite_instruction pass ins.r
+    to this function without indicating whether the operand is a shift-amount
+    slot.  For shift instructions (m_shl/m_shr/m_sar), the r operand must
+    have size == 1; folding a constant with a larger size triggers INTERR 50835.
+    The fix requires threading the parent opcode (or an is_shift_amount flag)
+    into _cy_process_operand so that when op is ins.r of a shift instruction
+    the make_number call uses size=1.
+    Reference implementations:
+      - Python path: forward_const_prop.py _slow_rewrite_instruction
+        (is_shift_amount flag + _SHIFT_OPCODES guard)
+      - Peephole path: fold_readonlydata.py _fold_readonly_operands_in_expr
+        (post-fixup clamps r.size to 1 after recursive fold)
+    This change requires a Cython rebuild (D810_BUILD_SPEEDUPS=1). Safe to
+    defer since Cython is disabled by default (cython_enabled=False).
+    """
     cdef:
         bint changed = <bint>False
         qstring name
