@@ -14,8 +14,10 @@ function-wide and therefore safe at control-flow merge points.
 import weakref
 
 import ida_hexrays
+import ida_segment
+import idaapi
 
-from d810.core import CythonMode, getLogger, typing
+from d810.core import CythonMode, getLogger, logging, typing
 from d810.hexrays.cfg_utils import (
     _VALID_MOP_SIZES,
     extract_base_and_offset,
@@ -28,9 +30,107 @@ from d810.hexrays.hexrays_helpers import AND_TABLE
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRulePriority
 
-logger = getLogger(__name__)
+logger = getLogger(__name__, logging.DEBUG)
 
-ConstMap = dict[str, tuple[int, int]]  # var  -> (value, size)
+from d810.optimizers.microcode.flow.constant_prop.lattice import (
+    BOTTOM, TOP, Const, LatticeValue, LatticeEnv, LatticeMeet,
+)
+
+ConstMap = LatticeEnv  # backward-compat alias
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers for readonly-segment ldx resolution
+# ---------------------------------------------------------------------------
+
+def _ro_segment_is_read_only(addr: int) -> bool:
+    """Return True if *addr* is in a readable, non-writable, non-executable segment.
+
+    Guards all IDA API calls with try/except — segment queries can fail when
+    the address is synthetic or outside any loaded segment.
+    """
+    try:
+        seg = ida_segment.getseg(addr)
+        if seg is None:
+            return False
+        perms = seg.perm
+        has_read = bool(perms & idaapi.SEGPERM_READ)
+        has_write = bool(perms & idaapi.SEGPERM_WRITE)
+        has_exec = bool(perms & idaapi.SEGPERM_EXEC)
+        return has_read and not has_write and not has_exec
+    except Exception:
+        return False
+
+
+def _ro_fetch_constant(addr: int, size: int) -> typing.Optional[int]:
+    """Read *size* bytes at *addr* and return as an integer, or None on failure."""
+    try:
+        if size == 1:
+            val = idaapi.get_byte(addr)
+        elif size == 2:
+            val = idaapi.get_word(addr)
+        elif size == 4:
+            val = idaapi.get_dword(addr)
+        elif size == 8:
+            val = idaapi.get_qword(addr)
+        else:
+            return None
+        return None if val == idaapi.BADADDR else val
+    except Exception:
+        return None
+
+
+@typing.runtime_checkable
+class MeetStrategy(typing.Protocol):
+    """Strategy for combining predecessor OUT maps at CFG merge points."""
+
+    def meet(self, pred_outs: list[ConstMap]) -> ConstMap:
+        """Return the combined constant map for the given predecessor OUT maps."""
+        ...
+
+
+class IntersectionMeet:
+    """Keep only vars where ALL predecessors agree on value. Sound."""
+
+    __slots__ = ()
+
+    def meet(self, pred_outs: list[ConstMap]) -> ConstMap:
+        """Intersection meet: conservative, sound at all CFG merge points."""
+        if not pred_outs:
+            return {}
+        if len(pred_outs) == 1:
+            return dict(pred_outs[0])
+        first = pred_outs[0]
+        res = {}
+        for k, v in first.items():
+            if all(other.get(k) == v for other in pred_outs[1:]):
+                res[k] = v
+        return res
+
+
+class UnionKillMeet:
+    """Keep vars from ANY predecessor; kill only on value conflict.
+
+    WARNING: Unsound with partial-state OUT maps — use only in
+    post-apply context where linearized CFG makes it practically safe.
+    """
+
+    __slots__ = ()
+
+    def meet(self, pred_outs: list[ConstMap]) -> ConstMap:
+        """Union-kill meet: aggressive, safe only in post-apply linearized context."""
+        if not pred_outs:
+            return {}
+        if len(pred_outs) == 1:
+            return dict(pred_outs[0])
+        candidates: dict[str, tuple[int, int] | None] = {}
+        for out_map in pred_outs:
+            for var, val in out_map.items():
+                if var not in candidates:
+                    candidates[var] = val
+                elif candidates[var] is not None and candidates[var] != val:
+                    candidates[var] = None
+        return {var: val for var, val in candidates.items() if val is not None}
 
 
 class ForwardConstantPropagationRule(FlowOptimizationRule):
@@ -91,16 +191,15 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         ida_hexrays.m_call,
     }
 
-    def __init__(self):
+    def __init__(self, meet_strategy: MeetStrategy | None = None):
         super().__init__()
-        # Run at CALLS and GLBOPT3. GLBOPT3 is safe — the unflattener only
-        # runs at CALLS/GLBOPT1/GLBOPT2, so there is no interference.
         self.maturities = [
             ida_hexrays.MMAT_CALLS,
             getattr(ida_hexrays, "MMAT_GLBOPT3", ida_hexrays.MMAT_CALLS),
         ]
         self._seen: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # mba -> (maturity, generation)
         self.cython_enabled = CythonMode().is_enabled()
+        self._meet_strategy: MeetStrategy = meet_strategy or IntersectionMeet()
 
     @typing.override
     def configure(self, kwargs):
@@ -109,6 +208,13 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
 
     @typing.override
     def optimize(self, blk: ida_hexrays.mblock_t):
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[FCP] optimize() called at maturity=%d (%s) blk=%d",
+                blk.mba.maturity if blk.mba else -1,
+                maturity_to_string(blk.mba.maturity) if blk.mba else "?",
+                blk.serial,
+            )
         if self.current_maturity not in self.maturities:
             if logger.debug_on:
                 logger.debug(
@@ -217,6 +323,13 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         Phase B: Iterate over each block and apply optimizations until the
         block is stable (reaches a fixed point).
         """
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[FCP] _slow_run_on_function: %d blocks, maturity=%d (%s)",
+                mba.qty,
+                mba.maturity,
+                maturity_to_string(mba.maturity),
+            )
         IN, _ = self._slow_dataflow(mba)
         if not IN:
             return 0
@@ -346,15 +459,38 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
 
     def _slow_dataflow(self, mba: ida_hexrays.mba_t):
         nb = mba.qty
-        IN: dict[int, ConstMap] = {i: {} for i in range(nb)}
-        OUT: dict[int, ConstMap] = {i: {} for i in range(nb)}
-        worklist: list[int] = list(range(nb))
+        block_serials = list(range(nb))
+        IN: dict[int, ConstMap] = {i: {} for i in block_serials}
+        OUT: dict[int, ConstMap] = {i: {} for i in block_serials}
+
+        # Collect universe: all variable names written anywhere in the function
+        universe = self._collect_universe(mba)
+
+        # Entry block IN: all TOP (unknown initial values at function entry)
+        # All other blocks: empty (missing = BOTTOM = identity for meet)
+        entry_serial = 0  # IDA entry block is always serial 0
+        IN[entry_serial] = {var: TOP for var in universe}
+
+        # Start worklist from entry only — unreachable blocks stay BOTTOM
+        worklist: list[int] = [entry_serial]
+
         preds: dict[int, list[int]] = {
-            i: list(mba.get_mblock(i).predset) for i in range(nb)
+            i: list(mba.get_mblock(i).predset) for i in block_serials
         }
+        iteration = 0
         while worklist:
+            iteration += 1
             idx = worklist.pop()
             inm = self._meet([OUT[p] for p in preds[idx]]) if preds[idx] else {}
+            if logger.isEnabledFor(logging.DEBUG):
+                total_vars = sum(len(v) for v in IN.values())
+                logger.debug(
+                    "[FCP] dataflow iteration %d: worklist=%d blk=%d %d vars in constant map",
+                    iteration,
+                    len(worklist),
+                    idx,
+                    total_vars,
+                )
             if inm != IN[idx]:
                 IN[idx] = inm
             out_new = self._transfer_block(mba.get_mblock(idx), inm)
@@ -365,28 +501,22 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                         worklist.append(succ)
         return IN, OUT
 
-    # meet = intersection of keys where all values agree
-    @staticmethod
-    def _meet(pred_outs: list[ConstMap]) -> ConstMap:
-        """
-        Compute the meet (intersection) of constant maps coming from the
-        predecessors.
+    # meet delegates to the injected MeetStrategy
+    def _meet(self, pred_outs: list[ConstMap]) -> ConstMap:
+        """Delegate meet computation to the configured MeetStrategy.
 
-        This optimised version avoids most overhead:
-        1. Early-out when there are 0 or 1 predecessors.
-        2. Iterate only over the keys of the *first* predecessor and compare the
-           value in the remaining maps.
+        The default strategy (IntersectionMeet) is sound at all CFG merge
+        points.  Callers may inject UnionKillMeet for a more aggressive pass
+        in post-apply contexts where the CFG is effectively linearized.
         """
-        if not pred_outs:
-            return {}
-        if len(pred_outs) == 1:
-            # Fast-path: single predecessor - just copy its map.
-            return dict(pred_outs[0])
-        first, res = pred_outs[0], {}
-        for k, v in first.items():
-            if all(other.get(k) == v for other in pred_outs[1:]):
-                res[k] = v
-        return res
+        result = self._meet_strategy.meet(pred_outs)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[FCP] meet: %d predecessors -> %d vars in result",
+                len(pred_outs),
+                len(result),
+            )
+        return result
 
     # transfer over whole block
     def _transfer_block(self, blk: ida_hexrays.mblock_t, in_map: ConstMap) -> ConstMap:
@@ -420,16 +550,28 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             if helper_name.startswith(("__ROL", "__ROR")):
                 return  # pure helper — preserve env
         if ins.has_side_effects() and ins.opcode != ida_hexrays.m_stx:
-            env.clear()
+            for k in list(env):
+                env[k] = TOP
             # Nothing more to learn from this instruction.
             return
 
-        # 2. ldx is a memory load whose result is unknown at analysis time.
-        # Kill the destination variable and do not GEN a constant for it.
+        # 2. ldx is a memory load — check if it loads from a readonly segment.
+        # If so, GEN the constant value; otherwise KILL the destination.
         if ins.opcode == ida_hexrays.m_ldx:
             written_var = self._get_written_var_name(ins)
-            if written_var and written_var in env:
-                del env[written_var]
+            readonly_val = self._try_resolve_readonly_ldx(ins)
+            if readonly_val is not None and written_var:
+                value, size = readonly_val
+                env[written_var] = Const(value, size)  # GEN: readonly constant
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "[forward-cprop] readonly ldx at %#x -> %s = %r",
+                        ins.ea, written_var, env[written_var],
+                    )
+                return
+            # Writable or unresolvable: KILL
+            if written_var:
+                env[written_var] = TOP
             return
 
         # 3. Determine written variable & apply precise KILL / GEN.
@@ -437,14 +579,22 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         is_const_assign = self._is_constant_stack_assignment(ins)
 
         # KILL stack var when overwritten by non-constant value
-        if written_var and not is_const_assign and written_var in env:
-            del env[written_var]
+        if written_var and not is_const_assign:
+            env[written_var] = TOP
 
         # 3. GEN stack var constant
         if is_const_assign:
             res = self._extract_assignment(ins)
             if res and res[0]:
-                env[res[0]] = res[1]
+                var_name, (value, size) = res[0], res[1]
+                env[var_name] = Const(value, size)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "[FCP] transfer: blk=? ins_ea=0x%x gen %s = %r",
+                        ins.ea,
+                        var_name,
+                        env[var_name],
+                    )
 
     def _slow_rewrite_instruction(
         self,
@@ -487,6 +637,12 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             changed = True
         if not changed:
             return 0
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[FCP] rewrite: ea=0x%x opcode=%d (substitution applied)",
+                ins.ea,
+                ins.opcode,
+            )
         # Ensure the instruction is internally consistent after we rewrote its operands.
         ins.optimize_solo()
         return 1
@@ -497,8 +653,11 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         changed = False
         if op.t == ida_hexrays.mop_S:
             name = get_stack_var_name(op)
-            if name and name in consts:
-                val, _ = consts[name]
+            if name:
+                lv = consts.get(name, BOTTOM)
+                if not isinstance(lv, Const):
+                    return False  # skip TOP and BOTTOM
+                val, size = lv.value, lv.size
                 if op.size not in _VALID_MOP_SIZES:
                     logger.warning(
                         "Skipping constprop rewrite: invalid op.size %d for var %s",
@@ -514,20 +673,20 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         elif op.t == ida_hexrays.mop_d and op.d is not None:
             if op.d.opcode == ida_hexrays.m_ldx:
                 addr = op.d.r
-                const_info, name = None, None
+                lv_info: LatticeValue = BOTTOM
                 if addr and addr.t == ida_hexrays.mop_S:
                     name = get_stack_var_name(addr)
-                    if name and name in consts:
-                        const_info = consts[name]
+                    if name:
+                        lv_info = consts.get(name, BOTTOM)
                 else:
                     base, off = extract_base_and_offset(addr)
                     if base:
                         base_name = get_stack_var_name(base)
                         name = f"{base_name}+{off:X}" if off else base_name
-                        if name in consts:
-                            const_info = consts[name]
-                if const_info:
-                    val, _ = const_info
+                        if name:
+                            lv_info = consts.get(name, BOTTOM)
+                if isinstance(lv_info, Const):
+                    val = lv_info.value
                     if op.size not in _VALID_MOP_SIZES:
                         logger.warning(
                             "Skipping constprop ldx rewrite: invalid op.size %d",
@@ -549,6 +708,91 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
     # ------------------------------------------------------------------
     # Helper utilities
     # ------------------------------------------------------------------
+
+    def _try_resolve_readonly_ldx(
+        self, ins: ida_hexrays.minsn_t
+    ) -> typing.Optional[tuple[int, int]]:
+        """Try to resolve an ldx instruction as a load from a readonly segment.
+
+        Reconstructs the effective address from the ldx operands (supporting
+        the same ``ldx  &sym, #off`` and ``ldx  $global_var, #off`` patterns
+        as FoldReadonlyDataRule).  If the address falls in a read-only segment,
+        reads the constant value there and returns ``(value, size)``.
+
+        Returns None if the address cannot be determined, is not readonly, or
+        the value cannot be read.
+        """
+        if ins.opcode != ida_hexrays.m_ldx:
+            return None
+
+        try:
+            ea: typing.Optional[int] = None
+
+            # Variant A: ldx  &sym , #off  (mop_S left, mop_n right)
+            if ins.l.t == ida_hexrays.mop_S and ins.r.t == ida_hexrays.mop_n:
+                base = ins.l.s.start_ea
+                off = ins.r.nnn.value
+                ea = base + off
+
+            # Variant B: ldx  $global_var , #off  (mop_v left, mop_n right)
+            elif ins.l.t == ida_hexrays.mop_v and ins.r.t == ida_hexrays.mop_n:
+                base = ins.l.g
+                off = ins.r.nnn.value
+                ea = base + off
+
+            # Variant C: ldx  $global_var , <pure-const-expr>
+            elif ins.l.t == ida_hexrays.mop_v and ins.r.t == ida_hexrays.mop_d:
+                from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
+                    _try_eval_pure_const_mop,
+                )
+                off = _try_eval_pure_const_mop(ins.r)
+                if off is not None:
+                    ea = ins.l.g + off
+
+            # Variant D: ldx  &sym , <pure-const-expr>
+            elif ins.l.t == ida_hexrays.mop_S and ins.r.t == ida_hexrays.mop_d:
+                from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
+                    _try_eval_pure_const_mop,
+                )
+                off = _try_eval_pure_const_mop(ins.r)
+                if off is not None:
+                    ea = ins.l.s.start_ea + off
+
+            if ea is None:
+                return None
+
+            if not _ro_segment_is_read_only(ea):
+                return None
+
+            size = ins.d.size if (ins.d and ins.d.size) else ins.l.size
+            if not size:
+                return None
+
+            value = _ro_fetch_constant(ea, size)
+            if value is None:
+                return None
+
+            return (value, size)
+
+        except Exception:
+            return None
+
+    def _collect_universe(self, mba: ida_hexrays.mba_t) -> set[str]:
+        """Collect all variable names that are written in any block.
+
+        This defines the universe of tracked variables for the lattice.
+        Only variables with at least one definition need tracking.
+        """
+        universe: set[str] = set()
+        for blk_idx in range(mba.qty):
+            blk = mba.get_mblock(blk_idx)
+            ins = blk.head
+            while ins:
+                dest_name = self._get_written_var_name(ins)
+                if dest_name is not None:
+                    universe.add(dest_name)
+                ins = ins.next
+        return universe
 
     # identify destination variable of an instruction (None if unknown)
     def _get_written_var_name(self, ins: ida_hexrays.minsn_t):
