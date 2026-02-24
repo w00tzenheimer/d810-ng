@@ -538,7 +538,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                     tmp.make_number(val & AND_TABLE[op.size], op.size)
                     op.assign(tmp)
                     return True
-            for attr in ("l", "r"):
+            for attr in ("l", "r", "d"):
                 sub = getattr(op.d, attr, None)
                 if sub and self._slow_process_operand(sub, consts):
                     changed = True
