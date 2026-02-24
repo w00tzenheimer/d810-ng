@@ -2912,6 +2912,40 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     "Post-apply ForwardConstProp: %d substitution(s)", const_prop_changes
                 )
 
+        # Phase 2: Run peephole folds on freshly propagated constants
+        if self.post_apply_const_prop:
+            from d810.optimizers.microcode.instructions.peephole.fold_rotatehelper import RotateHelperInlineRule
+            from d810.optimizers.microcode.instructions.peephole.fold_constant_subtree import ConstantSubtreeFoldRule
+
+            peephole_rules = [ConstantSubtreeFoldRule(), RotateHelperInlineRule()]
+            peephole_changes = 0
+
+            for blk_serial in range(self.mba.qty):
+                blk = self.mba.get_mblock(blk_serial)
+                changed_in_block = True
+                while changed_in_block:
+                    changed_in_block = False
+                    ins = blk.head
+                    while ins:
+                        next_ins = ins.next
+                        for rule in peephole_rules:
+                            new_ins = rule.check_and_replace(blk, ins)
+                            if new_ins is not None:
+                                ins.swap(new_ins)
+                                peephole_changes += 1
+                                changed_in_block = True
+                                break  # restart block scan
+                        if changed_in_block:
+                            break
+                        ins = next_ins
+
+            if peephole_changes > 0:
+                self.mba.mark_chains_dirty()
+                self.mba.optimize_local(0)
+                unflat_logger.info(
+                    "Post-apply peephole sweep: %d fold(s)", peephole_changes
+                )
+
     # Maximum wall-clock seconds for a single optimize() call.
     MAX_OPTIMIZE_SECONDS = 30.0
 
