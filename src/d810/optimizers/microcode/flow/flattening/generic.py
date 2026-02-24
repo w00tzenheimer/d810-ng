@@ -2896,7 +2896,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         # Phase 1: Propagate constants into newly unflattened blocks
         if self.post_apply_const_prop:
             from d810.optimizers.microcode.flow.constant_prop.forward_const_prop import ForwardConstantPropagationRule
-            const_prop = ForwardConstantPropagationRule()
+            from d810.optimizers.microcode.flow.constant_prop.lattice import LatticeMeet, BOTTOM
+            const_prop = ForwardConstantPropagationRule(meet_strategy=LatticeMeet(default_missing=BOTTOM))
             try:
                 const_prop_changes = const_prop._run_on_function(self.mba)
             except Exception as exc:

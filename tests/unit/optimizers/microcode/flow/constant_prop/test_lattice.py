@@ -244,3 +244,92 @@ class TestLatticeMeetStrategy:
         ]
         result = self.strategy.meet(envs)
         assert result == {"x": TOP}
+
+
+# ---------------------------------------------------------------------------
+# TestEnvMeetDefaultMissing
+# ---------------------------------------------------------------------------
+
+class TestEnvMeetDefaultMissing:
+    def test_env_meet_default_missing_top_kills_absent(self):
+        """With default_missing=TOP, a key present in only one env is killed."""
+        a: LatticeEnv = {"x": Const(1, 4)}
+        b: LatticeEnv = {}
+        result = env_meet(a, b, default_missing=TOP)
+        assert result == {"x": TOP}
+
+    def test_env_meet_default_missing_bottom_preserves_absent(self):
+        """With default_missing=BOTTOM (default), a key present in only one env survives."""
+        a: LatticeEnv = {"x": Const(1, 4)}
+        b: LatticeEnv = {}
+        result = env_meet(a, b, default_missing=BOTTOM)
+        assert result == {"x": Const(1, 4)}
+
+    def test_env_meet_default_missing_top_both_keys_present_agree(self):
+        """With default_missing=TOP, keys present in both envs that agree still yield the constant."""
+        a: LatticeEnv = {"x": Const(5, 4)}
+        b: LatticeEnv = {"x": Const(5, 4)}
+        result = env_meet(a, b, default_missing=TOP)
+        assert result == {"x": Const(5, 4)}
+
+    def test_env_meet_default_missing_top_both_keys_present_conflict(self):
+        """With default_missing=TOP, conflicting keys still produce TOP."""
+        a: LatticeEnv = {"x": Const(1, 4)}
+        b: LatticeEnv = {"x": Const(2, 4)}
+        result = env_meet(a, b, default_missing=TOP)
+        assert result == {"x": TOP}
+
+
+# ---------------------------------------------------------------------------
+# TestLatticeMeetConservativeAndAggressive
+# ---------------------------------------------------------------------------
+
+class TestLatticeMeetConservativeAndAggressive:
+    def test_lattice_meet_conservative_kills_absent(self):
+        """LatticeMeet(default_missing=TOP) kills constants from unreachable predecessors."""
+        conservative = LatticeMeet(default_missing=TOP)
+        live_env: LatticeEnv = {"state": Const(0xCAFE, 4)}
+        dead_env: LatticeEnv = {}  # unreachable block — empty OUT
+        result = conservative.meet([live_env, dead_env])
+        assert result == {"state": TOP}
+
+    def test_lattice_meet_aggressive_preserves_absent(self):
+        """LatticeMeet(default_missing=BOTTOM) preserves constants from unreachable predecessors."""
+        aggressive = LatticeMeet(default_missing=BOTTOM)
+        live_env: LatticeEnv = {"state": Const(0xCAFE, 4)}
+        dead_env: LatticeEnv = {}  # unreachable block — empty OUT
+        result = aggressive.meet([live_env, dead_env])
+        assert result == {"state": Const(0xCAFE, 4)}
+
+    def test_lattice_meet_conservative_default_is_top(self):
+        """LatticeMeet(default_missing=TOP) stores TOP as the default."""
+        conservative = LatticeMeet(default_missing=TOP)
+        assert conservative._default_missing is TOP
+
+    def test_lattice_meet_aggressive_default_is_bottom(self):
+        """LatticeMeet(default_missing=BOTTOM) stores BOTTOM as the default."""
+        aggressive = LatticeMeet(default_missing=BOTTOM)
+        assert aggressive._default_missing is BOTTOM
+
+    def test_lattice_meet_default_ctor_is_bottom(self):
+        """LatticeMeet() with no args defaults to BOTTOM (aggressive)."""
+        strategy = LatticeMeet()
+        assert strategy._default_missing is BOTTOM
+
+    def test_lattice_meet_conservative_cff_pattern(self):
+        """Conservative meet: one live predecessor + two dead empties kills the constant."""
+        conservative = LatticeMeet(default_missing=TOP)
+        case_env: LatticeEnv = {"state": Const(0x1, 4)}
+        dead1: LatticeEnv = {}
+        dead2: LatticeEnv = {}
+        result = conservative.meet([case_env, dead1, dead2])
+        assert result == {"state": TOP}
+
+    def test_lattice_meet_aggressive_cff_pattern(self):
+        """Aggressive meet: one live predecessor + two dead empties preserves the constant."""
+        aggressive = LatticeMeet(default_missing=BOTTOM)
+        case_env: LatticeEnv = {"state": Const(0x1, 4)}
+        dead1: LatticeEnv = {}
+        dead2: LatticeEnv = {}
+        result = aggressive.meet([case_env, dead1, dead2])
+        assert result == {"state": Const(0x1, 4)}
