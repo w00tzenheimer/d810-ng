@@ -304,7 +304,8 @@ cdef class MopSnapshot:
             except TypeError:
                 pass
         elif self.t == ida_hexrays.mop_v and self.gaddr is not None:
-            m.make_global(self.gaddr, self.size)
+            m.make_gvar(self.gaddr)
+            m.size = self.size
         elif self.t == ida_hexrays.mop_l and self.lvar_idx is not None:
             # Local variable: requires lvar_t, which we can't fully reconstruct
             # without the parent mba_t. Return empty mop (matches pure Python).
