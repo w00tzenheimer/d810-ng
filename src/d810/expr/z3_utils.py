@@ -617,15 +617,15 @@ def _find_def_in_block(
     Returns:
         The most-recent instruction in the block that writes to *mop*, or None.
     """
-    # Convert MopSnapshot (frozen dataclass) to a real mop_t for SWIG compatibility.
-    if hasattr(mop, 'to_mop'):
-        mop = mop.to_mop()
-
     # Build the use-list for mop so we can test against instruction def-lists.
+    # Skip append_use_list when mop is a MopSnapshot (frozen dataclass) — SWIG
+    # requires a real mop_t, and the call is only bookkeeping.  We fall through
+    # to the backwards walk which uses build_def_list independently.
     ml = ida_hexrays.mlist_t()
-    blk.append_use_list(ml, mop, ida_hexrays.MUST_ACCESS)
-    if ml.empty():
-        return None
+    if not hasattr(mop, 'to_mop'):
+        blk.append_use_list(ml, mop, ida_hexrays.MUST_ACCESS)
+        if ml.empty():
+            return None
 
     # Walk backwards from before_ins (or from the tail if before_ins is None).
     cur_ins = before_ins.prev if before_ins is not None else blk.tail
