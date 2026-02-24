@@ -77,6 +77,13 @@ import ida_hexrays
 import ida_segment
 import idaapi
 
+# Opcodes where the right operand (shift amount) must have size == 1.
+# Folding a constant into ins.r with a larger size triggers INTERR 50835.
+# Mirrors the same set in forward_const_prop.py.
+_SHIFT_OPCODES: frozenset[int] = frozenset({
+    ida_hexrays.m_shl, ida_hexrays.m_shr, ida_hexrays.m_sar,
+})
+
 import d810.core.typing as typing
 from d810.core import getLogger
 from d810.errors import AstEvaluationException
@@ -509,7 +516,19 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             changed |= self._fold_readonly_inplace(new_ins.r)
         # do not touch destination
 
-        return new_ins if changed else None
+        if not changed:
+            return None
+
+        # Post-fixup: shift instructions (m_shl/m_shr/m_sar) require that
+        # ins.r (the shift-amount operand) has size == 1.  If the recursive
+        # fold just replaced ins.r with a mop_n of a larger size, IDA's
+        # verifier will raise INTERR 50835.  Clamp the size here.
+        if new_ins.opcode in _SHIFT_OPCODES:
+            r = new_ins.r
+            if r is not None and r.t == ida_hexrays.mop_n and r.size != 1:
+                r.make_number(r.nnn.value & 0xFF, 1)
+
+        return new_ins
 
     def _fold_readonly_inplace(self, op: ida_hexrays.mop_t) -> bool:
         """Recursively fold `op` if it references a readonly global.

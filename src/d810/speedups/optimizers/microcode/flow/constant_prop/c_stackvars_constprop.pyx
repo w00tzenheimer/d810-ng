@@ -73,6 +73,18 @@ def process_operand_cy(op_py_obj, consts):
 cdef bool _process_operand_impl(object root_py_mop, object consts):
     """Iterative operand traversal working with Python proxy objects.
 
+    TODO: Add is_shift_amount guard (INTERR 50835 prevention).
+    When the parent instruction opcode is m_shl/m_shr/m_sar and the operand
+    being rewritten is ins.r (the shift-amount slot), make_number must be
+    called with size=1.  The Python path in forward_const_prop.py already
+    handles this via the is_shift_amount flag in _slow_process_operand.
+    This Cython path needs the same guard: thread the parent opcode down and
+    force size=1 when folding the r operand of a shift instruction.
+    See: fold_readonlydata.py _fold_readonly_operands_in_expr post-fixup
+    and forward_const_prop.py _slow_rewrite_instruction for the reference
+    implementations.
+    """
+
     We maintain Python lists (`worklist`, `post_order`) containing mop_t
     proxies.  The real C++ pointer is borrowed only when we need to access
     struct fields, avoiding conversions back-and-forth.
