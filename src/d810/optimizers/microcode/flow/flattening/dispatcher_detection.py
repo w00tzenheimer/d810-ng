@@ -214,6 +214,7 @@ class DispatcherCache:
         self._analysis: DispatcherAnalysis | None = None
         self._last_maturity: int = -1
         self._previous_type: DispatcherType | None = None
+        self._persisted_initial_state: int | None = None
 
         # Statistics for performance tuning
         self.blocks_analyzed = 0
@@ -231,6 +232,8 @@ class DispatcherCache:
             if cache._last_maturity != mba.maturity:
                 if cache._analysis is not None:
                     cache._previous_type = cache._analysis.dispatcher_type
+                    if cache._analysis.initial_state is not None:
+                        cache._persisted_initial_state = cache._analysis.initial_state
                 cache._analysis = None  # Invalidate
             return cache
 
@@ -835,6 +838,13 @@ class DispatcherCache:
                             logger.debug("Found initial state: 0x%x in block %d", const_val, i)
                             return
                 insn = insn.next
+
+        if analysis.initial_state is None and self._persisted_initial_state is not None:
+            logger.debug(
+                "Using persisted initial_state 0x%x from earlier maturity",
+                self._persisted_initial_state,
+            )
+            analysis.initial_state = self._persisted_initial_state
 
     def _get_mop_key(self, mop: ida_hexrays.mop_t) -> str | None:
         """Get a unique key for an mop_t for comparison."""
