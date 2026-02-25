@@ -1545,8 +1545,8 @@ class HodurUnflattener(GenericUnflatteningRule):
                 while insn:
                     if insn.ea == target_ea and insn.opcode == target_opcode:
                         blk.make_nop(insn)
-                        if logger.debug_on:
-                            logger.debug(
+                        if unflat_logger.debug_on:
+                            unflat_logger.debug(
                                 "NOPed state assignment in block %d (ea=0x%x)",
                                 blk_serial, target_ea,
                             )
