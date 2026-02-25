@@ -23,6 +23,7 @@ Key differences from O-LLVM:
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 import ida_hexrays
@@ -910,11 +911,14 @@ class HodurUnflattener(GenericUnflatteningRule):
         This is more effective than predecessor-based patching which tries to resolve
         state values at check block predecessors, but fails when the predecessor
         is the dispatcher itself (which can have any state value).
+
+        Conditional forks (2-way from_block with two different to_states) are handled
+        by grouping transitions per from_block and using queue_create_conditional_redirect
+        so both edges are preserved rather than collapsed to a single goto.
         """
         if self.state_machine is None or self.deferred is None:
             return 0
 
-        queued_patches = 0
         handlers = list(self.state_machine.handlers.values())
         if not handlers:
             return 0
@@ -927,13 +931,16 @@ class HodurUnflattener(GenericUnflatteningRule):
         )
         defer_loopback_to_terminal_fix = self._uses_extended_dispatch_ops()
 
-        for transition in self.state_machine.transitions:
-            from_blk = self.mba.get_mblock(transition.from_block)
-            if from_blk is None:
-                continue
+        # --- Group transitions by from_block so we can detect conditional forks ---
+        unflat_logger.debug(
+            "_queue_transitions_direct: %d total transitions, defer_loopback=%s",
+            len(self.state_machine.transitions),
+            defer_loopback_to_terminal_fix,
+        )
+        transitions_by_block: dict[int, list[StateTransition]] = defaultdict(list)
 
-            # Handle loopback-to-initial transitions in terminal cleanup where we
-            # can map them to an exit target, avoiding conflicting queued rewrites.
+        for transition in self.state_machine.transitions:
+            # Respect loopback deferral for extended dispatch ops
             if (
                 defer_loopback_to_terminal_fix
                 and initial_state is not None
@@ -941,48 +948,66 @@ class HodurUnflattener(GenericUnflatteningRule):
                 and transition.from_state != initial_state
             ):
                 continue
+            transitions_by_block[transition.from_block].append(transition)
 
-            to_handler = self.state_machine.handlers.get(transition.to_state)
+        queued_patches = 0
 
-            if to_handler is None:
-                unflat_logger.debug(
-                    "No handler found for to_state %s", hex(transition.to_state)
-                )
+        for from_serial, block_transitions in transitions_by_block.items():
+            from_blk = self.mba.get_mblock(from_serial)
+            if from_blk is None:
                 continue
 
-            # Get the target: first handler block (skip the check block)
-            if not to_handler.handler_blocks:
-                unflat_logger.debug(
-                    "No handler blocks for state %s", hex(transition.to_state)
-                )
-                continue
-
-            target_block = to_handler.handler_blocks[0]
+            # --- 1-way blocks: simple goto redirect ---
             if from_blk.nsucc() == 1:
                 succs = [s for s in from_blk.succset]
-                if not succs:
-                    continue
-                current_dest = succs[0]
-                if current_dest not in check_blocks:
+                if not succs or succs[0] not in check_blocks:
                     unflat_logger.debug(
                         "Block %d goes to %d, not a dispatcher check block; skipping",
-                        transition.from_block,
-                        current_dest,
+                        from_serial,
+                        succs[0] if succs else -1,
                     )
                     continue
-
+                # All transitions from a 1-way block must agree on a single to_state
+                # (duplicates from carry-forward are fine; ambiguity is not).
+                unique_to = {t.to_state for t in block_transitions}
+                if len(unique_to) != 1:
+                    unflat_logger.debug(
+                        "Block %d (1-way): ambiguous to_states %s, skipping",
+                        from_serial,
+                        [hex(s) for s in unique_to],
+                    )
+                    continue
+                to_state = next(iter(unique_to))
+                to_handler = self.state_machine.handlers.get(to_state)
+                if to_handler is None or not to_handler.handler_blocks:
+                    continue
+                target_block = to_handler.handler_blocks[0]
                 if self._queue_transition_redirect(
                     from_blk,
                     target_block,
-                    f"transition {hex(transition.from_state)} -> {hex(transition.to_state)}",
+                    f"transition {hex(block_transitions[0].from_state)} -> {hex(to_state)}",
                 ):
-                    self._resolved_transitions.add((transition.from_state, transition.to_state))
+                    for t in block_transitions:
+                        self._resolved_transitions.add((t.from_state, t.to_state))
                     queued_patches += 1
                 continue
 
-            if from_blk.nsucc() == 2 and any(
-                s in check_blocks for s in from_blk.succset
-            ):
+            # --- 2-way blocks ---
+            if from_blk.nsucc() != 2:
+                continue
+            if not any(s in check_blocks for s in from_blk.succset):
+                continue
+
+            unique_to_states = {t.to_state for t in block_transitions}
+
+            if len(unique_to_states) == 1:
+                # All transitions from this 2-way block go to the same state —
+                # collapse it to an unconditional goto (original behavior).
+                transition = block_transitions[0]
+                to_handler = self.state_machine.handlers.get(transition.to_state)
+                if to_handler is None or not to_handler.handler_blocks:
+                    continue
+                target_block = to_handler.handler_blocks[0]
                 if self._queue_transition_redirect(
                     from_blk,
                     target_block,
@@ -990,6 +1015,94 @@ class HodurUnflattener(GenericUnflatteningRule):
                 ):
                     self._resolved_transitions.add((transition.from_state, transition.to_state))
                     queued_patches += 1
+
+            elif len(unique_to_states) == 2:
+                # Conditional fork: two different states flow out of one 2-way block.
+                # We must preserve both edges — use queue_create_conditional_redirect.
+                t_a, t_b = block_transitions[0], block_transitions[-1]
+                handler_a = self.state_machine.handlers.get(t_a.to_state)
+                handler_b = self.state_machine.handlers.get(t_b.to_state)
+                if (
+                    handler_a is None or not handler_a.handler_blocks
+                    or handler_b is None or not handler_b.handler_blocks
+                ):
+                    unflat_logger.debug(
+                        "Conditional fork at block %d: missing handler(s), skipping",
+                        from_serial,
+                    )
+                    continue
+
+                target_a = handler_a.handler_blocks[0]
+                target_b = handler_b.handler_blocks[0]
+
+                # Use the check block to determine which target is jcc-taken vs
+                # fallthrough. The check block compares the state variable against
+                # state_val; walk it for each to_state to find the final handler.
+                # We need a check block serial — use the first successor in check_blocks.
+                check_blk_serial = next(
+                    (s for s in from_blk.succset if s in check_blocks), None
+                )
+                if check_blk_serial is None:
+                    continue
+
+                resolved_a = self._resolve_conditional_chain_target(check_blk_serial, t_a.to_state)
+                resolved_b = self._resolve_conditional_chain_target(check_blk_serial, t_b.to_state)
+
+                # Prefer resolved targets if available; fall back to direct handler blocks.
+                final_a = resolved_a if resolved_a is not None else target_a
+                final_b = resolved_b if resolved_b is not None else target_b
+
+                # Determine which is jcc-taken vs fallthrough by inspecting the check
+                # block's comparison instruction.
+                check_blk = self.mba.get_mblock(check_blk_serial)
+                if (
+                    check_blk is None
+                    or check_blk.tail is None
+                    or check_blk.tail.opcode not in HODUR_STATE_CHECK_OPCODES
+                ):
+                    continue
+
+                # Check which to_state makes the check block's jump taken
+                check_opcode = check_blk.tail.opcode
+                check_const = int(check_blk.tail.r.nnn.value) if check_blk.tail.r.t == ida_hexrays.mop_n else None
+                if check_const is None:
+                    continue
+
+                jt_a = HodurStateMachineDetector._is_jump_taken_for_state(
+                    check_opcode, int(t_a.to_state), check_const, check_blk.tail.r.size
+                )
+                if jt_a is None:
+                    continue
+
+                # jcc target vs fallthrough target
+                jcc_target = final_a if jt_a else final_b
+                ft_target = final_b if jt_a else final_a
+                jcc_state = t_a.to_state if jt_a else t_b.to_state
+                ft_state = t_b.to_state if jt_a else t_a.to_state
+
+                unflat_logger.debug(
+                    "Conditional fork at block %d: jcc->%d (state %s), "
+                    "fallthrough->%d (state %s)",
+                    from_serial,
+                    jcc_target,
+                    hex(jcc_state),
+                    ft_target,
+                    hex(ft_state),
+                )
+
+                self.deferred.queue_create_conditional_redirect(
+                    source_blk_serial=from_serial,
+                    ref_blk_serial=check_blk_serial,
+                    conditional_target_serial=jcc_target,
+                    fallthrough_target_serial=ft_target,
+                    description=(
+                        f"cond-fork {from_serial}: jcc->{hex(jcc_state)} "
+                        f"ft->{hex(ft_state)}"
+                    ),
+                )
+                self._resolved_transitions.add((t_a.from_state, t_a.to_state))
+                self._resolved_transitions.add((t_b.from_state, t_b.to_state))
+                queued_patches += 1
 
         return queued_patches
 
@@ -1653,6 +1766,8 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Collect all patches to apply (to avoid modifying while iterating)
         patches_fall_through = []  # (pred_blk, check_blk, fall_through_serial)
         patches_jump_taken = []  # (pred_blk, check_blk, jump_target_serial)
+        # Track conditional predecessors already queued to avoid duplicate patches
+        conditional_preds_patched: set[int] = set()
 
         # For each state check block
         for state_val, handler in self.state_machine.handlers.items():
@@ -1694,6 +1809,55 @@ class HodurUnflattener(GenericUnflatteningRule):
                         pred_serial,
                         [hex(v) for v in unique_values],
                     )
+                    if len(unique_values) == 2 and pred_serial not in conditional_preds_patched:
+                        # Attempt conditional transition resolution:
+                        # The predecessor is a 2-way block where each path sets a
+                        # different state value.  Walk the check-block chain for each
+                        # value and, if both resolve to a valid handler block, redirect
+                        # the two successor edges of pred_blk individually.
+                        val_list = list(unique_values)
+                        handler_targets = [
+                            self._resolve_conditional_chain_target(handler.check_block, v)
+                            for v in val_list
+                        ]
+
+                        if None not in handler_targets and pred_blk.nsucc() == 2:
+                            check_opcode = check_blk.tail.opcode if check_blk.tail else None
+                            if (
+                                check_blk.tail is not None
+                                and check_opcode in HODUR_STATE_CHECK_OPCODES
+                            ):
+                                # Determine which resolved handler corresponds to the
+                                # jump-taken vs fall-through edge of pred_blk by using
+                                # the check block's comparison against state_val.
+                                all_resolved = True
+                                for idx, v in enumerate(val_list):
+                                    jt_for_v = HodurStateMachineDetector._is_jump_taken_for_state(
+                                        check_opcode,
+                                        int(v),
+                                        int(state_val),
+                                        check_blk.tail.r.size,
+                                    )
+                                    if jt_for_v is None:
+                                        all_resolved = False
+                                        break
+                                    h_tgt = handler_targets[idx]
+                                    if jt_for_v:
+                                        patches_jump_taken.append(
+                                            (pred_blk, check_blk, h_tgt)
+                                        )
+                                    else:
+                                        patches_fall_through.append(
+                                            (pred_blk, check_blk, h_tgt)
+                                        )
+                                if all_resolved:
+                                    unflat_logger.debug(
+                                        "Conditional fork at pred %d: values %s -> handlers %s",
+                                        pred_serial,
+                                        [hex(v) for v in val_list],
+                                        [hex(h) for h in handler_targets],
+                                    )
+                                    conditional_preds_patched.add(pred_serial)
                     continue
 
                 pred_state = flat_values[0]
