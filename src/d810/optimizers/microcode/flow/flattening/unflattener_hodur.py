@@ -477,6 +477,7 @@ class HodurStateMachineDetector:
             return None
 
         cur = blk.head
+        count = 0
         while cur is not None:
             ok = interpreter.eval_instruction(
                 blk,
@@ -484,18 +485,23 @@ class HodurStateMachineDetector:
                 environment=env,
                 raise_exception=False,
             )
-            if cur is insn:
+            if not ok:
+                unflat_logger.warning("TRACE emulator: eval_instruction FAILED for opcode=%s from_state=%s", cur.opcode, hex(from_state))
+            if cur.ea == insn.ea and cur.opcode == insn.opcode:
                 if not ok:
                     return None
                 value = env.lookup(state_var, raise_exception=False)
                 if value is not None:
                     return int(value)
+                unflat_logger.warning("TRACE emulator: lookup returned None for from_state=%s", hex(from_state))
                 value = interpreter.eval_mop(
                     insn.d, environment=env, raise_exception=False
                 )
                 return int(value) if value is not None else None
+            count += 1
             cur = cur.next
 
+        unflat_logger.warning("TRACE emulator: identity match FAILED for from_state=%s, walked %d instructions", hex(from_state), count)
         return None
 
     def _evaluate_state_update_with_ast(
@@ -508,7 +514,10 @@ class HodurStateMachineDetector:
         """AST fallback for state updates when concrete emulation cannot resolve."""
         ast = minsn_to_ast(insn)
         if ast is None:
+            unflat_logger.warning("TRACE ast: minsn_to_ast returned None for opcode=%s from_state=%s", insn.opcode, hex(from_state))
             return None
+        if ast.dest_size is None and insn.d is not None:
+            ast.dest_size = insn.d.size
 
         leaf_values: dict[int, int] = {}
         for leaf in ast.get_leaf_list():
@@ -522,12 +531,14 @@ class HodurStateMachineDetector:
 
             resolved = self._resolve_single_mop_constant(blk, insn, leaf.mop)
             if resolved is None:
+                unflat_logger.warning("TRACE ast: leaf resolution FAILED for leaf mop type=%s ast_index=%s from_state=%s", leaf.mop.t if leaf.mop else None, leaf.ast_index, hex(from_state))
                 return None
             leaf_values[leaf.ast_index] = int(resolved)
 
         try:
             return int(ast.evaluate(leaf_values))
-        except Exception:
+        except Exception as exc:
+            unflat_logger.warning("TRACE ast: ast.evaluate FAILED from_state=%s exc=%s", hex(from_state), exc)
             return None
 
     def _resolve_next_state_value(
@@ -542,14 +553,18 @@ class HodurStateMachineDetector:
 
         Uses interpreter first, then AST fallback for resilience.
         """
+        unflat_logger.warning("TRACE _resolve_next: insn opcode=%s d_type=%s l_type=%s r_type=%s from_state=%s",
+            insn.opcode, insn.d.t, insn.l.t, insn.r.t, hex(from_state))
         next_state = self._evaluate_state_update_with_emulator(
             blk, insn, state_var, from_state
         )
         if next_state is None:
+            unflat_logger.warning("TRACE _resolve_next: emulator returned None, trying AST fallback for from_state=%s", hex(from_state))
             next_state = self._evaluate_state_update_with_ast(
                 blk, insn, state_var, from_state
             )
         if next_state is None:
+            unflat_logger.warning("TRACE _resolve_next: BOTH emulator and AST returned None for from_state=%s", hex(from_state))
             return None
 
         size = state_var.size if getattr(state_var, "size", 0) in (1, 2, 4, 8) else 4
@@ -722,6 +737,8 @@ class HodurUnflattener(GenericUnflatteningRule):
         self.deferred: DeferredGraphModifier | None = None
         self._actual_pass_count: int = 0
         self._current_tracked_maturity: int = ida_hexrays.MMAT_ZERO
+        self._resolved_transitions: set[tuple[int, int]] = set()
+        self._initial_transitions: list | None = None
 
     def configure(self, kwargs):
         super().configure(kwargs)
@@ -744,6 +761,8 @@ class HodurUnflattener(GenericUnflatteningRule):
             self._current_tracked_maturity = self.mba.maturity
             self._actual_pass_count = 0
             self.max_passes = self.DEFAULT_MAX_PASSES
+            self._resolved_transitions = set()
+            self._initial_transitions = None
 
         # Gate on actual Hodur runs, not block callback count
         if self._actual_pass_count >= self.max_passes:
@@ -778,8 +797,30 @@ class HodurUnflattener(GenericUnflatteningRule):
             unflat_logger.info("No Hodur state machine detected")
             return 0
 
+        # Save full transition list from first detection for carry-forward
+        if self._actual_pass_count == 0:
+            self._initial_transitions = list(self.state_machine.transitions)
+
         # Log the detected structure
         self._log_state_machine()
+
+        # On subsequent passes, supplement re-detected transitions with
+        # unresolved transitions carried forward from the initial detection.
+        if self._actual_pass_count > 0 and self._initial_transitions is not None:
+            detected_keys = {(t.from_state, t.to_state) for t in self.state_machine.transitions}
+            supplemented = 0
+            for t in self._initial_transitions:
+                key = (t.from_state, t.to_state)
+                if key not in self._resolved_transitions and key not in detected_keys:
+                    self.state_machine.transitions.append(t)
+                    supplemented += 1
+            unflat_logger.debug(
+                "HodurUnflattener: supplemented %d transitions from initial detection "
+                "(resolved: %d, re-detected: %d)",
+                supplemented,
+                len(self._resolved_transitions),
+                len(detected_keys),
+            )
 
         # Initialize deferred modifier - queue all changes first, apply later
         self.deferred = DeferredGraphModifier(self.mba)
@@ -935,6 +976,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     target_block,
                     f"transition {hex(transition.from_state)} -> {hex(transition.to_state)}",
                 ):
+                    self._resolved_transitions.add((transition.from_state, transition.to_state))
                     queued_patches += 1
                 continue
 
@@ -946,6 +988,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     target_block,
                     f"transition-cond {hex(transition.from_state)} -> {hex(transition.to_state)}",
                 ):
+                    self._resolved_transitions.add((transition.from_state, transition.to_state))
                     queued_patches += 1
 
         return queued_patches
@@ -1560,6 +1603,7 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         Re-runs the state machine detector on the current (possibly modified) CFG.
         Returns False if no state machine is found (fully resolved or never existed).
+        When a residual is found, updates self.state_machine with fresh block info.
         """
         if self.mba is None:
             return False
@@ -1573,6 +1617,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         )
         result = detector.detect()
         has_structure = result is not None
+        if has_structure:
+            # Update with fresh handler/check block info from current CFG
+            self.state_machine = result
         unflat_logger.debug(
             "HodurUnflattener: _state_machine_still_present -> %s",
             has_structure,
