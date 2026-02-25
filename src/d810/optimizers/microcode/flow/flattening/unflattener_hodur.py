@@ -1711,12 +1711,26 @@ class HodurUnflattener(GenericUnflatteningRule):
         if first_check_blk is None or first_check_blk.tail is None:
             return False
 
-        success_target = None
+        # Default: jnz jump target (next check block in chain)
+        jnz_target = None
         if (
             first_check_blk.tail.opcode == ida_hexrays.m_jnz
             and first_check_blk.tail.d.t == ida_hexrays.mop_b
         ):
-            success_target = first_check_blk.tail.d.b
+            jnz_target = first_check_blk.tail.d.b
+
+        # Prefer true exit target when it escapes the state machine region.
+        # The jnz target is typically the next check block, which loops back
+        # into the dispatcher and creates a residual while(1).
+        sm_blocks = self._collect_state_machine_blocks()
+        exit_target = self._find_terminal_exit_target(
+            first_check_blk.serial, sm_blocks
+        )
+        if exit_target is not None and exit_target not in sm_blocks:
+            success_target = exit_target
+        else:
+            success_target = jnz_target
+
         if success_target is None:
             return False
 
@@ -2012,6 +2026,9 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         resolved = 0
 
+        # Pre-compute state machine block set once for 2-way exit block handling
+        sm_blocks = self._collect_state_machine_blocks()
+
         # Collect predecessors of ALL check blocks (back-edges can target any entry)
         # Each entry is (pred_serial, dispatcher_target) so we know which check block
         # the predecessor currently targets and can pass the correct old_succ to
@@ -2029,6 +2046,23 @@ class HodurUnflattener(GenericUnflatteningRule):
         for pred_serial, dispatcher_target in preds_to_check:
             pred_blk = self.mba.get_mblock(pred_serial)
             if pred_blk is None:
+                continue
+
+            # Handle 2-way exit blocks ONLY outside the state machine region.
+            # Convert to 1-way goto targeting the non-check-block successor.
+            if pred_blk.nsucc() == 2:
+                if pred_serial not in sm_blocks:  # sm_blocks pre-computed
+                    # Find the non-check-block successor (the forward path)
+                    forward_succs = [s for s in pred_blk.succset if s not in check_blocks]
+                    if forward_succs:
+                        forward_target = forward_succs[0]
+                        make_2way_block_goto(pred_blk, forward_target)
+                        unflat_logger.info(
+                            "Assignment-map resolver: converted 2-way exit blk[%d] "
+                            "to goto blk[%d]",
+                            pred_serial, forward_target,
+                        )
+                        resolved += 1
                 continue
 
             # Only handle 1-way blocks (goto blocks)
