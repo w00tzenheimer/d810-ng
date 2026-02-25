@@ -1515,15 +1515,43 @@ class HodurUnflattener(GenericUnflatteningRule):
             if blk_serial not in patched_blocks and not is_handler_block:
                 continue
 
-            # NOTE: We skip NOPing state assignments for now because:
-            # 1. insn.ea is not unique - multiple instructions can share the same EA
-            # 2. NOPing by EA can accidentally remove unrelated instructions
-            # 3. The state assignments become dead code anyway after unflattening
-            # 4. IDA's optimizer will clean them up during subsequent passes
-            #
-            # The terminal back-edge fix is more important and safer.
-            # TODO: Implement proper instruction identity tracking for safe NOPing
             pass
+
+        # NOP state variable assignments in resolved handler blocks
+        state_var = self.state_machine.state_var
+        if state_var is not None:
+            state_nops: list[tuple[int, int, int]] = []  # (block_serial, ea, opcode)
+
+            for handler in self.state_machine.handlers.values():
+                for blk_serial in handler.handler_blocks:
+                    if blk_serial >= self.mba.qty:
+                        continue
+                    blk = self.mba.get_mblock(blk_serial)
+                    insn = blk.head
+                    while insn:
+                        # Match: mov CONST, state_var (state assignment)
+                        if (insn.opcode == ida_hexrays.m_mov
+                                and insn.l.t == ida_hexrays.mop_n
+                                and insn.l.nnn.value in self.state_machine.state_constants
+                                and insn.d.t == state_var.t
+                                and insn.d.size == state_var.size):
+                            state_nops.append((blk_serial, insn.ea, insn.opcode))
+                        insn = insn.next
+
+            # Apply NOPs — match by EA+opcode to avoid SWIG identity issues
+            for blk_serial, target_ea, target_opcode in state_nops:
+                blk = self.mba.get_mblock(blk_serial)
+                insn = blk.head
+                while insn:
+                    if insn.ea == target_ea and insn.opcode == target_opcode:
+                        blk.make_nop(insn)
+                        if logger.debug_on:
+                            logger.debug(
+                                "NOPed state assignment in block %d (ea=0x%x)",
+                                blk_serial, target_ea,
+                            )
+                        break
+                    insn = insn.next
 
         # Find terminal back-edge: a block that goes back to first_check_block
         # after all transitions have been patched
