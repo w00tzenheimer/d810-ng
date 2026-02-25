@@ -133,6 +133,7 @@ class HodurStateMachine:
         default_factory=dict
     )  # state_value -> handler
     transitions: list[StateTransition] = field(default_factory=list)
+    assignment_map: dict[int, list] = field(default_factory=dict)
 
     def add_state_constant(self, const: int) -> None:
         self.state_constants.add(const)
@@ -564,6 +565,42 @@ class HodurStateMachineDetector:
         mask = (1 << (size * 8)) - 1
         return int(next_state) & mask
 
+    def _extract_assigned_state_from_block(
+        self,
+        block_serial: int,
+        assignment_map: dict[int, list],
+        state_var: ida_hexrays.mop_t,
+    ) -> int | None:
+        """Extract the state constant assigned in a block, using assignment_map.
+
+        Tries direct constant extraction first (for m_mov), then emulator
+        fallback with each handler state as from_state (for xor/add/sub).
+        """
+        if block_serial not in assignment_map:
+            return None
+
+        blk = self.mba.get_mblock(block_serial)
+        for insn in assignment_map[block_serial]:
+            # Direct constant extraction for m_mov
+            if insn.opcode == ida_hexrays.m_mov and insn.l.t == ida_hexrays.mop_n:
+                val = int(insn.l.nnn.value)
+                # Mask to state_var size
+                size = state_var.size if getattr(state_var, "size", 0) in (1, 2, 4, 8) else 4
+                val &= (1 << (size * 8)) - 1
+                if self.state_machine is not None and val in self.state_machine.state_constants:
+                    return val
+
+            # Emulator fallback for xor/add/sub
+            if self.state_machine is not None:
+                for from_state in self.state_machine.handlers.keys():
+                    result = self._resolve_next_state_value(
+                        blk, insn, state_var, int(from_state)
+                    )
+                    if result is not None and result in self.state_machine.state_constants:
+                        return result
+
+        return None
+
     def _find_initial_state(self, state_constants: set[int]) -> int | None:
         """Find the initial state value (set before entering the state machine)."""
         # Look in the entry block and its immediate successors
@@ -610,6 +647,10 @@ class HodurStateMachineDetector:
             assignment_map.setdefault(update_site.block_serial, []).append(
                 update_site.instruction
             )
+
+        # Persist assignment_map on state machine for later use by resolvers
+        if self.state_machine is not None:
+            self.state_machine.assignment_map = assignment_map
 
         # Create a map: state_constant -> check_block serial
         check_map = {const: blk_serial for blk_serial, _, const in state_check_blocks}
@@ -767,6 +808,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._current_tracked_maturity: int = ida_hexrays.MMAT_ZERO
         self._resolved_transitions: set[tuple[int, int]] = set()
         self._initial_transitions: list | None = None
+        self._detector: HodurStateMachineDetector | None = None
 
     def configure(self, kwargs):
         super().configure(kwargs)
@@ -820,6 +862,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             max_state_constants=self.max_state_constants,
         )
         self.state_machine = detector.detect()
+        self._detector = detector
 
         if self.state_machine is None:
             unflat_logger.info("No Hodur state machine detected")
@@ -889,6 +932,15 @@ class HodurUnflattener(GenericUnflatteningRule):
             self.cur_maturity_pass,
             direct_transition_patches,
         )
+
+        # Phase 2: resolve remaining back-edges using assignment map
+        remaining_resolved = self._resolve_remaining_via_assignment_map()
+        if remaining_resolved > 0:
+            nb_changes += remaining_resolved
+            unflat_logger.info(
+                "Resolved %d remaining back-edges via assignment map",
+                remaining_resolved,
+            )
 
         # Use MopTracker resolution whenever unresolved transitions remain.
         if self._state_machine_still_present():
@@ -1936,6 +1988,96 @@ class HodurUnflattener(GenericUnflatteningRule):
             has_structure,
         )
         return has_structure
+
+    def _resolve_remaining_via_assignment_map(self) -> int:
+        """Resolve remaining dispatcher back-edges using assignment_map lookup.
+
+        After deferred patches, some handler exit blocks still goto the dispatcher.
+        These blocks contain state assignments that identify their target handler.
+        Use assignment_map to directly resolve and redirect them, bypassing
+        MopTracker backward tracing which fails on modified CFG.
+        """
+        if self.state_machine is None or not self.state_machine.assignment_map:
+            return 0
+
+        state_var = self.state_machine.state_var
+        if state_var is None:
+            return 0
+
+        if self._detector is None:
+            return 0
+
+        assignment_map = self.state_machine.assignment_map
+        check_blocks = {h.check_block for h in self.state_machine.handlers.values()}
+
+        resolved = 0
+
+        # Collect predecessors of ALL check blocks (back-edges can target any entry)
+        # Each entry is (pred_serial, dispatcher_target) so we know which check block
+        # the predecessor currently targets and can pass the correct old_succ to
+        # update_blk_successor and the correct start_block to
+        # _resolve_conditional_chain_target.
+        preds_to_check: set[tuple[int, int]] = set()
+        for cb_serial in check_blocks:
+            cb_blk = self.mba.get_mblock(cb_serial)
+            if cb_blk is None:
+                continue
+            for pred_serial in cb_blk.predset:
+                if pred_serial not in check_blocks:
+                    preds_to_check.add((pred_serial, cb_serial))
+
+        for pred_serial, dispatcher_target in preds_to_check:
+            pred_blk = self.mba.get_mblock(pred_serial)
+            if pred_blk is None:
+                continue
+
+            # Only handle 1-way blocks (goto blocks)
+            # 2-way blocks are application conditionals — preserve them
+            if pred_blk.nsucc() != 1:
+                continue
+
+            # Try to find state assignment in this block
+            target_state = self._detector._extract_assigned_state_from_block(
+                pred_serial, assignment_map, state_var
+            )
+
+            # If not found directly, walk backward along single-pred chains
+            if target_state is None:
+                walk_serial = pred_serial
+                for _ in range(5):  # max backward walk depth
+                    walk_blk = self.mba.get_mblock(walk_serial)
+                    if walk_blk is None or walk_blk.npred() != 1:
+                        break
+                    walk_serial = list(walk_blk.predset)[0]
+                    target_state = self._detector._extract_assigned_state_from_block(
+                        walk_serial, assignment_map, state_var
+                    )
+                    if target_state is not None:
+                        break
+
+            if target_state is None:
+                continue
+
+            # Find the handler entry for the target state, starting resolution
+            # from the check block that this predecessor actually targets.
+            handler_entry = self._resolve_conditional_chain_target(
+                dispatcher_target, target_state
+            )
+            if handler_entry is None:
+                continue
+
+            # Direct CFG surgery: redirect predecessor from the check block it
+            # currently targets (dispatcher_target) to the resolved handler entry.
+            update_blk_successor(pred_blk, dispatcher_target, handler_entry)
+
+            unflat_logger.info(
+                "Assignment-map resolver: block %d (state 0x%x) -> handler block %d"
+                " (via check block %d)",
+                pred_serial, target_state, handler_entry, dispatcher_target,
+            )
+            resolved += 1
+
+        return resolved
 
     def _resolve_and_patch(self) -> int:
         """
