@@ -316,7 +316,7 @@ class IndirectCallResolver(FlowOptimizationRule):
         """
         reg_values: Dict[int, int] = {}
         scan = blk.head
-        while scan is not None and scan is not insn:
+        while scan is not None and not (scan.ea == insn.ea and scan.opcode == insn.opcode):
             self._update_reg_value_map(scan, reg_values)
             scan = scan.next
 
@@ -418,7 +418,7 @@ class IndirectCallResolver(FlowOptimizationRule):
 
         # Strategy 2: Hikari sub pattern -- scan backwards from insn
         prev = blk.head
-        while prev is not None and prev is not insn:
+        while prev is not None and not (prev.ea == insn.ea and prev.opcode == insn.opcode):
             if (
                 prev.opcode == ida_hexrays.m_mov
                 and prev.l.t == ida_hexrays.mop_a
