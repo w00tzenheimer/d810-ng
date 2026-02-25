@@ -41,7 +41,7 @@ from d810.hexrays.cfg_utils import (
     update_blk_successor,
 )
 from d810.hexrays.deferred_modifier import DeferredGraphModifier
-from d810.hexrays.hexrays_formatters import format_minsn_t, format_mop_t
+from d810.hexrays.hexrays_formatters import format_mop_t
 from d810.hexrays.hexrays_helpers import extract_num_mop
 from d810.hexrays.tracker import MopTracker
 from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
@@ -59,7 +59,9 @@ unflat_logger = getLogger("D810.unflat.hodur")
 
 # State values must exceed this threshold to be considered dispatcher constants.
 # Real obfuscators use values from 0x1000+ (hardened OLLVM) to 0xDEAD0000+ (Hodur).
-MIN_STATE_CONSTANT = 0x10000000
+# Lowered from 0x10000000 to 0x01000000 to capture states like 0x0B8148F6 which are
+# 28-bit values just below the original 0x10000000 cutoff.
+MIN_STATE_CONSTANT = 0x01000000
 # Minimum number of unique state constants to consider it a state machine
 MIN_STATE_CONSTANTS = 3
 # Maximum number of state constants - if more, it's likely OLLVM FLA not Hodur
@@ -487,15 +489,12 @@ class HodurStateMachineDetector:
                 environment=env,
                 raise_exception=False,
             )
-            if not ok:
-                unflat_logger.warning("TRACE emulator: eval_instruction FAILED for opcode=%s from_state=%s", cur.opcode, hex(from_state))
             if cur.ea == insn.ea and cur.opcode == insn.opcode:
                 if not ok:
                     return None
                 value = env.lookup(state_var, raise_exception=False)
                 if value is not None:
                     return int(value)
-                unflat_logger.warning("TRACE emulator: lookup returned None for from_state=%s", hex(from_state))
                 value = interpreter.eval_mop(
                     insn.d, environment=env, raise_exception=False
                 )
@@ -503,7 +502,6 @@ class HodurStateMachineDetector:
             count += 1
             cur = cur.next
 
-        unflat_logger.warning("TRACE emulator: identity match FAILED for from_state=%s, walked %d instructions", hex(from_state), count)
         return None
 
     def _evaluate_state_update_with_ast(
@@ -516,7 +514,6 @@ class HodurStateMachineDetector:
         """AST fallback for state updates when concrete emulation cannot resolve."""
         ast = minsn_to_ast(insn)
         if ast is None:
-            unflat_logger.warning("TRACE ast: minsn_to_ast returned None for opcode=%s from_state=%s", insn.opcode, hex(from_state))
             return None
         if ast.dest_size is None and insn.d is not None:
             ast.dest_size = insn.d.size
@@ -533,14 +530,12 @@ class HodurStateMachineDetector:
 
             resolved = self._resolve_single_mop_constant(blk, insn, leaf.mop)
             if resolved is None:
-                unflat_logger.warning("TRACE ast: leaf resolution FAILED for leaf mop type=%s ast_index=%s from_state=%s", leaf.mop.t if leaf.mop else None, leaf.ast_index, hex(from_state))
                 return None
             leaf_values[leaf.ast_index] = int(resolved)
 
         try:
             return int(ast.evaluate(leaf_values))
-        except Exception as exc:
-            unflat_logger.warning("TRACE ast: ast.evaluate FAILED from_state=%s exc=%s", hex(from_state), exc)
+        except Exception:
             return None
 
     def _resolve_next_state_value(
@@ -555,18 +550,14 @@ class HodurStateMachineDetector:
 
         Uses interpreter first, then AST fallback for resilience.
         """
-        unflat_logger.warning("TRACE _resolve_next: insn opcode=%s d_type=%s l_type=%s r_type=%s from_state=%s",
-            insn.opcode, insn.d.t, insn.l.t, insn.r.t, hex(from_state))
         next_state = self._evaluate_state_update_with_emulator(
             blk, insn, state_var, from_state
         )
         if next_state is None:
-            unflat_logger.warning("TRACE _resolve_next: emulator returned None, trying AST fallback for from_state=%s", hex(from_state))
             next_state = self._evaluate_state_update_with_ast(
                 blk, insn, state_var, from_state
             )
         if next_state is None:
-            unflat_logger.warning("TRACE _resolve_next: BOTH emulator and AST returned None for from_state=%s", hex(from_state))
             return None
 
         size = state_var.size if getattr(state_var, "size", 0) in (1, 2, 4, 8) else 4
