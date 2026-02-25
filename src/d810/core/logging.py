@@ -24,6 +24,7 @@ ERROR = logging.ERROR
 CRITICAL = logging.CRITICAL
 NOTSET = logging.NOTSET
 FATAL = logging.FATAL
+getLevelName = logging.getLevelName
 
 _config = collections.Counter(version=0)
 
