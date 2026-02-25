@@ -680,7 +680,8 @@ class HodurUnflattener(GenericUnflatteningRule):
         ida_hexrays.MMAT_GLBOPT1,
         ida_hexrays.MMAT_GLBOPT2,
     ]
-    DEFAULT_MAX_PASSES = 10
+    DEFAULT_MAX_PASSES = 3
+    HARD_MAX_PASSES = 10
     MOP_TRACKER_MAX_NB_BLOCK = 100
     MOP_TRACKER_MAX_NB_PATH = 100
 
@@ -719,6 +720,8 @@ class HodurUnflattener(GenericUnflatteningRule):
         self.min_state_constants = MIN_STATE_CONSTANTS
         self.max_state_constants = MAX_STATE_CONSTANTS_HODUR
         self.deferred: DeferredGraphModifier | None = None
+        self._actual_pass_count: int = 0
+        self._current_tracked_maturity: int = ida_hexrays.MMAT_ZERO
 
     def configure(self, kwargs):
         super().configure(kwargs)
@@ -736,14 +739,14 @@ class HodurUnflattener(GenericUnflatteningRule):
         if not super().check_if_rule_should_be_used(blk):
             return False
 
-        # Only run once per maturity level (on first block we see)
-        # Note: blk.serial != 0 doesn't work because IDA starts from block 1
-        # We use cur_maturity_pass which is reset to 0 when maturity changes
-        if self.cur_maturity_pass > 0:
-            return False
+        # Reset pass count on maturity change
+        if self.mba.maturity != self._current_tracked_maturity:
+            self._current_tracked_maturity = self.mba.maturity
+            self._actual_pass_count = 0
+            self.max_passes = self.DEFAULT_MAX_PASSES
 
-        # Check pass limits (for future multi-pass support)
-        if self.cur_maturity_pass >= self.max_passes:
+        # Gate on actual Hodur runs, not block callback count
+        if self._actual_pass_count >= self.max_passes:
             return False
 
         return True
@@ -755,9 +758,10 @@ class HodurUnflattener(GenericUnflatteningRule):
         if not self.check_if_rule_should_be_used(blk):
             return 0
 
-        unflat_logger.info(
-            "HodurUnflattener: Starting pass %d at maturity %d",
-            self.cur_maturity_pass,
+        unflat_logger.debug(
+            "HodurUnflattener: Starting pass %d/%d at maturity %d",
+            self._actual_pass_count,
+            self.max_passes,
             self.cur_maturity,
         )
 
@@ -808,13 +812,16 @@ class HodurUnflattener(GenericUnflatteningRule):
                     run_deep_cleaning=False,
                 )
 
-        # Fallback path: some Hodur variants do not terminate transition blocks
-        # with m_goto, so direct queueing won't patch anything. Use the legacy
-        # predecessor/path-based strategy as backup in that case.
-        if direct_transition_patches == 0:
+        unflat_logger.debug(
+            "HodurUnflattener: pass %d direct transition patches = %d",
+            self.cur_maturity_pass,
+            direct_transition_patches,
+        )
+
+        # Use MopTracker resolution whenever unresolved transitions remain.
+        if self._state_machine_still_present():
             unflat_logger.info(
-                "No direct transition patches queued; falling back to path-based "
-                "Hodur patching"
+                "Unresolved transitions remain; running path-based Hodur patching"
             )
             nb_changes += self._resolve_and_patch()
 
@@ -825,11 +832,29 @@ class HodurUnflattener(GenericUnflatteningRule):
             nb_changes += self._fix_degenerate_terminal_loops()
 
         self.last_pass_nb_patch_done = nb_changes
+
+        # Adaptive convergence: extend max_passes when making progress
+        if nb_changes > 0 and self.max_passes < self.HARD_MAX_PASSES:
+            self.max_passes += 1
+            unflat_logger.debug(
+                "HodurUnflattener: progress detected, extending max_passes to %d",
+                self.max_passes,
+            )
+
         unflat_logger.info(
             "HodurUnflattener: Pass %d made %d changes",
-            self.cur_maturity_pass,
+            self._actual_pass_count,
             nb_changes,
         )
+
+        if nb_changes == 0:
+            unflat_logger.info(
+                "HodurUnflattener: convergence reached at pass %d, maturity %d",
+                self._actual_pass_count,
+                self.cur_maturity,
+            )
+
+        self._actual_pass_count += 1
 
         return nb_changes
 
@@ -1528,6 +1553,31 @@ class HodurUnflattener(GenericUnflatteningRule):
                 hex(t.to_state),
                 t.from_block,
             )
+
+    def _state_machine_still_present(self) -> bool:
+        """
+        Return True if the CFG still contains Hodur state machine structure.
+
+        Re-runs the state machine detector on the current (possibly modified) CFG.
+        Returns False if no state machine is found (fully resolved or never existed).
+        """
+        if self.mba is None:
+            return False
+
+        detector = HodurStateMachineDetector(
+            self.mba,
+            use_cache=False,
+            min_state_constant=self.min_state_constant,
+            min_state_constants=self.min_state_constants,
+            max_state_constants=self.max_state_constants,
+        )
+        result = detector.detect()
+        has_structure = result is not None
+        unflat_logger.debug(
+            "HodurUnflattener: _state_machine_still_present -> %s",
+            has_structure,
+        )
+        return has_structure
 
     def _resolve_and_patch(self) -> int:
         """
