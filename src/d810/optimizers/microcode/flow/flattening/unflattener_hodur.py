@@ -865,6 +865,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Queue direct transition patches (more effective for Hodur-style)
         direct_transition_patches = self._queue_transitions_direct()
 
+        # Queue conditional fork resolutions via predecessor walking
+        self._resolve_conditional_forks_via_predecessors()
+
         # Queue predecessor-based patches for any remaining cases
         self._queue_predecessor_patches()
 
@@ -1141,6 +1144,146 @@ class HodurUnflattener(GenericUnflatteningRule):
                 queued_patches += 1
 
         return queued_patches
+
+    def _find_conditional_predecessor(self, start_block: int) -> int | None:
+        """Walk backward along single-predecessor chains to find a 2-way block.
+
+        Only follows single-predecessor paths (npred()==1) to avoid crossing
+        dispatcher boundaries. Returns the serial of the first 2-way conditional
+        block found, or None.
+        """
+        current = start_block
+        visited: set[int] = {current}
+        max_depth = self.mba.qty  # Safety bound
+
+        for _ in range(max_depth):
+            blk = self.mba.get_mblock(current)
+            if blk.npred() != 1:
+                return None  # Multi-predecessor — bail
+
+            pred_serial = blk.predset[0]
+            if pred_serial in visited:
+                return None  # Cycle
+
+            pred_blk = self.mba.get_mblock(pred_serial)
+            if pred_blk.nsucc() == 2 and pred_blk.tail and pred_blk.tail.opcode in (
+                ida_hexrays.m_jcnd,
+                ida_hexrays.m_jnz,
+                ida_hexrays.m_jz,
+                ida_hexrays.m_jae,
+                ida_hexrays.m_jb,
+                ida_hexrays.m_ja,
+                ida_hexrays.m_jbe,
+                ida_hexrays.m_jg,
+                ida_hexrays.m_jge,
+                ida_hexrays.m_jl,
+                ida_hexrays.m_jle,
+            ):
+                return pred_serial
+
+            visited.add(pred_serial)
+            current = pred_serial
+
+        return None
+
+    def _resolve_conditional_forks_via_predecessors(self) -> int:
+        """Resolve conditional state forks by walking predecessor chains.
+
+        For unresolved 2-state transitions from the same from_block:
+        1. Walk backward from the from_block along single-predecessor chains
+        2. Find the 2-way conditional block (jcc)
+        3. Evaluate which branch leads to which state value
+        4. Queue conditional redirect
+
+        Returns:
+            Number of conditional forks resolved.
+        """
+        if self.state_machine is None or self.deferred is None:
+            return 0
+
+        resolved = 0
+
+        # Group conditional transitions by from_block
+        conditional_groups: dict[int, list[StateTransition]] = {}
+        for t in self.state_machine.transitions:
+            if t.is_conditional:
+                conditional_groups.setdefault(t.from_block, []).append(t)
+
+        for from_blk_serial, transitions in conditional_groups.items():
+            unique_states = list({t.to_state for t in transitions})
+            if len(unique_states) != 2:
+                continue
+
+            # Walk backward from from_block looking for a 2-way conditional block
+            cond_block = self._find_conditional_predecessor(from_blk_serial)
+            if cond_block is None:
+                if unflat_logger.debug_on:
+                    unflat_logger.debug(
+                        "No conditional predecessor found for block %d",
+                        from_blk_serial,
+                    )
+                continue
+
+            # Resolve which target block each state leads to through the chain
+            state_a, state_b = unique_states[0], unique_states[1]
+            target_a = self._resolve_conditional_chain_target(cond_block, state_a)
+            target_b = self._resolve_conditional_chain_target(cond_block, state_b)
+
+            if target_a is None or target_b is None:
+                if unflat_logger.debug_on:
+                    unflat_logger.debug(
+                        "Chain resolution failed for block %d states 0x%x/0x%x",
+                        from_blk_serial,
+                        state_a,
+                        state_b,
+                    )
+                continue
+
+            # Determine jcc taken/fallthrough mapping using the check block comparison
+            cond_blk = self.mba.get_mblock(cond_block)
+            if (
+                cond_blk is None
+                or cond_blk.tail is None
+                or cond_blk.tail.opcode not in HODUR_STATE_CHECK_OPCODES
+                or cond_blk.tail.r.t != ida_hexrays.mop_n
+            ):
+                continue
+
+            jt_a = HodurStateMachineDetector._is_jump_taken_for_state(
+                cond_blk.tail.opcode,
+                int(state_a),
+                int(cond_blk.tail.r.nnn.value),
+                cond_blk.tail.r.size,
+            )
+            if jt_a is None:
+                continue
+
+            taken_target = target_a if jt_a else target_b
+            fall_target = target_b if jt_a else target_a
+
+            self.deferred.queue_create_conditional_redirect(
+                source_blk_serial=from_blk_serial,
+                ref_blk_serial=cond_block,
+                conditional_target_serial=taken_target,
+                fallthrough_target_serial=fall_target,
+                description="Hodur conditional fork: block %d -> %d/%d" % (
+                    cond_block, taken_target, fall_target
+                ),
+            )
+            resolved += 1
+
+            if unflat_logger.debug_on:
+                unflat_logger.debug(
+                    "Resolved conditional fork at block %d: "
+                    "taken->%d, fall->%d (states 0x%x/0x%x)",
+                    cond_block,
+                    taken_target,
+                    fall_target,
+                    state_a,
+                    state_b,
+                )
+
+        return resolved
 
     def _queue_transition_redirect(
         self,
