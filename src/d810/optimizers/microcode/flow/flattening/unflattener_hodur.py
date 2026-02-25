@@ -28,7 +28,8 @@ from dataclasses import dataclass, field
 
 import ida_hexrays
 
-from d810.core import getLogger
+from d810.cfg.dominators import compute_dominators, dominates
+from d810.core import logging, getLogger
 from d810.core.bits import unsigned_to_signed
 from d810.expr.ast import minsn_to_ast
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
@@ -622,6 +623,13 @@ class HodurStateMachineDetector:
         # Create a map: state_constant -> check_block serial
         check_map = {const: blk_serial for blk_serial, _, const in state_check_blocks}
 
+        # Compute dominator tree for BFS bounding
+        try:
+            dom = compute_dominators(self.mba)
+        except Exception:
+            unflat_logger.warning("Dominator computation failed, using unbounded BFS")
+            dom = None
+
         # For each state handler, find what state it transitions to
         for state_val, handler in self.state_machine.handlers.items():
             check_blk = self.mba.get_mblock(handler.check_block)
@@ -635,12 +643,15 @@ class HodurStateMachineDetector:
             to_visit = []
 
             # Start from the fall-through successor
+            handler_entry_serial: int | None = None
             for succ_serial in check_blk.succset:
                 # Skip the jump target (that's the "break" path)
                 if check_blk.tail and check_blk.tail.d.t == ida_hexrays.mop_b:
                     if succ_serial == check_blk.tail.d.b:
                         continue
                 to_visit.append(succ_serial)
+                if handler_entry_serial is None:
+                    handler_entry_serial = succ_serial
 
             # BFS to find state assignments
             while to_visit:
@@ -675,11 +686,18 @@ class HodurStateMachineDetector:
                 # Continue BFS but stop at state check blocks
                 curr_blk = self.mba.get_mblock(curr_serial)
                 for succ_serial in curr_blk.succset:
+                    if succ_serial in visited:
+                        continue
+                    if succ_serial in check_map.values():
+                        continue
+                    # Only enqueue successor if dominated by handler entry
                     if (
-                        succ_serial not in visited
-                        and succ_serial not in check_map.values()
+                        dom is not None
+                        and handler_entry_serial is not None
+                        and not dominates(dom, handler_entry_serial, succ_serial)
                     ):
-                        to_visit.append(succ_serial)
+                        continue
+                    to_visit.append(succ_serial)
 
 
 class HodurUnflattener(GenericUnflatteningRule):
