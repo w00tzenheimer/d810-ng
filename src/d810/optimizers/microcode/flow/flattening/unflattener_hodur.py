@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 import ida_hexrays
 
 from d810.cfg.dominators import compute_dominators, dominates
-from d810.core import logging, getLogger
+from d810.core import getLogger
 from d810.core.bits import unsigned_to_signed
 from d810.expr.ast import minsn_to_ast
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
@@ -698,6 +698,24 @@ class HodurStateMachineDetector:
                     ):
                         continue
                     to_visit.append(succ_serial)
+
+        # Post-process: detect conditional forks (2 transitions from same from_block)
+        from_block_groups: dict[int, list[StateTransition]] = {}
+        for t in self.state_machine.transitions:
+            from_block_groups.setdefault(t.from_block, []).append(t)
+
+        for from_blk_serial, group in from_block_groups.items():
+            unique_to_states = {t.to_state for t in group}
+            if len(unique_to_states) == 2:
+                for t in group:
+                    t.is_conditional = True
+                    t.condition_block = from_blk_serial
+                if unflat_logger.debug_on:
+                    unflat_logger.debug(
+                        "Conditional fork at block %d: states %s",
+                        from_blk_serial,
+                        unique_to_states,
+                    )
 
 
 class HodurUnflattener(GenericUnflatteningRule):
