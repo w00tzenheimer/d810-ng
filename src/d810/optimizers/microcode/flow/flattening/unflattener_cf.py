@@ -17,6 +17,7 @@ from d810.hexrays.cfg_utils import safe_verify
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.hexrays.hexrays_helpers import MicrocodeHelper, MicroInstruction, MicroOperand
 from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
+from d810.cfg.dominators import compute_dominators
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
@@ -957,7 +958,7 @@ class jz_mapper_t(ida_hexrays.minsn_visitor_t):
         return 0
 
 
-def compute_dominators(mba: ida_hexrays.mba_t) -> list[ida_hexrays.bitset_t]:
+def _compute_dominators_bitset(mba: ida_hexrays.mba_t) -> list[ida_hexrays.bitset_t]:
     """
     Compute dominator information for the function.
     :param mba: mba_t
@@ -1309,7 +1310,7 @@ class cf_flatten_info_t:
         self.which_func = ea
 
         # Compute the dominator information for this function and stash it
-        self.dom_info = compute_dominators(mba)
+        self.dom_info = _compute_dominators_bitset(mba)
 
         # Compute some more information from the dominators. Basically, once the
         # control flow dispatch switch has transferred control to the function's
