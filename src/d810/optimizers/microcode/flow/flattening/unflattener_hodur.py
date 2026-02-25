@@ -2058,6 +2058,28 @@ class HodurUnflattener(GenericUnflatteningRule):
             if target_state is None:
                 continue
 
+            # Terminal states (no handler) should exit the state machine
+            if target_state not in self.state_machine.handlers:
+                sm_blocks = self._collect_state_machine_blocks()
+                first_ck = min(check_blocks) if check_blocks else None
+                exit_tgt = (
+                    self._find_terminal_exit_target(first_ck, sm_blocks)
+                    if first_ck is not None
+                    else None
+                )
+                if exit_tgt is not None:
+                    dispatcher_blk = self.mba.get_mblock(dispatcher_target)
+                    exit_blk = self.mba.get_mblock(exit_tgt)
+                    if dispatcher_blk is not None and exit_blk is not None:
+                        update_blk_successor(pred_blk, dispatcher_blk, exit_blk)
+                        unflat_logger.info(
+                            "Assignment-map resolver: terminal state 0x%x "
+                            "blk[%d] -> exit blk[%d]",
+                            target_state, pred_serial, exit_tgt,
+                        )
+                        resolved += 1
+                continue
+
             # Find the handler entry for the target state, starting resolution
             # from the check block that this predecessor actually targets.
             handler_entry = self._resolve_conditional_chain_target(
