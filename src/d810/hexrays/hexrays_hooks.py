@@ -972,7 +972,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             )
                         )
                         if self.stats is not None:
-                            self.stats.record_cfg_rule_patches(cfg_rule.name, nb_patch)
+                            self.stats.record_cfg_rule_patches(
+                                cfg_rule.name,
+                                nb_patch,
+                                maturity=self.current_maturity,
+                            )
                         self._generation += 1
                         # Rebuild analysis context after any CFG write so lower
                         # priorities see fresh facts on the next callback pass.

@@ -5,10 +5,29 @@ from collections import defaultdict
 from enum import Enum, auto
 
 from d810.core.typing import Any, Dict, List, Optional
+
 from .logging import getLogger
 from .registry import EventEmitter
 
 logger = getLogger("D810")
+
+# Lightweight maturity-int → name mapping that avoids importing ida_hexrays.
+# Values match MMAT_* constants defined in ida_hexrays (stable since IDA 7.x).
+_MATURITY_NAMES: Dict[int, str] = {
+    0: "MMAT_GENERATED",
+    1: "MMAT_PREOPTIMIZED",
+    2: "MMAT_LOCOPT",
+    3: "MMAT_CALLS",
+    4: "MMAT_GLBOPT1",
+    5: "MMAT_GLBOPT2",
+    6: "MMAT_GLBOPT3",
+    7: "MMAT_LVARS",
+}
+
+
+def _maturity_name(maturity: int) -> str:
+    """Return a short readable name for a microcode maturity level integer."""
+    return _MATURITY_NAMES.get(maturity, f"MMAT_{maturity}")
 
 
 class OptimizationEvent(Enum):
@@ -82,6 +101,16 @@ class OptimizationStatistics:
         default_factory=lambda: defaultdict(list)
     )
 
+    # Per-maturity instruction-rule firing counts: rule_name -> {maturity -> count}
+    maturity_rule_usages: Dict[str, Dict[int, int]] = dataclasses.field(
+        default_factory=lambda: defaultdict(lambda: defaultdict(int))
+    )
+
+    # Per-maturity CFG-rule patch counts: rule_name -> {maturity -> [patch_counts]}
+    maturity_cfg_rule_usages: Dict[str, Dict[int, List[int]]] = dataclasses.field(
+        default_factory=lambda: defaultdict(lambda: defaultdict(list))
+    )
+
     # NEW: Track actual rule objects (keyed by normalized name)
     rule_executions: Dict[str, RuleExecution] = dataclasses.field(default_factory=dict)
 
@@ -106,6 +135,8 @@ class OptimizationStatistics:
         self.instruction_optimizer_usage.clear()
         self.instruction_rule_usage.clear()
         self.cfg_rule_usages.clear()
+        self.maturity_rule_usages.clear()
+        self.maturity_cfg_rule_usages.clear()
         self.rule_executions.clear()
         self.rule_execution_log.clear()
         self.cycles_detected.clear()
@@ -154,14 +185,28 @@ class OptimizationStatistics:
         # Also update legacy counters for backward compatibility
         self.instruction_rule_usage[execution.rule_name] += 1
 
+        # Per-maturity tracking: extract maturity from metadata if present
+        maturity = metadata.get("maturity")
+        if maturity is not None:
+            self.maturity_rule_usages[execution.rule_name][maturity] += 1
+
         # Emit event with the actual rule object
         self.events.emit(OptimizationEvent.RULE_APPLIED, rule, metadata)
 
-    def record_cfg_rule_patches(self, rule_name: str, nb_patches: int) -> None:
+    def record_cfg_rule_patches(
+        self,
+        rule_name: str,
+        nb_patches: int,
+        maturity: Optional[int] = None,
+    ) -> None:
         self.cfg_rule_usages[rule_name].append(nb_patches)
+        if maturity is not None:
+            self.maturity_cfg_rule_usages[rule_name][maturity].append(nb_patches)
         self.events.emit(OptimizationEvent.CFG_RULE_PATCHES, rule_name, nb_patches)
 
-    def record_cycle_detected(self, optimizer_name: str, instruction_info: str = "") -> None:
+    def record_cycle_detected(
+        self, optimizer_name: str, instruction_info: str = ""
+    ) -> None:
         """Record that a rewrite cycle was detected and broken.
 
         Args:
@@ -174,7 +219,9 @@ class OptimizationStatistics:
             OptimizationEvent.CYCLE_DETECTED, optimizer_name, instruction_info
         )
 
-    def record_expression_bloat_rejected(self, optimizer_name: str, instruction_info: str = "") -> None:
+    def record_expression_bloat_rejected(
+        self, optimizer_name: str, instruction_info: str = ""
+    ) -> None:
         """Record that an expression bloat was detected and rejected.
 
         This is a defense-in-depth measure against rules that significantly
@@ -317,11 +364,24 @@ class OptimizationStatistics:
         if self.rule_executions:
             for name, execution in self.rule_executions.items():
                 if execution.match_count > 0:
-                    logger.info(
-                        "Instruction Rule '%s' has been used %d times",
-                        execution.rule_name,
-                        execution.match_count,
-                    )
+                    maturity_data = self.maturity_rule_usages.get(execution.rule_name)
+                    if maturity_data:
+                        breakdown = ", ".join(
+                            f"@{_maturity_name(m)}: {c}"
+                            for m, c in sorted(maturity_data.items())
+                        )
+                        logger.info(
+                            "Instruction Rule '%s' has been used %d times (%s)",
+                            execution.rule_name,
+                            execution.match_count,
+                            breakdown,
+                        )
+                    else:
+                        logger.info(
+                            "Instruction Rule '%s' has been used %d times",
+                            execution.rule_name,
+                            execution.match_count,
+                        )
         else:
             # Fallback to legacy counters
             for rule_name, nb_match in self.instruction_rule_usage.items():
@@ -336,12 +396,26 @@ class OptimizationStatistics:
         for rule_name, patch_list in self.cfg_rule_usages.items():
             nb_use = len(patch_list)
             if nb_use > 0:
-                logger.info(
-                    "BlkRule '%s' has been used %d times for a total of %d patches",
-                    rule_name,
-                    nb_use,
-                    sum(patch_list),
-                )
+                maturity_data = self.maturity_cfg_rule_usages.get(rule_name)
+                if maturity_data:
+                    breakdown = ", ".join(
+                        f"@{_maturity_name(m)}: {len(patches)} uses/{sum(patches)} patches"
+                        for m, patches in sorted(maturity_data.items())
+                    )
+                    logger.info(
+                        "BlkRule '%s' has been used %d times for a total of %d patches (%s)",
+                        rule_name,
+                        nb_use,
+                        sum(patch_list),
+                        breakdown,
+                    )
+                else:
+                    logger.info(
+                        "BlkRule '%s' has been used %d times for a total of %d patches",
+                        rule_name,
+                        nb_use,
+                        sum(patch_list),
+                    )
 
         # Cycle detection
         if self.total_cycles_detected > 0:
