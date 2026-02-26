@@ -6,7 +6,8 @@
             "name": "HodurUnflattener",
             "is_activated": true,
             "config": {
-                "max_state_constants": 100
+                "max_state_constants": 100,
+                "min_state_constant": 16777216
             }
         },
         {
