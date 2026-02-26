@@ -11,16 +11,22 @@ Meet rules:
     meet(Const(v,s), Const(v,s)) = Const(v,s)
     meet(Const(a,_), Const(b,_)) = TOP   if a != b or sizes differ
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+
+from d810.core import getLogger
 from d810.core.typing import Union
+
+logger = getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Sentinel values: BOTTOM and TOP
 # ---------------------------------------------------------------------------
+
 
 class _Sentinel(Enum):
     """Lattice sentinel values."""
@@ -39,6 +45,7 @@ TOP: _Sentinel = _Sentinel.TOP
 # ---------------------------------------------------------------------------
 # Const
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class Const:
@@ -68,6 +75,7 @@ LatticeEnv = dict[str, LatticeValue]
 # lattice_meet
 # ---------------------------------------------------------------------------
 
+
 def lattice_meet(a: LatticeValue, b: LatticeValue) -> LatticeValue:
     """Compute the meet of two lattice values.
 
@@ -88,8 +96,16 @@ def lattice_meet(a: LatticeValue, b: LatticeValue) -> LatticeValue:
     if a is TOP or b is TOP:
         return TOP
 
-    # Both are Const
-    assert isinstance(a, Const) and isinstance(b, Const)
+    # Both should be Const; if either is not, treat as conflict → TOP
+    if not isinstance(a, Const) or not isinstance(b, Const):
+        logger.warning(
+            "lattice_meet: unexpected non-Const input: a=%r (type=%s), b=%r (type=%s); returning TOP",
+            a,
+            type(a).__name__,
+            b,
+            type(b).__name__,
+        )
+        return TOP
     if a.value == b.value and a.size == b.size:
         return a
     return TOP
@@ -99,7 +115,10 @@ def lattice_meet(a: LatticeValue, b: LatticeValue) -> LatticeValue:
 # env_meet
 # ---------------------------------------------------------------------------
 
-def env_meet(a: LatticeEnv, b: LatticeEnv, *, default_missing: LatticeValue = BOTTOM) -> LatticeEnv:
+
+def env_meet(
+    a: LatticeEnv, b: LatticeEnv, *, default_missing: LatticeValue = BOTTOM
+) -> LatticeEnv:
     """Pointwise meet over the union of keys in two LatticeEnvs.
 
     Args:
@@ -126,6 +145,7 @@ def env_meet(a: LatticeEnv, b: LatticeEnv, *, default_missing: LatticeValue = BO
 # ---------------------------------------------------------------------------
 # LatticeMeet strategy
 # ---------------------------------------------------------------------------
+
 
 class LatticeMeet:
     """Meet strategy that folds a list of predecessor OUT environments.
