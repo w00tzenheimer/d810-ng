@@ -276,13 +276,34 @@ class ConcreteEvaluator:
                 return None if lv is None or rv is None else (lv // rv) & res_mask
             case ida_hexrays.m_sdiv if right is not None:
                 lv, rv = _ev(left), _ev(right)
-                return None if lv is None or rv is None else (lv // rv) & res_mask
+                if lv is None or rv is None:
+                    return None
+                left_value_signed = unsigned_to_signed(lv, left.dest_size)
+                right_value_signed = unsigned_to_signed(rv, right.dest_size)
+                quotient = (abs(left_value_signed) // abs(right_value_signed)) * (
+                    -1 if (left_value_signed < 0) ^ (right_value_signed < 0) else 1
+                )
+                return (
+                    signed_to_unsigned(quotient, node.dest_size)  # type: ignore[union-attr]
+                    & res_mask
+                )
             case ida_hexrays.m_umod if right is not None:
                 lv, rv = _ev(left), _ev(right)
                 return None if lv is None or rv is None else (lv % rv) & res_mask
             case ida_hexrays.m_smod if right is not None:
                 lv, rv = _ev(left), _ev(right)
-                return None if lv is None or rv is None else (lv % rv) & res_mask
+                if lv is None or rv is None:
+                    return None
+                left_value_signed = unsigned_to_signed(lv, left.dest_size)
+                right_value_signed = unsigned_to_signed(rv, right.dest_size)
+                quotient = (abs(left_value_signed) // abs(right_value_signed)) * (
+                    -1 if (left_value_signed < 0) ^ (right_value_signed < 0) else 1
+                )
+                remainder = left_value_signed - (quotient * right_value_signed)
+                return (
+                    signed_to_unsigned(remainder, node.dest_size)  # type: ignore[union-attr]
+                    & res_mask
+                )
             case ida_hexrays.m_or if right is not None:
                 lv, rv = _ev(left), _ev(right)
                 return None if lv is None or rv is None else (lv | rv) & res_mask

@@ -329,17 +329,24 @@ class MicroCodeInterpreter(object):
                 self.eval(ins.l, environment) // self.eval(ins.r, environment)
             ) & res_mask
         elif ins.opcode == ida_hexrays.m_sdiv:
-            return (
-                self.eval(ins.l, environment) // self.eval(ins.r, environment)
-            ) & res_mask
+            left_value = unsigned_to_signed(self.eval(ins.l, environment), ins.l.size)
+            right_value = unsigned_to_signed(self.eval(ins.r, environment), ins.r.size)
+            quotient = (abs(left_value) // abs(right_value)) * (
+                -1 if (left_value < 0) ^ (right_value < 0) else 1
+            )
+            return signed_to_unsigned(quotient, ins.d.size) & res_mask
         elif ins.opcode == ida_hexrays.m_umod:
             return (
                 self.eval(ins.l, environment) % self.eval(ins.r, environment)
             ) & res_mask
         elif ins.opcode == ida_hexrays.m_smod:
-            return (
-                self.eval(ins.l, environment) % self.eval(ins.r, environment)
-            ) & res_mask
+            left_value = unsigned_to_signed(self.eval(ins.l, environment), ins.l.size)
+            right_value = unsigned_to_signed(self.eval(ins.r, environment), ins.r.size)
+            quotient = (abs(left_value) // abs(right_value)) * (
+                -1 if (left_value < 0) ^ (right_value < 0) else 1
+            )
+            remainder = left_value - (quotient * right_value)
+            return signed_to_unsigned(remainder, ins.d.size) & res_mask
         elif ins.opcode == ida_hexrays.m_or:
             return (
                 self.eval(ins.l, environment) | self.eval(ins.r, environment)
