@@ -564,12 +564,16 @@ def _dump_dispatcher_node(
     lines: List[str],
     depth: int,
     max_depth: int,
+    value_lo: Optional[int] = None,
+    value_hi: Optional[int] = None,
     handler_state_map: Optional[Dict[int, int]] = None,
     handler_serials: Optional[set] = None,
 ) -> None:
     """Recursive helper for dump_dispatcher_tree.
 
     Args:
+        value_lo: Inclusive lower bound of state values that can reach this node.
+        value_hi: Inclusive upper bound of state values that can reach this node.
         handler_state_map: If provided, maps handler_serial -> state_constant extracted
             from the leaf comparison node (jnz/jz).
         handler_serials: If provided, collects all handler block serials seen at leaves.
@@ -615,9 +619,35 @@ def _dump_dispatcher_node(
     if is_jbe or is_ja:
         cmp_str = f"<= 0x{cmp_val:x}" if cmp_val is not None else "<= ?"
         lines.append(f"{prefix}blk[{serial}] {opcode_name} {cmp_str} (succs: {succs})")
-        for s in succs:
+
+        # Propagate narrowed ranges to successors.
+        # succs[0] = fall-through branch, succs[1] = jump/taken branch.
+        # m_jbe: if state_var <= X → jump (succs[1]); else fall-through (succs[0])
+        #   fall-through range: [X+1, hi]  (state > X)
+        #   taken      range:   [lo,  X]   (state <= X)
+        # m_ja: if state_var > X → jump (succs[1]); else fall-through (succs[0])
+        #   fall-through range: [lo,  X]   (state <= X)
+        #   taken      range:   [X+1, hi]  (state > X)
+        X = cmp_val
+        MASK = 0xFFFFFFFF
+        if is_jbe:
+            fall_lo = (X + 1) & MASK if X is not None else None
+            fall_hi = value_hi
+            taken_lo = value_lo
+            taken_hi = X
+        else:  # m_ja
+            fall_lo = value_lo
+            fall_hi = X
+            taken_lo = (X + 1) & MASK if X is not None else None
+            taken_hi = value_hi
+
+        child_ranges = [(fall_lo, fall_hi), (taken_lo, taken_hi)]
+        for idx, s in enumerate(succs):
+            c_lo, c_hi = child_ranges[idx] if idx < len(child_ranges) else (None, None)
             _dump_dispatcher_node(
                 mba, s, indent + 1, visited, lines, depth + 1, max_depth,
+                value_lo=c_lo,
+                value_hi=c_hi,
                 handler_state_map=handler_state_map,
                 handler_serials=handler_serials,
             )
@@ -625,37 +655,134 @@ def _dump_dispatcher_node(
     elif is_jnz or is_jz:
         op_sym = "==" if is_jz else "!="
         cmp_str = f"0x{cmp_val:x}" if cmp_val is not None else "?"
-        handler = succs[0] if succs else "?"
-        fall = succs[1] if len(succs) > 1 else "?"
-        lines.append(
-            f"{prefix}blk[{serial}] {opcode_name} {op_sym} {cmp_str}"
-            f" -> handler blk[{handler}] (fall-through: blk[{fall}])"
-        )
+        # succs[0] = fall-through, succs[1] = jump target
+        fall_blk = succs[0] if succs else "?"
+        jump_blk = succs[1] if len(succs) > 1 else "?"
+
+        # Derive states from the BST range rather than V-1/V+1 heuristic.
         # For m_jnz != V:
-        #   taken  (succs[0]) = state != V → this block handles the K (= V-1) case
-        #   fall   (succs[1]) = state == V → this block handles the K+1 (= V) case
+        #   fall-through (succs[0]) = state == V  → fall_state = V
+        #   jump target  (succs[1]) = state != V  → jump_state = the other value in [lo..hi]
         # For m_jz == V:
-        #   taken  (succs[0]) = state == V → this block handles the K (= V) case
-        #   fall   (succs[1]) = state != V → this block handles K+1 (= V+1) case
+        #   fall-through (succs[0]) = state != V  → fall_state = the other value in [lo..hi]
+        #   jump target  (succs[1]) = state == V  → jump_state = V
+        range_known = value_lo is not None and value_hi is not None
+        range_is_pair = range_known and (value_hi - value_lo == 1)
+
         if is_jnz:
-            taken_state = (cmp_val - 1) if cmp_val is not None else None
             fall_state = cmp_val
+            if range_is_pair and cmp_val is not None:
+                jump_state = value_lo if cmp_val == value_hi else value_hi
+            else:
+                jump_state = None
         else:  # m_jz
-            taken_state = cmp_val
-            fall_state = (cmp_val + 1) if cmp_val is not None else None
+            jump_state = cmp_val
+            if range_is_pair and cmp_val is not None:
+                fall_state = value_lo if cmp_val == value_hi else value_hi
+            else:
+                fall_state = None
 
-        if isinstance(handler, int):
-            if handler_serials is not None:
-                handler_serials.add(handler)
-            if handler_state_map is not None and taken_state is not None:
-                handler_state_map[handler] = taken_state
+        # Build display strings for range and derived states.
+        range_str = ""
+        if range_known:
+            range_str = f" [range: 0x{value_lo:x}..0x{value_hi:x}]"
+        jump_state_str = f"state=0x{jump_state:x}" if jump_state is not None else "state=?"
+        fall_state_str = f"state=0x{fall_state:x}" if fall_state is not None else "state=?"
 
-        if isinstance(fall, int):
-            if handler_serials is not None:
-                handler_serials.add(fall)
-            if handler_state_map is not None and fall_state is not None:
-                handler_state_map[fall] = fall_state
-        # Leaves — do not recurse
+        lines.append(
+            f"{prefix}blk[{serial}] {opcode_name} {op_sym} {cmp_str}{range_str}"
+            f" -> fall-through blk[{fall_blk}] ({fall_state_str})"
+            f" jump blk[{jump_blk}] ({jump_state_str})"
+        )
+
+        # Helper: determine if a block serial is a BST comparison node
+        # (has a conditional tail opcode and exactly 2 successors).
+        _bst_opcodes = set()
+        for _attr in ("m_jbe", "m_ja", "m_jnz", "m_jz"):
+            _v = getattr(idaapi, _attr, None)
+            if _v is not None:
+                _bst_opcodes.add(_v)
+
+        def _is_bst_node(blk_serial: int) -> bool:
+            if blk_serial in visited:
+                return False
+            _b = mba.get_mblock(blk_serial)
+            if _b is None or _b.nsucc() != 2:
+                return False
+            _tail = _b.tail
+            if _tail is None:
+                return False
+            return getattr(_tail, "opcode", None) in _bst_opcodes
+
+        # Compute narrowed range for the "not-equal" continuation path.
+        # When recursing from m_jnz != V, V is excluded from the range.
+        MASK = 0xFFFFFFFF
+
+        def _narrow_range_excluding(v, lo, hi):
+            """Return (new_lo, new_hi) after excluding v from [lo..hi].
+
+            If v == lo, the new range is [lo+1, hi].
+            If v == hi, the new range is [lo, hi-1].
+            Otherwise (v is in the interior), the range cannot be expressed as a
+            single contiguous interval, so return (lo, hi) unchanged.
+            """
+            if v is None or lo is None or hi is None:
+                return lo, hi
+            if v == lo:
+                return (lo + 1) & MASK, hi
+            if v == hi:
+                return lo, (hi - 1) & MASK
+            return lo, hi
+
+        if is_jnz:
+            # fall-through (succs[0]) is state == V → always a handler leaf
+            if isinstance(fall_blk, int):
+                if handler_serials is not None:
+                    handler_serials.add(fall_blk)
+                if handler_state_map is not None and fall_state is not None:
+                    handler_state_map[fall_blk] = fall_state
+
+            # jump target (succs[1]) is state != V → recurse if BST node, else handler
+            if isinstance(jump_blk, int):
+                if _is_bst_node(jump_blk):
+                    new_lo, new_hi = _narrow_range_excluding(cmp_val, value_lo, value_hi)
+                    _dump_dispatcher_node(
+                        mba, jump_blk, indent + 1, visited, lines, depth + 1, max_depth,
+                        value_lo=new_lo,
+                        value_hi=new_hi,
+                        handler_state_map=handler_state_map,
+                        handler_serials=handler_serials,
+                    )
+                else:
+                    if handler_serials is not None:
+                        handler_serials.add(jump_blk)
+                    if handler_state_map is not None and jump_state is not None:
+                        handler_state_map[jump_blk] = jump_state
+
+        else:  # m_jz
+            # jump target (succs[1]) is state == V → always a handler leaf
+            if isinstance(jump_blk, int):
+                if handler_serials is not None:
+                    handler_serials.add(jump_blk)
+                if handler_state_map is not None and jump_state is not None:
+                    handler_state_map[jump_blk] = jump_state
+
+            # fall-through (succs[0]) is state != V → recurse if BST node, else handler
+            if isinstance(fall_blk, int):
+                if _is_bst_node(fall_blk):
+                    new_lo, new_hi = _narrow_range_excluding(cmp_val, value_lo, value_hi)
+                    _dump_dispatcher_node(
+                        mba, fall_blk, indent + 1, visited, lines, depth + 1, max_depth,
+                        value_lo=new_lo,
+                        value_hi=new_hi,
+                        handler_state_map=handler_state_map,
+                        handler_serials=handler_serials,
+                    )
+                else:
+                    if handler_serials is not None:
+                        handler_serials.add(fall_blk)
+                    if handler_state_map is not None and fall_state is not None:
+                        handler_state_map[fall_blk] = fall_state
 
     else:
         cmp_str = f"0x{cmp_val:x}" if cmp_val is not None else "?"
@@ -1290,6 +1417,8 @@ def dump_dispatcher_tree(
         lines=bst_lines,
         depth=0,
         max_depth=max_depth,
+        value_lo=0,
+        value_hi=0xFFFFFFFF,
         handler_state_map=handler_state_map,
         handler_serials=handler_serials,
     )
