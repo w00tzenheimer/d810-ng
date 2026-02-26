@@ -175,20 +175,33 @@ cdef class AstEvaluator:
                 // self.evaluate(node.right, dict_index_to_value)
             ) & res_mask
         elif node.opcode == ida_hexrays.m_sdiv and node.right is not None:
-            return (
-                self.evaluate(node.left, dict_index_to_value)
-                // self.evaluate(node.right, dict_index_to_value)
-            ) & res_mask
+            left_value_signed = unsigned_to_signed(
+                self.evaluate(node.left, dict_index_to_value), node.left.dest_size
+            )
+            right_value_signed = unsigned_to_signed(
+                self.evaluate(node.right, dict_index_to_value), node.right.dest_size
+            )
+            quotient = (abs(left_value_signed) // abs(right_value_signed)) * (
+                -1 if (left_value_signed < 0) ^ (right_value_signed < 0) else 1
+            )
+            return signed_to_unsigned(quotient, node.dest_size) & res_mask
         elif node.opcode == ida_hexrays.m_umod and node.right is not None:
             return (
                 self.evaluate(node.left, dict_index_to_value)
                 % self.evaluate(node.right, dict_index_to_value)
             ) & res_mask
         elif node.opcode == ida_hexrays.m_smod and node.right is not None:
-            return (
-                self.evaluate(node.left, dict_index_to_value)
-                % self.evaluate(node.right, dict_index_to_value)
-            ) & res_mask
+            left_value_signed = unsigned_to_signed(
+                self.evaluate(node.left, dict_index_to_value), node.left.dest_size
+            )
+            right_value_signed = unsigned_to_signed(
+                self.evaluate(node.right, dict_index_to_value), node.right.dest_size
+            )
+            quotient = (abs(left_value_signed) // abs(right_value_signed)) * (
+                -1 if (left_value_signed < 0) ^ (right_value_signed < 0) else 1
+            )
+            remainder = left_value_signed - (quotient * right_value_signed)
+            return signed_to_unsigned(remainder, node.dest_size) & res_mask
         elif node.opcode == ida_hexrays.m_or and node.right is not None:
             return (
                 self.evaluate(node.left, dict_index_to_value)

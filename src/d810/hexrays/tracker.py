@@ -238,7 +238,7 @@ class MopHistory(object):
 
     def replace_block_in_path(self, old_blk: ida_hexrays.mblock_t, new_blk: ida_hexrays.mblock_t) -> bool:
         blk_index = get_blk_index(old_blk, self.block_path)
-        if blk_index > 0:
+        if blk_index >= 0:
             # Use copy-on-write: create new BlockInfo with new block
             self.history[blk_index] = self.history[blk_index].with_new_blk(new_blk)
             self._is_dirty = True

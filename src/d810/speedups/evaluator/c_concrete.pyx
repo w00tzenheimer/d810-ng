@@ -250,7 +250,14 @@ cdef class CythonConcreteEvaluator:
         elif node.opcode == ida_hexrays.m_sdiv and node.right is not None:
             lv = self.evaluate(node.left, dict_index_to_value)
             rv = self.evaluate(node.right, dict_index_to_value)
-            return None if lv is None or rv is None else (lv // rv) & res_mask
+            if lv is None or rv is None:
+                return None
+            left_value_signed = unsigned_to_signed(lv, node.left.dest_size)
+            right_value_signed = unsigned_to_signed(rv, node.right.dest_size)
+            quotient = (abs(left_value_signed) // abs(right_value_signed)) * (
+                -1 if (left_value_signed < 0) ^ (right_value_signed < 0) else 1
+            )
+            return signed_to_unsigned(quotient, node.dest_size) & res_mask
         elif node.opcode == ida_hexrays.m_umod and node.right is not None:
             lv = self.evaluate(node.left, dict_index_to_value)
             rv = self.evaluate(node.right, dict_index_to_value)
@@ -258,7 +265,15 @@ cdef class CythonConcreteEvaluator:
         elif node.opcode == ida_hexrays.m_smod and node.right is not None:
             lv = self.evaluate(node.left, dict_index_to_value)
             rv = self.evaluate(node.right, dict_index_to_value)
-            return None if lv is None or rv is None else (lv % rv) & res_mask
+            if lv is None or rv is None:
+                return None
+            left_value_signed = unsigned_to_signed(lv, node.left.dest_size)
+            right_value_signed = unsigned_to_signed(rv, node.right.dest_size)
+            quotient = (abs(left_value_signed) // abs(right_value_signed)) * (
+                -1 if (left_value_signed < 0) ^ (right_value_signed < 0) else 1
+            )
+            remainder = left_value_signed - (quotient * right_value_signed)
+            return signed_to_unsigned(remainder, node.dest_size) & res_mask
         elif node.opcode == ida_hexrays.m_or and node.right is not None:
             lv = self.evaluate(node.left, dict_index_to_value)
             rv = self.evaluate(node.right, dict_index_to_value)
