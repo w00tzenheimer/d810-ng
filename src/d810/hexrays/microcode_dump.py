@@ -693,27 +693,37 @@ def _find_pre_header(
             f" npred={blk.npred()} preds={preds}"
         )
 
+    # Collect all candidates with nsucc=1 targeting the dispatcher,
+    # then prefer the one with the fewest predecessors (the real pre-header
+    # comes from the function entry and has npred=0 or 1; handler back-edges
+    # have more predecessors).
+    best_serial: Optional[int] = None
+    best_npred: int = 999999
     for i in range(blk.npred()):
         pred_serial = blk.pred(i)
         pred_blk = mba.get_mblock(pred_serial)
         if pred_blk is None:
             continue
         nsucc = pred_blk.nsucc()
+        pred_npred = pred_blk.npred()
         tail = pred_blk.tail
         tail_opcode = getattr(tail, "opcode", None) if tail is not None else None
         tail_opname = OPCODE_MAP.get(tail_opcode, f"opcode_{tail_opcode}") if tail_opcode is not None else "no_tail"
         if diag_lines is not None:
             diag_lines.append(
-                f"  pred blk[{pred_serial}]: nsucc={nsucc}"
+                f"  pred blk[{pred_serial}]: nsucc={nsucc} npred={pred_npred}"
                 f" tail={tail_opname}"
                 + (f" succ0=blk[{pred_blk.succ(0)}]" if nsucc >= 1 else "")
             )
         # Pre-header has exactly one successor: the dispatcher entry
         if nsucc == 1 and pred_blk.succ(0) == dispatcher_entry_serial:
-            if diag_lines is not None:
-                diag_lines.append(f"  -> selected pre-header: blk[{pred_serial}]")
-            return pred_serial
-    return None
+            # Prefer fewest predecessors; break ties by lowest serial
+            if pred_npred < best_npred or (pred_npred == best_npred and pred_serial < best_serial):
+                best_npred = pred_npred
+                best_serial = pred_serial
+    if best_serial is not None and diag_lines is not None:
+        diag_lines.append(f"  -> selected pre-header: blk[{best_serial}] (npred={best_npred})")
+    return best_serial
 
 
 def _mop_matches_stkoff(
