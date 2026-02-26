@@ -734,13 +734,31 @@ def _dump_dispatcher_node(
                 return lo, (hi - 1) & MASK
             return lo, hi
 
+        # Check whether cmp_val falls within the active range for this BST node.
+        # If cmp_val is outside [value_lo, value_hi] the equality branch is dead
+        # code planted by the obfuscator; do not register it as a handler.
+        cmp_in_range = (
+            value_lo is not None
+            and value_hi is not None
+            and cmp_val is not None
+            and value_lo <= cmp_val <= value_hi
+        )
+
         if is_jnz:
-            # fall-through (succs[0]) is state == V → always a handler leaf
+            # fall-through (succs[0]) is state == V → handler leaf only when V is in range
             if isinstance(fall_blk, int):
-                if handler_serials is not None:
-                    handler_serials.add(fall_blk)
-                if handler_state_map is not None and fall_state is not None:
-                    handler_state_map[fall_blk] = fall_state
+                if cmp_val is None:
+                    lines.append(f"{prefix}  [unknown cmp_val: cannot classify fall-through blk[{fall_blk}]]")
+                elif not cmp_in_range:
+                    lines.append(
+                        f"{prefix}  [dead-code: 0x{cmp_val:x} outside range"
+                        f" 0x{value_lo:x}..0x{value_hi:x}]"
+                    )
+                else:
+                    if handler_serials is not None:
+                        handler_serials.add(fall_blk)
+                    if handler_state_map is not None and fall_state is not None:
+                        handler_state_map[fall_blk] = fall_state
 
             # jump target (succs[1]) is state != V → recurse if BST node, else handler
             if isinstance(jump_blk, int):
@@ -754,18 +772,28 @@ def _dump_dispatcher_node(
                         handler_serials=handler_serials,
                     )
                 else:
+                    if cmp_val is None:
+                        lines.append(f"{prefix}  [unknown cmp_val: cannot classify jump blk[{jump_blk}]]")
+                    elif handler_serials is not None:
+                        handler_serials.add(jump_blk)
+                        if handler_state_map is not None and jump_state is not None:
+                            handler_state_map[jump_blk] = jump_state
+
+        else:  # m_jz
+            # jump target (succs[1]) is state == V → handler leaf only when V is in range
+            if isinstance(jump_blk, int):
+                if cmp_val is None:
+                    lines.append(f"{prefix}  [unknown cmp_val: cannot classify jump blk[{jump_blk}]]")
+                elif not cmp_in_range:
+                    lines.append(
+                        f"{prefix}  [dead-code: 0x{cmp_val:x} outside range"
+                        f" 0x{value_lo:x}..0x{value_hi:x}]"
+                    )
+                else:
                     if handler_serials is not None:
                         handler_serials.add(jump_blk)
                     if handler_state_map is not None and jump_state is not None:
                         handler_state_map[jump_blk] = jump_state
-
-        else:  # m_jz
-            # jump target (succs[1]) is state == V → always a handler leaf
-            if isinstance(jump_blk, int):
-                if handler_serials is not None:
-                    handler_serials.add(jump_blk)
-                if handler_state_map is not None and jump_state is not None:
-                    handler_state_map[jump_blk] = jump_state
 
             # fall-through (succs[0]) is state != V → recurse if BST node, else handler
             if isinstance(fall_blk, int):
@@ -779,10 +807,12 @@ def _dump_dispatcher_node(
                         handler_serials=handler_serials,
                     )
                 else:
-                    if handler_serials is not None:
+                    if cmp_val is None:
+                        lines.append(f"{prefix}  [unknown cmp_val: cannot classify fall-through blk[{fall_blk}]]")
+                    elif handler_serials is not None:
                         handler_serials.add(fall_blk)
-                    if handler_state_map is not None and fall_state is not None:
-                        handler_state_map[fall_blk] = fall_state
+                        if handler_state_map is not None and fall_state is not None:
+                            handler_state_map[fall_blk] = fall_state
 
     else:
         cmp_str = f"0x{cmp_val:x}" if cmp_val is not None else "?"
