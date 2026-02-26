@@ -539,6 +539,844 @@ def dump_mba_json(
 
 
 # -----------------------------------------------------------------------------
+# Dispatcher Tree Visualization
+# -----------------------------------------------------------------------------
+
+
+def _get_mop_const_value(mop: "idaapi.mop_t") -> Optional[int]:
+    """Extract a constant integer value from a mop_t if it is a number operand."""
+    _init_constants()
+    if mop is None:
+        return None
+    mop_type = getattr(mop, "t", None)
+    if mop_type == idaapi.mop_n:
+        nnn = getattr(mop, "nnn", None)
+        if nnn is not None:
+            return getattr(nnn, "value", None)
+    return None
+
+
+def _dump_dispatcher_node(
+    mba: "idaapi.mbl_array_t",
+    serial: int,
+    indent: int,
+    visited: set,
+    lines: List[str],
+    depth: int,
+    max_depth: int,
+    handler_state_map: Optional[Dict[int, int]] = None,
+    handler_serials: Optional[set] = None,
+) -> None:
+    """Recursive helper for dump_dispatcher_tree.
+
+    Args:
+        handler_state_map: If provided, maps handler_serial -> state_constant extracted
+            from the leaf comparison node (jnz/jz).
+        handler_serials: If provided, collects all handler block serials seen at leaves.
+    """
+    _init_constants()
+
+    if depth > max_depth:
+        lines.append("  " * indent + f"blk[{serial}] <max depth reached>")
+        return
+
+    if serial in visited:
+        lines.append("  " * indent + f"blk[{serial}] <already visited>")
+        return
+    visited.add(serial)
+
+    blk = mba.get_mblock(serial)
+    if blk is None:
+        lines.append("  " * indent + f"blk[{serial}] <null block>")
+        return
+
+    insn = blk.tail
+    if insn is None:
+        lines.append("  " * indent + f"blk[{serial}] <no tail instruction>")
+        return
+
+    opcode = getattr(insn, "opcode", None)
+    opcode_name = OPCODE_MAP.get(opcode, f"opcode_{opcode}") if opcode is not None else "unknown"
+
+    succs = [blk.succ(i) for i in range(blk.nsucc())]
+
+    # Determine comparison constant from l or r operand
+    l_val = _get_mop_const_value(getattr(insn, "l", None))
+    r_val = _get_mop_const_value(getattr(insn, "r", None))
+    cmp_val = l_val if l_val is not None else r_val
+
+    prefix = "  " * indent
+
+    is_jbe = opcode is not None and hasattr(idaapi, "m_jbe") and opcode == idaapi.m_jbe
+    is_ja = opcode is not None and hasattr(idaapi, "m_ja") and opcode == idaapi.m_ja
+    is_jnz = opcode is not None and hasattr(idaapi, "m_jnz") and opcode == idaapi.m_jnz
+    is_jz = opcode is not None and hasattr(idaapi, "m_jz") and opcode == idaapi.m_jz
+
+    if is_jbe or is_ja:
+        cmp_str = f"<= 0x{cmp_val:x}" if cmp_val is not None else "<= ?"
+        lines.append(f"{prefix}blk[{serial}] {opcode_name} {cmp_str} (succs: {succs})")
+        for s in succs:
+            _dump_dispatcher_node(
+                mba, s, indent + 1, visited, lines, depth + 1, max_depth,
+                handler_state_map=handler_state_map,
+                handler_serials=handler_serials,
+            )
+
+    elif is_jnz or is_jz:
+        op_sym = "==" if is_jz else "!="
+        cmp_str = f"0x{cmp_val:x}" if cmp_val is not None else "?"
+        handler = succs[0] if succs else "?"
+        fall = succs[1] if len(succs) > 1 else "?"
+        lines.append(
+            f"{prefix}blk[{serial}] {opcode_name} {op_sym} {cmp_str}"
+            f" -> handler blk[{handler}] (fall-through: blk[{fall}])"
+        )
+        # For m_jnz != V:
+        #   taken  (succs[0]) = state != V → this block handles the K (= V-1) case
+        #   fall   (succs[1]) = state == V → this block handles the K+1 (= V) case
+        # For m_jz == V:
+        #   taken  (succs[0]) = state == V → this block handles the K (= V) case
+        #   fall   (succs[1]) = state != V → this block handles K+1 (= V+1) case
+        if is_jnz:
+            taken_state = (cmp_val - 1) if cmp_val is not None else None
+            fall_state = cmp_val
+        else:  # m_jz
+            taken_state = cmp_val
+            fall_state = (cmp_val + 1) if cmp_val is not None else None
+
+        if isinstance(handler, int):
+            if handler_serials is not None:
+                handler_serials.add(handler)
+            if handler_state_map is not None and taken_state is not None:
+                handler_state_map[handler] = taken_state
+
+        if isinstance(fall, int):
+            if handler_serials is not None:
+                handler_serials.add(fall)
+            if handler_state_map is not None and fall_state is not None:
+                handler_state_map[fall] = fall_state
+        # Leaves — do not recurse
+
+    else:
+        cmp_str = f"0x{cmp_val:x}" if cmp_val is not None else "?"
+        lines.append(
+            f"{prefix}blk[{serial}] {opcode_name} {cmp_str} (succs: {succs})"
+        )
+
+
+def _find_pre_header(
+    mba: "idaapi.mbl_array_t",
+    dispatcher_entry_serial: int,
+    diag_lines: Optional[List[str]] = None,
+) -> Optional[int]:
+    """Find the pre-header block that initializes the state variable.
+
+    The pre-header is the predecessor of the dispatcher entry block that is
+    NOT a handler back-edge (i.e., it has only one successor: the dispatcher).
+
+    Args:
+        mba: The microcode block array.
+        dispatcher_entry_serial: Block serial of the dispatcher entry.
+        diag_lines: Optional list to collect diagnostic output strings.
+
+    Returns:
+        Serial of the pre-header block, or None if not found.
+    """
+    blk = mba.get_mblock(dispatcher_entry_serial)
+    if blk is None:
+        return None
+
+    if diag_lines is not None:
+        preds = [blk.pred(i) for i in range(blk.npred())]
+        diag_lines.append(
+            f"_find_pre_header: dispatcher=blk[{dispatcher_entry_serial}]"
+            f" npred={blk.npred()} preds={preds}"
+        )
+
+    for i in range(blk.npred()):
+        pred_serial = blk.pred(i)
+        pred_blk = mba.get_mblock(pred_serial)
+        if pred_blk is None:
+            continue
+        nsucc = pred_blk.nsucc()
+        tail = pred_blk.tail
+        tail_opcode = getattr(tail, "opcode", None) if tail is not None else None
+        tail_opname = OPCODE_MAP.get(tail_opcode, f"opcode_{tail_opcode}") if tail_opcode is not None else "no_tail"
+        if diag_lines is not None:
+            diag_lines.append(
+                f"  pred blk[{pred_serial}]: nsucc={nsucc}"
+                f" tail={tail_opname}"
+                + (f" succ0=blk[{pred_blk.succ(0)}]" if nsucc >= 1 else "")
+            )
+        # Pre-header has exactly one successor: the dispatcher entry
+        if nsucc == 1 and pred_blk.succ(0) == dispatcher_entry_serial:
+            if diag_lines is not None:
+                diag_lines.append(f"  -> selected pre-header: blk[{pred_serial}]")
+            return pred_serial
+    return None
+
+
+def _mop_matches_stkoff(
+    mop: "idaapi.mop_t",
+    state_var_stkoff: int,
+    diag_lines: Optional[List[str]] = None,
+    state_var_lvar_idx: Optional[int] = None,
+    mba: Optional["idaapi.mbl_array_t"] = None,
+) -> bool:
+    """Return True if mop is a stack variable operand at the given stack offset.
+
+    Handles mop_S (direct stack var), mop_a wrapping a mop_S (address-of
+    pattern used in m_stx instructions), and mop_l (local variable promoted
+    from stack var at higher maturity levels such as GLBOPT2).
+
+    Args:
+        mop: The microcode operand to test.
+        state_var_stkoff: Stack offset of the state variable.
+        diag_lines: Optional list to collect diagnostic strings.
+        state_var_lvar_idx: If not None, match mop_l by lvar index directly.
+        mba: If provided and state_var_lvar_idx is None, fall back to
+            ``mba.vars[idx].location.stkoff()`` comparison for mop_l operands.
+    """
+    if mop is None:
+        return False
+    mop_type = getattr(mop, "t", None)
+    mop_S_type = getattr(idaapi, "mop_S", None)
+    mop_a_type = getattr(idaapi, "mop_a", None)
+    mop_l_type = getattr(idaapi, "mop_l", None)
+
+    if diag_lines is not None:
+        mop_type_name = MOP_TYPE_MAP.get(mop_type, f"unknown_{mop_type}") if mop_type is not None else "None"
+        diag_lines.append(
+            f"    _mop_matches_stkoff: mop.t={mop_type_name}({mop_type})"
+            f" target_stkoff=0x{state_var_stkoff:x}"
+            f" mop_S_type={mop_S_type} mop_a_type={mop_a_type} mop_l_type={mop_l_type}"
+            f" state_var_lvar_idx={state_var_lvar_idx}"
+        )
+
+    # Direct stack variable (mop_S)
+    if mop_type == mop_S_type:
+        s = getattr(mop, "s", None)
+        if s is not None:
+            off = getattr(s, "off", None)
+            if diag_lines is not None:
+                diag_lines.append(f"      -> mop_S: s.off=0x{off:x} match={off == state_var_stkoff}")
+            return off == state_var_stkoff
+
+    # Address-of a stack variable (mop_a containing mop_S) — used by m_stx
+    if mop_type == mop_a_type:
+        inner = getattr(mop, "a", None)
+        if inner is not None:
+            inner_type = getattr(inner, "t", None)
+            if inner_type == mop_S_type:
+                s = getattr(inner, "s", None)
+                if s is not None:
+                    off = getattr(s, "off", None)
+                    if diag_lines is not None:
+                        diag_lines.append(f"      -> mop_a->mop_S: s.off=0x{off:x} match={off == state_var_stkoff}")
+                    return off == state_var_stkoff
+
+    # Local variable (mop_l) — promoted stack var at GLBOPT2 maturity
+    if mop_l_type is not None and mop_type == mop_l_type:
+        lref = getattr(mop, "l", None)
+        if lref is not None:
+            idx = getattr(lref, "idx", None)
+            if diag_lines is not None:
+                diag_lines.append(
+                    f"      -> mop_l: lvar idx={idx}"
+                    f" state_var_lvar_idx={state_var_lvar_idx}"
+                )
+            if idx is not None:
+                # Fast path: match by lvar index if we know it
+                if state_var_lvar_idx is not None:
+                    match = idx == state_var_lvar_idx
+                    if diag_lines is not None:
+                        diag_lines.append(f"      -> mop_l idx match={match}")
+                    return match
+                # Fallback: resolve stkoff via mba.vars when lvar_idx unknown
+                if mba is not None:
+                    try:
+                        lvar = mba.vars[idx]
+                        off = lvar.location.stkoff()
+                        match = off == state_var_stkoff
+                        if diag_lines is not None:
+                            diag_lines.append(
+                                f"      -> mop_l mba.vars[{idx}].stkoff()=0x{off:x} match={match}"
+                            )
+                        return match
+                    except Exception as exc:
+                        if diag_lines is not None:
+                            diag_lines.append(f"      -> mop_l stkoff lookup failed: {exc}")
+
+    return False
+
+
+def _extract_state_from_block(
+    blk: "idaapi.mblock_t",
+    state_var_stkoff: int,
+    diag_lines: Optional[List[str]] = None,
+    state_var_lvar_idx: Optional[int] = None,
+    mba: Optional["idaapi.mbl_array_t"] = None,
+) -> Optional[int]:
+    """Scan a block's instructions for a write to state_var_stkoff.
+
+    Handles two patterns:
+    - ``m_mov <const>, <mop_S stkoff=N>`` — simple stack-variable move
+    - ``m_mov <const>, <mop_l lvar_idx=N>`` — local-var move at GLBOPT2
+    - ``m_stx <const>, <addr_of_stkoff>, <size>`` — store via address, used at
+      GLBOPT1/2 maturity levels
+
+    Args:
+        blk: The microcode block to scan.
+        state_var_stkoff: Stack offset of the state variable.
+        diag_lines: Optional list to collect diagnostic strings.
+        state_var_lvar_idx: If not None, also match mop_l writes by lvar index.
+        mba: Passed to ``_mop_matches_stkoff`` for mop_l fallback stkoff lookup.
+
+    Returns the constant value written, or None if not found.
+    """
+    _init_constants()
+    m_mov_opcode = getattr(idaapi, "m_mov", None)
+    m_stx_opcode = getattr(idaapi, "m_stx", None)
+
+    if m_mov_opcode is None:
+        return None
+
+    insn = blk.head
+    insn_idx = 0
+    while insn is not None:
+        opcode = getattr(insn, "opcode", None)
+        opcode_name = OPCODE_MAP.get(opcode, f"opcode_{opcode}") if opcode is not None else "None"
+
+        l_mop = getattr(insn, "l", None)
+        r_mop = getattr(insn, "r", None)
+        d_mop = getattr(insn, "d", None)
+
+        l_t = getattr(l_mop, "t", None) if l_mop is not None else None
+        r_t = getattr(r_mop, "t", None) if r_mop is not None else None
+        d_t = getattr(d_mop, "t", None) if d_mop is not None else None
+
+        l_tname = MOP_TYPE_MAP.get(l_t, f"unknown_{l_t}") if l_t is not None else "None"
+        r_tname = MOP_TYPE_MAP.get(r_t, f"unknown_{r_t}") if r_t is not None else "None"
+        d_tname = MOP_TYPE_MAP.get(d_t, f"unknown_{d_t}") if d_t is not None else "None"
+
+        if diag_lines is not None:
+            diag_lines.append(
+                f"  insn[{insn_idx}]: {opcode_name}"
+                f"  l.t={l_tname}  r.t={r_tname}  d.t={d_tname}"
+            )
+
+        if opcode == m_mov_opcode:
+            d = getattr(insn, "d", None)
+            if _mop_matches_stkoff(
+                d, state_var_stkoff, diag_lines=diag_lines,
+                state_var_lvar_idx=state_var_lvar_idx, mba=mba,
+            ):
+                l = getattr(insn, "l", None)
+                val = _get_mop_const_value(l)
+                if val is not None:
+                    if diag_lines is not None:
+                        diag_lines.append(f"  -> FOUND m_mov state write: 0x{val:x}")
+                    return val
+
+        elif m_stx_opcode is not None and opcode == m_stx_opcode:
+            # m_stx <value>, <addr>, <size_mop>
+            # l = value being stored, r = destination address
+            r = getattr(insn, "r", None)
+            if _mop_matches_stkoff(
+                r, state_var_stkoff, diag_lines=diag_lines,
+                state_var_lvar_idx=state_var_lvar_idx, mba=mba,
+            ):
+                l = getattr(insn, "l", None)
+                val = _get_mop_const_value(l)
+                if val is not None:
+                    if diag_lines is not None:
+                        diag_lines.append(f"  -> FOUND m_stx state write: 0x{val:x}")
+                    return val
+
+        insn = getattr(insn, "next", None)
+        insn_idx += 1
+    return None
+
+
+def _walk_handler_chain(
+    mba: "idaapi.mbl_array_t",
+    handler_start_serial: int,
+    dispatcher_entry_serial: int,
+    state_var_stkoff: int,
+    chain_visited: Optional[set] = None,
+    max_chain_depth: int = 64,
+    diag_lines: Optional[List[str]] = None,
+    state_var_lvar_idx: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Walk a handler's block chain to find the next-state write and back-edge.
+
+    Follows single-successor chains. Scans each block for an m_mov write to
+    the state variable (matched by stkoff or lvar index). Stops at:
+    - Blocks with multiple predecessors (potential merge/join)
+    - The dispatcher entry (back-edge detected)
+    - A block with no successors (function exit)
+    - Max depth exceeded
+
+    Args:
+        mba: The microcode block array.
+        handler_start_serial: First block of this handler.
+        dispatcher_entry_serial: Serial of the dispatcher entry block.
+        state_var_stkoff: Stack offset of the state variable.
+        chain_visited: External visited set to avoid re-walking shared blocks.
+        max_chain_depth: Maximum blocks to walk per handler.
+        diag_lines: Optional list to collect diagnostic output strings.
+        state_var_lvar_idx: If not None, also match mop_l writes by lvar index.
+
+    Returns:
+        Dict with keys:
+            - next_state: int or None — constant written to state var
+            - back_edge: bool — True if chain reaches dispatcher
+            - exit: bool — True if chain reaches a no-successor block
+            - chain: List[int] — block serials walked
+    """
+    _init_constants()
+    result: Dict[str, Any] = {
+        "next_state": None,
+        "back_edge": False,
+        "exit": False,
+        "chain": [],
+    }
+
+    if chain_visited is None:
+        chain_visited = set()
+
+    if diag_lines is not None:
+        diag_lines.append(
+            f"  walker start: blk[{handler_start_serial}]"
+            f" dispatcher=blk[{dispatcher_entry_serial}]"
+            f" stkoff=0x{state_var_stkoff:x}"
+        )
+
+    current = handler_start_serial
+    depth = 0
+
+    while current is not None and depth < max_chain_depth:
+        if current in chain_visited:
+            if diag_lines is not None:
+                diag_lines.append(f"  walker: blk[{current}] already in chain_visited -> stop")
+            break
+        chain_visited.add(current)
+        result["chain"].append(current)
+
+        if current == dispatcher_entry_serial:
+            result["back_edge"] = True
+            if diag_lines is not None:
+                diag_lines.append(f"  walker: blk[{current}] == dispatcher_entry -> back_edge stop")
+            break
+
+        blk = mba.get_mblock(current)
+        if blk is None:
+            if diag_lines is not None:
+                diag_lines.append(f"  walker: blk[{current}] is None -> stop")
+            break
+
+        num_insns = 0
+        tmp = blk.head
+        while tmp is not None:
+            num_insns += 1
+            tmp = getattr(tmp, "next", None)
+
+        if diag_lines is not None:
+            diag_lines.append(f"  walker: visiting blk[{current}] ({num_insns} insns)")
+
+        # Scan for state variable write if not yet found
+        if result["next_state"] is None and state_var_stkoff is not None:
+            val = _extract_state_from_block(
+                blk, state_var_stkoff, diag_lines=diag_lines,
+                state_var_lvar_idx=state_var_lvar_idx, mba=mba,
+            )
+            if val is not None:
+                result["next_state"] = val
+                if diag_lines is not None:
+                    diag_lines.append(f"  walker: found next_state=0x{val:x} in blk[{current}]")
+
+        nsucc = blk.nsucc()
+        if nsucc == 0:
+            result["exit"] = True
+            if diag_lines is not None:
+                diag_lines.append(f"  walker: blk[{current}] nsucc=0 -> exit stop")
+            break
+        if nsucc == 1:
+            next_serial = blk.succ(0)
+            if diag_lines is not None:
+                diag_lines.append(f"  walker: blk[{current}] nsucc=1 -> follow blk[{next_serial}]")
+            # Check if next block is dispatcher entry (back-edge)
+            if next_serial == dispatcher_entry_serial:
+                result["back_edge"] = True
+                if diag_lines is not None:
+                    diag_lines.append(f"  walker: next blk[{next_serial}] == dispatcher -> back_edge stop")
+                break
+            # Continue walking — do NOT stop on multi-predecessor blocks.
+            # Handler blocks in a flattened loop naturally have multiple
+            # predecessors (multiple BST leaves route adjacent state values
+            # to the same handler block). Stopping there prevents finding
+            # the state variable write.
+            current = next_serial
+        else:
+            # Multiple successors — handler branches internally.
+            # Still scan this block for state write before stopping.
+            # (The scan above already ran on this block, so just stop.)
+            succs = [blk.succ(i) for i in range(nsucc)]
+            if diag_lines is not None:
+                diag_lines.append(
+                    f"  walker: blk[{current}] nsucc={nsucc} succs={succs} -> multi-succ stop"
+                )
+            break
+
+        depth += 1
+
+    if diag_lines is not None:
+        diag_lines.append(
+            f"  walker done: next_state={result['next_state']} "
+            f"back_edge={result['back_edge']} exit={result['exit']} "
+            f"chain={result['chain']}"
+        )
+
+    return result
+
+
+def _find_pre_header_state(
+    mba: "idaapi.mbl_array_t",
+    dispatcher_entry_serial: int,
+    state_var_stkoff: Optional[int],
+    diag_lines: Optional[List[str]] = None,
+    state_var_lvar_idx: Optional[int] = None,
+) -> tuple:
+    """Find pre-header block and extract initial state constant.
+
+    Args:
+        mba: The microcode block array.
+        dispatcher_entry_serial: Block serial of the BST root.
+        state_var_stkoff: Stack offset of the state variable.
+        diag_lines: Optional list to collect diagnostic strings.
+        state_var_lvar_idx: If not None, also match mop_l writes by lvar index.
+
+    Returns:
+        Tuple of (pre_header_serial: Optional[int], initial_state: Optional[int])
+    """
+    pre_header_serial = _find_pre_header(mba, dispatcher_entry_serial, diag_lines=diag_lines)
+    if pre_header_serial is None or state_var_stkoff is None:
+        return pre_header_serial, None
+    blk = mba.get_mblock(pre_header_serial)
+    if blk is None:
+        return pre_header_serial, None
+    initial_state = _extract_state_from_block(
+        blk, state_var_stkoff, diag_lines=diag_lines,
+        state_var_lvar_idx=state_var_lvar_idx, mba=mba,
+    )
+    return pre_header_serial, initial_state
+
+
+def _detect_state_var_stkoff(
+    mba: "idaapi.mbl_array_t",
+    dispatcher_entry_serial: int,
+    diag: bool = False,
+):
+    """Auto-detect the state variable stack offset from the BST root comparison.
+
+    The BST root block's tail instruction is a conditional jump (jbe/ja/jnz/jz)
+    whose left operand is the state variable.  If that operand is a direct stack
+    variable (mop_S), its ``.s.off`` is the stkoff we need.  If the operand is
+    a register (mop_r), we try to find the stack variable via the register's
+    definition chain.  If it is a local variable (mop_l, promoted at GLBOPT2),
+    we return both the stkoff and the lvar index.
+
+    Args:
+        mba: The microcode block array.
+        dispatcher_entry_serial: Block serial of the BST root.
+        diag: If True, return ((stkoff, lvar_idx), diag_lines) tuple.
+
+    Returns:
+        If diag=False: Tuple of (stkoff_or_None, lvar_idx_or_None).
+        If diag=True: Tuple of ((stkoff_or_None, lvar_idx_or_None), diag_lines_list).
+    """
+    _init_constants()
+    diag_lines: List[str] = [] if diag else None
+
+    def _return(stkoff, lvar_idx=None):
+        result = (stkoff, lvar_idx)
+        if diag:
+            return result, diag_lines
+        return result
+
+    mop_S_type = getattr(idaapi, "mop_S", None)
+    mop_r_type = getattr(idaapi, "mop_r", None)
+
+    blk = mba.get_mblock(dispatcher_entry_serial)
+    if blk is None:
+        if diag_lines is not None:
+            diag_lines.append(f"_detect_stkoff: blk[{dispatcher_entry_serial}] is None")
+        return _return(None)
+
+    tail = getattr(blk, "tail", None)
+    if tail is None:
+        if diag_lines is not None:
+            diag_lines.append(f"_detect_stkoff: blk[{dispatcher_entry_serial}] has no tail")
+        return _return(None)
+
+    left = getattr(tail, "l", None)
+    if left is None:
+        if diag_lines is not None:
+            diag_lines.append(f"_detect_stkoff: tail has no .l operand")
+        return _return(None)
+
+    mop_type = getattr(left, "t", None)
+    if diag_lines is not None:
+        diag_lines.append(
+            f"_detect_stkoff: blk[{dispatcher_entry_serial}] tail opcode={tail.opcode}"
+            f" left.t={mop_type} (mop_S={mop_S_type}, mop_r={mop_r_type})"
+        )
+
+    # Direct stack variable (mop_S)
+    if mop_type == mop_S_type:
+        s = getattr(left, "s", None)
+        if s is not None:
+            off = getattr(s, "off", None)
+            if off is not None:
+                if diag_lines is not None:
+                    diag_lines.append(f"_detect_stkoff: mop_S hit -> stkoff=0x{off:x}")
+                return _return(off, None)
+
+    # Register (mop_r) — try to find underlying stack variable
+    if mop_type == mop_r_type:
+        reg = getattr(left, "r", None)
+        if diag_lines is not None:
+            diag_lines.append(f"_detect_stkoff: mop_r register={reg}")
+        # Walk instructions in the block looking for m_mov from mop_S to this reg
+        insn = blk.head
+        while insn is not None:
+            d = getattr(insn, "d", None)
+            if d is not None and getattr(d, "t", None) == mop_r_type and getattr(d, "r", None) == reg:
+                src = getattr(insn, "l", None)
+                if src is not None and getattr(src, "t", None) == mop_S_type:
+                    s = getattr(src, "s", None)
+                    if s is not None:
+                        off = getattr(s, "off", None)
+                        if off is not None:
+                            if diag_lines is not None:
+                                diag_lines.append(f"_detect_stkoff: found m_mov mop_S(0x{off:x}) -> reg{reg}")
+                            return _return(off, None)
+            insn = getattr(insn, "next", None)
+        if diag_lines is not None:
+            diag_lines.append(f"_detect_stkoff: no mop_S source found for reg{reg} in blk[{dispatcher_entry_serial}]")
+
+    # Local variable (mop_l) — promoted stack var at higher maturity levels
+    mop_l_type = getattr(idaapi, "mop_l", None)
+    if mop_type == mop_l_type:
+        lref = getattr(left, "l", None)
+        if lref is not None:
+            idx = getattr(lref, "idx", None)
+            if diag_lines is not None:
+                diag_lines.append(f"_detect_stkoff: mop_l lvar idx={idx}")
+            if idx is not None:
+                try:
+                    lvar = mba.vars[idx]
+                    loc = lvar.location
+                    off = loc.stkoff()
+                    if diag_lines is not None:
+                        diag_lines.append(
+                            f"_detect_stkoff: mop_l lvar[{idx}] location.stkoff()=0x{off:x}"
+                        )
+                    return _return(off, idx)
+                except Exception as e:
+                    if diag_lines is not None:
+                        diag_lines.append(f"_detect_stkoff: mop_l lvar[{idx}] stkoff failed: {e}")
+
+    if diag_lines is not None:
+        diag_lines.append(f"_detect_stkoff: FAILED - unhandled operand type {mop_type}")
+    return _return(None)
+
+
+def dump_dispatcher_tree(
+    mba: "idaapi.mbl_array_t",
+    dispatcher_entry_serial: int,
+    state_var_stkoff: int = None,
+    state_constants: set = None,
+    transitions: dict = None,
+    max_depth: int = 20,
+) -> str:
+    """Walk the BST dispatcher and return a full state machine visualization.
+
+    Outputs three sections:
+    1. Pre-header: the block that initializes the state variable.
+    2. BST tree: the binary search tree of comparison blocks.
+    3. Handler transitions: for each handler, the next-state written and
+       whether it loops back to the dispatcher or exits.
+
+    Args:
+        mba: The microcode block array.
+        dispatcher_entry_serial: Block serial number of the BST root.
+        state_var_stkoff: Optional stack offset of the state variable. Used to
+            extract state writes in handler chains and pre-header.
+        state_constants: Optional set of known state constant values (from Hodur
+            detector). Used for annotation only.
+        transitions: Optional dict mapping handler info from Hodur detector.
+            If provided, used to annotate handler transition entries.
+        max_depth: Maximum recursion depth to guard against malformed CFGs.
+
+    Returns:
+        Multi-section string (not printed — caller decides what to do with it).
+    """
+    _init_constants()
+    sections: List[str] = []
+
+    # Diagnostics collected during pre-header search and first-3-handler walks
+    diag_section: List[str] = []
+
+    # Auto-detect state_var_stkoff (and lvar_idx for mop_l) from the BST root
+    state_var_lvar_idx: Optional[int] = None
+    if state_var_stkoff is None:
+        (detected, detected_lvar_idx), detect_diag = _detect_state_var_stkoff(
+            mba, dispatcher_entry_serial, diag=True
+        )
+        if detect_diag:
+            diag_section.extend(detect_diag)
+        if detected is not None:
+            state_var_stkoff = detected
+            state_var_lvar_idx = detected_lvar_idx
+            lvar_note = (
+                f" lvar_idx={detected_lvar_idx}" if detected_lvar_idx is not None else ""
+            )
+            diag_section.append(
+                f"Auto-detected state_var_stkoff=0x{detected:x}{lvar_note}"
+                f" from blk[{dispatcher_entry_serial}]"
+            )
+
+    # --- Section 1: Pre-header ---
+    sections.append("=== STATE MACHINE ===")
+    pre_header_serial, initial_state = _find_pre_header_state(
+        mba, dispatcher_entry_serial, state_var_stkoff, diag_lines=diag_section,
+        state_var_lvar_idx=state_var_lvar_idx,
+    )
+    if pre_header_serial is not None:
+        state_str = f"0x{initial_state:08x}" if initial_state is not None else "<unknown>"
+        sections.append(
+            f"Pre-header: blk[{pre_header_serial}] -> state = {state_str}"
+            f" -> dispatcher blk[{dispatcher_entry_serial}]"
+        )
+    else:
+        sections.append(
+            f"Pre-header: <not found> -> dispatcher blk[{dispatcher_entry_serial}]"
+        )
+    sections.append("")
+
+    # --- Section 2: BST tree ---
+    sections.append("=== DISPATCHER BST ===")
+    bst_lines: List[str] = []
+    bst_visited: set = set()
+    handler_state_map: Dict[int, int] = {}   # handler_serial -> state_constant (from BST leaf)
+    handler_serials: set = set()
+
+    _dump_dispatcher_node(
+        mba,
+        dispatcher_entry_serial,
+        indent=0,
+        visited=bst_visited,
+        lines=bst_lines,
+        depth=0,
+        max_depth=max_depth,
+        handler_state_map=handler_state_map,
+        handler_serials=handler_serials,
+    )
+    sections.extend(bst_lines)
+    sections.append("")
+
+    # --- Section 3: Handler transitions ---
+    sections.append("=== HANDLER TRANSITIONS ===")
+
+    if not handler_serials:
+        sections.append("<no handlers found in BST>")
+    else:
+        chain_visited: set = set()
+        # Build entries: list of (state_const, handler_serial, walk_result)
+        entries = []
+        diag_handler_count = 0
+        for h_serial in sorted(handler_serials):
+            state_const = handler_state_map.get(h_serial)
+            if state_var_stkoff is not None:
+                # Collect diagnostics for the first 3 handlers only
+                handler_diag: Optional[List[str]] = None
+                if diag_handler_count < 3:
+                    handler_diag = []
+                    diag_section.append(f"Handler blk[{h_serial}] (state={hex(state_const) if state_const is not None else '?'}):")
+                    diag_handler_count += 1
+
+                walk = _walk_handler_chain(
+                    mba,
+                    h_serial,
+                    dispatcher_entry_serial,
+                    state_var_stkoff,
+                    chain_visited=chain_visited,
+                    diag_lines=handler_diag,
+                    state_var_lvar_idx=state_var_lvar_idx,
+                )
+                if handler_diag:
+                    diag_section.extend(handler_diag)
+            else:
+                walk = {"next_state": None, "back_edge": False, "exit": False, "chain": []}
+            entries.append((state_const, h_serial, walk))
+
+        # Sort by state constant (None sorts last)
+        entries.sort(key=lambda e: (e[0] is None, e[0] if e[0] is not None else 0))
+
+        known_count = 0
+        exit_count = 0
+        unknown_count = 0
+
+        for state_const, h_serial, walk in entries:
+            sc_str = f"0x{state_const:08x}" if state_const is not None else "<unknown>"
+            next_state = walk.get("next_state")
+
+            # If transitions dict provided, prefer its value
+            if transitions is not None:
+                trans_next = transitions.get(h_serial)
+                if trans_next is not None and next_state is None:
+                    next_state = trans_next
+
+            if walk.get("exit"):
+                label = "RETURN (exit)"
+                exit_count += 1
+            elif walk.get("back_edge") and next_state is not None:
+                label = f"next=0x{next_state:08x} (back-edge)"
+                known_count += 1
+            elif walk.get("back_edge"):
+                label = "back-edge (next state unknown)"
+                unknown_count += 1
+            elif next_state is not None:
+                label = f"next=0x{next_state:08x}"
+                known_count += 1
+            else:
+                label = "unknown"
+                unknown_count += 1
+
+            chain_str = f"chain={walk['chain'][:4]}" if walk["chain"] else ""
+            sections.append(
+                f"State {sc_str} -> blk[{h_serial}]:  {label}  {chain_str}"
+            )
+
+        sections.append("")
+        sections.append(
+            f"Summary: {len(handler_serials)} handlers, "
+            f"{known_count} with known transitions, "
+            f"{exit_count} exits, "
+            f"{unknown_count} unknown"
+        )
+
+    # --- Section 4: Diagnostics ---
+    if diag_section:
+        sections.append("")
+        sections.append("=== DIAGNOSTICS (pre-header + first 3 handlers) ===")
+        sections.extend(diag_section)
+
+    return "\n".join(sections)
+
+
+# -----------------------------------------------------------------------------
 # CLI / IDA Script Entry Point
 # -----------------------------------------------------------------------------
 
