@@ -1164,6 +1164,29 @@ def pytest_addoption(parser):
         help="Do not load any project configuration when dumping pseudocode.",
     )
     parser.addoption(
+        "--dump-microcode-maturity",
+        action="append",
+        default=None,
+        help=(
+            "Dump raw microcode at the specified maturity level(s) for the function(s) "
+            "given by --dump-function-pseudocode. Printed before d810 optimizers run. "
+            "Can be specified multiple times or as a comma-separated list. "
+            "Valid values: GENERATED, PREOPTIMIZED, LOCOPT, CALLS, GLBOPT1, GLBOPT2, GLBOPT3, LVARS. "
+            "Example: --dump-microcode-maturity CALLS --dump-microcode-maturity GLBOPT1 "
+            "or: --dump-microcode-maturity CALLS,GLBOPT1"
+        ),
+    )
+    parser.addoption(
+        "--dump-microcode-d810",
+        action="store_true",
+        default=False,
+        help=(
+            "Dump microcode AFTER d810 has run (with d810 optimizers active). "
+            "Use with --dump-function-pseudocode and --dump-project. "
+            "Shows the modified CFG/microcode that d810 produced."
+        ),
+    )
+    parser.addoption(
         "--unskip-research",
         action="store_true",
         default=False,

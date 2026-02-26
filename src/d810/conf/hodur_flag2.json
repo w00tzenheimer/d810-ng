@@ -7,7 +7,9 @@
             "is_activated": true,
             "config": {
                 "max_state_constants": 100,
-                "min_state_constant": 16777216
+                "min_state_constant": 16777216,
+                "enable_transition_validator": true,
+                "enable_transition_uddu_validator": true
             }
         },
         {
