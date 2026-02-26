@@ -7,11 +7,32 @@ import ida_hexrays
 from d810.hexrays import deferred_modifier as dm
 
 
+class _FakeEdgeSet:
+    """Minimal stub for IDA succset/predset (intvec_t-like interface)."""
+
+    def __init__(self, items: list[int] | None = None):
+        self._items: list[int] = list(items) if items else []
+
+    def size(self) -> int:
+        return len(self._items)
+
+    def __getitem__(self, idx: int) -> int:
+        return self._items[idx]
+
+    def clear(self) -> None:
+        self._items.clear()
+
+    def push_back(self, val: int) -> None:
+        self._items.append(val)
+
+
 class _FakeBlock:
     def __init__(self, serial: int):
         self.serial = serial
         self.type = ida_hexrays.BLT_1WAY
-        self.tail = SimpleNamespace(opcode=ida_hexrays.m_goto, ea=0x1000)
+        self.tail = SimpleNamespace(opcode=ida_hexrays.m_goto, ea=0x1000, l=None, d=None, r=None)
+        self.succset = _FakeEdgeSet()
+        self.predset = _FakeEdgeSet()
 
     def nsucc(self) -> int:
         return 1
@@ -31,6 +52,7 @@ class _FakeMBA:
         self.blocks = {0: _FakeBlock(0)}
         self.cleaned = 0
         self.marked_dirty = 0
+        self.qty = len(self.blocks)
 
     def get_mblock(self, serial: int):
         return self.blocks.get(serial)
@@ -146,6 +168,13 @@ def test_apply_runs_conservative_cleanup_without_optimize_local(monkeypatch):
 
 
 def test_apply_attempts_verify_recovery(monkeypatch):
+    # With unconditional pre-apply verify: the first safe_verify call is the
+    # pre-apply check. When it raises, _repair_wrong_successors() is attempted
+    # (finds nothing to fix on this fake MBA) and apply proceeds optimistically.
+    # The second safe_verify call is the post-apply check, which passes.
+    # mba_deep_cleaning is NOT called in this path (run_optimize_local=True
+    # takes the optimize_local(0) branch, and post-apply verify succeeds so
+    # the recovery branch is not entered).
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
     modifier.modifications = [
@@ -172,7 +201,6 @@ def test_apply_attempts_verify_recovery(monkeypatch):
     applied = modifier.apply(run_optimize_local=True, run_deep_cleaning=False)
     assert applied == 1
     assert verify_calls["n"] == 2
-    assert mba.cleaned == 1
     assert modifier.verify_failed is False
 
 
@@ -273,9 +301,12 @@ def test_apply_rolls_back_failed_mod_and_continues(monkeypatch):
 
     def _safe_verify(*_args, **_kwargs):
         verify_calls["count"] += 1
-        # First verification (after first apply) fails, rollback verify passes,
-        # and second modification verify passes.
-        if verify_calls["count"] == 1:
+        # Call 1: pre-apply verify (unconditional) -> passes through
+        # Call 2: after first mod apply -> fails, triggers rollback
+        # Call 3: after rollback verify -> passes
+        # Call 4: after second mod apply -> passes
+        # Call 5: post-apply verify -> passes
+        if verify_calls["count"] == 2:
             raise RuntimeError("verify failed")
 
     monkeypatch.setattr(modifier, "_apply_single", _apply_single)
@@ -295,7 +326,7 @@ def test_apply_rolls_back_failed_mod_and_continues(monkeypatch):
     assert applied == 1
     assert apply_calls["count"] == 2
     assert rollback_calls["count"] == 1
-    assert verify_calls["count"] == 4
+    assert verify_calls["count"] == 5
     assert modifier.verify_failed is False
 
 
@@ -319,10 +350,16 @@ def test_apply_sets_verify_failed_if_rollback_cannot_recover(monkeypatch):
     )
     monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
 
-    def _always_fail_verify(*_args, **_kwargs):
-        raise RuntimeError("verify failed")
+    verify_calls = {"count": 0}
 
-    monkeypatch.setattr(dm, "safe_verify", _always_fail_verify)
+    def _fail_after_precheck(*_args, **_kwargs):
+        verify_calls["count"] += 1
+        # Call 1: pre-apply verify -> pass (no pre-existing stale succset)
+        # Call 2+: per-mod verify -> fail, triggering rollback path
+        if verify_calls["count"] > 1:
+            raise RuntimeError("verify failed")
+
+    monkeypatch.setattr(dm, "safe_verify", _fail_after_precheck)
     monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
 
     applied = modifier.apply(

@@ -34,11 +34,13 @@ import idc
 
 from d810.core import getLogger
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
-from d810.hexrays.cfg_mutations import create_standalone_block
+from d810.hexrays.cfg_mutations import create_standalone_block, insert_goto_instruction
+from d810.hexrays.cfg_queries import _serial_in_predset
 from d810.hexrays.cfg_utils import (
     change_1way_block_successor,
     coalesce_jtbl_cases,
     create_block,
+    downgrade_nway_null_tail_to_1way,
     ensure_child_has_an_unconditional_father,
     ensure_last_block_is_goto,
     mba_deep_cleaning,
@@ -1324,6 +1326,23 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 nb_change += ensure_child_has_an_unconditional_father(
                     dispatcher_father, dispatcher_info.entry_block.blk, verify=False
                 )
+                # Handle degenerate BLT_NWAY blocks with null tail: these arise
+                # when all jtbl cases have been resolved but the block type was
+                # not updated, leaving type=BLT_NWAY, tail=None, nsucc==2.
+                # ensure_child_has_an_unconditional_father skips them (tail is None
+                # guard), so we fix them atomically here before INTERR 50860 fires.
+                if (
+                    dispatcher_father is not None
+                    and dispatcher_father.type == ida_hexrays.BLT_NWAY
+                    and dispatcher_father.tail is None
+                    and dispatcher_father.nsucc() == 2
+                ):
+                    if downgrade_nway_null_tail_to_1way(
+                        dispatcher_father,
+                        dispatcher_info.entry_block.blk.serial,
+                        verify=False,
+                    ):
+                        nb_change += 1
         return nb_change
 
     def ensure_dispatcher_fathers_are_direct(
@@ -2704,6 +2723,72 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self.non_significant_changes = ensure_last_block_is_goto(self.mba, verify=False)
         self.non_significant_changes += self.ensure_all_dispatcher_fathers_are_direct()
 
+        # Full-MBA scan: catch BLT_NWAY+null-tail blocks that the direct-father
+        # loop missed (grandfathers, trampolines, etc.).  Try every known
+        # dispatcher entry serial — downgrade_nway_null_tail_to_1way() is a
+        # no-op when the serial is not a successor of the candidate block.
+        all_dispatcher_entry_serials = [
+            d.entry_block.blk.serial for d in self.dispatcher_list
+        ]
+        for i in range(self.mba.qty):
+            blk = self.mba.get_mblock(i)
+            if blk is None:
+                continue
+            if blk.type == ida_hexrays.BLT_NWAY and blk.tail is None and blk.nsucc() == 2:
+                fixed = False
+                for dispatcher_entry_serial in all_dispatcher_entry_serials:
+                    if downgrade_nway_null_tail_to_1way(
+                        blk, dispatcher_entry_serial, verify=False
+                    ):
+                        self.non_significant_changes += 1
+                        fixed = True
+                        break
+                if not fixed:
+                    # Indirect path: check if a successor is a 1-way trampoline
+                    # whose single successor is a dispatcher entry.
+                    succ_serials = [int(blk.succset[j]) for j in range(blk.succset.size())]
+                    for succ_serial in succ_serials:
+                        succ_blk = self.mba.get_mblock(succ_serial)
+                        if succ_blk is None:
+                            continue
+                        if (succ_blk.type == ida_hexrays.BLT_1WAY
+                                and succ_blk.nsucc() == 1
+                                and int(succ_blk.succset[0]) in all_dispatcher_entry_serials):
+                            trampoline_serial = succ_serial
+                            keep_serial = [s for s in succ_serials if s != trampoline_serial][0]
+                            insert_goto_instruction(blk, keep_serial, nop_previous_instruction=False)
+                            blk.type = ida_hexrays.BLT_1WAY
+                            blk.flags |= ida_hexrays.MBL_GOTO
+                            blk.succset._del(trampoline_serial)
+                            blk.mark_lists_dirty()
+                            trampoline_blk = self.mba.get_mblock(trampoline_serial)
+                            if trampoline_blk is not None:
+                                trampoline_blk.predset._del(blk.serial)
+                                if trampoline_blk.serial != self.mba.qty - 1:
+                                    trampoline_blk.mark_lists_dirty()
+                            keep_blk = self.mba.get_mblock(keep_serial)
+                            if keep_blk is not None:
+                                if not _serial_in_predset(keep_blk, blk.serial):
+                                    keep_blk.predset.push_back(blk.serial)
+                                if keep_blk.serial != self.mba.qty - 1:
+                                    keep_blk.mark_lists_dirty()
+                            self.mba.mark_chains_dirty()
+                            logger.info(
+                                "blk[%d] BLT_NWAY null-tail fixed via trampoline %d -> keep %d",
+                                blk.serial, trampoline_serial, keep_serial,
+                            )
+                            self.non_significant_changes += 1
+                            break
+            # Case 2: BLT_NWAY with goto tail and single successor → downgrade to BLT_1WAY
+            elif (blk.type == ida_hexrays.BLT_NWAY
+                  and blk.tail is not None
+                  and blk.nsucc() == 1
+                  and blk.tail.opcode == ida_hexrays.m_goto):
+                blk.type = ida_hexrays.BLT_1WAY
+                self.mba.mark_chains_dirty()
+                self.non_significant_changes += 1
+                logger.info("blk[%d] downgraded BLT_NWAY+goto to BLT_1WAY", blk.serial)
+
         # Reset tracking for this optimization pass
         self._processed_dispatcher_fathers.clear()
         self._deferred_case_overlap_edges.clear()
@@ -2817,6 +2902,20 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             ):
                 deferred_modifier.reset()
             else:
+                # Second pass: catch any BLT_NWAY blocks created by
+                # duplicate_block() that inherited type from source.
+                for blk_serial in range(self.mba.qty):
+                    blk = self.mba.get_mblock(blk_serial)
+                    if blk is not None and blk.type == ida_hexrays.BLT_NWAY:
+                        tail = blk.tail
+                        if tail is not None and tail.opcode == ida_hexrays.m_goto and blk.nsucc() == 1:
+                            unflat_logger.debug(
+                                "generic: block %d BLT_NWAY+m_goto+nsucc==1 -> BLT_1WAY (pre-apply sweep)",
+                                blk_serial,
+                            )
+                            blk.type = ida_hexrays.BLT_1WAY
+                            self.mba.mark_chains_dirty()
+
                 unflat_logger.info(
                     "Applying %d deferred CFG modifications from resolve_dispatcher_father",
                     len(deferred_modifier.modifications),
@@ -2824,11 +2923,10 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 deferred_modifier.apply(
                     run_optimize_local=False,
                     run_deep_cleaning=False,
-                    verify_each_mod=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
-                    rollback_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
-                    continue_on_verify_failure=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
-                    defer_post_apply_maintenance=True,
-                    enable_snapshot_rollback=(self.mba.maturity == ida_hexrays.MMAT_CALLS),
+                    verify_each_mod=True,
+                    rollback_on_verify_failure=True,
+                    continue_on_verify_failure=True,
+                    enable_snapshot_rollback=True,
                 )
                 if not deferred_modifier.verify_failed and self._deferred_case_overlap_edges:
                     try:

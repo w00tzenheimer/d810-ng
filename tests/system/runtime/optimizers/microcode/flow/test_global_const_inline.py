@@ -27,6 +27,7 @@ class _FakeMop:
 
     def erase(self) -> None:
         self.erase_calls += 1
+        self.t = ida_hexrays.mop_z
 
 
 class _FakeInsn:

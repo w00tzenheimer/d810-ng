@@ -49,8 +49,8 @@ try:
     import idc
     import ida_hexrays
     from d810.core.project import ProjectManager
-    from d810.core import D810Manager
-    from d810.hexrays.utils.hexrays_formatters import maturity_to_string
+    from d810.manager import D810State
+    from d810.hexrays.hexrays_formatters import maturity_to_string
 except ImportError as e:
     print(f"ERROR: Failed to import IDA/D810 modules: {e}")
     idc.qexit(1)
@@ -88,8 +88,9 @@ def cmd_compare(args):
         return
 
     print(f"[*] Analyzing {hex(func_ea)}")
-    manager = D810Manager()
-    
+    manager = D810State()
+    manager.load(gui=False)
+
     # 1. Baseline
     manager.stop_d810()
     base_code, status = try_decompile(func_ea)
@@ -129,13 +130,14 @@ def cmd_bisect(args):
         print(f"ERROR: Function '{args['func']}' not found")
         return
 
-    manager = D810Manager()
+    manager = D810State()
+    manager.load(gui=False)
     if args.get('config'):
         try:
             p_idx = manager.project_manager.index(args['config'])
             manager.load_project(p_idx)
         except Exception: pass
-        
+
     manager.start_d810()
     
     # Verify it actually fails first
@@ -147,14 +149,14 @@ def cmd_bisect(args):
     print(f"[*] Starting bisect for failure: {status}")
     
     # Capture all active rules
-    original_ins = list(manager.instruction_optimizer.rules)
-    original_blk = list(manager.block_optimizer.cfg_rules)
+    original_ins = list(manager.manager.instruction_optimizer_rules)
+    original_blk = list(manager.manager.block_optimizer.cfg_rules)
     
     print(f"[*] Active rules: {len(original_ins)} instruction, {len(original_blk)} block")
     
     # Strategy: 
     # 1. Disable all block rules, see if it still fails (if so, it's an instruction rule)
-    manager.block_optimizer.cfg_rules = []
+    manager.manager.block_optimizer.cfg_rules = []
     _, status = try_decompile(func_ea)
     
     if status != "OK":
@@ -172,9 +174,9 @@ def cmd_bisect(args):
 def bisect_rules(ea, manager, rule_type, rule_list):
     def check(subset):
         if rule_type == "instruction":
-            manager.instruction_optimizer.rules = subset
+            manager.manager.instruction_optimizer_rules = subset
         else:
-            manager.block_optimizer.cfg_rules = subset
+            manager.manager.block_optimizer.cfg_rules = subset
         _, status = try_decompile(ea)
         return status != "OK"
 
@@ -210,6 +212,7 @@ def find_ida_binary():
         # Common macOS paths
         candidates.extend(
             [
+                "/Applications/IDA Professional 9.3.app/Contents/MacOS/idat",
                 "/Applications/IDA Pro 9.3/idat64.app/Contents/MacOS/idat64",
                 "/Applications/IDA Pro 9.0/idat64.app/Contents/MacOS/idat64",
                 "/Applications/IDA Pro 8.3/idat64.app/Contents/MacOS/idat64",

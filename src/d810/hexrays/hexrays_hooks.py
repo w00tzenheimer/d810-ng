@@ -589,7 +589,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     # the limit scales as: base * (1 + log2(block_count / 32)).
     # This is a safety net against infinite loops where the optimizer keeps
     # matching but never converges.
-    _BASE_PASSES_PER_MATURITY = 500
+    _BASE_PASSES_PER_MATURITY = 2000
 
     def __init__(self, stats: OptimizationStatistics, log_dir: pathlib.Path):
         optimizer_logger.debug("Initializing {0}...".format(self.__class__.__name__))

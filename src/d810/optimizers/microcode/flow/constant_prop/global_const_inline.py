@@ -104,59 +104,97 @@ class GlobalConstantInliner(FlowOptimizationRule):
     # Core logic                                                          #
     # ------------------------------------------------------------------ #
 
+    def _get_global_constant(self, ea: int, size: int) -> Optional[int]:
+        """Return the constant value at *ea* if it is a safe, non-pointer global.
+
+        Returns ``None`` if the address is not a safe constant to inline.
+        """
+        if ea == idaapi.BADADDR or size <= 0 or size > _MAX_INLINE_SIZE:
+            return None
+        flags = ida_bytes.get_flags(ea)
+        if ida_bytes.is_code(flags):
+            return None
+        if not _is_constant_global(ea):
+            return None
+        value = _read_constant_value(ea, size)
+        if _looks_like_pointer(value, size):
+            return None
+        return value
+
+    def _replace_nested_globals(self, mop: ida_hexrays.mop_t) -> int:
+        """Recursively replace mop_v globals in operand tree. Returns count of replacements."""
+        count = 0
+        if mop is None or mop.t == ida_hexrays.mop_z:
+            return 0
+
+        if mop.t == ida_hexrays.mop_v:
+            val = self._get_global_constant(mop.g, mop.size)
+            if val is not None:
+                mop.make_number(val, mop.size)
+                logger.info(
+                    "Inlined nested global at 0x%X -> 0x%X (size=%d)",
+                    mop.g,
+                    val,
+                    mop.size,
+                )
+                return 1
+
+        # Recurse into sub-operands for mop_d (inline instruction)
+        if mop.t == ida_hexrays.mop_d:
+            sub = mop.d  # the sub-instruction
+            if sub is not None:
+                if sub.l.t != ida_hexrays.mop_z:
+                    count += self._replace_nested_globals(sub.l)
+                if sub.r.t != ida_hexrays.mop_z:
+                    count += self._replace_nested_globals(sub.r)
+
+        return count
+
     def _try_inline_globals(
         self, blk: ida_hexrays.mblock_t, insn: ida_hexrays.minsn_t
     ) -> int:
         """Check all operands of *insn* for inlinable global references.
 
-        Returns the number of replacements performed (0 or 1).
+        Returns the number of replacements performed (0 or more).
         """
-        if insn.opcode not in (ida_hexrays.m_mov, ida_hexrays.m_ldx):
-            return 0
+        count: int = 0
 
-        ea: int = idaapi.BADADDR
-        size: int = 0
-        target_mop: Optional[ida_hexrays.mop_t] = None
+        if insn.opcode in (ida_hexrays.m_mov, ida_hexrays.m_ldx):
+            ea: int = idaapi.BADADDR
+            size: int = 0
 
-        # -- Pattern 1: mov dst, gv  (left operand is mop_v) ----------- #
-        if insn.opcode == ida_hexrays.m_mov and insn.l.t == ida_hexrays.mop_v:
-            ea = insn.l.g
-            size = insn.l.size
-            target_mop = insn.l
+            # -- Pattern 1: mov dst, gv  (left operand is mop_v) ----------- #
+            if insn.opcode == ida_hexrays.m_mov and insn.l.t == ida_hexrays.mop_v:
+                ea = insn.l.g
+                size = insn.l.size
 
-        # -- Pattern 2: ldx dst, seg, gv  (right operand is mop_v) ----- #
-        elif insn.opcode == ida_hexrays.m_ldx:
-            if insn.r.t == ida_hexrays.mop_v:
-                ea = insn.r.g
-                size = insn.d.size
-                target_mop = insn.r
+            # -- Pattern 2: ldx dst, seg, gv  (right operand is mop_v) ----- #
+            elif insn.opcode == ida_hexrays.m_ldx:
+                if insn.r.t == ida_hexrays.mop_v:
+                    ea = insn.r.g
+                    size = insn.d.size
 
-        if ea == idaapi.BADADDR or size <= 0 or size > _MAX_INLINE_SIZE:
-            return 0
+            if ea != idaapi.BADADDR and size > 0:
+                value = self._get_global_constant(ea, size)
+                if value is not None:
+                    _replace_with_immediate(insn, value, size)
+                    logger.info(
+                        "Inlined global constant at 0x%X -> 0x%X (size=%d)",
+                        ea,
+                        value,
+                        size,
+                    )
+                    count += 1
 
-        # Must reference data, not code.
-        flags = ida_bytes.get_flags(ea)
-        if ida_bytes.is_code(flags):
-            return 0
+        # Recursively search for nested globals in all operands
+        if insn.l.t != ida_hexrays.mop_z:
+            count += self._replace_nested_globals(insn.l)
+        if insn.r.t != ida_hexrays.mop_z:
+            count += self._replace_nested_globals(insn.r)
+        if insn.d.t != ida_hexrays.mop_z:
+            count += self._replace_nested_globals(insn.d)
 
-        if not _is_constant_global(ea):
-            return 0
-
-        value: int = _read_constant_value(ea, size)
-
-        # Skip pointer-like values -- we do not want to inline addresses.
-        if _looks_like_pointer(value, size):
-            return 0
-
-        # Perform the replacement.
-        _replace_with_immediate(insn, value, size)
-        logger.info(
-            "Inlined global constant at 0x%X -> 0x%X (size=%d)",
-            ea,
-            value,
-            size,
-        )
-        return 1
+        return count
 
 
 # ====================================================================== #
@@ -282,8 +320,15 @@ class _SegmentHitHandler(_PointerHeuristicHandler):
 
 
 class _RebasedSegmentHitHandler(_PointerHeuristicHandler):
+    # Only treat values below this threshold as potential RVAs/pointers.
+    # Large values like 0x76DFE728 are obfuscation constants, not pointers.
+    _MAX_RVA_VALUE: int = 0x10000000  # 256 MB
+
     def _check(self, ctx: _PointerHeuristicContext) -> Optional[bool]:
         if ctx.imagebase in (0, ctx.badaddr):
+            return None
+        # Only treat as RVA/pointer if value is below the threshold
+        if ctx.value >= self._MAX_RVA_VALUE:
             return None
         rebased = ctx.imagebase + ctx.value
         if ctx.safe_getseg(rebased) is not None:

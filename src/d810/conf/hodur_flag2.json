@@ -1,0 +1,35 @@
+{
+    "description": "Diagnostic: HodurUnflattener + JumpFixer only. CstSimplificationRule17/18, Z3ConstantOptimization, Z3setnzRuleGeneric, ForwardConstantPropagationRule all disabled.",
+    "ins_rules": [],
+    "blk_rules": [
+        {
+            "name": "HodurUnflattener",
+            "is_activated": true,
+            "config": {
+                "max_state_constants": 100
+            }
+        },
+        {
+            "name": "JumpFixer",
+            "is_activated": true,
+            "config": {
+                "enabled_rules": [
+                    "CompareConstantRule1",
+                    "CompareConstantRule2",
+                    "CompareConstantRule3",
+                    "JaeRule1",
+                    "JbRule1",
+                    "JnzRule1",
+                    "JnzRule2",
+                    "JnzRule3",
+                    "JnzRule4",
+                    "JnzRule5",
+                    "JnzRule6",
+                    "JnzRule7",
+                    "JnzRule8",
+                    "JmpRuleZ3Const"
+                ]
+            }
+        }
+    ]
+}

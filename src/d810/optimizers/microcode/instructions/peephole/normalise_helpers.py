@@ -57,16 +57,6 @@ class TransparentCallUnwrapRule(PeepholeSimplificationRule):
     ) -> ida_hexrays.minsn_t | None:  # noqa: D401
         """Return a replacement `minsn_t` or None to keep *ins* unchanged."""
 
-        if logger.debug_on:
-            logger.debug(
-                "[transparent-call] considering ea=%X, opcode=%s l=%s r=%s d=%s",
-                sanitize_ea(ins.ea),
-                opcode_to_string(ins.opcode),
-                format_mop_t(ins.l),
-                format_mop_t(ins.r),
-                format_mop_t(ins.d),
-            )
-
         # Pattern match -----------------------------------------------------------------
         if ins.opcode != ida_hexrays.m_call:
             return None
@@ -94,12 +84,6 @@ class TransparentCallUnwrapRule(PeepholeSimplificationRule):
 
         # Preserve the original EA so xrefs / logging stay consistent.
         new_ins.ea = ins.ea
-        if logger.debug_on:
-            logger.debug(
-                "[transparent-call] 0x%X unwrap -> %s",
-                sanitize_ea(ins.ea),
-                opcode_to_string(new_ins.opcode),
-            )
 
         return new_ins
 
@@ -132,16 +116,6 @@ class TypedImmediateCanonicaliseRule(PeepholeSimplificationRule):
         self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:
         """Replace *ins* when all it does is materialise a literal."""
-
-        if logger.debug_on:
-            logger.debug(
-                "[typed-imm] considering ea=%X, opcode=%s l=%s r=%s d=%s",
-                sanitize_ea(ins.ea),
-                opcode_to_string(ins.opcode),
-                format_mop_t(ins.l),
-                format_mop_t(ins.r),
-                format_mop_t(ins.d),
-            )
 
         # Skip rotate helper calls - they need special handling
         if is_rotate_helper_call(ins):
@@ -221,11 +195,6 @@ if mop.t == ida_hexrays.mop_d and _is_rotate_helper_call(mop.d):
             tree.ast_index = new_index
             context.unique_asts.append(tree)
             context.mop_key_to_index[key] = new_index
-            if logger.debug_on:
-                logger.debug(
-                    "[mop_to_ast_internal] Built compact rotate helper node for ea=0x%X",
-                    mop.d.ea if hasattr(mop.d, "ea") else -1,
-                )
             return tree
 """
 
@@ -602,16 +571,12 @@ def _eval_subtree(
     mop_r, mop_l) are resolved to constants via def-search before giving up.
     """
     if ast is None:
-        if logger.debug_on:
-            logger.debug("[fold_const] [_eval_subtree] ast is None - cannot evaluate")
         return None
 
     if ast.is_leaf():
         ast = typing.cast(AstLeaf, ast)
         mop = ast.mop
         if mop is None:
-            if logger.debug_on:
-                logger.debug("[fold_const] [_eval_subtree] Leaf with no mop: %s", ast)
             return None
 
         # Unified constant extraction (handles mop_n and wrapped constants)
@@ -658,12 +623,6 @@ def _eval_subtree(
                         and def_ins.l is not None
                         and def_ins.l.t == ida_hexrays.mop_n
                     ):
-                        if logger.debug_on:
-                            logger.debug(
-                                "[fold_const] [_eval_subtree] resolved %s via def-search: mov #0x%X",
-                                format_mop_t(mop),
-                                def_ins.l.nnn.value,
-                            )
                         return def_ins.l.nnn.value & _get_mask(bits)
 
                     # Case 2: mov <foldable-expr> -> var — build AST and recurse
@@ -672,20 +631,9 @@ def _eval_subtree(
                         if src_ast is not None:
                             resolved = _eval_subtree(src_ast, bits, blk=blk, ins=def_ins)
                             if resolved is not None:
-                                if logger.debug_on:
-                                    logger.debug(
-                                        "[fold_const] [_eval_subtree] resolved %s via def-search AST: 0x%X",
-                                        format_mop_t(mop),
-                                        resolved,
-                                    )
                                 return resolved
             except Exception as exc:
-                if logger.debug_on:
-                    logger.debug(
-                        "[fold_const] [_eval_subtree] def-search failed for %s: %s",
-                        format_mop_t(mop),
-                        exc,
-                    )
+                pass
 
         return None
 
@@ -734,21 +682,10 @@ def _eval_subtree(
     l = _eval_subtree(ast.left, bits, blk=blk, ins=ins)  # type: ignore
     r = _eval_subtree(ast.right, bits, blk=blk, ins=ins)  # type: ignore
     if l is None or r is None:
-        if logger.debug_on:
-            logger.debug(
-                "[fold_const] [_eval_subtree] Cannot evaluate binary node (%s) because %s is None",
-                opcode_to_string(ast.opcode),
-                "left" if l is None else "right",
-            )
         return None
 
     # special handling for rotate calls
     if ast.opcode == ida_hexrays.m_call and ast.func_name:
-        if logger.debug_on:
-            logger.debug(
-                "[fold_const] [_eval_subtree] opcode == mcall, func_name: %s",
-                ast.func_name,
-            )
         helper_name = ast.func_name.lstrip("!")
         mask = (1 << bits) - 1
         shift = r % bits
