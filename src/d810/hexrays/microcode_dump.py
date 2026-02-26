@@ -23,7 +23,7 @@ from d810.core.logging import getLogger
 from dataclasses import dataclass, field, asdict
 from enum import IntEnum
 
-from d810.core.typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
+from d810.core.typing import List, Optional, Dict, Any, Union, Tuple, TYPE_CHECKING
 
 # Defer IDA imports until needed - allows module to be imported for CLI --help
 idaapi = None
@@ -568,6 +568,8 @@ def _dump_dispatcher_node(
     value_hi: Optional[int] = None,
     handler_state_map: Optional[Dict[int, int]] = None,
     handler_serials: Optional[set] = None,
+    handler_range_map: Optional[Dict[int, Tuple[Optional[int], Optional[int]]]] = None,
+    chain_depth: int = 0,
 ) -> None:
     """Recursive helper for dump_dispatcher_tree.
 
@@ -577,6 +579,9 @@ def _dump_dispatcher_node(
         handler_state_map: If provided, maps handler_serial -> state_constant extracted
             from the leaf comparison node (jnz/jz).
         handler_serials: If provided, collects all handler block serials seen at leaves.
+        handler_range_map: If provided, maps handler_serial -> (value_lo, value_hi) from
+            the BST path leading to that handler leaf.
+        chain_depth: Current depth of m_jnz chain recursion (max 10).
     """
     _init_constants()
 
@@ -650,6 +655,8 @@ def _dump_dispatcher_node(
                 value_hi=c_hi,
                 handler_state_map=handler_state_map,
                 handler_serials=handler_serials,
+                handler_range_map=handler_range_map,
+                chain_depth=chain_depth,
             )
 
     elif is_jnz or is_jz:
@@ -744,6 +751,21 @@ def _dump_dispatcher_node(
             and value_lo <= cmp_val <= value_hi
         )
 
+        # Variant of _is_bst_node that skips the visited-set check — used for
+        # chain recursion (m_jnz/m_jz continuation path) so that a node already
+        # visited via interior recursion (with a wide range) can still be
+        # re-entered from a chain to produce a narrower range.
+        def _is_bst_node_chain(blk_serial: int) -> bool:
+            _b = mba.get_mblock(blk_serial)
+            if _b is None or _b.nsucc() != 2:
+                return False
+            _tail = _b.tail
+            if _tail is None:
+                return False
+            return getattr(_tail, "opcode", None) in _bst_opcodes
+
+        MAX_CHAIN_DEPTH = 10
+
         if is_jnz:
             # fall-through (succs[0]) is state == V → handler leaf only when V is in range
             if isinstance(fall_blk, int):
@@ -759,10 +781,18 @@ def _dump_dispatcher_node(
                         handler_serials.add(fall_blk)
                     if handler_state_map is not None and fall_state is not None:
                         handler_state_map[fall_blk] = fall_state
+                    if handler_range_map is not None:
+                        handler_range_map[fall_blk] = (value_lo, value_hi)
 
-            # jump target (succs[1]) is state != V → recurse if BST node, else handler
+            # jump target (succs[1]) is state != V → recurse if BST node, else handler.
+            # For the chain path: bypass visited check; guard by chain_depth instead.
             if isinstance(jump_blk, int):
-                if _is_bst_node(jump_blk):
+                already_resolved = (
+                    handler_state_map is not None
+                    and jump_blk in handler_state_map
+                    and handler_state_map[jump_blk] is not None
+                )
+                if not already_resolved and _is_bst_node_chain(jump_blk) and chain_depth < MAX_CHAIN_DEPTH:
                     new_lo, new_hi = _narrow_range_excluding(cmp_val, value_lo, value_hi)
                     _dump_dispatcher_node(
                         mba, jump_blk, indent + 1, visited, lines, depth + 1, max_depth,
@@ -770,14 +800,18 @@ def _dump_dispatcher_node(
                         value_hi=new_hi,
                         handler_state_map=handler_state_map,
                         handler_serials=handler_serials,
+                        handler_range_map=handler_range_map,
+                        chain_depth=chain_depth + 1,
                     )
-                else:
+                elif not already_resolved and not _is_bst_node_chain(jump_blk):
                     if cmp_val is None:
                         lines.append(f"{prefix}  [unknown cmp_val: cannot classify jump blk[{jump_blk}]]")
                     elif handler_serials is not None:
                         handler_serials.add(jump_blk)
                         if handler_state_map is not None and jump_state is not None:
                             handler_state_map[jump_blk] = jump_state
+                        if handler_range_map is not None:
+                            handler_range_map[jump_blk] = (value_lo, value_hi)
 
         else:  # m_jz
             # jump target (succs[1]) is state == V → handler leaf only when V is in range
@@ -794,10 +828,18 @@ def _dump_dispatcher_node(
                         handler_serials.add(jump_blk)
                     if handler_state_map is not None and jump_state is not None:
                         handler_state_map[jump_blk] = jump_state
+                    if handler_range_map is not None:
+                        handler_range_map[jump_blk] = (value_lo, value_hi)
 
-            # fall-through (succs[0]) is state != V → recurse if BST node, else handler
+            # fall-through (succs[0]) is state != V → recurse if BST node, else handler.
+            # For the chain path: bypass visited check; guard by chain_depth instead.
             if isinstance(fall_blk, int):
-                if _is_bst_node(fall_blk):
+                already_resolved = (
+                    handler_state_map is not None
+                    and fall_blk in handler_state_map
+                    and handler_state_map[fall_blk] is not None
+                )
+                if not already_resolved and _is_bst_node_chain(fall_blk) and chain_depth < MAX_CHAIN_DEPTH:
                     new_lo, new_hi = _narrow_range_excluding(cmp_val, value_lo, value_hi)
                     _dump_dispatcher_node(
                         mba, fall_blk, indent + 1, visited, lines, depth + 1, max_depth,
@@ -805,14 +847,18 @@ def _dump_dispatcher_node(
                         value_hi=new_hi,
                         handler_state_map=handler_state_map,
                         handler_serials=handler_serials,
+                        handler_range_map=handler_range_map,
+                        chain_depth=chain_depth + 1,
                     )
-                else:
+                elif not already_resolved and not _is_bst_node_chain(fall_blk):
                     if cmp_val is None:
                         lines.append(f"{prefix}  [unknown cmp_val: cannot classify fall-through blk[{fall_blk}]]")
                     elif handler_serials is not None:
                         handler_serials.add(fall_blk)
                         if handler_state_map is not None and fall_state is not None:
                             handler_state_map[fall_blk] = fall_state
+                        if handler_range_map is not None:
+                            handler_range_map[fall_blk] = (value_lo, value_hi)
 
     else:
         cmp_str = f"0x{cmp_val:x}" if cmp_val is not None else "?"
@@ -1438,6 +1484,7 @@ def dump_dispatcher_tree(
     bst_visited: set = set()
     handler_state_map: Dict[int, int] = {}   # handler_serial -> state_constant (from BST leaf)
     handler_serials: set = set()
+    handler_range_map: Dict[int, Tuple[Optional[int], Optional[int]]] = {}  # handler_serial -> (lo, hi)
 
     _dump_dispatcher_node(
         mba,
@@ -1451,6 +1498,7 @@ def dump_dispatcher_tree(
         value_hi=0xFFFFFFFF,
         handler_state_map=handler_state_map,
         handler_serials=handler_serials,
+        handler_range_map=handler_range_map,
     )
     sections.extend(bst_lines)
     sections.append("")
@@ -1498,7 +1546,14 @@ def dump_dispatcher_tree(
         unknown_count = 0
 
         for state_const, h_serial, walk in entries:
-            sc_str = f"0x{state_const:08x}" if state_const is not None else "<unknown>"
+            if state_const is not None:
+                state_label = f"State 0x{state_const:08x}"
+            else:
+                rng = handler_range_map.get(h_serial)
+                if rng is not None and rng[0] is not None and rng[1] is not None:
+                    state_label = f"State range [0x{rng[0]:x}..0x{rng[1]:x}]"
+                else:
+                    state_label = "State <unknown>"
             next_state = walk.get("next_state")
 
             # If transitions dict provided, prefer its value
@@ -1507,7 +1562,14 @@ def dump_dispatcher_tree(
                 if trans_next is not None and next_state is None:
                     next_state = trans_next
 
-            if walk.get("exit"):
+            # A handler that completes its chain without ever reaching the
+            # dispatcher back-edge (and without a 0-successor exit block) is
+            # also classified as an exit — it doesn't loop back to the state
+            # machine (e.g., a `break` that falls through to a return path).
+            is_exit = walk.get("exit") or (
+                not walk.get("back_edge") and walk.get("chain")
+            )
+            if is_exit:
                 label = "RETURN (exit)"
                 exit_count += 1
             elif walk.get("back_edge") and next_state is not None:
@@ -1525,7 +1587,7 @@ def dump_dispatcher_tree(
 
             chain_str = f"chain={walk['chain'][:4]}" if walk["chain"] else ""
             sections.append(
-                f"State {sc_str} -> blk[{h_serial}]:  {label}  {chain_str}"
+                f"{state_label} -> blk[{h_serial}]:  {label}  {chain_str}"
             )
 
         sections.append("")
