@@ -126,13 +126,6 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
         try:
             folded, changed = _fold_bottom_up(ast, bits, blk=blk, ins=ins)
         except Exception as exc:
-            if logger.debug_on:
-                logger.debug(
-                    "[fold-subtree] _fold_bottom_up raised at 0x%X %s: %s",
-                    sanitize_ea(ins.ea),
-                    opcode_to_string(ins.opcode),
-                    exc,
-                )
             return None
 
         if not changed:
@@ -145,15 +138,6 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
             # Whole expression is constant — emit m_ldc #value, dst
             mask = AND_TABLE[dst_size]
             value &= mask
-
-            if logger.debug_on:
-                logger.debug(
-                    "[fold-subtree] 0x%X %s -> ldc 0x%X (size=%d)",
-                    sanitize_ea(ins.ea),
-                    opcode_to_string(ins.opcode),
-                    value,
-                    dst_size,
-                )
 
             new_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
             new_ins.opcode = ida_hexrays.m_ldc
@@ -197,18 +181,6 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
             dst_mop.assign(ins.d)
             dst_mop.size = dst_size
             new_ins = folded.create_minsn(sanitize_ea(ins.ea), dst_mop)
-            if logger.debug_on:
-                logger.debug(
-                    "[fold-subtree] 0x%X %s -> partial fold (some subtrees constant)",
-                    sanitize_ea(ins.ea),
-                    opcode_to_string(ins.opcode),
-                )
             return new_ins
         except Exception as exc:
-            if logger.debug_on:
-                logger.debug(
-                    "[fold-subtree] partial-fold create_minsn failed at 0x%X: %s",
-                    sanitize_ea(ins.ea),
-                    exc,
-                )
             return None

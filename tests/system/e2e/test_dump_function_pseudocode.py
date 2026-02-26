@@ -35,10 +35,24 @@ def _get_default_binary() -> str:
 
 
 def _get_func_ea(name: str) -> int:
-    """Get function address by name, handling macOS underscore prefix."""
+    """Get function address by name or hex address string.
+
+    Handles:
+    - Named symbols (e.g. ``_hodur_func``)
+    - macOS underscore-prefixed names (e.g. ``hodur_func`` -> ``_hodur_func``)
+    - Hex address strings (e.g. ``0x180012B60``) for functions without a
+      named export (auto-named ``sub_*`` functions not present in the IDB)
+    """
     ea = idc.get_name_ea_simple(name)
     if ea == idaapi.BADADDR:
         ea = idc.get_name_ea_simple("_" + name)
+    if ea == idaapi.BADADDR and name.startswith("0x"):
+        try:
+            ea = int(name, 16)
+            if not idaapi.get_func(ea):
+                ea = idaapi.BADADDR
+        except ValueError:
+            pass
     return ea
 
 
@@ -117,6 +131,13 @@ class TestDumpFunctionPseudocode:
                     )
                 code_after = pseudocode_to_string(after.get_pseudocode())
                 rules_fired = state.stats.get_fired_rule_names()
+                # Block/CFG rules are tracked in cfg_rule_usages: name -> [patch_counts].
+                # A rule "fired" if it produced at least one positive patch count.
+                block_rules_fired = sorted(
+                    name
+                    for name, counts in state.stats.cfg_rule_usages.items()
+                    if any(c > 0 for c in counts)
+                )
 
                 print("\n" + "=" * 88)
                 print(f"FUNCTION: {function_name} @ {hex(func_ea)}")
@@ -124,8 +145,12 @@ class TestDumpFunctionPseudocode:
                 print(f"PROJECT: {project_name if use_project else '<none>'}")
                 print(f"CODE_CHANGED: {code_before != code_after}")
                 print(
-                    "RULES_FIRED: "
+                    "RULES_FIRED (instruction): "
                     + (", ".join(rules_fired) if rules_fired else "<none>")
+                )
+                print(
+                    "RULES_FIRED (block): "
+                    + (", ".join(block_rules_fired) if block_rules_fired else "<none>")
                 )
                 print("\n--- BEFORE ---")
                 print(code_before)

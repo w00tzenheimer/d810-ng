@@ -1075,6 +1075,40 @@ def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t, verify: bool = Tru
             )
         )
 
+    # Post-copy type correction: copy_block clones the source block's type,
+    # so a BLT_NWAY source block produces a BLT_NWAY duplicate even when the
+    # tail/successor set no longer matches that expectation.  Downgrade the
+    # type to whatever IDA's verifier actually requires.
+    if duplicated_blk.type == ida_hexrays.BLT_NWAY:
+        tail = duplicated_blk.tail
+        nsucc = duplicated_blk.nsucc()
+        if tail is not None and tail.opcode == ida_hexrays.m_goto and nsucc == 1:
+            new_type = ida_hexrays.BLT_1WAY
+            new_type_name = "BLT_1WAY"
+        elif tail is None and nsucc == 0:
+            new_type = ida_hexrays.BLT_STOP
+            new_type_name = "BLT_STOP"
+        elif tail is None and nsucc == 1:
+            new_type = ida_hexrays.BLT_1WAY
+            new_type_name = "BLT_1WAY"
+        elif tail is not None and tail.opcode == ida_hexrays.m_jcnd and nsucc == 2:
+            new_type = ida_hexrays.BLT_2WAY
+            new_type_name = "BLT_2WAY"
+        else:
+            new_type = None
+            new_type_name = None
+        if new_type is not None:
+            tail_opcode = tail.opcode if tail is not None else None
+            helper_logger.debug(
+                "duplicate_block: block %d downgraded BLT_NWAY->%s (tail=%s nsucc=%d)",
+                duplicated_blk.serial,
+                new_type_name,
+                tail_opcode,
+                nsucc,
+            )
+            duplicated_blk.type = new_type
+            mba.mark_chains_dirty()
+
     return duplicated_blk, duplicated_blk_default
 
 
@@ -1172,6 +1206,105 @@ def ensure_child_has_an_unconditional_father(
     return 1
 
 
+def downgrade_nway_null_tail_to_1way(
+    blk: "ida_hexrays.mblock_t",
+    dispatcher_entry_serial: int,
+    verify: bool = True,
+) -> bool:
+    """Atomically downgrade a degenerate BLT_NWAY block (null tail) to BLT_1WAY.
+
+    A BLT_NWAY block can end up with a null tail and exactly 2 successors when
+    all jtbl cases have been resolved away but the block type was never updated.
+    This leaves the CFG in an illegal state (INTERR 50860) because IDA's verifier
+    requires BLT_NWAY blocks to have a valid m_jtbl tail.
+
+    This function handles the specific case where:
+    - ``blk.type == BLT_NWAY`` (type==3 or ida_hexrays.BLT_NWAY)
+    - ``blk.tail is None``
+    - ``blk.nsucc() == 2`` with one successor being the dispatcher entry trampoline
+
+    It atomically:
+    1. Inserts a ``m_goto`` tail pointing to the non-dispatcher successor
+    2. Sets ``blk.type = BLT_1WAY``
+    3. Removes the dispatcher trampoline from ``blk.succset`` and its ``predset``
+
+    Args:
+        blk: The degenerate BLT_NWAY block to downgrade.
+        dispatcher_entry_serial: Serial of the dispatcher entry block (the
+            successor to remove).
+        verify: If True, call ``mba.verify()`` after mutation.
+
+    Returns:
+        True if the downgrade was applied, False if preconditions not met.
+    """
+    if blk is None:
+        return False
+    # Preconditions
+    if blk.type != ida_hexrays.BLT_NWAY:
+        return False
+    if blk.tail is not None:
+        return False
+    if blk.nsucc() != 2:
+        return False
+
+    mba = blk.mba
+    succ_serials = [int(blk.succset[i]) for i in range(blk.succset.size())]
+    if dispatcher_entry_serial not in succ_serials:
+        return False
+
+    non_dispatcher_serials = [s for s in succ_serials if s != dispatcher_entry_serial]
+    if len(non_dispatcher_serials) != 1:
+        return False
+    keep_serial = non_dispatcher_serials[0]
+
+    helper_logger.debug(
+        "downgrade_nway_null_tail_to_1way: blk %d BLT_NWAY null-tail "
+        "succset=%s -> BLT_1WAY goto blk %d (dropping dispatcher trampoline %d)",
+        blk.serial, succ_serials, keep_serial, dispatcher_entry_serial,
+    )
+
+    # 1. Insert m_goto tail pointing to the surviving successor
+    insert_goto_instruction(blk, keep_serial, nop_previous_instruction=False)
+
+    # 2. Atomically set block type
+    blk.type = ida_hexrays.BLT_1WAY
+    blk.flags |= ida_hexrays.MBL_GOTO
+
+    # 3. Rewire succset: remove trampoline, keep only surviving successor
+    blk.succset._del(dispatcher_entry_serial)
+    blk.mark_lists_dirty()
+
+    # 4. Remove blk from trampoline's predset
+    trampoline_blk = mba.get_mblock(dispatcher_entry_serial)
+    if trampoline_blk is not None:
+        trampoline_blk.predset._del(blk.serial)
+        if trampoline_blk.serial != mba.qty - 1:
+            trampoline_blk.mark_lists_dirty()
+
+    # 5. Ensure blk is in surviving successor's predset
+    keep_blk = mba.get_mblock(keep_serial)
+    if keep_blk is not None:
+        if not _serial_in_predset(keep_blk, blk.serial):
+            keep_blk.predset.push_back(blk.serial)
+        if keep_blk.serial != mba.qty - 1:
+            keep_blk.mark_lists_dirty()
+
+    mba.mark_chains_dirty()
+
+    if not verify:
+        return True
+    try:
+        mba.verify(True)
+        return True
+    except RuntimeError as e:
+        helper_logger.error(
+            "downgrade_nway_null_tail_to_1way: verify failed for blk %d: %s",
+            blk.serial, e,
+        )
+        log_block_info(blk, helper_logger.error)
+        raise
+
+
 __all__ = [
     "_rewire_edge",
     "insert_goto_instruction",
@@ -1196,4 +1329,5 @@ __all__ = [
     "mba_remove_simple_goto_blocks",
     "mba_deep_cleaning",
     "ensure_child_has_an_unconditional_father",
+    "downgrade_nway_null_tail_to_1way",
 ]
