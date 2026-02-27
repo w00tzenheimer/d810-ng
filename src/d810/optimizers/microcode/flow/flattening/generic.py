@@ -3013,8 +3013,13 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         for generation in range(self.MAX_POST_APPLY_ITERATIONS):
             iter_changes = 0
 
-            # Phase A: FCP — propagate constants into newly unflattened blocks
-            const_prop = ForwardConstantPropagationRule(meet_strategy=LatticeMeet(default_missing=BOTTOM))
+            # Phase A: FCP — propagate constants into newly unflattened blocks.
+            # Use TOP (conservative) for missing predecessors: after unflattening the
+            # linearised CFG has incomplete predecessor environments for newly wired
+            # blocks.  BOTTOM (aggressive identity) would let any Const(k) from a
+            # single predecessor — e.g. the "int result = 0" initialisation — dominate
+            # through join points and incorrectly fold live function parameters to 0.
+            const_prop = ForwardConstantPropagationRule(meet_strategy=LatticeMeet(default_missing=TOP))
             try:
                 fcp_changes = const_prop._run_on_function(self.mba)
             except Exception as exc:
