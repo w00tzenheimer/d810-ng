@@ -11,6 +11,7 @@ import ida_hexrays
 
 from d810.core.stats import OptimizationStatistics
 from d810.hexrays.hexrays_hooks import InstructionOptimizerManager
+from d810.optimizers.microcode.instructions.pattern_matching import handler as _pattern_handler
 from d810.optimizers.microcode.instructions.pattern_matching.handler import PatternOptimizer
 
 
@@ -155,10 +156,7 @@ def test_pattern_optimizer_filters_matches_by_allowed_rule_names(monkeypatch):
         ]
     )
 
-    monkeypatch.setattr(
-        "d810.optimizers.microcode.instructions.pattern_matching.handler.minsn_to_ast",
-        lambda _ins: object(),
-    )
+    monkeypatch.setattr(_pattern_handler, "minsn_to_ast", lambda _ins: object())
 
     blk = SimpleNamespace(mba=SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED))
     ins = SimpleNamespace(opcode=ida_hexrays.m_add, _print=lambda: "orig", ea=0x401000)
