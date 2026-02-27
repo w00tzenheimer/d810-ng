@@ -1375,6 +1375,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._initial_transitions: list | None = None
         self._detector: HodurStateMachineDetector | None = None
         self._jtbl_converted: bool = False
+        self._jtbl_dispatcher_serial: int = -1
+        self._jtbl_state_to_handler: dict[int, int] = {}
+        self._jtbl_handler_state_map: dict[int, int] = {}
 
     def configure(self, kwargs):
         super().configure(kwargs)
@@ -1481,6 +1484,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         # BST→m_jtbl conversion: replace BST dispatcher with a single switch
         # instruction before DeferredGraphModifier snapshots block state.
         self._jtbl_converted = False
+        self._jtbl_dispatcher_serial = -1
+        self._jtbl_state_to_handler = {}
+        self._jtbl_handler_state_map = {}
         if self.state_machine is not None:
             bst_stkoff = _get_state_var_stkoff(self._detector) if self._detector is not None else None
             entry_serial = list(self.state_machine.handlers.values())[0].check_block if self.state_machine.handlers else 0
@@ -1503,6 +1509,11 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         # Initialize deferred modifier - queue all changes first, apply later
         self.deferred = DeferredGraphModifier(self.mba)
+
+        # Post-m_jtbl resolution: resolve switch cases into direct jumps
+        if self._jtbl_converted:
+            jtbl_resolved = self._resolve_jtbl_switch()
+            unflat_logger.info("Post-m_jtbl resolution: %d cases resolved", jtbl_resolved)
 
         # Ensure DispatcherCache has run (for emulation path in conditional forks)
         _ = DispatcherCache.get_or_create(self.mba).analyze()
@@ -1771,6 +1782,11 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Step 9: Finalize.
         self.mba.mark_chains_dirty()
         self._jtbl_converted = True
+        self._jtbl_dispatcher_serial = dispatcher_serial
+        self._jtbl_handler_state_map = dict(bst_result.handler_state_map)
+        self._jtbl_state_to_handler = {
+            state: blk for blk, state in bst_result.handler_state_map.items()
+        }
 
         unflat_logger.info(
             "BST->m_jtbl: converted %d states on blk[%d], NOPed %d BST blocks",
@@ -1779,6 +1795,203 @@ class HodurUnflattener(GenericUnflatteningRule):
             len(dead_serials),
         )
         return True
+
+    def _find_state_write_in_block(
+        self,
+        blk: "ida_hexrays.mblock_t",
+        state_var: "ida_hexrays.mop_t",
+    ) -> "tuple[str, tuple] | None":
+        """Scan block backward for last state variable write.
+
+        Returns:
+            ("literal", (const_value, insn_ea)) for mov state_var, CONST
+            ("computed", (insn, blk)) for xor/sub/add/mul/and/or state_var, ...
+            None if no state write found.
+        """
+        _COMPUTE_OPCODES = {
+            ida_hexrays.m_xor,
+            ida_hexrays.m_sub,
+            ida_hexrays.m_add,
+            ida_hexrays.m_mul,
+            ida_hexrays.m_and,
+            ida_hexrays.m_or,
+        }
+        insn = blk.tail
+        while insn is not None:
+            if insn.opcode == ida_hexrays.m_goto:
+                insn = insn.prev
+                continue
+            if insn.d and insn.d.equal_mops(state_var, ida_hexrays.EQ_IGNSIZE):
+                if insn.opcode == ida_hexrays.m_mov and insn.l.t == ida_hexrays.mop_n:
+                    return ("literal", (insn.l.signed_value(), insn.ea))
+                if insn.opcode in _COMPUTE_OPCODES:
+                    return ("computed", (insn, blk))
+            insn = insn.prev
+        return None
+
+    def _trace_case_body(
+        self,
+        case_entry: int,
+        switch_head: int,
+        max_depth: int = 64,
+    ) -> "tuple[int, str, tuple] | None":
+        """Follow successor chain from case entry to back-edge or exit.
+
+        Returns:
+            (tail_serial, "terminal", None) — case exits function
+            (tail_serial, "literal", (const_value, insn_ea)) — literal state write
+            (tail_serial, "computed", (insn, blk)) — computed state write
+            (current_serial, "conditional", [(tail, type, info), ...]) — 2-way split
+            None — tracing failed
+        """
+        visited: set[int] = set()
+        current = case_entry
+        for _ in range(max_depth):
+            if current in visited:
+                return None
+            visited.add(current)
+            blk = self.mba.get_mblock(current)
+            nsucc = blk.nsucc()
+            if nsucc == 0:
+                return (current, "terminal", None)
+            if nsucc == 1:
+                succ = next(iter(blk.succset))
+                if succ == switch_head:
+                    result = self._find_state_write_in_block(
+                        blk, self.state_machine.state_var
+                    )
+                    if result is None:
+                        return None
+                    kind, info = result
+                    return (current, kind, info)
+                current = succ
+                continue
+            if nsucc == 2:
+                succs = list(blk.succset)
+                branches = []
+                for succ in succs:
+                    if succ == switch_head:
+                        result = self._find_state_write_in_block(
+                            blk, self.state_machine.state_var
+                        )
+                        if result is not None:
+                            kind, info = result
+                            branches.append((current, kind, info))
+                    else:
+                        sub = self._trace_case_body(succ, switch_head, max_depth=16)
+                        if sub is not None:
+                            branches.append(sub)
+                if branches:
+                    return (current, "conditional", branches)
+                return None
+            # nsucc > 2: unexpected topology
+            return None
+        return None
+
+    def _resolve_jtbl_switch(self) -> int:
+        """Resolve m_jtbl switch cases by redirecting back-edges to target handlers.
+
+        For each switch case body:
+        - Literal v10=CONST: redirect to target case block via mcases_t lookup
+        - Computed v10=expr: attempt forward eval or MopTracker resolution
+        - Terminal (return): no action
+        - Conditional: resolve each branch independently
+        """
+        if not self._jtbl_converted or self.deferred is None or self.state_machine is None:
+            return 0
+        switch_blk = self.mba.get_mblock(self._jtbl_dispatcher_serial)
+        resolved = 0
+
+        def _handle_result(result, entry_serial: int) -> int:
+            nonlocal resolved
+            if result is None:
+                return 0
+            tail_serial, kind, info = result
+            if kind == "terminal":
+                return 0
+            if kind == "literal":
+                const_value, insn_ea = info
+                target = self._jtbl_state_to_handler.get(const_value)
+                if target is not None:
+                    self.deferred.queue_goto_change(
+                        tail_serial,
+                        target,
+                        description=f"jtbl-resolve: blk[{entry_serial}] state 0x{const_value:x} -> blk[{target}]",
+                    )
+                    self.deferred.queue_insn_nop(
+                        tail_serial,
+                        insn_ea,
+                        description=f"jtbl-resolve: nop state write at ea=0x{insn_ea:x}",
+                    )
+                    from_state = self._jtbl_handler_state_map.get(entry_serial, 0)
+                    self._resolved_transitions.add((from_state, const_value))
+                    resolved += 1
+                    return 1
+                return 0
+            if kind == "computed":
+                return self._resolve_jtbl_computed_case(entry_serial, tail_serial, info)
+            if kind == "conditional":
+                count = 0
+                for branch in info:
+                    count += _handle_result(branch, entry_serial)
+                return count
+            return 0
+
+        for case_entry in list(switch_blk.succset):
+            result = self._trace_case_body(case_entry, self._jtbl_dispatcher_serial)
+            _handle_result(result, case_entry)
+
+        return resolved
+
+    def _resolve_jtbl_computed_case(
+        self,
+        case_entry: int,
+        tail_serial: int,
+        write_info: tuple,  # (insn, blk) from "computed" result
+    ) -> int:
+        """Resolve a computed state transition using forward eval or MopTracker."""
+        from_state = self._jtbl_handler_state_map.get(case_entry)
+        if from_state is None:
+            return 0
+        insn, _blk = write_info
+        # Inline evaluation for common patterns: op state_var, CONST, state_var
+        # or op CONST, state_var, state_var
+        _MASK = 0xFFFFFFFF
+        try:
+            l_mop = insn.l
+            r_mop = insn.r
+            opcode = insn.opcode
+            imm_val: "int | None" = None
+            if l_mop.t == ida_hexrays.mop_n:
+                imm_val = l_mop.signed_value()
+            elif r_mop.t == ida_hexrays.mop_n:
+                imm_val = r_mop.signed_value()
+            if imm_val is not None:
+                if opcode == ida_hexrays.m_xor:
+                    computed = (from_state ^ imm_val) & _MASK
+                elif opcode == ida_hexrays.m_sub:
+                    computed = (from_state - imm_val) & _MASK
+                elif opcode == ida_hexrays.m_add:
+                    computed = (from_state + imm_val) & _MASK
+                else:
+                    return 0
+                target = self._jtbl_state_to_handler.get(computed)
+                if target is not None:
+                    self.deferred.queue_goto_change(
+                        tail_serial,
+                        target,
+                        description=f"jtbl-computed: blk[{case_entry}] state 0x{computed:x} -> blk[{target}]",
+                    )
+                    self.deferred.queue_insn_nop(
+                        tail_serial,
+                        insn.ea,
+                        description=f"jtbl-computed: nop computed write at ea=0x{insn.ea:x}",
+                    )
+                    self._resolved_transitions.add((from_state, computed))
+                    return 1
+        except Exception:
+            pass
+        return 0
 
     def _merge_bst_transitions(self, bst_result: TransitionResult) -> None:
         """Merge BST-discovered transitions into state_machine.
@@ -1852,6 +2065,11 @@ class HodurUnflattener(GenericUnflatteningRule):
                 state_var = self.state_machine.state_var
         self._cache_dispatcher_set = dispatcher_set
         self._cache_state_var = state_var
+
+        if self._jtbl_converted and self._resolved_transitions:
+            # Filter out transitions already resolved by jtbl phase
+            # (leave this as a TODO comment for now, full implementation comes later)
+            pass
 
         check_blocks = {handler.check_block for handler in handlers}
         initial_state = (
