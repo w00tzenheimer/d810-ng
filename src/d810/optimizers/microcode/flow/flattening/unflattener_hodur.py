@@ -70,6 +70,7 @@ from d810.optimizers.microcode.flow.flattening.transition_builder import (
     _get_state_var_stkoff,
 )
 from d810.hexrays.bst_analysis import BSTAnalysisResult, analyze_bst_dispatcher
+from d810.hexrays.cfg_mutations import convert_jtbl_to_goto
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.flattening.safeguards import (
@@ -1596,6 +1597,12 @@ class HodurUnflattener(GenericUnflatteningRule):
                     run_deep_cleaning=False,
                 )
 
+                if self._jtbl_converted and self._resolved_transitions:
+                    pruned = self._prune_resolved_jtbl_cases()
+                    if pruned > 0:
+                        unflat_logger.info("Pruned %d resolved cases from m_jtbl", pruned)
+                        nb_changes += pruned
+
         unflat_logger.debug(
             "HodurUnflattener: pass %d direct transition patches = %d",
             self.cur_maturity_pass,
@@ -1942,6 +1949,119 @@ class HodurUnflattener(GenericUnflatteningRule):
             _handle_result(result, case_entry)
 
         return resolved
+
+    def _prune_resolved_jtbl_cases(self) -> int:
+        """Remove resolved cases from the m_jtbl instruction after deferred.apply().
+
+        After _resolve_jtbl_switch() redirects handler back-edges, the switch
+        structure remains because mcases_t still has all cases.  This method
+        prunes case entries whose state constants have all been resolved, keeping
+        the m_jtbl lean so that IDA can further simplify the CFG.
+
+        Returns:
+            Number of case entries removed (or total cases if fully converted).
+        """
+        if not self._jtbl_converted or not self._resolved_transitions:
+            return 0
+
+        switch_blk = self.mba.get_mblock(self._jtbl_dispatcher_serial)
+        if switch_blk is None:
+            return 0
+        tail = switch_blk.tail
+        if tail is None or tail.opcode != ida_hexrays.m_jtbl:
+            return 0
+        if tail.r is None or tail.r.t != ida_hexrays.mop_c:
+            return 0
+
+        cases = tail.r.c
+
+        # Determine resolved entries: a case entry is resolved when ALL state
+        # constants that route to it have been resolved.
+        resolved_from_states = {from_s for from_s, _to_s in self._resolved_transitions}
+
+        # Invert _jtbl_state_to_handler: entry_serial -> set of state constants
+        entry_to_states: dict[int, set[int]] = defaultdict(set)
+        for state, entry in self._jtbl_state_to_handler.items():
+            entry_to_states[entry].add(state)
+
+        resolved_entries: set[int] = set()
+        for entry, states in entry_to_states.items():
+            if states <= resolved_from_states:  # all states for this entry resolved
+                resolved_entries.add(entry)
+
+        if not resolved_entries:
+            return 0
+
+        total_cases = cases.targets.size()
+
+        # If ALL entries resolved, convert m_jtbl to a single m_goto
+        if len(resolved_entries) >= total_cases:
+            initial_target = self._jtbl_state_to_handler.get(
+                self.state_machine.initial_state if self.state_machine is not None else -1
+            )
+            if initial_target is None and total_cases > 0:
+                initial_target = int(cases.targets[0])
+            if initial_target is not None:
+                convert_jtbl_to_goto(switch_blk, initial_target, self.mba)
+                unflat_logger.info(
+                    "_prune_resolved_jtbl_cases: all %d cases resolved, "
+                    "converted m_jtbl to goto blk[%d]",
+                    total_cases,
+                    initial_target,
+                )
+                return total_cases
+            return 0
+
+        # Partial prune: rebuild mcases_t keeping only unresolved entries
+        old_succs = set(int(switch_blk.succset[i]) for i in range(switch_blk.succset.size()))
+
+        surviving_groups: dict[int, list[int]] = defaultdict(list)
+        for i in range(cases.targets.size()):
+            tgt = int(cases.targets[i])
+            if tgt not in resolved_entries:
+                for j in range(cases.values[i].size()):
+                    surviving_groups[tgt].append(int(cases.values[i][j]))
+
+        new_mc = ida_hexrays.mcases_t()
+        for tgt in sorted(surviving_groups):
+            new_mc.targets.push_back(tgt)
+            uv = ida_pro.svalvec_t()
+            for val in surviving_groups[tgt]:
+                uv.push_back(val)
+            new_mc.values.push_back(uv)
+
+        cases.swap(new_mc)  # In-place swap, safe for SWIG
+
+        # Rebuild succset from the new mcases_t
+        new_succs: set[int] = set(
+            int(cases.targets[i]) for i in range(cases.targets.size())
+        )
+        switch_blk.succset.clear()
+        for i in range(cases.targets.size()):
+            switch_blk.succset.add_unique(int(cases.targets[i]))
+
+        # Fix predsets for removed successors
+        blk_serial = int(switch_blk.serial)
+        for removed in old_succs - new_succs:
+            r_blk = self.mba.get_mblock(removed)
+            if r_blk is not None:
+                try:
+                    r_blk.predset._del(blk_serial)
+                    r_blk.mark_lists_dirty()
+                except Exception:
+                    pass
+
+        switch_blk.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+
+        removed_count = total_cases - cases.targets.size()
+        unflat_logger.info(
+            "_prune_resolved_jtbl_cases: pruned %d/%d cases from m_jtbl blk[%d]",
+            removed_count,
+            total_cases,
+            self._jtbl_dispatcher_serial,
+        )
+        return removed_count
 
     def _resolve_jtbl_computed_case(
         self,
