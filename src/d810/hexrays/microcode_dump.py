@@ -912,20 +912,19 @@ def _find_pre_header(
         tail = pred_blk.tail
         tail_opcode = getattr(tail, "opcode", None) if tail is not None else None
         tail_opname = OPCODE_MAP.get(tail_opcode, f"opcode_{tail_opcode}") if tail_opcode is not None else "no_tail"
-        if diag_lines is not None:
-            diag_lines.append(
-                f"  pred blk[{pred_serial}]: nsucc={nsucc} npred={pred_npred}"
-                f" tail={tail_opname}"
-                + (f" succ0=blk[{pred_blk.succ(0)}]" if nsucc >= 1 else "")
-            )
         # Pre-header has exactly one successor: the dispatcher entry
         if nsucc == 1 and pred_blk.succ(0) == dispatcher_entry_serial:
+            if diag_lines is not None:
+                diag_lines.append(
+                    f"  candidate blk[{pred_serial}]: nsucc={nsucc} npred={pred_npred}"
+                    f" tail={tail_opname} succ0=blk[{pred_blk.succ(0)}]"
+                )
             # Prefer fewest predecessors; break ties by lowest serial
             if pred_npred < best_npred or (pred_npred == best_npred and pred_serial < best_serial):
                 best_npred = pred_npred
                 best_serial = pred_serial
     if best_serial is not None and diag_lines is not None:
-        diag_lines.append(f"  -> selected pre-header: blk[{best_serial}] (npred={best_npred})")
+        diag_lines.append(f"  Selected pre-header: blk[{best_serial}] (npred={best_npred}, serial={best_serial})")
     return best_serial
 
 
@@ -1023,6 +1022,103 @@ def _mop_matches_stkoff(
     return False
 
 
+def _resolve_mop_value_in_block(
+    mop: "idaapi.mop_t",
+    blk: "idaapi.mblock_t",
+    insn_before: "idaapi.minsn_t",
+    max_depth: int = 2,
+) -> Optional[int]:
+    """Backward-scan *blk* for the instruction that defines *mop* and fold it.
+
+    Only handles binary ops (m_add, m_sub, m_and, m_or, m_xor) where BOTH
+    operands resolve to literal constants within the same block.  Max recursion
+    depth is *max_depth* (default 2) to prevent runaway recursion.
+
+    Args:
+        mop: The source operand whose constant value we want to resolve.
+        blk: The microcode block to scan backward in.
+        insn_before: Scan only instructions that appear *before* this one.
+        max_depth: Maximum recursive resolution depth.
+
+    Returns:
+        The folded integer value (masked to 32 bits), or None if resolution failed.
+    """
+    if max_depth <= 0:
+        return None
+
+    _init_constants()
+
+    # Fast path: already a literal constant.
+    val = _get_mop_const_value(mop)
+    if val is not None:
+        return val
+
+    mop_type = getattr(mop, "t", None)
+    # Only handle register (mop_r=1) and local-var (mop_l=9) sources.
+    mop_r_type = getattr(idaapi, "mop_r", 1)
+    mop_l_type = getattr(idaapi, "mop_l", 9)
+    if mop_type not in (mop_r_type, mop_l_type):
+        return None
+
+    # Opcodes for binary arithmetic/logic ops.
+    m_add = getattr(idaapi, "m_add", 28)
+    m_sub = getattr(idaapi, "m_sub", 29)
+    m_and = getattr(idaapi, "m_and", 21)
+    m_or = getattr(idaapi, "m_or", 22)
+    m_xor = getattr(idaapi, "m_xor", 31)
+    binary_ops = {m_add, m_sub, m_and, m_or, m_xor}
+
+    def _mops_match(a: "idaapi.mop_t", b: "idaapi.mop_t") -> bool:
+        """Return True when two mops refer to the same register or lvar."""
+        at = getattr(a, "t", None)
+        bt = getattr(b, "t", None)
+        if at != bt:
+            return False
+        if at == mop_r_type:
+            return getattr(a, "r", None) == getattr(b, "r", None)
+        if at == mop_l_type:
+            return getattr(a, "l", None) == getattr(b, "l", None)
+        return False
+
+    # Collect instructions before insn_before, in order.
+    insns_before: List["idaapi.minsn_t"] = []
+    cur = blk.head
+    while cur is not None and cur is not insn_before:
+        insns_before.append(cur)
+        cur = getattr(cur, "next", None)
+
+    # Scan backward for the instruction whose destination matches *mop*.
+    for definer in reversed(insns_before):
+        d = getattr(definer, "d", None)
+        if d is None:
+            continue
+        if not _mops_match(d, mop):
+            continue
+        # Found the defining instruction — must be a binary op.
+        op = getattr(definer, "opcode", None)
+        if op not in binary_ops:
+            return None
+        l_op = getattr(definer, "l", None)
+        r_op = getattr(definer, "r", None)
+        lv = _resolve_mop_value_in_block(l_op, blk, definer, max_depth - 1)
+        rv = _resolve_mop_value_in_block(r_op, blk, definer, max_depth - 1)
+        if lv is None or rv is None:
+            return None
+        if op == m_xor:
+            result = lv ^ rv
+        elif op == m_sub:
+            result = lv - rv
+        elif op == m_add:
+            result = lv + rv
+        elif op == m_and:
+            result = lv & rv
+        else:  # m_or
+            result = lv | rv
+        return result & 0xFFFFFFFF
+
+    return None
+
+
 def _extract_state_from_block(
     blk: "idaapi.mblock_t",
     state_var_stkoff: int,
@@ -1090,6 +1186,14 @@ def _extract_state_from_block(
                     if diag_lines is not None:
                         diag_lines.append(f"  -> FOUND m_mov state write: 0x{val:x}")
                     return val
+                # Fallback: source is non-constant — try MBA constant folding.
+                folded = _resolve_mop_value_in_block(l, blk, insn)
+                if folded is not None:
+                    if diag_lines is not None:
+                        diag_lines.append(
+                            f"  -> FOUND m_mov state write (folded): 0x{folded:x}"
+                        )
+                    return folded
 
         elif m_stx_opcode is not None and opcode == m_stx_opcode:
             # m_stx <value>, <addr>, <size_mop>
@@ -1105,6 +1209,14 @@ def _extract_state_from_block(
                     if diag_lines is not None:
                         diag_lines.append(f"  -> FOUND m_stx state write: 0x{val:x}")
                     return val
+                # Fallback: source is non-constant — try MBA constant folding.
+                folded = _resolve_mop_value_in_block(l, blk, insn)
+                if folded is not None:
+                    if diag_lines is not None:
+                        diag_lines.append(
+                            f"  -> FOUND m_stx state write (folded): 0x{folded:x}"
+                        )
+                    return folded
 
         insn = getattr(insn, "next", None)
         insn_idx += 1
@@ -1120,6 +1232,7 @@ def _walk_handler_chain(
     max_chain_depth: int = 64,
     diag_lines: Optional[List[str]] = None,
     state_var_lvar_idx: Optional[int] = None,
+    _branch_depth: int = 0,
 ) -> Dict[str, Any]:
     """Walk a handler's block chain to find the next-state write and back-edge.
 
@@ -1130,6 +1243,13 @@ def _walk_handler_chain(
     - A block with no successors (function exit)
     - Max depth exceeded
 
+    At multi-successor blocks (nsucc <= 4), spawns recursive sub-walks for
+    each successor (up to 1 level of branching). Results are merged:
+    - All branches same next_state + back_edge → deterministic transition
+    - All branches back_edge but different states → conditional_states set
+    - Mix of exit + transition → conditional exit
+    - Any branch unresolvable → unknown (conservative)
+
     Args:
         mba: The microcode block array.
         handler_start_serial: First block of this handler.
@@ -1139,6 +1259,7 @@ def _walk_handler_chain(
         max_chain_depth: Maximum blocks to walk per handler.
         diag_lines: Optional list to collect diagnostic output strings.
         state_var_lvar_idx: If not None, also match mop_l writes by lvar index.
+        _branch_depth: Internal recursion depth for multi-succ branching (max 1).
 
     Returns:
         Dict with keys:
@@ -1146,6 +1267,7 @@ def _walk_handler_chain(
             - back_edge: bool — True if chain reaches dispatcher
             - exit: bool — True if chain reaches a no-successor block
             - chain: List[int] — block serials walked
+            - conditional_states: set of int (optional) — multiple next states
     """
     _init_constants()
     result: Dict[str, Any] = {
@@ -1232,13 +1354,91 @@ def _walk_handler_chain(
             current = next_serial
         else:
             # Multiple successors — handler branches internally.
-            # Still scan this block for state write before stopping.
-            # (The scan above already ran on this block, so just stop.)
+            # The state-var scan above already ran on this block.
             succs = [blk.succ(i) for i in range(nsucc)]
             if diag_lines is not None:
                 diag_lines.append(
-                    f"  walker: blk[{current}] nsucc={nsucc} succs={succs} -> multi-succ stop"
+                    f"  walker: blk[{current}] nsucc={nsucc} succs={succs}"
                 )
+
+            # Attempt recursive sub-walks if budget allows and not too wide.
+            if nsucc <= 4 and _branch_depth < 1:
+                if diag_lines is not None:
+                    diag_lines.append(
+                        f"  walker: blk[{current}] branching into {nsucc} successors"
+                        f" (branch_depth={_branch_depth})"
+                    )
+                sub_results = []
+                remaining_depth = max_chain_depth - depth - 1
+                for succ_serial in succs:
+                    sub = _walk_handler_chain(
+                        mba=mba,
+                        handler_start_serial=succ_serial,
+                        dispatcher_entry_serial=dispatcher_entry_serial,
+                        state_var_stkoff=state_var_stkoff,
+                        chain_visited=set(chain_visited),
+                        max_chain_depth=max(0, remaining_depth),
+                        diag_lines=diag_lines,
+                        state_var_lvar_idx=state_var_lvar_idx,
+                        _branch_depth=_branch_depth + 1,
+                    )
+                    sub_results.append(sub)
+                    result["chain"].extend(sub["chain"])
+
+                # Merge sub-walk results
+                all_back_edge = all(s["back_edge"] for s in sub_results)
+                any_back_edge = any(s["back_edge"] for s in sub_results)
+                all_exit = all(s["exit"] for s in sub_results)
+                any_exit = any(s["exit"] for s in sub_results)
+                sub_states = [s["next_state"] for s in sub_results if s["next_state"] is not None]
+                all_resolved = all(
+                    s["back_edge"] or s["exit"] for s in sub_results
+                )
+
+                if not all_resolved:
+                    # At least one branch is unresolvable — conservative unknown
+                    if diag_lines is not None:
+                        diag_lines.append(
+                            f"  walker: branch merge: some unresolvable -> unknown"
+                        )
+                    break
+
+                if all_back_edge and not any_exit:
+                    # All branches reach dispatcher
+                    unique_states = set(sub_states)
+                    if len(unique_states) == 1 and result["next_state"] is None:
+                        result["next_state"] = unique_states.pop()
+                    elif len(unique_states) > 1 and result["next_state"] is None:
+                        # Different next states per branch — conditional transition
+                        result["conditional_states"] = unique_states
+                    result["back_edge"] = True
+                    if diag_lines is not None:
+                        diag_lines.append(
+                            f"  walker: branch merge: all back_edge"
+                            f" states={set(sub_states)} -> back_edge"
+                        )
+                elif any_exit and any_back_edge:
+                    # Mix of exit and transition — conditional exit
+                    result["exit"] = True
+                    if sub_states and result["next_state"] is None:
+                        result["next_state"] = sub_states[0]
+                    if diag_lines is not None:
+                        diag_lines.append(
+                            f"  walker: branch merge: mixed exit+transition"
+                            f" -> conditional exit"
+                        )
+                elif all_exit:
+                    result["exit"] = True
+                    if diag_lines is not None:
+                        diag_lines.append(
+                            f"  walker: branch merge: all exit -> exit"
+                        )
+            else:
+                if diag_lines is not None:
+                    diag_lines.append(
+                        f"  walker: blk[{current}] nsucc={nsucc} branch_depth={_branch_depth}"
+                        f" -> multi-succ stop (too wide or depth limit)"
+                    )
             break
 
         depth += 1
@@ -1509,7 +1709,6 @@ def dump_dispatcher_tree(
     if not handler_serials:
         sections.append("<no handlers found in BST>")
     else:
-        chain_visited: set = set()
         # Build entries: list of (state_const, handler_serial, walk_result)
         entries = []
         diag_handler_count = 0
@@ -1523,12 +1722,16 @@ def dump_dispatcher_tree(
                     diag_section.append(f"Handler blk[{h_serial}] (state={hex(state_const) if state_const is not None else '?'}):")
                     diag_handler_count += 1
 
+                # Each handler gets a fresh visited set so it can walk into
+                # blocks other handlers have already visited, while still
+                # preventing self-cycles within its own walk.
+                per_handler_visited: set = set()
                 walk = _walk_handler_chain(
                     mba,
                     h_serial,
                     dispatcher_entry_serial,
                     state_var_stkoff,
-                    chain_visited=chain_visited,
+                    chain_visited=per_handler_visited,
                     diag_lines=handler_diag,
                     state_var_lvar_idx=state_var_lvar_idx,
                 )
@@ -1544,6 +1747,7 @@ def dump_dispatcher_tree(
         known_count = 0
         exit_count = 0
         unknown_count = 0
+        conditional_count = 0
 
         for state_const, h_serial, walk in entries:
             if state_const is not None:
@@ -1575,6 +1779,12 @@ def dump_dispatcher_tree(
             elif walk.get("back_edge") and next_state is not None:
                 label = f"next=0x{next_state:08x} (back-edge)"
                 known_count += 1
+            elif walk.get("conditional_states"):
+                cond_hex = ", ".join(
+                    f"0x{s:08x}" for s in sorted(walk["conditional_states"])
+                )
+                label = f"conditional transition -> {{{cond_hex}}}"
+                conditional_count += 1
             elif walk.get("back_edge"):
                 label = "back-edge (next state unknown)"
                 unknown_count += 1
@@ -1594,6 +1804,7 @@ def dump_dispatcher_tree(
         sections.append(
             f"Summary: {len(handler_serials)} handlers, "
             f"{known_count} with known transitions, "
+            f"{conditional_count} conditional, "
             f"{exit_count} exits, "
             f"{unknown_count} unknown"
         )
