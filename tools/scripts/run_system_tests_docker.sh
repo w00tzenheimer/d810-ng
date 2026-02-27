@@ -6,15 +6,17 @@
 #   ./run_system_tests_docker.sh system [OPTIONS]
 #   ./run_system_tests_docker.sh dump [OPTIONS] [-- PYTEST_ARGS...]
 #   ./run_system_tests_docker.sh shell [OPTIONS]
+#   ./run_system_tests_docker.sh exec [OPTIONS] -- COMMAND [ARGS...]
 #
 # Commands:
 #   system    Run SETUP then: pytest tests/system -v
 #   dump      Run SETUP then: pytest -s tests/system/e2e/test_dump_function_pseudocode.py [OPTIONS]
 #   shell     Run SETUP then start an interactive bash (docker run -it)
+#   exec      Run SETUP then exec COMMAND with ARGS (e.g. exec -- python -c 'print(1)' or exec -- bash -c '...')
 #
 # SETUP (same for all commands): export IDA/PYTHONPATH env, pip install -e .[dev], python -m d810.speedups.install
 #
-# Options (system/shell):
+# Options (system/shell/exec):
 #   -w, --worktree REL      Use worktree at REPO_ROOT/WORKTREE_ROOT/REL as /work (default worktree root: .worktrees)
 #   -l, --logs              Mount work dir .tmp/logs at /root/.idapro/logs
 #
@@ -25,8 +27,10 @@
 #   -o, --out FILE          Redirect stdout+stderr to .tmp/FILE; file is truncated at start of each run (not appended)
 #   --                      Remaining args passed to pytest
 #
+# Options (exec): same as system/shell; then -- COMMAND [ARGS...] to run after SETUP (required).
+#
 # Inside the container:
-#   CMD=system|dump|shell   Current command (also set for shell so scripts can branch)
+#   CMD=system|dump|shell|exec   Current command (also set for shell/exec so scripts can branch)
 #   PYTHON=/app/ida/.venv/bin/python   Venv Python interpreter
 #   PIP=/app/ida/.venv/bin/pip         Venv pip
 #   IDA_PREFIX, IDA_INSTALL_DIR, D810_LIBCLANG_PATH, PYTHONPATH, D810_NO_CYTHON, D810_TEST_BINARY  Set for tests
@@ -43,6 +47,8 @@
 #   ./run_system_tests_docker.sh system -w my-worktree
 #   ./run_system_tests_docker.sh shell
 #   ./run_system_tests_docker.sh shell -w verifycpp-on-ngcfgpass -l
+#   ./run_system_tests_docker.sh exec -- python -c 'print("hello world")'
+#   ./run_system_tests_docker.sh exec -- bash -c 'echo hi && $PYTHON -m pytest tests/unit/ -v'
 #   ./run_system_tests_docker.sh dump -f sub_7FFD3338C040 -m LOCOPT,CALLS,GLBOPT1,GLBOPT2 -p hodur_flag2.json -o hodur_flag2_dump.txt
 #   ./run_system_tests_docker.sh dump -f AntiDebug_ExceptionFilter -p example_libobfuscated.json -o antidebug_dump4.txt -w verifycpp-on-ngcfgpass -l
 set -e
@@ -63,13 +69,13 @@ REPO_ROOT="$(cd "$REPO_ROOT" && pwd)"
 
 CMD="${1:-}"
 shift || true
-if [ "$CMD" != "system" ] && [ "$CMD" != "dump" ] && [ "$CMD" != "shell" ]; then
+if [ "$CMD" != "system" ] && [ "$CMD" != "dump" ] && [ "$CMD" != "shell" ] && [ "$CMD" != "exec" ]; then
   if [ "$CMD" = "-h" ] || [ "$CMD" = "--help" ]; then
     sed -n '2,/^set -e$/p' "$0" | sed '$d'
     exit 0
   fi
-  echo "Usage: $0 system [--worktree REL] | dump [OPTIONS] [-- PYTEST_ARGS...] | shell [--worktree REL]" >&2
-  echo "Commands: system | dump | shell" >&2
+  echo "Usage: $0 system | dump [OPTIONS] [-- PYTEST_ARGS...] | shell | exec [OPTIONS] -- COMMAND [ARGS...]" >&2
+  echo "Commands: system | dump | shell | exec" >&2
   echo "Run with --help for full help." >&2
   exit 1
 fi
@@ -83,6 +89,7 @@ DUMP_PROJECT=""
 DUMP_OUT=""
 MOUNT_LOGS=""
 EXTRA_PYTEST=()
+EXEC_ARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -112,7 +119,11 @@ while [ $# -gt 0 ]; do
       ;;
     --)
       shift
-      EXTRA_PYTEST=("$@")
+      if [ "$CMD" = "exec" ]; then
+        EXEC_ARGS=("$@")
+      else
+        EXTRA_PYTEST=("$@")
+      fi
       break
       ;;
     *)
@@ -179,6 +190,20 @@ run_bash_it() {
     --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$inner"
 }
 
+run_bash_exec() {
+  local inner="$SETUP_CMD && exec \"\$@\""
+  docker run --rm \
+    $VOL_WORK \
+    $VOL_LOGS \
+    -w /work \
+    -e "CMD=exec" \
+    -e "PYTHON=$IDA_VENV_PYTHON" \
+    -e "PIP=$IDA_VENV_PIP" \
+    -e "D810_NO_CYTHON=${D810_NO_CYTHON:-1}" \
+    -e "D810_TEST_BINARY=${D810_TEST_BINARY:-libobfuscated.dll}" \
+    --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$inner" -- "${EXEC_ARGS[@]}"
+}
+
 if [ "$CMD" = "system" ]; then
   run_bash "$SETUP_CMD && $ENV_TEST $IDA_VENV_PYTHON -m pytest tests/system -v"
   exit 0
@@ -186,6 +211,15 @@ fi
 
 if [ "$CMD" = "shell" ]; then
   run_bash_it "$SETUP_CMD && exec bash"
+  exit 0
+fi
+
+if [ "$CMD" = "exec" ]; then
+  if [ ${#EXEC_ARGS[@]} -eq 0 ]; then
+    echo "ERROR: exec requires a command after -- (e.g. $0 exec -- python -c 'print(1)')" >&2
+    exit 1
+  fi
+  run_bash_exec
   exit 0
 fi
 
