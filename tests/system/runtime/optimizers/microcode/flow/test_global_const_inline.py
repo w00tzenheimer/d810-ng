@@ -1,40 +1,58 @@
-"""System tests for GlobalConstantInliner._try_inline_globals using real microcode.
+"""System tests for GlobalConstantInliner pointer-filtering logic.
 
-These tests replace the original mocked contract tests with tests that operate on
-genuine IDA Pro microcode generated from the libobfuscated binary.
+Background
+----------
+At ``MMAT_PREOPTIMIZED``, IDA already folds constant loads from read-only
+globals into ``mop_n`` immediates for this binary (MinGW-compiled DLL with
+``-O0 -g``), so ``mop_v`` references in source operand positions never appear.
+Constructing fake ``minsn_t`` / ``mop_t`` objects to exercise
+``_try_inline_globals`` directly would be equivalent to the mocked tests we
+are replacing, without any benefit from having a live IDA session.
 
-``global_const_rva_guard()`` (in ``samples/src/c/global_const_inline.c``) is
-purpose-built to carry exactly two constant-global loads:
+Instead we test ``_get_global_constant`` -- the **single decision function**
+that ``_try_inline_globals`` delegates every inlining decision to -- against
+real addresses inside the binary's ``.rdata`` section.  This covers the same
+three logical branches that the mocked tests targeted:
 
-* ``SAFE_INLINE_CONST = 0x1122334455667788`` -- ordinary numeric constant;
-  does **not** land in any mapped segment → **must be inlined**.
-* ``RVA_LIKE_OFFSET = 0x2000`` -- when added to the PE imagebase the result
-  falls inside a real segment → must **not** be inlined.
++--------------------------------+------------------------+-------------------+
+| Branch                         | Value                  | Expected outcome  |
++================================+========================+===================+
+| Rebased-RVA pointer guard      | ``RVA_LIKE_OFFSET``    | returns ``None``  |
+|                                | = 0x2000               | (skip inlining)   |
++--------------------------------+------------------------+-------------------+
+| Normal constant inlining       | ``SAFE_INLINE_CONST``  | returns the value |
+|                                | = 0x1122334455667788   | (do inline)       |
++--------------------------------+------------------------+-------------------+
+| BADADDR all-ones sentinel      | 0xFFFFFFFFFFFFFFFF     | ``_looks_like_    |
+|                                |                        | pointer`` = True  |
++--------------------------------+------------------------+-------------------+
 
-Together they exercise both branches of the pointer-filtering logic
-(``_looks_like_pointer`` / ``_BadaddrSentinelHandler``) with genuine
-``minsn_t`` / ``mop_t`` objects instead of hand-rolled fakes.
+The two constants are placed in ``.rdata`` by ``global_const_rva_guard()`` in
+``samples/src/c/global_const_inline.c``.  We locate them by scanning the
+``.rdata`` segment for their byte patterns rather than relying on symbol names
+(which are not exported for static consts in MinGW builds).
 """
 
 from __future__ import annotations
 
 import os
 import platform
+import struct
 
 import pytest
 
-import ida_hexrays
+import ida_bytes
+import ida_segment
 import idaapi
 
 from d810.optimizers.microcode.flow.constant_prop import global_const_inline as gci
 
 
 # ---------------------------------------------------------------------------
-# Platform helpers (mirror of pattern used in sibling runtime test files)
+# Platform helpers
 # ---------------------------------------------------------------------------
 
 def _get_default_binary() -> str:
-    """Return the default test-binary name for the current platform."""
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
@@ -42,178 +60,108 @@ def _get_default_binary() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Microcode helpers (inlined to avoid conftest import across package boundary)
+# Search helper
 # ---------------------------------------------------------------------------
 
-def _get_func_ea(name: str) -> int:
-    """Resolve *name* to a function EA, trying with and without underscore prefix."""
-    import idc
+def _find_in_rdata(target_value: int, size: int = 8) -> int:
+    """Return the first EA in a read-only segment that holds *target_value*.
 
-    ea = idc.get_name_ea_simple(name)
-    if ea == idaapi.BADADDR:
-        ea = idc.get_name_ea_simple("_" + name)
-    return ea
-
-
-def _gen_microcode(func_name: str):
-    """Return fresh MMAT_PREOPTIMIZED microcode for *func_name*, or ``None``."""
-    func_ea = _get_func_ea(func_name)
-    if func_ea == idaapi.BADADDR:
-        return None
-
-    func = idaapi.get_func(func_ea)
-    if func is None:
-        return None
-
-    mbr = ida_hexrays.mba_ranges_t(func)
-    hf = ida_hexrays.hexrays_failure_t()
-    return ida_hexrays.gen_microcode(
-        mbr, hf, None, ida_hexrays.DECOMP_NO_WAIT, ida_hexrays.MMAT_PREOPTIMIZED
-    )
-
-
-# ---------------------------------------------------------------------------
-# Search helpers
-# ---------------------------------------------------------------------------
-
-def _find_ldx_with_value(mba, target_value: int, size: int = 8):
-    """Walk *mba* for an ``m_ldx`` whose ``r`` is a ``mop_v`` that reads as *target_value*.
-
-    Returns ``(blk, ins)`` on the first match, or ``(None, None)`` if not found.
-    The value is read with ``_read_constant_value`` using *size* bytes.
+    Walks ``.rdata`` / ``.rodata`` / ``__const`` byte-by-byte with the given
+    *size* alignment to locate the value.  Returns ``idaapi.BADADDR`` if not
+    found.
     """
-    for i in range(mba.qty):
-        blk = mba.get_mblock(i)
-        ins = blk.head
-        while ins is not None:
-            if ins.opcode == ida_hexrays.m_ldx and ins.r.t == ida_hexrays.mop_v:
-                val = gci._read_constant_value(ins.r.g, size)
-                if val == target_value:
-                    return blk, ins
-            ins = ins.next
-    return None, None
+    pattern = struct.pack("<Q" if size == 8 else "<I", target_value)
 
+    seg = ida_segment.get_first_seg()
+    while seg is not None:
+        seg_name = ida_segment.get_segm_name(seg)
+        if seg_name in (".rdata", ".rodata", "__const", "__DATA_CONST"):
+            ea = seg.start_ea
+            end = seg.end_ea - size + 1
+            while ea < end:
+                raw = ida_bytes.get_bytes(ea, size)
+                if raw and raw == pattern:
+                    return ea
+                ea += 1
+        seg = ida_segment.get_next_seg(seg.start_ea)
 
-def _find_any_const_ldx(mba):
-    """Return ``(blk, ins)`` for the first ``m_ldx`` that loads from a constant global."""
-    for i in range(mba.qty):
-        blk = mba.get_mblock(i)
-        ins = blk.head
-        while ins is not None:
-            if ins.opcode == ida_hexrays.m_ldx and ins.r.t == ida_hexrays.mop_v:
-                if gci._is_constant_global(ins.r.g):
-                    return blk, ins
-            ins = ins.next
-    return None, None
+    return idaapi.BADADDR
 
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestTryInlineGlobals:
-    """``_try_inline_globals`` contract tests using real IDA Pro microcode.
+class TestGlobalConstantInliner:
+    """Pointer-filtering contract tests using real IDA Pro APIs.
 
-    Uses ``global_const_rva_guard()`` -- a function purpose-built for this
-    scenario -- to avoid any manual mocking of IDA API functions.
-    Each test method generates its own fresh ``mba_t`` so that a successful
-    inlining in one test does not corrupt the microcode seen by another.
+    Each test exercises one branch of ``_get_global_constant`` -- the single
+    decision function that ``_try_inline_globals`` calls for every candidate
+    inlining site -- against real addresses found inside the binary's
+    ``.rdata`` section.
     """
 
     binary_name = _get_default_binary()
 
     @pytest.mark.ida_required
-    def test_try_inline_globals_skips_rebased_rva_pointer(self, libobfuscated_setup):
-        """Must return 0 for ``RVA_LIKE_OFFSET`` (value=0x2000).
+    def test_skips_rebased_rva_pointer(self, libobfuscated_setup):
+        """``_get_global_constant`` must return ``None`` for ``RVA_LIKE_OFFSET`` (0x2000).
 
-        ``imagebase + 0x2000`` lands inside the loaded PE's ``.text`` section,
-        so ``_looks_like_pointer`` returns ``True`` and the constant must **not**
-        be rewritten to an immediate.
+        ``global_const_rva_guard`` stores ``RVA_LIKE_OFFSET = 0x2000`` in
+        ``.rdata``.  When passed through the pointer-heuristic chain,
+        ``imagebase + 0x2000`` lands inside the PE's ``.text`` section, so
+        ``_looks_like_pointer`` returns ``True`` and the constant is
+        rejected (returns ``None``).
         """
         rule = gci.GlobalConstantInliner()
-        mba = _gen_microcode("global_const_rva_guard")
-        if mba is None:
-            pytest.skip("global_const_rva_guard not found in binary")
 
-        blk, ins = _find_ldx_with_value(mba, target_value=0x2000)
-        if ins is None:
-            pytest.skip("Could not locate RVA_LIKE_OFFSET (0x2000) load in microcode")
+        ea = _find_in_rdata(0x2000, size=8)
+        if ea == idaapi.BADADDR:
+            pytest.skip("RVA_LIKE_OFFSET (0x2000) not found in .rdata")
 
-        result = rule._try_inline_globals(blk, ins)
+        result = rule._get_global_constant(ea, 8)
 
-        assert result == 0, (
-            "Expected _try_inline_globals to skip RVA_LIKE_OFFSET=0x2000 "
-            f"(imagebase+0x2000 lands in a real segment), got result={result}"
+        assert result is None, (
+            f"Expected None for RVA-like value 0x2000 at {ea:#x} "
+            f"(imagebase+0x2000 = {idaapi.get_imagebase() + 0x2000:#x} is in .text); "
+            f"got {result!r}"
         )
-        # Opcode must remain m_ldx -- no rewrite occurred.
-        assert ins.opcode == ida_hexrays.m_ldx
 
     @pytest.mark.ida_required
-    def test_try_inline_globals_inlines_non_pointer_constant(self, libobfuscated_setup):
-        """Must inline ``SAFE_INLINE_CONST`` (value=0x1122334455667788).
+    def test_inlines_non_pointer_constant(self, libobfuscated_setup):
+        """``_get_global_constant`` must return the value for ``SAFE_INLINE_CONST``.
 
-        This large random-looking value does not fall inside any mapped segment
-        and does not match any ASLR heuristic, so ``_looks_like_pointer``
-        returns ``False`` and the load must be rewritten to an ``m_mov`` with
-        the immediate value.
+        ``global_const_rva_guard`` stores ``SAFE_INLINE_CONST = 0x1122334455667788``
+        in ``.rdata``.  This large random-looking value does not fall inside
+        any mapped segment and triggers no ASLR heuristic, so
+        ``_looks_like_pointer`` returns ``False`` and the function returns
+        the constant directly.
         """
         SAFE_VALUE = 0x1122334455667788
-
         rule = gci.GlobalConstantInliner()
-        mba = _gen_microcode("global_const_rva_guard")
-        if mba is None:
-            pytest.skip("global_const_rva_guard not found in binary")
 
-        blk, ins = _find_ldx_with_value(mba, target_value=SAFE_VALUE)
-        if ins is None:
-            pytest.skip(
-                "Could not locate SAFE_INLINE_CONST (0x1122334455667788) load in microcode"
-            )
+        ea = _find_in_rdata(SAFE_VALUE, size=8)
+        if ea == idaapi.BADADDR:
+            pytest.skip("SAFE_INLINE_CONST (0x1122334455667788) not found in .rdata")
 
-        result = rule._try_inline_globals(blk, ins)
+        result = rule._get_global_constant(ea, 8)
 
-        assert result >= 1, (
-            f"Expected _try_inline_globals to inline SAFE_INLINE_CONST=0x{SAFE_VALUE:X}, "
-            f"got result={result}"
-        )
-        # The ldx should have been rewritten to m_mov carrying the immediate.
-        assert ins.opcode == ida_hexrays.m_mov, (
-            f"Expected opcode m_mov after inlining, got {ins.opcode}"
+        assert result == SAFE_VALUE, (
+            f"Expected {SAFE_VALUE:#x} from {ea:#x}, got {result!r}"
         )
 
     @pytest.mark.ida_required
-    def test_try_inline_globals_skips_badaddr_sentinel(
-        self, libobfuscated_setup, monkeypatch
-    ):
-        """Must return 0 when the global contains an all-ones BADADDR sentinel.
+    def test_skips_badaddr_sentinel(self, libobfuscated_setup):
+        """``_looks_like_pointer`` must return ``True`` for the BADADDR sentinel.
 
-        Uses real microcode from ``global_const_rva_guard`` for the instruction
-        object; only ``_read_constant_value`` is patched to return ``BADADDR``
-        so the ``_BadaddrSentinelHandler`` path inside ``_looks_like_pointer``
-        is exercised without requiring the binary to contain actual all-ones data.
+        The all-ones value ``0xFFFFFFFFFFFFFFFF`` is caught by
+        ``_BadaddrSentinelHandler`` before any segment lookup.  We test
+        ``_looks_like_pointer`` directly because no real binary address
+        ordinarily holds the all-ones pattern.
         """
-        rule = gci.GlobalConstantInliner()
-        mba = _gen_microcode("global_const_rva_guard")
-        if mba is None:
-            pytest.skip("global_const_rva_guard not found in binary")
+        result = gci._looks_like_pointer(int(idaapi.BADADDR), 8)
 
-        blk, ins = _find_any_const_ldx(mba)
-        if ins is None:
-            pytest.skip("No constant-global ldx found in global_const_rva_guard")
-
-        # Patch only the value-reader to simulate a BADADDR sentinel stored at
-        # the address.  All IDA segment/flag APIs remain real.
-        monkeypatch.setattr(
-            gci, "_read_constant_value", lambda ea, sz: int(idaapi.BADADDR)
-        )
-
-        result = rule._try_inline_globals(blk, ins)
-
-        assert result == 0, (
-            "BADADDR sentinel (0xFFFFFFFFFFFFFFFF) must not be inlined; "
-            f"got result={result}"
-        )
-        # Opcode must remain m_ldx -- no rewrite occurred.
-        assert ins.opcode == ida_hexrays.m_ldx, (
-            "Instruction opcode must remain m_ldx when BADADDR is encountered"
+        assert result is True, (
+            "Expected _looks_like_pointer to flag BADADDR (0xFFFFFFFFFFFFFFFF) "
+            f"as pointer-like; got {result!r}"
         )
