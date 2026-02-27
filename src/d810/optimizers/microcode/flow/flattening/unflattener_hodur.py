@@ -1876,6 +1876,9 @@ class HodurUnflattener(GenericUnflatteningRule):
                         )
                         if result is not None:
                             kind, info = result
+                            if kind == "literal":
+                                const_val, insn_ea = info
+                                return (current, kind, (const_val, insn_ea, scan_serial))
                             return (current, kind, info)
                     return None
                 current = succ
@@ -1890,7 +1893,11 @@ class HodurUnflattener(GenericUnflatteningRule):
                         )
                         if result is not None:
                             kind, info = result
-                            branches.append((current, kind, info))
+                            if kind == "literal":
+                                const_val, insn_ea = info
+                                branches.append((current, kind, (const_val, insn_ea, current)))
+                            else:
+                                branches.append((current, kind, info))
                     else:
                         sub = self._trace_case_body(succ, switch_head, max_depth=16, _visited=_visited)
                         if sub is not None:
@@ -1930,7 +1937,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             if kind == "terminal":
                 return 0
             if kind == "literal":
-                const_value, insn_ea = info
+                const_value, insn_ea, write_blk = info if len(info) == 3 else (*info, tail_serial)
                 target = self._jtbl_state_to_handler.get(const_value)
                 if target is not None:
                     self.deferred.queue_goto_change(
@@ -1939,7 +1946,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                         description=f"jtbl-resolve: blk[{entry_serial}] state 0x{const_value:x} -> blk[{target}]",
                     )
                     self.deferred.queue_insn_nop(
-                        tail_serial,
+                        write_blk,
                         insn_ea,
                         description=f"jtbl-resolve: nop state write at ea=0x{insn_ea:x}",
                     )
