@@ -266,9 +266,17 @@ class TestVerify:
 
     def test_verify_success(self):
         """Test verify() returns True when safe_verify succeeds."""
+        import d810.hexrays as _hx_pkg
+
         mock_cfg_verify = Mock()
         mock_cfg_verify.safe_verify.return_value = None
 
+        original_attr = getattr(_hx_pkg, 'cfg_verify', None)
+        original_mod = sys.modules.get('d810.hexrays.cfg_verify')
+        # Patch both the package attribute and sys.modules so that
+        # `from d810.hexrays import cfg_verify` inside IDABackend.verify()
+        # resolves to the mock regardless of which lookup path Python uses.
+        _hx_pkg.cfg_verify = mock_cfg_verify
         sys.modules['d810.hexrays.cfg_verify'] = mock_cfg_verify
         try:
             backend = IDABackend()
@@ -279,13 +287,25 @@ class TestVerify:
             assert result is True
             mock_cfg_verify.safe_verify.assert_called_once_with(mock_mba, "IDABackend.verify()")
         finally:
-            sys.modules.pop('d810.hexrays.cfg_verify', None)
+            if original_attr is not None:
+                _hx_pkg.cfg_verify = original_attr
+            else:
+                _hx_pkg.__dict__.pop('cfg_verify', None)
+            if original_mod is not None:
+                sys.modules['d810.hexrays.cfg_verify'] = original_mod
+            else:
+                sys.modules.pop('d810.hexrays.cfg_verify', None)
 
     def test_verify_failure(self):
         """Test verify() returns False when safe_verify raises RuntimeError."""
+        import d810.hexrays as _hx_pkg
+
         mock_cfg_verify = Mock()
         mock_cfg_verify.safe_verify.side_effect = RuntimeError("verify failed")
 
+        original_attr = getattr(_hx_pkg, 'cfg_verify', None)
+        original_mod = sys.modules.get('d810.hexrays.cfg_verify')
+        _hx_pkg.cfg_verify = mock_cfg_verify
         sys.modules['d810.hexrays.cfg_verify'] = mock_cfg_verify
         try:
             backend = IDABackend()
@@ -295,7 +315,14 @@ class TestVerify:
 
             assert result is False
         finally:
-            sys.modules.pop('d810.hexrays.cfg_verify', None)
+            if original_attr is not None:
+                _hx_pkg.cfg_verify = original_attr
+            else:
+                _hx_pkg.__dict__.pop('cfg_verify', None)
+            if original_mod is not None:
+                sys.modules['d810.hexrays.cfg_verify'] = original_mod
+            else:
+                sys.modules.pop('d810.hexrays.cfg_verify', None)
 
 
 @pytest.mark.skipif(not IDA_AVAILABLE, reason="Requires IDA")
