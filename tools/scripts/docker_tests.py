@@ -4,12 +4,15 @@ Run d810 tests via Docker: either docker-compose (unit/integration/all) or
 a single image (system tests / pseudocode dump). Cross-platform (macOS, Linux, Windows).
 Python 3.11+.
 
+This script inlines the logic of run_system_tests_docker.sh and test_with_docker.sh;
+it does not call those scripts.
+
 Usage:
-  Compose:  docker_tests.py unit [service]
-            docker_tests.py integration [service]
-            docker_tests.py all [service]
-  Image:    docker_tests.py system [--worktree REL]
-            docker_tests.py dump [OPTIONS] [-- PYTEST_ARGS ...]
+  Compose (test_with_docker.sh):  docker_tests.py unit [service]
+                                 docker_tests.py integration [service]
+                                 docker_tests.py all [service]
+  Image (run_system_tests_docker.sh):  docker_tests.py system [--worktree REL]
+                                       docker_tests.py dump [OPTIONS] [-- PYTEST_ARGS ...]
 
 Environment: D810_REPO_ROOT, D810_WORKTREE_ROOT, D810_DOCKER_IMAGE,
              D810_NO_CYTHON, D810_TEST_BINARY
@@ -24,6 +27,23 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# Container paths and commands (system_dump_mode; match run_system_tests_docker.sh)
+_IDA_APP = "/app/ida"
+_IDA_PYTHON = f"{_IDA_APP}/python"
+_WORK = "/work"
+_VENV_PIP = f"{_IDA_APP}/.venv/bin/pip"
+_VENV_PYTHON = f"{_IDA_APP}/.venv/bin/python"
+_PYTHONPATH_VAL = f"{_WORK}/src:{_IDA_PYTHON}"
+_EXPORT_IDA = (
+    f"export IDA_PREFIX={_IDA_APP} IDA_INSTALL_DIR={_IDA_APP} "
+    f"D810_LIBCLANG_PATH={_IDA_APP}/libclang.so PYTHONPATH={_PYTHONPATH_VAL}:$PYTHONPATH"
+)
+_PIP_INSTALL = f"{_VENV_PIP} install -e .[dev] -q"
+_SPEEDUPS = f"{_VENV_PYTHON} -m d810.speedups.install"
+_PYTEST_SYSTEM = f"{_VENV_PYTHON} -m pytest tests/system -v"
+_PYTEST_DUMP = f"{_VENV_PYTHON} -m pytest -s tests/system/e2e/test_dump_function_pseudocode.py"
+_WORK_TMP = f"{_WORK}/.tmp"
 
 
 def get_repo_root() -> Path:
@@ -71,7 +91,10 @@ def compose_mode(
     if not compose_file.is_file():
         print("ERROR: docker-compose.yml not found", file=sys.stderr)
         return 1
-    (repo_root / ".env").touch()
+    env_file = repo_root / ".env"
+    if not env_file.is_file():
+        print("Creating .env file...")
+        env_file.touch()
 
     print("======================================================================")
     print("D810-NG Docker Test Runner (compose)")
@@ -83,6 +106,8 @@ def compose_mode(
     unit_script = """
 set -e
 pip install -e .[dev]
+
+# Run unit tests (no IDA required)
 echo '========================================='
 echo 'Running unit tests (no IDA required)...'
 echo '========================================='
@@ -92,10 +117,15 @@ PYTHONPATH=src pytest tests/unit/ -v --tb=short
     integration_script = """
 set -e
 pip install -e .[dev]
+
+# Check if test binary exists
 if [ ! -f samples/bins/libobfuscated.dll ]; then
   echo 'Test binary not found, skipping integration tests'
   exit 0
 fi
+
+# Run integration tests with pytest
+echo ''
 echo '========================================='
 echo 'Running integration tests with pytest...'
 echo '========================================='
@@ -182,16 +212,16 @@ def system_dump_mode(
         "run",
         "--rm",
         "-v",
-        _volume_arg(work_dir, "/work"),
+        _volume_arg(work_dir, _WORK),
         "-w",
-        "/work",
+        _WORK,
     ]
 
     for key, val in (
-        ("IDA_PREFIX", "/app/ida"),
-        ("IDA_INSTALL_DIR", "/app/ida"),
-        ("D810_LIBCLANG_PATH", "/app/ida/libclang.so"),
-        ("PYTHONPATH", "/work/src:/app/ida/python"),
+        ("IDA_PREFIX", _IDA_APP),
+        ("IDA_INSTALL_DIR", _IDA_APP),
+        ("D810_LIBCLANG_PATH", f"{_IDA_APP}/libclang.so"),
+        ("PYTHONPATH", _PYTHONPATH_VAL),
         ("D810_NO_CYTHON", env_no_cython),
         ("D810_TEST_BINARY", env_test_binary),
     ):
@@ -204,15 +234,15 @@ def system_dump_mode(
 
     if command == "system":
         inner = (
-            "/app/ida/.venv/bin/pip install -e .[dev] -q && "
-            "/app/ida/.venv/bin/python -m d810.speedups.install && "
-            "/app/ida/.venv/bin/python -m pytest tests/system -v"
+            f"{_EXPORT_IDA} && "
+            f"{_PIP_INSTALL} && "
+            f"{_SPEEDUPS} && "
+            f"D810_NO_CYTHON={env_no_cython} D810_TEST_BINARY={env_test_binary} {_PYTEST_SYSTEM}"
         )
-        docker_args.extend(["--entrypoint", "/bin/sh", docker_image, "-c", inner])
+        docker_args.extend(["--entrypoint", "/bin/bash", docker_image, "-lc", inner])
         return run(docker_args)
 
     # dump
-    pytest_cmd = "/app/ida/.venv/bin/python -m pytest -s tests/system/e2e/test_dump_function_pseudocode.py"
     dump_args = []
     if dump_function:
         dump_args.extend(["--dump-function-pseudocode", dump_function])
@@ -230,21 +260,23 @@ def system_dump_mode(
         log_path.write_text("", encoding="utf-8")
 
     cmd_parts = [
-        "/app/ida/.venv/bin/pip install -e .[dev] -q",
-        "/app/ida/.venv/bin/python -m d810.speedups.install",
+        _EXPORT_IDA,
+        _PIP_INSTALL,
+        _SPEEDUPS,
     ]
     pytest_inner = (
-        f"D810_NO_CYTHON={env_no_cython} D810_TEST_BINARY={env_test_binary} {pytest_cmd} "
+        f"D810_NO_CYTHON={env_no_cython} D810_TEST_BINARY={env_test_binary} {_PYTEST_DUMP} "
         + " ".join(shlex.quote(a) for a in dump_args)
     )
     if log_path is not None:
-        log_in_container = f"/work/.tmp/{dump_out}"
+        log_in_container = f"{_WORK_TMP}/{dump_out}"
+        cmd_parts.append(f': > "{log_in_container}"')
         cmd_parts.append(f'{pytest_inner} > "{log_in_container}" 2>&1')
     else:
         cmd_parts.append(pytest_inner)
 
     inner = " && ".join(cmd_parts)
-    docker_args.extend(["--entrypoint", "/bin/sh", docker_image, "-c", inner])
+    docker_args.extend(["--entrypoint", "/bin/bash", docker_image, "-lc", inner])
     return run(docker_args)
 
 
