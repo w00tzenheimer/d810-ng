@@ -32,6 +32,7 @@ import os
 import pathlib
 import platform
 import random
+import shutil
 import subprocess
 import tempfile
 from d810.core.typing import Any
@@ -55,6 +56,35 @@ def _cleanup_temp_libs() -> None:
 
 
 atexit.register(_cleanup_temp_libs)
+
+# Candidate compilers tried in preference order when D810_C_COMPILER is not set.
+_COMPILER_CANDIDATES = ["clang", "gcc", "g++", "cc"]
+
+
+def _find_compiler() -> str:
+    """Return the C compiler to use, checking the environment then PATH.
+
+    Resolution order:
+    1. ``D810_C_COMPILER`` environment variable (explicit override)
+    2. First of ``clang``, ``gcc``, ``g++``, ``cc`` found on PATH
+
+    Raises:
+        RuntimeError: If no suitable compiler is found.
+    """
+    if "D810_C_COMPILER" in os.environ:
+        compiler = os.environ["D810_C_COMPILER"]
+        logger.debug(f"Using compiler from D810_C_COMPILER: {compiler}")
+        return compiler
+
+    for candidate in _COMPILER_CANDIDATES:
+        if shutil.which(candidate) is not None:
+            logger.debug(f"Auto-detected compiler: {candidate}")
+            return candidate
+
+    raise RuntimeError(
+        "No C compiler found. Install clang or gcc, or set D810_C_COMPILER "
+        f"to the path of a compiler. Tried: {_COMPILER_CANDIDATES}"
+    )
 
 
 def compile_reference_function(
@@ -107,8 +137,8 @@ def compile_reference_function(
     include_dir = src_path.parent.parent.parent / "include"
 
     # Build compiler command
-    # Use clang as default (can be overridden with D810_C_COMPILER env var)
-    compiler = os.environ.get("D810_C_COMPILER", "clang")
+    # Use clang if available, fall back to gcc/g++, or honour D810_C_COMPILER.
+    compiler = _find_compiler()
     cmd = [
         compiler,
         "-shared",
