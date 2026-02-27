@@ -3,31 +3,46 @@
 # Paths are repo-relative; no host-specific paths.
 #
 # Usage:
-#   ./run_system_tests_docker.sh system [--worktree REL_PATH]
+#   ./run_system_tests_docker.sh system [OPTIONS]
 #   ./run_system_tests_docker.sh dump [OPTIONS] [-- PYTEST_ARGS...]
+#   ./run_system_tests_docker.sh shell [OPTIONS]
 #
 # Commands:
-#   system    Run full system tests: pytest tests/system
-#   dump      Run dump pseudocode e2e test (optionally with --dump-function-pseudocode, etc.)
+#   system    Run SETUP then: pytest tests/system -v
+#   dump      Run SETUP then: pytest -s tests/system/e2e/test_dump_function_pseudocode.py [OPTIONS]
+#   shell     Run SETUP then start an interactive bash (docker run -it)
 #
-# Options for dump:
+# SETUP (same for all commands): export IDA/PYTHONPATH env, pip install -e .[dev], python -m d810.speedups.install
+#
+# Options (system/shell):
+#   -w, --worktree REL      Use worktree at REPO_ROOT/WORKTREE_ROOT/REL as /work (default worktree root: .worktrees)
+#   -l, --logs              Mount work dir .tmp/logs at /root/.idapro/logs
+#
+# Options (dump only):
 #   -f, --function NAME     Pass --dump-function-pseudocode NAME
 #   -m, --maturity LIST     Pass --dump-microcode-maturity LIST (comma-separated)
 #   -p, --project NAME      Pass --dump-project NAME (JSON project name)
-#   -o, --out FILE          Redirect stdout+stderr to FILE under work dir .tmp/
-#   -w, --worktree REL      Use worktree at REPO_ROOT/WORKTREE_ROOT/REL as /work (WORKTREE_ROOT defaults to .worktrees)
-#   -l, --logs              Mount .tmp/logs at /root/.idapro/logs
+#   -o, --out FILE          Redirect stdout+stderr to .tmp/FILE; file is truncated at start of each run (not appended)
 #   --                      Remaining args passed to pytest
 #
-# Environment:
+# Inside the container:
+#   CMD=system|dump|shell   Current command (also set for shell so scripts can branch)
+#   PYTHON=/app/ida/.venv/bin/python   Venv Python interpreter
+#   PIP=/app/ida/.venv/bin/pip         Venv pip
+#   IDA_PREFIX, IDA_INSTALL_DIR, D810_LIBCLANG_PATH, PYTHONPATH, D810_NO_CYTHON, D810_TEST_BINARY  Set for tests
+#
+# Environment (host):
 #   D810_DOCKER_IMAGE       Docker image (default: idapro-9.3)
-#   D810_REPO_ROOT          Repo root (default: git rev-parse --show-toplevel from cwd)
-#   D810_WORKTREE_ROOT      Dir under repo root for worktrees (default: .worktrees)
-#   D810_NO_CYTHON          If set, passed into container (e.g. 1)
-#   D810_TEST_BINARY        Passed into container (e.g. libobfuscated.dll)
+#   D810_REPO_ROOT         Repo root (default: git rev-parse --show-toplevel from cwd)
+#   D810_WORKTREE_ROOT     Dir under repo root for worktrees (default: .worktrees)
+#   D810_NO_CYTHON         Passed into container (default: 1)
+#   D810_TEST_BINARY       Passed into container (default: libobfuscated.dll)
 #
 # Examples:
 #   ./run_system_tests_docker.sh system
+#   ./run_system_tests_docker.sh system -w my-worktree
+#   ./run_system_tests_docker.sh shell
+#   ./run_system_tests_docker.sh shell -w verifycpp-on-ngcfgpass -l
 #   ./run_system_tests_docker.sh dump -f sub_7FFD3338C040 -m LOCOPT,CALLS,GLBOPT1,GLBOPT2 -p hodur_flag2.json -o hodur_flag2_dump.txt
 #   ./run_system_tests_docker.sh dump -f AntiDebug_ExceptionFilter -p example_libobfuscated.json -o antidebug_dump4.txt -w verifycpp-on-ngcfgpass -l
 set -e
@@ -48,9 +63,14 @@ REPO_ROOT="$(cd "$REPO_ROOT" && pwd)"
 
 CMD="${1:-}"
 shift || true
-if [ "$CMD" != "system" ] && [ "$CMD" != "dump" ]; then
-  echo "Usage: $0 system [--worktree REL] | dump [OPTIONS] [-- PYTEST_ARGS...]" >&2
-  echo "Commands: system | dump" >&2
+if [ "$CMD" != "system" ] && [ "$CMD" != "dump" ] && [ "$CMD" != "shell" ]; then
+  if [ "$CMD" = "-h" ] || [ "$CMD" = "--help" ]; then
+    sed -n '2,/^set -e$/p' "$0" | sed '$d'
+    exit 0
+  fi
+  echo "Usage: $0 system [--worktree REL] | dump [OPTIONS] [-- PYTEST_ARGS...] | shell [--worktree REL]" >&2
+  echo "Commands: system | dump | shell" >&2
+  echo "Run with --help for full help." >&2
   exit 1
 fi
 
@@ -130,6 +150,12 @@ ENV_IDA="IDA_PREFIX=/app/ida IDA_INSTALL_DIR=/app/ida D810_LIBCLANG_PATH=/app/id
 ENV_PYTHON="PYTHONPATH=${PYWORK}:/app/ida/python:\$PYTHONPATH"
 ENV_TEST="D810_NO_CYTHON=${D810_NO_CYTHON:-1} D810_TEST_BINARY=${D810_TEST_BINARY:-libobfuscated.dll}"
 
+IDA_VENV_PIP="/app/ida/.venv/bin/pip"
+IDA_VENV_PYTHON="/app/ida/.venv/bin/python"
+
+# One-time setup: export env, pip install -e .[dev], d810.speedups.install
+SETUP_CMD="export $ENV_IDA $ENV_PYTHON && $IDA_VENV_PIP install -e .[dev] -q && $IDA_VENV_PYTHON -m d810.speedups.install"
+
 run_bash() {
   local inner="$1"
   docker run --rm \
@@ -139,16 +165,33 @@ run_bash() {
     --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$inner"
 }
 
+run_bash_it() {
+  local inner="$1"
+  docker run -it --rm \
+    $VOL_WORK \
+    $VOL_LOGS \
+    -w /work \
+    -e "CMD=$CMD" \
+    -e "PYTHON=$IDA_VENV_PYTHON" \
+    -e "PIP=$IDA_VENV_PIP" \
+    -e "D810_NO_CYTHON=${D810_NO_CYTHON:-1}" \
+    -e "D810_TEST_BINARY=${D810_TEST_BINARY:-libobfuscated.dll}" \
+    --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$inner"
+}
+
 if [ "$CMD" = "system" ]; then
-  run_bash "export $ENV_IDA $ENV_PYTHON
-    /app/ida/.venv/bin/pip install -e .[dev] -q
-    /app/ida/.venv/bin/python -m d810.speedups.install
-    $ENV_TEST /app/ida/.venv/bin/python -m pytest tests/system -v"
+  run_bash "$SETUP_CMD && $ENV_TEST $IDA_VENV_PYTHON -m pytest tests/system -v"
+  exit 0
+fi
+
+if [ "$CMD" = "shell" ]; then
+  run_bash_it "$SETUP_CMD && exec bash"
   exit 0
 fi
 
 # dump
-PYTEST_CMD="/app/ida/.venv/bin/python -m pytest -s tests/system/e2e/test_dump_function_pseudocode.py"
+PYTEST="$IDA_VENV_PYTHON -m pytest"
+PYTEST_DUMP="$PYTEST -s tests/system/e2e/test_dump_function_pseudocode.py"
 DUMP_ARGS=()
 [ -n "$DUMP_FUNCTION" ] && DUMP_ARGS+=(--dump-function-pseudocode "$DUMP_FUNCTION")
 [ -n "$DUMP_MATURITY" ] && DUMP_ARGS+=(--dump-microcode-maturity "$DUMP_MATURITY")
@@ -164,8 +207,5 @@ if [ -n "$DUMP_OUT" ]; then
   REDIR="> \"$LOG_PATH\" 2>&1"
 fi
 
-INNER="export $ENV_IDA $ENV_PYTHON
-  $TRUNCATE_CMD/app/ida/.venv/bin/pip install -e .[dev] -q
-  /app/ida/.venv/bin/python -m d810.speedups.install
-  $ENV_TEST $PYTEST_CMD ${DUMP_ARGS[*]} -v $REDIR"
+INNER="$SETUP_CMD && ${TRUNCATE_CMD}$ENV_TEST $PYTEST_DUMP ${DUMP_ARGS[*]} -v $REDIR"
 run_bash "$INNER"
