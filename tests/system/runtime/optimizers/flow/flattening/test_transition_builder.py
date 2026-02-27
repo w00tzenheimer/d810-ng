@@ -161,6 +161,33 @@ class TestConvertBstToResultConditional:
 # ---------------------------------------------------------------------------
 
 
+class TestBSTAnalysisResultDefaults:
+    def test_bst_node_blocks_defaults_to_empty_set(self):
+        bst = BSTAnalysisResult(
+            handler_state_map={},
+            handler_range_map={},
+            transitions={},
+            conditional_transitions={},
+            exits=set(),
+            pre_header_serial=None,
+            initial_state=None,
+        )
+        assert bst.bst_node_blocks == set()
+
+    def test_bst_node_blocks_accepts_values(self):
+        bst = BSTAnalysisResult(
+            handler_state_map={10: 100},
+            handler_range_map={},
+            transitions={},
+            conditional_transitions={},
+            exits=set(),
+            pre_header_serial=None,
+            initial_state=None,
+            bst_node_blocks={5, 7, 9},
+        )
+        assert bst.bst_node_blocks == {5, 7, 9}
+
+
 class TestConvertBstToResultEdgeCases:
     def test_empty_bst(self):
         bst = BSTAnalysisResult(
