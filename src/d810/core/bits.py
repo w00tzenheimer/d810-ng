@@ -178,14 +178,23 @@ def get_parity_flag(op1: int, op2: int, nb_bytes: int) -> int:
 # =============================================================================
 
 def ror(x: int, n: int, nb_bits: int = 32) -> int:
-    """Rotate right."""
-    mask = (2**n) - 1
-    mask_bits = x & mask
-    return (x >> n) | (mask_bits << (nb_bits - n))
+    """Rotate right.
+
+    Masks the input to *nb_bits* before rotating and masks the result,
+    so callers need not pre-sanitize the value.
+    """
+    full_mask = (1 << nb_bits) - 1
+    x &= full_mask
+    n %= nb_bits
+    return ((x >> n) | (x << (nb_bits - n))) & full_mask
 
 
 def rol(x: int, n: int, nb_bits: int = 32) -> int:
-    """Rotate left."""
+    """Rotate left.
+
+    Masks the input to *nb_bits* before rotating and masks the result,
+    so callers need not pre-sanitize the value.
+    """
     return ror(x, nb_bits - n, nb_bits)
 
 
