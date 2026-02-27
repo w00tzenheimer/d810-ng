@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import platform
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +12,13 @@ import ida_hexrays
 from d810.core.stats import OptimizationStatistics
 from d810.hexrays.hexrays_hooks import InstructionOptimizerManager
 from d810.optimizers.microcode.instructions.pattern_matching.handler import PatternOptimizer
+
+
+def _get_default_binary() -> str:
+    override = os.environ.get("D810_TEST_BINARY")
+    if override:
+        return override
+    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
 
 
 class _NamedRule:
@@ -53,14 +62,12 @@ class _CaptureOptimizer:
         return None
 
 
-
 class _PatternRule:
     def __init__(self, name: str, replacement):
         self.name = name
         self._replacement = replacement
         self.calls = 0
-        # Add maturities attribute for per-rule maturity checks
-        self.maturities = [2, 3, 4, 5]  # All maturities by default
+        self.maturities = [2, 3, 4, 5]
 
     def check_pattern_and_replace(self, pattern, candidate):
         self.calls += 1
@@ -71,51 +78,60 @@ def _make_block(func_ea: int) -> SimpleNamespace:
     return SimpleNamespace(mba=SimpleNamespace(entry_ea=func_ea), serial=0)
 
 
-def test_instruction_scope_cache_is_used_per_function_and_maturity(monkeypatch):
-    monkeypatch.setattr(
-        "d810.hexrays.hexrays_hooks.InstructionVisitorManager",
-        lambda _optimizer: SimpleNamespace(),
-    )
-    manager = InstructionOptimizerManager(OptimizationStatistics(), Path("."))
-    manager.analyzer = SimpleNamespace(analyze=lambda *_args, **_kwargs: None)
-    capture = _CaptureOptimizer()
-    manager.instruction_optimizers = [capture]
-    manager._active_optimizers = list(manager.instruction_optimizers)
+class TestInstructionScopeCaching:
+    """Tests for InstructionOptimizerManager rule-scope caching behavior.
 
-    scope_service = _FakeRuleScopeService(
-        {
-            (0x401000, 1): (_NamedRule("Rule.A"), _NamedRule("Rule.B")),
-            (0x401000, 2): (_NamedRule("Rule.C"),),
-            (0x402000, 2): (_NamedRule("Rule.D"),),
-        }
-    )
-    manager.configure(
-        rule_scope_service=scope_service,
-        rule_scope_project_name="proj",
-        rule_scope_idb_key="idb",
-    )
+    Requires a real IDB so that minsn_visitor_t.__init__() (called inside
+    InstructionOptimizerManager.__init__) has valid IDA state.
+    """
 
-    ins = SimpleNamespace(opcode=ida_hexrays.m_add)
-    blk_401000 = _make_block(0x401000)
+    binary_name = _get_default_binary()
 
-    manager.current_maturity = 1
-    assert manager.optimize(blk_401000, ins) is False
-    assert capture.allowed[-1] == frozenset({"Rule.A", "Rule.B"})
-    assert len(scope_service.calls) == 1
+    def test_instruction_scope_cache_is_used_per_function_and_maturity(
+        self, libobfuscated_setup
+    ):
+        manager = InstructionOptimizerManager(OptimizationStatistics(), Path("."))
+        manager.analyzer = SimpleNamespace(analyze=lambda *_args, **_kwargs: None)
+        capture = _CaptureOptimizer()
+        manager.instruction_optimizers = [capture]
+        manager._active_optimizers = list(manager.instruction_optimizers)
 
-    assert manager.optimize(blk_401000, ins) is False
-    assert len(scope_service.calls) == 1
+        scope_service = _FakeRuleScopeService(
+            {
+                (0x401000, 1): (_NamedRule("Rule.A"), _NamedRule("Rule.B")),
+                (0x401000, 2): (_NamedRule("Rule.C"),),
+                (0x402000, 2): (_NamedRule("Rule.D"),),
+            }
+        )
+        manager.configure(
+            rule_scope_service=scope_service,
+            rule_scope_project_name="proj",
+            rule_scope_idb_key="idb",
+        )
 
-    manager.current_maturity = 2
-    assert manager.optimize(blk_401000, ins) is False
-    assert capture.allowed[-1] == frozenset({"Rule.C"})
-    assert len(scope_service.calls) == 2
+        ins = SimpleNamespace(opcode=ida_hexrays.m_add)
+        blk_401000 = _make_block(0x401000)
 
-    blk_402000 = _make_block(0x402000)
-    assert manager.optimize(blk_402000, ins) is False
-    assert capture.allowed[-1] == frozenset({"Rule.D"})
-    assert len(scope_service.calls) == 3
+        manager.current_maturity = 1
+        assert manager.optimize(blk_401000, ins) is False
+        assert capture.allowed[-1] == frozenset({"Rule.A", "Rule.B"})
+        assert len(scope_service.calls) == 1
 
+        # Second call with same (func_ea, maturity) must NOT re-query the service.
+        assert manager.optimize(blk_401000, ins) is False
+        assert len(scope_service.calls) == 1
+
+        # New maturity → new query.
+        manager.current_maturity = 2
+        assert manager.optimize(blk_401000, ins) is False
+        assert capture.allowed[-1] == frozenset({"Rule.C"})
+        assert len(scope_service.calls) == 2
+
+        # New func_ea → new query.
+        blk_402000 = _make_block(0x402000)
+        assert manager.optimize(blk_402000, ins) is False
+        assert capture.allowed[-1] == frozenset({"Rule.D"})
+        assert len(scope_service.calls) == 3
 
 
 def test_pattern_optimizer_filters_matches_by_allowed_rule_names(monkeypatch):

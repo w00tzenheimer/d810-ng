@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from d810.core.persistence import ActiveRuleRecipeConfig
+import tempfile
+
+from d810.core.persistence import ActiveRuleRecipeConfig, create_optimization_storage
 from d810.core.rule_scope import RuleScopeEvent, RuleScopeInvalidation
 from d810.manager import D810Manager
 
@@ -99,7 +101,7 @@ def test_recipe_apply_and_clear_emit_events_and_persist():
     assert cleared[0].reason == RuleScopeEvent.RECIPE_CLEARED
 
 
-def test_init_storage_loads_persisted_recipe_and_emits_events(monkeypatch):
+def test_init_storage_loads_persisted_recipe_and_emits_events():
     persisted = ActiveRuleRecipeConfig(
         name="persisted_recipe",
         enabled_rules={"RuleA"},
@@ -109,34 +111,41 @@ def test_init_storage_loads_persisted_recipe_and_emits_events(monkeypatch):
         target_tags_all={"flattened"},
         notes="persisted",
     )
-    fake_storage = _FakeStorage(recipe=persisted)
 
-    manager = _build_manager()
-    manager.storage = None
-    manager.rule_scope_service.attach(manager.event_emitter)
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test_rules.db"
 
-    captured_reloaded: list[RuleScopeInvalidation] = []
-    captured_applied: list[RuleScopeInvalidation] = []
-    manager.event_emitter.on(
-        RuleScopeEvent.IDB_OVERLAY_RELOADED,
-        lambda payload: captured_reloaded.append(payload),
-    )
-    manager.event_emitter.on(
-        RuleScopeEvent.RECIPE_APPLIED,
-        lambda payload: captured_applied.append(payload),
-    )
+        # Pre-seed a real SQLite storage with the persisted recipe.
+        seed = create_optimization_storage(db_path)
+        seed.set_active_rule_recipe(persisted)
+        seed.close()
 
-    monkeypatch.setattr(
-        "d810.manager.create_optimization_storage",
-        lambda _target, backend="sqlite": fake_storage,
-    )
+        manager = _build_manager()
+        # Point _init_storage at our pre-seeded DB.
+        manager.config["function_rules_storage"] = db_path
+        manager.storage = None
+        manager.rule_scope_service.attach(manager.event_emitter)
 
-    manager._init_storage()
+        captured_reloaded: list[RuleScopeInvalidation] = []
+        captured_applied: list[RuleScopeInvalidation] = []
+        manager.event_emitter.on(
+            RuleScopeEvent.IDB_OVERLAY_RELOADED,
+            lambda payload: captured_reloaded.append(payload),
+        )
+        manager.event_emitter.on(
+            RuleScopeEvent.RECIPE_APPLIED,
+            lambda payload: captured_applied.append(payload),
+        )
 
-    active = manager.get_active_rule_recipe()
-    assert active is not None
-    assert active.name == "persisted_recipe"
-    assert active.enabled_rules == frozenset({"RuleA"})
-    assert active.disabled_rules == frozenset({"RuleB"})
-    assert len(captured_applied) == 1
-    assert len(captured_reloaded) == 1
+        manager._init_storage()
+
+        active = manager.get_active_rule_recipe()
+        assert active is not None
+        assert active.name == "persisted_recipe"
+        assert active.enabled_rules == frozenset({"RuleA"})
+        assert active.disabled_rules == frozenset({"RuleB"})
+        assert len(captured_applied) == 1
+        assert len(captured_reloaded) == 1
+
+        if manager.storage is not None:
+            manager.storage.close()
