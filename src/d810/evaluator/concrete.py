@@ -232,8 +232,9 @@ class ConcreteEvaluator:
                 lv = _ev(left)
                 return None if lv is None else (-lv) & res_mask
             case ida_hexrays.m_lnot:
+                # Logical NOT: returns 1 when operand is zero, 0 otherwise (!x in C).
                 lv = _ev(left)
-                return None if lv is None else int(lv != 0) & res_mask
+                return None if lv is None else int(lv == 0) & res_mask
             case ida_hexrays.m_bnot:
                 lv = _ev(left)
                 return None if lv is None else (lv ^ res_mask) & res_mask

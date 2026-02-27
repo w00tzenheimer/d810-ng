@@ -295,7 +295,8 @@ class MicroCodeInterpreter(object):
         elif ins.opcode == ida_hexrays.m_neg:
             return (-self.eval(ins.l, environment)) & res_mask
         elif ins.opcode == ida_hexrays.m_lnot:
-            return self.eval(ins.l, environment) != 0
+            # Logical NOT: returns 1 when operand is zero, 0 otherwise (!x in C).
+            return int(self.eval(ins.l, environment) == 0) & res_mask
         elif ins.opcode == ida_hexrays.m_bnot:
             return (self.eval(ins.l, environment) ^ res_mask) & res_mask
         elif ins.opcode == ida_hexrays.m_xds:

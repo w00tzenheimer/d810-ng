@@ -303,15 +303,27 @@ class TestUnaryOpcodes:
         node = _Node(_OPC.m_neg, _ConstLeaf(0, 1), dest_size=1)
         assert ev.evaluate(node, {}) == 0
 
-    def test_m_lnot_nonzero_returns_true(self, ev):
-        """lnot of any nonzero value is True."""
+    def test_m_lnot_nonzero_returns_zero(self, ev):
+        """lnot of any nonzero value is 0 — logical NOT: !42 == 0 in C."""
         node = _Node(_OPC.m_lnot, _ConstLeaf(42, 1), dest_size=1)
-        assert ev.evaluate(node, {}) is True
+        result = ev.evaluate(node, {})
+        assert result == 0
+        assert isinstance(result, int), f"Expected int, got {type(result).__name__}"
 
-    def test_m_lnot_zero_returns_false(self, ev):
-        """lnot of zero is False."""
+    def test_m_lnot_zero_returns_one(self, ev):
+        """lnot of zero is 1 — logical NOT: !0 == 1 in C."""
         node = _Node(_OPC.m_lnot, _ConstLeaf(0, 1), dest_size=1)
-        assert ev.evaluate(node, {}) is False
+        result = ev.evaluate(node, {})
+        assert result == 1
+        assert isinstance(result, int), f"Expected int, got {type(result).__name__}"
+
+    def test_m_lnot_result_is_masked_to_dest_size(self, ev):
+        """lnot(0) in 4-byte dest: int(0 == 0) & 0xFFFFFFFF == 1."""
+        # dest_size=4 -> res_mask=0xFFFFFFFF; int(True) & mask == 1
+        node = _Node(_OPC.m_lnot, _ConstLeaf(0, 4), dest_size=4)
+        result = ev.evaluate(node, {})
+        assert result == 1
+        assert 0 <= result <= 0xFFFFFFFF
 
     def test_m_bnot_8bit(self, ev):
         """bnot(0xAA) in 8-bit == 0x55."""
@@ -741,11 +753,25 @@ class TestErrorCases:
         with pytest.raises(ValueError, match="right is None for binary opcode"):
             ev.evaluate(node, {})
 
-    def test_division_by_zero_propagates(self, ev):
-        """ZeroDivisionError propagates upward (mirroring original behaviour)."""
+    def test_udiv_by_zero_returns_none(self, ev):
+        """m_udiv with divisor=0 returns None (safe; cannot evaluate at compile time)."""
         node = _Node(_OPC.m_udiv, _ConstLeaf(1, 4), _ConstLeaf(0, 4), dest_size=4)
-        with pytest.raises(ZeroDivisionError):
-            ev.evaluate(node, {})
+        assert ev.evaluate(node, {}) is None
+
+    def test_sdiv_by_zero_returns_none(self, ev):
+        """m_sdiv with divisor=0 returns None."""
+        node = _Node(_OPC.m_sdiv, _ConstLeaf(1, 4), _ConstLeaf(0, 4), dest_size=4)
+        assert ev.evaluate(node, {}) is None
+
+    def test_umod_by_zero_returns_none(self, ev):
+        """m_umod with divisor=0 returns None."""
+        node = _Node(_OPC.m_umod, _ConstLeaf(1, 4), _ConstLeaf(0, 4), dest_size=4)
+        assert ev.evaluate(node, {}) is None
+
+    def test_smod_by_zero_returns_none(self, ev):
+        """m_smod with divisor=0 returns None."""
+        node = _Node(_OPC.m_smod, _ConstLeaf(1, 4), _ConstLeaf(0, 4), dest_size=4)
+        assert ev.evaluate(node, {}) is None
 
     def test_left_is_none_raises(self, ev):
         """ValueError when left operand is None."""
