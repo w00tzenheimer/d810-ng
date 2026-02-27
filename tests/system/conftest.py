@@ -1187,6 +1187,27 @@ def pytest_addoption(parser):
         ),
     )
     parser.addoption(
+        "--dump-bst-maturity",
+        action="store",
+        default=None,
+        help=(
+            "Maturity level at which to dump the BST dispatcher tree (e.g. GLBOPT1). "
+            "When set, uses gen_microcode() instead of decompile() for the BST dump. "
+            "Valid values: GENERATED, PREOPTIMIZED, LOCOPT, CALLS, GLBOPT1, GLBOPT2, GLBOPT3, LVARS."
+        ),
+    )
+    parser.addoption(
+        "--dump-microcode-d810-maturity",
+        action="store",
+        default=None,
+        help=(
+            "Capture the post-D810 MBA snapshot at the specified maturity (e.g. GLBOPT1). "
+            "D810 runs normally; the MBA is snapshotted after all D810 rules fire at that "
+            "maturity and printed as a block/instruction dump. "
+            "Valid values: GENERATED, PREOPTIMIZED, LOCOPT, CALLS, GLBOPT1, GLBOPT2, GLBOPT3, LVARS."
+        ),
+    )
+    parser.addoption(
         "--unskip-research",
         action="store_true",
         default=False,

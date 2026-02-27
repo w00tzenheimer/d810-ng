@@ -24,23 +24,23 @@ Usage:
     # Force refresh
     cache.refresh()
 """
+
 from __future__ import annotations
 
 import weakref
 from dataclasses import dataclass, field
 from enum import Enum, IntFlag
-from d810.core.typing import TYPE_CHECKING
 
 import ida_hexrays
 
-from d810.core import getLogger
-from d810.optimizers.microcode.flow.analysis_stats import (
-    summarize_dispatcher_detection,
-)
+from d810.core import getLogger, logging
+from d810.core.typing import TYPE_CHECKING
+from d810.optimizers.microcode.flow.analysis_stats import summarize_dispatcher_detection
 
 # Optional emulation support
 try:
     from d810.expr.emulation_oracle import EmulationOracle, StateTransition
+
     EMULATION_AVAILABLE = True
 except ImportError:
     EMULATION_AVAILABLE = False
@@ -54,16 +54,17 @@ logger = getLogger("D810.dispatcher")
 
 class DispatcherStrategy(IntFlag):
     """Flags indicating which strategies detected a block as a dispatcher."""
+
     NONE = 0
-    HIGH_FAN_IN = 1 << 0           # >=N predecessors
-    STATE_COMPARISON = 1 << 1      # Compares against large constants
-    LOOP_HEADER = 1 << 2           # Natural loop header
-    PREDECESSOR_UNIFORM = 1 << 3   # Most preds are unconditional jumps
-    CONSTANT_FREQUENCY = 1 << 4    # Many unique constants compared
-    BACK_EDGE = 1 << 5             # Has incoming back-edges
-    NESTED_LOOP = 1 << 6           # Part of nested loop structure
-    SMALL_BLOCK = 1 << 7           # Few instructions (dispatchers are typically tight)
-    SWITCH_JUMP = 1 << 8           # Contains jtbl or computed goto
+    HIGH_FAN_IN = 1 << 0  # >=N predecessors
+    STATE_COMPARISON = 1 << 1  # Compares against large constants
+    LOOP_HEADER = 1 << 2  # Natural loop header
+    PREDECESSOR_UNIFORM = 1 << 3  # Most preds are unconditional jumps
+    CONSTANT_FREQUENCY = 1 << 4  # Many unique constants compared
+    BACK_EDGE = 1 << 5  # Has incoming back-edges
+    NESTED_LOOP = 1 << 6  # Part of nested loop structure
+    SMALL_BLOCK = 1 << 7  # Few instructions (dispatchers are typically tight)
+    SWITCH_JUMP = 1 << 8  # Contains jtbl or computed goto
 
 
 class DispatcherType(Enum):
@@ -101,6 +102,7 @@ class DispatcherType(Enum):
 @dataclass
 class BlockAnalysis:
     """Analysis results for a single block."""
+
     serial: int
     strategies: DispatcherStrategy = DispatcherStrategy.NONE
     score: float = 0.0
@@ -121,13 +123,14 @@ class BlockAnalysis:
     def is_strong_dispatcher(self) -> bool:
         """True if multiple strategies agree this is a dispatcher."""
         # Count set bits
-        count = bin(self.strategies).count('1')
+        count = bin(self.strategies).count("1")
         return count >= 2
 
 
 @dataclass
 class StateVariableCandidate:
     """A candidate for the state variable."""
+
     mop: ida_hexrays.mop_t
     mop_type: int = 0  # ida_hexrays.mop_t type (mop_S, mop_r, etc.)
     mop_offset: int = 0  # For mop_S: stack offset; for mop_r: register number
@@ -164,12 +167,15 @@ class StateVariableCandidate:
 @dataclass
 class DispatcherAnalysis:
     """Complete dispatcher analysis for a function."""
+
     func_ea: int
     maturity: int
 
     # Analysis results
     blocks: dict[int, BlockAnalysis] = field(default_factory=dict)
-    dispatchers: list[int] = field(default_factory=list)  # Block serials flagged as dispatchers
+    dispatchers: list[int] = field(
+        default_factory=list
+    )  # Block serials flagged as dispatchers
     state_variable: StateVariableCandidate | None = None
     state_constants: set[int] = field(default_factory=set)
 
@@ -191,7 +197,9 @@ class DispatcherAnalysis:
 
 # Thresholds for detection strategies
 MIN_HIGH_FAN_IN = 5
-MIN_STATE_CONSTANT = 0x100  # Lowered from 0x10000 to detect smaller state values (e.g., 0x1000-0x7000)
+MIN_STATE_CONSTANT = (
+    0x100  # Lowered from 0x10000 to detect smaller state values (e.g., 0x1000-0x7000)
+)
 MIN_UNIQUE_CONSTANTS = 3
 MIN_PREDECESSOR_UNIFORMITY_RATIO = 0.8
 MIN_BACK_EDGE_RATIO = 0.3
@@ -259,7 +267,9 @@ class DispatcherCache:
         if self._analysis is not None and self._last_maturity == self.mba.maturity:
             return self._analysis
 
-        logger.debug("Analyzing function 0x%x at maturity %d", self.func_ea, self.mba.maturity)
+        logger.debug(
+            "Analyzing function 0x%x at maturity %d", self.func_ea, self.mba.maturity
+        )
 
         analysis = DispatcherAnalysis(
             func_ea=self.func_ea,
@@ -311,6 +321,20 @@ class DispatcherCache:
             len(analysis.state_constants),
             analysis.dispatcher_type.name,
         )
+        if logger.debug_on:
+            logger.debug("Dispatchers (%d):", len(analysis.dispatchers))
+            for serial in sorted(analysis.dispatchers):
+                blk_info = analysis.blocks.get(serial)
+                consts = sorted(blk_info.state_constants) if blk_info else []
+                consts_str = (
+                    ", ".join(f"0x{c:x}" for c in consts) if consts else "(none)"
+                )
+                logger.debug("  blk[%d]: state_constants=[%s]", serial, consts_str)
+            logger.debug(
+                "State constants (%d): %s",
+                len(analysis.state_constants),
+                ", ".join(f"0x{c:x}" for c in sorted(analysis.state_constants)),
+            )
 
         return analysis
 
@@ -387,8 +411,8 @@ class DispatcherCache:
                 return None
 
         try:
-            import idc
             import idaapi
+            import idc
 
             # Create emulation oracle - detect architecture from IDA
             arch = self._detect_architecture()
@@ -423,7 +447,9 @@ class DispatcherCache:
 
                 logger.info(
                     "State variable: stack offset %d (micro) -> %d (native), size=%d",
-                    state_var.mop_offset, native_offset, state_var.mop_size
+                    state_var.mop_offset,
+                    native_offset,
+                    state_var.mop_size,
                 )
 
                 # Use oracle's trace_state_variable for stack-based state
@@ -435,15 +461,13 @@ class DispatcherCache:
                 )
 
                 # Convert StateTransition objects to tuples
-                transitions = [
-                    (t.from_value, t.to_value) for t in transitions_raw
-                ]
+                transitions = [(t.from_value, t.to_value) for t in transitions_raw]
 
                 if transitions:
                     logger.info(
                         "Emulation found %d state transitions: %s",
                         len(transitions),
-                        [(hex(f), hex(t)) for f, t in transitions[:5]]  # Log first 5
+                        [(hex(f), hex(t)) for f, t in transitions[:5]],  # Log first 5
                     )
                 else:
                     logger.debug("Emulation completed but no transitions found")
@@ -454,7 +478,7 @@ class DispatcherCache:
                 # Register variable - need different approach
                 logger.debug(
                     "State variable in register %d - register tracing not yet implemented",
-                    state_var.mop_offset
+                    state_var.mop_offset,
                 )
                 return None
 
@@ -473,6 +497,7 @@ class DispatcherCache:
         """Detect architecture from IDA database."""
         try:
             import idaapi
+
             info = idaapi.get_inf_structure()
             if info.is_64bit():
                 # Check if ARM64
@@ -495,7 +520,9 @@ class DispatcherCache:
                 return val
         return 0x100  # Default fallback
 
-    def _get_or_create_block(self, analysis: DispatcherAnalysis, serial: int) -> BlockAnalysis:
+    def _get_or_create_block(
+        self, analysis: DispatcherAnalysis, serial: int
+    ) -> BlockAnalysis:
         """Get or create BlockAnalysis for a serial."""
         if serial not in analysis.blocks:
             analysis.blocks[serial] = BlockAnalysis(serial=serial)
@@ -524,18 +551,26 @@ class DispatcherCache:
                 block_info.unconditional_pred_count = uncond_count
 
                 # Check predecessor uniformity
-                if pred_count > 0 and uncond_count / pred_count >= MIN_PREDECESSOR_UNIFORMITY_RATIO:
+                if (
+                    pred_count > 0
+                    and uncond_count / pred_count >= MIN_PREDECESSOR_UNIFORMITY_RATIO
+                ):
                     block_info.strategies |= DispatcherStrategy.PREDECESSOR_UNIFORM
 
     def _analyze_state_comparisons(self, analysis: DispatcherAnalysis) -> None:
         """Strategy 2: State comparison detection."""
         # Track which variables are compared against large constants
         comparison_opcodes = [
-            ida_hexrays.m_jnz, ida_hexrays.m_jz,
-            ida_hexrays.m_jae, ida_hexrays.m_jb,
-            ida_hexrays.m_ja, ida_hexrays.m_jbe,
-            ida_hexrays.m_jge, ida_hexrays.m_jg,
-            ida_hexrays.m_jl, ida_hexrays.m_jle,
+            ida_hexrays.m_jnz,
+            ida_hexrays.m_jz,
+            ida_hexrays.m_jae,
+            ida_hexrays.m_jb,
+            ida_hexrays.m_ja,
+            ida_hexrays.m_jbe,
+            ida_hexrays.m_jge,
+            ida_hexrays.m_jg,
+            ida_hexrays.m_jl,
+            ida_hexrays.m_jle,
         ]
 
         # var_key -> (mop, list of (block_serial, constant_value))
@@ -553,7 +588,10 @@ class DispatcherCache:
                         if var_key:
                             if var_key not in var_comparisons:
                                 # Store the mop along with comparisons
-                                var_comparisons[var_key] = (ida_hexrays.mop_t(blk.tail.l), [])
+                                var_comparisons[var_key] = (
+                                    ida_hexrays.mop_t(blk.tail.l),
+                                    [],
+                                )
                             var_comparisons[var_key][1].append((i, const_val))
 
                             block_info = self._get_or_create_block(analysis, i)
@@ -634,7 +672,8 @@ class DispatcherCache:
         # Simple heuristic: count blocks with back-edges that are also
         # targets of other back-edge blocks
         loop_headers = [
-            serial for serial, info in analysis.blocks.items()
+            serial
+            for serial, info in analysis.blocks.items()
             if DispatcherStrategy.BACK_EDGE in info.strategies
         ]
 
@@ -800,7 +839,7 @@ class DispatcherCache:
                 "Classified as CONDITIONAL_CHAIN dispatcher (score=%d, threshold=%d, maturity=%d)",
                 conditional_chain_score,
                 min_score,
-                self.mba.maturity
+                self.mba.maturity,
             )
             # Find initial state for conditional chain dispatchers
             self._find_initial_state(analysis)
@@ -812,7 +851,7 @@ class DispatcherCache:
                 "Locked-in CONDITIONAL_CHAIN from previous maturity (score=%d, threshold=%d, maturity=%d)",
                 conditional_chain_score,
                 min_score,
-                self.mba.maturity
+                self.mba.maturity,
             )
             self._find_initial_state(analysis)
         elif has_jtbl:
@@ -835,7 +874,9 @@ class DispatcherCache:
                             # Also update the state variable candidate if we have one
                             if analysis.state_variable is not None:
                                 analysis.state_variable.init_value = const_val
-                            logger.debug("Found initial state: 0x%x in block %d", const_val, i)
+                            logger.debug(
+                                "Found initial state: 0x%x in block %d", const_val, i
+                            )
                             return
                 insn = insn.next
 
