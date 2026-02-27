@@ -60,6 +60,13 @@ from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
     DispatcherCache,
     DispatcherStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.transition_builder import (
+    StateHandler,
+    StateTransition,
+    StateUpdateSite,
+    TransitionBuilder,
+    TransitionResult,
+)
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.flattening.safeguards import (
@@ -101,37 +108,6 @@ HODUR_STATE_UPDATE_OPCODES = {
     ida_hexrays.m_or,
     ida_hexrays.m_and,
 }
-
-
-@dataclass
-class StateTransition:
-    """Represents a state transition in the Hodur state machine."""
-
-    from_state: int
-    to_state: int
-    from_block: int  # Block serial where transition originates
-    condition_block: int | None = None  # Block serial with state check (if conditional)
-    is_conditional: bool = False  # True if this is a conditional transition
-
-
-@dataclass
-class StateUpdateSite:
-    """Represents an instruction that writes the dispatcher state variable."""
-
-    block_serial: int
-    instruction: ida_hexrays.minsn_t
-
-
-@dataclass
-class StateHandler:
-    """Represents a handler for a specific state value."""
-
-    state_value: int
-    check_block: int  # Block with jnz state, CONSTANT
-    handler_blocks: list[int] = field(
-        default_factory=list
-    )  # Blocks executed when state matches
-    transitions: list[StateTransition] = field(default_factory=list)
 
 
 @dataclass
@@ -1468,6 +1444,18 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Log the detected structure
         self._log_state_machine()
 
+        # Try BST analysis to find additional transitions not found by BFS
+        if self.state_machine is not None:
+            builder = TransitionBuilder()
+            bst_result = builder.build(self.mba, detector)
+            if bst_result is not None and bst_result.resolved_count > len(self.state_machine.transitions):
+                self._merge_bst_transitions(bst_result)
+                unflat_logger.info(
+                    "BST walker found %d transitions (vs BFS %d), merged",
+                    bst_result.resolved_count,
+                    len(self.state_machine.transitions) - bst_result.resolved_count,
+                )
+
         # On subsequent passes, supplement re-detected transitions with
         # unresolved transitions carried forward from the initial detection.
         if self._actual_pass_count > 0 and self._initial_transitions is not None:
@@ -1624,6 +1612,38 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._actual_pass_count += 1
 
         return nb_changes
+
+    def _merge_bst_transitions(self, bst_result: TransitionResult) -> None:
+        """Merge BST-discovered transitions into state_machine.
+
+        Only adds transitions for states that don't already have resolved
+        transitions. Preserves BFS-discovered transitions (they have richer
+        metadata like handler_blocks).
+        """
+        sm = self.state_machine
+
+        # Build set of states that already have transitions
+        existing_from_states = {t.from_state for t in sm.transitions}
+
+        # Add BST transitions for states not covered by BFS
+        added = 0
+        for t in bst_result.transitions:
+            if t.from_state not in existing_from_states:
+                sm.transitions.append(t)
+                # Also add to handler's transitions if handler exists
+                handler = sm.handlers.get(t.from_state)
+                if handler is not None:
+                    handler.transitions.append(t)
+                added += 1
+
+        # Update initial_state if BST found one and current is None
+        if sm.initial_state is None and bst_result.initial_state is not None:
+            sm.initial_state = bst_result.initial_state
+
+        if added > 0:
+            unflat_logger.info(
+                "Merged %d BST transitions for previously unresolved states", added
+            )
 
     def _queue_transitions_direct(self) -> int:
         """
