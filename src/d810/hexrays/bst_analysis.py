@@ -727,6 +727,233 @@ def _resolve_mop_value_in_block(
     return None
 
 
+def _resolve_mop_from_maps(
+    mop: "idaapi.mop_t",
+    stk_map: Dict[int, int],
+    reg_map: Dict[int, int],
+    mba: Optional["idaapi.mbl_array_t"] = None,
+    state_var_lvar_idx: Optional[int] = None,
+    diag_lines: Optional[List[str]] = None,
+) -> Optional[int]:
+    """Resolve a mop_t to a concrete value using accumulated forward-eval maps.
+
+    Handles: mop_n (literal), mop_S (stk_map via .s.off), mop_r (reg_map),
+    mop_l (stk_map via lvar stkoff), mop_d (recursive binop eval).
+
+    Args:
+        mop: The operand to resolve.
+        stk_map: Accumulated stack-offset -> value map.
+        reg_map: Accumulated register -> value map.
+        mba: Optional mbl_array_t for mop_l lvar stkoff lookup.
+        state_var_lvar_idx: If not None, the lvar index of the state variable.
+        diag_lines: Optional list to collect diagnostic strings.
+
+    Returns:
+        The resolved integer value, or None if resolution failed.
+    """
+    _init_constants()
+    if mop is None:
+        return None
+
+    mop_type = getattr(mop, "t", None)
+    mop_n_type = getattr(idaapi, "mop_n", 2)
+    mop_S_type = getattr(idaapi, "mop_S", None)
+    mop_r_type = getattr(idaapi, "mop_r", 1)
+    mop_l_type = getattr(idaapi, "mop_l", 9)
+    mop_d_type = getattr(idaapi, "mop_d", 4)
+
+    result: Optional[int] = None
+
+    if mop_type == mop_n_type:
+        result = _get_mop_const_value(mop)
+    elif mop_S_type is not None and mop_type == mop_S_type:
+        off = getattr(mop, "s", None)
+        if off is not None:
+            off = getattr(off, "off", None)
+        if off is not None:
+            result = stk_map.get(off)
+    elif mop_type == mop_r_type:
+        reg = getattr(mop, "r", None)
+        if reg is not None:
+            result = reg_map.get(reg)
+    elif mop_l_type is not None and mop_type == mop_l_type:
+        lvar_ref = getattr(mop, "l", None)
+        idx = getattr(lvar_ref, "idx", None) if lvar_ref is not None else None
+        if idx is not None and state_var_lvar_idx is not None and idx == state_var_lvar_idx:
+            # State var itself — look up by its own state in stk_map if available
+            pass
+        if idx is not None and mba is not None:
+            try:
+                lvar = mba.vars[idx]
+                off = lvar.location.stkoff()
+                result = stk_map.get(off)
+            except Exception:
+                pass
+    elif mop_type == mop_d_type:
+        nested = getattr(mop, "d", None)
+        if nested is not None:
+            op = getattr(nested, "opcode", None)
+            l_mop = getattr(nested, "l", None)
+            r_mop = getattr(nested, "r", None)
+            lv = _resolve_mop_from_maps(l_mop, stk_map, reg_map, mba, state_var_lvar_idx)
+            if r_mop is not None and getattr(r_mop, "t", None) != 0:
+                rv = _resolve_mop_from_maps(r_mop, stk_map, reg_map, mba, state_var_lvar_idx)
+            else:
+                rv = None
+            if lv is not None:
+                m_add = getattr(idaapi, "m_add", 28)
+                m_sub = getattr(idaapi, "m_sub", 29)
+                m_and = getattr(idaapi, "m_and", 21)
+                m_or = getattr(idaapi, "m_or", 22)
+                m_xor = getattr(idaapi, "m_xor", 31)
+                m_mul = getattr(idaapi, "m_mul", 30)
+                if rv is not None:
+                    if op == m_xor:
+                        result = (lv ^ rv) & 0xFFFFFFFF
+                    elif op == m_sub:
+                        result = (lv - rv) & 0xFFFFFFFF
+                    elif op == m_add:
+                        result = (lv + rv) & 0xFFFFFFFF
+                    elif op == m_and:
+                        result = (lv & rv) & 0xFFFFFFFF
+                    elif op == m_or:
+                        result = (lv | rv) & 0xFFFFFFFF
+                    elif op == m_mul:
+                        result = (lv * rv) & 0xFFFFFFFF
+
+    if diag_lines is not None:
+        diag_lines.append(
+            f"  fwd_resolve: mop_t={mop_type} -> {hex(result) if result is not None else 'None'}"
+        )
+    return result
+
+
+def _forward_eval_insn(
+    insn: "idaapi.minsn_t",
+    stk_map: Dict[int, int],
+    reg_map: Dict[int, int],
+    state_var_stkoff: int,
+    mba: Optional["idaapi.mbl_array_t"] = None,
+    state_var_lvar_idx: Optional[int] = None,
+    diag_lines: Optional[List[str]] = None,
+) -> Optional[int]:
+    """Evaluate one instruction, updating stk_map/reg_map in-place.
+
+    Returns the resolved constant if this instruction writes the state
+    variable; otherwise returns None and updates the maps.
+
+    Args:
+        insn: The microcode instruction to evaluate.
+        stk_map: Accumulated stack-offset -> value map (mutated in-place).
+        reg_map: Accumulated register -> value map (mutated in-place).
+        state_var_stkoff: Stack offset of the state variable.
+        mba: Optional mbl_array_t for lvar stkoff resolution.
+        state_var_lvar_idx: If not None, the lvar index of the state variable.
+        diag_lines: Optional list to collect diagnostic strings.
+
+    Returns:
+        The state-variable value if this instruction writes it, else None.
+    """
+    _init_constants()
+    if insn is None:
+        return None
+
+    op = getattr(insn, "opcode", None)
+    if op is None:
+        return None
+
+    m_mov_op = getattr(idaapi, "m_mov", None)
+    m_add = getattr(idaapi, "m_add", 28)
+    m_sub = getattr(idaapi, "m_sub", 29)
+    m_and = getattr(idaapi, "m_and", 21)
+    m_or = getattr(idaapi, "m_or", 22)
+    m_xor = getattr(idaapi, "m_xor", 31)
+    m_mul = getattr(idaapi, "m_mul", 30)
+    binary_ops = {m_add, m_sub, m_and, m_or, m_xor, m_mul}
+
+    mop_S_type = getattr(idaapi, "mop_S", None)
+    mop_r_type = getattr(idaapi, "mop_r", 1)
+    mop_l_type = getattr(idaapi, "mop_l", 9)
+
+    def _store_to_dest(dest: "idaapi.mop_t", val: int) -> bool:
+        """Store val into the appropriate map based on dest type. Returns True if state var."""
+        dest_t = getattr(dest, "t", None)
+        is_state = False
+        if mop_S_type is not None and dest_t == mop_S_type:
+            off = getattr(dest, "s", None)
+            if off is not None:
+                off = getattr(off, "off", None)
+            if off is not None:
+                stk_map[off] = val
+                if off == state_var_stkoff:
+                    is_state = True
+        elif dest_t == mop_r_type:
+            reg = getattr(dest, "r", None)
+            if reg is not None:
+                reg_map[reg] = val
+        elif mop_l_type is not None and dest_t == mop_l_type:
+            lvar_ref = getattr(dest, "l", None)
+            idx = getattr(lvar_ref, "idx", None) if lvar_ref is not None else None
+            if idx is not None and mba is not None:
+                try:
+                    lvar = mba.vars[idx]
+                    off = lvar.location.stkoff()
+                    stk_map[off] = val
+                    if off == state_var_stkoff:
+                        is_state = True
+                except Exception:
+                    pass
+            if idx is not None and state_var_lvar_idx is not None and idx == state_var_lvar_idx:
+                is_state = True
+        return is_state
+
+    dest = getattr(insn, "d", None)
+    if dest is None:
+        return None
+
+    val: Optional[int] = None
+
+    if op == m_mov_op:
+        src = getattr(insn, "l", None)
+        val = _resolve_mop_from_maps(
+            src, stk_map, reg_map, mba, state_var_lvar_idx, diag_lines
+        )
+    elif op in binary_ops:
+        l_mop = getattr(insn, "l", None)
+        r_mop = getattr(insn, "r", None)
+        lv = _resolve_mop_from_maps(l_mop, stk_map, reg_map, mba, state_var_lvar_idx)
+        rv = _resolve_mop_from_maps(r_mop, stk_map, reg_map, mba, state_var_lvar_idx)
+        if lv is not None and rv is not None:
+            if op == m_xor:
+                val = (lv ^ rv) & 0xFFFFFFFF
+            elif op == m_sub:
+                val = (lv - rv) & 0xFFFFFFFF
+            elif op == m_add:
+                val = (lv + rv) & 0xFFFFFFFF
+            elif op == m_and:
+                val = (lv & rv) & 0xFFFFFFFF
+            elif op == m_or:
+                val = (lv | rv) & 0xFFFFFFFF
+            elif op == m_mul:
+                val = (lv * rv) & 0xFFFFFFFF
+    else:
+        return None
+
+    if val is None:
+        return None
+
+    val = val & 0xFFFFFFFF
+    is_state = _store_to_dest(dest, val)
+    if is_state:
+        if diag_lines is not None:
+            opcode_name = OPCODE_MAP.get(op, f"opcode_{op}")
+            diag_lines.append(
+                f"  fwd_eval_insn: {opcode_name} -> state_var write 0x{val:x}"
+            )
+        return val
+    return None
+
+
 def _extract_state_from_block(
     blk: "idaapi.mblock_t",
     state_var_stkoff: int,
@@ -898,6 +1125,11 @@ def _walk_handler_chain(
     current = handler_start_serial
     depth = 0
 
+    # Forward-eval maps: accumulate variable -> value across blocks in chain.
+    # Initialized once before the loop so constants from blk[N] carry into blk[N+1].
+    fwd_stk_map: Dict[int, int] = {}
+    fwd_reg_map: Dict[int, int] = {}
+
     while current is not None and depth < max_chain_depth:
         if current in chain_visited:
             if diag_lines is not None:
@@ -928,15 +1160,40 @@ def _walk_handler_chain(
             diag_lines.append(f"  walker: visiting blk[{current}] ({num_insns} insns)")
 
         # Scan for state variable write if not yet found
-        if result["next_state"] is None and state_var_stkoff is not None:
-            val = _extract_state_from_block(
+        if state_var_stkoff is not None:
+            fast_val = _extract_state_from_block(
                 blk, state_var_stkoff, diag_lines=diag_lines,
                 state_var_lvar_idx=state_var_lvar_idx, mba=mba,
-            )
-            if val is not None:
-                result["next_state"] = val
+            ) if result["next_state"] is None else None
+            if fast_val is not None:
+                result["next_state"] = fast_val
                 if diag_lines is not None:
-                    diag_lines.append(f"  walker: found next_state=0x{val:x} in blk[{current}]")
+                    diag_lines.append(f"  walker: found next_state=0x{fast_val:x} in blk[{current}]")
+                # Fast path found it — still run forward eval to keep maps current.
+                fwd_insn = blk.head
+                while fwd_insn is not None:
+                    _forward_eval_insn(
+                        fwd_insn, fwd_stk_map, fwd_reg_map, state_var_stkoff,
+                        mba=mba, state_var_lvar_idx=state_var_lvar_idx,
+                    )
+                    fwd_insn = getattr(fwd_insn, "next", None)
+            else:
+                # Fast path did not find state (or already found in prior block).
+                # Run forward eval to accumulate maps and check for MBA state writes.
+                fwd_insn = blk.head
+                while fwd_insn is not None:
+                    fwd_val = _forward_eval_insn(
+                        fwd_insn, fwd_stk_map, fwd_reg_map, state_var_stkoff,
+                        mba=mba, state_var_lvar_idx=state_var_lvar_idx,
+                        diag_lines=diag_lines,
+                    )
+                    if fwd_val is not None and result["next_state"] is None:
+                        result["next_state"] = fwd_val
+                        if diag_lines is not None:
+                            diag_lines.append(
+                                f"  walker: FOUND via fwd_eval: 0x{fwd_val:x} in blk[{current}]"
+                            )
+                    fwd_insn = getattr(fwd_insn, "next", None)
 
         nsucc = blk.nsucc()
         if nsucc == 0:
