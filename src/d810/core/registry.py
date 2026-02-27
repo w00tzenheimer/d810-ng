@@ -275,8 +275,6 @@ def get_all_subclasses(python_class: type) -> list[type]:
     Traverses the entire class hierarchy to find all concrete subclasses,
     returning them sorted by class name.
     """
-    python_class.__subclasses__()
-
     subclasses = set()
     check_these = [python_class]
 

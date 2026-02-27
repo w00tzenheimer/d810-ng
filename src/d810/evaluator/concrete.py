@@ -233,7 +233,7 @@ class ConcreteEvaluator:
                 return None if lv is None else (-lv) & res_mask
             case ida_hexrays.m_lnot:
                 lv = _ev(left)
-                return None if lv is None else lv != 0
+                return None if lv is None else int(lv != 0) & res_mask
             case ida_hexrays.m_bnot:
                 lv = _ev(left)
                 return None if lv is None else (lv ^ res_mask) & res_mask
@@ -273,13 +273,17 @@ class ConcreteEvaluator:
                 return None if lv is None or rv is None else (lv * rv) & res_mask
             case ida_hexrays.m_udiv if right is not None:
                 lv, rv = _ev(left), _ev(right)
-                return None if lv is None or rv is None else (lv // rv) & res_mask
+                if lv is None or rv is None or rv == 0:
+                    return None
+                return (lv // rv) & res_mask
             case ida_hexrays.m_sdiv if right is not None:
                 lv, rv = _ev(left), _ev(right)
                 if lv is None or rv is None:
                     return None
                 left_value_signed = unsigned_to_signed(lv, left.dest_size)
                 right_value_signed = unsigned_to_signed(rv, right.dest_size)
+                if right_value_signed == 0:
+                    return None
                 quotient = (abs(left_value_signed) // abs(right_value_signed)) * (
                     -1 if (left_value_signed < 0) ^ (right_value_signed < 0) else 1
                 )
@@ -289,13 +293,17 @@ class ConcreteEvaluator:
                 )
             case ida_hexrays.m_umod if right is not None:
                 lv, rv = _ev(left), _ev(right)
-                return None if lv is None or rv is None else (lv % rv) & res_mask
+                if lv is None or rv is None or rv == 0:
+                    return None
+                return (lv % rv) & res_mask
             case ida_hexrays.m_smod if right is not None:
                 lv, rv = _ev(left), _ev(right)
                 if lv is None or rv is None:
                     return None
                 left_value_signed = unsigned_to_signed(lv, left.dest_size)
                 right_value_signed = unsigned_to_signed(rv, right.dest_size)
+                if right_value_signed == 0:
+                    return None
                 quotient = (abs(left_value_signed) // abs(right_value_signed)) * (
                     -1 if (left_value_signed < 0) ^ (right_value_signed < 0) else 1
                 )
