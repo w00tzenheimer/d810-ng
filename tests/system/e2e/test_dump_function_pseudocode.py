@@ -15,15 +15,21 @@ Use default platform binary, or override with:
 
 from __future__ import annotations
 
+import json
 import os
 import platform
+import tempfile
+from pathlib import Path
 
-import idaapi
-import idc
 import pytest
 
-from d810.testing.skip_controls import unskip_cases_enabled
+import ida_hexrays
+import idaapi
+import idc
+
+from d810.hexrays.microcode_dump import dump_dispatcher_tree, dump_function_microcode
 from d810.testing.runner import _resolve_test_project_index
+from d810.testing.skip_controls import unskip_cases_enabled
 
 
 def _get_default_binary() -> str:
@@ -31,7 +37,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 def _get_func_ea(name: str) -> int:
@@ -99,7 +107,9 @@ class TestDumpFunctionPseudocode:
         raw = _dump_target
         function_names = [name.strip() for name in raw.split(",") if name.strip()]
         if not function_names:
-            raise AssertionError("No valid function names provided to --dump-function-pseudocode")
+            raise AssertionError(
+                "No valid function names provided to --dump-function-pseudocode"
+            )
 
         use_project = not request.config.getoption("--dump-no-project")
         project_name = request.config.getoption("--dump-project")
@@ -146,7 +156,9 @@ class TestDumpFunctionPseudocode:
                     mat = state.stats.maturity_rule_usages.get(rule_name)
                     if not mat:
                         return ""
-                    parts = [f"@{_maturity_name(m)}:{c}" for m, c in sorted(mat.items())]
+                    parts = [
+                        f"@{_maturity_name(m)}:{c}" for m, c in sorted(mat.items())
+                    ]
                     return " [" + ", ".join(parts) + "]"
 
                 def _cfg_rule_maturity_note(rule_name: str) -> str:
@@ -184,16 +196,46 @@ class TestDumpFunctionPseudocode:
 
                 # Dump dispatcher tree if available
                 try:
-                    from d810.hexrays.microcode_dump import dump_dispatcher_tree
+
+                    _bst_maturity_name = request.config.getoption(
+                        "--dump-bst-maturity", default=None
+                    )
+                    _bst_maturity_map = {
+                        "GENERATED": ida_hexrays.MMAT_GENERATED,
+                        "PREOPTIMIZED": ida_hexrays.MMAT_PREOPTIMIZED,
+                        "LOCOPT": ida_hexrays.MMAT_LOCOPT,
+                        "CALLS": ida_hexrays.MMAT_CALLS,
+                        "GLBOPT1": ida_hexrays.MMAT_GLBOPT1,
+                        "GLBOPT2": ida_hexrays.MMAT_GLBOPT2,
+                        "GLBOPT3": ida_hexrays.MMAT_GLBOPT3,
+                        "LVARS": ida_hexrays.MMAT_LVARS,
+                    }
                     # Get the MBA from a fresh decompile without d810
                     state.stop_d810()
-                    cfunc_raw = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
-                    if cfunc_raw and cfunc_raw.mba:
+                    if _bst_maturity_name:
+                        target_mat = _bst_maturity_map.get(
+                            _bst_maturity_name.upper(), ida_hexrays.MMAT_GLBOPT1
+                        )
+                        func = idaapi.get_func(func_ea)
+                        mbr = idaapi.mba_ranges_t()
+                        mbr.ranges.push_back(idaapi.range_t(func.start_ea, func.end_ea))
+                        hf = idaapi.hexrays_failure_t()
+                        mba = idaapi.gen_microcode(
+                            mbr, hf, None, idaapi.DECOMP_NO_WAIT, target_mat
+                        )
+                        mba_source = f"gen_microcode({_bst_maturity_name.upper()})"
+                    else:
+                        cfunc_raw = idaapi.decompile(
+                            func_ea, flags=idaapi.DECOMP_NO_CACHE
+                        )
+                        mba = cfunc_raw.mba if cfunc_raw else None
+                        mba_source = "decompile(LVARS)"
+                    if mba:
                         # Find dispatcher entry (block with most predecessors, typically blk[2])
                         max_preds = 0
                         dispatcher_serial = -1
-                        for i in range(cfunc_raw.mba.qty):
-                            blk = cfunc_raw.mba.get_mblock(i)
+                        for i in range(mba.qty):
+                            blk = mba.get_mblock(i)
                             if blk.npred() > max_preds:
                                 max_preds = blk.npred()
                                 dispatcher_serial = i
@@ -206,24 +248,33 @@ class TestDumpFunctionPseudocode:
                                 from d810.optimizers.microcode.flow.flattening.unflattener_hodur import (
                                     HodurUnflattener,
                                 )
+
                                 # Re-enable d810 briefly to get Hodur context
                                 # (best-effort: may not be available at this maturity)
                                 detector = getattr(state, "_hodur_detector", None)
                                 if detector is not None:
-                                    hodur_stkoff = getattr(detector, "state_var_stkoff", None)
-                                    hodur_state_constants = getattr(detector, "state_constants", None)
-                                    hodur_transitions = getattr(detector, "transitions", None)
+                                    hodur_stkoff = getattr(
+                                        detector, "state_var_stkoff", None
+                                    )
+                                    hodur_state_constants = getattr(
+                                        detector, "state_constants", None
+                                    )
+                                    hodur_transitions = getattr(
+                                        detector, "transitions", None
+                                    )
                             except Exception:
                                 pass
                             tree_str = dump_dispatcher_tree(
-                                cfunc_raw.mba,
+                                mba,
                                 dispatcher_serial,
                                 state_var_stkoff=hodur_stkoff,
                                 state_constants=hodur_state_constants,
                                 transitions=hodur_transitions,
                             )
-                            print("\n--- DISPATCHER TREE ---")
-                            print(f"Entry: blk[{dispatcher_serial}] ({max_preds} predecessors)")
+                            print(f"\n--- DISPATCHER TREE ({mba_source}) ---")
+                            print(
+                                f"Entry: blk[{dispatcher_serial}] ({max_preds} predecessors)"
+                            )
                             print(tree_str)
                             print("=" * 88)
                 except Exception as e:
@@ -239,19 +290,32 @@ class TestDumpFunctionPseudocode:
         _maturity_raw = request.config.getoption("--dump-microcode-maturity") or []
         # Flatten list and split comma-separated values: ["CALLS,GLBOPT1"] -> ["CALLS", "GLBOPT1"]
         maturity_names = [
-            m.strip()
-            for entry in _maturity_raw
-            for m in entry.split(",")
-            if m.strip()
+            m.strip() for entry in _maturity_raw for m in entry.split(",") if m.strip()
         ]
         dump_d810 = request.config.getoption("--dump-microcode-d810")
-        if not maturity_names and not dump_d810:
-            pytest.skip("No --dump-microcode-maturity or --dump-microcode-d810 provided")
+        dump_d810_maturity = request.config.getoption(
+            "--dump-microcode-d810-maturity", default=None
+        )
+        if not maturity_names and not dump_d810 and not dump_d810_maturity:
+            pytest.skip(
+                "No --dump-microcode-maturity, --dump-microcode-d810, or --dump-microcode-d810-maturity provided"
+            )
 
-        _valid_maturities = {"GENERATED", "PREOPTIMIZED", "LOCOPT", "CALLS", "GLBOPT1", "GLBOPT2", "GLBOPT3", "LVARS"}
+        _valid_maturities = {
+            "GENERATED",
+            "PREOPTIMIZED",
+            "LOCOPT",
+            "CALLS",
+            "GLBOPT1",
+            "GLBOPT2",
+            "GLBOPT3",
+            "LVARS",
+        }
         for m in maturity_names:
             if m not in _valid_maturities:
-                raise ValueError(f"Invalid maturity '{m}'. Valid: {sorted(_valid_maturities)}")
+                raise ValueError(
+                    f"Invalid maturity '{m}'. Valid: {sorted(_valid_maturities)}"
+                )
 
         raw = _dump_target
         function_names = [name.strip() for name in raw.split(",") if name.strip()]
@@ -285,7 +349,9 @@ class TestDumpFunctionPseudocode:
                     data = mba_to_dict(mba, func_name=function_name)
 
                     print("\n" + "=" * 88)
-                    print(f"MICROCODE DUMP (with d810): {function_name} @ {hex(func_ea)}")
+                    print(
+                        f"MICROCODE DUMP (with d810): {function_name} @ {hex(func_ea)}"
+                    )
                     print(f"MATURITY: {data['maturity']}")
                     print(f"BLOCKS: {data['num_blocks']}")
                     print("=" * 88)
@@ -294,7 +360,105 @@ class TestDumpFunctionPseudocode:
                         preds = blk["predecessors"]
                         succs = blk["successors"]
                         btype = blk.get("type_name", "")
-                        print(f"\n--- blk[{blk['serial']}] type={btype} preds={preds} succs={succs} ---")
+                        print(
+                            f"\n--- blk[{blk['serial']}] type={btype} preds={preds} succs={succs} ---"
+                        )
+                        for insn in blk["instructions"]:
+                            parts = [f"  {insn['opcode']}"]
+                            if insn.get("d"):
+                                parts.append(f"{insn['d']} =")
+                            if insn.get("l"):
+                                parts.append(f"{insn['l']}")
+                            if insn["opcode"] not in ("mov", "ret", "jmp", "call"):
+                                if insn.get("r"):
+                                    parts.append(f"{insn['r']}")
+                            print(" ".join(parts))
+                    print("=" * 88)
+        if dump_d810_maturity:
+            # Post-D810 mid-pipeline capture: run decompile with D810 active,
+            # but capture the MBA state *after* D810 finishes at the requested
+            # maturity via the D810_CAPTURE_POST_MATURITY env-var hook in
+            # BlockOptimizerManager._maybe_capture_post_d810().
+
+            _d810_mat_map = {
+                "GENERATED": 1,
+                "PREOPTIMIZED": 2,
+                "LOCOPT": 3,
+                "CALLS": 4,
+                "GLBOPT1": 5,
+                "GLBOPT2": 6,
+                "GLBOPT3": 7,
+                "LVARS": 8,
+            }
+            d810_mat_name = dump_d810_maturity.upper()
+            if d810_mat_name not in _d810_mat_map:
+                raise ValueError(
+                    f"Invalid --dump-microcode-d810-maturity '{dump_d810_maturity}'. "
+                    f"Valid: {sorted(_d810_mat_map)}"
+                )
+            target_mat_int = _d810_mat_map[d810_mat_name]
+            capture_path = str(Path(tempfile.gettempdir()) / "d810_mid_capture.json")
+
+            use_project = not request.config.getoption("--dump-no-project")
+            project_name = request.config.getoption("--dump-project")
+
+            with d810_state() as state:
+                if use_project:
+                    project_index = _resolve_test_project_index(state, project_name)
+                    state.load_project(project_index)
+
+                state.start_d810()
+
+                for function_name in function_names:
+                    func_ea = _get_func_ea(function_name)
+                    if func_ea == idaapi.BADADDR:
+                        raise AssertionError(f"Function '{function_name}' not found")
+
+                    # Remove stale capture file before decompile
+                    if os.path.exists(capture_path):
+                        os.unlink(capture_path)
+
+                    os.environ["D810_CAPTURE_POST_MATURITY"] = str(target_mat_int)
+                    os.environ["D810_CAPTURE_POST_FILE"] = capture_path
+                    try:
+                        cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
+                    finally:
+                        os.environ.pop("D810_CAPTURE_POST_MATURITY", None)
+                        os.environ.pop("D810_CAPTURE_POST_FILE", None)
+
+                    if cfunc is None:
+                        raise AssertionError(
+                            f"Failed to decompile '{function_name}' with d810"
+                        )
+
+                    if not os.path.exists(capture_path):
+                        print(
+                            f"\n[post-D810 capture at {d810_mat_name}: no snapshot written "
+                            f"-- D810 may not have advanced past this maturity for this function]"
+                        )
+                        continue
+
+                    with open(capture_path) as fh:
+                        data = json.load(fh)
+                    os.unlink(capture_path)
+
+                    print("\n" + "=" * 88)
+                    print(
+                        f"POST-D810 MICROCODE @ MMAT_{d810_mat_name}: "
+                        f"{function_name} @ {hex(func_ea)}"
+                    )
+                    print(f"MATURITY: {data['maturity']}")
+                    print(f"BLOCKS: {data['num_blocks']}")
+                    print(f"PROJECT: {project_name if use_project else '<none>'}")
+                    print("=" * 88)
+
+                    for blk in data["blocks"]:
+                        preds = blk["predecessors"]
+                        succs = blk["successors"]
+                        btype = blk.get("type_name", "")
+                        print(
+                            f"\n--- blk[{blk['serial']}] type={btype} preds={preds} succs={succs} ---"
+                        )
                         for insn in blk["instructions"]:
                             parts = [f"  {insn['opcode']}"]
                             if insn.get("d"):
@@ -308,8 +472,6 @@ class TestDumpFunctionPseudocode:
                     print("=" * 88)
         if maturity_names:
             # Raw (pre-d810) microcode mode using gen_microcode()
-            import ida_hexrays
-            from d810.hexrays.microcode_dump import dump_function_microcode
 
             maturity_map = {
                 "GENERATED": ida_hexrays.MMAT_GENERATED,
@@ -345,7 +507,9 @@ class TestDumpFunctionPseudocode:
                         preds = blk["predecessors"]
                         succs = blk["successors"]
                         btype = blk.get("type_name", "")
-                        print(f"\n--- blk[{blk['serial']}] type={btype} preds={preds} succs={succs} ---")
+                        print(
+                            f"\n--- blk[{blk['serial']}] type={btype} preds={preds} succs={succs} ---"
+                        )
                         for insn in blk["instructions"]:
                             parts = [f"  {insn['opcode']}"]
                             if insn.get("d"):

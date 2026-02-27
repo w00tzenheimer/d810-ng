@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import contextlib
 import enum
+import json
 import math
+import os
 import pathlib
 import time
 from collections import defaultdict
@@ -23,6 +25,7 @@ from d810.hexrays.hexrays_formatters import (
     maturity_to_string,
 )
 from d810.hexrays.hexrays_helpers import check_ins_mop_size_are_ok
+from d810.hexrays.microcode_dump import mba_to_dict
 
 # ---------------------------------------------------------------------------
 # hash_minsn: Cython fast path with pure-Python fallback
@@ -715,8 +718,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             mba_qty = int(mba.qty) if mba.qty else 32
             if mba_qty > 32:
                 scaled = int(
-                    self._BASE_PASSES_PER_MATURITY
-                    * (1 + math.log2(mba_qty / 32))
+                    self._BASE_PASSES_PER_MATURITY * (1 + math.log2(mba_qty / 32))
                 )
                 if scaled != self._max_passes_current:
                     self._max_passes_current = scaled
@@ -762,6 +764,45 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self._pass_count = self._max_passes_current + 1
         return 0
 
+    def _maybe_capture_post_d810(self, mba: ida_hexrays.mbl_array_t) -> None:
+        """Snapshot the MBA to a file when D810_CAPTURE_POST_MATURITY matches.
+
+        Called right before maturity advances so self.current_maturity is the
+        maturity whose D810 rules just finished running.  The snapshot is written
+        to D810_CAPTURE_POST_FILE (default /tmp/d810_capture.txt) as JSON-lines
+        so callers can parse blocks without a running IDA session.
+
+        Environment variables
+        ---------------------
+        D810_CAPTURE_POST_MATURITY : str
+            Integer maturity level to capture (e.g. "5" for MMAT_GLBOPT1).
+        D810_CAPTURE_POST_FILE : str
+            Destination path for the dump (default: /tmp/d810_capture.txt).
+        """
+        capture_mat_str = os.environ.get("D810_CAPTURE_POST_MATURITY")
+        if not capture_mat_str:
+            return
+        try:
+            target_mat = int(capture_mat_str)
+        except ValueError:
+            return
+        if self.current_maturity != target_mat:
+            return
+        capture_file = os.environ.get("D810_CAPTURE_POST_FILE", "/tmp/d810_capture.txt")
+        try:
+
+            data = mba_to_dict(mba)
+            with open(capture_file, "w") as fh:
+                json.dump(data, fh, indent=2)
+            optimizer_logger.info(
+                "Post-D810 MBA captured at maturity %s -> %s (%d blocks)",
+                maturity_to_string(target_mat),
+                capture_file,
+                data.get("num_blocks", -1),
+            )
+        except Exception:
+            optimizer_logger.exception("Post-D810 capture failed")
+
     def log_info_on_input(self, blk: ida_hexrays.mblock_t):
         mba: ida_hexrays.mbl_array_t = blk.mba
 
@@ -771,6 +812,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     "BlockOptimizer called at maturity: %s",
                     maturity_to_string(mba.maturity),
                 )
+
+            # Post-D810 capture: when the optimizer advances past a maturity, the
+            # previous maturity's rules have all fired.  If D810_CAPTURE_POST_MATURITY
+            # matches self.current_maturity (the just-completed one), snapshot the MBA.
+            self._maybe_capture_post_d810(mba)
 
             self.current_maturity = mba.maturity
             self._pipeline_just_fired = False
@@ -838,11 +884,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 "Rule scope service not initialized at block optimize time - no rules will run. "
                 "This may indicate a race condition during initialization."
             )
-            return tuple()
+            return ()
         if blk.mba is None or blk.mba.entry_ea is None:
-            return tuple()
+            return ()
         if self.current_maturity is None:
-            return tuple()
+            return ()
         t0_ns = time.perf_counter_ns()
         rules = self._rule_scope_service.get_active_rules(
             project_name=self._rule_scope_project_name,
