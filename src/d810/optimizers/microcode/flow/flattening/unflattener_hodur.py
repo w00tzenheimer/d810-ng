@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 
 import logging
 import ida_hexrays
+import ida_pro
 
 from d810.cfg.dominators import compute_dominators, dominates
 from d810.core import getLogger
@@ -66,7 +67,9 @@ from d810.optimizers.microcode.flow.flattening.transition_builder import (
     StateUpdateSite,
     TransitionBuilder,
     TransitionResult,
+    _get_state_var_stkoff,
 )
+from d810.hexrays.bst_analysis import BSTAnalysisResult, analyze_bst_dispatcher
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.flattening.safeguards import (
@@ -1371,6 +1374,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._resolved_transitions: set[tuple[int, int]] = set()
         self._initial_transitions: list | None = None
         self._detector: HodurStateMachineDetector | None = None
+        self._jtbl_converted: bool = False
 
     def configure(self, kwargs):
         super().configure(kwargs)
@@ -1473,6 +1477,29 @@ class HodurUnflattener(GenericUnflatteningRule):
                 len(self._resolved_transitions),
                 len(detected_keys),
             )
+
+        # BST→m_jtbl conversion: replace BST dispatcher with a single switch
+        # instruction before DeferredGraphModifier snapshots block state.
+        self._jtbl_converted = False
+        if self.state_machine is not None:
+            bst_stkoff = _get_state_var_stkoff(self._detector) if self._detector is not None else None
+            entry_serial = list(self.state_machine.handlers.values())[0].check_block if self.state_machine.handlers else 0
+            try:
+                raw_bst = analyze_bst_dispatcher(
+                    self.mba,
+                    dispatcher_entry_serial=entry_serial,
+                    state_var_stkoff=bst_stkoff,
+                )
+            except Exception:
+                raw_bst = None
+
+            if raw_bst is not None and len(raw_bst.handler_state_map) > 0:
+                converted = self._convert_bst_to_jtbl(
+                    raw_bst,
+                    dispatcher_serial=entry_serial,
+                )
+                if converted:
+                    self.mba.mark_chains_dirty()
 
         # Initialize deferred modifier - queue all changes first, apply later
         self.deferred = DeferredGraphModifier(self.mba)
@@ -1612,6 +1639,146 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._actual_pass_count += 1
 
         return nb_changes
+
+    def _convert_bst_to_jtbl(
+        self,
+        bst_result: BSTAnalysisResult,
+        dispatcher_serial: int,
+    ) -> bool:
+        """Replace BST comparison tree with m_jtbl switch instruction.
+
+        All handler code blocks become switch case targets, keeping them
+        reachable regardless of how many transitions are resolved.
+        Returns True if conversion succeeded.
+        """
+        if self.state_machine is None or self.state_machine.state_var is None:
+            return False
+        if not bst_result.handler_state_map:
+            return False
+
+        # Step 1: Group transitions by target — prevents INTERR 50753 where each
+        # target serial must appear exactly once in mcases_t.targets.
+        groups: dict[int, list[int]] = defaultdict(list)
+        for handler_blk, state_val in bst_result.handler_state_map.items():
+            groups[handler_blk].append(state_val)
+
+        # Step 2: Build mcases_t.
+        mc = ida_hexrays.mcases_t()
+        for tgt in sorted(groups):
+            mc.targets.push_back(tgt)
+            uv = ida_pro.svalvec_t()
+            for val in groups[tgt]:
+                uv.push_back(val)
+            mc.values.push_back(uv)
+
+        # Step 3: Collect old successor set from dispatcher block.
+        dispatcher_blk = self.mba.get_mblock(dispatcher_serial)
+        if dispatcher_blk is None:
+            return False
+        blk_serial = int(dispatcher_blk.serial)
+        old_succs = set(int(s) for s in dispatcher_blk.succset)
+
+        # Step 4: Clear dispatcher block instructions (make_nop before remove
+        # to prevent Error 52123).
+        insns = []
+        cur = dispatcher_blk.head
+        while cur is not None:
+            insns.append(cur)
+            cur = cur.next
+        for insn in insns:
+            dispatcher_blk.make_nop(insn)
+            dispatcher_blk.remove_from_block(insn)
+
+        # Step 5: Create and insert m_jtbl instruction.
+        # Use mba.entry_ea for safe EA — prevents INTERR 50863.
+        safe_ea = self.mba.entry_ea
+        jtbl_ins = ida_hexrays.minsn_t(safe_ea)
+        jtbl_ins.ea = safe_ea
+        jtbl_ins.opcode = ida_hexrays.m_jtbl
+        # l operand: state variable (deep copy via assign)
+        jtbl_ins.l = ida_hexrays.mop_t()
+        jtbl_ins.l.assign(self.state_machine.state_var)
+        # r operand: mcases_t
+        jtbl_ins.r = ida_hexrays.mop_t()
+        jtbl_ins.r.t = ida_hexrays.mop_c
+        jtbl_ins.r.c = mc
+        # d operand: erase
+        jtbl_ins.d = ida_hexrays.mop_t()
+        jtbl_ins.d.erase()
+        # Insert into now-empty block
+        dispatcher_blk.insert_into_block(jtbl_ins, dispatcher_blk.head)
+
+        # Step 6: Set block type to NWAY.
+        dispatcher_blk.type = ida_hexrays.BLT_NWAY
+
+        # Step 7: Rebuild succset/predset — mark_chains_dirty alone is insufficient.
+        dispatcher_blk.succset.clear()
+        new_succs = set()
+        for i in range(mc.targets.size()):
+            tgt = int(mc.targets[i])
+            dispatcher_blk.succset.add_unique(tgt)
+            new_succs.add(tgt)
+
+        for removed in old_succs - new_succs:
+            r_blk = self.mba.get_mblock(removed)
+            if r_blk is not None:
+                r_blk.predset._del(blk_serial)
+                r_blk.mark_lists_dirty()
+
+        for added in new_succs - old_succs:
+            a_blk = self.mba.get_mblock(added)
+            if a_blk is not None:
+                a_blk.predset.push_back(blk_serial)
+                a_blk.mark_lists_dirty()
+
+        dispatcher_blk.mark_lists_dirty()
+
+        # Step 8: NOP dead BST blocks (comparison nodes), excluding the dispatcher
+        # itself (which we just converted, not dead).
+        dead_serials = bst_result.bst_node_blocks - {dispatcher_serial}
+        for dead_serial in sorted(dead_serials):
+            dead_blk = self.mba.get_mblock(dead_serial)
+            if dead_blk is None:
+                continue
+            # Remove all instructions
+            d_insns = []
+            cur = dead_blk.head
+            while cur is not None:
+                d_insns.append(cur)
+                cur = cur.next
+            for insn in d_insns:
+                dead_blk.make_nop(insn)
+                dead_blk.remove_from_block(insn)
+            # Disconnect successors
+            d_old_succs = [int(s) for s in dead_blk.succset]
+            for ss in d_old_succs:
+                dead_blk.succset._del(ss)
+                s_blk = self.mba.get_mblock(ss)
+                if s_blk is not None:
+                    s_blk.predset._del(dead_serial)
+                    s_blk.mark_lists_dirty()
+            # Disconnect predecessors (also clean up their succsets)
+            d_old_preds = [int(p) for p in dead_blk.predset]
+            for pp in d_old_preds:
+                dead_blk.predset._del(pp)
+                p_blk = self.mba.get_mblock(pp)
+                if p_blk is not None:
+                    p_blk.succset._del(dead_serial)
+                    p_blk.mark_lists_dirty()
+            dead_blk.type = ida_hexrays.BLT_0WAY
+            dead_blk.mark_lists_dirty()
+
+        # Step 9: Finalize.
+        self.mba.mark_chains_dirty()
+        self._jtbl_converted = True
+
+        unflat_logger.info(
+            "BST->m_jtbl: converted %d states on blk[%d], NOPed %d BST blocks",
+            len(bst_result.handler_state_map),
+            dispatcher_serial,
+            len(dead_serials),
+        )
+        return True
 
     def _merge_bst_transitions(self, bst_result: TransitionResult) -> None:
         """Merge BST-discovered transitions into state_machine.
@@ -2462,8 +2629,11 @@ class HodurUnflattener(GenericUnflatteningRule):
                     insn = insn.next
 
         # Find terminal back-edge: a block that goes back to first_check_block
-        # after all transitions have been patched
-        self._queue_terminal_backedge_fix(first_check_block)
+        # after all transitions have been patched.
+        # Skip when m_jtbl conversion is active — back-edges to the switch
+        # are intentional (unresolved handlers loop through the switch case).
+        if not self._jtbl_converted:
+            self._queue_terminal_backedge_fix(first_check_block)
 
     def _queue_terminal_backedge_fix(self, first_check_block: int) -> None:
         """

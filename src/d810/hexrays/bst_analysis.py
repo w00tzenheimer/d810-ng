@@ -133,6 +133,7 @@ class BSTAnalysisResult:
     exits: Set[int] = field(default_factory=set)
     pre_header_serial: Optional[int] = None
     initial_state: Optional[int] = None
+    bst_node_blocks: Set[int] = field(default_factory=set)
 
 
 # -----------------------------------------------------------------------------
@@ -167,6 +168,7 @@ def _dump_dispatcher_node(
     handler_serials: Optional[set] = None,
     handler_range_map: Optional[Dict[int, Tuple[Optional[int], Optional[int]]]] = None,
     chain_depth: int = 0,
+    bst_node_blocks: Optional[Set[int]] = None,
 ) -> None:
     """Recursive helper for dump_dispatcher_tree.
 
@@ -179,6 +181,8 @@ def _dump_dispatcher_node(
         handler_range_map: If provided, maps handler_serial -> (value_lo, value_hi) from
             the BST path leading to that handler leaf.
         chain_depth: Current depth of m_jnz chain recursion (max 10).
+        bst_node_blocks: If provided, collects all BST internal/comparison block serials
+            (blocks to NOP after m_jtbl conversion).
     """
     _init_constants()
 
@@ -219,6 +223,8 @@ def _dump_dispatcher_node(
     is_jz = opcode is not None and hasattr(idaapi, "m_jz") and opcode == idaapi.m_jz
 
     if is_jbe or is_ja:
+        if bst_node_blocks is not None:
+            bst_node_blocks.add(serial)  # Track BST node for later NOP
         cmp_str = f"<= 0x{cmp_val:x}" if cmp_val is not None else "<= ?"
         lines.append(f"{prefix}blk[{serial}] {opcode_name} {cmp_str} (succs: {succs})")
 
@@ -254,9 +260,12 @@ def _dump_dispatcher_node(
                 handler_serials=handler_serials,
                 handler_range_map=handler_range_map,
                 chain_depth=chain_depth,
+                bst_node_blocks=bst_node_blocks,
             )
 
     elif is_jnz or is_jz:
+        if bst_node_blocks is not None:
+            bst_node_blocks.add(serial)  # Track BST node for later NOP
         op_sym = "==" if is_jz else "!="
         cmp_str = f"0x{cmp_val:x}" if cmp_val is not None else "?"
         # succs[0] = fall-through, succs[1] = jump target
@@ -399,6 +408,7 @@ def _dump_dispatcher_node(
                         handler_serials=handler_serials,
                         handler_range_map=handler_range_map,
                         chain_depth=chain_depth + 1,
+                        bst_node_blocks=bst_node_blocks,
                     )
                 elif not already_resolved and not _is_bst_node_chain(jump_blk):
                     if cmp_val is None:
@@ -446,6 +456,7 @@ def _dump_dispatcher_node(
                         handler_serials=handler_serials,
                         handler_range_map=handler_range_map,
                         chain_depth=chain_depth + 1,
+                        bst_node_blocks=bst_node_blocks,
                     )
                 elif not already_resolved and not _is_bst_node_chain(fall_blk):
                     if cmp_val is None:
@@ -1266,6 +1277,7 @@ def analyze_bst_dispatcher(
     handler_state_map: Dict[int, int] = {}
     handler_serials: set = set()
     handler_range_map: Dict[int, Tuple[Optional[int], Optional[int]]] = {}
+    bst_node_blocks: Set[int] = set()
 
     _dump_dispatcher_node(
         mba,
@@ -1280,10 +1292,12 @@ def analyze_bst_dispatcher(
         handler_state_map=handler_state_map,
         handler_serials=handler_serials,
         handler_range_map=handler_range_map,
+        bst_node_blocks=bst_node_blocks,
     )
 
     result.handler_state_map = handler_state_map
     result.handler_range_map = handler_range_map
+    result.bst_node_blocks = bst_node_blocks
 
     # Phase 2: Walk each handler chain
     for h_serial in sorted(handler_serials):
@@ -1315,3 +1329,8 @@ def analyze_bst_dispatcher(
                 result.conditional_transitions[state_const] = walk["conditional_states"]
 
     return result
+
+
+# -----------------------------------------------------------------------------
+# m_jtbl conversion helper
+# -----------------------------------------------------------------------------
