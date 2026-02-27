@@ -1830,7 +1830,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                 continue
             if insn.d and insn.d.equal_mops(state_var, ida_hexrays.EQ_IGNSIZE):
                 if insn.opcode == ida_hexrays.m_mov and insn.l.t == ida_hexrays.mop_n:
-                    return ("literal", (insn.l.signed_value(), insn.ea))
+                    return ("literal", (insn.l.nnn.value, insn.ea))
                 if insn.opcode in _COMPUTE_OPCODES:
                     return ("computed", (insn, blk))
             insn = insn.prev
@@ -1841,6 +1841,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         case_entry: int,
         switch_head: int,
         max_depth: int = 64,
+        _visited: "set[int] | None" = None,
     ) -> "tuple[int, str, tuple] | None":
         """Follow successor chain from case entry to back-edge or exit.
 
@@ -1851,12 +1852,15 @@ class HodurUnflattener(GenericUnflatteningRule):
             (current_serial, "conditional", [(tail, type, info), ...]) — 2-way split
             None — tracing failed
         """
-        visited: set[int] = set()
+        if _visited is None:
+            _visited = set()
+        visited: list[int] = []
         current = case_entry
         for _ in range(max_depth):
-            if current in visited:
+            if current in _visited:
                 return None
-            visited.add(current)
+            _visited.add(current)
+            visited.append(current)
             blk = self.mba.get_mblock(current)
             nsucc = blk.nsucc()
             if nsucc == 0:
@@ -1864,13 +1868,16 @@ class HodurUnflattener(GenericUnflatteningRule):
             if nsucc == 1:
                 succ = next(iter(blk.succset))
                 if succ == switch_head:
-                    result = self._find_state_write_in_block(
-                        blk, self.state_machine.state_var
-                    )
-                    if result is None:
-                        return None
-                    kind, info = result
-                    return (current, kind, info)
+                    # Scan backward through visited chain for state write
+                    for scan_serial in reversed(visited):
+                        scan_blk = self.mba.get_mblock(scan_serial)
+                        result = self._find_state_write_in_block(
+                            scan_blk, self.state_machine.state_var
+                        )
+                        if result is not None:
+                            kind, info = result
+                            return (current, kind, info)
+                    return None
                 current = succ
                 continue
             if nsucc == 2:
@@ -1885,7 +1892,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                             kind, info = result
                             branches.append((current, kind, info))
                     else:
-                        sub = self._trace_case_body(succ, switch_head, max_depth=16)
+                        sub = self._trace_case_body(succ, switch_head, max_depth=16, _visited=_visited)
                         if sub is not None:
                             branches.append(sub)
                 if branches:
@@ -1907,6 +1914,12 @@ class HodurUnflattener(GenericUnflatteningRule):
         if not self._jtbl_converted or self.deferred is None or self.state_machine is None:
             return 0
         switch_blk = self.mba.get_mblock(self._jtbl_dispatcher_serial)
+        unflat_logger.info(
+            "Post-m_jtbl _resolve: switch blk[%d] nsucc=%d, state_var=%s",
+            self._jtbl_dispatcher_serial,
+            switch_blk.nsucc(),
+            self.state_machine.state_var.dstr() if self.state_machine.state_var else "None",
+        )
         resolved = 0
 
         def _handle_result(result, entry_serial: int) -> int:
@@ -2083,9 +2096,9 @@ class HodurUnflattener(GenericUnflatteningRule):
             opcode = insn.opcode
             imm_val: "int | None" = None
             if l_mop.t == ida_hexrays.mop_n:
-                imm_val = l_mop.signed_value()
+                imm_val = l_mop.nnn.value
             elif r_mop.t == ida_hexrays.mop_n:
-                imm_val = r_mop.signed_value()
+                imm_val = r_mop.nnn.value
             if imm_val is not None:
                 if opcode == ida_hexrays.m_xor:
                     computed = (from_state ^ imm_val) & _MASK
