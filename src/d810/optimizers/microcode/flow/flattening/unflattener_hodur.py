@@ -1800,60 +1800,62 @@ class HodurUnflattener(GenericUnflatteningRule):
     def _resolve_exit_via_bst_default(
         self, bst_default_serial: int, exit_state: int
     ) -> int | None:
-        """Resolve an exit state through the BST default block's comparison.
+        """Resolve an exit state through chained BST default comparison blocks.
 
-        The BST default block is a 2WAY comparison block (jnz/jz) that routes
-        exit states to actual exit targets. Instead of redirecting to the
-        comparison block directly, we evaluate the comparison statically and
-        return the appropriate successor.
+        The BST default region may consist of multiple chained 2WAY comparison
+        blocks (jnz/jz).  This method iteratively follows the chain until it
+        reaches a block that is NOT a state-var comparison, which is the actual
+        exit target.
 
         Args:
-            bst_default_serial: Block serial of the BST default/boundary block.
+            bst_default_serial: Block serial of the first BST default/boundary block.
             exit_state: The final state value for this exit path.
 
         Returns:
             The successor serial to redirect to, or None if unresolvable.
         """
-        bst_default_blk = self.mba.get_mblock(bst_default_serial)
-        if bst_default_blk is None or bst_default_blk.nsucc() != 2:
-            return None
+        current_serial = bst_default_serial
+        visited: set[int] = set()
 
-        tail = bst_default_blk.tail
-        if tail is None:
-            return None
+        while current_serial not in visited:
+            visited.add(current_serial)
 
-        if tail.opcode not in (ida_hexrays.m_jnz, ida_hexrays.m_jz):
-            return None
+            blk = self.mba.get_mblock(current_serial)
+            if blk is None or blk.nsucc() != 2:
+                # Not a 2WAY comparison — this is the actual target block.
+                return current_serial if current_serial != bst_default_serial else None
 
-        # Extract the comparison constant from the right operand
-        if tail.r is None or tail.r.t != ida_hexrays.mop_n:
-            return None
+            tail = blk.tail
+            if tail is None or tail.opcode not in (ida_hexrays.m_jnz, ida_hexrays.m_jz):
+                return current_serial if current_serial != bst_default_serial else None
 
-        comparison_value = int(tail.r.nnn.value)
+            # Extract the comparison constant from the right operand.
+            if tail.r is None or tail.r.t != ida_hexrays.mop_n:
+                return current_serial if current_serial != bst_default_serial else None
 
-        # succ(0) = fall-through (condition false), succ(1) = jump (condition true)
-        # m_jnz: condition true when left != right
-        # m_jz:  condition true when left == right
-        if tail.opcode == ida_hexrays.m_jnz:
-            condition_true = exit_state != comparison_value
-        else:  # m_jz
-            condition_true = exit_state == comparison_value
+            comparison_value = int(tail.r.nnn.value)
 
-        target_serial = (
-            bst_default_blk.succ(1) if condition_true else bst_default_blk.succ(0)
-        )
+            # succ(0) = fall-through (condition false), succ(1) = jump (condition true)
+            # m_jnz: condition true when left != right
+            # m_jz:  condition true when left == right
+            if tail.opcode == ida_hexrays.m_jnz:
+                condition_true = exit_state != comparison_value
+            else:  # m_jz
+                condition_true = exit_state == comparison_value
 
-        unflat_logger.info(
-            "blk[%d] exit state 0x%x resolved through BST default blk[%d] "
-            "(cmp=0x%x, opcode=%d) -> blk[%d]",
-            bst_default_serial,
-            exit_state,
-            bst_default_serial,
-            comparison_value,
-            tail.opcode,
-            target_serial,
-        )
-        return target_serial
+            next_serial = blk.succ(1) if condition_true else blk.succ(0)
+
+            unflat_logger.info(
+                "  exit %#x: resolved through blk[%d] -> blk[%d]",
+                exit_state,
+                current_serial,
+                next_serial,
+            )
+
+            current_serial = next_serial
+
+        # Loop detected — return last resolved serial.
+        return current_serial
 
     def _linearize_handlers(
         self,
