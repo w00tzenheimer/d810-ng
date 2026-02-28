@@ -39,6 +39,7 @@ from d810.expr.z3_utils import _resolve_mop_via_predecessors
 from d810.hexrays.bst_analysis import (
     BSTAnalysisResult,
     _forward_eval_insn,
+    _mop_matches_stkoff,
     analyze_bst_dispatcher,
     find_bst_default_block,
     resolve_target_via_bst,
@@ -1816,6 +1817,8 @@ class HodurUnflattener(GenericUnflatteningRule):
         """
         current_serial = bst_default_serial
         visited: set[int] = set()
+        state_var_ref: tuple[int, int] | None = None
+        state_var_stkoff: int | None = None
 
         while current_serial not in visited:
             visited.add(current_serial)
@@ -1832,6 +1835,31 @@ class HodurUnflattener(GenericUnflatteningRule):
             # Extract the comparison constant from the right operand.
             if tail.r is None or tail.r.t != ida_hexrays.mop_n:
                 return current_serial if current_serial != bst_default_serial else None
+
+            # Verify the left operand is the state variable.
+            if state_var_ref is None:
+                # First iteration: capture state variable identity from left operand.
+                state_var_ref = (tail.l.t, tail.l.size)
+                if tail.l.t == 3:  # mop_S (stack var)
+                    state_var_stkoff = tail.l.s.off
+            else:
+                # Subsequent iterations: verify left operand is still the state variable.
+                if (tail.l.t, tail.l.size) != state_var_ref:
+                    unflat_logger.info(
+                        "  exit %#x: blk[%d] compares non-state-var (mop_t=%d), stopping",
+                        exit_state,
+                        current_serial,
+                        tail.l.t,
+                    )
+                    return current_serial
+                if tail.l.t == 3 and tail.l.s.off != state_var_stkoff:
+                    unflat_logger.info(
+                        "  exit %#x: blk[%d] compares non-state-var (mop_t=%d), stopping",
+                        exit_state,
+                        current_serial,
+                        tail.l.t,
+                    )
+                    return current_serial
 
             comparison_value = int(tail.r.nnn.value)
 
@@ -1964,6 +1992,39 @@ class HodurUnflattener(GenericUnflatteningRule):
                                     insn_ea=write_ea,
                                     description=f"hodur-linear: dead state write (exit) in blk[{write_blk}]",
                                 )
+                            # NOP dead state_var writes in the resolved exit target block.
+                            # OLLVM often places a dead default-state write at the top of
+                            # the first post-dispatcher block (e.g. "mov %var_110, #0xD62B0F79").
+                            # If that write is left alive the state variable stays live and
+                            # IDA cannot eliminate the dispatcher, leaving while(1) loops.
+                            exit_blk = self.mba.get_mblock(exit_target)
+                            if exit_blk is not None:
+                                scan_insn = exit_blk.head
+                                while scan_insn is not None:
+                                    if (
+                                        scan_insn.opcode == 2  # m_mov
+                                        and scan_insn.d is not None
+                                        and _mop_matches_stkoff(
+                                            scan_insn.d,
+                                            state_var_stkoff,
+                                            mba=self.mba,
+                                        )
+                                    ):
+                                        unflat_logger.info(
+                                            "  NOP dead state_var write in exit target"
+                                            " blk[%d] ea=%#x",
+                                            exit_target,
+                                            scan_insn.ea,
+                                        )
+                                        self.deferred.queue_insn_nop(
+                                            block_serial=exit_target,
+                                            insn_ea=scan_insn.ea,
+                                            description=(
+                                                f"hodur-linear: dead state write"
+                                                f" (exit target) in blk[{exit_target}]"
+                                            ),
+                                        )
+                                    scan_insn = scan_insn.next
                             resolved_count += 1
                             self._resolved_transitions.add(
                                 (incoming_state, path.final_state)
@@ -2034,6 +2095,112 @@ class HodurUnflattener(GenericUnflatteningRule):
 
                 resolved_count += 1
                 self._resolved_transitions.add((incoming_state, path.final_state))
+
+        # --- Linearize BST default region back-edges ---
+        # The BST default region may contain hidden handlers that loop back
+        # to the dispatcher. Find blocks in the default region that have
+        # back-edges to the dispatcher and resolve their state through the
+        # BST default chain.
+        bst_default = find_bst_default_block(
+            self.mba,
+            dispatcher_serial,
+            bst_result.bst_node_blocks,
+            set(bst_result.handler_state_map.keys()),
+        )
+        if bst_default is not None:
+            # Walk blocks reachable from bst_default that aren't BST nodes or handlers
+            bst_default_region: set[int] = set()
+            queue: list[int] = [bst_default]
+            handler_serials = set(bst_result.handler_state_map.keys())
+            while queue:
+                serial = queue.pop()
+                if (
+                    serial in bst_default_region
+                    or serial in bst_node_blocks
+                    or serial == dispatcher_serial
+                ):
+                    continue
+                if serial in handler_serials:
+                    continue
+                bst_default_region.add(serial)
+                blk = self.mba.get_mblock(serial)
+                if blk is None:
+                    continue
+                for i in range(blk.nsucc()):
+                    queue.append(blk.succ(i))
+
+            # Find blocks in the default region that jump back to the dispatcher
+            for serial in bst_default_region:
+                blk = self.mba.get_mblock(serial)
+                if blk is None or blk.nsucc() != 1:
+                    continue
+                succ = blk.succ(0)
+                if succ != dispatcher_serial:
+                    continue
+                # This block has a back-edge to the dispatcher
+                # Read the state value it writes
+                insn = blk.head
+                written_state = None
+                state_write_ea = None
+                while insn is not None:
+                    if insn.opcode == 2 and insn.d is not None:  # m_mov
+                        if _mop_matches_stkoff(insn.d, state_var_stkoff, mba=self.mba):
+                            if insn.l is not None and insn.l.t == 2:  # mop_n (constant)
+                                written_state = int(insn.l.nnn.value)
+                                state_write_ea = insn.ea
+                    insn = insn.next
+
+                if written_state is None:
+                    continue
+
+                # Resolve through BST default
+                target = self._resolve_exit_via_bst_default(bst_default, written_state)
+                if target is None:
+                    continue
+
+                unflat_logger.info(
+                    "  BST default back-edge: blk[%d] state %#x -> resolved blk[%d]",
+                    serial,
+                    written_state,
+                    target,
+                )
+
+                # Redirect the back-edge
+                self.deferred.queue_goto_change(
+                    block_serial=serial,
+                    new_target=target,
+                    description=f"hodur-linear: BST default blk[{serial}] {written_state:#x}->blk[{target}]",
+                    rule_priority=550,
+                )
+
+                # NOP the state write
+                if state_write_ea is not None:
+                    self.deferred.queue_insn_nop(
+                        block_serial=serial,
+                        insn_ea=state_write_ea,
+                        description=f"hodur-linear: dead state write (BST default) in blk[{serial}]",
+                    )
+
+                # Also NOP state writes in the target block
+                target_blk = self.mba.get_mblock(target)
+                if target_blk is not None:
+                    scan_insn = target_blk.head
+                    while scan_insn is not None:
+                        if (
+                            scan_insn.opcode == 2  # m_mov
+                            and scan_insn.d is not None
+                            and _mop_matches_stkoff(
+                                scan_insn.d, state_var_stkoff, mba=self.mba
+                            )
+                        ):
+                            self.deferred.queue_insn_nop(
+                                block_serial=target,
+                                insn_ea=scan_insn.ea,
+                                description=f"hodur-linear: dead state write (BST default target) in blk[{target}]",
+                            )
+                        scan_insn = scan_insn.next
+
+                resolved_count += 1
 
         # Redirect pre-header to initial handler
         if (
