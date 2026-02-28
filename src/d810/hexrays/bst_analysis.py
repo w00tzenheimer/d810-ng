@@ -249,6 +249,7 @@ def _dump_dispatcher_node(
     handler_range_map: Optional[Dict[int, Tuple[Optional[int], Optional[int]]]] = None,
     chain_depth: int = 0,
     bst_node_blocks: Optional[Set[int]] = None,
+    allow_revisit: bool = False,
 ) -> None:
     """Recursive helper for dump_dispatcher_tree.
 
@@ -271,9 +272,12 @@ def _dump_dispatcher_node(
         return
 
     if serial in visited:
-        lines.append("  " * indent + f"blk[{serial}] <already visited>")
-        return
-    visited.add(serial)
+        if not allow_revisit:
+            lines.append("  " * indent + f"blk[{serial}] <already visited>")
+            return
+        # allow_revisit=True: proceed without re-adding to visited (already there)
+    else:
+        visited.add(serial)
 
     blk = mba.get_mblock(serial)
     if blk is None:
@@ -526,6 +530,7 @@ def _dump_dispatcher_node(
                         handler_range_map=handler_range_map,
                         chain_depth=chain_depth + 1,
                         bst_node_blocks=bst_node_blocks,
+                        allow_revisit=True,
                     )
                 elif not already_resolved and not _is_bst_node_chain(jump_blk):
                     if cmp_val is None:
@@ -578,6 +583,7 @@ def _dump_dispatcher_node(
                         handler_range_map=handler_range_map,
                         chain_depth=chain_depth + 1,
                         bst_node_blocks=bst_node_blocks,
+                        allow_revisit=True,
                     )
                 elif not already_resolved and not _is_bst_node_chain(fall_blk):
                     if cmp_val is None:
