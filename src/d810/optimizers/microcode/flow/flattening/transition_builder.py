@@ -168,8 +168,11 @@ def _convert_bst_to_result(bst: BSTAnalysisResult) -> TransitionResult:
     * ``assignment_map`` is left empty (BST does not track raw instructions).
     """
     # 1. Invert: blk_serial -> state  becomes  state -> blk_serial
+    # Filter out BST comparison node blocks — they are not handler entries.
     state_to_handler_blk: Dict[int, int] = {
-        state: blk for blk, state in bst.handler_state_map.items()
+        state: blk
+        for blk, state in bst.handler_state_map.items()
+        if blk not in bst.bst_node_blocks
     }
 
     # 2. Build handlers dict

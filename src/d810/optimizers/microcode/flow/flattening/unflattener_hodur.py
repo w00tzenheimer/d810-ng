@@ -1419,6 +1419,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._jtbl_dispatcher_serial: int = -1
         self._jtbl_state_to_handler: dict[int, int] = {}
         self._jtbl_handler_state_map: dict[int, int] = {}
+        self._linearized_blocks: set[int] = set()
 
     def configure(self, kwargs):
         super().configure(kwargs)
@@ -1443,6 +1444,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             self.max_passes = self.DEFAULT_MAX_PASSES
             self._resolved_transitions = set()
             self._initial_transitions = None
+            self._linearized_blocks = set()
 
         # Gate on actual Hodur runs, not block callback count
         if self._actual_pass_count >= self.max_passes:
@@ -1798,18 +1800,53 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         return results
 
+    # Comparison opcodes supported by the BST walk.
+    _BST_CMP_OPCODES: frozenset[int] = frozenset()  # populated in _init_bst_cmp_opcodes
+
+    @staticmethod
+    def _init_bst_cmp_opcodes() -> frozenset[int]:
+        """Build the set of comparison opcodes for BST walking."""
+        return frozenset({
+            ida_hexrays.m_jnz,   # !=
+            ida_hexrays.m_jz,    # ==
+            ida_hexrays.m_jbe,   # unsigned <=
+            ida_hexrays.m_ja,    # unsigned >
+            ida_hexrays.m_jb,    # unsigned <
+            ida_hexrays.m_jae,   # unsigned >=
+        })
+
+    @staticmethod
+    def _eval_bst_condition(opcode: int, state: int, cmp_val: int) -> bool:
+        """Evaluate a BST comparison: does the condition cause a jump?"""
+        if opcode == ida_hexrays.m_jnz:
+            return state != cmp_val
+        if opcode == ida_hexrays.m_jz:
+            return state == cmp_val
+        if opcode == ida_hexrays.m_jbe:
+            return state <= cmp_val
+        if opcode == ida_hexrays.m_ja:
+            return state > cmp_val
+        if opcode == ida_hexrays.m_jb:
+            return state < cmp_val
+        if opcode == ida_hexrays.m_jae:
+            return state >= cmp_val
+        return False
+
     def _resolve_exit_via_bst_default(
         self, bst_default_serial: int, exit_state: int
     ) -> int | None:
-        """Resolve an exit state through chained BST default comparison blocks.
+        """Resolve an exit state by walking BST comparison blocks.
 
-        The BST default region may consist of multiple chained 2WAY comparison
-        blocks (jnz/jz).  This method iteratively follows the chain until it
-        reaches a block that is NOT a state-var comparison, which is the actual
-        exit target.
+        Walks a chain/tree of 2WAY comparison blocks (jnz/jz/jbe/ja/jb/jae)
+        starting from *bst_default_serial*, following the branch dictated by
+        *exit_state* at each node.  Stops at the first block that is NOT a
+        state-variable comparison and returns its serial.
+
+        Can be called with the BST default leaf (original use) or the BST root
+        (dispatcher entry) to resolve states through the full tree.
 
         Args:
-            bst_default_serial: Block serial of the first BST default/boundary block.
+            bst_default_serial: Block serial to start the walk from.
             exit_state: The final state value for this exit path.
 
         Returns:
@@ -1829,7 +1866,10 @@ class HodurUnflattener(GenericUnflatteningRule):
                 return current_serial if current_serial != bst_default_serial else None
 
             tail = blk.tail
-            if tail is None or tail.opcode not in (ida_hexrays.m_jnz, ida_hexrays.m_jz):
+            if not self._BST_CMP_OPCODES:
+                # Lazy init — ida_hexrays constants need IDA runtime.
+                HodurUnflattener._BST_CMP_OPCODES = self._init_bst_cmp_opcodes()
+            if tail is None or tail.opcode not in self._BST_CMP_OPCODES:
                 return current_serial if current_serial != bst_default_serial else None
 
             # Extract the comparison constant from the right operand.
@@ -1864,12 +1904,9 @@ class HodurUnflattener(GenericUnflatteningRule):
             comparison_value = int(tail.r.nnn.value)
 
             # succ(0) = fall-through (condition false), succ(1) = jump (condition true)
-            # m_jnz: condition true when left != right
-            # m_jz:  condition true when left == right
-            if tail.opcode == ida_hexrays.m_jnz:
-                condition_true = exit_state != comparison_value
-            else:  # m_jz
-                condition_true = exit_state == comparison_value
+            condition_true = self._eval_bst_condition(
+                tail.opcode, exit_state, comparison_value
+            )
 
             next_serial = blk.succ(1) if condition_true else blk.succ(0)
 
@@ -1940,11 +1977,14 @@ class HodurUnflattener(GenericUnflatteningRule):
 
             if not paths:
                 unflat_logger.debug(
-                    "Handler blk[%d] (state 0x%x): no exit paths found",
+                    "Handler blk[%d] (state 0x%x): no exit paths found, deferring to legacy",
                     handler_serial,
                     incoming_state,
                 )
                 continue
+
+            # Only claim handler as linearized after successful path evaluation
+            self._linearized_blocks.add(handler_serial)
 
             for path in paths:
                 if path.final_state is None:
@@ -1971,73 +2011,83 @@ class HodurUnflattener(GenericUnflatteningRule):
                         set(bst_result.handler_state_map.keys()),
                     )
                     exit_target: int | None = None
+                    resolve_label: str = ""
                     if bst_default is not None and path.final_state is not None:
                         exit_target = self._resolve_exit_via_bst_default(
                             bst_default, path.final_state
                         )
                         if exit_target is not None:
-                            self.deferred.queue_goto_change(
-                                block_serial=path.exit_block,
-                                new_target=exit_target,
-                                description=(
-                                    f"hodur-linear: blk[{handler_serial}] "
-                                    f"exit 0x{path.final_state:x} -> resolved blk[{exit_target}]"
-                                ),
-                                rule_priority=550,
+                            resolve_label = f"BST default blk[{bst_default}]"
+                    if exit_target is None and path.final_state is not None:
+                        # Exact/range map missed this state, but it may still
+                        # be a comparison constant in the BST.  Walk from root.
+                        exit_target = self._resolve_exit_via_bst_default(
+                            dispatcher_serial, path.final_state
+                        )
+                        if exit_target is not None:
+                            resolve_label = "BST root-walk"
+                    if exit_target is not None:
+                        self.deferred.queue_goto_change(
+                            block_serial=path.exit_block,
+                            new_target=exit_target,
+                            description=(
+                                f"hodur-linear: blk[{handler_serial}] "
+                                f"exit 0x{path.final_state:x} -> {resolve_label} -> blk[{exit_target}]"
+                            ),
+                            rule_priority=550,
+                        )
+                        self._linearized_blocks.add(path.exit_block)
+                        for write_blk, write_ea in path.state_writes:
+                            self.deferred.queue_insn_nop(
+                                block_serial=write_blk,
+                                insn_ea=write_ea,
+                                description=f"hodur-linear: dead state write (exit) in blk[{write_blk}]",
                             )
-                            # Bypass blk[60] entirely — state writes are dead.
-                            for write_blk, write_ea in path.state_writes:
-                                self.deferred.queue_insn_nop(
-                                    block_serial=write_blk,
-                                    insn_ea=write_ea,
-                                    description=f"hodur-linear: dead state write (exit) in blk[{write_blk}]",
-                                )
-                            # NOP dead state_var writes in the resolved exit target block.
-                            # OLLVM often places a dead default-state write at the top of
-                            # the first post-dispatcher block (e.g. "mov %var_110, #0xD62B0F79").
-                            # If that write is left alive the state variable stays live and
-                            # IDA cannot eliminate the dispatcher, leaving while(1) loops.
-                            exit_blk = self.mba.get_mblock(exit_target)
-                            if exit_blk is not None:
-                                scan_insn = exit_blk.head
-                                while scan_insn is not None:
-                                    if (
-                                        scan_insn.opcode == ida_hexrays.m_mov
-                                        and scan_insn.d is not None
-                                        and _mop_matches_stkoff(
-                                            scan_insn.d,
-                                            state_var_stkoff,
-                                            mba=self.mba,
-                                        )
-                                    ):
-                                        unflat_logger.info(
-                                            "  NOP dead state_var write in exit target"
-                                            " blk[%d] ea=%#x",
-                                            exit_target,
-                                            scan_insn.ea,
-                                        )
-                                        self.deferred.queue_insn_nop(
-                                            block_serial=exit_target,
-                                            insn_ea=scan_insn.ea,
-                                            description=(
-                                                f"hodur-linear: dead state write"
-                                                f" (exit target) in blk[{exit_target}]"
-                                            ),
-                                        )
-                                    scan_insn = scan_insn.next
-                            resolved_count += 1
-                            self._resolved_transitions.add(
-                                (incoming_state, path.final_state)
-                            )
-                            unflat_logger.info(
-                                "Handler blk[%d]: exit state 0x%x -> resolved through "
-                                "BST default blk[%d] -> blk[%d]",
-                                handler_serial,
-                                path.final_state,
-                                bst_default,
-                                exit_target,
-                            )
-                            continue
+                        # NOP dead state_var writes in the resolved exit target block.
+                        # OLLVM often places a dead default-state write at the top of
+                        # the first post-dispatcher block (e.g. "mov %var_110, #0xD62B0F79").
+                        # If that write is left alive the state variable stays live and
+                        # IDA cannot eliminate the dispatcher, leaving while(1) loops.
+                        exit_blk = self.mba.get_mblock(exit_target)
+                        if exit_blk is not None:
+                            scan_insn = exit_blk.head
+                            while scan_insn is not None:
+                                if (
+                                    scan_insn.opcode == ida_hexrays.m_mov
+                                    and scan_insn.d is not None
+                                    and _mop_matches_stkoff(
+                                        scan_insn.d,
+                                        state_var_stkoff,
+                                        mba=self.mba,
+                                    )
+                                ):
+                                    unflat_logger.info(
+                                        "  NOP dead state_var write in exit target"
+                                        " blk[%d] ea=%#x",
+                                        exit_target,
+                                        scan_insn.ea,
+                                    )
+                                    self.deferred.queue_insn_nop(
+                                        block_serial=exit_target,
+                                        insn_ea=scan_insn.ea,
+                                        description=(
+                                            f"hodur-linear: dead state write"
+                                            f" (exit target) in blk[{exit_target}]"
+                                        ),
+                                    )
+                                scan_insn = scan_insn.next
+                        resolved_count += 1
+                        self._resolved_transitions.add(
+                            (incoming_state, path.final_state)
+                        )
+                        unflat_logger.info(
+                            "Handler blk[%d]: exit state 0x%x -> %s -> blk[%d]",
+                            handler_serial,
+                            path.final_state,
+                            resolve_label,
+                            exit_target,
+                        )
+                        continue
 
                     # Fallback: redirect to bst_default directly (or terminal exit)
                     if bst_default is None:
@@ -2054,6 +2104,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                             ),
                             rule_priority=550,
                         )
+                        self._linearized_blocks.add(path.exit_block)
                         # Keep state variable live for exit paths (no NOP).
                         resolved_count += 1
                         self._resolved_transitions.add(
@@ -2085,6 +2136,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     ),
                     rule_priority=550,
                 )
+                self._linearized_blocks.add(path.exit_block)
 
                 for write_blk, write_ea in path.state_writes:
                     self.deferred.queue_insn_nop(
@@ -2849,6 +2901,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         queued_patches = 0
 
         for from_serial, block_transitions in transitions_by_block.items():
+            # Skip blocks already linearized by _linearize_handlers
+            if from_serial in self._linearized_blocks:
+                continue
             from_blk = self.mba.get_mblock(from_serial)
             if from_blk is None:
                 continue
@@ -3104,6 +3159,9 @@ class HodurUnflattener(GenericUnflatteningRule):
                 for blk_serial in handler.handler_blocks:
                     # Skip the handler entry block -- already handled above as from_blk
                     if blk_serial == handler.handler_blocks[0]:
+                        continue
+                    # Skip blocks already linearized by _linearize_handlers
+                    if blk_serial in self._linearized_blocks:
                         continue
                     blk = self.mba.get_mblock(blk_serial)
                     if blk is None or blk.nsucc() != 1:
@@ -3400,6 +3458,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                 description=description,
                 rule_priority=50,  # Medium priority - path-based analysis
             )
+            self._nop_state_write_in_block(from_blk)
             return True
 
         if from_blk.nsucc() == 2:
@@ -3411,9 +3470,42 @@ class HodurUnflattener(GenericUnflatteningRule):
                 goto_target=target_block,
                 description=description,
             )
+            self._nop_state_write_in_block(from_blk)
             return True
 
         return False
+
+    def _nop_state_write_in_block(self, blk: ida_hexrays.mblock_t) -> None:
+        """NOP any state variable write found in blk (legacy path helper).
+
+        Only acts on blocks with a single predecessor to avoid destroying
+        state writes that are shared with exit paths.
+        """
+        if (
+            self.deferred is None
+            or self.state_machine is None
+            or self.state_machine.state_var is None
+        ):
+            return
+        # With _linearized_blocks coordination, the legacy path only handles
+        # blocks the linearizer didn't claim — state writes are dead after
+        # the goto redirect regardless of predecessor count.
+        write_result = self._find_state_write_in_block(
+            blk, self.state_machine.state_var
+        )
+        if write_result is None:
+            return
+        write_type, write_data = write_result
+        if write_type == "literal":
+            _, insn_ea = write_data
+        else:  # "computed"
+            insn, _ = write_data
+            insn_ea = insn.ea
+        self.deferred.queue_insn_nop(
+            block_serial=blk.serial,
+            insn_ea=insn_ea,
+            description="hodur: dead state write (legacy path)",
+        )
 
     def _get_primary_check_opcode(self) -> int | None:
         if self.state_machine is None or not self.state_machine.handlers:
