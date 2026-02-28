@@ -165,6 +165,17 @@ def resolve_target_via_bst(
         # of m_jnz chain propagation, not real range handlers.
         if handler_serial in exact_handler_serials:
             continue
+        # Skip degenerate catch-all ranges from linear BST m_jnz chains.
+        # _narrow_range_excluding propagates (0, 0xFFFFFFFF) to all handlers
+        # when the chain is purely linear — returning the first entry for any
+        # unrecognized state would give the wrong handler.  Legitimate BST
+        # ranges are narrow; the full 32-bit range is an artifact.
+        if (
+            low is not None
+            and high is not None
+            and (high - low) >= 0xFFFF0000
+        ):
+            continue
         if low is not None and state_value < low:
             continue
         if high is not None and state_value > high:
