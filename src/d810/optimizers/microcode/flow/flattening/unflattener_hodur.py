@@ -25,16 +25,25 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Optional
 
-import logging
 import ida_hexrays
 import ida_pro
 
 from d810.cfg.dominators import compute_dominators, dominates
-from d810.core import getLogger
+from d810.core import logging
 from d810.core.bits import unsigned_to_signed
 from d810.expr.ast import minsn_to_ast
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
+from d810.expr.z3_utils import _resolve_mop_via_predecessors
+from d810.hexrays.bst_analysis import (
+    BSTAnalysisResult,
+    _forward_eval_insn,
+    analyze_bst_dispatcher,
+    find_bst_default_block,
+    resolve_target_via_bst,
+)
+from d810.hexrays.cfg_mutations import convert_jtbl_to_goto
 from d810.hexrays.cfg_utils import (
     change_1way_block_successor,
     duplicate_block,
@@ -56,10 +65,13 @@ from d810.hexrays.tracker import (
     MopTracker,
     remove_segment_registers,
 )
-from d810.expr.z3_utils import _resolve_mop_via_predecessors
 from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
     DispatcherCache,
     DispatcherStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
+from d810.optimizers.microcode.flow.flattening.safeguards import (
+    should_apply_cfg_modifications,
 )
 from d810.optimizers.microcode.flow.flattening.transition_builder import (
     StateHandler,
@@ -69,17 +81,10 @@ from d810.optimizers.microcode.flow.flattening.transition_builder import (
     TransitionResult,
     _get_state_var_stkoff,
 )
-from d810.hexrays.bst_analysis import BSTAnalysisResult, analyze_bst_dispatcher
-from d810.hexrays.cfg_mutations import convert_jtbl_to_goto
-from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
-from d810.optimizers.microcode.handler import ConfigParam
-from d810.optimizers.microcode.flow.flattening.safeguards import (
-    should_apply_cfg_modifications,
-)
 from d810.optimizers.microcode.flow.flattening.utils import get_all_possibles_values
+from d810.optimizers.microcode.handler import ConfigParam
 
-unflat_logger = getLogger("D810.unflat.hodur", logging.DEBUG)
-unflat_logger.setLevel(logging.DEBUG)
+unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
 
 # State values must exceed this threshold to be considered dispatcher constants.
 # Real obfuscators use values from 0x1000+ (hardened OLLVM) to 0xDEAD0000+ (Hodur).
@@ -140,6 +145,15 @@ class HodurStateMachine:
             self.handlers[transition.from_state].transitions.append(transition)
 
 
+@dataclass
+class HandlerPathResult:
+    """Result of evaluating one exit path from a handler."""
+
+    exit_block: int  # block serial where handler exits to dispatcher
+    final_state: Optional[int]  # concrete state value at exit; None for terminal (m_ret) paths
+    state_writes: list  # [(block_serial, insn_ea), ...] of state var writes
+
+
 class HodurStateMachineDetector:
     """Detects Hodur-style while-loop state machines in microcode."""
 
@@ -179,7 +193,6 @@ class HodurStateMachineDetector:
                     len(analysis.state_constants),
                     analysis.nested_loop_depth,
                 )
-                pass
             else:
                 unflat_logger.debug(
                     "Dispatcher cache confirms Hodur-style: %d state constants, initial=%s",
@@ -344,21 +357,21 @@ class HodurStateMachineDetector:
         if opcode == ida_hexrays.m_jbe:
             return left_cmp <= right_cmp
         if opcode == ida_hexrays.m_jg:
-            return unsigned_to_signed(
-                left_cmp, right_value_size
-            ) > unsigned_to_signed(right_cmp, right_value_size)
+            return unsigned_to_signed(left_cmp, right_value_size) > unsigned_to_signed(
+                right_cmp, right_value_size
+            )
         if opcode == ida_hexrays.m_jge:
-            return unsigned_to_signed(
-                left_cmp, right_value_size
-            ) >= unsigned_to_signed(right_cmp, right_value_size)
+            return unsigned_to_signed(left_cmp, right_value_size) >= unsigned_to_signed(
+                right_cmp, right_value_size
+            )
         if opcode == ida_hexrays.m_jl:
-            return unsigned_to_signed(
-                left_cmp, right_value_size
-            ) < unsigned_to_signed(right_cmp, right_value_size)
+            return unsigned_to_signed(left_cmp, right_value_size) < unsigned_to_signed(
+                right_cmp, right_value_size
+            )
         if opcode == ida_hexrays.m_jle:
-            return unsigned_to_signed(
-                left_cmp, right_value_size
-            ) <= unsigned_to_signed(right_cmp, right_value_size)
+            return unsigned_to_signed(left_cmp, right_value_size) <= unsigned_to_signed(
+                right_cmp, right_value_size
+            )
         return None
 
     @staticmethod
@@ -387,8 +400,10 @@ class HodurStateMachineDetector:
 
         normalized_opcode = insn.opcode
         if insn.l.t == ida_hexrays.mop_n:
-            normalized_opcode = HodurStateMachineDetector._swap_jump_opcode_for_reversed_operands(
-                insn.opcode
+            normalized_opcode = (
+                HodurStateMachineDetector._swap_jump_opcode_for_reversed_operands(
+                    insn.opcode
+                )
             )
 
         return (normalized_opcode, int(num_mop.nnn.value), num_mop.size)
@@ -638,9 +653,16 @@ class HodurStateMachineDetector:
             if insn.opcode == ida_hexrays.m_mov and insn.l.t == ida_hexrays.mop_n:
                 val = int(insn.l.nnn.value)
                 # Mask to state_var size
-                size = state_var.size if getattr(state_var, "size", 0) in (1, 2, 4, 8) else 4
+                size = (
+                    state_var.size
+                    if getattr(state_var, "size", 0) in (1, 2, 4, 8)
+                    else 4
+                )
                 val &= (1 << (size * 8)) - 1
-                if self.state_machine is not None and val in self.state_machine.state_constants:
+                if (
+                    self.state_machine is not None
+                    and val in self.state_machine.state_constants
+                ):
                     return val
 
             # Emulator fallback for xor/add/sub
@@ -649,7 +671,10 @@ class HodurStateMachineDetector:
                     result = self._resolve_next_state_value(
                         blk, insn, state_var, int(from_state)
                     )
-                    if result is not None and result in self.state_machine.state_constants:
+                    if (
+                        result is not None
+                        and result in self.state_machine.state_constants
+                    ):
                         return result
 
         return None
@@ -683,7 +708,6 @@ class HodurStateMachineDetector:
 
         return None
 
-
     def _eval_binop(self, opcode: int, lval: int, rval: int) -> "int | None":
         """Evaluate a binary microcode operation on two integer constants."""
         MASK32 = 0xFFFFFFFF
@@ -692,7 +716,7 @@ class HodurStateMachineDetector:
             ida_hexrays.m_sub: lambda a, b: (a - b) & MASK32,
             ida_hexrays.m_xor: lambda a, b: (a ^ b) & MASK32,
             ida_hexrays.m_and: lambda a, b: (a & b) & MASK32,
-            ida_hexrays.m_or:  lambda a, b: (a | b) & MASK32,
+            ida_hexrays.m_or: lambda a, b: (a | b) & MASK32,
         }
         fn = ops.get(opcode)
         return fn(lval, rval) if fn else None
@@ -733,7 +757,11 @@ class HodurStateMachineDetector:
             while ins is not None and ins.ea >= stop_serial:
                 ins = ins.prev
             while ins is not None:
-                if ins.d is not None and ins.d.t == ida_hexrays.mop_r and ins.d.r == mop.r:
+                if (
+                    ins.d is not None
+                    and ins.d.t == ida_hexrays.mop_r
+                    and ins.d.r == mop.r
+                ):
                     if ins.opcode == ida_hexrays.m_mov:
                         return self._fold_block_local(blk, ins.l, ins.ea, _depth + 1)
                     lv = self._fold_block_local(blk, ins.l, ins.ea, _depth + 1)
@@ -900,7 +928,9 @@ class HodurStateMachineDetector:
                     queue.extend([p.serial for p in pred_blk.preds()])
         return None
 
-    def _build_transitions_by_scan(self, mba: "ida_hexrays.mba_t") -> "list[StateTransition]":
+    def _build_transitions_by_scan(
+        self, mba: "ida_hexrays.mba_t"
+    ) -> "list[StateTransition]":
         """Build state transitions by scanning all blocks for state variable assignments.
 
         Uses block-local constant folding via IDA's def-search instead of BFS+MopTracker.
@@ -957,14 +987,18 @@ class HodurStateMachineDetector:
                         # Self-loop: state var assigned its own current value — skip.
                         insn = insn.next
                         continue
-                    transitions.append(StateTransition(
-                        from_state=current_state,
-                        to_state=folded,
-                        from_block=blk_idx,
-                    ))
+                    transitions.append(
+                        StateTransition(
+                            from_state=current_state,
+                            to_state=folded,
+                            from_block=blk_idx,
+                        )
+                    )
                 insn = insn.next
 
-        unflat_logger.info("SCAN: found %d transitions across %d blocks", len(transitions), mba.qty)
+        unflat_logger.info(
+            "SCAN: found %d transitions across %d blocks", len(transitions), mba.qty
+        )
         return transitions
 
     def _forward_eval_instruction(
@@ -1111,7 +1145,9 @@ class HodurStateMachineDetector:
                     continue
                 insn = blk.head
                 while insn is not None:
-                    val = self._forward_eval_instruction(insn, stk_map, reg_map, state_var)
+                    val = self._forward_eval_instruction(
+                        insn, stk_map, reg_map, state_var
+                    )
                     if val is not None and val != K:
                         # Accept if val is a known state constant OR looks like one
                         # (state_constants may be incomplete if IDA optimized away checks)
@@ -1227,7 +1263,8 @@ class HodurStateMachineDetector:
                         if next_state not in self.state_machine.state_constants:
                             unflat_logger.debug(
                                 "BFS: skipping invalid transition %s -> %s (not a state constant)",
-                                state_val, next_state,
+                                state_val,
+                                next_state,
                             )
                             continue
                         transition = StateTransition(
@@ -1281,7 +1318,9 @@ class HodurStateMachineDetector:
         )
 
         # Phase 3: Forward propagation for unresolved handlers
-        forward_transitions = self._resolve_transitions_forward_prop(self.state_machine, self.mba)
+        forward_transitions = self._resolve_transitions_forward_prop(
+            self.state_machine, self.mba
+        )
         if forward_transitions:
             unflat_logger.info(
                 "Forward propagation resolved %d additional transitions",
@@ -1456,7 +1495,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         if self.state_machine is not None:
             builder = TransitionBuilder()
             bst_result = builder.build(self.mba, detector)
-            if bst_result is not None and bst_result.resolved_count > len(self.state_machine.transitions):
+            if bst_result is not None and bst_result.resolved_count > len(
+                self.state_machine.transitions
+            ):
                 self._merge_bst_transitions(bst_result)
                 unflat_logger.info(
                     "BST walker found %d transitions (vs BFS %d), merged",
@@ -1467,7 +1508,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         # On subsequent passes, supplement re-detected transitions with
         # unresolved transitions carried forward from the initial detection.
         if self._actual_pass_count > 0 and self._initial_transitions is not None:
-            detected_keys = {(t.from_state, t.to_state) for t in self.state_machine.transitions}
+            detected_keys = {
+                (t.from_state, t.to_state) for t in self.state_machine.transitions
+            }
             supplemented = 0
             for t in self._initial_transitions:
                 key = (t.from_state, t.to_state)
@@ -1482,15 +1525,24 @@ class HodurUnflattener(GenericUnflatteningRule):
                 len(detected_keys),
             )
 
-        # BST→m_jtbl conversion: replace BST dispatcher with a single switch
-        # instruction before DeferredGraphModifier snapshots block state.
+        # Direct linearization: store BST result for use after deferred init.
         self._jtbl_converted = False
         self._jtbl_dispatcher_serial = -1
         self._jtbl_state_to_handler = {}
         self._jtbl_handler_state_map = {}
+        self._bst_result: BSTAnalysisResult | None = None
+        self._bst_dispatcher_serial: int = -1
         if self.state_machine is not None:
-            bst_stkoff = _get_state_var_stkoff(self._detector) if self._detector is not None else None
-            entry_serial = list(self.state_machine.handlers.values())[0].check_block if self.state_machine.handlers else 0
+            bst_stkoff = (
+                _get_state_var_stkoff(self._detector)
+                if self._detector is not None
+                else None
+            )
+            entry_serial = (
+                list(self.state_machine.handlers.values())[0].check_block
+                if self.state_machine.handlers
+                else 0
+            )
             try:
                 raw_bst = analyze_bst_dispatcher(
                     self.mba,
@@ -1501,20 +1553,22 @@ class HodurUnflattener(GenericUnflatteningRule):
                 raw_bst = None
 
             if raw_bst is not None and len(raw_bst.handler_state_map) > 0:
-                converted = self._convert_bst_to_jtbl(
-                    raw_bst,
-                    dispatcher_serial=entry_serial,
-                )
-                if converted:
-                    self.mba.mark_chains_dirty()
+                self._bst_result = raw_bst
+                self._bst_dispatcher_serial = entry_serial
 
         # Initialize deferred modifier - queue all changes first, apply later
         self.deferred = DeferredGraphModifier(self.mba)
 
-        # Post-m_jtbl resolution: resolve switch cases into direct jumps
-        if self._jtbl_converted:
-            jtbl_resolved = self._resolve_jtbl_switch()
-            unflat_logger.info("Post-m_jtbl resolution: %d cases resolved", jtbl_resolved)
+        # Direct linearization: queue goto redirects from BST analysis
+        if self._bst_result is not None:
+            linearized = self._linearize_handlers(
+                self._bst_result,
+                dispatcher_serial=self._bst_dispatcher_serial,
+            )
+            if linearized > 0:
+                unflat_logger.info(
+                    "Direct linearization: %d redirects queued", linearized
+                )
 
         # Ensure DispatcherCache has run (for emulation path in conditional forks)
         _ = DispatcherCache.get_or_create(self.mba).analyze()
@@ -1542,12 +1596,17 @@ class HodurUnflattener(GenericUnflatteningRule):
             if blk is None or blk.type != ida_hexrays.BLT_NWAY:
                 continue
             # Case 2: BLT_NWAY + m_goto tail + nsucc==1 → downgrade to BLT_1WAY
-            if (blk.tail is not None
-                    and blk.nsucc() == 1
-                    and blk.tail.opcode == ida_hexrays.m_goto):
+            if (
+                blk.tail is not None
+                and blk.nsucc() == 1
+                and blk.tail.opcode == ida_hexrays.m_goto
+            ):
                 blk.type = ida_hexrays.BLT_1WAY
                 self.mba.mark_chains_dirty()
-                unflat_logger.info("blk[%d] BLT_NWAY+goto downgraded to BLT_1WAY (pre-apply)", blk.serial)
+                unflat_logger.info(
+                    "blk[%d] BLT_NWAY+goto downgraded to BLT_1WAY (pre-apply)",
+                    blk.serial,
+                )
             # Case 1: BLT_NWAY + null tail + nsucc==2 → find dispatcher trampoline and fix
             elif blk.tail is None and blk.nsucc() == 2:
                 # Check if one successor is a 1-way trampoline leading to a known Hodur
@@ -1576,7 +1635,9 @@ class HodurUnflattener(GenericUnflatteningRule):
                         self.mba.mark_chains_dirty()
                         unflat_logger.info(
                             "blk[%d] BLT_NWAY null-tail fixed via trampoline %d → keep %d (hodur pre-apply)",
-                            blk.serial, succ_serial, keep_serial
+                            blk.serial,
+                            succ_serial,
+                            keep_serial,
                         )
                         fixed = True
                         break
@@ -1597,11 +1658,8 @@ class HodurUnflattener(GenericUnflatteningRule):
                     run_deep_cleaning=False,
                 )
 
-                if self._jtbl_converted and self._resolved_transitions:
-                    pruned = self._prune_resolved_jtbl_cases()
-                    if pruned > 0:
-                        unflat_logger.info("Pruned %d resolved cases from m_jtbl", pruned)
-                        nb_changes += pruned
+                # _prune_resolved_jtbl_cases skipped: direct linearization does not
+                # create an m_jtbl switch, so pruning is not needed.
 
         unflat_logger.debug(
             "HodurUnflattener: pass %d direct transition patches = %d",
@@ -1657,6 +1715,347 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._actual_pass_count += 1
 
         return nb_changes
+
+    def _evaluate_handler_paths(
+        self,
+        entry_serial: int,
+        incoming_state: int,
+        bst_node_blocks: set[int],
+        state_var_stkoff: int,
+    ) -> list[HandlerPathResult]:
+        """DFS forward eval of a handler, forking state at conditional branches.
+
+        Walks all blocks from entry_serial, forward-evaluating each instruction.
+        When an exit to the dispatcher (successor in bst_node_blocks) is found,
+        records the exit block and the current state variable value.
+        Uses per-path visited set to handle diamonds and prevent infinite loops.
+        """
+        results: list[HandlerPathResult] = []
+
+        queue: list[tuple[int, dict, dict, frozenset, list]] = [
+            (entry_serial, {}, {state_var_stkoff: incoming_state}, frozenset(), []),
+        ]
+
+        while queue:
+            curr_serial, reg_map, stk_map, path_visited, state_writes = queue.pop()
+
+            if curr_serial in path_visited:
+                continue
+            path_visited = path_visited | {curr_serial}
+
+            blk = self.mba.get_mblock(curr_serial)
+
+            cur_writes = list(state_writes)
+            insn = blk.head
+            while insn is not None:
+                old_val = stk_map.get(state_var_stkoff)
+                _forward_eval_insn(
+                    insn,
+                    stk_map,
+                    reg_map,
+                    state_var_stkoff,
+                    mba=self.mba,
+                )
+                new_val = stk_map.get(state_var_stkoff)
+                if new_val != old_val:
+                    cur_writes.append((curr_serial, insn.ea))
+                insn = insn.next
+
+            succs = [blk.succ(i) for i in range(blk.nsucc())]
+
+            if not succs:
+                # Terminal block (e.g., m_ret) — handler exits the function naturally.
+                # Record as a terminal path with final_state=None.
+                results.append(HandlerPathResult(
+                    exit_block=curr_serial,
+                    final_state=None,
+                    state_writes=list(cur_writes),
+                ))
+                continue
+
+            for succ_serial in succs:
+                if succ_serial in bst_node_blocks:
+                    final_val = stk_map.get(state_var_stkoff)
+                    if final_val is not None:
+                        results.append(
+                            HandlerPathResult(
+                                exit_block=curr_serial,
+                                final_state=final_val & 0xFFFFFFFF,
+                                state_writes=cur_writes,
+                            )
+                        )
+                else:
+                    queue.append(
+                        (
+                            succ_serial,
+                            dict(reg_map),
+                            dict(stk_map),
+                            path_visited,
+                            list(cur_writes),
+                        )
+                    )
+
+        return results
+
+    def _resolve_exit_via_bst_default(
+        self, bst_default_serial: int, exit_state: int
+    ) -> int | None:
+        """Resolve an exit state through the BST default block's comparison.
+
+        The BST default block is a 2WAY comparison block (jnz/jz) that routes
+        exit states to actual exit targets. Instead of redirecting to the
+        comparison block directly, we evaluate the comparison statically and
+        return the appropriate successor.
+
+        Args:
+            bst_default_serial: Block serial of the BST default/boundary block.
+            exit_state: The final state value for this exit path.
+
+        Returns:
+            The successor serial to redirect to, or None if unresolvable.
+        """
+        bst_default_blk = self.mba.get_mblock(bst_default_serial)
+        if bst_default_blk is None or bst_default_blk.nsucc() != 2:
+            return None
+
+        tail = bst_default_blk.tail
+        if tail is None:
+            return None
+
+        if tail.opcode not in (ida_hexrays.m_jnz, ida_hexrays.m_jz):
+            return None
+
+        # Extract the comparison constant from the right operand
+        if tail.r is None or tail.r.t != ida_hexrays.mop_n:
+            return None
+
+        comparison_value = int(tail.r.nnn.value)
+
+        # succ(0) = fall-through (condition false), succ(1) = jump (condition true)
+        # m_jnz: condition true when left != right
+        # m_jz:  condition true when left == right
+        if tail.opcode == ida_hexrays.m_jnz:
+            condition_true = exit_state != comparison_value
+        else:  # m_jz
+            condition_true = exit_state == comparison_value
+
+        target_serial = (
+            bst_default_blk.succ(1) if condition_true else bst_default_blk.succ(0)
+        )
+
+        unflat_logger.info(
+            "blk[%d] exit state 0x%x resolved through BST default blk[%d] "
+            "(cmp=0x%x, opcode=%d) -> blk[%d]",
+            bst_default_serial,
+            exit_state,
+            bst_default_serial,
+            comparison_value,
+            tail.opcode,
+            target_serial,
+        )
+        return target_serial
+
+    def _linearize_handlers(
+        self,
+        bst_result: BSTAnalysisResult,
+        dispatcher_serial: int,
+    ) -> int:
+        """Linearize all handlers by redirecting exits directly to target handlers.
+
+        For each handler:
+        1. Run DFS forward eval to find exit paths and their final state values.
+        2. Resolve each final state to a target handler via BST lookup.
+        3. Queue goto redirect: handler exit -> target handler entry.
+        4. Queue NOP for state variable writes (dead after redirect).
+
+        Args:
+            bst_result: Parsed BST analysis with handler maps and node blocks.
+            dispatcher_serial: Block serial of the dispatcher entry.
+
+        Returns:
+            Number of transitions successfully resolved.
+        """
+        state_var_stkoff = _get_state_var_stkoff(self._detector)
+        if state_var_stkoff is None:
+            unflat_logger.info("Cannot linearize: state_var_stkoff is None")
+            return 0
+
+        bst_node_blocks = bst_result.bst_node_blocks | {dispatcher_serial}
+        sm_blocks = self._collect_state_machine_blocks()
+        resolved_count = 0
+
+        # All handlers: exact + range
+        all_handlers: dict[int, int] = {}  # handler_serial -> incoming_state
+        for serial, state in bst_result.handler_state_map.items():
+            all_handlers[serial] = state
+        # Range handlers: seed forward eval with range low (or high) as incoming state.
+        # The entry block writes a concrete constant regardless of which exact value
+        # dispatched here; the seed only matters if no state write is found at entry.
+        for serial, (low, high) in bst_result.handler_range_map.items():
+            if serial not in all_handlers:
+                mid = low if low is not None else (high if high is not None else 0)
+                all_handlers[serial] = mid
+
+        for handler_serial, incoming_state in all_handlers.items():
+            # Skip handlers that are BST comparison nodes themselves
+            if handler_serial in bst_node_blocks:
+                continue
+
+            paths = self._evaluate_handler_paths(
+                entry_serial=handler_serial,
+                incoming_state=incoming_state,
+                bst_node_blocks=bst_node_blocks,
+                state_var_stkoff=state_var_stkoff,
+            )
+
+            if not paths:
+                unflat_logger.debug(
+                    "Handler blk[%d] (state 0x%x): no exit paths found",
+                    handler_serial,
+                    incoming_state,
+                )
+                continue
+
+            for path in paths:
+                if path.final_state is None:
+                    # Terminal path — handler already exits naturally (e.g., function return).
+                    # No redirect needed. Count as resolved.
+                    unflat_logger.info(
+                        "Handler blk[%d] (state=0x%x): terminal exit via blk[%d]",
+                        handler_serial,
+                        incoming_state,
+                        path.exit_block,
+                    )
+                    resolved_count += 1
+                    continue
+
+                target_serial = resolve_target_via_bst(bst_result, path.final_state)
+                if target_serial is None:
+                    # No handler matches this state value — it's an exit transition.
+                    # Try to resolve THROUGH the BST default block's comparison so we
+                    # redirect to the actual exit target rather than blk[bst_default].
+                    bst_default = find_bst_default_block(
+                        self.mba,
+                        dispatcher_serial,
+                        bst_result.bst_node_blocks,
+                        set(bst_result.handler_state_map.keys()),
+                    )
+                    exit_target: int | None = None
+                    if bst_default is not None and path.final_state is not None:
+                        exit_target = self._resolve_exit_via_bst_default(
+                            bst_default, path.final_state
+                        )
+                        if exit_target is not None:
+                            self.deferred.queue_goto_change(
+                                block_serial=path.exit_block,
+                                new_target=exit_target,
+                                description=(
+                                    f"hodur-linear: blk[{handler_serial}] "
+                                    f"exit 0x{path.final_state:x} -> resolved blk[{exit_target}]"
+                                ),
+                                rule_priority=550,
+                            )
+                            # Bypass blk[60] entirely — state writes are dead.
+                            for write_blk, write_ea in path.state_writes:
+                                self.deferred.queue_insn_nop(
+                                    block_serial=write_blk,
+                                    insn_ea=write_ea,
+                                    description=f"hodur-linear: dead state write (exit) in blk[{write_blk}]",
+                                )
+                            resolved_count += 1
+                            self._resolved_transitions.add(
+                                (incoming_state, path.final_state)
+                            )
+                            unflat_logger.info(
+                                "Handler blk[%d]: exit state 0x%x -> resolved through "
+                                "BST default blk[%d] -> blk[%d]",
+                                handler_serial,
+                                path.final_state,
+                                bst_default,
+                                exit_target,
+                            )
+                            continue
+
+                    # Fallback: redirect to bst_default directly (or terminal exit)
+                    if bst_default is None:
+                        bst_default = self._find_terminal_exit_target(
+                            dispatcher_serial, sm_blocks
+                        )
+                    if bst_default is not None:
+                        self.deferred.queue_goto_change(
+                            block_serial=path.exit_block,
+                            new_target=bst_default,
+                            description=(
+                                f"hodur-linear: blk[{handler_serial}] "
+                                f"exit state 0x{path.final_state:x} -> bst_default blk[{bst_default}]"
+                            ),
+                            rule_priority=550,
+                        )
+                        # Keep state variable live for exit paths (no NOP).
+                        resolved_count += 1
+                        self._resolved_transitions.add(
+                            (incoming_state, path.final_state)
+                        )
+                        unflat_logger.info(
+                            "Handler blk[%d]: exit state 0x%x -> bst_default blk[%d]",
+                            handler_serial,
+                            path.final_state,
+                            bst_default,
+                        )
+                    else:
+                        unflat_logger.debug(
+                            "Handler blk[%d]: exit state 0x%x -> no bst_default found, leaving intact",
+                            handler_serial,
+                            path.final_state,
+                        )
+                    continue
+
+                is_self_loop = target_serial == handler_serial
+
+                self.deferred.queue_goto_change(
+                    block_serial=path.exit_block,
+                    new_target=target_serial,
+                    description=(
+                        f"hodur-linear: blk[{handler_serial}] "
+                        f"0x{incoming_state:x}->0x{path.final_state:x} "
+                        f"{'(loop)' if is_self_loop else ''}"
+                    ),
+                    rule_priority=550,
+                )
+
+                for write_blk, write_ea in path.state_writes:
+                    self.deferred.queue_insn_nop(
+                        block_serial=write_blk,
+                        insn_ea=write_ea,
+                        description=f"hodur-linear: dead state write in blk[{write_blk}]",
+                    )
+
+                resolved_count += 1
+                self._resolved_transitions.add((incoming_state, path.final_state))
+
+        # Redirect pre-header to initial handler
+        if (
+            bst_result.initial_state is not None
+            and bst_result.pre_header_serial is not None
+        ):
+            initial_handler = resolve_target_via_bst(
+                bst_result, bst_result.initial_state
+            )
+            if initial_handler is not None:
+                self.deferred.queue_goto_change(
+                    block_serial=bst_result.pre_header_serial,
+                    new_target=initial_handler,
+                    description="hodur-linear: pre-header -> initial handler",
+                    rule_priority=550,
+                )
+                resolved_count += 1
+
+        unflat_logger.info(
+            "Hodur linearization: %d transitions resolved for %d handlers",
+            resolved_count,
+            len(all_handlers),
+        )
+        return resolved_count
 
     def _convert_bst_to_jtbl(
         self,
@@ -1878,7 +2277,11 @@ class HodurUnflattener(GenericUnflatteningRule):
                             kind, info = result
                             if kind == "literal":
                                 const_val, insn_ea = info
-                                return (current, kind, (const_val, insn_ea, scan_serial))
+                                return (
+                                    current,
+                                    kind,
+                                    (const_val, insn_ea, scan_serial),
+                                )
                             return (current, kind, info)
                     return None
                 current = succ
@@ -1895,11 +2298,15 @@ class HodurUnflattener(GenericUnflatteningRule):
                             kind, info = result
                             if kind == "literal":
                                 const_val, insn_ea = info
-                                branches.append((current, kind, (const_val, insn_ea, current)))
+                                branches.append(
+                                    (current, kind, (const_val, insn_ea, current))
+                                )
                             else:
                                 branches.append((current, kind, info))
                     else:
-                        sub = self._trace_case_body(succ, switch_head, max_depth=16, _visited=_visited)
+                        sub = self._trace_case_body(
+                            succ, switch_head, max_depth=16, _visited=_visited
+                        )
                         if sub is not None:
                             branches.append(sub)
                 if branches:
@@ -1918,14 +2325,22 @@ class HodurUnflattener(GenericUnflatteningRule):
         - Terminal (return): no action
         - Conditional: resolve each branch independently
         """
-        if not self._jtbl_converted or self.deferred is None or self.state_machine is None:
+        if (
+            not self._jtbl_converted
+            or self.deferred is None
+            or self.state_machine is None
+        ):
             return 0
         switch_blk = self.mba.get_mblock(self._jtbl_dispatcher_serial)
         unflat_logger.info(
             "Post-m_jtbl _resolve: switch blk[%d] nsucc=%d, state_var=%s",
             self._jtbl_dispatcher_serial,
             switch_blk.nsucc(),
-            self.state_machine.state_var.dstr() if self.state_machine.state_var else "None",
+            (
+                self.state_machine.state_var.dstr()
+                if self.state_machine.state_var
+                else "None"
+            ),
         )
         resolved = 0
 
@@ -1937,7 +2352,9 @@ class HodurUnflattener(GenericUnflatteningRule):
             if kind == "terminal":
                 return 0
             if kind == "literal":
-                const_value, insn_ea, write_blk = info if len(info) == 3 else (*info, tail_serial)
+                const_value, insn_ea, write_blk = (
+                    info if len(info) == 3 else (*info, tail_serial)
+                )
                 target = self._jtbl_state_to_handler.get(const_value)
                 if target is not None:
                     self.deferred.queue_goto_change(
@@ -2017,7 +2434,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         # If ALL entries resolved, convert m_jtbl to a single m_goto
         if len(resolved_entries) >= total_cases:
             initial_target = self._jtbl_state_to_handler.get(
-                self.state_machine.initial_state if self.state_machine is not None else -1
+                self.state_machine.initial_state
+                if self.state_machine is not None
+                else -1
             )
             if initial_target is None and total_cases > 0:
                 initial_target = int(cases.targets[0])
@@ -2033,7 +2452,9 @@ class HodurUnflattener(GenericUnflatteningRule):
             return 0
 
         # Partial prune: rebuild mcases_t keeping only unresolved entries
-        old_succs = set(int(switch_blk.succset[i]) for i in range(switch_blk.succset.size()))
+        old_succs = {
+            int(switch_blk.succset[i]) for i in range(switch_blk.succset.size())
+        }
 
         surviving_groups: dict[int, list[int]] = defaultdict(list)
         for i in range(cases.targets.size()):
@@ -2053,9 +2474,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         cases.swap(new_mc)  # In-place swap, safe for SWIG
 
         # Rebuild succset from the new mcases_t
-        new_succs: set[int] = set(
+        new_succs: set[int] = {
             int(cases.targets[i]) for i in range(cases.targets.size())
-        )
+        }
         switch_blk.succset.clear()
         for i in range(cases.targets.size()):
             switch_blk.succset.add_unique(int(cases.targets[i]))
@@ -2238,10 +2659,15 @@ class HodurUnflattener(GenericUnflatteningRule):
                 continue
             # Defensive: skip self-loop transitions (should be filtered at build time,
             # but cache-based path may admit them).
-            if transition.from_state is not None and transition.from_state == transition.to_state:
+            if (
+                transition.from_state is not None
+                and transition.from_state == transition.to_state
+            ):
                 unflat_logger.debug(
                     "_queue_transitions_direct: skipping self-loop transition %s -> %s (block %d)",
-                    hex(transition.from_state), hex(transition.to_state), transition.from_block,
+                    hex(transition.from_state),
+                    hex(transition.to_state),
+                    transition.from_block,
                 )
                 continue
             transitions_by_block[transition.from_block].append(transition)
@@ -2255,7 +2681,7 @@ class HodurUnflattener(GenericUnflatteningRule):
 
             # --- 1-way blocks: simple goto redirect ---
             if from_blk.nsucc() == 1:
-                succs = [s for s in from_blk.succset]
+                succs = list(from_blk.succset)
                 if not succs or succs[0] not in check_blocks:
                     unflat_logger.debug(
                         "Block %d goes to %d, not a dispatcher check block; skipping",
@@ -2311,7 +2737,9 @@ class HodurUnflattener(GenericUnflatteningRule):
                     f"transition-cond {hex(transition.from_state) if transition.from_state is not None else 'unknown'} -> {hex(transition.to_state)}",
                 ):
                     if transition.from_state is not None:
-                        self._resolved_transitions.add((transition.from_state, transition.to_state))
+                        self._resolved_transitions.add(
+                            (transition.from_state, transition.to_state)
+                        )
                     queued_patches += 1
 
             elif len(unique_to_states) == 2:
@@ -2321,8 +2749,10 @@ class HodurUnflattener(GenericUnflatteningRule):
                 handler_a = self.state_machine.handlers.get(t_a.to_state)
                 handler_b = self.state_machine.handlers.get(t_b.to_state)
                 if (
-                    handler_a is None or not handler_a.handler_blocks
-                    or handler_b is None or not handler_b.handler_blocks
+                    handler_a is None
+                    or not handler_a.handler_blocks
+                    or handler_b is None
+                    or not handler_b.handler_blocks
                 ):
                     unflat_logger.debug(
                         "Conditional fork at block %d: missing handler(s), skipping",
@@ -2351,9 +2781,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                 )
 
                 # Try emulation when static walk failed and we have full context
-                dispatcher_set = getattr(
-                    self, "_cache_dispatcher_set", set()
-                )
+                dispatcher_set = getattr(self, "_cache_dispatcher_set", set())
                 state_var = getattr(self, "_cache_state_var", None)
                 valid_a = set(handler_a.handler_blocks)
                 valid_b = set(handler_b.handler_blocks)
@@ -2370,7 +2798,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                             dispatcher_set, ladder_entry
                         )
                         try:
-                            for hist in [1]: # dummy to preserve indent
+                            for hist in [1]:  # dummy to preserve indent
                                 em_a = self._emulate_chain_exit(
                                     ladder_entry,
                                     int(t_a.to_state),
@@ -2421,8 +2849,10 @@ class HodurUnflattener(GenericUnflatteningRule):
                     continue
 
                 # Check which to_state makes the check block's jump taken
-                check_info = HodurStateMachineDetector._extract_check_constant_and_opcode(
-                    check_blk.tail
+                check_info = (
+                    HodurStateMachineDetector._extract_check_constant_and_opcode(
+                        check_blk.tail
+                    )
                 )
                 if check_info is None:
                     continue
@@ -2474,9 +2904,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         # avoid corrupting conditional branches within handler bodies.
         check_block_serials = {handler.check_block for handler in handlers}
         sm_blocks_for_exit = self._collect_state_machine_blocks()
-        first_check_serial = (
-            handlers[0].check_block if handlers else None
-        )
+        first_check_serial = handlers[0].check_block if handlers else None
         exit_target = (
             self._find_terminal_exit_target(first_check_serial, sm_blocks_for_exit)
             if first_check_serial is not None
@@ -2490,7 +2918,9 @@ class HodurUnflattener(GenericUnflatteningRule):
             for transition in self.state_machine.transitions:
                 to_handler = self.state_machine.handlers.get(transition.to_state)
                 if to_handler and to_handler.handler_blocks:
-                    from_handler = self.state_machine.handlers.get(transition.from_state)
+                    from_handler = self.state_machine.handlers.get(
+                        transition.from_state
+                    )
                     if from_handler and from_handler.handler_blocks:
                         handler_entry_to_next[from_handler.handler_blocks[0]] = (
                             to_handler.handler_blocks[0]
@@ -2514,14 +2944,15 @@ class HodurUnflattener(GenericUnflatteningRule):
                     if self._queue_transition_redirect(
                         blk,
                         redirect_target,
-                        "handler-body back-edge blk[%d] -> check blk[%d]" % (
-                            blk_serial, succs[0]
-                        ),
+                        "handler-body back-edge blk[%d] -> check blk[%d]"
+                        % (blk_serial, succs[0]),
                     ):
                         unflat_logger.debug(
                             "_queue_transitions_direct: handler-body back-edge blk[%d]"
                             " -> check blk[%d] redirected to blk[%d]",
-                            blk_serial, succs[0], redirect_target,
+                            blk_serial,
+                            succs[0],
+                            redirect_target,
                         )
                         queued_patches += 1
 
@@ -2548,18 +2979,23 @@ class HodurUnflattener(GenericUnflatteningRule):
                 return None  # Cycle
 
             pred_blk = self.mba.get_mblock(pred_serial)
-            if pred_blk.nsucc() == 2 and pred_blk.tail and pred_blk.tail.opcode in (
-                ida_hexrays.m_jcnd,
-                ida_hexrays.m_jnz,
-                ida_hexrays.m_jz,
-                ida_hexrays.m_jae,
-                ida_hexrays.m_jb,
-                ida_hexrays.m_ja,
-                ida_hexrays.m_jbe,
-                ida_hexrays.m_jg,
-                ida_hexrays.m_jge,
-                ida_hexrays.m_jl,
-                ida_hexrays.m_jle,
+            if (
+                pred_blk.nsucc() == 2
+                and pred_blk.tail
+                and pred_blk.tail.opcode
+                in (
+                    ida_hexrays.m_jcnd,
+                    ida_hexrays.m_jnz,
+                    ida_hexrays.m_jz,
+                    ida_hexrays.m_jae,
+                    ida_hexrays.m_jb,
+                    ida_hexrays.m_ja,
+                    ida_hexrays.m_jbe,
+                    ida_hexrays.m_jg,
+                    ida_hexrays.m_jge,
+                    ida_hexrays.m_jl,
+                    ida_hexrays.m_jle,
+                )
             ):
                 return pred_serial
 
@@ -2690,9 +3126,8 @@ class HodurUnflattener(GenericUnflatteningRule):
                 ref_blk_serial=cond_block,
                 conditional_target_serial=taken_target,
                 fallthrough_target_serial=fall_target,
-                description="Hodur conditional fork: block %d -> %d/%d" % (
-                    cond_block, taken_target, fall_target
-                ),
+                description="Hodur conditional fork: block %d -> %d/%d"
+                % (cond_block, taken_target, fall_target),
             )
             resolved += 1
 
@@ -2963,11 +3398,13 @@ class HodurUnflattener(GenericUnflatteningRule):
                     insn = blk.head
                     while insn:
                         # Match: mov CONST, state_var (state assignment)
-                        if (insn.opcode == ida_hexrays.m_mov
-                                and insn.l.t == ida_hexrays.mop_n
-                                and insn.l.nnn.value in self.state_machine.state_constants
-                                and insn.d.t == state_var.t
-                                and insn.d.size == state_var.size):
+                        if (
+                            insn.opcode == ida_hexrays.m_mov
+                            and insn.l.t == ida_hexrays.mop_n
+                            and insn.l.nnn.value in self.state_machine.state_constants
+                            and insn.d.t == state_var.t
+                            and insn.d.size == state_var.size
+                        ):
                             state_nops.append((blk_serial, insn.ea, insn.opcode))
                         insn = insn.next
 
@@ -2981,7 +3418,8 @@ class HodurUnflattener(GenericUnflatteningRule):
                         if unflat_logger.debug_on:
                             unflat_logger.debug(
                                 "NOPed state assignment in block %d (ea=0x%x)",
-                                blk_serial, target_ea,
+                                blk_serial,
+                                target_ea,
                             )
                         break
                     insn = insn.next
@@ -3116,9 +3554,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         # The jnz target is typically the next check block, which loops back
         # into the dispatcher and creates a residual while(1).
         sm_blocks = self._collect_state_machine_blocks()
-        exit_target = self._find_terminal_exit_target(
-            first_check_blk.serial, sm_blocks
-        )
+        exit_target = self._find_terminal_exit_target(first_check_blk.serial, sm_blocks)
         if exit_target is not None and exit_target not in sm_blocks:
             success_target = exit_target
         else:
@@ -3330,7 +3766,9 @@ class HodurUnflattener(GenericUnflatteningRule):
                     append_mop_if_not_in_list(mop_def, def_list)
                 cur_ins = cur_ins.next
 
-        return [m for m in use_before_def if m.t in (ida_hexrays.mop_r, ida_hexrays.mop_S)]
+        return [
+            m for m in use_before_def if m.t in (ida_hexrays.mop_r, ida_hexrays.mop_S)
+        ]
 
     def _get_successor_into_dispatcher(
         self,
@@ -3554,7 +3992,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         # This lets us identify the "from_state" (entry state) for each handler block.
         block_to_from_state: dict[int, int] = {}
         for sc in analysis.state_constants:
-            routed_serial = self._resolve_conditional_chain_target(disp_entry_serial, sc)
+            routed_serial = self._resolve_conditional_chain_target(
+                disp_entry_serial, sc
+            )
             if routed_serial is not None:
                 block_to_from_state[routed_serial] = sc
         unflat_logger.debug(
@@ -3621,7 +4061,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             unflat_logger.debug(
                 "_build_state_machine_from_cache: block %d: from_state=%s -> next_state=%s"
                 " (target block %d)",
-                from_block_serial, hex(from_state), hex(next_state), target_serial,
+                from_block_serial,
+                hex(from_state),
+                hex(next_state),
+                target_serial,
             )
 
             # Register the transition: from_state (entry state) -> next_state (assigned state).
@@ -3654,7 +4097,6 @@ class HodurUnflattener(GenericUnflatteningRule):
                 )
                 handlers_by_state[next_state] = handler
                 machine.add_handler(handler)
-
 
         if not machine.transitions:
             unflat_logger.debug(
@@ -3750,14 +4192,17 @@ class HodurUnflattener(GenericUnflatteningRule):
             if pred_blk.nsucc() == 2:
                 if pred_serial not in sm_blocks:  # sm_blocks pre-computed
                     # Find the non-check-block successor (the forward path)
-                    forward_succs = [s for s in pred_blk.succset if s not in check_blocks]
+                    forward_succs = [
+                        s for s in pred_blk.succset if s not in check_blocks
+                    ]
                     if forward_succs:
                         forward_target = forward_succs[0]
                         make_2way_block_goto(pred_blk, forward_target)
                         unflat_logger.info(
                             "Assignment-map resolver: converted 2-way exit blk[%d] "
                             "to goto blk[%d]",
-                            pred_serial, forward_target,
+                            pred_serial,
+                            forward_target,
                         )
                         resolved += 1
                 continue
@@ -3806,7 +4251,9 @@ class HodurUnflattener(GenericUnflatteningRule):
                         unflat_logger.info(
                             "Assignment-map resolver: terminal state 0x%x "
                             "blk[%d] -> exit blk[%d]",
-                            target_state, pred_serial, exit_tgt,
+                            target_state,
+                            pred_serial,
+                            exit_tgt,
                         )
                         resolved += 1
                 continue
@@ -3826,7 +4273,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             unflat_logger.info(
                 "Assignment-map resolver: block %d (state 0x%x) -> handler block %d"
                 " (via check block %d)",
-                pred_serial, target_state, handler_entry, dispatcher_target,
+                pred_serial,
+                target_state,
+                handler_entry,
+                dispatcher_target,
             )
             resolved += 1
 
@@ -3873,7 +4323,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             )
 
             # For each predecessor of the check block
-            pred_list = [p for p in check_blk.predset]
+            pred_list = list(check_blk.predset)
             for pred_serial in pred_list:
                 pred_blk = self.mba.get_mblock(pred_serial)
 
@@ -3902,7 +4352,10 @@ class HodurUnflattener(GenericUnflatteningRule):
                         pred_serial,
                         [hex(v) for v in unique_values],
                     )
-                    if len(unique_values) == 2 and pred_serial not in conditional_preds_patched:
+                    if (
+                        len(unique_values) == 2
+                        and pred_serial not in conditional_preds_patched
+                    ):
                         # Attempt conditional transition resolution:
                         # The predecessor is a 2-way block where each path sets a
                         # different state value.  Walk the check-block chain for each
@@ -3910,12 +4363,16 @@ class HodurUnflattener(GenericUnflatteningRule):
                         # the two successor edges of pred_blk individually.
                         val_list = list(unique_values)
                         handler_targets = [
-                            self._resolve_conditional_chain_target(handler.check_block, v)
+                            self._resolve_conditional_chain_target(
+                                handler.check_block, v
+                            )
                             for v in val_list
                         ]
 
                         if None not in handler_targets and pred_blk.nsucc() == 2:
-                            check_opcode = check_blk.tail.opcode if check_blk.tail else None
+                            check_opcode = (
+                                check_blk.tail.opcode if check_blk.tail else None
+                            )
                             if (
                                 check_blk.tail is not None
                                 and check_opcode in HODUR_STATE_CHECK_OPCODES
