@@ -396,6 +396,17 @@ def _dump_dispatcher_node(
             if _v is not None:
                 _bst_opcodes.add(_v)
 
+        # Extract the state variable size from the root BST node once so that
+        # _is_bst_node / _is_bst_node_chain can reject comparisons that test a
+        # differently-sized operand (e.g. an 8-byte pointer vs NULL).
+        # mop_n == 2: the constant side; the other side is the state variable.
+        if getattr(insn.l, "t", None) == 2:  # mop_n on left → state var on right
+            _root_state_var_size = getattr(insn.r, "size", None)
+        elif getattr(insn.r, "t", None) == 2:  # mop_n on right → state var on left
+            _root_state_var_size = getattr(insn.l, "size", None)
+        else:
+            _root_state_var_size = None  # Can't determine, skip size filtering
+
         def _is_bst_node(blk_serial: int) -> bool:
             if blk_serial in visited:
                 return False
@@ -405,7 +416,20 @@ def _dump_dispatcher_node(
             _tail = _b.tail
             if _tail is None:
                 return False
-            return getattr(_tail, "opcode", None) in _bst_opcodes
+            if getattr(_tail, "opcode", None) not in _bst_opcodes:
+                return False
+            if _root_state_var_size is not None:
+                _l_t = getattr(_tail.l, "t", None)
+                _r_t = getattr(_tail.r, "t", None)
+                if _l_t == 2:  # mop_n on left, state var on right
+                    if getattr(_tail.r, "size", None) != _root_state_var_size:
+                        return False
+                elif _r_t == 2:  # mop_n on right, state var on left
+                    if getattr(_tail.l, "size", None) != _root_state_var_size:
+                        return False
+                else:
+                    return False  # No constant operand → not a BST comparison
+            return True
 
         # Compute narrowed range for the "not-equal" continuation path.
         # When recursing from m_jnz != V, V is excluded from the range.
@@ -448,7 +472,20 @@ def _dump_dispatcher_node(
             _tail = _b.tail
             if _tail is None:
                 return False
-            return getattr(_tail, "opcode", None) in _bst_opcodes
+            if getattr(_tail, "opcode", None) not in _bst_opcodes:
+                return False
+            if _root_state_var_size is not None:
+                _l_t = getattr(_tail.l, "t", None)
+                _r_t = getattr(_tail.r, "t", None)
+                if _l_t == 2:  # mop_n on left, state var on right
+                    if getattr(_tail.r, "size", None) != _root_state_var_size:
+                        return False
+                elif _r_t == 2:  # mop_n on right, state var on left
+                    if getattr(_tail.l, "size", None) != _root_state_var_size:
+                        return False
+                else:
+                    return False  # No constant operand → not a BST comparison
+            return True
 
         MAX_CHAIN_DEPTH = 10
 

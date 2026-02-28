@@ -2002,7 +2002,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                                 scan_insn = exit_blk.head
                                 while scan_insn is not None:
                                     if (
-                                        scan_insn.opcode == 2  # m_mov
+                                        scan_insn.opcode == ida_hexrays.m_mov
                                         and scan_insn.d is not None
                                         and _mop_matches_stkoff(
                                             scan_insn.d,
@@ -2130,12 +2130,17 @@ class HodurUnflattener(GenericUnflatteningRule):
                     queue.append(blk.succ(i))
 
             # Find blocks in the default region that jump back to the dispatcher
+            # (any BST node counts as a valid back-edge target, not just the entry)
             for serial in bst_default_region:
                 blk = self.mba.get_mblock(serial)
-                if blk is None or blk.nsucc() != 1:
+                if blk is None:
                     continue
-                succ = blk.succ(0)
-                if succ != dispatcher_serial:
+                # Find any successor that is a BST node (back-edge to dispatcher tree)
+                backedge_succs = [
+                    blk.succ(i) for i in range(blk.nsucc())
+                    if blk.succ(i) in bst_node_blocks
+                ]
+                if not backedge_succs:
                     continue
                 # This block has a back-edge to the dispatcher
                 # Read the state value it writes
@@ -2143,9 +2148,9 @@ class HodurUnflattener(GenericUnflatteningRule):
                 written_state = None
                 state_write_ea = None
                 while insn is not None:
-                    if insn.opcode == 2 and insn.d is not None:  # m_mov
+                    if insn.opcode == ida_hexrays.m_mov and insn.d is not None:
                         if _mop_matches_stkoff(insn.d, state_var_stkoff, mba=self.mba):
-                            if insn.l is not None and insn.l.t == 2:  # mop_n (constant)
+                            if insn.l is not None and insn.l.t == ida_hexrays.mop_n:
                                 written_state = int(insn.l.nnn.value)
                                 state_write_ea = insn.ea
                     insn = insn.next
@@ -2187,7 +2192,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     scan_insn = target_blk.head
                     while scan_insn is not None:
                         if (
-                            scan_insn.opcode == 2  # m_mov
+                            scan_insn.opcode == ida_hexrays.m_mov
                             and scan_insn.d is not None
                             and _mop_matches_stkoff(
                                 scan_insn.d, state_var_stkoff, mba=self.mba
@@ -3110,7 +3115,73 @@ class HodurUnflattener(GenericUnflatteningRule):
                     redirect_target = handler_entry_to_next.get(
                         handler.handler_blocks[0], exit_target
                     )
-                    if self._queue_transition_redirect(
+                    # If we fell back to exit_target, try to resolve through
+                    # BST default first (handles state values that fall through
+                    # all BST comparisons and would otherwise redirect to the
+                    # terminal exit block incorrectly).
+                    bst_default_target: int | None = None
+                    if (
+                        redirect_target == exit_target
+                        and self._bst_result is not None
+                    ):
+                        state_var_stkoff = _get_state_var_stkoff(self._detector)
+                        if state_var_stkoff is not None:
+                            # Scan block for constant state write
+                            written_state: int | None = None
+                            scan = blk.head
+                            while scan is not None:
+                                if (
+                                    scan.opcode == ida_hexrays.m_mov
+                                    and scan.d is not None
+                                    and _mop_matches_stkoff(
+                                        scan.d, state_var_stkoff, mba=self.mba
+                                    )
+                                    and scan.l is not None
+                                    and scan.l.t == ida_hexrays.mop_n
+                                ):
+                                    written_state = int(scan.l.nnn.value)
+                                scan = scan.next
+                            if written_state is not None:
+                                bst_default = find_bst_default_block(
+                                    self.mba,
+                                    self._bst_dispatcher_serial,
+                                    self._bst_result.bst_node_blocks,
+                                    set(self._bst_result.handler_state_map.keys()),
+                                )
+                                if bst_default is not None:
+                                    resolved = self._resolve_exit_via_bst_default(
+                                        bst_default, written_state
+                                    )
+                                    if resolved is not None:
+                                        bst_default_target = resolved
+                                        unflat_logger.debug(
+                                            "_queue_transitions_direct: handler-body"
+                                            " back-edge blk[%d] state %#x resolved"
+                                            " via BST default to blk[%d]",
+                                            blk_serial,
+                                            written_state,
+                                            resolved,
+                                        )
+                    if bst_default_target is not None:
+                        self.deferred.queue_goto_change(
+                            block_serial=blk_serial,
+                            new_target=bst_default_target,
+                            description=(
+                                "handler-body back-edge blk[%d] -> check blk[%d]"
+                                " (BST default resolved)"
+                                % (blk_serial, succs[0])
+                            ),
+                            rule_priority=550,
+                        )
+                        unflat_logger.debug(
+                            "_queue_transitions_direct: handler-body back-edge blk[%d]"
+                            " -> check blk[%d] redirected via BST default to blk[%d]",
+                            blk_serial,
+                            succs[0],
+                            bst_default_target,
+                        )
+                        queued_patches += 1
+                    elif self._queue_transition_redirect(
                         blk,
                         redirect_target,
                         "handler-body back-edge blk[%d] -> check blk[%d]"
