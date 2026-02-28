@@ -137,6 +137,86 @@ class BSTAnalysisResult:
 
 
 # -----------------------------------------------------------------------------
+# BST lookup
+# -----------------------------------------------------------------------------
+
+
+def resolve_target_via_bst(
+    bst_result: BSTAnalysisResult,
+    state_value: int,
+) -> Optional[int]:
+    """Given a concrete state value, find which handler block it dispatches to.
+
+    Checks exact matches first (handler_state_map), then range matches
+    (handler_range_map). Returns the handler block serial or None.
+
+    >>> bst = BSTAnalysisResult()
+    >>> bst.handler_state_map = {10: 0xAA}
+    >>> resolve_target_via_bst(bst, 0xAA)
+    10
+    """
+    for handler_serial, state_const in bst_result.handler_state_map.items():
+        if state_const == state_value:
+            return handler_serial
+
+    exact_handler_serials = set(bst_result.handler_state_map.keys())
+    for handler_serial, (low, high) in bst_result.handler_range_map.items():
+        # Skip exact-match handlers — their range entries are artifacts
+        # of m_jnz chain propagation, not real range handlers.
+        if handler_serial in exact_handler_serials:
+            continue
+        if low is not None and state_value < low:
+            continue
+        if high is not None and state_value > high:
+            continue
+        return handler_serial
+
+    return None
+
+
+def find_bst_default_block(
+    mba: "idaapi.mbl_array_t",
+    bst_root_serial: int,
+    bst_node_blocks: set,
+    handler_block_serials: set,
+) -> Optional[int]:
+    """Find the BST's default fall-through block (reached when no comparison matches).
+
+    Walks all BST node successors. Any successor that is neither a BST node
+    nor a handler entry is the default block (contains cleanup/exit code).
+
+    Args:
+        mba: The microcode block array.
+        bst_root_serial: Serial of the BST dispatcher root (included in search).
+        bst_node_blocks: Set of block serials that are BST comparison nodes.
+        handler_block_serials: Set of block serials that are handler entries.
+
+    Returns:
+        Serial of the default fall-through block, or None if not found.
+
+    >>> # Doctest: pure-Python path (no IDA)
+    >>> find_bst_default_block(None, 0, set(), set()) is None
+    True
+    """
+    _ensure_ida_imports()
+    if mba is None:
+        return None
+
+    all_bst_serials = bst_node_blocks | {bst_root_serial}
+
+    for bst_serial in all_bst_serials:
+        blk = mba.get_mblock(bst_serial)
+        if blk is None:
+            continue
+        for i in range(blk.nsucc()):
+            succ = blk.succ(i)
+            if succ not in all_bst_serials and succ not in handler_block_serials:
+                return succ
+
+    return None
+
+
+# -----------------------------------------------------------------------------
 # Internal helpers
 # -----------------------------------------------------------------------------
 
@@ -413,12 +493,16 @@ def _dump_dispatcher_node(
                 elif not already_resolved and not _is_bst_node_chain(jump_blk):
                     if cmp_val is None:
                         lines.append(f"{prefix}  [unknown cmp_val: cannot classify jump blk[{jump_blk}]]")
-                    elif handler_serials is not None:
+                    elif handler_serials is not None and jump_state is not None:
                         handler_serials.add(jump_blk)
-                        if handler_state_map is not None and jump_state is not None:
+                        if handler_state_map is not None:
                             handler_state_map[jump_blk] = jump_state
                         if handler_range_map is not None:
                             handler_range_map[jump_blk] = (value_lo, value_hi)
+                    # When jump_state is None, the range has >2 values but the
+                    # continuation is not a BST node — this is the BST default/
+                    # exit block (reached when no comparison matches). Do NOT
+                    # classify it as a handler.
 
         else:  # m_jz
             # jump target (succs[1]) is state == V → handler leaf only when V is in range
@@ -461,9 +545,9 @@ def _dump_dispatcher_node(
                 elif not already_resolved and not _is_bst_node_chain(fall_blk):
                     if cmp_val is None:
                         lines.append(f"{prefix}  [unknown cmp_val: cannot classify fall-through blk[{fall_blk}]]")
-                    elif handler_serials is not None:
+                    elif handler_serials is not None and fall_state is not None:
                         handler_serials.add(fall_blk)
-                        if handler_state_map is not None and fall_state is not None:
+                        if handler_state_map is not None:
                             handler_state_map[fall_blk] = fall_state
                         if handler_range_map is not None:
                             handler_range_map[fall_blk] = (value_lo, value_hi)
