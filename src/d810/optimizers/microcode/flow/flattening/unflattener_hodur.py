@@ -2010,6 +2010,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         bst_node_blocks = bst_result.bst_node_blocks | {dispatcher_serial}
         sm_blocks = self._collect_state_machine_blocks()
         resolved_count = 0
+        bst_rootwalk_targets: set[int] = set()
 
         # All handlers: exact + range
         all_handlers: dict[int, int] = {}  # handler_serial -> incoming_state
@@ -2086,6 +2087,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                         )
                         if exit_target is not None:
                             resolve_label = "BST root-walk"
+                            bst_rootwalk_targets.add(exit_target)
                         if exit_target is not None and exit_target in bst_node_blocks:
                             logger.info(
                                 "hodur-linear: handler %d exit state 0x%x resolved to BST internal node blk[%d], skipping",
@@ -2217,6 +2219,70 @@ class HodurUnflattener(GenericUnflatteningRule):
 
                 resolved_count += 1
                 self._resolved_transitions.add((incoming_state, path.final_state))
+
+        # --- Second pass: linearize BST root-walk hidden handler exits ---
+        # Some handler exits resolve to "hidden handler" blocks in the BST
+        # default region via BST root-walk. These hidden handlers' own exits
+        # back to the dispatcher are never linearized because they're not in
+        # the handler transition table. Process them now.
+        for rootwalk_blk in bst_rootwalk_targets:
+            if rootwalk_blk in bst_node_blocks:
+                continue  # Skip actual BST comparison nodes
+            try:
+                hidden_paths = self._evaluate_handler_paths(
+                    entry_serial=rootwalk_blk,
+                    incoming_state=0,
+                    bst_node_blocks=bst_node_blocks,
+                    state_var_stkoff=state_var_stkoff,
+                )
+            except Exception:
+                continue
+
+            for path in hidden_paths:
+                if path.final_state is None:
+                    continue  # Terminal path, no redirect needed
+
+                # Try exact BST resolution first
+                target = resolve_target_via_bst(bst_result, path.final_state)
+                if target is None:
+                    # Try BST root-walk
+                    target = self._resolve_exit_via_bst_default(
+                        dispatcher_serial, path.final_state
+                    )
+                if target is None:
+                    continue
+                if target in bst_node_blocks:
+                    continue  # Don't redirect to BST internal nodes
+
+                self.deferred.queue_goto_change(
+                    block_serial=path.exit_block,
+                    new_target=target,
+                    description=(
+                        f"hodur-linear: hidden-handler blk[{rootwalk_blk}]"
+                        f" exit 0x{path.final_state:x} -> blk[{target}]"
+                    ),
+                    rule_priority=550,
+                )
+                self._linearized_blocks.add(path.exit_block)
+                unflat_logger.info(
+                    "hodur-linear: hidden-handler blk[%d] exit_blk=%d -> target blk[%d] (state 0x%x)",
+                    rootwalk_blk,
+                    path.exit_block,
+                    target,
+                    path.final_state,
+                )
+
+                for write_blk, write_ea in path.state_writes:
+                    self.deferred.queue_insn_nop(
+                        block_serial=write_blk,
+                        insn_ea=write_ea,
+                        description=(
+                            f"hodur-linear: dead state write"
+                            f" (hidden-handler blk[{rootwalk_blk}]) in blk[{write_blk}]"
+                        ),
+                    )
+
+                resolved_count += 1
 
         # --- Linearize BST default region back-edges ---
         # The BST default region may contain hidden handlers that loop back
