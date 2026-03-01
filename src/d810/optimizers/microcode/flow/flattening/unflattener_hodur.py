@@ -153,6 +153,7 @@ class HandlerPathResult:
     exit_block: int  # block serial where handler exits to dispatcher
     final_state: Optional[int]  # concrete state value at exit; None for terminal (m_ret) paths
     state_writes: list  # [(block_serial, insn_ea), ...] of state var writes
+    ordered_path: list = field(default_factory=list)  # ordered sequence of block serials visited during DFS
 
 
 class HodurStateMachineDetector:
@@ -1661,6 +1662,8 @@ class HodurUnflattener(GenericUnflatteningRule):
                     run_deep_cleaning=False,
                 )
 
+                self._log_post_apply_reachability()
+
                 # _prune_resolved_jtbl_cases skipped: direct linearization does not
                 # create an m_jtbl switch, so pruning is not needed.
 
@@ -1735,12 +1738,12 @@ class HodurUnflattener(GenericUnflatteningRule):
         """
         results: list[HandlerPathResult] = []
 
-        queue: list[tuple[int, dict, dict, frozenset, list]] = [
-            (entry_serial, {}, {state_var_stkoff: incoming_state}, frozenset(), []),
+        queue: list[tuple[int, dict, dict, frozenset, list, list]] = [
+            (entry_serial, {}, {state_var_stkoff: incoming_state}, frozenset(), [], [entry_serial]),
         ]
 
         while queue:
-            curr_serial, reg_map, stk_map, path_visited, state_writes = queue.pop()
+            curr_serial, reg_map, stk_map, path_visited, state_writes, ordered_path = queue.pop()
 
             if curr_serial in path_visited:
                 continue
@@ -1773,6 +1776,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     exit_block=curr_serial,
                     final_state=None,
                     state_writes=list(cur_writes),
+                    ordered_path=list(ordered_path),
                 ))
                 continue
 
@@ -1785,9 +1789,11 @@ class HodurUnflattener(GenericUnflatteningRule):
                                 exit_block=curr_serial,
                                 final_state=final_val & 0xFFFFFFFF,
                                 state_writes=cur_writes,
+                                ordered_path=list(ordered_path),
                             )
                         )
                 else:
+                    new_ordered = ordered_path + [succ_serial]
                     queue.append(
                         (
                             succ_serial,
@@ -1795,6 +1801,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                             dict(stk_map),
                             path_visited,
                             list(cur_writes),
+                            new_ordered,
                         )
                     )
 
@@ -1922,6 +1929,59 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Loop detected — return last resolved serial.
         return current_serial
 
+    def _log_post_apply_reachability(self) -> None:
+        """BFS from pre-header to check which handler entries are reachable post-apply.
+
+        Logs reachable count vs total and lists unreachable handler serials.
+        Only runs when debug logging is active.
+        """
+        if not unflat_logger.debug_on:
+            return
+
+        if self._bst_result is None:
+            return
+
+        # Determine BFS start: pre-header if available, else block 0
+        start_serial: int = 0
+        if hasattr(self._bst_result, "pre_header_serial") and self._bst_result.pre_header_serial is not None:
+            start_serial = self._bst_result.pre_header_serial
+
+        # BFS over the post-apply CFG
+        reachable: set[int] = set()
+        bfs_queue: list[int] = [start_serial]
+        while bfs_queue:
+            serial = bfs_queue.pop(0)
+            if serial in reachable:
+                continue
+            reachable.add(serial)
+            blk = self.mba.get_mblock(serial)
+            if blk is None:
+                continue
+            for i in range(blk.nsucc()):
+                succ = blk.succ(i)
+                if succ not in reachable:
+                    bfs_queue.append(succ)
+
+        # Check handler entries
+        handler_serials = set(self._bst_result.handler_state_map.keys())
+        range_serials = set(self._bst_result.handler_range_map.keys())
+        all_handler_entries = handler_serials | range_serials
+
+        reachable_handlers = all_handler_entries & reachable
+        unreachable_handlers = all_handler_entries - reachable
+
+        unflat_logger.debug(
+            "Post-apply reachability: %d/%d handler entries reachable from blk[%d]",
+            len(reachable_handlers),
+            len(all_handler_entries),
+            start_serial,
+        )
+        if unreachable_handlers:
+            unflat_logger.debug(
+                "Post-apply unreachable handler entries: %s",
+                sorted(unreachable_handlers),
+            )
+
     def _linearize_handlers(
         self,
         bst_result: BSTAnalysisResult,
@@ -2026,6 +2086,14 @@ class HodurUnflattener(GenericUnflatteningRule):
                         )
                         if exit_target is not None:
                             resolve_label = "BST root-walk"
+                        if exit_target is not None and exit_target in bst_node_blocks:
+                            logger.info(
+                                "hodur-linear: handler %d exit state 0x%x resolved to BST internal node blk[%d], skipping",
+                                handler_serial,
+                                path.final_state,
+                                exit_target,
+                            )
+                            exit_target = None
                     if exit_target is not None:
                         self.deferred.queue_goto_change(
                             block_serial=path.exit_block,
@@ -2048,8 +2116,10 @@ class HodurUnflattener(GenericUnflatteningRule):
                         # the first post-dispatcher block (e.g. "mov %var_110, #0xD62B0F79").
                         # If that write is left alive the state variable stays live and
                         # IDA cannot eliminate the dispatcher, leaving while(1) loops.
+                        # Guard: skip if exit_target is a BST/shared node — NOP'ing
+                        # state writes there would destroy writes needed by other handlers.
                         exit_blk = self.mba.get_mblock(exit_target)
-                        if exit_blk is not None:
+                        if exit_blk is not None and exit_target not in bst_node_blocks:
                             scan_insn = exit_blk.head
                             while scan_insn is not None:
                                 if (
@@ -2238,9 +2308,11 @@ class HodurUnflattener(GenericUnflatteningRule):
                         description=f"hodur-linear: dead state write (BST default) in blk[{serial}]",
                     )
 
-                # Also NOP state writes in the target block
+                # Also NOP state writes in the target block, but only if the
+                # target is not a BST/shared node (NOP'ing there would destroy
+                # writes needed by other handlers using the same block).
                 target_blk = self.mba.get_mblock(target)
-                if target_blk is not None:
+                if target_blk is not None and target not in bst_node_blocks:
                     scan_insn = target_blk.head
                     while scan_insn is not None:
                         if (
