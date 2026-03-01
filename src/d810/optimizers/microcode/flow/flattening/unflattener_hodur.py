@@ -1982,6 +1982,45 @@ class HodurUnflattener(GenericUnflatteningRule):
                 sorted(unreachable_handlers),
             )
 
+    def _log_dispatcher_predecessor_census(
+        self,
+        bst_node_blocks: set[int],
+        handler_entries: set[int],
+        processed_rootwalk: set[int],
+    ) -> None:
+        """Log which blocks still have successors pointing to BST nodes."""
+        bst_preds: dict[str, list[int]] = {
+            "handler_exit": [],
+            "hidden_handler": [],
+            "bst_internal": [],
+            "unknown": [],
+        }
+        for serial in range(self.mba.qty):
+            blk = self.mba.get_mblock(serial)
+            for i in range(blk.nsucc()):
+                succ = blk.succ(i)
+                if succ in bst_node_blocks:
+                    if serial in bst_node_blocks:
+                        bst_preds["bst_internal"].append(serial)
+                    elif serial in handler_entries:
+                        bst_preds["handler_exit"].append(serial)
+                    elif serial in processed_rootwalk:
+                        bst_preds["hidden_handler"].append(serial)
+                    else:
+                        bst_preds["unknown"].append(serial)
+                    break
+        unflat_logger.info(
+            "Dispatcher pred census: handler_exit=%d, hidden=%d, bst_internal=%d, unknown=%d",
+            len(bst_preds["handler_exit"]),
+            len(bst_preds["hidden_handler"]),
+            len(bst_preds["bst_internal"]),
+            len(bst_preds["unknown"]),
+        )
+        if bst_preds["unknown"]:
+            unflat_logger.info("Unknown BST preds: %s", bst_preds["unknown"])
+        if bst_preds["handler_exit"]:
+            unflat_logger.info("Handler exits still pointing to BST: %s", bst_preds["handler_exit"])
+
     def _linearize_handlers(
         self,
         bst_result: BSTAnalysisResult,
@@ -2249,6 +2288,15 @@ class HodurUnflattener(GenericUnflatteningRule):
                     target = self._resolve_exit_via_bst_default(
                         dispatcher_serial, path.final_state
                     )
+                    # Chain detection diagnostic
+                    if (target is not None
+                            and target not in bst_node_blocks
+                            and target not in all_handlers):
+                        unflat_logger.info(
+                            "Chain candidate: hidden blk[%d] exit -> blk[%d] "
+                            "(not a known handler, potential chained hidden handler)",
+                            rootwalk_blk, target,
+                        )
                 if target is None:
                     continue
                 if target in bst_node_blocks:
@@ -2283,6 +2331,15 @@ class HodurUnflattener(GenericUnflatteningRule):
                     )
 
                 resolved_count += 1
+
+        # Predecessor census (diagnostic only)
+        handler_entries = set(all_handlers.keys())
+        rootwalk_processed = set(bst_rootwalk_targets)  # all were processed in second pass
+        self._log_dispatcher_predecessor_census(
+            bst_node_blocks=bst_node_blocks,
+            handler_entries=handler_entries,
+            processed_rootwalk=rootwalk_processed,
+        )
 
         # --- Linearize BST default region back-edges ---
         # The BST default region may contain hidden handlers that loop back

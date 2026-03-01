@@ -3002,7 +3002,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             return
 
         from d810.optimizers.microcode.flow.constant_prop.forward_const_prop import ForwardConstantPropagationRule
-        from d810.optimizers.microcode.flow.constant_prop.lattice import LatticeMeet, BOTTOM
+        from d810.optimizers.microcode.flow.constant_prop.lattice import LatticeMeet, BOTTOM, TOP
         from d810.optimizers.microcode.instructions.peephole.fold_rotatehelper import RotateHelperInlineRule
         from d810.optimizers.microcode.instructions.peephole.fold_constant_subtree import ConstantSubtreeFoldRule
         from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import FoldReadonlyDataRule
