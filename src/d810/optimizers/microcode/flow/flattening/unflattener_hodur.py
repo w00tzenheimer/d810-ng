@@ -2060,6 +2060,12 @@ class HodurUnflattener(GenericUnflatteningRule):
                 description=reason,
             )
             claimed_exits[path.exit_block] = target
+            _exit_blk_npred = exit_blk.npred() if exit_blk is not None else -1
+            unflat_logger.info(
+                "REDIRECT_DECISION: exit_blk=%d target=%d via_pred=None"
+                " decision=plain reason=%s via_pred_npred=None",
+                path.exit_block, target, reason,
+            )
             return True
 
         # Already claimed for the same target — no-op.
@@ -2074,6 +2080,11 @@ class HodurUnflattener(GenericUnflatteningRule):
                 "EDGE_REDIRECT: no via_pred for exit blk[%d] -> target %d "
                 "(ordered_path too short: %s)",
                 path.exit_block, target, path.ordered_path,
+            )
+            unflat_logger.info(
+                "REDIRECT_DECISION: exit_blk=%d target=%d via_pred=None"
+                " decision=skip reason=ordered_path_too_short via_pred_npred=None",
+                path.exit_block, target,
             )
             return False
 
@@ -2122,14 +2133,33 @@ class HodurUnflattener(GenericUnflatteningRule):
                     "cannot queue redirect",
                     path.exit_block, target,
                 )
+                unflat_logger.info(
+                    "REDIRECT_DECISION: exit_blk=%d target=%d via_pred=%d"
+                    " decision=skip reason=all_segments_claimed via_pred_npred=None",
+                    path.exit_block, target, via_pred,
+                )
                 return False
             src_block = found_src
             use_pred = found_pred
             src_blk = self.mba.get_mblock(src_block)
             old_target = src_blk.succ(0) if src_blk is not None and src_blk.nsucc() > 0 else 0
+            _use_pred_blk = self.mba.get_mblock(use_pred)
+            _use_pred_npred = _use_pred_blk.npred() if _use_pred_blk is not None else -1
+            unflat_logger.info(
+                "REDIRECT_DECISION: exit_blk=%d target=%d via_pred=%d"
+                " decision=escalated reason=prior_edge_claimed via_pred_npred=%d",
+                path.exit_block, target, use_pred, _use_pred_npred,
+            )
         else:
             src_block = path.exit_block
             use_pred = via_pred
+            _via_pred_blk = self.mba.get_mblock(use_pred)
+            _via_pred_npred = _via_pred_blk.npred() if _via_pred_blk is not None else -1
+            unflat_logger.info(
+                "REDIRECT_DECISION: exit_blk=%d target=%d via_pred=%d"
+                " decision=edge_split reason=exit_claimed via_pred_npred=%d",
+                path.exit_block, target, use_pred, _via_pred_npred,
+            )
 
         unflat_logger.info(
             "EDGE_REDIRECT: exit blk[%d] -> target %d conflicts with claimed=%d; "
@@ -3822,6 +3852,13 @@ class HodurUnflattener(GenericUnflatteningRule):
                 description=description,
                 rule_priority=50,  # Medium priority - path-based analysis
             )
+            unflat_logger.info(
+                "NOP_AUDIT: blk[%d] npred=%d preds=%s nsucc=%d owner_handler=N/A",
+                from_blk.serial,
+                from_blk.npred(),
+                [from_blk.predset[i] for i in range(from_blk.predset.size())],
+                from_blk.nsucc(),
+            )
             self._nop_state_write_in_block(from_blk)
             return True
 
@@ -3833,6 +3870,13 @@ class HodurUnflattener(GenericUnflatteningRule):
                 block_serial=from_blk.serial,
                 goto_target=target_block,
                 description=description,
+            )
+            unflat_logger.info(
+                "NOP_AUDIT: blk[%d] npred=%d preds=%s nsucc=%d owner_handler=N/A",
+                from_blk.serial,
+                from_blk.npred(),
+                [from_blk.predset[i] for i in range(from_blk.predset.size())],
+                from_blk.nsucc(),
             )
             self._nop_state_write_in_block(from_blk)
             return True

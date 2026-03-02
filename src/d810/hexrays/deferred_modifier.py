@@ -2393,6 +2393,16 @@ class DeferredGraphModifier:
 
         try:
             # Step 1: Clone the source block.
+            logger.info(
+                "EDGE_SPLIT_PRE: src_blk=%d src_npred=%d via_pred=%d"
+                " via_pred_npred=%d old_target=%d new_target=%d",
+                blk.serial,
+                blk.npred(),
+                via_pred,
+                via_pred_blk.npred(),
+                old_target if old_target is not None else -1,
+                new_target,
+            )
             clone_blk, nop_or_none = duplicate_block(blk, verify=False)
             logger.debug(
                 "edge_redirect_via_pred_split: cloned block %d -> clone %d",
@@ -2446,6 +2456,16 @@ class DeferredGraphModifier:
             # Remove via_pred from blk's predset (change_1way_block_successor wired
             # via_pred -> clone, but blk.predset still contains via_pred).
             blk.predset._del(via_pred)
+
+            logger.info(
+                "EDGE_SPLIT_POST: clone=%d src_preds=%s clone_preds=%s"
+                " via_pred_succ=%d risk=%s",
+                clone_blk.serial,
+                [blk.predset[i] for i in range(blk.predset.size())],
+                [clone_blk.predset[i] for i in range(clone_blk.predset.size())],
+                clone_blk.serial,
+                "HIGH" if via_pred_blk.npred() > 1 else "LOW",
+            )
 
             # Step 6: Fix via_pred's tail instruction blkref if it references blk.
             pred_blk = via_pred_blk
