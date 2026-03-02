@@ -364,10 +364,6 @@ class GraphModification:
     via_pred: int | None = None
     # For EDGE_REDIRECT_VIA_PRED_SPLIT: future corridor cloning endpoint (unused, stub)
     clone_until: int | None = None
-    # For BLOCK_GOTO_CHANGE: "ABSOLUTE" uses new_target as-is; "STOP" resolves
-    # to mba.qty-1 at apply-time, tracking the real STOP block after edge-split
-    # insertions shift its serial.
-    target_kind: str = "ABSOLUTE"
 
 
 @dataclass
@@ -537,7 +533,6 @@ class DeferredGraphModifier:
         new_target: int,
         description: str = "",
         rule_priority: int = 0,
-        target_kind: str = "ABSOLUTE",
     ) -> None:
         """Queue a change to an unconditional goto's destination.
 
@@ -549,10 +544,6 @@ class DeferredGraphModifier:
                            Use 100 for proven constant analysis,
                            50 for path-based analysis,
                            0 for default/fallback rules.
-            target_kind: "ABSOLUTE" uses new_target as-is (default).
-                         "STOP" resolves new_target to mba.qty-1 at apply-time,
-                         so the modification tracks the real STOP block even
-                         after edge-split insertions shift its serial.
         """
         self.modifications.append(GraphModification(
             mod_type=ModificationType.BLOCK_GOTO_CHANGE,
@@ -561,7 +552,6 @@ class DeferredGraphModifier:
             priority=10,  # High priority - do block changes first
             description=description or f"goto {block_serial} -> {new_target}",
             rule_priority=rule_priority,
-            target_kind=target_kind,
         ))
         logger.debug(
             "Queued goto change: block %d -> %d (rule_priority=%d)",
@@ -2075,22 +2065,7 @@ class DeferredGraphModifier:
             return False
 
         if mod.mod_type == ModificationType.BLOCK_GOTO_CHANGE:
-            # Resolve STOP targets dynamically: duplicate_block inserts clones
-            # before the STOP block, shifting its serial.  Queued mods that used
-            # the STOP serial at queue-time now point at the wrong block.
-            effective_target = mod.new_target
-            if mod.target_kind == "STOP":
-                effective_target = self.mba.qty - 1
-                if effective_target != mod.new_target:
-                    logger.debug(
-                        "STOP_TARGET_RESOLVED: block %d queued_target=%d"
-                        " resolved_to=%d (mba.qty=%d)",
-                        mod.block_serial,
-                        mod.new_target,
-                        effective_target,
-                        self.mba.qty,
-                    )
-            return self._apply_goto_change(blk, effective_target)
+            return self._apply_goto_change(blk, mod.new_target)
 
         elif mod.mod_type == ModificationType.BLOCK_TARGET_CHANGE:
             return self._apply_target_change(blk, mod.new_target)
