@@ -2021,6 +2021,119 @@ class HodurUnflattener(GenericUnflatteningRule):
         if bst_preds["handler_exit"]:
             unflat_logger.info("Handler exits still pointing to BST: %s", bst_preds["handler_exit"])
 
+    def _queue_handler_redirect(
+        self,
+        path: "HandlerPathResult",
+        target: int,
+        reason: str,
+        claimed_exits: dict[int, int],
+        claimed_edges: dict[tuple[int, int], int],
+        bst_node_blocks: set[int],
+    ) -> bool:
+        """Queue a goto redirect for one handler exit path, using edge-level split on conflict.
+
+        Fast path: if path.exit_block not yet claimed, queue a plain goto_change.
+        Conflict path: if exit_block already claimed for a different target, attempt
+        an edge-level redirect (EDGE_REDIRECT_VIA_PRED_SPLIT) using the predecessor
+        from path.ordered_path.  Falls back to walking earlier path segments if the
+        immediate predecessor edge is already claimed.
+
+        Args:
+            path: DFS path result (exit_block, ordered_path, etc.)
+            target: Block serial of the desired redirect target.
+            reason: Human-readable description string for logging/queuing.
+            claimed_exits: Tracks block_serial -> target for already-claimed exits.
+            claimed_edges: Tracks (src_block, via_pred) -> target for edge-level claims.
+            bst_node_blocks: BST comparison node serials (should not be cloned).
+
+        Returns:
+            True if a redirect was successfully queued or already resolved, False on failure.
+        """
+        exit_blk = self.mba.get_mblock(path.exit_block)
+
+        # Fast path: exit block not yet claimed by any handler.
+        if path.exit_block not in claimed_exits:
+            self.deferred.queue_goto_change(
+                block_serial=path.exit_block,
+                new_target=target,
+                rule_priority=550,
+                description=reason,
+            )
+            claimed_exits[path.exit_block] = target
+            return True
+
+        # Already claimed for the same target — no-op.
+        if claimed_exits[path.exit_block] == target:
+            return True
+
+        # Conflict: exit_block claimed for a different target. Use edge-level redirect.
+        if len(path.ordered_path) >= 2:
+            via_pred = path.ordered_path[-2]
+        else:
+            unflat_logger.warning(
+                "EDGE_REDIRECT: no via_pred for exit blk[%d] -> target %d "
+                "(ordered_path too short: %s)",
+                path.exit_block, target, path.ordered_path,
+            )
+            return False
+
+        # Determine old_target (current successor of exit_block leading to dispatcher).
+        old_target = 0
+        if exit_blk is not None and exit_blk.nsucc() > 0:
+            old_target = exit_blk.succ(0)
+
+        # Check if this specific edge is already claimed.
+        edge_key = (path.exit_block, via_pred)
+        if edge_key in claimed_edges:
+            if claimed_edges[edge_key] == target:
+                return True  # Already claimed for same target.
+            # Escalate: walk backward through ordered_path to find an unclaimed edge.
+            unflat_logger.info(
+                "EDGE_ESCALATION: edge (%d, %d) claimed for %d, searching earlier segment for target %d",
+                path.exit_block, via_pred, claimed_edges[edge_key], target,
+            )
+            found_src: int | None = None
+            found_pred: int | None = None
+            for i in range(len(path.ordered_path) - 2, 0, -1):
+                seg_src = path.ordered_path[i]
+                seg_pred = path.ordered_path[i - 1]
+                seg_key = (seg_src, seg_pred)
+                if seg_key not in claimed_edges and seg_src not in bst_node_blocks:
+                    found_src = seg_src
+                    found_pred = seg_pred
+                    break
+            if found_src is None or found_pred is None:
+                unflat_logger.warning(
+                    "EDGE_REDIRECT: all path segments claimed for exit blk[%d] -> target %d, "
+                    "cannot queue redirect",
+                    path.exit_block, target,
+                )
+                return False
+            src_block = found_src
+            use_pred = found_pred
+            src_blk = self.mba.get_mblock(src_block)
+            old_target = src_blk.succ(0) if src_blk is not None and src_blk.nsucc() > 0 else 0
+        else:
+            src_block = path.exit_block
+            use_pred = via_pred
+
+        unflat_logger.info(
+            "EDGE_REDIRECT: exit blk[%d] -> target %d conflicts with claimed=%d; "
+            "using edge_redirect(src=%d, old=%d, new=%d, via_pred=%d)",
+            path.exit_block, target, claimed_exits[path.exit_block],
+            src_block, old_target, target, use_pred,
+        )
+        self.deferred.queue_edge_redirect(
+            src_block=src_block,
+            old_target=old_target,
+            new_target=target,
+            via_pred=use_pred,
+            rule_priority=550,
+            description=reason,
+        )
+        claimed_edges[(src_block, use_pred)] = target
+        return True
+
     def _linearize_handlers(
         self,
         bst_result: BSTAnalysisResult,
@@ -2050,6 +2163,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         sm_blocks = self._collect_state_machine_blocks()
         resolved_count = 0
         claimed_exits: dict[int, int] = {}
+        claimed_edges: dict[tuple[int, int], int] = {}
         deferred_conflict_count = 0
         bst_rootwalk_targets: set[int] = set()
 
@@ -2138,27 +2252,21 @@ class HodurUnflattener(GenericUnflatteningRule):
                             )
                             exit_target = None
                     if exit_target is not None:
-                        _exit = path.exit_block
-                        _target = exit_target
-                        if _exit in claimed_exits and claimed_exits[_exit] != _target:
-                            deferred_conflict_count += 1
-                            unflat_logger.info(
-                                "EXIT_CONFLICT_DEFERRED blk[%d] target=%d claimed=%d (exit-resolved)",
-                                _exit, _target, claimed_exits[_exit],
-                            )
-                        else:
-                            if _exit not in claimed_exits:
-                                claimed_exits[_exit] = _target
-                            self.deferred.queue_goto_change(
-                                block_serial=path.exit_block,
-                                new_target=exit_target,
-                                description=(
-                                    f"hodur-linear: blk[{handler_serial}] "
-                                    f"exit 0x{path.final_state:x} -> {resolve_label} -> blk[{exit_target}]"
-                                ),
-                                rule_priority=550,
-                            )
+                        _redirect_ok = self._queue_handler_redirect(
+                            path=path,
+                            target=exit_target,
+                            reason=(
+                                f"hodur-linear: blk[{handler_serial}] "
+                                f"exit 0x{path.final_state:x} -> {resolve_label} -> blk[{exit_target}]"
+                            ),
+                            claimed_exits=claimed_exits,
+                            claimed_edges=claimed_edges,
+                            bst_node_blocks=bst_node_blocks,
+                        )
+                        if _redirect_ok:
                             self._linearized_blocks.add(path.exit_block)
+                        else:
+                            deferred_conflict_count += 1
                         for write_blk, write_ea in path.state_writes:
                             self.deferred.queue_insn_nop(
                                 block_serial=write_blk,
@@ -2219,27 +2327,21 @@ class HodurUnflattener(GenericUnflatteningRule):
                             dispatcher_serial, sm_blocks
                         )
                     if bst_default is not None:
-                        _exit = path.exit_block
-                        _target = bst_default
-                        if _exit in claimed_exits and claimed_exits[_exit] != _target:
-                            deferred_conflict_count += 1
-                            unflat_logger.info(
-                                "EXIT_CONFLICT_DEFERRED blk[%d] target=%d claimed=%d (bst-default)",
-                                _exit, _target, claimed_exits[_exit],
-                            )
-                        else:
-                            if _exit not in claimed_exits:
-                                claimed_exits[_exit] = _target
-                            self.deferred.queue_goto_change(
-                                block_serial=path.exit_block,
-                                new_target=bst_default,
-                                description=(
-                                    f"hodur-linear: blk[{handler_serial}] "
-                                    f"exit state 0x{path.final_state:x} -> bst_default blk[{bst_default}]"
-                                ),
-                                rule_priority=550,
-                            )
+                        _redirect_ok = self._queue_handler_redirect(
+                            path=path,
+                            target=bst_default,
+                            reason=(
+                                f"hodur-linear: blk[{handler_serial}] "
+                                f"exit state 0x{path.final_state:x} -> bst_default blk[{bst_default}]"
+                            ),
+                            claimed_exits=claimed_exits,
+                            claimed_edges=claimed_edges,
+                            bst_node_blocks=bst_node_blocks,
+                        )
+                        if _redirect_ok:
                             self._linearized_blocks.add(path.exit_block)
+                        else:
+                            deferred_conflict_count += 1
                         # Keep state variable live for exit paths (no NOP).
                         resolved_count += 1
                         self._resolved_transitions.add(
@@ -2261,30 +2363,27 @@ class HodurUnflattener(GenericUnflatteningRule):
 
                 is_self_loop = target_serial == handler_serial
 
-                _exit = path.exit_block
-                _target = target_serial
-                if _exit in claimed_exits and claimed_exits[_exit] != _target:
-                    deferred_conflict_count += 1
-                    unflat_logger.info(
-                        "EXIT_CONFLICT_DEFERRED blk[%d] target=%d claimed=%d (main-handler)",
-                        _exit, _target, claimed_exits[_exit],
-                    )
-                else:
-                    if _exit not in claimed_exits:
-                        claimed_exits[_exit] = _target
-                    self.deferred.queue_goto_change(
-                        block_serial=path.exit_block,
-                        new_target=target_serial,
-                        description=(
-                            f"hodur-linear: blk[{handler_serial}] "
-                            f"0x{incoming_state:x}->0x{path.final_state:x} "
-                            f"{'(loop)' if is_self_loop else ''}"
-                        ),
-                        rule_priority=550,
-                    )
+                _redirect_ok = self._queue_handler_redirect(
+                    path=path,
+                    target=target_serial,
+                    reason=(
+                        f"hodur-linear: blk[{handler_serial}] "
+                        f"0x{incoming_state:x}->0x{path.final_state:x} "
+                        f"{'(loop)' if is_self_loop else ''}"
+                    ),
+                    claimed_exits=claimed_exits,
+                    claimed_edges=claimed_edges,
+                    bst_node_blocks=bst_node_blocks,
+                )
+                if _redirect_ok:
                     self._linearized_blocks.add(path.exit_block)
+                else:
+                    deferred_conflict_count += 1
 
                 for write_blk, write_ea in path.state_writes:
+                    write_blk_obj = self.mba.get_mblock(write_blk)
+                    if write_blk_obj is not None and write_blk_obj.npred() > 1:
+                        continue  # Skip NOP on shared multi-pred blocks
                     self.deferred.queue_insn_nop(
                         block_serial=write_blk,
                         insn_ea=write_ea,
@@ -2337,27 +2436,21 @@ class HodurUnflattener(GenericUnflatteningRule):
                 if target in bst_node_blocks:
                     continue  # Don't redirect to BST internal nodes
 
-                _exit = path.exit_block
-                _target = target
-                if _exit in claimed_exits and claimed_exits[_exit] != _target:
-                    deferred_conflict_count += 1
-                    unflat_logger.info(
-                        "EXIT_CONFLICT_DEFERRED blk[%d] target=%d claimed=%d (hidden-handler)",
-                        _exit, _target, claimed_exits[_exit],
-                    )
-                else:
-                    if _exit not in claimed_exits:
-                        claimed_exits[_exit] = _target
-                    self.deferred.queue_goto_change(
-                        block_serial=path.exit_block,
-                        new_target=target,
-                        description=(
-                            f"hodur-linear: hidden-handler blk[{rootwalk_blk}]"
-                            f" exit 0x{path.final_state:x} -> blk[{target}]"
-                        ),
-                        rule_priority=550,
-                    )
+                _redirect_ok = self._queue_handler_redirect(
+                    path=path,
+                    target=target,
+                    reason=(
+                        f"hodur-linear: hidden-handler blk[{rootwalk_blk}]"
+                        f" exit 0x{path.final_state:x} -> blk[{target}]"
+                    ),
+                    claimed_exits=claimed_exits,
+                    claimed_edges=claimed_edges,
+                    bst_node_blocks=bst_node_blocks,
+                )
+                if _redirect_ok:
                     self._linearized_blocks.add(path.exit_block)
+                else:
+                    deferred_conflict_count += 1
                 unflat_logger.info(
                     "hodur-linear: hidden-handler blk[%d] exit_blk=%d -> target blk[%d] (state 0x%x)",
                     rootwalk_blk,
@@ -2367,6 +2460,9 @@ class HodurUnflattener(GenericUnflatteningRule):
                 )
 
                 for write_blk, write_ea in path.state_writes:
+                    write_blk_obj = self.mba.get_mblock(write_blk)
+                    if write_blk_obj is not None and write_blk_obj.npred() > 1:
+                        continue  # Skip NOP on shared multi-pred blocks
                     self.deferred.queue_insn_nop(
                         block_serial=write_blk,
                         insn_ea=write_ea,
@@ -2462,23 +2558,22 @@ class HodurUnflattener(GenericUnflatteningRule):
                 )
 
                 # Redirect the back-edge
-                _exit = serial
-                _target = target
-                if _exit in claimed_exits and claimed_exits[_exit] != _target:
+                _synthetic_path = HandlerPathResult(
+                    exit_block=serial,
+                    final_state=written_state,
+                    state_writes=[],
+                    ordered_path=[serial],
+                )
+                _redirect_ok = self._queue_handler_redirect(
+                    path=_synthetic_path,
+                    target=target,
+                    reason=f"hodur-linear: BST default blk[{serial}] {written_state:#x}->blk[{target}]",
+                    claimed_exits=claimed_exits,
+                    claimed_edges=claimed_edges,
+                    bst_node_blocks=bst_node_blocks,
+                )
+                if not _redirect_ok:
                     deferred_conflict_count += 1
-                    unflat_logger.info(
-                        "EXIT_CONFLICT_DEFERRED blk[%d] target=%d claimed=%d (bst-default-backedge)",
-                        _exit, _target, claimed_exits[_exit],
-                    )
-                else:
-                    if _exit not in claimed_exits:
-                        claimed_exits[_exit] = _target
-                    self.deferred.queue_goto_change(
-                        block_serial=serial,
-                        new_target=target,
-                        description=f"hodur-linear: BST default blk[{serial}] {written_state:#x}->blk[{target}]",
-                        rule_priority=550,
-                    )
 
                 # NOP the state write (runs unconditionally)
                 if state_write_ea is not None:
