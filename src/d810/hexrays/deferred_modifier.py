@@ -331,6 +331,12 @@ class ModificationType(Enum):
     EDGE_REDIRECT_VIA_PRED_SPLIT = auto()  # Clone src block; redirect one predecessor to clone
 
 
+class TargetRefKind(Enum):
+    """How a modification target should be interpreted at apply-time."""
+    ABSOLUTE = auto()
+    STOP_BLOCK = auto()  # Resolve to current mba.qty - 1 at apply-time
+
+
 @dataclass
 class GraphModification:
     """Represents a single queued graph modification."""
@@ -364,6 +370,8 @@ class GraphModification:
     via_pred: int | None = None
     # For EDGE_REDIRECT_VIA_PRED_SPLIT: future corridor cloning endpoint (unused, stub)
     clone_until: int | None = None
+    # How to resolve new_target at apply-time
+    target_ref_kind: TargetRefKind = TargetRefKind.ABSOLUTE
 
 
 @dataclass
@@ -483,11 +491,35 @@ class DeferredGraphModifier:
             "mod_type": mod.mod_type.name,
             "block_serial": mod.block_serial,
             "new_target": mod.new_target,
+            "target_ref_kind": mod.target_ref_kind.name,
             "priority": mod.priority,
             "rule_priority": mod.rule_priority,
             "description": mod.description,
         })
         return payload
+
+    def _infer_target_ref_kind(self, new_target: int | None) -> TargetRefKind:
+        """Infer whether *new_target* should track the dynamic STOP block."""
+        if new_target is None:
+            return TargetRefKind.ABSOLUTE
+        try:
+            stop_serial = self.mba.qty - 1
+            if int(new_target) != stop_serial:
+                return TargetRefKind.ABSOLUTE
+            stop_blk = self.mba.get_mblock(stop_serial)
+            if stop_blk is not None and stop_blk.nsucc() == 0 and stop_blk.tail is None:
+                return TargetRefKind.STOP_BLOCK
+        except Exception:
+            pass
+        return TargetRefKind.ABSOLUTE
+
+    def _resolve_target_serial(self, mod: GraphModification) -> int | None:
+        """Resolve mod.new_target according to mod.target_ref_kind."""
+        if mod.new_target is None:
+            return None
+        if mod.target_ref_kind == TargetRefKind.STOP_BLOCK:
+            return self.mba.qty - 1
+        return mod.new_target
 
     def _is_watched_edge(self, block_serial: int, new_target: int | None) -> bool:
         if new_target is None:
@@ -533,6 +565,7 @@ class DeferredGraphModifier:
         new_target: int,
         description: str = "",
         rule_priority: int = 0,
+        target_ref_kind: TargetRefKind | None = None,
     ) -> None:
         """Queue a change to an unconditional goto's destination.
 
@@ -545,6 +578,11 @@ class DeferredGraphModifier:
                            50 for path-based analysis,
                            0 for default/fallback rules.
         """
+        resolved_target_kind = (
+            target_ref_kind
+            if target_ref_kind is not None
+            else self._infer_target_ref_kind(new_target)
+        )
         self.modifications.append(GraphModification(
             mod_type=ModificationType.BLOCK_GOTO_CHANGE,
             block_serial=block_serial,
@@ -552,6 +590,7 @@ class DeferredGraphModifier:
             priority=10,  # High priority - do block changes first
             description=description or f"goto {block_serial} -> {new_target}",
             rule_priority=rule_priority,
+            target_ref_kind=resolved_target_kind,
         ))
         logger.debug(
             "Queued goto change: block %d -> %d (rule_priority=%d)",
@@ -575,14 +614,21 @@ class DeferredGraphModifier:
         block_serial: int,
         new_target: int,
         description: str = "",
+        target_ref_kind: TargetRefKind | None = None,
     ) -> None:
         """Queue a change to a conditional jump's target."""
+        resolved_target_kind = (
+            target_ref_kind
+            if target_ref_kind is not None
+            else self._infer_target_ref_kind(new_target)
+        )
         self.modifications.append(GraphModification(
             mod_type=ModificationType.BLOCK_TARGET_CHANGE,
             block_serial=block_serial,
             new_target=new_target,
             priority=10,
             description=description or f"jmp target {block_serial} -> {new_target}",
+            target_ref_kind=resolved_target_kind,
         ))
         logger.debug("Queued target change: block %d -> %d", block_serial, new_target)
         if self.event_emitter is not None:
@@ -593,14 +639,21 @@ class DeferredGraphModifier:
         block_serial: int,
         goto_target: int,
         description: str = "",
+        target_ref_kind: TargetRefKind | None = None,
     ) -> None:
         """Queue conversion of a 2-way block to a 1-way goto."""
+        resolved_target_kind = (
+            target_ref_kind
+            if target_ref_kind is not None
+            else self._infer_target_ref_kind(goto_target)
+        )
         self.modifications.append(GraphModification(
             mod_type=ModificationType.BLOCK_CONVERT_TO_GOTO,
             block_serial=block_serial,
             new_target=goto_target,
             priority=20,  # After simple target changes
             description=description or f"convert {block_serial} to goto {goto_target}",
+            target_ref_kind=resolved_target_kind,
         ))
         logger.debug("Queued convert to goto: block %d -> %d", block_serial, goto_target)
         if self.event_emitter is not None:
@@ -922,14 +975,14 @@ class DeferredGraphModifier:
             # For BLOCK_CREATE_WITH_REDIRECT, we key by (type, source_block, target)
             # since multiple redirects to different targets would conflict
             if mod.mod_type == ModificationType.BLOCK_CREATE_WITH_REDIRECT:
-                key = (mod.mod_type, mod.block_serial, mod.new_target)
+                key = (mod.mod_type, mod.block_serial, mod.new_target, mod.target_ref_kind)
             elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT:
                 key = (mod.mod_type, mod.block_serial, mod.new_target,
-                       mod.conditional_target, mod.fallthrough_target)
+                       mod.conditional_target, mod.fallthrough_target, mod.target_ref_kind)
             elif mod.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
                 key = (mod.mod_type, mod.src_block, mod.old_target, mod.via_pred, mod.new_target)
             else:
-                key = (mod.mod_type, mod.block_serial, mod.new_target)
+                key = (mod.mod_type, mod.block_serial, mod.new_target, mod.target_ref_kind)
 
             if key in seen_keys:
                 logger.debug(
@@ -959,7 +1012,7 @@ class DeferredGraphModifier:
                         continue  # Handled by edge-specific conflict pass below
                     same_type_mods = [m for m in mods if m.mod_type == mod_type]
                     if len(same_type_mods) > 1:
-                        targets = [m.new_target for m in same_type_mods]
+                        targets = [(m.new_target, m.target_ref_kind) for m in same_type_mods]
                         if len(set(targets)) > 1:
                             # CONFLICT: Multiple modifications with different targets
                             # Resolve by keeping only the highest rule_priority modification
@@ -972,7 +1025,7 @@ class DeferredGraphModifier:
                                 block_serial,
                                 winner.rule_priority,
                                 winner.new_target,
-                                [(m.rule_priority, m.new_target) for m in losers]
+                                [(m.rule_priority, m.new_target, m.target_ref_kind.name) for m in losers]
                             )
 
                             # Remove losers from unique_modifications
@@ -1516,44 +1569,14 @@ class DeferredGraphModifier:
         for i, mod in enumerate(sorted_mods):
             blk = self.mba.get_mblock(mod.block_serial)
             logger.info(
-                "  [%d] %s (priority=%d) target_blk=%d new_target=%s",
-                i, mod.mod_type.name, mod.priority, mod.block_serial, mod.new_target
+                "  [%d] %s (priority=%d) target_blk=%d new_target=%s ref=%s",
+                i, mod.mod_type.name, mod.priority, mod.block_serial, mod.new_target,
+                mod.target_ref_kind.name,
             )
             logger.info("      BEFORE: %s", _format_block_info(blk))
             if mod.new_target is not None:
                 target_blk = self.mba.get_mblock(mod.new_target)
                 logger.info("      TARGET: %s", _format_block_info(target_blk))
-
-        # RISK_STOP_TARGET_DRIFT: before the apply loop, check if any
-        # BLOCK_GOTO_CHANGE targets the current STOP block while
-        # EDGE_REDIRECT_VIA_PRED_SPLIT entries are also queued (those insert
-        # clones at the end of the block array and may steal the STOP serial).
-        _stop_serial = self.mba.qty - 1
-        _goto_mods_targeting_stop = [
-            m for m in sorted_mods
-            if m.mod_type == ModificationType.BLOCK_GOTO_CHANGE
-            and m.new_target == _stop_serial
-        ]
-        _edge_split_count = sum(
-            1 for m in sorted_mods
-            if m.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT
-        )
-        if _goto_mods_targeting_stop and _edge_split_count > 0:
-            logger.warning(
-                "RISK_STOP_TARGET_DRIFT: %d queued mods target stop_serial=%d"
-                " and %d edge_splits will insert before it",
-                len(_goto_mods_targeting_stop),
-                _stop_serial,
-                _edge_split_count,
-            )
-        else:
-            logger.info(
-                "RISK_STOP_TARGET_DRIFT: no drift risk"
-                " (goto_mods_to_stop=%d edge_splits=%d stop_serial=%d)",
-                len(_goto_mods_targeting_stop),
-                _edge_split_count,
-                _stop_serial,
-            )
 
         successful = 0
         failed = 0
@@ -1561,42 +1584,19 @@ class DeferredGraphModifier:
         recent_modifications: list[dict] = []
 
         for i, mod in enumerate(sorted_mods):
+            effective_new_target = self._resolve_target_serial(mod)
+            if effective_new_target != mod.new_target:
+                logger.debug(
+                    "Resolved dynamic target for mod[%d] %s: %s -> %s",
+                    i,
+                    mod.mod_type.name,
+                    mod.new_target,
+                    effective_new_target,
+                )
+                mod.new_target = effective_new_target
             blk = self.mba.get_mblock(mod.block_serial)
             logger.info("--- Applying [%d]: %s ---", i, mod.description)
             logger.info("    BEFORE: %s", _format_block_info(blk))
-
-            # TARGET_DRIFT_AUDIT: for each BLOCK_GOTO_CHANGE, log the target
-            # block's current shape so we can detect if it has drifted (e.g.
-            # an edge-split clone stole the serial that was originally the STOP
-            # block and the queued mods now point at the wrong block).
-            if mod.mod_type == ModificationType.BLOCK_GOTO_CHANGE and mod.new_target is not None:
-                _tgt_blk = self.mba.get_mblock(mod.new_target)
-                if _tgt_blk is not None:
-                    _tgt_tail_op = (
-                        ida_hexrays.get_mnem(_tgt_blk.tail.opcode)
-                        if _tgt_blk.tail is not None
-                        else "no_tail"
-                    )
-                    logger.info(
-                        "TARGET_DRIFT_AUDIT: mod target_serial=%d"
-                        " block_type=%s nsucc=%d tail_opcode=%s",
-                        mod.new_target,
-                        _tgt_blk.type,
-                        _tgt_blk.nsucc(),
-                        _tgt_tail_op,
-                    )
-                    if _tgt_blk.nsucc() == 1 and _tgt_blk.type == ida_hexrays.BLT_STOP:
-                        logger.warning(
-                            "TARGET_DRIFT_AUDIT: UNEXPECTED — target_serial=%d"
-                            " is BLT_STOP but has 1 successor (possible clone drift)",
-                            mod.new_target,
-                        )
-                else:
-                    logger.warning(
-                        "TARGET_DRIFT_AUDIT: target_serial=%d not found in MBA"
-                        " (block disappeared)",
-                        mod.new_target,
-                    )
 
             if self._is_watched_edge(mod.block_serial, mod.new_target):
                 logger.warning(
@@ -2439,6 +2439,12 @@ class DeferredGraphModifier:
                 "src_block %d has %d successors, expected 1", blk.serial, blk.nsucc()
             )
             return False
+        if new_target == blk.serial:
+            logger.warning(
+                "edge_redirect_via_pred_split: rejecting self-loop redirect src=%d -> %d",
+                blk.serial, new_target,
+            )
+            return False
 
         via_pred_blk = mba.get_mblock(via_pred)
         if via_pred_blk is None:
@@ -2468,17 +2474,7 @@ class DeferredGraphModifier:
                 old_target if old_target is not None else -1,
                 new_target,
             )
-            _mba_qty_before = mba.qty
-            _old_stop_serial = _mba_qty_before - 1
             clone_blk, nop_or_none = duplicate_block(blk, verify=False)
-            logger.info(
-                "SERIAL_SHIFT_AUDIT: mba_qty_before=%d mba_qty_after=%d"
-                " clone_serial=%d old_stop_serial=%d",
-                _mba_qty_before,
-                mba.qty,
-                clone_blk.serial,
-                _old_stop_serial,
-            )
             logger.debug(
                 "edge_redirect_via_pred_split: cloned block %d -> clone %d",
                 blk.serial, clone_blk.serial,
@@ -2531,16 +2527,6 @@ class DeferredGraphModifier:
             # Remove via_pred from blk's predset (change_1way_block_successor wired
             # via_pred -> clone, but blk.predset still contains via_pred).
             blk.predset._del(via_pred)
-
-            logger.info(
-                "EDGE_SPLIT_POST: clone=%d src_preds=%s clone_preds=%s"
-                " via_pred_succ=%d risk=%s",
-                clone_blk.serial,
-                [blk.predset[i] for i in range(blk.predset.size())],
-                [clone_blk.predset[i] for i in range(clone_blk.predset.size())],
-                clone_blk.serial,
-                "HIGH" if via_pred_blk.npred() > 1 else "LOW",
-            )
 
             # Step 6: Fix via_pred's tail instruction blkref if it references blk.
             pred_blk = via_pred_blk
