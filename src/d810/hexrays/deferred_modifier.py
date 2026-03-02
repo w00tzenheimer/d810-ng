@@ -328,6 +328,7 @@ class ModificationType(Enum):
     INSN_NOP = auto()                 # NOP a specific instruction
     BLOCK_CREATE_WITH_REDIRECT = auto()  # Create intermediate block and redirect
     BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT = auto()  # Create conditional 2-way block with redirect
+    EDGE_REDIRECT_VIA_PRED_SPLIT = auto()  # Clone src block; redirect one predecessor to clone
 
 
 @dataclass
@@ -355,6 +356,14 @@ class GraphModification:
     conditional_target: int | None = None
     # For BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: fallthrough target
     fallthrough_target: int | None = None
+    # For EDGE_REDIRECT_VIA_PRED_SPLIT: block to clone
+    src_block: int | None = None
+    # For EDGE_REDIRECT_VIA_PRED_SPLIT: current successor being replaced on clone
+    old_target: int | None = None
+    # For EDGE_REDIRECT_VIA_PRED_SPLIT: predecessor whose edge gets redirected to clone
+    via_pred: int | None = None
+    # For EDGE_REDIRECT_VIA_PRED_SPLIT: future corridor cloning endpoint (unused, stub)
+    clone_until: int | None = None
 
 
 @dataclass
@@ -733,6 +742,68 @@ class DeferredGraphModifier:
             self._debug_dump_block_neighborhood(source_blk_serial, "enqueue source")
             self._debug_dump_block_neighborhood(ref_blk_serial, "enqueue ref-target")
 
+    def queue_edge_redirect(
+        self,
+        src_block: int,
+        old_target: int,
+        new_target: int,
+        via_pred: int | None = None,
+        clone_until: int | None = None,
+        description: str = "",
+        rule_priority: int = 0,
+    ) -> None:
+        """Queue an edge-level redirect, optionally via predecessor-split cloning.
+
+        When ``via_pred`` is None, delegates to :meth:`queue_goto_change` for
+        full backward compatibility.
+
+        When ``via_pred`` is provided, queues an ``EDGE_REDIRECT_VIA_PRED_SPLIT``
+        modification: the ``src_block`` will be cloned and the edge from
+        ``via_pred`` rewired to the clone, which then targets ``new_target``
+        instead of ``old_target``.
+
+        Args:
+            src_block: The block to redirect (or clone if via_pred is set).
+            old_target: Current successor on src_block being replaced (on clone).
+            new_target: New successor target for the clone.
+            via_pred: Predecessor whose edge is rewired to the clone. If None,
+                      legacy BLOCK_GOTO_CHANGE semantics apply.
+            clone_until: Future corridor endpoint (not yet implemented, stub).
+            description: Optional logging description.
+            rule_priority: Conflict-resolution priority (higher wins).
+        """
+        if via_pred is None:
+            self.queue_goto_change(
+                block_serial=src_block,
+                new_target=new_target,
+                description=description,
+                rule_priority=rule_priority,
+            )
+            return
+
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
+            block_serial=src_block,
+            new_target=new_target,
+            priority=8,
+            description=description or (
+                f"edge redirect via pred split: pred={via_pred} src={src_block} "
+                f"{old_target} -> {new_target}"
+            ),
+            rule_priority=rule_priority,
+            src_block=src_block,
+            old_target=old_target,
+            via_pred=via_pred,
+            clone_until=clone_until,
+        ))
+        logger.debug(
+            "Queued edge_redirect_via_pred_split: pred=%d src=%d old=%d new=%d "
+            "(rule_priority=%d)",
+            via_pred, src_block, old_target, new_target, rule_priority,
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
     def has_modifications(self) -> bool:
         """Check if there are any queued modifications."""
         return len(self.modifications) > 0
@@ -855,6 +926,8 @@ class DeferredGraphModifier:
             elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT:
                 key = (mod.mod_type, mod.block_serial, mod.new_target,
                        mod.conditional_target, mod.fallthrough_target)
+            elif mod.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
+                key = (mod.mod_type, mod.src_block, mod.old_target, mod.via_pred, mod.new_target)
             else:
                 key = (mod.mod_type, mod.block_serial, mod.new_target)
 
@@ -882,6 +955,8 @@ class DeferredGraphModifier:
 
                 # Same type, different targets = conflict - resolve by rule_priority
                 for mod_type in unique_types:
+                    if mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
+                        continue  # Handled by edge-specific conflict pass below
                     same_type_mods = [m for m in mods if m.mod_type == mod_type]
                     if len(same_type_mods) > 1:
                         targets = [m.new_target for m in same_type_mods]
@@ -909,6 +984,11 @@ class DeferredGraphModifier:
         # A single block should not receive multiple competing edge rewrites
         # (e.g., CREATE_WITH_REDIRECT + GOTO_CHANGE), because that can strand
         # newly-created blocks and poison MBA verify.
+        # EDGE_REDIRECT_VIA_PRED_SPLIT is intentionally excluded here: its
+        # conflict resolution is keyed by (src_block, old_target, via_pred) and
+        # is handled by the edge-type-specific pass above.  Including it in the
+        # per-block terminal pass would collapse two redirects that share the
+        # same src_block but differ only in via_pred — which is legitimate.
         terminal_mod_types = {
             ModificationType.BLOCK_GOTO_CHANGE,
             ModificationType.BLOCK_TARGET_CHANGE,
@@ -922,7 +1002,42 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_CONVERT_TO_GOTO: 3,
             ModificationType.BLOCK_CREATE_WITH_REDIRECT: 4,
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: 5,
+            # EDGE_REDIRECT_VIA_PRED_SPLIT is intentionally absent: it is not
+            # in terminal_mod_types (it executes via a separate code path in
+            # apply_modifications) so ranking it here would cause it to be
+            # incorrectly processed by the terminal-type conflict pass.
         }
+
+        # Edge-type conflict resolution: for EDGE_REDIRECT_VIA_PRED_SPLIT,
+        # group by (src_block, old_target, via_pred) and keep highest rule_priority.
+        # This must run BEFORE the general terminal-type pass below so that survivors
+        # are correctly evaluated in the mixed-type pass.
+        edge_type = ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT
+        edge_mods = [m for m in unique_modifications if m.mod_type == edge_type]
+        if edge_mods:
+            edge_groups: dict[tuple, list[GraphModification]] = {}
+            for em in edge_mods:
+                group_key = (em.src_block, em.old_target, em.via_pred)
+                edge_groups.setdefault(group_key, []).append(em)
+            for group_key, group_mods in edge_groups.items():
+                if len(group_mods) <= 1:
+                    continue
+                targets = {m.new_target for m in group_mods}
+                if len(targets) <= 1:
+                    continue
+                # Conflict: same (src, old, via_pred) but different new_target
+                winner = max(group_mods, key=lambda m: m.rule_priority)
+                losers = [m for m in group_mods if m != winner]
+                logger.warning(
+                    "EDGE CONFLICT RESOLVED: src=%d old=%d via_pred=%d - keeping "
+                    "new_target=%d (rule_priority=%d), discarding %s",
+                    group_key[0], group_key[1], group_key[2],
+                    winner.new_target, winner.rule_priority,
+                    [(m.rule_priority, m.new_target) for m in losers],
+                )
+                for loser in losers:
+                    if loser in unique_modifications:
+                        unique_modifications.remove(loser)
 
         remaining_by_block: dict[int, list[GraphModification]] = {}
         for mod in unique_modifications:
@@ -1824,6 +1939,57 @@ class DeferredGraphModifier:
                 _rollback_target,
             )
 
+        if mod.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
+            # Best-effort: rewire via_pred back to src_block.
+            # The clone block created by duplicate_block cannot be removed
+            # (no API to delete a block), so it remains as dead code.
+            src_block = mod.src_block
+            via_pred = mod.via_pred
+            if src_block is None or via_pred is None:
+                return None
+
+            def _rollback_edge_redirect() -> bool:
+                pred_blk = self.mba.get_mblock(via_pred)
+                src_blk = self.mba.get_mblock(src_block)
+                if pred_blk is None or src_blk is None:
+                    return False
+                # We don't know the clone serial post-hoc, so scan pred_blk's
+                # succset for a block that is NOT src_block and rewire back.
+                # This is best-effort; may fail if topology has changed further.
+                logger.warning(
+                    "edge_redirect_via_pred_split rollback: rewiring pred=%d "
+                    "back to src=%d (clone block remains as dead code)",
+                    via_pred, src_block,
+                )
+                # Remove any successor that is not src_block from pred_blk succset,
+                # add src_block back.
+                succs = [pred_blk.succset[i] for i in range(pred_blk.succset.size())]
+                for s in succs:
+                    if s != src_block:
+                        pred_blk.succset._del(s)
+                        clone_blk = self.mba.get_mblock(s)
+                        if clone_blk is not None:
+                            clone_blk.predset._del(via_pred)
+                if not any(
+                    pred_blk.succset[i] == src_block
+                    for i in range(pred_blk.succset.size())
+                ):
+                    pred_blk.succset.push_back(src_block)
+                if not any(
+                    src_blk.predset[i] == via_pred
+                    for i in range(src_blk.predset.size())
+                ):
+                    src_blk.predset.push_back(via_pred)
+                pred_blk.mark_lists_dirty()
+                src_blk.mark_lists_dirty()
+                self.mba.mark_chains_dirty()
+                return True
+
+            return (
+                f"rollback edge_redirect pred={via_pred} -> src={src_block}",
+                _rollback_edge_redirect,
+            )
+
         return None
 
     def _apply_single(self, mod: GraphModification) -> bool:
@@ -1856,6 +2022,11 @@ class DeferredGraphModifier:
         elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT:
             return self._apply_create_conditional_redirect(
                 blk, mod.new_target, mod.conditional_target, mod.fallthrough_target
+            )
+
+        elif mod.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
+            return self._apply_edge_redirect_via_pred_split(
+                blk, mod.old_target, mod.new_target, mod.via_pred, mod.clone_until
             )
 
         else:
@@ -2154,6 +2325,159 @@ class DeferredGraphModifier:
             logger.error(
                 "Exception in create_conditional_redirect for block %d: %s",
                 source_blk.serial, e
+            )
+            import traceback
+            logger.error("Traceback: %s", traceback.format_exc())
+            return False
+
+    def _apply_edge_redirect_via_pred_split(
+        self,
+        blk: "ida_hexrays.mblock_t",
+        old_target: int,
+        new_target: int,
+        via_pred: int,
+        clone_until: int | None,
+    ) -> bool:
+        """Clone ``blk`` and rewire ``via_pred``'s edge from ``blk`` to the clone.
+
+        The clone then has its successor changed from ``old_target`` to
+        ``new_target``.  The original ``blk`` keeps all other predecessors and
+        its original successor.
+
+        **Corridor case** (``clone_until`` is not None) is not yet implemented;
+        this method returns False with a warning in that case.
+
+        Args:
+            blk: The block to clone (src_block).
+            old_target: Current successor on blk being replaced on the clone.
+            new_target: New successor for the clone.
+            via_pred: Predecessor whose edge is rewired to the clone.
+            clone_until: Future corridor endpoint (stub — not implemented).
+
+        Returns:
+            True on success, False on failure.
+        """
+        if clone_until is not None:
+            logger.warning(
+                "edge_redirect_via_pred_split: corridor cloning (clone_until=%d) "
+                "is not yet implemented for block %d",
+                clone_until, blk.serial,
+            )
+            return False
+
+        mba = self.mba
+
+        # Preconditions
+        # Guard: src_block must be 1-way (clone inherits its successor).
+        if blk.nsucc() != 1:
+            logger.warning(
+                "src_block %d has %d successors, expected 1", blk.serial, blk.nsucc()
+            )
+            return False
+
+        via_pred_blk = mba.get_mblock(via_pred)
+        if via_pred_blk is None:
+            logger.warning("via_pred block %d not found", via_pred)
+            return False
+        if via_pred_blk.nsucc() != 1:
+            logger.warning(
+                "via_pred block %d has %d successors, expected 1",
+                via_pred, via_pred_blk.nsucc(),
+            )
+            return False
+        if not any(blk.predset[i] == via_pred for i in range(blk.predset.size())):
+            logger.warning(
+                "via_pred %d is not a predecessor of src_block %d", via_pred, blk.serial
+            )
+            return False
+
+        try:
+            # Step 1: Clone the source block.
+            clone_blk, nop_or_none = duplicate_block(blk, verify=False)
+            logger.debug(
+                "edge_redirect_via_pred_split: cloned block %d -> clone %d",
+                blk.serial, clone_blk.serial,
+            )
+
+            # Step 2: Clear clone predset.
+            # Use _del() — the standard API used throughout this codebase (e.g.
+            # duplicate_block in cfg_mutations.py); predset has no .empty()/.pop_back().
+            while clone_blk.predset.size() > 0:
+                clone_blk.predset._del(clone_blk.predset[0])
+
+            # Step 3: Guard clone shape — must be 1-way to allow redirect.
+            # If duplicate_block produced a non-1-way clone, the clone is
+            # disconnected (no preds yet) so leaving it is harmless.
+            if clone_blk.nsucc() != 1:
+                logger.warning(
+                    "edge_redirect_via_pred_split: clone %d has %d successors, expected 1",
+                    clone_blk.serial, clone_blk.nsucc(),
+                )
+                return False
+
+            # Step 4: Redirect clone -> new_target BEFORE rewiring via_pred.
+            # This keeps the graph consistent: if this step fails, via_pred still
+            # points at blk (original state), so no partial mutation occurs.
+            if old_target is not None:
+                clone_succ = [clone_blk.succset[i] for i in range(clone_blk.succset.size())]
+                if old_target not in clone_succ:
+                    logger.warning(
+                        "Clone %d does not have expected successor %d",
+                        clone_blk.serial, old_target,
+                    )
+                    return False
+
+            if not change_1way_block_successor(clone_blk, new_target, verify=False):
+                logger.warning(
+                    "edge_redirect_via_pred_split: failed to redirect clone %d "
+                    "from %d to %d",
+                    clone_blk.serial, old_target, new_target,
+                )
+                return False
+
+            # Step 5: Only now rewire via_pred -> clone.  The graph is only
+            # mutated from via_pred's perspective once the clone is fully set up.
+            if not change_1way_block_successor(via_pred_blk, clone_blk.serial, verify=False):
+                logger.warning(
+                    "edge_redirect_via_pred_split: failed to rewire pred=%d to clone=%d",
+                    via_pred, clone_blk.serial,
+                )
+                return False
+            # Remove via_pred from blk's predset (change_1way_block_successor wired
+            # via_pred -> clone, but blk.predset still contains via_pred).
+            blk.predset._del(via_pred)
+
+            # Step 6: Fix via_pred's tail instruction blkref if it references blk.
+            pred_blk = via_pred_blk
+            if pred_blk.tail is not None:
+                tail = pred_blk.tail
+                # For m_goto: l operand holds the target block serial
+                if tail.opcode == ida_hexrays.m_goto and tail.l.t == ida_hexrays.mop_b:
+                    if tail.l.b == blk.serial:
+                        tail.l.b = clone_blk.serial
+                # For conditional jumps: d operand holds the taken-branch target
+                elif ida_hexrays.is_mcode_jcond(tail.opcode) and tail.d.t == ida_hexrays.mop_b:
+                    if tail.d.b == blk.serial:
+                        tail.d.b = clone_blk.serial
+
+            pred_blk.mark_lists_dirty()
+            blk.mark_lists_dirty()
+            clone_blk.mark_lists_dirty()
+
+            # Step 7: Mark chains dirty so IDA rebuilds def-use.
+            mba.mark_chains_dirty()
+
+            logger.debug(
+                "edge_redirect_via_pred_split: done — pred=%d -> clone=%d -> %d "
+                "(original blk=%d -> %d preserved)",
+                via_pred, clone_blk.serial, new_target, blk.serial, old_target,
+            )
+            return True
+
+        except Exception as e:
+            logger.error(
+                "Exception in edge_redirect_via_pred_split for block %d: %s",
+                blk.serial, e,
             )
             import traceback
             logger.error("Traceback: %s", traceback.format_exc())
