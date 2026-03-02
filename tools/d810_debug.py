@@ -35,6 +35,18 @@ Environment variables:
   D810_TEST_BINARY  : default binary name/path if --binary is not given
   D810_CAPTURE_DB   : default capture DB path if --db is not given
   D810_NO_CYTHON    : set to 1 (or use --no-cython) to disable Cython speedups
+
+Test result capture (pytest DB):
+
+  # Run DSL tests and capture into the runtime test_results DB
+  pytest tests/system/e2e/test_libdeobfuscated_dsl.py --capture-to-db -v
+
+  # Inspect high-level results via this CLI
+  python3 tools/d810_debug.py pytest-results
+
+  # For advanced queries, you can still use the underlying helper module:
+  #   python -m tests.system.runtime.test_capture list-functions
+  #   python -m tests.system.runtime.test_capture get-function test_chained_add
 """
 
 from __future__ import annotations
