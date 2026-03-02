@@ -1524,6 +1524,37 @@ class DeferredGraphModifier:
                 target_blk = self.mba.get_mblock(mod.new_target)
                 logger.info("      TARGET: %s", _format_block_info(target_blk))
 
+        # RISK_STOP_TARGET_DRIFT: before the apply loop, check if any
+        # BLOCK_GOTO_CHANGE targets the current STOP block while
+        # EDGE_REDIRECT_VIA_PRED_SPLIT entries are also queued (those insert
+        # clones at the end of the block array and may steal the STOP serial).
+        _stop_serial = self.mba.qty - 1
+        _goto_mods_targeting_stop = [
+            m for m in sorted_mods
+            if m.mod_type == ModificationType.BLOCK_GOTO_CHANGE
+            and m.new_target == _stop_serial
+        ]
+        _edge_split_count = sum(
+            1 for m in sorted_mods
+            if m.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT
+        )
+        if _goto_mods_targeting_stop and _edge_split_count > 0:
+            logger.warning(
+                "RISK_STOP_TARGET_DRIFT: %d queued mods target stop_serial=%d"
+                " and %d edge_splits will insert before it",
+                len(_goto_mods_targeting_stop),
+                _stop_serial,
+                _edge_split_count,
+            )
+        else:
+            logger.info(
+                "RISK_STOP_TARGET_DRIFT: no drift risk"
+                " (goto_mods_to_stop=%d edge_splits=%d stop_serial=%d)",
+                len(_goto_mods_targeting_stop),
+                _edge_split_count,
+                _stop_serial,
+            )
+
         successful = 0
         failed = 0
         rolled_back = 0
@@ -1533,6 +1564,40 @@ class DeferredGraphModifier:
             blk = self.mba.get_mblock(mod.block_serial)
             logger.info("--- Applying [%d]: %s ---", i, mod.description)
             logger.info("    BEFORE: %s", _format_block_info(blk))
+
+            # TARGET_DRIFT_AUDIT: for each BLOCK_GOTO_CHANGE, log the target
+            # block's current shape so we can detect if it has drifted (e.g.
+            # an edge-split clone stole the serial that was originally the STOP
+            # block and the queued mods now point at the wrong block).
+            if mod.mod_type == ModificationType.BLOCK_GOTO_CHANGE and mod.new_target is not None:
+                _tgt_blk = self.mba.get_mblock(mod.new_target)
+                if _tgt_blk is not None:
+                    _tgt_tail_op = (
+                        ida_hexrays.get_mnem(_tgt_blk.tail.opcode)
+                        if _tgt_blk.tail is not None
+                        else "no_tail"
+                    )
+                    logger.info(
+                        "TARGET_DRIFT_AUDIT: mod target_serial=%d"
+                        " block_type=%s nsucc=%d tail_opcode=%s",
+                        mod.new_target,
+                        _tgt_blk.type,
+                        _tgt_blk.nsucc(),
+                        _tgt_tail_op,
+                    )
+                    if _tgt_blk.nsucc() == 1 and _tgt_blk.type == ida_hexrays.BLT_STOP:
+                        logger.warning(
+                            "TARGET_DRIFT_AUDIT: UNEXPECTED — target_serial=%d"
+                            " is BLT_STOP but has 1 successor (possible clone drift)",
+                            mod.new_target,
+                        )
+                else:
+                    logger.warning(
+                        "TARGET_DRIFT_AUDIT: target_serial=%d not found in MBA"
+                        " (block disappeared)",
+                        mod.new_target,
+                    )
+
             if self._is_watched_edge(mod.block_serial, mod.new_target):
                 logger.warning(
                     "DEBUG WATCH apply[%d] %s src=%d dst=%s",
@@ -2403,7 +2468,17 @@ class DeferredGraphModifier:
                 old_target if old_target is not None else -1,
                 new_target,
             )
+            _mba_qty_before = mba.qty
+            _old_stop_serial = _mba_qty_before - 1
             clone_blk, nop_or_none = duplicate_block(blk, verify=False)
+            logger.info(
+                "SERIAL_SHIFT_AUDIT: mba_qty_before=%d mba_qty_after=%d"
+                " clone_serial=%d old_stop_serial=%d",
+                _mba_qty_before,
+                mba.qty,
+                clone_blk.serial,
+                _old_stop_serial,
+            )
             logger.debug(
                 "edge_redirect_via_pred_split: cloned block %d -> clone %d",
                 blk.serial, clone_blk.serial,
