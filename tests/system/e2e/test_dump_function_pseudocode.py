@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import tempfile
 from pathlib import Path
 
@@ -30,6 +31,79 @@ import idc
 from d810.hexrays.microcode_dump import dump_dispatcher_tree, dump_function_microcode
 from d810.testing.runner import _resolve_test_project_index
 from d810.testing.skip_controls import unskip_cases_enabled
+
+
+def _extract_pseudocode_stats(text: str) -> dict:
+    """Extract simple metrics from a pseudocode string.
+
+    Counts are approximate — based on pattern matching, not AST parsing.
+
+    Args:
+        text: Pseudocode string (BEFORE or AFTER decompilation output).
+
+    Returns:
+        Dict with keys: lines, returns, whiles, gotos, calls, ifs.
+
+    Examples:
+        >>> s = 'int x;\\nif (a) return 1;\\nwhile (b) { sub_foo(); }\\nreturn 0;'
+        >>> stats = _extract_pseudocode_stats(s)
+        >>> stats['lines']
+        4
+        >>> stats['returns']
+        2
+        >>> stats['whiles']
+        1
+        >>> stats['ifs']
+        1
+        >>> stats['calls'] >= 1
+        True
+    """
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    returns = len(re.findall(r'\breturn\b', text))
+    whiles = len(re.findall(r'\bwhile\s*\(', text))
+    gotos = len(re.findall(r'\bgoto\b', text))
+    ifs = len(re.findall(r'\bif\s*\(', text))
+    # Count sub_XXXX style calls explicitly, plus identifier(...) patterns
+    sub_calls = len(re.findall(r'\bsub_[0-9A-Fa-f]+\s*\(', text))
+    # identifier( where identifier is a word not a keyword and not alone on a
+    # continuation line — approximate function-call detection
+    kw = {'if', 'while', 'for', 'switch', 'return', 'sizeof', 'typeof', 'goto'}
+    ident_calls = len([
+        m for m in re.finditer(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\(', text)
+        if m.group(1) not in kw
+    ])
+    calls = max(sub_calls, ident_calls)
+    return {
+        'lines': len(lines),
+        'returns': returns,
+        'whiles': whiles,
+        'gotos': gotos,
+        'calls': calls,
+        'ifs': ifs,
+    }
+
+
+def _format_stats_block(function_name: str, before: dict, after: dict) -> str:
+    """Format a BEFORE/AFTER/DELTA stats block for a function."""
+    keys = ('lines', 'returns', 'whiles', 'gotos', 'calls', 'ifs')
+
+    def _fmt(d: dict) -> str:
+        return ' '.join(f'{k}={d[k]}' for k in keys)
+
+    def _delta(b: dict, a: dict) -> str:
+        parts = []
+        for k in keys:
+            diff = a[k] - b[k]
+            parts.append(f'{k}={diff:+d}')
+        return ' '.join(parts)
+
+    lines = [
+        f'=== STATS: {function_name} ===',
+        f'BEFORE: {_fmt(before)}',
+        f'AFTER:  {_fmt(after)}',
+        f'DELTA:  {_delta(before, after)}',
+    ]
+    return '\n'.join(lines)
 
 
 def _get_default_binary() -> str:
@@ -193,6 +267,11 @@ class TestDumpFunctionPseudocode:
                 print("\n--- AFTER ---")
                 print(code_after)
                 print("=" * 88)
+
+                # Stats summary — extracted from pseudocode text directly
+                stats_before = _extract_pseudocode_stats(code_before)
+                stats_after = _extract_pseudocode_stats(code_after)
+                print(_format_stats_block(function_name, stats_before, stats_after))
 
                 # Dump dispatcher tree if available
                 try:
