@@ -2099,6 +2099,20 @@ class HodurUnflattener(GenericUnflatteningRule):
                 seg_pred = path.ordered_path[i - 1]
                 seg_key = (seg_src, seg_pred)
                 if seg_key not in claimed_edges and seg_src not in bst_node_blocks:
+                    # Validate edge-split preconditions before accepting this pair.
+                    seg_src_blk = self.mba.get_mblock(seg_src)
+                    seg_pred_blk = self.mba.get_mblock(seg_pred)
+                    if seg_src_blk is None or seg_pred_blk is None:
+                        continue
+                    if seg_src_blk.nsucc() != 1:
+                        continue
+                    if seg_pred_blk.nsucc() != 1:
+                        continue
+                    if not any(
+                        seg_pred_blk.succ(j) == seg_src
+                        for j in range(seg_pred_blk.nsucc())
+                    ):
+                        continue
                     found_src = seg_src
                     found_pred = seg_pred
                     break
@@ -2265,60 +2279,60 @@ class HodurUnflattener(GenericUnflatteningRule):
                         )
                         if _redirect_ok:
                             self._linearized_blocks.add(path.exit_block)
+                            for write_blk, write_ea in path.state_writes:
+                                self.deferred.queue_insn_nop(
+                                    block_serial=write_blk,
+                                    insn_ea=write_ea,
+                                    description=f"hodur-linear: dead state write (exit) in blk[{write_blk}]",
+                                )
+                            # NOP dead state_var writes in the resolved exit target block.
+                            # OLLVM often places a dead default-state write at the top of
+                            # the first post-dispatcher block (e.g. "mov %var_110, #0xD62B0F79").
+                            # If that write is left alive the state variable stays live and
+                            # IDA cannot eliminate the dispatcher, leaving while(1) loops.
+                            # Guard: skip if exit_target is a BST/shared node — NOP'ing
+                            # state writes there would destroy writes needed by other handlers.
+                            exit_blk = self.mba.get_mblock(exit_target)
+                            if exit_blk is not None and exit_target not in bst_node_blocks:
+                                scan_insn = exit_blk.head
+                                while scan_insn is not None:
+                                    if (
+                                        scan_insn.opcode == ida_hexrays.m_mov
+                                        and scan_insn.d is not None
+                                        and _mop_matches_stkoff(
+                                            scan_insn.d,
+                                            state_var_stkoff,
+                                            mba=self.mba,
+                                        )
+                                    ):
+                                        unflat_logger.info(
+                                            "  NOP dead state_var write in exit target"
+                                            " blk[%d] ea=%#x",
+                                            exit_target,
+                                            scan_insn.ea,
+                                        )
+                                        self.deferred.queue_insn_nop(
+                                            block_serial=exit_target,
+                                            insn_ea=scan_insn.ea,
+                                            description=(
+                                                f"hodur-linear: dead state write"
+                                                f" (exit target) in blk[{exit_target}]"
+                                            ),
+                                        )
+                                    scan_insn = scan_insn.next
+                            resolved_count += 1
+                            self._resolved_transitions.add(
+                                (incoming_state, path.final_state)
+                            )
+                            unflat_logger.info(
+                                "Handler blk[%d]: exit state 0x%x -> %s -> blk[%d]",
+                                handler_serial,
+                                path.final_state,
+                                resolve_label,
+                                exit_target,
+                            )
                         else:
                             deferred_conflict_count += 1
-                        for write_blk, write_ea in path.state_writes:
-                            self.deferred.queue_insn_nop(
-                                block_serial=write_blk,
-                                insn_ea=write_ea,
-                                description=f"hodur-linear: dead state write (exit) in blk[{write_blk}]",
-                            )
-                        # NOP dead state_var writes in the resolved exit target block.
-                        # OLLVM often places a dead default-state write at the top of
-                        # the first post-dispatcher block (e.g. "mov %var_110, #0xD62B0F79").
-                        # If that write is left alive the state variable stays live and
-                        # IDA cannot eliminate the dispatcher, leaving while(1) loops.
-                        # Guard: skip if exit_target is a BST/shared node — NOP'ing
-                        # state writes there would destroy writes needed by other handlers.
-                        exit_blk = self.mba.get_mblock(exit_target)
-                        if exit_blk is not None and exit_target not in bst_node_blocks:
-                            scan_insn = exit_blk.head
-                            while scan_insn is not None:
-                                if (
-                                    scan_insn.opcode == ida_hexrays.m_mov
-                                    and scan_insn.d is not None
-                                    and _mop_matches_stkoff(
-                                        scan_insn.d,
-                                        state_var_stkoff,
-                                        mba=self.mba,
-                                    )
-                                ):
-                                    unflat_logger.info(
-                                        "  NOP dead state_var write in exit target"
-                                        " blk[%d] ea=%#x",
-                                        exit_target,
-                                        scan_insn.ea,
-                                    )
-                                    self.deferred.queue_insn_nop(
-                                        block_serial=exit_target,
-                                        insn_ea=scan_insn.ea,
-                                        description=(
-                                            f"hodur-linear: dead state write"
-                                            f" (exit target) in blk[{exit_target}]"
-                                        ),
-                                    )
-                                scan_insn = scan_insn.next
-                        resolved_count += 1
-                        self._resolved_transitions.add(
-                            (incoming_state, path.final_state)
-                        )
-                        unflat_logger.info(
-                            "Handler blk[%d]: exit state 0x%x -> %s -> blk[%d]",
-                            handler_serial,
-                            path.final_state,
-                            resolve_label,
-                            exit_target,
-                        )
                         continue
 
                     # Fallback: redirect to bst_default directly (or terminal exit)
@@ -2340,19 +2354,19 @@ class HodurUnflattener(GenericUnflatteningRule):
                         )
                         if _redirect_ok:
                             self._linearized_blocks.add(path.exit_block)
+                            # Keep state variable live for exit paths (no NOP).
+                            resolved_count += 1
+                            self._resolved_transitions.add(
+                                (incoming_state, path.final_state)
+                            )
+                            unflat_logger.info(
+                                "Handler blk[%d]: exit state 0x%x -> bst_default blk[%d]",
+                                handler_serial,
+                                path.final_state,
+                                bst_default,
+                            )
                         else:
                             deferred_conflict_count += 1
-                        # Keep state variable live for exit paths (no NOP).
-                        resolved_count += 1
-                        self._resolved_transitions.add(
-                            (incoming_state, path.final_state)
-                        )
-                        unflat_logger.info(
-                            "Handler blk[%d]: exit state 0x%x -> bst_default blk[%d]",
-                            handler_serial,
-                            path.final_state,
-                            bst_default,
-                        )
                     else:
                         unflat_logger.debug(
                             "Handler blk[%d]: exit state 0x%x -> no bst_default found, leaving intact",
@@ -2377,21 +2391,19 @@ class HodurUnflattener(GenericUnflatteningRule):
                 )
                 if _redirect_ok:
                     self._linearized_blocks.add(path.exit_block)
+                    for write_blk, write_ea in path.state_writes:
+                        write_blk_obj = self.mba.get_mblock(write_blk)
+                        if write_blk_obj is not None and write_blk_obj.npred() > 1:
+                            continue  # Skip NOP on shared multi-pred blocks
+                        self.deferred.queue_insn_nop(
+                            block_serial=write_blk,
+                            insn_ea=write_ea,
+                            description=f"hodur-linear: dead state write in blk[{write_blk}]",
+                        )
+                    resolved_count += 1
+                    self._resolved_transitions.add((incoming_state, path.final_state))
                 else:
                     deferred_conflict_count += 1
-
-                for write_blk, write_ea in path.state_writes:
-                    write_blk_obj = self.mba.get_mblock(write_blk)
-                    if write_blk_obj is not None and write_blk_obj.npred() > 1:
-                        continue  # Skip NOP on shared multi-pred blocks
-                    self.deferred.queue_insn_nop(
-                        block_serial=write_blk,
-                        insn_ea=write_ea,
-                        description=f"hodur-linear: dead state write in blk[{write_blk}]",
-                    )
-
-                resolved_count += 1
-                self._resolved_transitions.add((incoming_state, path.final_state))
 
         # --- Second pass: linearize BST root-walk hidden handler exits ---
         # Some handler exits resolve to "hidden handler" blocks in the BST
@@ -2449,30 +2461,28 @@ class HodurUnflattener(GenericUnflatteningRule):
                 )
                 if _redirect_ok:
                     self._linearized_blocks.add(path.exit_block)
+                    unflat_logger.info(
+                        "hodur-linear: hidden-handler blk[%d] exit_blk=%d -> target blk[%d] (state 0x%x)",
+                        rootwalk_blk,
+                        path.exit_block,
+                        target,
+                        path.final_state,
+                    )
+                    for write_blk, write_ea in path.state_writes:
+                        write_blk_obj = self.mba.get_mblock(write_blk)
+                        if write_blk_obj is not None and write_blk_obj.npred() > 1:
+                            continue  # Skip NOP on shared multi-pred blocks
+                        self.deferred.queue_insn_nop(
+                            block_serial=write_blk,
+                            insn_ea=write_ea,
+                            description=(
+                                f"hodur-linear: dead state write"
+                                f" (hidden-handler blk[{rootwalk_blk}]) in blk[{write_blk}]"
+                            ),
+                        )
+                    resolved_count += 1
                 else:
                     deferred_conflict_count += 1
-                unflat_logger.info(
-                    "hodur-linear: hidden-handler blk[%d] exit_blk=%d -> target blk[%d] (state 0x%x)",
-                    rootwalk_blk,
-                    path.exit_block,
-                    target,
-                    path.final_state,
-                )
-
-                for write_blk, write_ea in path.state_writes:
-                    write_blk_obj = self.mba.get_mblock(write_blk)
-                    if write_blk_obj is not None and write_blk_obj.npred() > 1:
-                        continue  # Skip NOP on shared multi-pred blocks
-                    self.deferred.queue_insn_nop(
-                        block_serial=write_blk,
-                        insn_ea=write_ea,
-                        description=(
-                            f"hodur-linear: dead state write"
-                            f" (hidden-handler blk[{rootwalk_blk}]) in blk[{write_blk}]"
-                        ),
-                    )
-
-                resolved_count += 1
 
         # Predecessor census (diagnostic only)
         handler_entries = set(all_handlers.keys())
@@ -2572,39 +2582,39 @@ class HodurUnflattener(GenericUnflatteningRule):
                     claimed_edges=claimed_edges,
                     bst_node_blocks=bst_node_blocks,
                 )
-                if not _redirect_ok:
+                if _redirect_ok:
+                    # NOP the state write (only when redirect succeeded)
+                    if state_write_ea is not None:
+                        self.deferred.queue_insn_nop(
+                            block_serial=serial,
+                            insn_ea=state_write_ea,
+                            description=f"hodur-linear: dead state write (BST default) in blk[{serial}]",
+                        )
+
+                    # Also NOP state writes in the target block, but only if the
+                    # target is not a BST/shared node (NOP'ing there would destroy
+                    # writes needed by other handlers using the same block).
+                    target_blk = self.mba.get_mblock(target)
+                    if target_blk is not None and target not in bst_node_blocks:
+                        scan_insn = target_blk.head
+                        while scan_insn is not None:
+                            if (
+                                scan_insn.opcode == ida_hexrays.m_mov
+                                and scan_insn.d is not None
+                                and _mop_matches_stkoff(
+                                    scan_insn.d, state_var_stkoff, mba=self.mba
+                                )
+                            ):
+                                self.deferred.queue_insn_nop(
+                                    block_serial=target,
+                                    insn_ea=scan_insn.ea,
+                                    description=f"hodur-linear: dead state write (BST default target) in blk[{target}]",
+                                )
+                            scan_insn = scan_insn.next
+
+                    resolved_count += 1
+                else:
                     deferred_conflict_count += 1
-
-                # NOP the state write (runs unconditionally)
-                if state_write_ea is not None:
-                    self.deferred.queue_insn_nop(
-                        block_serial=serial,
-                        insn_ea=state_write_ea,
-                        description=f"hodur-linear: dead state write (BST default) in blk[{serial}]",
-                    )
-
-                # Also NOP state writes in the target block, but only if the
-                # target is not a BST/shared node (NOP'ing there would destroy
-                # writes needed by other handlers using the same block).
-                target_blk = self.mba.get_mblock(target)
-                if target_blk is not None and target not in bst_node_blocks:
-                    scan_insn = target_blk.head
-                    while scan_insn is not None:
-                        if (
-                            scan_insn.opcode == ida_hexrays.m_mov
-                            and scan_insn.d is not None
-                            and _mop_matches_stkoff(
-                                scan_insn.d, state_var_stkoff, mba=self.mba
-                            )
-                        ):
-                            self.deferred.queue_insn_nop(
-                                block_serial=target,
-                                insn_ea=scan_insn.ea,
-                                description=f"hodur-linear: dead state write (BST default target) in blk[{target}]",
-                            )
-                        scan_insn = scan_insn.next
-
-                resolved_count += 1
 
         # Redirect pre-header to initial handler
         if (
