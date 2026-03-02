@@ -23,7 +23,7 @@ Key differences from O-LLVM:
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -154,6 +154,21 @@ class HandlerPathResult:
     final_state: Optional[int]  # concrete state value at exit; None for terminal (m_ret) paths
     state_writes: list  # [(block_serial, insn_ea), ...] of state var writes
     ordered_path: list = field(default_factory=list)  # ordered sequence of block serials visited during DFS
+
+
+@dataclass
+class Pass0RedirectRecord:
+    """Compact redirect ledger row for pass-0 linearization diagnostics."""
+
+    category: str
+    handler_entry: int
+    incoming_state: int | None
+    exit_block: int
+    final_state: int | None
+    source_block: int
+    via_pred: int | None
+    target_block: int
+    reason: str
 
 
 class HodurStateMachineDetector:
@@ -1421,6 +1436,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._jtbl_state_to_handler: dict[int, int] = {}
         self._jtbl_handler_state_map: dict[int, int] = {}
         self._linearized_blocks: set[int] = set()
+        self._pass0_redirect_ledger: list[Pass0RedirectRecord] = []
+        self._pass0_handler_entries: set[int] = set()
+        self._last_redirect_meta: dict | None = None
 
     def configure(self, kwargs):
         super().configure(kwargs)
@@ -1446,6 +1464,9 @@ class HodurUnflattener(GenericUnflatteningRule):
             self._resolved_transitions = set()
             self._initial_transitions = None
             self._linearized_blocks = set()
+            self._pass0_redirect_ledger = []
+            self._pass0_handler_entries = set()
+            self._last_redirect_meta = None
 
         # Gate on actual Hodur runs, not block callback count
         if self._actual_pass_count >= self.max_passes:
@@ -1466,6 +1487,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             self.max_passes,
             self.cur_maturity,
         )
+        if self._actual_pass_count == 0:
+            self._pass0_redirect_ledger = []
+            self._pass0_handler_entries = set()
+            self._last_redirect_meta = None
 
         # Detect state machine
         detector = HodurStateMachineDetector(
@@ -1475,6 +1500,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             max_state_constants=self.max_state_constants,
         )
         self.state_machine = detector.detect()
+        detector_detected_state_machine = self.state_machine is not None
         self._detector = detector
 
         if self.state_machine is None:
@@ -1537,11 +1563,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._bst_result: BSTAnalysisResult | None = None
         self._bst_dispatcher_serial: int = -1
         if self.state_machine is not None:
-            bst_stkoff = (
-                _get_state_var_stkoff(self._detector)
-                if self._detector is not None
-                else None
-            )
+            bst_stkoff = self._get_effective_state_var_stkoff()
             entry_serial = (
                 list(self.state_machine.handlers.values())[0].check_block
                 if self.state_machine.handlers
@@ -1564,21 +1586,41 @@ class HodurUnflattener(GenericUnflatteningRule):
         self.deferred = DeferredGraphModifier(self.mba)
 
         # Direct linearization: queue goto redirects from BST analysis
-        if self._bst_result is not None:
+        direct_linearization_applied = False
+        if (
+            self._bst_result is not None
+            and detector_detected_state_machine
+            and self._actual_pass_count == 0
+        ):
             linearized = self._linearize_handlers(
                 self._bst_result,
                 dispatcher_serial=self._bst_dispatcher_serial,
             )
             if linearized > 0:
+                direct_linearization_applied = True
                 unflat_logger.info(
                     "Direct linearization: %d redirects queued", linearized
                 )
+        elif self._bst_result is not None:
+            unflat_logger.info(
+                "Skipping direct linearization: pass=%d detector_detected=%s",
+                self._actual_pass_count,
+                detector_detected_state_machine,
+            )
 
         # Ensure DispatcherCache has run (for emulation path in conditional forks)
         _ = DispatcherCache.get_or_create(self.mba).analyze()
 
-        # Queue direct transition patches (more effective for Hodur-style)
-        direct_transition_patches = self._queue_transitions_direct()
+        # Queue legacy direct-transition patches only when BST-direct mode is absent.
+        if self._bst_result is None and not direct_linearization_applied:
+            direct_transition_patches = self._queue_transitions_direct()
+        else:
+            direct_transition_patches = 0
+            unflat_logger.info(
+                "Skipping legacy _queue_transitions_direct: bst_result=%s linearized=%s",
+                self._bst_result is not None,
+                direct_linearization_applied,
+            )
 
         # Queue conditional fork resolutions via predecessor walking
         self._resolve_conditional_forks_via_predecessors()
@@ -1647,6 +1689,8 @@ class HodurUnflattener(GenericUnflatteningRule):
                         break
 
         if self.deferred.has_modifications():
+            self._audit_priority50_stop_redirects()
+
             num_redirected = len(self.deferred.modifications)
             total_handlers = len(self.state_machine.handlers)
             if not should_apply_cfg_modifications(
@@ -1662,6 +1706,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     run_deep_cleaning=False,
                 )
 
+                self._log_pass0_redirect_ledger()
                 self._log_post_apply_reachability()
 
                 # _prune_resolved_jtbl_cases skipped: direct linearization does not
@@ -1929,15 +1974,89 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Loop detected — return last resolved serial.
         return current_serial
 
+    def _record_pass0_redirect(
+        self,
+        category: str,
+        handler_entry: int,
+        incoming_state: int | None,
+        path: HandlerPathResult,
+        target_block: int,
+        reason: str,
+    ) -> None:
+        """Capture one pass-0 redirect in a compact diagnostic ledger."""
+        if self._actual_pass_count != 0:
+            return
+        meta = self._last_redirect_meta or {}
+        source_block = int(meta.get("source_block", path.exit_block))
+        via_pred = meta.get("via_pred")
+        if via_pred is not None:
+            via_pred = int(via_pred)
+        self._pass0_redirect_ledger.append(
+            Pass0RedirectRecord(
+                category=category,
+                handler_entry=handler_entry,
+                incoming_state=incoming_state,
+                exit_block=path.exit_block,
+                final_state=path.final_state,
+                source_block=source_block,
+                via_pred=via_pred,
+                target_block=target_block,
+                reason=reason,
+            )
+        )
+
+    def _log_pass0_redirect_ledger(self) -> None:
+        """Emit pass-0 redirect ledger (summary + per-row lines)."""
+        if self._actual_pass_count != 0:
+            return
+        if not self._pass0_redirect_ledger:
+            unflat_logger.info("PASS0_REDIRECT_LEDGER: empty")
+            return
+
+        category_counts: dict[str, int] = defaultdict(int)
+        unique_targets: set[int] = set()
+        for row in self._pass0_redirect_ledger:
+            category_counts[row.category] += 1
+            unique_targets.add(row.target_block)
+
+        summary = ", ".join(
+            f"{key}={category_counts[key]}" for key in sorted(category_counts)
+        )
+        unflat_logger.info(
+            "PASS0_REDIRECT_LEDGER: rows=%d unique_targets=%d categories={%s}",
+            len(self._pass0_redirect_ledger),
+            len(unique_targets),
+            summary,
+        )
+        for idx, row in enumerate(self._pass0_redirect_ledger):
+            in_state = (
+                f"0x{row.incoming_state:x}" if row.incoming_state is not None else "None"
+            )
+            out_state = (
+                f"0x{row.final_state:x}" if row.final_state is not None else "None"
+            )
+            via_pred = f"blk[{row.via_pred}]" if row.via_pred is not None else "None"
+            unflat_logger.info(
+                "PASS0_REDIRECT[%03d]: cat=%s entry=blk[%d] in=%s exit=blk[%d] "
+                "src=blk[%d] via=%s out=%s -> target=blk[%d] reason=%s",
+                idx,
+                row.category,
+                row.handler_entry,
+                in_state,
+                row.exit_block,
+                row.source_block,
+                via_pred,
+                out_state,
+                row.target_block,
+                row.reason,
+            )
+
     def _log_post_apply_reachability(self) -> None:
         """BFS from pre-header to check which handler entries are reachable post-apply.
 
         Logs reachable count vs total and lists unreachable handler serials.
         Only runs when debug logging is active.
         """
-        if not unflat_logger.debug_on:
-            return
-
         if self._bst_result is None:
             return
 
@@ -1962,25 +2081,68 @@ class HodurUnflattener(GenericUnflatteningRule):
                 if succ not in reachable:
                     bfs_queue.append(succ)
 
-        # Check handler entries
-        handler_serials = set(self._bst_result.handler_state_map.keys())
-        range_serials = set(self._bst_result.handler_range_map.keys())
-        all_handler_entries = handler_serials | range_serials
+        # Check handler entries. Prefer pass-0 set because it excludes BST internals.
+        if self._pass0_handler_entries:
+            all_handler_entries = set(self._pass0_handler_entries)
+        else:
+            handler_serials = set(self._bst_result.handler_state_map.keys())
+            range_serials = set(self._bst_result.handler_range_map.keys())
+            all_handler_entries = handler_serials | range_serials
 
         reachable_handlers = all_handler_entries & reachable
         unreachable_handlers = all_handler_entries - reachable
 
-        unflat_logger.debug(
+        unflat_logger.info(
             "Post-apply reachability: %d/%d handler entries reachable from blk[%d]",
             len(reachable_handlers),
             len(all_handler_entries),
             start_serial,
         )
         if unreachable_handlers:
-            unflat_logger.debug(
+            unflat_logger.info(
                 "Post-apply unreachable handler entries: %s",
                 sorted(unreachable_handlers),
             )
+            # Correlate each unreachable entry with redirect attempts.
+            incoming_by_target: dict[int, list[Pass0RedirectRecord]] = defaultdict(list)
+            pred_redirect_by_source: dict[int, list[Pass0RedirectRecord]] = defaultdict(list)
+            for row in self._pass0_redirect_ledger:
+                incoming_by_target[row.target_block].append(row)
+                pred_redirect_by_source[row.source_block].append(row)
+
+            for entry in sorted(unreachable_handlers):
+                blk = self.mba.get_mblock(entry)
+                preds: list[int] = []
+                if blk is not None:
+                    preds = [blk.pred(i) for i in range(blk.npred())]
+                incoming_rows = incoming_by_target.get(entry, [])
+                pred_rows = []
+                for pred in preds:
+                    pred_rows.extend(pred_redirect_by_source.get(pred, []))
+
+                incoming_desc = (
+                    ", ".join(
+                        f"blk[{r.source_block}]->blk[{r.target_block}]({r.category})"
+                        for r in incoming_rows[:6]
+                    )
+                    if incoming_rows
+                    else "none"
+                )
+                pred_desc = (
+                    ", ".join(
+                        f"pred blk[{r.source_block}] -> blk[{r.target_block}]({r.category})"
+                        for r in pred_rows[:6]
+                    )
+                    if pred_rows
+                    else "none"
+                )
+                unflat_logger.info(
+                    "Post-apply unreachable entry blk[%d]: preds=%s incoming_redirects=%s pred_redirects=%s",
+                    entry,
+                    preds,
+                    incoming_desc,
+                    pred_desc,
+                )
 
     def _log_dispatcher_predecessor_census(
         self,
@@ -2049,6 +2211,15 @@ class HodurUnflattener(GenericUnflatteningRule):
         Returns:
             True if a redirect was successfully queued or already resolved, False on failure.
         """
+        def _safe_npred(blk: ida_hexrays.mblock_t | None) -> int:
+            if blk is None:
+                return -1
+            try:
+                return int(blk.npred())
+            except Exception:
+                return -1
+
+        self._last_redirect_meta = None
         exit_blk = self.mba.get_mblock(path.exit_block)
 
         # Fast path: exit block not yet claimed by any handler.
@@ -2060,16 +2231,27 @@ class HodurUnflattener(GenericUnflatteningRule):
                 description=reason,
             )
             claimed_exits[path.exit_block] = target
-            _exit_blk_npred = exit_blk.npred() if exit_blk is not None else -1
             unflat_logger.info(
                 "REDIRECT_DECISION: exit_blk=%d target=%d via_pred=None"
                 " decision=plain reason=%s via_pred_npred=None",
                 path.exit_block, target, reason,
             )
+            self._last_redirect_meta = {
+                "kind": "plain",
+                "source_block": path.exit_block,
+                "via_pred": None,
+                "target": target,
+            }
             return True
 
         # Already claimed for the same target — no-op.
         if claimed_exits[path.exit_block] == target:
+            self._last_redirect_meta = {
+                "kind": "already_claimed",
+                "source_block": path.exit_block,
+                "via_pred": None,
+                "target": target,
+            }
             return True
 
         # Conflict: exit_block claimed for a different target. Use edge-level redirect.
@@ -2097,6 +2279,12 @@ class HodurUnflattener(GenericUnflatteningRule):
         edge_key = (path.exit_block, via_pred)
         if edge_key in claimed_edges:
             if claimed_edges[edge_key] == target:
+                self._last_redirect_meta = {
+                    "kind": "already_claimed_edge",
+                    "source_block": path.exit_block,
+                    "via_pred": via_pred,
+                    "target": target,
+                }
                 return True  # Already claimed for same target.
             # Escalate: walk backward through ordered_path to find an unclaimed edge.
             unflat_logger.info(
@@ -2144,7 +2332,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             src_blk = self.mba.get_mblock(src_block)
             old_target = src_blk.succ(0) if src_blk is not None and src_blk.nsucc() > 0 else 0
             _use_pred_blk = self.mba.get_mblock(use_pred)
-            _use_pred_npred = _use_pred_blk.npred() if _use_pred_blk is not None else -1
+            _use_pred_npred = _safe_npred(_use_pred_blk)
             unflat_logger.info(
                 "REDIRECT_DECISION: exit_blk=%d target=%d via_pred=%d"
                 " decision=escalated reason=prior_edge_claimed via_pred_npred=%d",
@@ -2154,7 +2342,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             src_block = path.exit_block
             use_pred = via_pred
             _via_pred_blk = self.mba.get_mblock(use_pred)
-            _via_pred_npred = _via_pred_blk.npred() if _via_pred_blk is not None else -1
+            _via_pred_npred = _safe_npred(_via_pred_blk)
             unflat_logger.info(
                 "REDIRECT_DECISION: exit_blk=%d target=%d via_pred=%d"
                 " decision=edge_split reason=exit_claimed via_pred_npred=%d",
@@ -2176,6 +2364,12 @@ class HodurUnflattener(GenericUnflatteningRule):
             description=reason,
         )
         claimed_edges[(src_block, use_pred)] = target
+        self._last_redirect_meta = {
+            "kind": "edge",
+            "source_block": src_block,
+            "via_pred": use_pred,
+            "target": target,
+        }
         return True
 
     def _linearize_handlers(
@@ -2198,7 +2392,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         Returns:
             Number of transitions successfully resolved.
         """
-        state_var_stkoff = _get_state_var_stkoff(self._detector)
+        state_var_stkoff = self._get_effective_state_var_stkoff()
         if state_var_stkoff is None:
             unflat_logger.info("Cannot linearize: state_var_stkoff is None")
             return 0
@@ -2210,6 +2404,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         claimed_edges: dict[tuple[int, int], int] = {}
         deferred_conflict_count = 0
         bst_rootwalk_targets: set[int] = set()
+        hidden_redirects_seen: set[tuple[int, int, int, int]] = set()
 
         # All handlers: exact + range
         all_handlers: dict[int, int] = {}  # handler_serial -> incoming_state
@@ -2222,6 +2417,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             if serial not in all_handlers:
                 mid = low if low is not None else (high if high is not None else 0)
                 all_handlers[serial] = mid
+        if self._actual_pass_count == 0:
+            self._pass0_handler_entries = {
+                serial for serial in all_handlers if serial not in bst_node_blocks
+            }
 
         for handler_serial, incoming_state in all_handlers.items():
             # Skip handlers that are BST comparison nodes themselves
@@ -2296,18 +2495,27 @@ class HodurUnflattener(GenericUnflatteningRule):
                             )
                             exit_target = None
                     if exit_target is not None:
+                        _reason = (
+                            f"hodur-linear: blk[{handler_serial}] "
+                            f"exit 0x{path.final_state:x} -> {resolve_label} -> blk[{exit_target}]"
+                        )
                         _redirect_ok = self._queue_handler_redirect(
                             path=path,
                             target=exit_target,
-                            reason=(
-                                f"hodur-linear: blk[{handler_serial}] "
-                                f"exit 0x{path.final_state:x} -> {resolve_label} -> blk[{exit_target}]"
-                            ),
+                            reason=_reason,
                             claimed_exits=claimed_exits,
                             claimed_edges=claimed_edges,
                             bst_node_blocks=bst_node_blocks,
                         )
                         if _redirect_ok:
+                            self._record_pass0_redirect(
+                                category="exit_resolved",
+                                handler_entry=handler_serial,
+                                incoming_state=incoming_state,
+                                path=path,
+                                target_block=exit_target,
+                                reason=_reason,
+                            )
                             self._linearized_blocks.add(path.exit_block)
                             for write_blk, write_ea in path.state_writes:
                                 self.deferred.queue_insn_nop(
@@ -2371,18 +2579,27 @@ class HodurUnflattener(GenericUnflatteningRule):
                             dispatcher_serial, sm_blocks
                         )
                     if bst_default is not None:
+                        _reason = (
+                            f"hodur-linear: blk[{handler_serial}] "
+                            f"exit state 0x{path.final_state:x} -> bst_default blk[{bst_default}]"
+                        )
                         _redirect_ok = self._queue_handler_redirect(
                             path=path,
                             target=bst_default,
-                            reason=(
-                                f"hodur-linear: blk[{handler_serial}] "
-                                f"exit state 0x{path.final_state:x} -> bst_default blk[{bst_default}]"
-                            ),
+                            reason=_reason,
                             claimed_exits=claimed_exits,
                             claimed_edges=claimed_edges,
                             bst_node_blocks=bst_node_blocks,
                         )
                         if _redirect_ok:
+                            self._record_pass0_redirect(
+                                category="exit_bst_default",
+                                handler_entry=handler_serial,
+                                incoming_state=incoming_state,
+                                path=path,
+                                target_block=bst_default,
+                                reason=_reason,
+                            )
                             self._linearized_blocks.add(path.exit_block)
                             # Keep state variable live for exit paths (no NOP).
                             resolved_count += 1
@@ -2407,19 +2624,28 @@ class HodurUnflattener(GenericUnflatteningRule):
 
                 is_self_loop = target_serial == handler_serial
 
+                _reason = (
+                    f"hodur-linear: blk[{handler_serial}] "
+                    f"0x{incoming_state:x}->0x{path.final_state:x} "
+                    f"{'(loop)' if is_self_loop else ''}"
+                )
                 _redirect_ok = self._queue_handler_redirect(
                     path=path,
                     target=target_serial,
-                    reason=(
-                        f"hodur-linear: blk[{handler_serial}] "
-                        f"0x{incoming_state:x}->0x{path.final_state:x} "
-                        f"{'(loop)' if is_self_loop else ''}"
-                    ),
+                    reason=_reason,
                     claimed_exits=claimed_exits,
                     claimed_edges=claimed_edges,
                     bst_node_blocks=bst_node_blocks,
                 )
                 if _redirect_ok:
+                    self._record_pass0_redirect(
+                        category="state_transition",
+                        handler_entry=handler_serial,
+                        incoming_state=incoming_state,
+                        path=path,
+                        target_block=target_serial,
+                        reason=_reason,
+                    )
                     self._linearized_blocks.add(path.exit_block)
                     for write_blk, write_ea in path.state_writes:
                         write_blk_obj = self.mba.get_mblock(write_blk)
@@ -2436,11 +2662,17 @@ class HodurUnflattener(GenericUnflatteningRule):
                     deferred_conflict_count += 1
 
         # --- Second pass: linearize BST root-walk hidden handler exits ---
-        # Some handler exits resolve to "hidden handler" blocks in the BST
-        # default region via BST root-walk. These hidden handlers' own exits
-        # back to the dispatcher are never linearized because they're not in
-        # the handler transition table. Process them now.
-        for rootwalk_blk in bst_rootwalk_targets:
+        # Some handler exits resolve to hidden handlers in the BST-default
+        # region. Their own exits may chain into more hidden handlers, so use
+        # a worklist/fixpoint traversal instead of one-shot processing.
+        hidden_worklist: deque[int] = deque(bst_rootwalk_targets)
+        hidden_seen: set[int] = set(bst_rootwalk_targets)
+        hidden_processed: set[int] = set()
+        while hidden_worklist:
+            rootwalk_blk = hidden_worklist.popleft()
+            if rootwalk_blk in hidden_processed:
+                continue
+            hidden_processed.add(rootwalk_blk)
             if rootwalk_blk in bst_node_blocks:
                 continue  # Skip actual BST comparison nodes
             try:
@@ -2456,6 +2688,13 @@ class HodurUnflattener(GenericUnflatteningRule):
             for path in hidden_paths:
                 if path.final_state is None:
                     continue  # Terminal path, no redirect needed
+                if path.final_state == 0:
+                    unflat_logger.info(
+                        "hodur-linear: hidden-handler blk[%d] exit_blk=%d has zero final_state, skipping",
+                        rootwalk_blk,
+                        path.exit_block,
+                    )
+                    continue
 
                 # Try exact BST resolution first
                 target = resolve_target_via_bst(bst_result, path.final_state)
@@ -2477,19 +2716,59 @@ class HodurUnflattener(GenericUnflatteningRule):
                     continue
                 if target in bst_node_blocks:
                     continue  # Don't redirect to BST internal nodes
+                if target == path.exit_block:
+                    unflat_logger.info(
+                        "hodur-linear: hidden-handler blk[%d] exit_blk=%d resolved to itself, skipping",
+                        rootwalk_blk,
+                        path.exit_block,
+                    )
+                    continue
 
+                if target not in all_handlers and target not in hidden_seen:
+                    hidden_seen.add(target)
+                    hidden_worklist.append(target)
+                    unflat_logger.info(
+                        "Queued chained hidden handler: blk[%d] from hidden blk[%d] "
+                        "state=0x%x",
+                        target,
+                        rootwalk_blk,
+                        path.final_state,
+                    )
+
+                hidden_key = (rootwalk_blk, path.exit_block, path.final_state, target)
+                if hidden_key in hidden_redirects_seen:
+                    unflat_logger.info(
+                        "hodur-linear: hidden-handler duplicate redirect skipped "
+                        "blk[%d] exit_blk=%d state=0x%x target=%d",
+                        rootwalk_blk,
+                        path.exit_block,
+                        path.final_state,
+                        target,
+                    )
+                    continue
+                hidden_redirects_seen.add(hidden_key)
+
+                _reason = (
+                    f"hodur-linear: hidden-handler blk[{rootwalk_blk}]"
+                    f" exit 0x{path.final_state:x} -> blk[{target}]"
+                )
                 _redirect_ok = self._queue_handler_redirect(
                     path=path,
                     target=target,
-                    reason=(
-                        f"hodur-linear: hidden-handler blk[{rootwalk_blk}]"
-                        f" exit 0x{path.final_state:x} -> blk[{target}]"
-                    ),
+                    reason=_reason,
                     claimed_exits=claimed_exits,
                     claimed_edges=claimed_edges,
                     bst_node_blocks=bst_node_blocks,
                 )
                 if _redirect_ok:
+                    self._record_pass0_redirect(
+                        category="hidden_handler",
+                        handler_entry=rootwalk_blk,
+                        incoming_state=None,
+                        path=path,
+                        target_block=target,
+                        reason=_reason,
+                    )
                     self._linearized_blocks.add(path.exit_block)
                     unflat_logger.info(
                         "hodur-linear: hidden-handler blk[%d] exit_blk=%d -> target blk[%d] (state 0x%x)",
@@ -2516,7 +2795,7 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         # Predecessor census (diagnostic only)
         handler_entries = set(all_handlers.keys())
-        rootwalk_processed = set(bst_rootwalk_targets)  # all were processed in second pass
+        rootwalk_processed = set(hidden_processed)
         self._log_dispatcher_predecessor_census(
             bst_node_blocks=bst_node_blocks,
             handler_entries=handler_entries,
@@ -2604,15 +2883,26 @@ class HodurUnflattener(GenericUnflatteningRule):
                     state_writes=[],
                     ordered_path=[serial],
                 )
+                _reason = (
+                    f"hodur-linear: BST default blk[{serial}] {written_state:#x}->blk[{target}]"
+                )
                 _redirect_ok = self._queue_handler_redirect(
                     path=_synthetic_path,
                     target=target,
-                    reason=f"hodur-linear: BST default blk[{serial}] {written_state:#x}->blk[{target}]",
+                    reason=_reason,
                     claimed_exits=claimed_exits,
                     claimed_edges=claimed_edges,
                     bst_node_blocks=bst_node_blocks,
                 )
                 if _redirect_ok:
+                    self._record_pass0_redirect(
+                        category="bst_default_backedge",
+                        handler_entry=serial,
+                        incoming_state=written_state,
+                        path=_synthetic_path,
+                        target_block=target,
+                        reason=_reason,
+                    )
                     # NOP the state write (only when redirect succeeded)
                     if state_write_ea is not None:
                         self.deferred.queue_insn_nop(
@@ -2655,11 +2945,25 @@ class HodurUnflattener(GenericUnflatteningRule):
                 bst_result, bst_result.initial_state
             )
             if initial_handler is not None:
+                _reason = "hodur-linear: pre-header -> initial handler"
                 self.deferred.queue_goto_change(
                     block_serial=bst_result.pre_header_serial,
                     new_target=initial_handler,
-                    description="hodur-linear: pre-header -> initial handler",
+                    description=_reason,
                     rule_priority=550,
+                )
+                self._pass0_redirect_ledger.append(
+                    Pass0RedirectRecord(
+                        category="preheader",
+                        handler_entry=bst_result.pre_header_serial,
+                        incoming_state=bst_result.initial_state,
+                        exit_block=bst_result.pre_header_serial,
+                        final_state=bst_result.initial_state,
+                        source_block=bst_result.pre_header_serial,
+                        via_pred=None,
+                        target_block=initial_handler,
+                        reason=_reason,
+                    )
                 )
                 resolved_count += 1
 
@@ -3576,7 +3880,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                         redirect_target == exit_target
                         and self._bst_result is not None
                     ):
-                        state_var_stkoff = _get_state_var_stkoff(self._detector)
+                        state_var_stkoff = self._get_effective_state_var_stkoff()
                         if state_var_stkoff is not None:
                             # Scan block for constant state write
                             written_state: int | None = None
@@ -3944,6 +4248,166 @@ class HodurUnflattener(GenericUnflatteningRule):
             blocks.update(handler.handler_blocks)
         return blocks
 
+    def _collect_handler_body_blocks(self) -> set[int]:
+        if self.state_machine is None:
+            return set()
+        blocks: set[int] = set()
+        for handler in self.state_machine.handlers.values():
+            blocks.update(handler.handler_blocks)
+        return blocks
+
+    def _get_effective_state_var_stkoff(self) -> int | None:
+        """Resolve stack offset for state var from detector or active state machine."""
+        if self._detector is not None:
+            try:
+                stkoff = _get_state_var_stkoff(self._detector)
+                if stkoff is not None:
+                    return stkoff
+            except Exception:
+                pass
+
+        if self.state_machine is None or self.state_machine.state_var is None:
+            return None
+        if self.state_machine.state_var.t == ida_hexrays.mop_S:
+            return self.state_machine.state_var.s.off
+        return None
+
+    def _mops_match_state_var(
+        self,
+        candidate: ida_hexrays.mop_t | None,
+        state_var: ida_hexrays.mop_t,
+    ) -> bool:
+        """Compare state-variable mops with SSA-tolerant fallback."""
+        if candidate is None:
+            return False
+
+        # Reuse detector-level matcher when available (includes SSA fallback).
+        if self._detector is not None:
+            try:
+                return self._detector._mops_match_state_var(candidate, state_var)
+            except Exception:
+                pass
+
+        try:
+            if equal_mops_ignore_size(candidate, state_var):
+                return True
+        except Exception:
+            pass
+
+        if candidate.t == state_var.t:
+            try:
+                if candidate.t == ida_hexrays.mop_r and candidate.r == state_var.r:
+                    return True
+                if (
+                    candidate.t == ida_hexrays.mop_S
+                    and candidate.s.off == state_var.s.off
+                    and candidate.size == state_var.size
+                ):
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _is_stop_block_serial(self, blk_serial: int | None) -> bool:
+        if blk_serial is None:
+            return False
+        if blk_serial < 0 or blk_serial >= self.mba.qty:
+            return False
+        blk = self.mba.get_mblock(blk_serial)
+        if blk is None:
+            return False
+        return blk.nsucc() == 0 and blk.tail is None
+
+    def _collect_high_priority_redirect_targets(self, min_rule_priority: int = 550) -> set[int]:
+        """Collect queued redirect targets from high-priority linearization mods."""
+        if self.deferred is None:
+            return set()
+        targets: set[int] = set()
+        for mod in self.deferred.modifications:
+            if mod.rule_priority < min_rule_priority:
+                continue
+            if mod.new_target is not None:
+                targets.add(mod.new_target)
+            if mod.conditional_target is not None:
+                targets.add(mod.conditional_target)
+            if mod.fallthrough_target is not None:
+                targets.add(mod.fallthrough_target)
+        return targets
+
+    def _classify_stop_redirect_source(
+        self,
+        blk_serial: int,
+        handler_body_blocks: set[int],
+        check_blocks: set[int],
+        high_priority_targets: set[int],
+    ) -> str:
+        tags: list[str] = []
+        if blk_serial in handler_body_blocks:
+            tags.append("handler_body")
+        if blk_serial in check_blocks:
+            tags.append("check_block")
+        if blk_serial in self._linearized_blocks:
+            tags.append("linearized_src")
+        if blk_serial in high_priority_targets:
+            tags.append("highprio_target")
+        blk = self.mba.get_mblock(blk_serial)
+        if blk is not None:
+            if blk.npred() > 1:
+                tags.append("merge_src")
+            if blk.nsucc() == 1:
+                succ0 = blk.succ(0)
+                if self.state_machine is not None:
+                    check_set = {h.check_block for h in self.state_machine.handlers.values()}
+                    if succ0 in check_set:
+                        tags.append("to_check")
+        if not tags:
+            tags.append("other")
+        return ",".join(tags)
+
+    def _audit_priority50_stop_redirects(self) -> None:
+        """Audit surviving rule_priority=50 goto redirects that target STOP."""
+        if self.deferred is None or self.state_machine is None:
+            return
+        stop_serial = self.mba.qty - 1
+        handler_body_blocks = self._collect_handler_body_blocks()
+        check_blocks = {handler.check_block for handler in self.state_machine.handlers.values()}
+        high_priority_targets = self._collect_high_priority_redirect_targets(550)
+        flagged = 0
+        for mod in self.deferred.modifications:
+            if mod.mod_type.name != "BLOCK_GOTO_CHANGE":
+                continue
+            if mod.rule_priority != 50:
+                continue
+            target_is_stop = mod.new_target == stop_serial or self._is_stop_block_serial(mod.new_target)
+            if not target_is_stop:
+                continue
+            role = self._classify_stop_redirect_source(
+                mod.block_serial,
+                handler_body_blocks,
+                check_blocks,
+                high_priority_targets,
+            )
+            blk = self.mba.get_mblock(mod.block_serial)
+            npred = blk.npred() if blk is not None else -1
+            nsucc = blk.nsucc() if blk is not None else -1
+            unflat_logger.warning(
+                "STOP_REDIRECT_AUDIT: src_blk=%d target=%d role=%s npred=%d nsucc=%d desc=%s",
+                mod.block_serial,
+                mod.new_target,
+                role,
+                npred,
+                nsucc,
+                mod.description,
+            )
+            flagged += 1
+        if flagged == 0:
+            unflat_logger.info("STOP_REDIRECT_AUDIT: no surviving priority-50 STOP redirects")
+        else:
+            unflat_logger.warning(
+                "STOP_REDIRECT_AUDIT: %d surviving priority-50 STOP redirects",
+                flagged,
+            )
+
     def _find_terminal_loopback_transition(self) -> StateTransition | None:
         if self.state_machine is None or self.state_machine.initial_state is None:
             return None
@@ -4185,6 +4649,15 @@ class HodurUnflattener(GenericUnflatteningRule):
             return
 
         if self.state_machine.initial_state is None:
+            return
+
+        # Direct linearization already rewires handler exits. Running terminal
+        # back-edge rewriting on top often injects STOP-path redirects that
+        # collapse handler bodies in OLLVM-style graphs.
+        if self._bst_result is not None:
+            unflat_logger.info(
+                "Skipping terminal back-edge fix: direct linearization active"
+            )
             return
 
         # Preserve the previously-stable behavior for classic jnz-based Hodur/ABC
