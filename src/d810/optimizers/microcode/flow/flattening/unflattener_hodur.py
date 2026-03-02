@@ -2053,11 +2053,16 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         # Fast path: exit block not yet claimed by any handler.
         if path.exit_block not in claimed_exits:
+            # Detect STOP-block targets: use target_kind="STOP" so the serial
+            # is re-resolved at apply-time after edge-split insertions may have
+            # shifted the STOP block's position.
+            _is_stop_target = (target == self.mba.qty - 1)
             self.deferred.queue_goto_change(
                 block_serial=path.exit_block,
                 new_target=target,
                 rule_priority=550,
                 description=reason,
+                target_kind="STOP" if _is_stop_target else "ABSOLUTE",
             )
             claimed_exits[path.exit_block] = target
             _exit_blk_npred = exit_blk.npred() if exit_blk is not None else -1
@@ -2160,6 +2165,13 @@ class HodurUnflattener(GenericUnflatteningRule):
                 " decision=edge_split reason=exit_claimed via_pred_npred=%d",
                 path.exit_block, target, use_pred, _via_pred_npred,
             )
+            # EXPERIMENT GUARD: skip edge-split when via_pred has multiple predecessors.
+            if _via_pred_npred > 1:
+                unflat_logger.info(
+                    "EDGE_REDIRECT_SKIPPED: via_pred blk[%d] has npred=%d, too risky",
+                    use_pred, _via_pred_npred,
+                )
+                return False
 
         unflat_logger.info(
             "EDGE_REDIRECT: exit blk[%d] -> target %d conflicts with claimed=%d; "
@@ -4362,12 +4374,16 @@ class HodurUnflattener(GenericUnflatteningRule):
                 continue
 
             succ = next(iter(blk.succset))
+            # Detect STOP-block targets so the serial is re-resolved at apply-time
+            # after edge-split insertions may have shifted the STOP block's position.
+            _exit_is_stop = (exit_target == self.mba.qty - 1)
             if succ == blk.serial and blk.serial != exit_target:
                 self.deferred.queue_goto_change(
                     block_serial=blk.serial,
                     new_target=exit_target,
                     description="fix_degenerate_terminal_loop",
                     rule_priority=50,
+                    target_kind="STOP" if _exit_is_stop else "ABSOLUTE",
                 )
                 nb_fixed += 1
                 unflat_logger.info(
@@ -4393,6 +4409,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     new_target=exit_target,
                     description="fix_degenerate_terminal_loop",
                     rule_priority=50,
+                    target_kind="STOP" if _exit_is_stop else "ABSOLUTE",
                 )
                 nb_fixed += 1
                 unflat_logger.info(
