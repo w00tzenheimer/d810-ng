@@ -2049,6 +2049,8 @@ class HodurUnflattener(GenericUnflatteningRule):
         bst_node_blocks = bst_result.bst_node_blocks | {dispatcher_serial}
         sm_blocks = self._collect_state_machine_blocks()
         resolved_count = 0
+        claimed_exits: dict[int, int] = {}
+        deferred_conflict_count = 0
         bst_rootwalk_targets: set[int] = set()
 
         # All handlers: exact + range
@@ -2136,16 +2138,27 @@ class HodurUnflattener(GenericUnflatteningRule):
                             )
                             exit_target = None
                     if exit_target is not None:
-                        self.deferred.queue_goto_change(
-                            block_serial=path.exit_block,
-                            new_target=exit_target,
-                            description=(
-                                f"hodur-linear: blk[{handler_serial}] "
-                                f"exit 0x{path.final_state:x} -> {resolve_label} -> blk[{exit_target}]"
-                            ),
-                            rule_priority=550,
-                        )
-                        self._linearized_blocks.add(path.exit_block)
+                        _exit = path.exit_block
+                        _target = exit_target
+                        if _exit in claimed_exits and claimed_exits[_exit] != _target:
+                            deferred_conflict_count += 1
+                            unflat_logger.info(
+                                "EXIT_CONFLICT_DEFERRED blk[%d] target=%d claimed=%d (exit-resolved)",
+                                _exit, _target, claimed_exits[_exit],
+                            )
+                        else:
+                            if _exit not in claimed_exits:
+                                claimed_exits[_exit] = _target
+                            self.deferred.queue_goto_change(
+                                block_serial=path.exit_block,
+                                new_target=exit_target,
+                                description=(
+                                    f"hodur-linear: blk[{handler_serial}] "
+                                    f"exit 0x{path.final_state:x} -> {resolve_label} -> blk[{exit_target}]"
+                                ),
+                                rule_priority=550,
+                            )
+                            self._linearized_blocks.add(path.exit_block)
                         for write_blk, write_ea in path.state_writes:
                             self.deferred.queue_insn_nop(
                                 block_serial=write_blk,
@@ -2206,16 +2219,27 @@ class HodurUnflattener(GenericUnflatteningRule):
                             dispatcher_serial, sm_blocks
                         )
                     if bst_default is not None:
-                        self.deferred.queue_goto_change(
-                            block_serial=path.exit_block,
-                            new_target=bst_default,
-                            description=(
-                                f"hodur-linear: blk[{handler_serial}] "
-                                f"exit state 0x{path.final_state:x} -> bst_default blk[{bst_default}]"
-                            ),
-                            rule_priority=550,
-                        )
-                        self._linearized_blocks.add(path.exit_block)
+                        _exit = path.exit_block
+                        _target = bst_default
+                        if _exit in claimed_exits and claimed_exits[_exit] != _target:
+                            deferred_conflict_count += 1
+                            unflat_logger.info(
+                                "EXIT_CONFLICT_DEFERRED blk[%d] target=%d claimed=%d (bst-default)",
+                                _exit, _target, claimed_exits[_exit],
+                            )
+                        else:
+                            if _exit not in claimed_exits:
+                                claimed_exits[_exit] = _target
+                            self.deferred.queue_goto_change(
+                                block_serial=path.exit_block,
+                                new_target=bst_default,
+                                description=(
+                                    f"hodur-linear: blk[{handler_serial}] "
+                                    f"exit state 0x{path.final_state:x} -> bst_default blk[{bst_default}]"
+                                ),
+                                rule_priority=550,
+                            )
+                            self._linearized_blocks.add(path.exit_block)
                         # Keep state variable live for exit paths (no NOP).
                         resolved_count += 1
                         self._resolved_transitions.add(
@@ -2237,17 +2261,28 @@ class HodurUnflattener(GenericUnflatteningRule):
 
                 is_self_loop = target_serial == handler_serial
 
-                self.deferred.queue_goto_change(
-                    block_serial=path.exit_block,
-                    new_target=target_serial,
-                    description=(
-                        f"hodur-linear: blk[{handler_serial}] "
-                        f"0x{incoming_state:x}->0x{path.final_state:x} "
-                        f"{'(loop)' if is_self_loop else ''}"
-                    ),
-                    rule_priority=550,
-                )
-                self._linearized_blocks.add(path.exit_block)
+                _exit = path.exit_block
+                _target = target_serial
+                if _exit in claimed_exits and claimed_exits[_exit] != _target:
+                    deferred_conflict_count += 1
+                    unflat_logger.info(
+                        "EXIT_CONFLICT_DEFERRED blk[%d] target=%d claimed=%d (main-handler)",
+                        _exit, _target, claimed_exits[_exit],
+                    )
+                else:
+                    if _exit not in claimed_exits:
+                        claimed_exits[_exit] = _target
+                    self.deferred.queue_goto_change(
+                        block_serial=path.exit_block,
+                        new_target=target_serial,
+                        description=(
+                            f"hodur-linear: blk[{handler_serial}] "
+                            f"0x{incoming_state:x}->0x{path.final_state:x} "
+                            f"{'(loop)' if is_self_loop else ''}"
+                        ),
+                        rule_priority=550,
+                    )
+                    self._linearized_blocks.add(path.exit_block)
 
                 for write_blk, write_ea in path.state_writes:
                     self.deferred.queue_insn_nop(
@@ -2302,16 +2337,27 @@ class HodurUnflattener(GenericUnflatteningRule):
                 if target in bst_node_blocks:
                     continue  # Don't redirect to BST internal nodes
 
-                self.deferred.queue_goto_change(
-                    block_serial=path.exit_block,
-                    new_target=target,
-                    description=(
-                        f"hodur-linear: hidden-handler blk[{rootwalk_blk}]"
-                        f" exit 0x{path.final_state:x} -> blk[{target}]"
-                    ),
-                    rule_priority=550,
-                )
-                self._linearized_blocks.add(path.exit_block)
+                _exit = path.exit_block
+                _target = target
+                if _exit in claimed_exits and claimed_exits[_exit] != _target:
+                    deferred_conflict_count += 1
+                    unflat_logger.info(
+                        "EXIT_CONFLICT_DEFERRED blk[%d] target=%d claimed=%d (hidden-handler)",
+                        _exit, _target, claimed_exits[_exit],
+                    )
+                else:
+                    if _exit not in claimed_exits:
+                        claimed_exits[_exit] = _target
+                    self.deferred.queue_goto_change(
+                        block_serial=path.exit_block,
+                        new_target=target,
+                        description=(
+                            f"hodur-linear: hidden-handler blk[{rootwalk_blk}]"
+                            f" exit 0x{path.final_state:x} -> blk[{target}]"
+                        ),
+                        rule_priority=550,
+                    )
+                    self._linearized_blocks.add(path.exit_block)
                 unflat_logger.info(
                     "hodur-linear: hidden-handler blk[%d] exit_blk=%d -> target blk[%d] (state 0x%x)",
                     rootwalk_blk,
@@ -2416,14 +2462,25 @@ class HodurUnflattener(GenericUnflatteningRule):
                 )
 
                 # Redirect the back-edge
-                self.deferred.queue_goto_change(
-                    block_serial=serial,
-                    new_target=target,
-                    description=f"hodur-linear: BST default blk[{serial}] {written_state:#x}->blk[{target}]",
-                    rule_priority=550,
-                )
+                _exit = serial
+                _target = target
+                if _exit in claimed_exits and claimed_exits[_exit] != _target:
+                    deferred_conflict_count += 1
+                    unflat_logger.info(
+                        "EXIT_CONFLICT_DEFERRED blk[%d] target=%d claimed=%d (bst-default-backedge)",
+                        _exit, _target, claimed_exits[_exit],
+                    )
+                else:
+                    if _exit not in claimed_exits:
+                        claimed_exits[_exit] = _target
+                    self.deferred.queue_goto_change(
+                        block_serial=serial,
+                        new_target=target,
+                        description=f"hodur-linear: BST default blk[{serial}] {written_state:#x}->blk[{target}]",
+                        rule_priority=550,
+                    )
 
-                # NOP the state write
+                # NOP the state write (runs unconditionally)
                 if state_write_ea is not None:
                     self.deferred.queue_insn_nop(
                         block_serial=serial,
@@ -2471,6 +2528,13 @@ class HodurUnflattener(GenericUnflatteningRule):
                 )
                 resolved_count += 1
 
+        if deferred_conflict_count > 0:
+            unflat_logger.info(
+                "EXIT_CONFLICT_SUMMARY: %d exit conflicts deferred (first claimant wins); "
+                "claimed_exits has %d unique redirected blocks",
+                deferred_conflict_count,
+                len(claimed_exits),
+            )
         unflat_logger.info(
             "Hodur linearization: %d transitions resolved for %d handlers",
             resolved_count,

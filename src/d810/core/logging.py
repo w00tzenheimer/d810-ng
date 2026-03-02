@@ -319,7 +319,12 @@ conf: dict[str, typing.Any] = {
         },
         "D810.unflat": {
             "level": "INFO",
-            "handlers": ["defaultFileHandler"],
+            "handlers": ["consoleHandler", "defaultFileHandler"],
+            "propagate": False,
+        },
+        "D810.unflat.hodur": {
+            "level": "INFO",
+            "handlers": ["consoleHandler", "defaultFileHandler"],
             "propagate": False,
         },
         "D810.tracker": {
