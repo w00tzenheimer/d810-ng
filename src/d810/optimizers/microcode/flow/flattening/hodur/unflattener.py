@@ -220,7 +220,13 @@ class HodurUnflattener(GenericUnflatteningRule):
         fragments = []
         for strategy in self._strategies:
             if strategy.is_applicable(snapshot):
-                fragment = strategy.plan(snapshot)
+                try:
+                    fragment = strategy.plan(snapshot)
+                except Exception as e:
+                    unflat_logger.warning(
+                        "Strategy %s crashed: %s", strategy.name, e
+                    )
+                    continue
                 if fragment is not None:
                     fragments.append(fragment)
 
@@ -346,19 +352,33 @@ class HodurUnflattener(GenericUnflatteningRule):
 
     def _get_effective_state_var_stkoff(
         self, state_machine: HodurStateMachine | None = None
-    ) -> int:
-        """Return the stack offset of the state variable, or 0 as fallback."""
+    ) -> int | None:
+        """Return the stack offset of the state variable, or None on failure.
+
+        Matches the original monolith semantics: returns None so that
+        ``analyze_bst_dispatcher`` can auto-detect the stkoff.
+        """
+        # Try detector first (passes detector object, not mop_t)
+        if self._detector is not None:
+            try:
+                from d810.optimizers.microcode.flow.flattening.transition_builder import (
+                    _get_state_var_stkoff,
+                )
+
+                stkoff = _get_state_var_stkoff(self._detector)
+                if stkoff is not None:
+                    return stkoff
+            except Exception:
+                pass
+
+        # Fallback: read mop_S.s.off directly from state_machine.state_var
         sm = state_machine if state_machine is not None else self.state_machine
         if sm is None or sm.state_var is None:
-            return 0
-        try:
-            from d810.optimizers.microcode.flow.flattening.transition_builder import (
-                _get_state_var_stkoff,
-            )
-
-            return _get_state_var_stkoff(sm.state_var)
-        except Exception:
-            return 0
+            return None
+        import ida_hexrays
+        if sm.state_var.t == ida_hexrays.mop_S:
+            return sm.state_var.s.off
+        return None
 
     def _compute_reachability_info(self, mba: ida_hexrays.mba_t) -> ReachabilityInfo:
         """BFS from block 0 to compute reachable block set."""

@@ -155,6 +155,18 @@ class TransactionalExecutor:
                 deferred.queue_insn_nop(edit.source_block, edit.instruction_ea)
         elif edit.edit_type == EditType.CONDITIONAL_REDIRECT:
             deferred.queue_conditional_target_change(edit.source_block, edit.target_block)
+        elif edit.edit_type == EditType.EDGE_REDIRECT:
+            old_target = edit.metadata.get("old_target", 0)
+            via_pred = edit.metadata.get("via_pred")
+            if via_pred is not None and edit.target_block is not None:
+                deferred.queue_edge_redirect(
+                    src_block=edit.source_block,
+                    old_target=old_target,
+                    new_target=edit.target_block,
+                    via_pred=via_pred,
+                    rule_priority=edit.metadata.get("rule_priority", 550),
+                    description=edit.metadata.get("description", ""),
+                )
         elif edit.edit_type == EditType.BLOCK_DUPLICATE:
             executor_logger.warning(
                 "BLOCK_DUPLICATE not yet implemented for block %d",
