@@ -7,9 +7,15 @@ and redirect to the nearest function exit or return block.
 """
 from __future__ import annotations
 
+import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
+from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+    can_reach_return,
+    collect_state_machine_blocks,
+    find_terminal_exit_target,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_CLEANUP,
     BenefitMetrics,
@@ -85,18 +91,6 @@ class TerminalLoopCleanupStrategy:
         """
         if not self.is_applicable(snapshot):
             return None
-
-        # Resolve IDA runtime imports
-        try:
-            import ida_hexrays
-        except ImportError:
-            return None
-
-        from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
-            collect_state_machine_blocks,
-            find_terminal_exit_target,
-            can_reach_return,
-        )
 
         mba = snapshot.mba
         sm = snapshot.state_machine

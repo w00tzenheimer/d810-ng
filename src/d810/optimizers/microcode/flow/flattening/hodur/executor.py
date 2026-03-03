@@ -1,63 +1,22 @@
 """Transactional executor for Hodur unflattening pipeline."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from d810.core import logging
 
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     EditType,
     PlanFragment,
     ProposedEdit,
+    StageResult,
+    VerificationGate,
+)
+
+from d810.hexrays.deferred_modifier import DeferredGraphModifier
+from d810.optimizers.microcode.flow.flattening.safeguards import (
+    should_apply_cfg_modifications,
 )
 
 executor_logger = logging.getLogger("D810.unflat.hodur.executor")
-
-try:
-    from d810.hexrays.deferred_modifier import DeferredGraphModifier
-    from d810.optimizers.microcode.flow.flattening.safeguards import (
-        should_apply_cfg_modifications,
-    )
-    _IDA_AVAILABLE = True
-except ImportError:
-    _IDA_AVAILABLE = False
-
-
-@dataclass
-class StageResult:
-    """Outcome of executing one plan fragment."""
-
-    strategy_name: str
-    edits_applied: int = 0
-    reachability_after: float = 1.0
-    conflict_count_after: int = 0
-    success: bool = True
-    rollback_needed: bool = False
-    error: str | None = None
-
-
-@dataclass
-class VerificationGate:
-    """Post-stage verification thresholds."""
-
-    min_reachability: float = 0.7
-    max_conflict_count: int = 10
-
-    def check(self, result: StageResult) -> bool:
-        """Return True iff the result passes all verification thresholds.
-
-        Args:
-            result: The stage result to check.
-
-        Returns:
-            True when reachability is above the minimum and conflict count is
-            at or below the maximum.
-        """
-        if result.reachability_after < self.min_reachability:
-            return False
-        if result.conflict_count_after > self.max_conflict_count:
-            return False
-        return True
 
 
 class TransactionalExecutor:
@@ -88,13 +47,6 @@ class TransactionalExecutor:
         """Execute one plan fragment through DeferredGraphModifier."""
         if fragment.is_empty():
             return StageResult(strategy_name=fragment.strategy_name)
-
-        if not _IDA_AVAILABLE:
-            return StageResult(
-                strategy_name=fragment.strategy_name,
-                success=False,
-                error="IDA runtime not available",
-            )
 
         deferred = DeferredGraphModifier(self.mba)
 

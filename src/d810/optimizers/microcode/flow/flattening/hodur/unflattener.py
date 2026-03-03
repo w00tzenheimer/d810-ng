@@ -46,10 +46,12 @@ from d810.optimizers.microcode.flow.flattening.hodur.planner import (
     PipelinePolicy,
     UnflatteningPlanner,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.executor import (
+from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     StageResult,
-    TransactionalExecutor,
     VerificationGate,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.executor import (
+    TransactionalExecutor,
 )
 
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)

@@ -11,9 +11,14 @@ Corresponds to ``HodurUnflattener._resolve_remaining_via_assignment_map`` and
 """
 from __future__ import annotations
 
+import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
+from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
+    HODUR_STATE_CHECK_OPCODES,
+    HodurStateMachineDetector,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_FALLBACK,
     BenefitMetrics,
@@ -88,12 +93,6 @@ class AssignmentMapFallbackStrategy:
             back-edge redirects, or None when no assignment_map data exists.
         """
         if not self.is_applicable(snapshot):
-            return None
-
-        # Resolve IDA runtime imports
-        try:
-            import ida_hexrays
-        except ImportError:
             return None
 
         from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
@@ -229,11 +228,6 @@ class AssignmentMapFallbackStrategy:
         """
         insns = assignment_map.get(blk_serial)
         if not insns:
-            return None
-
-        try:
-            import ida_hexrays
-        except ImportError:
             return None
 
         size = getattr(state_var, "size", 4)
@@ -511,16 +505,6 @@ class AssignmentMapFallbackStrategy:
             Handler entry block serial (leaf after BST traversal), or None if
             the chain cannot be resolved.
         """
-        try:
-            import ida_hexrays
-        except ImportError:
-            return None
-
-        from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
-            HODUR_STATE_CHECK_OPCODES,
-            HodurStateMachineDetector,
-        )
-
         visited: set[int] = set()
         current = dispatcher_target
 

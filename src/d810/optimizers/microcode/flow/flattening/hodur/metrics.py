@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.executor import StageResult
+    from d810.optimizers.microcode.flow.flattening.hodur.strategy import StageResult
 
 
 def handler_coverage(resolved_count: int, total_handlers: int) -> float:
