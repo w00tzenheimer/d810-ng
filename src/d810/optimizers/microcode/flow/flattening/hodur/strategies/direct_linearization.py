@@ -102,21 +102,47 @@ class DirectHandlerLinearizationStrategy:
         handlers_resolved = 0
         transitions_resolved = 0
 
+        # Build a lookup: from_state -> set of to_state values from detected transitions.
+        sm = snapshot.state_machine
+        state_transitions_map: dict[int, list[int]] = {}
+        if sm is not None and hasattr(sm, "transitions"):
+            for t in sm.transitions:
+                state_transitions_map.setdefault(t.from_state, []).append(t.to_state)
+
+        # Build a lookup: state_value -> check_block serial.
+        handlers_by_state: dict[int, int] = {}
+        if sm is not None and hasattr(sm, "handlers"):
+            for state_val, handler_obj in sm.handlers.items():
+                handlers_by_state[state_val] = handler_obj.check_block
+
         for handler_serial, incoming_state in all_handlers.items():
             if handler_serial in bst_node_blocks:
                 continue
 
-            # Propose a GOTO_REDIRECT from this handler entry.
-            # The actual DFS forward evaluation is deferred to the executor.
-            # Here we claim ownership of the handler entry block.
+            # Attempt to resolve target_block from detected transitions.
+            target_block: int | None = None
+            to_states = state_transitions_map.get(incoming_state, [])
+            if len(to_states) == 1:
+                target_block = handlers_by_state.get(to_states[0])
+
+            if target_block is None:
+                logger.debug(
+                    "direct_linearization: no unique target for handler serial=%d"
+                    " incoming_state=0x%x (to_states=%s) — skipping",
+                    handler_serial,
+                    incoming_state,
+                    to_states,
+                )
+                continue
+
+            # Claim ownership of the handler entry block.
             owned_blocks.add(handler_serial)
 
-            # Record a representative GOTO_REDIRECT edit per handler.
             edits.append(
                 ProposedEdit(
                     edit_type=EditType.GOTO_REDIRECT,
                     source_block=handler_serial,
-                    target_block=None,  # resolved at execution time via BST
+                    target_block=target_block,
                     metadata={
                         "incoming_state": incoming_state,
                         "bst_dispatcher_serial": dispatcher_serial,
@@ -132,13 +158,17 @@ class DirectHandlerLinearizationStrategy:
 
         # Claim pre-header redirect if available.
         pre_header: int | None = getattr(bst, "pre_header_serial", None)
-        if pre_header is not None and pre_header != -1:
+        initial_state: int | None = getattr(sm, "initial_state", None) if sm is not None else None
+        pre_header_target: int | None = None
+        if initial_state is not None:
+            pre_header_target = handlers_by_state.get(initial_state)
+        if pre_header is not None and pre_header != -1 and pre_header_target is not None:
             owned_blocks.add(pre_header)
             edits.append(
                 ProposedEdit(
                     edit_type=EditType.GOTO_REDIRECT,
                     source_block=pre_header,
-                    target_block=None,
+                    target_block=pre_header_target,
                     metadata={
                         "role": "pre_header",
                         "strategy": self.name,

@@ -75,7 +75,7 @@ class UnflatteningPlanner:
         direct_handlers = sum(
             f.expected_benefit.handlers_resolved
             for f in fragments
-            if "fallback" not in f.strategy_name
+            if f.family != FAMILY_FALLBACK
         )
         if total_handlers > 0:
             coverage = direct_handlers / total_handlers

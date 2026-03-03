@@ -13,6 +13,15 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 
 executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 
+try:
+    from d810.hexrays.deferred_modifier import DeferredGraphModifier
+    from d810.optimizers.microcode.flow.flattening.safeguards import (
+        should_apply_cfg_modifications,
+    )
+    _IDA_AVAILABLE = True
+except ImportError:
+    _IDA_AVAILABLE = False
+
 
 @dataclass
 class StageResult:
@@ -80,12 +89,7 @@ class TransactionalExecutor:
         if fragment.is_empty():
             return StageResult(strategy_name=fragment.strategy_name)
 
-        try:
-            from d810.hexrays.deferred_modifier import DeferredGraphModifier
-            from d810.optimizers.microcode.flow.flattening.safeguards import (
-                should_apply_cfg_modifications,
-            )
-        except ImportError:
+        if not _IDA_AVAILABLE:
             return StageResult(
                 strategy_name=fragment.strategy_name,
                 success=False,
@@ -151,6 +155,11 @@ class TransactionalExecutor:
                 deferred.queue_insn_nop(edit.source_block, edit.instruction_ea)
         elif edit.edit_type == EditType.CONDITIONAL_REDIRECT:
             deferred.queue_conditional_target_change(edit.source_block, edit.target_block)
+        elif edit.edit_type == EditType.BLOCK_DUPLICATE:
+            executor_logger.warning(
+                "BLOCK_DUPLICATE not yet implemented for block %d",
+                edit.source_block,
+            )
 
     def _compute_reachability(self) -> float:
         """Compute fraction of blocks reachable from entry."""
