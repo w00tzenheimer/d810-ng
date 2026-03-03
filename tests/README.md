@@ -171,7 +171,7 @@ pytest -s tests/system/e2e/test_dump_function_pseudocode.py --unskip-research
 
 ## Backend-Aware Guard Note
 
-- `tests/unit/test_mop_snapshot_guard.py` is intentionally backend-aware.
+- `tests/system/runtime/hexrays/test_mop_snapshot_guard.py` is intentionally backend-aware.
 - `d810.hexrays.mop_snapshot.MopSnapshot` can resolve to either:
   - pure Python dataclass implementation, or
   - Cython extension implementation.
@@ -181,7 +181,7 @@ pytest -s tests/system/e2e/test_dump_function_pseudocode.py --unskip-research
 - If you need deterministic pure-Python behavior for debugging this test:
 
 ```bash
-D810_NO_CYTHON=1 PYTHONPATH=src pytest -q tests/unit/test_mop_snapshot_guard.py
+D810_NO_CYTHON=1 PYTHONPATH=src pytest -q tests/system/runtime/hexrays/test_mop_snapshot_guard.py
 ```
 
 ## Operator Complexity Assertions
