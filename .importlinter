@@ -31,12 +31,12 @@ source_modules =
 forbidden_modules =
     d810.optimizers
 ignore_imports =
-    # lattice.py is pure Python (no IDA imports) — legitimate unit test
     tests.unit.optimizers.microcode.flow.constant_prop.test_lattice -> d810.optimizers.microcode.flow.constant_prop.lattice
-    # strategy.py is pure Python (no IDA imports) — legitimate unit test
     tests.unit.optimizers.microcode.flow.flattening.hodur.test_strategy_types -> d810.optimizers.microcode.flow.flattening.hodur.strategy
-    # snapshot.py is pure Python (no IDA imports) — legitimate unit test
     tests.unit.optimizers.microcode.flow.flattening.hodur.test_analysis_snapshot -> d810.optimizers.microcode.flow.flattening.hodur.snapshot
+    tests.unit.optimizers.microcode.flow.flattening.hodur.test_strategies -> d810.optimizers.microcode.flow.flattening.hodur.strategies
+    tests.unit.optimizers.microcode.flow.flattening.hodur.test_strategies -> d810.optimizers.microcode.flow.flattening.hodur.strategy
+    tests.unit.optimizers.microcode.flow.flattening.hodur.test_strategies -> d810.optimizers.microcode.flow.flattening.hodur.snapshot
 [importlinter:contract:layered-architecture]
 name = Layered architecture prevents upward imports
 type = layers
