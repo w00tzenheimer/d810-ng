@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_FALLBACK,
+    OwnershipScope,
     PlanFragment,
 )
 
@@ -57,13 +58,15 @@ class UnflatteningPlanner:
     def find_conflicts(
         self, fragments: list[PlanFragment]
     ) -> list[tuple[str, str, frozenset[int]]]:
-        """Find pairs of fragments with overlapping block ownership."""
+        """Find pairs of fragments with overlapping block, edge, or transition ownership."""
         conflicts = []
         for i, a in enumerate(fragments):
             for b in fragments[i + 1 :]:
-                overlap = a.ownership.overlap_blocks(b.ownership)
-                if overlap:
-                    conflicts.append((a.strategy_name, b.strategy_name, overlap))
+                block_overlap = a.ownership.overlap_blocks(b.ownership)
+                edge_overlap = a.ownership.overlap_edges(b.ownership)
+                trans_overlap = a.ownership.transitions & b.ownership.transitions
+                if block_overlap or edge_overlap or trans_overlap:
+                    conflicts.append((a.strategy_name, b.strategy_name, block_overlap))
         return conflicts
 
     def apply_policy(
@@ -88,16 +91,27 @@ class UnflatteningPlanner:
         fragments: list[PlanFragment],
         conflicts: list[tuple[str, str, frozenset[int]]],
     ) -> list[PlanFragment]:
-        """Resolve ownership conflicts by keeping higher-score fragment."""
-        dropped: set[str] = set()
-        for name_a, name_b, _overlap in conflicts:
-            frag_a = next(f for f in fragments if f.strategy_name == name_a)
-            frag_b = next(f for f in fragments if f.strategy_name == name_b)
-            loser = (
-                name_b
-                if frag_a.expected_benefit.composite_score()
-                >= frag_b.expected_benefit.composite_score()
-                else name_a
-            )
-            dropped.add(loser)
-        return [f for f in fragments if f.strategy_name not in dropped]
+        """Greedy independent set: iterate by score, skip conflicting fragments.
+
+        Fragments are sorted by descending composite score.  Each fragment is
+        accepted only when its ownership scope is fully disjoint from all
+        already-accepted fragments.  This avoids the cascade problem where the
+        naive pairwise approach can drop a high-scoring fragment because it
+        conflicted with a low-scoring one that was itself later dropped.
+        """
+        scored = sorted(
+            fragments,
+            key=lambda f: f.expected_benefit.composite_score(),
+            reverse=True,
+        )
+        accepted: list[PlanFragment] = []
+        claimed = OwnershipScope(
+            blocks=frozenset(),
+            edges=frozenset(),
+            transitions=frozenset(),
+        )
+        for frag in scored:
+            if frag.ownership.is_disjoint(claimed):
+                accepted.append(frag)
+                claimed = claimed.union(frag.ownership)
+        return accepted

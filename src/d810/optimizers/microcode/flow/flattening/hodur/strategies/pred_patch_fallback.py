@@ -96,22 +96,47 @@ class PredPatchFallbackStrategy:
             if cb is not None:
                 check_blocks.add(cb)
 
-        # Propose GOTO_REDIRECT edits for each check block's predecessors.
-        # The actual MopTracker resolution happens at execution time.
+        # Build handler lookup: state_value -> check_block serial.
+        handlers_by_state: dict[int, int] = {}
+        for state_val, handler_obj in handlers.items():
+            cb = getattr(handler_obj, "check_block", None)
+            if cb is not None:
+                handlers_by_state[state_val] = cb
+
+        # Propose GOTO_REDIRECT edits for each transition whose target can be
+        # resolved to a concrete check block.  Edits with target_block=None are
+        # skipped — the executor cannot apply them safely.
         edits: list[ProposedEdit] = []
         owned_blocks: set[int] = set()
+        transitions = getattr(sm, "transitions", []) or []
 
-        for cb_serial in check_blocks:
-            owned_blocks.add(cb_serial)
-            # One placeholder edit per check block indicating it needs
-            # predecessor-based resolution.
+        seen_sources: set[int] = set()
+        for t in transitions:
+            from_block = getattr(t, "from_block", None)
+            to_state = getattr(t, "to_state", None)
+            if from_block is None or to_state is None:
+                continue
+            target_block = handlers_by_state.get(to_state)
+            if target_block is None:
+                logger.debug(
+                    "pred_patch_fallback: no check_block for to_state=0x%x"
+                    " from_block=%d — skipping",
+                    to_state,
+                    from_block,
+                )
+                continue
+            if from_block in seen_sources:
+                continue
+            seen_sources.add(from_block)
+            owned_blocks.add(from_block)
             edits.append(
                 ProposedEdit(
                     edit_type=EditType.GOTO_REDIRECT,
-                    source_block=cb_serial,
-                    target_block=None,
+                    source_block=from_block,
+                    target_block=target_block,
                     metadata={
-                        "role": "pred_patch_check_block",
+                        "role": "pred_patch_redirect",
+                        "to_state": to_state,
                         "strategy": self.name,
                     },
                 )

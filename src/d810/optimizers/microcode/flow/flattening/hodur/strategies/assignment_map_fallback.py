@@ -119,24 +119,35 @@ class AssignmentMapFallbackStrategy:
                     )
                 )
 
-        # Propose GOTO_REDIRECT for blocks in assignment_map that still have
-        # check-block back-edges.
-        check_blocks: set[int] = set()
-        for h in handlers.values():
-            cb = getattr(h, "check_block", None)
+        # Build handler lookup: state_value -> check_block serial (handler ENTRY).
+        handlers_by_state: dict[int, int] = {}
+        for state_val, handler_obj in handlers.items():
+            cb = getattr(handler_obj, "check_block", None)
             if cb is not None:
-                check_blocks.add(cb)
+                handlers_by_state[state_val] = cb
 
-        for src_serial in assignment_map:
+        # Propose GOTO_REDIRECT for blocks in assignment_map that can be resolved
+        # to a concrete target handler entry.  Skip any that cannot be resolved
+        # since target_block=None is unsafe for the executor.
+        for src_serial, assigned_state in assignment_map.items():
+            target_block = handlers_by_state.get(assigned_state)
+            if target_block is None:
+                logger.debug(
+                    "assignment_map_fallback: no handler entry for state=0x%x"
+                    " src_serial=%d — skipping redirect",
+                    assigned_state,
+                    src_serial,
+                )
+                continue
             owned_blocks.add(src_serial)
             edits.append(
                 ProposedEdit(
                     edit_type=EditType.GOTO_REDIRECT,
                     source_block=src_serial,
-                    target_block=None,
+                    target_block=target_block,
                     metadata={
                         "role": "assignment_map_redirect",
-                        "check_blocks": list(check_blocks),
+                        "assigned_state": assigned_state,
                         "strategy": self.name,
                     },
                 )

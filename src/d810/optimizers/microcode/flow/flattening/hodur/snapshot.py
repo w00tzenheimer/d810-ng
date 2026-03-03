@@ -10,6 +10,15 @@ by unit tests without an IDA environment.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
+        HodurStateMachine,
+    )
+    from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
+        HodurStateMachineDetector,
+    )
 
 
 __all__ = [
@@ -41,10 +50,10 @@ class AnalysisSnapshot:
     Passed to every strategy's plan() method as read-only context.
     """
 
-    mba: object  # ida_hexrays.mba_t
-    state_machine: object  # HodurStateMachine
-    detector: object  # HodurStateMachineDetector
-    dispatcher_cache: object | None = None
+    mba: object  # ida_hexrays.mba_t — keep as object (IDA type, not importable in unit tests)
+    state_machine: HodurStateMachine | None = None
+    detector: HodurStateMachineDetector | None = None
+    dispatcher_cache: object | None = None  # keep as object (IDA type)
     bst_result: object | None = None
     bst_dispatcher_serial: int = -1
     handler_graph: dict = field(default_factory=dict)
@@ -57,19 +66,19 @@ class AnalysisSnapshot:
 
     @property
     def state_constants(self) -> set:
-        if self.state_machine and hasattr(self.state_machine, "state_constants"):
+        if self.state_machine is not None:
             return self.state_machine.state_constants
         return set()
 
     @property
     def handler_count(self) -> int:
-        if self.state_machine and hasattr(self.state_machine, "handlers"):
+        if self.state_machine is not None:
             return len(self.state_machine.handlers)
         return 0
 
     @property
     def transition_count(self) -> int:
-        if self.state_machine and hasattr(self.state_machine, "transitions"):
+        if self.state_machine is not None:
             return len(self.state_machine.transitions)
         return 0
 

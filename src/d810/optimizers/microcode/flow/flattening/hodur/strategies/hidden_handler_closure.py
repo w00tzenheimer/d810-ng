@@ -52,22 +52,23 @@ class HiddenHandlerClosureStrategy:
         return FAMILY_DIRECT
 
     def is_applicable(self, snapshot: AnalysisSnapshot) -> bool:
-        """Return True when the snapshot contains a BST result with a default block.
+        """Return True when the snapshot has hidden handler transitions to resolve.
 
         Args:
             snapshot: Immutable analysis snapshot for the current function.
 
         Returns:
-            True if bst_result is present and the BST default region is non-empty.
+            True if the state machine has range handlers (BST default region)
+            that may have unlinearized exit paths.
         """
         if snapshot.bst_result is None:
             return False
         bst = snapshot.bst_result
-        # Applicable whenever there are range handlers (potential hidden handlers)
-        # or when handler_range_map is non-empty.
         handler_range_map = getattr(bst, "handler_range_map", None) or {}
-        handler_state_map = getattr(bst, "handler_state_map", None) or {}
-        return bool(handler_range_map) or bool(handler_state_map)
+        # Also need a state machine with handlers to resolve targets.
+        sm = snapshot.state_machine
+        has_handlers = bool(sm is not None and getattr(sm, "handlers", None))
+        return bool(handler_range_map) and has_handlers
 
     def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
         """Produce a PlanFragment for hidden handler exit redirects.
@@ -94,52 +95,72 @@ class HiddenHandlerClosureStrategy:
         handler_state_map: dict = getattr(bst, "handler_state_map", {}) or {}
         all_known_handlers = set(handler_state_map.keys()) | set(handler_range_map.keys())
 
-        # Build transition and handler lookups from the snapshot state machine.
+        # Build handler lookup: state_value -> check_block serial (ENTRY block).
         sm = snapshot.state_machine
-        state_transitions_map: dict[int, list[int]] = {}
-        if sm is not None and hasattr(sm, "transitions"):
-            for t in sm.transitions:
-                state_transitions_map.setdefault(t.from_state, []).append(t.to_state)
-
         handlers_by_state: dict[int, int] = {}
         if sm is not None and hasattr(sm, "handlers"):
             for state_val, handler_obj in sm.handlers.items():
                 handlers_by_state[state_val] = handler_obj.check_block
 
+        # Build set of states that are range (hidden) handler states.
+        range_states: set = set()
+        for serial, (low, high) in handler_range_map.items():
+            if low is not None:
+                range_states.add(low)
+            if high is not None:
+                range_states.add(high)
+
         edits: list[ProposedEdit] = []
         owned_blocks: set[int] = set()
 
-        # For each range handler — these are the most likely hidden handler candidates.
-        for serial, (low, high) in handler_range_map.items():
-            if serial in bst_node_blocks:
+        # Iterate transitions whose from_state corresponds to a range/hidden handler.
+        # The correct source_block is transition.from_block (the EXIT block where
+        # the state is written), matching the same semantics as direct_linearization.
+        transitions = []
+        if sm is not None and hasattr(sm, "transitions"):
+            transitions = list(sm.transitions)
+
+        seen_sources: set[int] = set()
+        for transition in transitions:
+            from_block = getattr(transition, "from_block", None)
+            from_state = getattr(transition, "from_state", None)
+            to_state = getattr(transition, "to_state", None)
+            if from_block is None or to_state is None:
                 continue
 
-            # Attempt to resolve target_block from transitions for the range state.
-            mid_state = low if low is not None else (high if high is not None else None)
-            target_block: int | None = None
-            if mid_state is not None:
-                to_states = state_transitions_map.get(mid_state, [])
-                if len(to_states) == 1:
-                    target_block = handlers_by_state.get(to_states[0])
+            # Only process transitions that originate from hidden/range handler states.
+            if from_state not in range_states:
+                continue
 
+            # Skip BST internal blocks as redirect sources.
+            if from_block in bst_node_blocks:
+                continue
+
+            target_block: int | None = handlers_by_state.get(to_state)
             if target_block is None:
                 logger.debug(
-                    "hidden_handler_closure: no unique target for serial=%d"
-                    " range=(%s, %s) — skipping",
-                    serial,
-                    hex(low) if low is not None else "None",
-                    hex(high) if high is not None else "None",
+                    "hidden_handler_closure: no handler entry for to_state=0x%x"
+                    " from_block=%d — skipping",
+                    to_state,
+                    from_block,
                 )
                 continue
 
-            owned_blocks.add(serial)
+            # Deduplicate per source block.
+            if from_block in seen_sources:
+                continue
+            seen_sources.add(from_block)
+
+            owned_blocks.add(from_block)
             edits.append(
                 ProposedEdit(
                     edit_type=EditType.GOTO_REDIRECT,
-                    source_block=serial,
+                    source_block=from_block,
                     target_block=target_block,
                     metadata={
-                        "role": "hidden_handler_entry",
+                        "role": "hidden_handler_exit",
+                        "from_state": from_state,
+                        "to_state": to_state,
                         "strategy": self.name,
                     },
                 )

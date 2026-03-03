@@ -115,41 +115,53 @@ class TerminalLoopCleanupStrategy:
                 ):
                     loopback_blocks.add(from_block)
 
+        # Build handler lookup: state_value -> check_block serial (ENTRY block).
+        handlers_by_state: dict[int, int] = {}
+        for state_val, handler_obj in handlers.items():
+            cb = getattr(handler_obj, "check_block", None)
+            if cb is not None:
+                handlers_by_state[state_val] = cb
+
         edits: list[ProposedEdit] = []
         owned_blocks: set[int] = set()
 
-        # Propose GOTO_REDIRECT for each loopback block.
+        # Propose GOTO_REDIRECT for each loopback block, resolving the target
+        # as the initial state's handler entry.  Skip if unresolvable — target_block=None
+        # is unsafe for the executor.
+        initial_target: int | None = None
+        if initial_state is not None:
+            initial_target = handlers_by_state.get(initial_state)
+
         for blk_serial in loopback_blocks:
+            if initial_target is None:
+                logger.debug(
+                    "terminal_loop_cleanup: no handler entry for initial_state=0x%x"
+                    " loopback_block=%d — skipping",
+                    initial_state,
+                    blk_serial,
+                )
+                continue
             owned_blocks.add(blk_serial)
             edits.append(
                 ProposedEdit(
                     edit_type=EditType.GOTO_REDIRECT,
                     source_block=blk_serial,
-                    target_block=None,  # resolved at execution time (terminal exit)
+                    target_block=initial_target,
                     metadata={
                         "role": "loopback_redirect",
+                        "initial_state": initial_state,
                         "strategy": self.name,
-                        "check_blocks": list(check_blocks),
                     },
                 )
             )
 
-        # Propose GOTO_REDIRECT for degenerate self-loop blocks nearby check blocks.
-        # These are nop/goto-only blocks that loop to themselves.
-        # We claim all check blocks as potential degenerate loop sources.
-        for cb_serial in check_blocks:
-            owned_blocks.add(cb_serial)
-            edits.append(
-                ProposedEdit(
-                    edit_type=EditType.GOTO_REDIRECT,
-                    source_block=cb_serial,
-                    target_block=None,
-                    metadata={
-                        "role": "degenerate_loop_candidate",
-                        "strategy": self.name,
-                    },
-                )
-            )
+        # Degenerate self-loop candidates cannot be resolved to a concrete target
+        # at plan time — skip them to avoid target_block=None in executor.
+        logger.debug(
+            "terminal_loop_cleanup: skipping %d degenerate loop candidates"
+            " (target unresolvable at plan time)",
+            len(check_blocks),
+        )
 
         if not edits:
             return None
