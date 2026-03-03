@@ -10,9 +10,14 @@ Corresponds to ``HodurUnflattener._resolve_and_patch`` and
 """
 from __future__ import annotations
 
+import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
+from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
+    HODUR_STATE_CHECK_OPCODES,
+    HodurStateMachineDetector,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_FALLBACK,
     BenefitMetrics,
@@ -21,6 +26,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
     ProposedEdit,
 )
+from d810.tracker.mop_tracker import MopTracker, get_all_possibles_values
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
@@ -150,17 +156,6 @@ class PredPatchFallbackStrategy:
             None when no unresolved predecessors exist.
         """
         if not self.is_applicable(snapshot):
-            return None
-
-        # MopTracker requires IDA runtime — return None in unit-test environments.
-        try:
-            import ida_hexrays
-            from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
-                HODUR_STATE_CHECK_OPCODES,
-                HodurStateMachineDetector,
-            )
-            from d810.tracker.mop_tracker import MopTracker, get_all_possibles_values
-        except ImportError:
             return None
 
         mba = snapshot.mba

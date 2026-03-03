@@ -268,3 +268,50 @@ class UnflatteningStrategy(Protocol):
             the strategy has nothing to contribute.
         """
         ...
+
+
+# ---------------------------------------------------------------------------
+# StageResult
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class StageResult:
+    """Outcome of executing one plan fragment."""
+
+    strategy_name: str
+    edits_applied: int = 0
+    reachability_after: float = 1.0
+    conflict_count_after: int = 0
+    success: bool = True
+    rollback_needed: bool = False
+    error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# VerificationGate
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class VerificationGate:
+    """Post-stage verification thresholds."""
+
+    min_reachability: float = 0.7
+    max_conflict_count: int = 10
+
+    def check(self, result: StageResult) -> bool:
+        """Return True iff the result passes all verification thresholds.
+
+        Args:
+            result: The stage result to check.
+
+        Returns:
+            True when reachability is above the minimum and conflict count is
+            at or below the maximum.
+        """
+        if result.reachability_after < self.min_reachability:
+            return False
+        if result.conflict_count_after > self.max_conflict_count:
+            return False
+        return True

@@ -9,9 +9,22 @@ from __future__ import annotations
 
 from collections import deque
 
+import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
+from d810.hexrays.bst_analysis import (
+    _mop_matches_stkoff,
+    find_bst_default_block,
+    resolve_target_via_bst,
+)
+from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+    collect_state_machine_blocks,
+    evaluate_handler_paths,
+    find_terminal_exit_target,
+    resolve_exit_via_bst_default,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.datamodel import HandlerPathResult
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_DIRECT,
     BenefitMetrics,
@@ -19,6 +32,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     OwnershipScope,
     PlanFragment,
     ProposedEdit,
+)
+from d810.optimizers.microcode.flow.flattening.transition_builder import (
+    _get_state_var_stkoff,
 )
 
 if TYPE_CHECKING:
@@ -88,16 +104,6 @@ class DirectHandlerLinearizationStrategy:
         if not self.is_applicable(snapshot):
             return None
 
-        # ---- Resolve imports (IDA runtime) ----
-        try:
-            import ida_hexrays
-            from d810.hexrays.bst_analysis import _mop_matches_stkoff
-            from d810.optimizers.microcode.flow.flattening.transition_builder import (
-                _get_state_var_stkoff,
-            )
-        except ImportError:
-            return None
-
         mba = snapshot.mba
         bst_result = snapshot.bst_result
         dispatcher_serial: int = snapshot.bst_dispatcher_serial
@@ -124,15 +130,6 @@ class DirectHandlerLinearizationStrategy:
         if state_var_stkoff is None:
             logger.info("Cannot linearize: state_var_stkoff is None")
             return None
-
-        # ---- Import helpers ----
-        from d810.hexrays.bst_analysis import find_bst_default_block, resolve_target_via_bst
-        from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
-            collect_state_machine_blocks,
-            evaluate_handler_paths,
-            find_terminal_exit_target,
-            resolve_exit_via_bst_default,
-        )
 
         bst_node_blocks: set[int] = set(getattr(bst_result, "bst_node_blocks", set()) or set())
         bst_node_blocks.add(dispatcher_serial)
@@ -610,7 +607,6 @@ class DirectHandlerLinearizationStrategy:
                     target,
                 )
 
-                from d810.optimizers.microcode.flow.flattening.hodur.datamodel import HandlerPathResult
                 _synthetic_path = HandlerPathResult(
                     exit_block=serial,
                     final_state=written_state,

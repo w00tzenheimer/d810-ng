@@ -11,9 +11,24 @@ Corresponds to ``HodurUnflattener._resolve_conditional_forks_via_predecessors``,
 """
 from __future__ import annotations
 
+import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
+from d810.hexrays.hexrays_utils import (
+    InstructionDefUseCollector,
+    append_mop_if_not_in_list,
+    get_mop_index,
+    remove_segment_registers,
+)
+from d810.optimizers.microcode.chain_analysis import (
+    MicroCodeEnvironment,
+    MicroCodeInterpreter,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
+    HODUR_STATE_CHECK_OPCODES,
+    HodurStateMachineDetector,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_FALLBACK,
     BenefitMetrics,
@@ -22,6 +37,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
     ProposedEdit,
 )
+from d810.optimizers.microcode.flow.flattening.transition_builder import (
+    _resolve_mop_via_predecessors,
+)
+from d810.hexrays.hexrays_utils import equal_mops_ignore_size
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
@@ -83,11 +102,6 @@ class ConditionalForkFallbackStrategy:
 
         Port of HodurUnflattener._find_conditional_predecessor.
         """
-        try:
-            import ida_hexrays
-        except ImportError:
-            return None
-
         current = start_block
         visited: set[int] = {current}
         max_depth = mba.qty  # Safety bound
@@ -184,17 +198,6 @@ class ConditionalForkFallbackStrategy:
 
         Port of HodurUnflattener._collect_ladder_use_before_def.
         """
-        try:
-            import ida_hexrays
-            from d810.hexrays.hexrays_utils import (
-                InstructionDefUseCollector,
-                append_mop_if_not_in_list,
-                get_mop_index,
-                remove_segment_registers,
-            )
-        except ImportError:
-            return []
-
         use_list: list = []
         def_list: list = []
         use_before_def: list = []
@@ -279,18 +282,6 @@ class ConditionalForkFallbackStrategy:
 
         Port of HodurUnflattener._emulate_chain_exit.
         """
-        try:
-            from d810.hexrays.hexrays_utils import equal_mops_ignore_size
-            from d810.optimizers.microcode.chain_analysis import (
-                MicroCodeEnvironment,
-                MicroCodeInterpreter,
-            )
-            from d810.optimizers.microcode.flow.flattening.transition_builder import (
-                _resolve_mop_via_predecessors,
-            )
-        except ImportError:
-            return None
-
         cur_blk = mba.get_mblock(entry_block_serial)
         if cur_blk is None:
             return None
@@ -367,16 +358,6 @@ class ConditionalForkFallbackStrategy:
             fork, or None when no conditional transitions exist.
         """
         if not self.is_applicable(snapshot):
-            return None
-
-        # IDA-specific imports — return None in unit-test environments.
-        try:
-            import ida_hexrays
-            from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
-                HODUR_STATE_CHECK_OPCODES,
-                HodurStateMachineDetector,
-            )
-        except ImportError:
             return None
 
         mba = snapshot.mba
