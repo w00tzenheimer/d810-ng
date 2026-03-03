@@ -62,6 +62,8 @@ class ProposedEdit:
     target_block: int | None = None
     instruction_ea: int | None = None
     metadata: dict = field(default_factory=dict)  # type: ignore[type-arg]
+    """Mutable metadata dict. Contents can change despite frozen dataclass.
+    Strategies should treat as write-once after construction."""
 
 
 # ---------------------------------------------------------------------------

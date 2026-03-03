@@ -94,6 +94,14 @@ class ConditionalForkFallbackStrategy:
                 continue
             conditional_groups.setdefault(from_block, []).append(t)
 
+        # Build handler lookup: state_value -> check_block serial (ENTRY block).
+        handlers_by_state: dict[int, int] = {}
+        handlers = getattr(sm, "handlers", None) or {}
+        for state_val, handler_obj in handlers.items():
+            cb = getattr(handler_obj, "check_block", None)
+            if cb is not None:
+                handlers_by_state[state_val] = cb
+
         edits: list[ProposedEdit] = []
         owned_blocks: set[int] = set()
         owned_transitions: set[tuple[int, int]] = set()
@@ -103,22 +111,37 @@ class ConditionalForkFallbackStrategy:
             if len(unique_states) != 2:
                 continue
 
-            owned_blocks.add(from_blk_serial)
             state_a, state_b = unique_states[0], unique_states[1]
 
-            edits.append(
-                ProposedEdit(
-                    edit_type=EditType.CONVERT_TO_GOTO,
-                    source_block=from_blk_serial,
-                    target_block=None,
-                    metadata={
-                        "role": "conditional_fork",
-                        "state_a": state_a,
-                        "state_b": state_b,
-                        "strategy": self.name,
-                    },
+            # Emit one GOTO_REDIRECT per arm of the conditional fork, only when
+            # the target can be resolved.  Skip arms with no resolvable target to
+            # avoid passing target_block=None to the executor.
+            for to_state in (state_a, state_b):
+                if to_state is None:
+                    continue
+                target_block = handlers_by_state.get(to_state)
+                if target_block is None:
+                    logger.debug(
+                        "conditional_fork_fallback: no handler entry for"
+                        " to_state=0x%x from_block=%d — skipping arm",
+                        to_state,
+                        from_blk_serial,
+                    )
+                    continue
+                owned_blocks.add(from_blk_serial)
+                edits.append(
+                    ProposedEdit(
+                        edit_type=EditType.GOTO_REDIRECT,
+                        source_block=from_blk_serial,
+                        target_block=target_block,
+                        metadata={
+                            "role": "conditional_fork_arm",
+                            "to_state": to_state,
+                            "strategy": self.name,
+                        },
+                    )
                 )
-            )
+
             # Record transitions as owned.
             for t in group_transitions:
                 from_s = getattr(t, "from_state", None)

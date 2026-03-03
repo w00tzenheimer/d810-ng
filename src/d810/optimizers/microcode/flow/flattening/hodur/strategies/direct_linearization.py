@@ -49,22 +49,21 @@ class DirectHandlerLinearizationStrategy:
         return FAMILY_DIRECT
 
     def is_applicable(self, snapshot: AnalysisSnapshot) -> bool:
-        """Return True when the snapshot contains a usable BST result.
+        """Return True when the snapshot has a state machine with transitions and handlers.
 
         Args:
             snapshot: Immutable analysis snapshot for the current function.
 
         Returns:
-            True if bst_result is populated and at least one handler is known.
+            True if state_machine is populated with transitions and handlers so
+            that from_block -> target handler redirects can be constructed.
         """
-        if snapshot.bst_result is None:
+        sm = snapshot.state_machine
+        if sm is None:
             return False
-        bst = snapshot.bst_result
-        has_handlers = bool(
-            getattr(bst, "handler_state_map", None)
-            or getattr(bst, "handler_range_map", None)
-        )
-        return has_handlers
+        has_transitions = bool(getattr(sm, "transitions", None))
+        has_handlers = bool(getattr(sm, "handlers", None))
+        return has_transitions and has_handlers
 
     def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
         """Produce a PlanFragment with GOTO_REDIRECT edits for all resolvable handlers.
@@ -80,20 +79,9 @@ class DirectHandlerLinearizationStrategy:
             return None
 
         bst = snapshot.bst_result
-        handler_state_map: dict = getattr(bst, "handler_state_map", {}) or {}
-        handler_range_map: dict = getattr(bst, "handler_range_map", {}) or {}
         bst_node_blocks: set = getattr(bst, "bst_node_blocks", set()) or set()
         dispatcher_serial: int = snapshot.bst_dispatcher_serial
         bst_node_blocks = bst_node_blocks | {dispatcher_serial}
-
-        # Collect all handlers (exact + range).
-        all_handlers: dict[int, int] = {}
-        for serial, state in handler_state_map.items():
-            all_handlers[serial] = state
-        for serial, (low, high) in handler_range_map.items():
-            if serial not in all_handlers:
-                mid = low if low is not None else (high if high is not None else 0)
-                all_handlers[serial] = mid
 
         edits: list[ProposedEdit] = []
         owned_blocks: set[int] = set()
@@ -102,49 +90,61 @@ class DirectHandlerLinearizationStrategy:
         handlers_resolved = 0
         transitions_resolved = 0
 
-        # Build a lookup: from_state -> set of to_state values from detected transitions.
+        # Build a lookup: state_value -> check_block serial (handler ENTRY).
         sm = snapshot.state_machine
-        state_transitions_map: dict[int, list[int]] = {}
-        if sm is not None and hasattr(sm, "transitions"):
-            for t in sm.transitions:
-                state_transitions_map.setdefault(t.from_state, []).append(t.to_state)
-
-        # Build a lookup: state_value -> check_block serial.
         handlers_by_state: dict[int, int] = {}
         if sm is not None and hasattr(sm, "handlers"):
             for state_val, handler_obj in sm.handlers.items():
                 handlers_by_state[state_val] = handler_obj.check_block
 
-        for handler_serial, incoming_state in all_handlers.items():
-            if handler_serial in bst_node_blocks:
+        # Iterate detected transitions: source is transition.from_block (EXIT block
+        # where the state variable is written), target is the ENTRY of to_state handler.
+        transitions = []
+        if sm is not None and hasattr(sm, "transitions"):
+            transitions = list(sm.transitions)
+
+        seen_sources: set[int] = set()
+        for transition in transitions:
+            from_block = getattr(transition, "from_block", None)
+            to_state = getattr(transition, "to_state", None)
+            if from_block is None or to_state is None:
                 continue
 
-            # Attempt to resolve target_block from detected transitions.
-            target_block: int | None = None
-            to_states = state_transitions_map.get(incoming_state, [])
-            if len(to_states) == 1:
-                target_block = handlers_by_state.get(to_states[0])
+            # Skip BST internal blocks as redirect sources.
+            if from_block in bst_node_blocks:
+                continue
 
+            target_block: int | None = handlers_by_state.get(to_state)
             if target_block is None:
                 logger.debug(
-                    "direct_linearization: no unique target for handler serial=%d"
-                    " incoming_state=0x%x (to_states=%s) — skipping",
-                    handler_serial,
-                    incoming_state,
-                    to_states,
+                    "direct_linearization: no handler entry for to_state=0x%x"
+                    " from_block=%d — skipping",
+                    to_state,
+                    from_block,
                 )
                 continue
 
-            # Claim ownership of the handler entry block.
-            owned_blocks.add(handler_serial)
+            # Deduplicate: one redirect per from_block (first transition wins).
+            if from_block in seen_sources:
+                logger.debug(
+                    "direct_linearization: duplicate source from_block=%d"
+                    " (already queued) — skipping",
+                    from_block,
+                )
+                continue
+            seen_sources.add(from_block)
+
+            # Claim ownership of the EXIT block (where state write lives).
+            owned_blocks.add(from_block)
 
             edits.append(
                 ProposedEdit(
                     edit_type=EditType.GOTO_REDIRECT,
-                    source_block=handler_serial,
+                    source_block=from_block,
                     target_block=target_block,
                     metadata={
-                        "incoming_state": incoming_state,
+                        "from_state": getattr(transition, "from_state", None),
+                        "to_state": to_state,
                         "bst_dispatcher_serial": dispatcher_serial,
                         "strategy": self.name,
                     },
@@ -153,7 +153,8 @@ class DirectHandlerLinearizationStrategy:
             handlers_resolved += 1
             transitions_resolved += 1
 
-            # Also claim the BST node blocks as "influenced" (not owned exclusively).
+        # Also claim the BST node blocks as "influenced" (not owned exclusively).
+        if edits:
             owned_blocks.update(bst_node_blocks)
 
         # Claim pre-header redirect if available.
