@@ -94,19 +94,50 @@ class HiddenHandlerClosureStrategy:
         handler_state_map: dict = getattr(bst, "handler_state_map", {}) or {}
         all_known_handlers = set(handler_state_map.keys()) | set(handler_range_map.keys())
 
+        # Build transition and handler lookups from the snapshot state machine.
+        sm = snapshot.state_machine
+        state_transitions_map: dict[int, list[int]] = {}
+        if sm is not None and hasattr(sm, "transitions"):
+            for t in sm.transitions:
+                state_transitions_map.setdefault(t.from_state, []).append(t.to_state)
+
+        handlers_by_state: dict[int, int] = {}
+        if sm is not None and hasattr(sm, "handlers"):
+            for state_val, handler_obj in sm.handlers.items():
+                handlers_by_state[state_val] = handler_obj.check_block
+
         edits: list[ProposedEdit] = []
         owned_blocks: set[int] = set()
 
         # For each range handler — these are the most likely hidden handler candidates.
-        for serial in handler_range_map:
+        for serial, (low, high) in handler_range_map.items():
             if serial in bst_node_blocks:
                 continue
+
+            # Attempt to resolve target_block from transitions for the range state.
+            mid_state = low if low is not None else (high if high is not None else None)
+            target_block: int | None = None
+            if mid_state is not None:
+                to_states = state_transitions_map.get(mid_state, [])
+                if len(to_states) == 1:
+                    target_block = handlers_by_state.get(to_states[0])
+
+            if target_block is None:
+                logger.debug(
+                    "hidden_handler_closure: no unique target for serial=%d"
+                    " range=(%s, %s) — skipping",
+                    serial,
+                    hex(low) if low is not None else "None",
+                    hex(high) if high is not None else "None",
+                )
+                continue
+
             owned_blocks.add(serial)
             edits.append(
                 ProposedEdit(
                     edit_type=EditType.GOTO_REDIRECT,
                     source_block=serial,
-                    target_block=None,
+                    target_block=target_block,
                     metadata={
                         "role": "hidden_handler_entry",
                         "strategy": self.name,

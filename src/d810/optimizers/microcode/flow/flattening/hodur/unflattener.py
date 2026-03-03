@@ -448,6 +448,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         claimed_exits: dict[int, int],
         claimed_edges: dict[tuple[int, int], int],
         bst_node_blocks: set[int],
+        deferred: object | None = None,
     ) -> bool:
         """Queue a goto redirect for one handler exit path, using edge-level split on conflict.
 
@@ -476,12 +477,13 @@ class HodurUnflattener(GenericUnflatteningRule):
             except Exception:
                 return -1
 
+        _deferred = deferred if deferred is not None else self.deferred
         self._last_redirect_meta = None
         exit_blk = self.mba.get_mblock(path.exit_block)
 
         # Fast path: exit block not yet claimed by any handler.
         if path.exit_block not in claimed_exits:
-            self.deferred.queue_goto_change(
+            _deferred.queue_goto_change(
                 block_serial=path.exit_block,
                 new_target=target,
                 rule_priority=550,
@@ -612,7 +614,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             path.exit_block, target, claimed_exits[path.exit_block],
             src_block, old_target, target, use_pred,
         )
-        self.deferred.queue_edge_redirect(
+        _deferred.queue_edge_redirect(
             src_block=src_block,
             old_target=old_target,
             new_target=target,
