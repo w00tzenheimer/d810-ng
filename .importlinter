@@ -14,6 +14,8 @@ forbidden_modules =
     d810.hexrays
 ignore_imports =
     tests.unit.test_mop_snapshot_guard -> d810.hexrays.mop_snapshot
+    d810.optimizers.microcode.flow.flattening.hodur.executor -> d810.hexrays.deferred_modifier
+    d810.optimizers.microcode.flow.flattening.hodur.executor -> d810.optimizers.microcode.flow.flattening.safeguards
 
 [importlinter:contract:unit-tests-no-ui]
 name = Unit tests must not import ui modules
@@ -37,6 +39,9 @@ ignore_imports =
     tests.unit.optimizers.microcode.flow.flattening.hodur.test_strategies -> d810.optimizers.microcode.flow.flattening.hodur.strategies
     tests.unit.optimizers.microcode.flow.flattening.hodur.test_strategies -> d810.optimizers.microcode.flow.flattening.hodur.strategy
     tests.unit.optimizers.microcode.flow.flattening.hodur.test_strategies -> d810.optimizers.microcode.flow.flattening.hodur.snapshot
+    tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner -> d810.optimizers.microcode.flow.flattening.hodur.planner
+    tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner -> d810.optimizers.microcode.flow.flattening.hodur.strategy
+    tests.unit.optimizers.microcode.flow.flattening.hodur.test_executor -> d810.optimizers.microcode.flow.flattening.hodur.executor
 [importlinter:contract:layered-architecture]
 name = Layered architecture prevents upward imports
 type = layers

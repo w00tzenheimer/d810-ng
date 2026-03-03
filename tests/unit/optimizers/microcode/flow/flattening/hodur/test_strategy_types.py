@@ -215,6 +215,7 @@ class TestPlanFragment:
     def test_empty_fragment(self) -> None:
         frag = PlanFragment(
             strategy_name="test",
+            family=FAMILY_DIRECT,
             proposed_edits=[],
             ownership=self._empty_scope(),
             prerequisites=[],
@@ -227,6 +228,7 @@ class TestPlanFragment:
         edit = ProposedEdit(edit_type=EditType.GOTO_REDIRECT, source_block=1)
         frag = PlanFragment(
             strategy_name="test",
+            family=FAMILY_DIRECT,
             proposed_edits=[edit],
             ownership=self._empty_scope(),
             prerequisites=[],
@@ -238,6 +240,7 @@ class TestPlanFragment:
     def test_strategy_name_preserved(self) -> None:
         frag = PlanFragment(
             strategy_name="my_strategy",
+            family=FAMILY_FALLBACK,
             proposed_edits=[],
             ownership=self._empty_scope(),
             prerequisites=["dep_a"],

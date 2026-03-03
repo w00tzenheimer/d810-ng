@@ -188,6 +188,8 @@ class PlanFragment:
 
     Args:
         strategy_name: Identifier of the strategy that produced this fragment.
+        family: Strategy family — one of :data:`FAMILY_DIRECT`,
+            :data:`FAMILY_FALLBACK`, or :data:`FAMILY_CLEANUP`.
         proposed_edits: Ordered list of atomic edits to apply.
         ownership: Microcode resources claimed by this plan.
         prerequisites: Names of other strategies whose fragments must be applied
@@ -198,6 +200,7 @@ class PlanFragment:
     """
 
     strategy_name: str
+    family: str
     proposed_edits: list[ProposedEdit]
     ownership: OwnershipScope
     prerequisites: list[str]
