@@ -162,6 +162,7 @@ class DirectHandlerLinearizationStrategy:
         )
         return PlanFragment(
             strategy_name=self.name,
+            family=self.family,
             proposed_edits=edits,
             ownership=ownership,
             prerequisites=[],

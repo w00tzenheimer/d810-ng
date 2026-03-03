@@ -267,6 +267,7 @@ class TestPrerequisites:
         # Construct a plan fragment explicitly to check prerequisites field.
         frag = PlanFragment(
             strategy_name="hidden_handler_closure",
+            family=FAMILY_DIRECT,
             proposed_edits=[],
             ownership=OwnershipScope(
                 blocks=frozenset(), edges=frozenset(), transitions=frozenset()
