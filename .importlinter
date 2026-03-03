@@ -12,10 +12,6 @@ source_modules =
     tests.unit
 forbidden_modules =
     d810.hexrays
-ignore_imports =
-    tests.unit.test_mop_snapshot_guard -> d810.hexrays.mop_snapshot
-    d810.optimizers.microcode.flow.flattening.hodur.executor -> d810.hexrays.deferred_modifier
-    d810.optimizers.microcode.flow.flattening.hodur.executor -> d810.optimizers.microcode.flow.flattening.safeguards
 
 [importlinter:contract:unit-tests-no-ui]
 name = Unit tests must not import ui modules
@@ -36,12 +32,9 @@ ignore_imports =
     tests.unit.optimizers.microcode.flow.constant_prop.test_lattice -> d810.optimizers.microcode.flow.constant_prop.lattice
     tests.unit.optimizers.microcode.flow.flattening.hodur.test_strategy_types -> d810.optimizers.microcode.flow.flattening.hodur.strategy
     tests.unit.optimizers.microcode.flow.flattening.hodur.test_analysis_snapshot -> d810.optimizers.microcode.flow.flattening.hodur.snapshot
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_strategies -> d810.optimizers.microcode.flow.flattening.hodur.strategies
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_strategies -> d810.optimizers.microcode.flow.flattening.hodur.strategy
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_strategies -> d810.optimizers.microcode.flow.flattening.hodur.snapshot
     tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner -> d810.optimizers.microcode.flow.flattening.hodur.planner
     tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner -> d810.optimizers.microcode.flow.flattening.hodur.strategy
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_executor -> d810.optimizers.microcode.flow.flattening.hodur.executor
+    tests.unit.optimizers.microcode.flow.flattening.hodur.test_executor -> d810.optimizers.microcode.flow.flattening.hodur.strategy
 [importlinter:contract:layered-architecture]
 name = Layered architecture prevents upward imports
 type = layers
@@ -51,9 +44,9 @@ layers =
     d810.recon
     d810.hexrays
     d810.mba
-    d810.ctree
-    d810.evaluator
     d810.expr
+    d810.cfg
+    d810.evaluator
     d810.core
     d810.errors
 ignore_imports =
@@ -63,24 +56,9 @@ ignore_imports =
     d810.hexrays.hexrays_hooks -> d810.optimizers.microcode.instructions.handler
     d810.hexrays.hexrays_hooks -> d810.optimizers.microcode.instructions.pattern_matching.experimental
     d810.hexrays.hexrays_hooks -> d810.optimizers.microcode.instructions.egraph.egglog_handler
-    # expr.p_ast uses evaluator for concrete evaluation (bidirectional dependency)
-    d810.expr.p_ast -> d810.evaluator.concrete
     d810.hexrays.ctree_hooks -> d810.optimizers.microcode.handler
     # evaluator uses hexrays mop snapshot (IDA type wrapper)
     d810.evaluator.concrete -> d810.hexrays.mop_snapshot
-    # expr layer depends on hexrays helpers/formatters (hexrays wraps IDA types)
-    d810.expr.p_ast -> d810.hexrays.hexrays_formatters
-    d810.expr.p_ast -> d810.hexrays.hexrays_helpers
-    d810.expr.p_ast -> d810.hexrays.mop_snapshot
-    d810.expr.emulator -> d810.hexrays.cfg_utils
-    d810.expr.emulator -> d810.hexrays.hexrays_formatters
-    d810.expr.emulator -> d810.hexrays.hexrays_helpers
-    d810.expr.emulator -> d810.hexrays.ida_utils
-    d810.expr.utils -> d810.hexrays.hexrays_helpers
-    d810.expr.z3_utils -> d810.hexrays.hexrays_formatters
-    d810.expr.z3_utils -> d810.hexrays.hexrays_helpers
-    d810.expr.z3_utils -> d810.hexrays.mop_snapshot
-    d810.expr.z3_utils -> d810.hexrays.tracker
     # mba IDA backend uses hexrays mop snapshot
     d810.mba.backends.ida -> d810.hexrays.mop_snapshot
 
