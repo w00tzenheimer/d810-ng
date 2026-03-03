@@ -1,10 +1,13 @@
 """DirectHandlerLinearizationStrategy — core BST-based linearization.
 
-Iterates all detected state machine handlers, runs DFS forward evaluation to
-find handler exit paths and their final state values, then proposes
-GOTO_REDIRECT edits that bypass the dispatcher entirely.
+Faithful port of HodurUnflattener._linearize_handlers (first pass only) from
+commit 4313af46.  Iterates all detected state machine handlers, runs DFS forward
+evaluation to find handler exit paths and their final state values, then proposes
+GOTO_REDIRECT / EDGE_REDIRECT / NOP_INSN edits that bypass the dispatcher entirely.
 """
 from __future__ import annotations
+
+from collections import deque
 
 from d810.core.typing import TYPE_CHECKING
 
@@ -29,11 +32,14 @@ __all__ = ["DirectHandlerLinearizationStrategy"]
 
 
 class DirectHandlerLinearizationStrategy:
-    """Propose GOTO_REDIRECT edits for every resolved handler exit path.
+    """Propose GOTO_REDIRECT / EDGE_REDIRECT / NOP_INSN edits for all resolved handler exits.
 
-    Reads the BST analysis result from the snapshot and, for each handler
-    entry, proposes redirects from handler exit blocks to target handler
-    entries.  No CFG mutations are performed — all work is encoded as
+    This is a faithful port of HodurUnflattener._linearize_handlers (first pass only)
+    from commit 4313af46.  It reads the BST analysis result from the snapshot and,
+    for each handler entry, runs DFS forward evaluation, resolves exit states via BST
+    lookup, and proposes redirects from handler exit blocks to target handler entries.
+
+    No CFG mutations are performed — all work is encoded as
     :class:`~d810.optimizers.microcode.flow.flattening.hodur.strategy.ProposedEdit`
     objects inside a :class:`~d810.optimizers.microcode.flow.flattening.hodur.strategy.PlanFragment`.
     """
@@ -49,24 +55,28 @@ class DirectHandlerLinearizationStrategy:
         return FAMILY_DIRECT
 
     def is_applicable(self, snapshot: AnalysisSnapshot) -> bool:
-        """Return True when the snapshot has a state machine with transitions and handlers.
+        """Return True when the snapshot has a BST result with handlers.
 
         Args:
             snapshot: Immutable analysis snapshot for the current function.
 
         Returns:
-            True if state_machine is populated with transitions and handlers so
-            that from_block -> target handler redirects can be constructed.
+            True if bst_result is populated with handler_state_map entries so
+            that direct linearization can be attempted.
         """
-        sm = snapshot.state_machine
-        if sm is None:
+        bst = snapshot.bst_result
+        if bst is None:
             return False
-        has_transitions = bool(getattr(sm, "transitions", None))
-        has_handlers = bool(getattr(sm, "handlers", None))
-        return has_transitions and has_handlers
+        handler_state_map = getattr(bst, "handler_state_map", None) or {}
+        return bool(handler_state_map)
 
     def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
-        """Produce a PlanFragment with GOTO_REDIRECT edits for all resolvable handlers.
+        """Produce a PlanFragment with edits for all resolvable handler exits.
+
+        Faithful port of HodurUnflattener._linearize_handlers (first pass, i.e.
+        main handler loop + BST back-edge pass + pre-header redirect).  The
+        second pass (hidden handler fixpoint closure) is handled by
+        HiddenHandlerClosureStrategy.
 
         Args:
             snapshot: Immutable analysis snapshot for the current function.
@@ -78,107 +88,738 @@ class DirectHandlerLinearizationStrategy:
         if not self.is_applicable(snapshot):
             return None
 
-        bst = snapshot.bst_result
-        bst_node_blocks: set = getattr(bst, "bst_node_blocks", set()) or set()
+        # ---- Resolve imports (IDA runtime) ----
+        try:
+            import ida_hexrays
+            from d810.hexrays.bst_analysis import _mop_matches_stkoff
+            from d810.optimizers.microcode.flow.flattening.transition_builder import (
+                _get_state_var_stkoff,
+            )
+        except ImportError:
+            return None
+
+        mba = snapshot.mba
+        bst_result = snapshot.bst_result
         dispatcher_serial: int = snapshot.bst_dispatcher_serial
-        bst_node_blocks = bst_node_blocks | {dispatcher_serial}
+        state_machine = snapshot.state_machine
+
+        # ---- Resolve state_var_stkoff ----
+        # Port of HodurUnflattener._get_effective_state_var_stkoff from 4313af46.
+        # First try via detector (which wraps the same logic), then fall back to
+        # reading mop_S.s.off directly from the state_machine's state_var mop_t.
+        state_var_stkoff: int | None = None
+        detector = snapshot.detector
+        if detector is not None:
+            try:
+                state_var_stkoff = _get_state_var_stkoff(detector)
+            except Exception:
+                pass
+        if state_var_stkoff is None and state_machine is not None and state_machine.state_var is not None:
+            sv = state_machine.state_var
+            try:
+                if sv.t == ida_hexrays.mop_S:
+                    state_var_stkoff = sv.s.off
+            except Exception:
+                pass
+        if state_var_stkoff is None:
+            logger.info("Cannot linearize: state_var_stkoff is None")
+            return None
+
+        # ---- Import helpers ----
+        from d810.hexrays.bst_analysis import find_bst_default_block, resolve_target_via_bst
+        from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+            collect_state_machine_blocks,
+            evaluate_handler_paths,
+            find_terminal_exit_target,
+            resolve_exit_via_bst_default,
+        )
+
+        bst_node_blocks: set[int] = set(getattr(bst_result, "bst_node_blocks", set()) or set())
+        bst_node_blocks.add(dispatcher_serial)
+        sm_blocks = collect_state_machine_blocks(state_machine)
+
+        # ---- Build all_handlers dict: handler_serial -> incoming_state ----
+        all_handlers: dict[int, int] = {}
+        handler_state_map: dict = getattr(bst_result, "handler_state_map", {}) or {}
+        handler_range_map: dict = getattr(bst_result, "handler_range_map", {}) or {}
+        for serial, state in handler_state_map.items():
+            all_handlers[serial] = state
+        for serial, (low, high) in handler_range_map.items():
+            if serial not in all_handlers:
+                mid = low if low is not None else (high if high is not None else 0)
+                all_handlers[serial] = mid
 
         edits: list[ProposedEdit] = []
         owned_blocks: set[int] = set()
         owned_edges: set[tuple[int, int]] = set()
         owned_transitions: set[tuple[int, int]] = set()
-        handlers_resolved = 0
-        transitions_resolved = 0
 
-        # Build a lookup: state_value -> check_block serial (handler ENTRY).
-        sm = snapshot.state_machine
-        handlers_by_state: dict[int, int] = {}
-        if sm is not None and hasattr(sm, "handlers"):
-            for state_val, handler_obj in sm.handlers.items():
-                handlers_by_state[state_val] = handler_obj.check_block
+        resolved_count = 0
+        claimed_exits: dict[int, int] = {}
+        claimed_edges: dict[tuple[int, int], int] = {}
+        bst_rootwalk_targets: set[int] = set()
 
-        # Iterate detected transitions: source is transition.from_block (EXIT block
-        # where the state variable is written), target is the ENTRY of to_state handler.
-        transitions = []
-        if sm is not None and hasattr(sm, "transitions"):
-            transitions = list(sm.transitions)
+        # Pass-0 redirect ledger (kept in metadata for G2 / diagnostics)
+        pass0_ledger: list[dict] = []
+        linearized_blocks: set[int] = set()
 
-        seen_sources: set[int] = set()
-        for transition in transitions:
-            from_block = getattr(transition, "from_block", None)
-            to_state = getattr(transition, "to_state", None)
-            if from_block is None or to_state is None:
-                continue
+        def _queue_redirect(
+            path: object,
+            target: int,
+            reason: str,
+        ) -> dict | None:
+            """Queue a redirect for one handler exit path.
 
-            # Skip BST internal blocks as redirect sources.
-            if from_block in bst_node_blocks:
-                continue
+            Returns a dict with redirect metadata, or None on failure.
+            This mirrors _queue_handler_redirect from the original, but instead
+            of calling deferred.queue_*, it returns a descriptor that the outer
+            function converts to ProposedEdit objects.
+            """
+            exit_blk = mba.get_mblock(path.exit_block)
 
-            target_block: int | None = handlers_by_state.get(to_state)
-            if target_block is None:
-                logger.debug(
-                    "direct_linearization: no handler entry for to_state=0x%x"
-                    " from_block=%d — skipping",
-                    to_state,
-                    from_block,
+            # Fast path: exit block not yet claimed by any handler.
+            if path.exit_block not in claimed_exits:
+                claimed_exits[path.exit_block] = target
+                logger.info(
+                    "REDIRECT_DECISION: exit_blk=%d target=%d via_pred=None"
+                    " decision=plain reason=%s via_pred_npred=None",
+                    path.exit_block, target, reason,
                 )
-                continue
+                return {
+                    "kind": "plain",
+                    "source_block": path.exit_block,
+                    "via_pred": None,
+                    "target": target,
+                    "old_target": None,
+                }
 
-            # Deduplicate: one redirect per from_block (first transition wins).
-            if from_block in seen_sources:
-                logger.debug(
-                    "direct_linearization: duplicate source from_block=%d"
-                    " (already queued) — skipping",
-                    from_block,
+            # Already claimed for same target — no-op.
+            if claimed_exits[path.exit_block] == target:
+                return {
+                    "kind": "already_claimed",
+                    "source_block": path.exit_block,
+                    "via_pred": None,
+                    "target": target,
+                    "old_target": None,
+                }
+
+            # Conflict: need edge-level redirect.
+            if len(path.ordered_path) >= 2:
+                via_pred = path.ordered_path[-2]
+            else:
+                logger.warning(
+                    "EDGE_REDIRECT: no via_pred for exit blk[%d] -> target %d "
+                    "(ordered_path too short: %s)",
+                    path.exit_block, target, path.ordered_path,
                 )
-                continue
-            seen_sources.add(from_block)
+                return None
 
-            # Claim ownership of the EXIT block (where state write lives).
-            owned_blocks.add(from_block)
+            old_target = 0
+            if exit_blk is not None and exit_blk.nsucc() > 0:
+                old_target = exit_blk.succ(0)
 
-            edits.append(
-                ProposedEdit(
-                    edit_type=EditType.GOTO_REDIRECT,
-                    source_block=from_block,
-                    target_block=target_block,
-                    metadata={
-                        "from_state": getattr(transition, "from_state", None),
-                        "to_state": to_state,
-                        "bst_dispatcher_serial": dispatcher_serial,
-                        "strategy": self.name,
-                    },
+            edge_key = (path.exit_block, via_pred)
+            if edge_key in claimed_edges:
+                if claimed_edges[edge_key] == target:
+                    return {
+                        "kind": "already_claimed_edge",
+                        "source_block": path.exit_block,
+                        "via_pred": via_pred,
+                        "target": target,
+                        "old_target": old_target,
+                    }
+                # Escalate: walk backward through ordered_path to find an unclaimed edge.
+                logger.info(
+                    "EDGE_ESCALATION: edge (%d, %d) claimed for %d, searching earlier segment for target %d",
+                    path.exit_block, via_pred, claimed_edges[edge_key], target,
                 )
+                found_src: int | None = None
+                found_pred: int | None = None
+                for i in range(len(path.ordered_path) - 2, 0, -1):
+                    seg_src = path.ordered_path[i]
+                    seg_pred = path.ordered_path[i - 1]
+                    seg_key = (seg_src, seg_pred)
+                    if seg_key not in claimed_edges and seg_src not in bst_node_blocks:
+                        seg_src_blk = mba.get_mblock(seg_src)
+                        seg_pred_blk = mba.get_mblock(seg_pred)
+                        if seg_src_blk is None or seg_pred_blk is None:
+                            continue
+                        if seg_src_blk.nsucc() != 1:
+                            continue
+                        if seg_pred_blk.nsucc() != 1:
+                            continue
+                        if not any(
+                            seg_pred_blk.succ(j) == seg_src
+                            for j in range(seg_pred_blk.nsucc())
+                        ):
+                            continue
+                        found_src = seg_src
+                        found_pred = seg_pred
+                        break
+                if found_src is None or found_pred is None:
+                    logger.warning(
+                        "EDGE_REDIRECT: all path segments claimed for exit blk[%d] -> target %d, "
+                        "cannot queue redirect",
+                        path.exit_block, target,
+                    )
+                    return None
+                src_block = found_src
+                use_pred = found_pred
+                src_blk = mba.get_mblock(src_block)
+                old_target = src_blk.succ(0) if src_blk is not None and src_blk.nsucc() > 0 else 0
+                logger.info(
+                    "REDIRECT_DECISION: exit_blk=%d target=%d via_pred=%d"
+                    " decision=escalated reason=prior_edge_claimed",
+                    path.exit_block, target, use_pred,
+                )
+            else:
+                src_block = path.exit_block
+                use_pred = via_pred
+                logger.info(
+                    "REDIRECT_DECISION: exit_blk=%d target=%d via_pred=%d"
+                    " decision=edge_split reason=exit_claimed",
+                    path.exit_block, target, use_pred,
+                )
+
+            logger.info(
+                "EDGE_REDIRECT: exit blk[%d] -> target %d conflicts with claimed=%d; "
+                "using edge_redirect(src=%d, old=%d, new=%d, via_pred=%d)",
+                path.exit_block, target, claimed_exits[path.exit_block],
+                src_block, old_target, target, use_pred,
             )
-            handlers_resolved += 1
-            transitions_resolved += 1
+            claimed_edges[(src_block, use_pred)] = target
+            return {
+                "kind": "edge",
+                "source_block": src_block,
+                "via_pred": use_pred,
+                "target": target,
+                "old_target": old_target,
+            }
 
-        # Also claim the BST node blocks as "influenced" (not owned exclusively).
-        if edits:
-            owned_blocks.update(bst_node_blocks)
+        def _emit_redirect(meta: dict, path: object, incoming_state: int, category: str, handler_serial: int) -> bool:
+            """Convert a redirect metadata dict into ProposedEdit(s) and append to edits."""
+            kind = meta["kind"]
+            target = meta["target"]
+            src_block = meta["source_block"]
 
-        # Claim pre-header redirect if available.
-        pre_header: int | None = getattr(bst, "pre_header_serial", None)
-        initial_state: int | None = getattr(sm, "initial_state", None) if sm is not None else None
-        pre_header_target: int | None = None
-        if initial_state is not None:
-            pre_header_target = handlers_by_state.get(initial_state)
-        if pre_header is not None and pre_header != -1 and pre_header_target is not None:
-            owned_blocks.add(pre_header)
-            edits.append(
-                ProposedEdit(
+            if kind in ("already_claimed", "already_claimed_edge"):
+                return True  # Already queued, no new edit needed.
+
+            if kind == "plain":
+                edits.append(ProposedEdit(
                     edit_type=EditType.GOTO_REDIRECT,
-                    source_block=pre_header,
-                    target_block=pre_header_target,
+                    source_block=src_block,
+                    target_block=target,
+                    metadata={
+                        "reason": f"hodur-linear: blk[{handler_serial}] -> blk[{target}]",
+                        "rule_priority": 550,
+                        "strategy": "direct_handler_linearization",
+                    },
+                ))
+                owned_blocks.add(src_block)
+                owned_edges.add((src_block, target))
+                pass0_ledger.append({
+                    "category": category,
+                    "handler_entry": handler_serial,
+                    "incoming_state": incoming_state,
+                    "exit_block": path.exit_block,
+                    "final_state": path.final_state,
+                    "source_block": src_block,
+                    "via_pred": None,
+                    "target_block": target,
+                })
+                return True
+
+            if kind == "edge":
+                via_pred = meta["via_pred"]
+                old_target = meta["old_target"]
+                edits.append(ProposedEdit(
+                    edit_type=EditType.EDGE_REDIRECT,
+                    source_block=src_block,
+                    target_block=target,
+                    metadata={
+                        "old_target": old_target,
+                        "via_pred": via_pred,
+                        "rule_priority": 550,
+                        "description": f"hodur-linear: blk[{handler_serial}] edge redirect -> blk[{target}]",
+                        "strategy": "direct_handler_linearization",
+                    },
+                ))
+                owned_blocks.add(src_block)
+                owned_edges.add((src_block, target))
+                pass0_ledger.append({
+                    "category": category,
+                    "handler_entry": handler_serial,
+                    "incoming_state": incoming_state,
+                    "exit_block": path.exit_block,
+                    "final_state": path.final_state,
+                    "source_block": src_block,
+                    "via_pred": via_pred,
+                    "target_block": target,
+                })
+                return True
+
+            return False
+
+        # ---- Main handler loop ----
+        for handler_serial, incoming_state in all_handlers.items():
+            if handler_serial in bst_node_blocks:
+                continue
+
+            paths = evaluate_handler_paths(
+                mba=mba,
+                entry_serial=handler_serial,
+                incoming_state=incoming_state,
+                bst_node_blocks=bst_node_blocks,
+                state_var_stkoff=state_var_stkoff,
+            )
+
+            if not paths:
+                logger.debug(
+                    "Handler blk[%d] (state 0x%x): no exit paths found, deferring to legacy",
+                    handler_serial,
+                    incoming_state,
+                )
+                continue
+
+            linearized_blocks.add(handler_serial)
+
+            for path in paths:
+                if path.final_state is None:
+                    # Terminal path — handler already exits naturally.
+                    logger.info(
+                        "Handler blk[%d] (state=0x%x): terminal exit via blk[%d]",
+                        handler_serial,
+                        incoming_state,
+                        path.exit_block,
+                    )
+                    resolved_count += 1
+                    continue
+
+                target_serial = resolve_target_via_bst(bst_result, path.final_state)
+
+                if target_serial is None:
+                    # No handler matches this state value — it's an exit transition.
+                    bst_default = find_bst_default_block(
+                        mba,
+                        dispatcher_serial,
+                        bst_result.bst_node_blocks,
+                        set(handler_state_map.keys()),
+                    )
+                    exit_target: int | None = None
+                    resolve_label: str = ""
+                    if bst_default is not None and path.final_state is not None:
+                        exit_target = resolve_exit_via_bst_default(
+                            mba, bst_default, path.final_state
+                        )
+                        if exit_target is not None:
+                            resolve_label = f"BST default blk[{bst_default}]"
+                    if exit_target is None and path.final_state is not None:
+                        exit_target = resolve_exit_via_bst_default(
+                            mba, dispatcher_serial, path.final_state
+                        )
+                        if exit_target is not None:
+                            resolve_label = "BST root-walk"
+                            bst_rootwalk_targets.add(exit_target)
+                        if exit_target is not None and exit_target in bst_node_blocks:
+                            logger.info(
+                                "hodur-linear: handler %d exit state 0x%x resolved to BST internal node blk[%d], skipping",
+                                handler_serial,
+                                path.final_state,
+                                exit_target,
+                            )
+                            exit_target = None
+
+                    if exit_target is not None:
+                        _reason = (
+                            f"hodur-linear: blk[{handler_serial}] "
+                            f"exit 0x{path.final_state:x} -> {resolve_label} -> blk[{exit_target}]"
+                        )
+                        meta = _queue_redirect(path, exit_target, _reason)
+                        if meta is not None and meta["kind"] not in ("already_claimed", "already_claimed_edge"):
+                            ok = _emit_redirect(meta, path, incoming_state, "exit_resolved", handler_serial)
+                            if ok:
+                                linearized_blocks.add(path.exit_block)
+                                # NOP dead state writes in exit path
+                                for write_blk, write_ea in path.state_writes:
+                                    edits.append(ProposedEdit(
+                                        edit_type=EditType.NOP_INSN,
+                                        source_block=write_blk,
+                                        instruction_ea=write_ea,
+                                        metadata={
+                                            "reason": f"hodur-linear: dead state write (exit) in blk[{write_blk}]",
+                                            "strategy": "direct_handler_linearization",
+                                        },
+                                    ))
+                                # NOP dead state_var writes in the resolved exit target block.
+                                exit_blk = mba.get_mblock(exit_target)
+                                if exit_blk is not None and exit_target not in bst_node_blocks:
+                                    scan_insn = exit_blk.head
+                                    while scan_insn is not None:
+                                        if (
+                                            scan_insn.opcode == ida_hexrays.m_mov
+                                            and scan_insn.d is not None
+                                            and _mop_matches_stkoff(
+                                                scan_insn.d,
+                                                state_var_stkoff,
+                                                mba=mba,
+                                            )
+                                        ):
+                                            logger.info(
+                                                "  NOP dead state_var write in exit target"
+                                                " blk[%d] ea=%#x",
+                                                exit_target,
+                                                scan_insn.ea,
+                                            )
+                                            edits.append(ProposedEdit(
+                                                edit_type=EditType.NOP_INSN,
+                                                source_block=exit_target,
+                                                instruction_ea=scan_insn.ea,
+                                                metadata={
+                                                    "reason": f"hodur-linear: dead state write (exit target) in blk[{exit_target}]",
+                                                    "strategy": "direct_handler_linearization",
+                                                },
+                                            ))
+                                        scan_insn = scan_insn.next
+                                resolved_count += 1
+                                owned_transitions.add((incoming_state, path.final_state))
+                        elif meta is not None and meta["kind"] in ("already_claimed", "already_claimed_edge"):
+                            pass  # already counted
+                        else:
+                            pass  # conflict, skip
+                        continue
+
+                    # Fallback: redirect to bst_default directly (or terminal exit)
+                    if bst_default is None:
+                        bst_default = find_terminal_exit_target(
+                            mba, dispatcher_serial, sm_blocks
+                        )
+                    if bst_default is not None:
+                        _reason = (
+                            f"hodur-linear: blk[{handler_serial}] "
+                            f"exit state 0x{path.final_state:x} -> bst_default blk[{bst_default}]"
+                        )
+                        meta = _queue_redirect(path, bst_default, _reason)
+                        if meta is not None and meta["kind"] not in ("already_claimed", "already_claimed_edge"):
+                            ok = _emit_redirect(meta, path, incoming_state, "exit_bst_default", handler_serial)
+                            if ok:
+                                linearized_blocks.add(path.exit_block)
+                                # Keep state variable live for exit paths (no NOP).
+                                resolved_count += 1
+                                owned_transitions.add((incoming_state, path.final_state))
+                    else:
+                        logger.debug(
+                            "Handler blk[%d]: exit state 0x%x -> no bst_default found, leaving intact",
+                            handler_serial,
+                            path.final_state,
+                        )
+                    continue
+
+                # Normal state transition to another handler
+                is_self_loop = target_serial == handler_serial
+                _reason = (
+                    f"hodur-linear: blk[{handler_serial}] "
+                    f"0x{incoming_state:x}->0x{path.final_state:x} "
+                    f"{'(loop)' if is_self_loop else ''}"
+                )
+                meta = _queue_redirect(path, target_serial, _reason)
+                if meta is not None and meta["kind"] not in ("already_claimed", "already_claimed_edge"):
+                    ok = _emit_redirect(meta, path, incoming_state, "state_transition", handler_serial)
+                    if ok:
+                        linearized_blocks.add(path.exit_block)
+                        # NOP dead state writes (skip multi-pred blocks)
+                        for write_blk, write_ea in path.state_writes:
+                            write_blk_obj = mba.get_mblock(write_blk)
+                            if write_blk_obj is not None and write_blk_obj.npred() > 1:
+                                continue
+                            edits.append(ProposedEdit(
+                                edit_type=EditType.NOP_INSN,
+                                source_block=write_blk,
+                                instruction_ea=write_ea,
+                                metadata={
+                                    "reason": f"hodur-linear: dead state write in blk[{write_blk}]",
+                                    "strategy": "direct_handler_linearization",
+                                },
+                            ))
+                        resolved_count += 1
+                        owned_transitions.add((incoming_state, path.final_state))
+
+        # ---- BST default back-edge pass ----
+        bst_default_for_backedge = find_bst_default_block(
+            mba,
+            dispatcher_serial,
+            bst_result.bst_node_blocks,
+            set(handler_state_map.keys()),
+        )
+        if bst_default_for_backedge is not None:
+            bst_default_region: set[int] = set()
+            bde_queue: list[int] = [bst_default_for_backedge]
+            handler_serials_set = set(handler_state_map.keys())
+            while bde_queue:
+                serial = bde_queue.pop()
+                if (
+                    serial in bst_default_region
+                    or serial in bst_node_blocks
+                    or serial == dispatcher_serial
+                ):
+                    continue
+                if serial in handler_serials_set:
+                    continue
+                bst_default_region.add(serial)
+                blk = mba.get_mblock(serial)
+                if blk is None:
+                    continue
+                for i in range(blk.nsucc()):
+                    bde_queue.append(blk.succ(i))
+
+            for serial in bst_default_region:
+                blk = mba.get_mblock(serial)
+                if blk is None:
+                    continue
+                backedge_succs = [
+                    blk.succ(i) for i in range(blk.nsucc())
+                    if blk.succ(i) in bst_node_blocks
+                ]
+                if not backedge_succs:
+                    continue
+
+                insn = blk.head
+                written_state = None
+                state_write_ea = None
+                while insn is not None:
+                    if insn.opcode == ida_hexrays.m_mov and insn.d is not None:
+                        if _mop_matches_stkoff(insn.d, state_var_stkoff, mba=mba):
+                            if insn.l is not None and insn.l.t == ida_hexrays.mop_n:
+                                written_state = int(insn.l.nnn.value)
+                                state_write_ea = insn.ea
+                    insn = insn.next
+
+                if written_state is None:
+                    continue
+
+                target = resolve_exit_via_bst_default(
+                    mba, bst_default_for_backedge, written_state
+                )
+                if target is None:
+                    continue
+
+                logger.info(
+                    "  BST default back-edge: blk[%d] state %#x -> resolved blk[%d]",
+                    serial,
+                    written_state,
+                    target,
+                )
+
+                from d810.optimizers.microcode.flow.flattening.hodur.datamodel import HandlerPathResult
+                _synthetic_path = HandlerPathResult(
+                    exit_block=serial,
+                    final_state=written_state,
+                    state_writes=[],
+                    ordered_path=[serial],
+                )
+                _reason = (
+                    f"hodur-linear: BST default blk[{serial}] {written_state:#x}->blk[{target}]"
+                )
+                meta = _queue_redirect(_synthetic_path, target, _reason)
+                if meta is not None and meta["kind"] not in ("already_claimed", "already_claimed_edge"):
+                    ok = _emit_redirect(meta, _synthetic_path, written_state, "bst_default_backedge", serial)
+                    if ok:
+                        if state_write_ea is not None:
+                            edits.append(ProposedEdit(
+                                edit_type=EditType.NOP_INSN,
+                                source_block=serial,
+                                instruction_ea=state_write_ea,
+                                metadata={
+                                    "reason": f"hodur-linear: dead state write (BST default) in blk[{serial}]",
+                                    "strategy": "direct_handler_linearization",
+                                },
+                            ))
+                        target_blk = mba.get_mblock(target)
+                        if target_blk is not None and target not in bst_node_blocks:
+                            scan_insn = target_blk.head
+                            while scan_insn is not None:
+                                if (
+                                    scan_insn.opcode == ida_hexrays.m_mov
+                                    and scan_insn.d is not None
+                                    and _mop_matches_stkoff(
+                                        scan_insn.d, state_var_stkoff, mba=mba
+                                    )
+                                ):
+                                    edits.append(ProposedEdit(
+                                        edit_type=EditType.NOP_INSN,
+                                        source_block=target,
+                                        instruction_ea=scan_insn.ea,
+                                        metadata={
+                                            "reason": f"hodur-linear: dead state write (BST default target) in blk[{target}]",
+                                            "strategy": "direct_handler_linearization",
+                                        },
+                                    ))
+                                scan_insn = scan_insn.next
+                        resolved_count += 1
+
+        # ---- PASS 2: Hidden handler fixpoint closure ----
+        # Iterate bst_rootwalk_targets collected during pass 1.
+        # For each hidden handler entry, run DFS forward eval, resolve exits,
+        # and emit redirects.  Continue until no new hidden handlers are found
+        # (fixpoint convergence).
+        hidden_worklist: deque[int] = deque(bst_rootwalk_targets)
+        hidden_seen: set[int] = set(bst_rootwalk_targets)
+        hidden_processed: set[int] = set()
+        hidden_redirects_seen: set[tuple[int, int, int, int]] = set()
+
+        while hidden_worklist:
+            rootwalk_blk = hidden_worklist.popleft()
+            if rootwalk_blk in hidden_processed:
+                continue
+            hidden_processed.add(rootwalk_blk)
+            if rootwalk_blk in bst_node_blocks:
+                continue  # Skip actual BST comparison nodes
+            try:
+                hidden_paths = evaluate_handler_paths(
+                    mba=mba,
+                    entry_serial=rootwalk_blk,
+                    incoming_state=0,
+                    bst_node_blocks=bst_node_blocks,
+                    state_var_stkoff=state_var_stkoff,
+                )
+            except Exception:
+                continue
+
+            for path in hidden_paths:
+                if path.final_state is None:
+                    continue  # Terminal path, no redirect needed
+
+                # Try exact BST resolution first
+                target = resolve_target_via_bst(bst_result, path.final_state)
+                if target is None:
+                    # Try BST root-walk
+                    target = resolve_exit_via_bst_default(
+                        mba, dispatcher_serial, path.final_state
+                    )
+                    # Chain detection diagnostic
+                    if (
+                        target is not None
+                        and target not in bst_node_blocks
+                        and target not in all_handlers
+                    ):
+                        logger.info(
+                            "Chain candidate: hidden blk[%d] exit -> blk[%d] "
+                            "(not a known handler, potential chained hidden handler)",
+                            rootwalk_blk,
+                            target,
+                        )
+                if target is None:
+                    continue
+                if target in bst_node_blocks:
+                    continue  # Don't redirect to BST internal nodes
+                if target == path.exit_block:
+                    logger.info(
+                        "hodur-linear: hidden-handler blk[%d] exit_blk=%d resolved to itself, skipping",
+                        rootwalk_blk,
+                        path.exit_block,
+                    )
+                    continue
+
+                if target not in all_handlers and target not in hidden_seen:
+                    hidden_seen.add(target)
+                    hidden_worklist.append(target)
+                    logger.info(
+                        "Queued chained hidden handler: blk[%d] from hidden blk[%d] state=0x%x",
+                        target,
+                        rootwalk_blk,
+                        path.final_state,
+                    )
+
+                hidden_key = (rootwalk_blk, path.exit_block, path.final_state, target)
+                if hidden_key in hidden_redirects_seen:
+                    logger.info(
+                        "hodur-linear: hidden-handler duplicate redirect skipped "
+                        "blk[%d] exit_blk=%d state=0x%x target=%d",
+                        rootwalk_blk,
+                        path.exit_block,
+                        path.final_state,
+                        target,
+                    )
+                    continue
+                hidden_redirects_seen.add(hidden_key)
+
+                _reason = (
+                    f"hodur-linear: hidden-handler blk[{rootwalk_blk}]"
+                    f" exit 0x{path.final_state:x} -> blk[{target}]"
+                )
+                meta = _queue_redirect(path, target, _reason)
+                if meta is not None and meta["kind"] not in ("already_claimed", "already_claimed_edge"):
+                    ok = _emit_redirect(meta, path, 0, "hidden_handler", rootwalk_blk)
+                    if ok:
+                        linearized_blocks.add(path.exit_block)
+                        logger.info(
+                            "hodur-linear: hidden-handler blk[%d] exit_blk=%d -> target blk[%d] (state 0x%x)",
+                            rootwalk_blk,
+                            path.exit_block,
+                            target,
+                            path.final_state,
+                        )
+                        for write_blk, write_ea in path.state_writes:
+                            write_blk_obj = mba.get_mblock(write_blk)
+                            if write_blk_obj is not None and write_blk_obj.npred() > 1:
+                                continue  # Skip NOP on shared multi-pred blocks
+                            edits.append(ProposedEdit(
+                                edit_type=EditType.NOP_INSN,
+                                source_block=write_blk,
+                                instruction_ea=write_ea,
+                                metadata={
+                                    "reason": (
+                                        f"hodur-linear: dead state write"
+                                        f" (hidden-handler blk[{rootwalk_blk}]) in blk[{write_blk}]"
+                                    ),
+                                    "strategy": "direct_handler_linearization",
+                                },
+                            ))
+                        resolved_count += 1
+
+        # ---- Pre-header redirect ----
+        initial_state = getattr(bst_result, "initial_state", None)
+        pre_header_serial = getattr(bst_result, "pre_header_serial", None)
+        if initial_state is not None and pre_header_serial is not None:
+            initial_handler = resolve_target_via_bst(bst_result, initial_state)
+            if initial_handler is not None:
+                _reason = "hodur-linear: pre-header -> initial handler"
+                edits.append(ProposedEdit(
+                    edit_type=EditType.GOTO_REDIRECT,
+                    source_block=pre_header_serial,
+                    target_block=initial_handler,
                     metadata={
                         "role": "pre_header",
-                        "strategy": self.name,
+                        "reason": _reason,
+                        "rule_priority": 550,
+                        "strategy": "direct_handler_linearization",
                     },
-                )
-            )
+                ))
+                owned_blocks.add(pre_header_serial)
+                owned_edges.add((pre_header_serial, initial_handler))
+                pass0_ledger.append({
+                    "category": "preheader",
+                    "handler_entry": pre_header_serial,
+                    "incoming_state": initial_state,
+                    "exit_block": pre_header_serial,
+                    "final_state": initial_state,
+                    "source_block": pre_header_serial,
+                    "via_pred": None,
+                    "target_block": initial_handler,
+                })
+                resolved_count += 1
+
+        logger.info(
+            "Hodur direct linearization: %d transitions resolved for %d handlers",
+            resolved_count,
+            len(all_handlers),
+        )
 
         if not edits:
             return None
+
+        # Claim BST node blocks as influenced.
+        owned_blocks.update(bst_node_blocks)
 
         ownership = OwnershipScope(
             blocks=frozenset(owned_blocks),
@@ -186,8 +827,8 @@ class DirectHandlerLinearizationStrategy:
             transitions=frozenset(owned_transitions),
         )
         benefit = BenefitMetrics(
-            handlers_resolved=handlers_resolved,
-            transitions_resolved=transitions_resolved,
+            handlers_resolved=len(all_handlers),
+            transitions_resolved=resolved_count,
             blocks_freed=len(bst_node_blocks),
             conflict_density=0.0,
         )
@@ -199,4 +840,13 @@ class DirectHandlerLinearizationStrategy:
             prerequisites=[],
             expected_benefit=benefit,
             risk_score=0.1,
+            # Store ledger and bookkeeping for diagnostics.
+            # hidden_processed: set of hidden handler serials processed in Pass 2.
+            metadata={
+                "pass0_redirect_ledger": pass0_ledger,
+                "linearized_blocks": linearized_blocks,
+                "bst_rootwalk_targets": bst_rootwalk_targets,
+                "hidden_processed": hidden_processed,
+                "resolved_transitions": set(owned_transitions),
+            },
         )

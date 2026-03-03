@@ -38,6 +38,7 @@ class EditType(Enum):
     NOP_INSN = auto()
     BLOCK_DUPLICATE = auto()
     CONDITIONAL_REDIRECT = auto()
+    EDGE_REDIRECT = auto()  # Clone src block; redirect one predecessor to clone
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +209,8 @@ class PlanFragment:
     prerequisites: list[str]
     expected_benefit: BenefitMetrics
     risk_score: float
+    metadata: dict = field(default_factory=dict)  # type: ignore[type-arg]
+    """Arbitrary strategy-specific metadata (e.g. pass0 ledger, bookkeeping for G2)."""
 
     def is_empty(self) -> bool:
         """Return True when this fragment proposes no edits.

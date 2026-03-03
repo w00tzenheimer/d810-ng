@@ -34,16 +34,19 @@ __all__ = ["AssignmentMapFallbackStrategy"]
 
 
 class AssignmentMapFallbackStrategy:
-    """Propose NOP_INSN edits for dead state variable assignments.
+    """Propose NOP_INSN and GOTO_REDIRECT edits via assignment_map lookup.
 
-    After direct linearization has bypassed the dispatcher, the ``mov
-    STATE_CONSTANT, state_var`` instructions in handler blocks become dead
-    code.  This strategy finds those assignments and proposes NOP_INSN edits
-    to remove them, allowing IDA's dead-code elimination to clean up the
-    dispatcher blocks.
+    Part 1 (``_queue_state_assignment_removals``): NOPs dead state variable
+    writes in handler blocks.  Iterates all handler body blocks, finds
+    ``m_mov`` of a state constant to the state variable, and emits NOP_INSN
+    edits.
 
-    It also proposes GOTO_REDIRECT edits for any remaining predecessor edges
-    to dispatcher check blocks that can be resolved via ``assignment_map``.
+    Part 2 (``_resolve_remaining_via_assignment_map``): For unresolved handler
+    exits that still target dispatcher check blocks, uses ``assignment_map`` to
+    determine the target state, resolves to a handler entry, and emits
+    GOTO_REDIRECT edits.  2-way exit blocks outside the state machine region
+    are handled via BLOCK_DUPLICATE (not yet implemented in the executor — the
+    edit is emitted as a warning placeholder).
 
     Prerequisites: ``direct_handler_linearization`` must have run first.
     """
@@ -87,71 +90,59 @@ class AssignmentMapFallbackStrategy:
         if not self.is_applicable(snapshot):
             return None
 
+        # Resolve IDA runtime imports
+        try:
+            import ida_hexrays
+        except ImportError:
+            return None
+
+        from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+            collect_state_machine_blocks,
+            find_terminal_exit_target,
+        )
+
+        mba = snapshot.mba
         sm = snapshot.state_machine
         handlers = getattr(sm, "handlers", {}) or {}
         state_constants: set = getattr(sm, "state_constants", set()) or set()
         assignment_map: dict = getattr(sm, "assignment_map", {}) or {}
+        state_var = getattr(sm, "state_var", None)
+        detector = snapshot.detector
 
-        if not handlers:
+        if not handlers or state_var is None:
             return None
 
         edits: list[ProposedEdit] = []
         owned_blocks: set[int] = set()
 
-        # Propose NOP_INSN edits for all handler body blocks that contain
-        # state constant assignments.  The actual instruction EA is resolved
-        # at execution time; here we just claim the blocks.
-        for handler in handlers.values():
-            handler_blocks = getattr(handler, "handler_blocks", []) or []
-            for blk_serial in handler_blocks:
-                owned_blocks.add(blk_serial)
-                # One placeholder NOP_INSN per handler block.
-                edits.append(
-                    ProposedEdit(
-                        edit_type=EditType.NOP_INSN,
-                        source_block=blk_serial,
-                        target_block=None,
-                        metadata={
-                            "role": "dead_state_assignment",
-                            "strategy": self.name,
-                            "state_constants": list(state_constants)[:8],
-                        },
-                    )
-                )
+        state_machine_blocks = collect_state_machine_blocks(sm)
 
-        # Build handler lookup: state_value -> check_block serial (handler ENTRY).
-        handlers_by_state: dict[int, int] = {}
-        for state_val, handler_obj in handlers.items():
-            cb = getattr(handler_obj, "check_block", None)
-            if cb is not None:
-                handlers_by_state[state_val] = cb
+        # --- Part 1: NOP dead state variable assignments ---
+        self._queue_state_assignment_removals(
+            mba=mba,
+            sm=sm,
+            handlers=handlers,
+            state_constants=state_constants,
+            state_var=state_var,
+            ida_hexrays=ida_hexrays,
+            edits=edits,
+            owned_blocks=owned_blocks,
+        )
 
-        # Propose GOTO_REDIRECT for blocks in assignment_map that can be resolved
-        # to a concrete target handler entry.  Skip any that cannot be resolved
-        # since target_block=None is unsafe for the executor.
-        for src_serial, assigned_state in assignment_map.items():
-            target_block = handlers_by_state.get(assigned_state)
-            if target_block is None:
-                logger.debug(
-                    "assignment_map_fallback: no handler entry for state=0x%x"
-                    " src_serial=%d — skipping redirect",
-                    assigned_state,
-                    src_serial,
-                )
-                continue
-            owned_blocks.add(src_serial)
-            edits.append(
-                ProposedEdit(
-                    edit_type=EditType.GOTO_REDIRECT,
-                    source_block=src_serial,
-                    target_block=target_block,
-                    metadata={
-                        "role": "assignment_map_redirect",
-                        "assigned_state": assigned_state,
-                        "strategy": self.name,
-                    },
-                )
-            )
+        # --- Part 2: resolve remaining back-edges via assignment_map ---
+        self._resolve_remaining_via_assignment_map(
+            mba=mba,
+            sm=sm,
+            handlers=handlers,
+            assignment_map=assignment_map,
+            state_var=state_var,
+            state_machine_blocks=state_machine_blocks,
+            find_terminal_exit_target=find_terminal_exit_target,
+            detector=detector,
+            ida_hexrays=ida_hexrays,
+            edits=edits,
+            owned_blocks=owned_blocks,
+        )
 
         if not edits:
             return None
@@ -176,3 +167,396 @@ class AssignmentMapFallbackStrategy:
             expected_benefit=benefit,
             risk_score=0.25,
         )
+
+    # -------------------------------------------------------------------------
+    # Private helpers — ported from HodurUnflattener
+    # -------------------------------------------------------------------------
+
+    def _find_state_write_in_block(
+        self,
+        blk: object,
+        state_var: object,
+        state_constants: set,
+        ida_hexrays: object,
+    ) -> list[tuple[int, int]]:
+        """Scan block instructions for m_mov of state constant to state_var.
+
+        Args:
+            blk: Live mblock_t.
+            state_var: mop_t for the state variable.
+            state_constants: Set of known state constant values.
+            ida_hexrays: The ida_hexrays module (IDA runtime).
+
+        Returns:
+            List of (block_serial, insn_ea) tuples for matching instructions.
+        """
+        results: list[tuple[int, int]] = []
+        insn = blk.head
+        while insn:
+            if (
+                insn.opcode == ida_hexrays.m_mov
+                and insn.l is not None
+                and insn.l.t == ida_hexrays.mop_n
+                and insn.l.nnn.value in state_constants
+                and insn.d is not None
+                and insn.d.t == state_var.t
+                and insn.d.size == state_var.size
+            ):
+                results.append((blk.serial, insn.ea))
+            insn = insn.next
+        return results
+
+    def _extract_assigned_state_from_block(
+        self,
+        blk_serial: int,
+        assignment_map: dict,
+        state_var: object,
+    ) -> int | None:
+        """Extract the constant state assigned in a block via assignment_map.
+
+        ``assignment_map`` is ``dict[int, list[minsn_t]]`` — values are lists
+        of live microcode instructions, not scalar state values.  Iterate the
+        list and return the first ``m_mov`` whose left operand is a numeric
+        constant.
+
+        Args:
+            blk_serial: Block serial number.
+            assignment_map: Mapping of block serial -> list of minsn_t.
+            state_var: mop_t for the state variable (used for size masking).
+
+        Returns:
+            The assigned state constant value, or None if not found.
+        """
+        insns = assignment_map.get(blk_serial)
+        if not insns:
+            return None
+
+        try:
+            import ida_hexrays
+        except ImportError:
+            return None
+
+        size = getattr(state_var, "size", 4)
+        if size not in (1, 2, 4, 8):
+            size = 4
+        mask = (1 << (size * 8)) - 1
+
+        for insn in insns:
+            if insn.opcode == ida_hexrays.m_mov and insn.l is not None and insn.l.t == ida_hexrays.mop_n:
+                return int(insn.l.nnn.value) & mask
+
+        return None
+
+    def _queue_state_assignment_removals(
+        self,
+        mba: object,
+        sm: object,
+        handlers: dict,
+        state_constants: set,
+        state_var: object,
+        ida_hexrays: object,
+        edits: list,
+        owned_blocks: set[int],
+    ) -> None:
+        """NOP dead state variable writes in handler blocks.
+
+        Faithful port of HodurUnflattener._queue_state_assignment_removals
+        (the NOP-state-assignment inner loop only — the terminal back-edge fix
+        is handled by TerminalLoopCleanupStrategy in the refactored pipeline).
+        """
+        if sm is None or state_var is None:
+            return
+
+        initial_state = getattr(sm, "initial_state", None)
+        if initial_state is None:
+            return
+
+        # NOP state variable assignments in handler body blocks.
+        for handler in handlers.values():
+            for blk_serial in handler.handler_blocks:
+                if blk_serial >= mba.qty:
+                    continue
+                blk = mba.get_mblock(blk_serial)
+                if blk is None:
+                    continue
+                insn = blk.head
+                while insn:
+                    if (
+                        insn.opcode == ida_hexrays.m_mov
+                        and insn.l is not None
+                        and insn.l.t == ida_hexrays.mop_n
+                        and insn.l.nnn.value in state_constants
+                        and insn.d is not None
+                        and insn.d.t == state_var.t
+                        and insn.d.size == state_var.size
+                    ):
+                        logger.info(
+                            "NOPed state assignment in block %d (ea=0x%x)",
+                            blk_serial,
+                            insn.ea,
+                        )
+                        edits.append(ProposedEdit(
+                            edit_type=EditType.NOP_INSN,
+                            source_block=blk_serial,
+                            instruction_ea=insn.ea,
+                            metadata={
+                                "reason": (
+                                    f"hodur-assignment-map: dead state write"
+                                    f" in blk[{blk_serial}]"
+                                ),
+                                "strategy": self.name,
+                            },
+                        ))
+                        owned_blocks.add(blk_serial)
+                    insn = insn.next
+
+    def _resolve_remaining_via_assignment_map(
+        self,
+        mba: object,
+        sm: object,
+        handlers: dict,
+        assignment_map: dict,
+        state_var: object,
+        state_machine_blocks: set[int],
+        find_terminal_exit_target: object,
+        detector: object,
+        ida_hexrays: object,
+        edits: list,
+        owned_blocks: set[int],
+    ) -> None:
+        """Resolve remaining dispatcher back-edges using assignment_map lookup.
+
+        Faithful port of HodurUnflattener._resolve_remaining_via_assignment_map.
+
+        For unresolved handler exits that still target dispatcher check blocks,
+        use assignment_map to directly resolve and redirect them, bypassing
+        MopTracker backward tracing which fails on modified CFG.
+
+        Note: BLOCK_DUPLICATE edits for 2-way exit blocks are emitted but are
+        not yet fully implemented in the executor — they will be logged as
+        warnings.
+        """
+        if not assignment_map:
+            return
+
+        check_blocks = {h.check_block for h in handlers.values()}
+
+        # Collect predecessors of ALL check blocks.
+        preds_to_check: set[tuple[int, int]] = set()
+        for cb_serial in check_blocks:
+            cb_blk = mba.get_mblock(cb_serial)
+            if cb_blk is None:
+                continue
+            for pred_serial in cb_blk.predset:
+                if pred_serial not in check_blocks:
+                    preds_to_check.add((pred_serial, cb_serial))
+
+        for pred_serial, dispatcher_target in preds_to_check:
+            pred_blk = mba.get_mblock(pred_serial)
+            if pred_blk is None:
+                continue
+
+            # Handle 2-way exit blocks ONLY outside the state machine region.
+            if pred_blk.nsucc() == 2:
+                if pred_serial not in state_machine_blocks:
+                    # Find the non-check-block successor (the forward path).
+                    forward_succs = [
+                        s for s in pred_blk.succset if s not in check_blocks
+                    ]
+                    if forward_succs:
+                        forward_target = forward_succs[0]
+                        # Emit BLOCK_DUPLICATE as a placeholder (not yet
+                        # implemented in executor, will log a warning).
+                        edits.append(ProposedEdit(
+                            edit_type=EditType.BLOCK_DUPLICATE,
+                            source_block=pred_serial,
+                            target_block=forward_target,
+                            metadata={
+                                "reason": (
+                                    f"assignment-map resolver: converted 2-way exit"
+                                    f" blk[{pred_serial}] to goto blk[{forward_target}]"
+                                ),
+                                "strategy": self.name,
+                            },
+                        ))
+                        owned_blocks.add(pred_serial)
+                        logger.info(
+                            "Assignment-map resolver: converted 2-way exit blk[%d] "
+                            "to goto blk[%d]",
+                            pred_serial,
+                            forward_target,
+                        )
+                continue
+
+            # Only handle 1-way blocks (goto blocks).
+            if pred_blk.nsucc() != 1:
+                continue
+
+            # Try to find state assignment in this block via assignment_map.
+            target_state = self._extract_assigned_state_from_block(
+                pred_serial, assignment_map, state_var
+            )
+
+            # If not found directly, walk backward along single-pred chains.
+            if target_state is None:
+                walk_serial = pred_serial
+                for _ in range(5):  # max backward walk depth
+                    walk_blk = mba.get_mblock(walk_serial)
+                    if walk_blk is None or walk_blk.npred() != 1:
+                        break
+                    walk_serial = list(walk_blk.predset)[0]
+                    target_state = self._extract_assigned_state_from_block(
+                        walk_serial, assignment_map, state_var
+                    )
+                    if target_state is not None:
+                        break
+
+            # Also try detector-level extraction if available.
+            if target_state is None and detector is not None:
+                try:
+                    target_state = detector._extract_assigned_state_from_block(
+                        pred_serial, assignment_map, state_var
+                    )
+                except Exception:
+                    pass
+
+            if target_state is None:
+                continue
+
+            # Terminal states (no handler) should exit the state machine.
+            if target_state not in sm.handlers:
+                first_ck = min(check_blocks) if check_blocks else None
+                exit_tgt = (
+                    find_terminal_exit_target(mba, first_ck, state_machine_blocks)
+                    if first_ck is not None
+                    else None
+                )
+                if exit_tgt is not None:
+                    edits.append(ProposedEdit(
+                        edit_type=EditType.GOTO_REDIRECT,
+                        source_block=pred_serial,
+                        target_block=exit_tgt,
+                        metadata={
+                            "reason": (
+                                f"assignment-map resolver: terminal state 0x{target_state:x}"
+                                f" blk[{pred_serial}] -> exit blk[{exit_tgt}]"
+                            ),
+                            "strategy": self.name,
+                        },
+                    ))
+                    owned_blocks.add(pred_serial)
+                    logger.info(
+                        "Assignment-map resolver: terminal state 0x%x "
+                        "blk[%d] -> exit blk[%d]",
+                        target_state,
+                        pred_serial,
+                        exit_tgt,
+                    )
+                continue
+
+            # Find the handler entry for the target state.
+            handler_entry = self._resolve_handler_entry(
+                dispatcher_target, target_state, handlers, mba
+            )
+            if handler_entry is None:
+                continue
+
+            edits.append(ProposedEdit(
+                edit_type=EditType.GOTO_REDIRECT,
+                source_block=pred_serial,
+                target_block=handler_entry,
+                metadata={
+                    "reason": (
+                        f"assignment-map resolver: block {pred_serial}"
+                        f" (state 0x{target_state:x}) -> handler block {handler_entry}"
+                        f" (via check block {dispatcher_target})"
+                    ),
+                    "strategy": self.name,
+                },
+            ))
+            owned_blocks.add(pred_serial)
+            logger.info(
+                "Assignment-map resolver: block %d (state 0x%x) -> handler block %d"
+                " (via check block %d)",
+                pred_serial,
+                target_state,
+                handler_entry,
+                dispatcher_target,
+            )
+
+    def _resolve_handler_entry(
+        self,
+        dispatcher_target: int,
+        target_state: int,
+        handlers: dict,
+        mba: object,
+    ) -> int | None:
+        """Find the handler entry block for the given target state.
+
+        Port of HodurUnflattener._resolve_conditional_chain_target: walks the
+        BST conditional-check chain starting from ``dispatcher_target``,
+        evaluating each comparison against ``target_state``, until it reaches a
+        leaf block that is not a state-check node.  That leaf is the handler
+        entry block.
+
+        Args:
+            dispatcher_target: Check block serial that the predecessor currently
+                targets (start of BST walk).
+            target_state: Concrete state value to resolve.
+            handlers: Mapping of state value -> handler object (unused here,
+                kept for context).
+            mba: Live mba_t needed to fetch mblock_t objects.
+
+        Returns:
+            Handler entry block serial (leaf after BST traversal), or None if
+            the chain cannot be resolved.
+        """
+        try:
+            import ida_hexrays
+        except ImportError:
+            return None
+
+        from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
+            HODUR_STATE_CHECK_OPCODES,
+            HodurStateMachineDetector,
+        )
+
+        visited: set[int] = set()
+        current = dispatcher_target
+
+        for _ in range(mba.qty):
+            if current in visited:
+                return None
+            visited.add(current)
+
+            blk = mba.get_mblock(current)
+            if blk is None:
+                return None
+            if blk.tail is None or blk.tail.opcode not in HODUR_STATE_CHECK_OPCODES:
+                return current
+
+            check_info = HodurStateMachineDetector._extract_check_constant_and_opcode(
+                blk.tail
+            )
+            if check_info is None:
+                return current
+
+            check_opcode, check_const, check_size = check_info
+            jump_target, fallthrough = (
+                HodurStateMachineDetector._get_jump_and_fallthrough_targets(blk)
+            )
+            if jump_target is None or fallthrough is None:
+                return None
+
+            jump_taken = HodurStateMachineDetector._is_jump_taken_for_state(
+                check_opcode,
+                int(target_state),
+                check_const,
+                check_size,
+            )
+            if jump_taken is None:
+                return None
+
+            current = jump_target if jump_taken else fallthrough
+
+        return None
