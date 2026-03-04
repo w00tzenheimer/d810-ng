@@ -15,7 +15,7 @@ from __future__ import annotations
 import ida_hexrays
 
 from d810.core import logging
-from d810.hexrays.hexrays_formatters import format_mop_t
+from d810.hexrays.utils.hexrays_formatters import format_mop_t
 from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
     DispatcherCache,
 )
@@ -299,7 +299,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             entry_serial = list(state_machine.handlers.values())[0].check_block
             bst_stkoff = self._get_effective_state_var_stkoff(state_machine)
             try:
-                from d810.hexrays.bst_analysis import analyze_bst_dispatcher
+                from d810.recon.flow.bst_analysis import analyze_bst_dispatcher
 
                 raw_bst = analyze_bst_dispatcher(
                     mba,

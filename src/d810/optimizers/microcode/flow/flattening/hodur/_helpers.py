@@ -11,12 +11,12 @@ from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
 
-from d810.hexrays.bst_analysis import (
+from d810.hexrays.utils.bst_analysis import (
     _forward_eval_insn,
     _mop_matches_stkoff,
     find_bst_default_block,
-    resolve_target_via_bst,
 )
+from d810.recon.flow.bst_model import resolve_target_via_bst
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import HandlerPathResult
 
 if TYPE_CHECKING:
