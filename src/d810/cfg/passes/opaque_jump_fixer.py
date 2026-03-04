@@ -1,7 +1,7 @@
-"""CFGPass that fixes opaque predicates by converting conditionals to unconditional gotos.
+"""FlowGraphTransform that fixes opaque predicates by converting conditionals to unconditional gotos.
 
 This pass migrates the CFG-level jump fixing logic from JumpFixer
-(src/d810/optimizers/microcode/flow/jumps/handler.py) into the CFGPass framework.
+(src/d810/optimizers/microcode/flow/jumps/handler.py) into the FlowGraphTransform framework.
 
 The individual rules (JnzRule1-8, JbRule1, etc.) are instruction-level pattern
 matchers that identify opaque predicates. Those stay as InstructionOptimizationRule.
@@ -11,7 +11,7 @@ blocks to 1-way unconditional gotos when the condition is provably opaque.
 Two modes:
 1. **Pre-computed fixes**: Pass a dict mapping block_serial -> correct_target_serial.
    The pass emits ConvertToGoto for each entry.
-2. **Structural detection** (future): Detect constant-foldable conditions on PortableCFG.
+2. **Structural detection** (future): Detect constant-foldable conditions on FlowGraph.
 
 Example:
     >>> # Pre-computed mode: rule analysis determined block 10 should goto 20
@@ -27,12 +27,12 @@ Example:
 """
 from __future__ import annotations
 
-from d810.cfg.passes._base import CFGPass
+from d810.cfg.passes._base import FlowGraphTransform
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification
 from d810.cfg.flowgraph import FlowGraph
 
 
-class OpaqueJumpFixerPass(CFGPass):
+class OpaqueJumpFixerPass(FlowGraphTransform):
     """Convert 2-way blocks with opaque predicates to 1-way unconditional gotos.
 
     This pass applies pre-computed opaque predicate fixes (determined by
@@ -105,7 +105,7 @@ class OpaqueJumpFixerPass(CFGPass):
         """Analyze CFG and return ConvertToGoto for opaque conditional jumps.
 
         Args:
-            cfg: Portable CFG snapshot to analyze.
+            cfg: FlowGraph snapshot to analyze.
 
         Returns:
             List of ConvertToGoto modifications for blocks where:
@@ -146,7 +146,7 @@ class OpaqueJumpFixerPass(CFGPass):
         """Check if this pass should run on the given CFG.
 
         Args:
-            cfg: Portable CFG snapshot to check.
+            cfg: FlowGraph snapshot to check.
 
         Returns:
             True if there are any pre-computed fixes, False otherwise.

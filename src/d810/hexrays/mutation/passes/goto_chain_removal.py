@@ -1,10 +1,10 @@
-"""CFGPass that collapses chains of goto-only blocks.
+"""FlowGraphTransform that collapses chains of goto-only blocks.
 
 This pass identifies 1-way blocks that contain only a goto instruction
 (no meaningful computation) and redirects their predecessors to bypass
 the intermediate goto block, directly targeting the goto's destination.
 
-This is the CFGPass equivalent of mba_remove_simple_goto_blocks() from
+This is the FlowGraphTransform equivalent of mba_remove_simple_goto_blocks() from
 cfg_mutations.py.
 
 Example:
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import ida_hexrays
 
-from d810.cfg.passes._base import CFGPass
+from d810.cfg.passes._base import FlowGraphTransform
 from d810.cfg.graph_modification import GraphModification, RedirectBranch, RedirectGoto
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 
@@ -60,7 +60,7 @@ def _is_simple_goto_block(blk: BlockSnapshot, cfg: FlowGraph) -> bool:
 
     Args:
         blk: BlockSnapshot to test.
-        cfg: Containing PortableCFG (used to validate successor exists).
+        cfg: Containing FlowGraph (used to validate successor exists).
 
     Returns:
         True if blk is a simple goto block, False otherwise.
@@ -88,7 +88,7 @@ def _is_simple_goto_block(blk: BlockSnapshot, cfg: FlowGraph) -> bool:
     return True
 
 
-class GotoChainRemovalPass(CFGPass):
+class GotoChainRemovalPass(FlowGraphTransform):
     """Collapse goto-only blocks by redirecting their predecessors.
 
     This pass finds 1-way blocks that contain exactly one m_goto instruction
@@ -157,7 +157,7 @@ class GotoChainRemovalPass(CFGPass):
         - Uses the mop_b operand's block_num as new_target (not just succs[0]).
 
         Args:
-            cfg: Portable CFG snapshot to analyze.
+            cfg: FlowGraph snapshot to analyze.
 
         Returns:
             List of RedirectGoto / RedirectBranch modifications. Empty list if

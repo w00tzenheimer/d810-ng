@@ -205,7 +205,7 @@ class TestBlockSnapshot:
 
 
 class TestPortableCFG:
-    """Test PortableCFG creation, properties, and topology queries."""
+    """Test FlowGraph creation, properties, and topology queries."""
 
     def test_empty_cfg(self) -> None:
         """Test creation of empty CFG (edge case)."""
@@ -318,7 +318,7 @@ class TestPortableCFG:
         assert "0xdeadbeef" in r
 
     def test_immutability(self) -> None:
-        """Test that PortableCFG is frozen (immutable)."""
+        """Test that FlowGraph is frozen (immutable)."""
         cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000)
         with pytest.raises(Exception):
             cfg.entry_serial = 99  # type: ignore
@@ -367,20 +367,20 @@ class TestPortableCFG:
         assert cfg1 != cfg3
 
     def test_blocks_immutable(self) -> None:
-        """PortableCFG.blocks should not allow mutation after construction."""
+        """FlowGraph.blocks should not allow mutation after construction."""
         blk = BlockSnapshot(serial=0, block_type=2, succs=(), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
         cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         with pytest.raises(TypeError):
             cfg.blocks[99] = blk  # type: ignore
 
     def test_metadata_immutable(self) -> None:
-        """PortableCFG.metadata should not allow mutation after construction."""
+        """FlowGraph.metadata should not allow mutation after construction."""
         cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000, metadata={"key": "value"})
         with pytest.raises(TypeError):
             cfg.metadata["new_key"] = "new_value"  # type: ignore
 
     def test_not_hashable(self) -> None:
-        """PortableCFG with MappingProxyType is not hashable (values may be mutable)."""
+        """FlowGraph with MappingProxyType is not hashable (values may be mutable)."""
         cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000)
         with pytest.raises(TypeError):
             hash(cfg)

@@ -1,7 +1,7 @@
-"""CFGPass that merges artificially split basic blocks.
+"""FlowGraphTransform that merges artificially split basic blocks.
 
 This pass migrates the functionality of BlockMerger from
-optimizers/microcode/flow/block_merge.py into the CFGPass/PassPipeline framework.
+optimizers/microcode/flow/block_merge.py into the FlowGraphTransform/PassPipeline framework.
 
 When a block B has a single successor S, and S has a single predecessor B,
 the trailing goto in B is redundant. This pass signals to NOP that goto so
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import ida_hexrays
 
-from d810.cfg.passes._base import CFGPass
+from d810.cfg.passes._base import FlowGraphTransform
 from d810.cfg.graph_modification import GraphModification, NopInstructions
 from d810.cfg.flowgraph import FlowGraph
 
@@ -34,7 +34,7 @@ _M_GOTO_OPCODE = ida_hexrays.m_goto
 _MOP_B_TYPE = ida_hexrays.mop_b
 
 
-class BlockMergePass(CFGPass):
+class BlockMergePass(FlowGraphTransform):
     """Merge artificially split basic blocks by NOPing redundant gotos.
 
     This pass detects block pairs where:
@@ -48,7 +48,7 @@ class BlockMergePass(CFGPass):
     When detected, the trailing goto in B is NOPed via NopInstructions,
     signaling to IDA's optimizer that the blocks can be merged.
 
-    This is the CFGPass equivalent of the existing BlockMerger rule in
+    This is the FlowGraphTransform equivalent of the existing BlockMerger rule in
     optimizers/microcode/flow/block_merge.py.
 
     Attributes:
@@ -90,7 +90,7 @@ class BlockMergePass(CFGPass):
         """Analyze CFG and return NopInstructions for mergeable block pairs.
 
         Args:
-            cfg: Portable CFG snapshot to analyze.
+            cfg: FlowGraph snapshot to analyze.
 
         Returns:
             List of NopInstructions modifications for blocks where:

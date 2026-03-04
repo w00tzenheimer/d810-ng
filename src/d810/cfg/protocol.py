@@ -1,7 +1,7 @@
 """Protocol for CFG backends that can lift, lower, and verify modifications.
 
 CFGBackend defines the interface between backend-agnostic passes (operating
-on PortableCFG) and concrete backend implementations (IDA mba_t, in-memory
+on FlowGraph) and concrete backend implementations (IDA mba_t, in-memory
 graphs, etc.).
 
 Example:
@@ -22,16 +22,17 @@ from d810.cfg.graph_modification import GraphModification
 
 @runtime_checkable
 class IRTranslator(Protocol):
-    """Protocol for CFG backends that can lift, lower, and verify modifications.
+    """Protocol for intermediate representation translators that can lift,
+    lower, and verify modifications.
 
-    A CFGBackend provides three core operations:
-        - lift: Convert backend-specific state to PortableCFG
-        - lower: Apply GraphModifications to backend state
-        - verify: Check backend state consistency after modifications
+    An IRTranslator provides three core operations:
+        - lift: Convert ir-specific state to FlowGraph
+        - lower: Apply GraphModifications to ir state
+        - verify: Check ir state consistency after modifications
 
-    Backends are responsible for:
-        - Translating backend state to/from portable IR
-        - Applying modification intents to mutable backend state
+    IRTranslators are responsible for:
+        - Translating IR state to/from portable IR
+        - Applying modification intents to mutable IR state
         - Validating state consistency (e.g., no dangling edges)
 
     The Protocol is runtime_checkable, so you can use isinstance() to verify
@@ -54,13 +55,13 @@ class IRTranslator(Protocol):
         ...
 
     def lift(self, state: Any) -> FlowGraph:
-        """Convert backend-specific state to PortableCFG.
+        """Convert backend-specific state to FlowGraph.
 
         Args:
             state: Backend-specific mutable state (e.g., mba_t, networkx graph).
 
         Returns:
-            Portable CFG snapshot capturing current state topology.
+            FlowGraph snapshot capturing current state topology.
 
         Example:
             >>> cfg = backend.lift(mba)

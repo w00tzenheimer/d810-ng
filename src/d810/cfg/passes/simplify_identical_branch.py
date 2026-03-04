@@ -1,7 +1,7 @@
-"""CFGPass that simplifies 2-way blocks with identical branch targets to 1-way gotos.
+"""FlowGraphTransform that simplifies 2-way blocks with identical branch targets to 1-way gotos.
 
 This pass migrates the functionality of make_2way_block_goto() from cfg_mutations.py
-into the CFGPass/PassPipeline framework. When a conditional branch has identical
+into the FlowGraphTransform/PassPipeline framework. When a conditional branch has identical
 true/false targets, the condition is dead and can be replaced with an unconditional goto.
 
 Example:
@@ -10,18 +10,18 @@ Example:
 """
 from __future__ import annotations
 
-from d810.cfg.passes._base import CFGPass
+from d810.cfg.passes._base import FlowGraphTransform
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification
 from d810.cfg.flowgraph import FlowGraph
 
 
-class SimplifyIdenticalBranchPass(CFGPass):
+class SimplifyIdenticalBranchPass(FlowGraphTransform):
     """Convert 2-way blocks where both successors are the same to 1-way goto.
 
     When a conditional branch has identical true/false targets, the condition
     is dead and can be replaced with an unconditional goto.
 
-    This is the CFGPass equivalent of the existing make_2way_block_goto()
+    This is the FlowGraphTransform equivalent of the existing make_2way_block_goto()
     function in cfg_mutations.py.
 
     Attributes:
@@ -52,7 +52,7 @@ class SimplifyIdenticalBranchPass(CFGPass):
         """Analyze CFG and return ConvertToGoto for 2-way blocks with identical targets.
 
         Args:
-            cfg: Portable CFG snapshot to analyze.
+            cfg: FlowGraph snapshot to analyze.
 
         Returns:
             List of ConvertToGoto modifications for blocks where:

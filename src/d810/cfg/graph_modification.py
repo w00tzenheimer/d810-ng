@@ -37,7 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from d810.core.typing import Union
 
-# Import InsnSnapshot from Phase 3 (portable CFG layer)
+# Import InsnSnapshot from Phase 3 (FlowGraph layer)
 from d810.cfg.flowgraph import InsnSnapshot
 
 

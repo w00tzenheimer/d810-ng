@@ -1,6 +1,6 @@
 """Tests for GotoChainRemovalPass.
 
-This module tests the CFGPass that collapses chains of goto-only blocks.
+This module tests the FlowGraphTransform that collapses chains of goto-only blocks.
 Tests cover:
 - Detection of goto-only blocks (exactly 1 m_goto instruction with mop_b operand)
 - RedirectGoto emission for 1-way predecessors

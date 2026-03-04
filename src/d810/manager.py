@@ -613,7 +613,7 @@ class D810Manager:
         self.hx_decompiler_hook.hook()
 
     def _build_pass_pipeline(self):
-        """Construct a PassPipeline with the 2 safe cleanup CFGPasses for MMAT_GLBOPT2.
+        """Construct a PassPipeline with the 2 safe cleanup FlowGraphTransformes for MMAT_GLBOPT2.
 
         Only called when config["enable_pass_pipeline"] is True. Imports are
         deferred here so that pass modules are never loaded when the flag is

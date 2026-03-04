@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.passes._base import CFGPass
+from d810.cfg.passes._base import FlowGraphTransform
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification, RedirectGoto
 from d810.cfg.pipeline import PassPipeline
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
@@ -81,7 +81,7 @@ class MutatingBackend(InMemoryBackend):
 # ============================================================================
 
 
-class NoOpPass(CFGPass):
+class NoOpPass(FlowGraphTransform):
     """Pass that does nothing (returns empty modification list)."""
     name = "noop"
 
@@ -90,7 +90,7 @@ class NoOpPass(CFGPass):
         return []
 
 
-class SingleModPass(CFGPass):
+class SingleModPass(FlowGraphTransform):
     """Pass that returns one ConvertToGoto modification."""
     name = "single_mod"
 
@@ -99,7 +99,7 @@ class SingleModPass(CFGPass):
         return [ConvertToGoto(block_serial=1, goto_target=0)]
 
 
-class DoubleModPass(CFGPass):
+class DoubleModPass(FlowGraphTransform):
     """Pass that returns two modifications."""
     name = "double_mod"
 
@@ -111,7 +111,7 @@ class DoubleModPass(CFGPass):
         ]
 
 
-class ConditionalPass(CFGPass):
+class ConditionalPass(FlowGraphTransform):
     """Pass that only applies to CFGs with >2 blocks."""
     name = "conditional"
 
@@ -124,7 +124,7 @@ class ConditionalPass(CFGPass):
         return [ConvertToGoto(block_serial=1, goto_target=0)]
 
 
-class CountingPass(CFGPass):
+class CountingPass(FlowGraphTransform):
     """Pass that returns modifications equal to number of blocks in CFG."""
     name = "counting"
 

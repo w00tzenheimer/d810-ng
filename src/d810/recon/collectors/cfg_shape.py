@@ -1,9 +1,9 @@
 """CFGShapeCollector - microcode CFG topology metrics.
 
-Operates on either a live ``mba_t`` (at IDA runtime) or a ``PortableCFG``
+Operates on either a live ``mba_t`` (at IDA runtime) or a ``FlowGraph``
 snapshot (for unit tests). Distinguishes the two by duck-typing: if the
 target has a ``blocks`` attribute that maps serials to ``BlockSnapshot``,
-it is treated as a ``PortableCFG``; otherwise it is treated as an ``mba_t``.
+it is treated as a ``FlowGraph``; otherwise it is treated as an ``mba_t``.
 
 Maturities fired: MMAT_CALLS (3), MMAT_PREOPTIMIZED (5).
 """
@@ -23,7 +23,7 @@ _HIGH_INDEGREE_THRESHOLD = 3
 
 
 def _collect_from_portable_cfg(target) -> tuple[set[int], dict[int, tuple[int, ...]], dict[int, set[int]]]:
-    """Extract nodes/succs/preds from a PortableCFG snapshot."""
+    """Extract nodes/succs/preds from a FlowGraph snapshot."""
     nodes: set[int] = set(target.blocks.keys())
     succs: dict[int, tuple[int, ...]] = {}
     preds: dict[int, set[int]] = {}
@@ -139,7 +139,7 @@ class CFGShapeCollector:
     Candidates flagged:
         - ``"high_indegree_block"`` when ``max_in_degree >= 3``
 
-    Accepts both ``PortableCFG`` (unit tests) and live ``mba_t`` (IDA runtime).
+    Accepts both ``FlowGraph`` (unit tests) and live ``mba_t`` (IDA runtime).
     """
 
     name: str = "CFGShapeCollector"
@@ -149,7 +149,7 @@ class CFGShapeCollector:
     def collect(self, target, func_ea: int, maturity: int) -> ReconResult:
         """Collect CFG shape metrics.
 
-        :param target: ``PortableCFG`` or live ``mba_t``.
+        :param target: ``FlowGraph`` or live ``mba_t``.
         :param func_ea: Function effective address.
         :param maturity: Current maturity level.
         :return: Frozen ``ReconResult`` with CFG shape metrics.

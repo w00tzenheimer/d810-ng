@@ -1,6 +1,6 @@
 """Tests for DeadBlockEliminationPass.
 
-This module tests the CFGPass that eliminates unreachable (dead) blocks
+This module tests the FlowGraphTransform that eliminates unreachable (dead) blocks
 from the CFG. Tests cover:
 - Detection of dead blocks via reachability analysis
 - NopInstructions emission for dead blocks
@@ -293,7 +293,7 @@ class TestDeadBlockEliminationPass:
         """Last dummy/sentinel block (highest serial) is never removed even if unreachable.
 
         IDA's MBA has a sentinel block at serial mba.qty-1 that must never
-        be removed. In PortableCFG we protect max(cfg.blocks.keys()).
+        be removed. In FlowGraph we protect max(cfg.blocks.keys()).
         """
         # Create CFG: 0 -> 1, dead block 2, sentinel block 3 (highest serial)
         blk0 = BlockSnapshot(

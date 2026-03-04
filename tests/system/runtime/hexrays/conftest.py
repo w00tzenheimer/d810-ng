@@ -13,7 +13,7 @@ from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 
 
 class InMemoryBackend:
-    """Mock backend operating on synthetic PortableCFG for pass tests."""
+    """Mock backend operating on synthetic FlowGraph for pass tests."""
 
     def __init__(self, blocks: dict[int, BlockSnapshot] | None = None):
         self.blocks = blocks or {}

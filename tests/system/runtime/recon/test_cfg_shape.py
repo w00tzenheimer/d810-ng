@@ -1,4 +1,4 @@
-"""Unit tests for CFGShapeCollector using PortableCFG (no IDA dependency)."""
+"""Unit tests for CFGShapeCollector using FlowGraph (no IDA dependency)."""
 from __future__ import annotations
 import pytest
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
@@ -104,7 +104,7 @@ class TestCFGShapeCollector:
             result.func_ea = 0  # type: ignore[misc]
 
     def test_collect_accepts_portable_cfg(self):
-        """CFGShapeCollector.collect() must work on PortableCFG (no IDA needed)."""
+        """CFGShapeCollector.collect() must work on FlowGraph (no IDA needed)."""
         cfg = _make_linear_cfg(10)
         # Should not raise
         result = CFGShapeCollector().collect(cfg, func_ea=0x401000, maturity=5)

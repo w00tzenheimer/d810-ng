@@ -1,4 +1,4 @@
-"""CFGPass that eliminates unreachable (dead) blocks from the CFG.
+"""FlowGraphTransform that eliminates unreachable (dead) blocks from the CFG.
 
 This pass identifies blocks that are unreachable from the entry block via
 standard control flow (following successor edges). For each dead block,
@@ -12,12 +12,12 @@ Example:
 """
 from __future__ import annotations
 
-from d810.cfg.passes._base import CFGPass
+from d810.cfg.passes._base import FlowGraphTransform
 from d810.cfg.graph_modification import GraphModification, NopInstructions
 from d810.cfg.flowgraph import FlowGraph
 
 
-class DeadBlockEliminationPass(CFGPass):
+class DeadBlockEliminationPass(FlowGraphTransform):
     """Eliminate unreachable blocks by NOPing their instructions.
 
     This pass performs a reachability analysis from the entry block,
@@ -71,7 +71,7 @@ class DeadBlockEliminationPass(CFGPass):
         """Analyze CFG and return NopInstructions for unreachable blocks.
 
         Args:
-            cfg: Portable CFG snapshot to analyze.
+            cfg: FlowGraph snapshot to analyze.
 
         Returns:
             List of NopInstructions modifications for blocks unreachable
@@ -80,11 +80,11 @@ class DeadBlockEliminationPass(CFGPass):
 
         Note:
             Exception edges are NOT considered during reachability analysis.
-            PortableCFG only captures normal successor/predecessor edges.
+            FlowGraph only captures normal successor/predecessor edges.
             Blocks that are reachable only via exception edges will be
             incorrectly classified as dead. This is a known limitation of
             the portable representation - fixing it would require capturing
-            exception edge data in the PortableCFG data model.
+            exception edge data in the FlowGraph data model.
 
         Example:
             >>> # All blocks reachable: no modifications
@@ -140,7 +140,7 @@ class DeadBlockEliminationPass(CFGPass):
         the entry block by following successor edges.
 
         Args:
-            cfg: Portable CFG to analyze.
+            cfg: FlowGraph to analyze.
 
         Returns:
             Set of block serials reachable from entry.

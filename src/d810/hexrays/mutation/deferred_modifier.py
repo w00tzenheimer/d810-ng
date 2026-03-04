@@ -874,7 +874,7 @@ class DeferredGraphModifier:
         return len(self.modifications) > 0
 
     def _restore_from_snapshot(self, snapshot: FlowGraph) -> bool:
-        """Restore MBA topology from a PortableCFG snapshot.
+        """Restore MBA topology from a FlowGraph snapshot.
 
         Best-effort restoration of block topology (edges, types, flags).
         Instruction content restoration is not guaranteed.
