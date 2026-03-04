@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from d810.cfg.graph_modification import ConvertToGoto
-from d810.cfg.pipeline import PassPipeline
+from d810.cfg.pipeline import FlowGraphTransformPipeline
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
 
@@ -197,7 +197,7 @@ class TestSimplifyIdenticalBranchPassIntegration:
         backend = InMemoryBackend(blocks)
 
         # Run through PassPipeline
-        pipeline = PassPipeline(backend, [SimplifyIdenticalBranchPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [SimplifyIdenticalBranchPass()])
         total_mods = pipeline.run(blocks)
 
         assert total_mods == 1
@@ -226,7 +226,7 @@ class TestSimplifyIdenticalBranchPassIntegration:
         backend = InMemoryBackend(blocks)
 
         # Run through PassPipeline
-        pipeline = PassPipeline(backend, [SimplifyIdenticalBranchPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [SimplifyIdenticalBranchPass()])
         total_mods = pipeline.run(blocks)
 
         assert total_mods == 0
@@ -256,7 +256,7 @@ class TestSimplifyIdenticalBranchPassIntegration:
         backend = InMemoryBackend(blocks)
 
         # Run through PassPipeline
-        pipeline = PassPipeline(backend, [SimplifyIdenticalBranchPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [SimplifyIdenticalBranchPass()])
         total_mods = pipeline.run(blocks)
 
         assert total_mods == 2

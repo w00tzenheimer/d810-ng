@@ -14,7 +14,7 @@ import pytest
 
 from d810.cfg.passes._base import FlowGraphTransform
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification, RedirectGoto
-from d810.cfg.pipeline import PassPipeline
+from d810.cfg.pipeline import FlowGraphTransformPipeline
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from tests.unit.hexrays.conftest import InMemoryBackend
 
@@ -147,7 +147,7 @@ class TestPassPipeline:
     def test_empty_pipeline(self):
         """Empty pipeline should return 0."""
         backend = InMemoryBackend()
-        pipeline = PassPipeline(backend, [])
+        pipeline = FlowGraphTransformPipeline(backend, [])
 
         total = pipeline.run({})
 
@@ -157,7 +157,7 @@ class TestPassPipeline:
     def test_single_pass_no_modifications(self):
         """Pass that returns empty list should result in 0 total."""
         backend = InMemoryBackend()
-        pipeline = PassPipeline(backend, [NoOpPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [NoOpPass()])
 
         total = pipeline.run({})
 
@@ -167,7 +167,7 @@ class TestPassPipeline:
     def test_single_pass_with_modifications(self):
         """Pass with modifications should return correct count."""
         backend = InMemoryBackend()
-        pipeline = PassPipeline(backend, [SingleModPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
         total = pipeline.run({})
 
@@ -178,7 +178,7 @@ class TestPassPipeline:
     def test_multiple_passes_accumulate(self):
         """Multiple transform should accumulate modification counts."""
         backend = InMemoryBackend()
-        pipeline = PassPipeline(backend, [SingleModPass(), DoubleModPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [SingleModPass(), DoubleModPass()])
 
         total = pipeline.run({})
 
@@ -199,7 +199,7 @@ class TestPassPipeline:
         blocks = {0: blk0, 1: blk1}
 
         backend = InMemoryBackend(blocks)
-        pipeline = PassPipeline(backend, [ConditionalPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [ConditionalPass()])
 
         total = pipeline.run(blocks)
 
@@ -225,7 +225,7 @@ class TestPassPipeline:
         blocks = {0: blk0, 1: blk1, 2: blk2}
 
         backend = InMemoryBackend(blocks)
-        pipeline = PassPipeline(backend, [ConditionalPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [ConditionalPass()])
 
         total = pipeline.run(blocks)
 
@@ -236,7 +236,7 @@ class TestPassPipeline:
     def test_pass_with_mods_but_lower_returns_zero(self):
         """Pass with mods but lower returning 0 should not count or verify."""
         backend = ZeroLowerBackend()
-        pipeline = PassPipeline(backend, [SingleModPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
         total = pipeline.run({})
 
@@ -248,7 +248,7 @@ class TestPassPipeline:
     def test_verify_failure_skips_count(self):
         """Verify failure should skip counting modifications."""
         backend = FailingVerificationBackend()
-        pipeline = PassPipeline(backend, [SingleModPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
         total = pipeline.run({})
 
@@ -261,7 +261,7 @@ class TestPassPipeline:
         """CFG should be re-lifted after successful modifications."""
         backend = MutatingBackend()
         # Use CountingPass which returns mods based on block count
-        pipeline = PassPipeline(backend, [CountingPass(), CountingPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [CountingPass(), CountingPass()])
 
         total = pipeline.run({})
 
@@ -288,7 +288,7 @@ class TestPassPipeline:
         # CountingPass returns mods equal to block count
         # After first pass applies mods, backend adds a new block
         # Second pass should see 3 blocks (original 2 + 1 added)
-        pipeline = PassPipeline(backend, [CountingPass(), CountingPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [CountingPass(), CountingPass()])
 
         total = pipeline.run(blocks)
 
@@ -303,7 +303,7 @@ class TestPassPipeline:
     def test_repr(self):
         """PassPipeline repr should show backend name and pass names."""
         backend = InMemoryBackend()
-        pipeline = PassPipeline(backend, [NoOpPass(), SingleModPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [NoOpPass(), SingleModPass()])
 
         repr_str = repr(pipeline)
 
@@ -316,7 +316,7 @@ class TestPassPipeline:
         """PassPipeline should make defensive copy of transform list."""
         backend = InMemoryBackend()
         passes = [NoOpPass()]
-        pipeline = PassPipeline(backend, passes)
+        pipeline = FlowGraphTransformPipeline(backend, passes)
 
         # Mutate original list
         passes.append(SingleModPass())
@@ -341,7 +341,7 @@ class TestPassPipeline:
         # ConditionalPass requires >2 blocks (won't apply)
         # SingleModPass always applies
         # NoOpPass always applies but returns no mods
-        pipeline = PassPipeline(backend, [ConditionalPass(), SingleModPass(), NoOpPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [ConditionalPass(), SingleModPass(), NoOpPass()])
 
         total = pipeline.run(blocks)
 
@@ -356,7 +356,7 @@ class TestPassPipelineLogging:
     def test_logs_non_applicable_pass(self, caplog):
         """Should log when pass is not applicable."""
         backend = InMemoryBackend()
-        pipeline = PassPipeline(backend, [ConditionalPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [ConditionalPass()])
 
         with caplog.at_level("DEBUG"):
             pipeline.run({})
@@ -366,7 +366,7 @@ class TestPassPipelineLogging:
     def test_logs_no_modifications(self, caplog):
         """Should log when pass produces no modifications."""
         backend = InMemoryBackend()
-        pipeline = PassPipeline(backend, [NoOpPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [NoOpPass()])
 
         with caplog.at_level("DEBUG"):
             pipeline.run({})
@@ -376,7 +376,7 @@ class TestPassPipelineLogging:
     def test_logs_verify_failure(self, caplog):
         """Should log warning when verification fails."""
         backend = FailingVerificationBackend()
-        pipeline = PassPipeline(backend, [SingleModPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
         with caplog.at_level("WARNING"):
             pipeline.run({})
@@ -386,7 +386,7 @@ class TestPassPipelineLogging:
     def test_logs_successful_application(self, caplog):
         """Should log when modifications are successfully applied."""
         backend = InMemoryBackend()
-        pipeline = PassPipeline(backend, [SingleModPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
         with caplog.at_level("DEBUG"):
             pipeline.run({})

@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from d810.cfg.graph_modification import NopInstructions
-from d810.cfg.pipeline import PassPipeline
+from d810.cfg.pipeline import FlowGraphTransformPipeline
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from d810.cfg.passes.dead_block_elimination import DeadBlockEliminationPass
 
@@ -418,7 +418,7 @@ class TestDeadBlockEliminationPassIntegration:
         backend = InMemoryBackend(blocks)
 
         # Run through PassPipeline
-        pipeline = PassPipeline(backend, [DeadBlockEliminationPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [DeadBlockEliminationPass()])
         total_mods = pipeline.run(blocks)
 
         assert total_mods == 1
@@ -443,7 +443,7 @@ class TestDeadBlockEliminationPassIntegration:
         backend = InMemoryBackend(blocks)
 
         # Run through PassPipeline
-        pipeline = PassPipeline(backend, [DeadBlockEliminationPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [DeadBlockEliminationPass()])
         total_mods = pipeline.run(blocks)
 
         assert total_mods == 0
@@ -480,7 +480,7 @@ class TestDeadBlockEliminationPassIntegration:
         backend = InMemoryBackend(blocks)
 
         # Run through PassPipeline
-        pipeline = PassPipeline(backend, [DeadBlockEliminationPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [DeadBlockEliminationPass()])
         total_mods = pipeline.run(blocks)
 
         assert total_mods == 2
