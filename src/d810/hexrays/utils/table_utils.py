@@ -15,22 +15,11 @@ import enum
 
 from d810.core.typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-# ---------------------------------------------------------------------------
-# IDA-dependent imports -- guarded so unit tests can run without IDA.
-# ---------------------------------------------------------------------------
-try:
-    import ida_bytes
-    import ida_funcs
-    import ida_hexrays
-    import idaapi
 
-    _IDA_AVAILABLE = True
-except ImportError:
-    ida_bytes = None  # type: ignore[assignment]
-    ida_funcs = None  # type: ignore[assignment]
-    ida_hexrays = None  # type: ignore[assignment]
-    idaapi = None  # type: ignore[assignment]
-    _IDA_AVAILABLE = False
+import ida_bytes
+import ida_funcs
+import ida_hexrays
+import idaapi
 
 if TYPE_CHECKING:
     from ida_hexrays import mblock_t

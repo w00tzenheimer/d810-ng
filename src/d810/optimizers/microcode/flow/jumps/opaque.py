@@ -1,5 +1,6 @@
 import ida_hexrays
 
+from d810.evaluator.evaluators import evaluate_concrete
 from d810.core.bits import unsigned_to_signed
 from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode, mop_to_ast
 from d810.hexrays.expr.z3_utils import z3_check_mop_equality, z3_check_mop_inequality
@@ -50,9 +51,19 @@ def _eval_constant_mop(mop) -> int | None:
     if ast is None or not _is_constant_ast(ast):
         return None
     try:
-        return int(ast.evaluate({}))
+        result = evaluate_concrete(ast, {})
     except Exception:
-        return None
+        result = None
+
+    # Compatibility path for non-d810 test stubs that only provide an
+    # evaluate(dict) method. Real ASTs should be handled by evaluate_concrete.
+    if result is None and hasattr(ast, "evaluate"):
+        try:
+            result = ast.evaluate({})
+        except Exception:
+            return None
+
+    return int(result) if result is not None else None
 
 
 def _constant_relation(left_mop, right_mop) -> bool | None:

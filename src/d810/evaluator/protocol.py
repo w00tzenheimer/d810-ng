@@ -27,7 +27,7 @@ class EvaluatorProtocol(Protocol):
         True
     """
 
-    def evaluate(self, node: object, env: dict[int, int]) -> int:
+    def evaluate(self, node: object, env: dict[int, int]) -> int | None:
         """Return the concrete integer value of *node*.
 
         Args:
@@ -38,7 +38,8 @@ class EvaluatorProtocol(Protocol):
                 each variable leaf.  Constant leaves do not need an entry.
 
         Returns:
-            Concrete integer result, masked to ``node.dest_size`` bits.
+            Concrete integer result, masked to ``node.dest_size`` bits, or
+            ``None`` when the runtime value is unknown.
 
         Raises:
             AstEvaluationException: If the AST contains an unsupported

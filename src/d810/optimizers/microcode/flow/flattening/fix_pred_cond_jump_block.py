@@ -31,7 +31,7 @@ from d810.hexrays.mutation.cfg_mutations import (
     update_blk_successor)
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.utils.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
-from d810.hexrays.utils.tracker import MopTracker
+from d810.evaluator.hexrays_microcode.tracker import MopTracker
 from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
     DispatcherCache,
     DispatcherType,

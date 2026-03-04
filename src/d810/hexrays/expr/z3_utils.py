@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import functools
 import os
+import sys
 from d810.core import typing
 from d810.core.typing import TYPE_CHECKING, Dict, Tuple
 
@@ -784,10 +785,14 @@ def _resolve_mop_to_ast_via_tracker(
             return result
 
     # FALLBACK: MopTracker for multi-predecessor cases or early maturity.
-    try:
-        from d810.hexrays.utils.tracker import MopTracker
-    except ImportError:
-        logger.debug("_resolve_mop_to_ast_via_tracker: MopTracker not available")
+    # Keep this lookup dynamic so hexrays does not hard-import evaluator layer.
+    tracker_module = sys.modules.get("d810.evaluator.hexrays_microcode.tracker")
+    if tracker_module is None:
+        logger.debug("_resolve_mop_to_ast_via_tracker: MopTracker module not loaded")
+        return None
+    MopTracker = getattr(tracker_module, "MopTracker", None)
+    if MopTracker is None:
+        logger.debug("_resolve_mop_to_ast_via_tracker: MopTracker class not available")
         return None
 
     # Create tracker with limited block depth. IDA decomposes compound MBA

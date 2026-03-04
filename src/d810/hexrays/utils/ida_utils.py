@@ -10,11 +10,43 @@ from idaapi import (
     SEGPERM_WRITE,
     XREF_DATA,
     dr_W,
+    get_byte,
+    get_dword,
+    get_qword,
     getseg,
+    get_word,
     is_loaded,
     segment_t,
     xrefblk_t,
 )
+
+
+def fetch_idb_value(address: int, size: int) -> int | None:
+    """Read a value from the IDA database at the given address.
+
+    Only sizes 1, 2, 4, and 8 bytes are supported. Returns None for any
+    other size (including zero or negative values, which can occur for
+    function-reference mops with size == -1).
+
+    Args:
+        address: Linear address to read from.
+        size: Size in bytes. Must be one of {1, 2, 4, 8}.
+
+    Returns:
+        The integer value read from the database, or None if *size* is not
+        in the supported set.
+    """
+    if size <= 0:
+        return None
+    if size == 1:
+        return get_byte(address)
+    elif size == 2:
+        return get_word(address)
+    elif size == 4:
+        return get_dword(address)
+    elif size == 8:
+        return get_qword(address)
+    return None
 
 
 def segment_is_read_only(addr: int) -> bool:

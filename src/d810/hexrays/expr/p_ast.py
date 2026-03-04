@@ -124,9 +124,6 @@ class AstBase:
     def get_pattern(self) -> str: ...
 
     @abc.abstractmethod
-    def evaluate(self, dict_index_to_value: dict[int, int]) -> int: ...
-
-    @abc.abstractmethod
     def get_depth_signature(self, depth: int) -> list[str]: ...
 
     def __bool__(self) -> bool:
@@ -406,20 +403,6 @@ class AstNode(AstBase):
             )
         else:
             raise ValueError(f"Invalid number of operands: {nb_operands}")
-
-    def evaluate_with_leaf_info(
-        self, leafs_info: list[AstInfo], leafs_value: list[int]
-    ) -> int:
-        from d810.evaluator.evaluators import evaluate_concrete
-        return evaluate_concrete(self, {
-            li.ast.ast_index: lv
-            for li, lv in zip(leafs_info, leafs_value)
-            if li.ast.ast_index is not None
-        })
-
-    def evaluate(self, dict_index_to_value: dict[int, int]) -> int:
-        from d810.evaluator.evaluators import evaluate_concrete
-        return evaluate_concrete(self, dict_index_to_value)
 
     def get_depth_signature(self, depth):
         # Check cache first (fast path for frozen nodes)
@@ -760,18 +743,6 @@ class AstLeaf(AstBase):
         if self.name is not None:
             return "AstLeaf('{0}')".format(self.name)
 
-    def evaluate_with_leaf_info(self, leafs_info, leafs_value):
-        from d810.evaluator.evaluators import evaluate_concrete
-        return evaluate_concrete(self, {
-            li.ast.ast_index: lv
-            for li, lv in zip(leafs_info, leafs_value)
-            if li.ast.ast_index is not None
-        })
-
-    def evaluate(self, dict_index_to_value):
-        from d810.evaluator.evaluators import evaluate_concrete
-        return evaluate_concrete(self, dict_index_to_value)
-
     def get_depth_signature(self, depth):
         # Check cache first
         cached = self._depth_sig_cache.get(depth)
@@ -865,10 +836,6 @@ class AstConstant(AstLeaf):
                 return True
         other_value = other.mop.value if isinstance(other.mop, MopSnapshot) else other.mop.nnn.value
         return self.expected_value == other_value
-
-    def evaluate(self, dict_index_to_value=None):
-        from d810.evaluator.evaluators import evaluate_concrete
-        return evaluate_concrete(self, dict_index_to_value or {})
 
     def get_depth_signature(self, depth):
         # Check cache first (inherited from AstLeaf)
@@ -1083,9 +1050,6 @@ class AstProxy(AstBase):
         return self._target.get_pattern()
 
     @typing.override
-    def evaluate(self, dict_index_to_value: dict[int, int]) -> int:
-        return self._target.evaluate(dict_index_to_value)
-
     @typing.override
     def get_depth_signature(self, depth: int) -> list[str]:
         return self._target.get_depth_signature(depth)

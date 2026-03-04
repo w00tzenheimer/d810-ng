@@ -39,11 +39,11 @@ import sys
 import tempfile
 import time
 import warnings
-from d810.core.typing import TYPE_CHECKING
 
 import pytest
 
 from d810.core.clang_loader import load_clang_index
+from d810.core.typing import TYPE_CHECKING
 from tests.conftest import PROJECT_ROOT, EnvWrapper
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,7 @@ def _is_ida():
 if not _is_ida():
     try:
         import idapro
+
         logger.info("idapro module initialized for idalib mode")
     except ImportError:
         pytest.skip(
@@ -92,12 +93,10 @@ if TYPE_CHECKING:
 
 import d810
 import d810._vendor.ida_reloader as reloadable
-from d810.hexrays.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
+
 # Also import from d810.core to ensure both cache locations are accessible
-from d810.core import (
-    MOP_CONSTANT_CACHE as CORE_MOP_CONSTANT_CACHE,
-    MOP_TO_AST_CACHE as CORE_MOP_TO_AST_CACHE,
-)
+from d810.core import MOP_CONSTANT_CACHE as CORE_MOP_CONSTANT_CACHE
+from d810.core import MOP_TO_AST_CACHE as CORE_MOP_TO_AST_CACHE
 
 # Just scan/import modules to populate registries - no reload needed for tests
 reloadable.Scanner.scan(d810.__path__, "d810.", skip_packages=False)
@@ -111,10 +110,19 @@ print("  d810 modules loaded")
 # Try to import clang bindings - required for AST comparison in system tests
 _CLANG_AVAILABLE = False
 try:
-    from d810._vendor.clang.cindex import Config, Cursor, CursorKind, Index, TranslationUnit
+    from d810._vendor.clang.cindex import (
+        Config,
+        Cursor,
+        CursorKind,
+        Index,
+        TranslationUnit,
+    )
+
     _CLANG_AVAILABLE = True
 except ImportError:
-    logger.warning("Clang bindings not available - AST comparison tests will be skipped")
+    logger.warning(
+        "Clang bindings not available - AST comparison tests will be skipped"
+    )
     Config = None
     Cursor = None
     CursorKind = None
@@ -540,8 +548,12 @@ typedef int int32_t;
                 "Could not find function definition in one or both inputs."
             )
 
-        effective_ignore = ignore_types if ignore_types is not None else self.ignore_types
-        if not self._cursors_equal(cursor_actual, cursor_expected, ignore_comments, effective_ignore):
+        effective_ignore = (
+            ignore_types if ignore_types is not None else self.ignore_types
+        )
+        if not self._cursors_equal(
+            cursor_actual, cursor_expected, ignore_comments, effective_ignore
+        ):
             raise AssertionError(
                 f"Code semantic mismatch!\n\nActual:\n{actual_code}\n\nExpected:\n{expected_code}"
             )
@@ -554,7 +566,9 @@ typedef int int32_t;
         ignore_types: bool | None = None,
     ) -> bool:
         try:
-            self.check_equivalence(actual_code, expected_code, ignore_comments, ignore_types)
+            self.check_equivalence(
+                actual_code, expected_code, ignore_comments, ignore_types
+            )
             return True
         except AssertionError:
             return False
@@ -572,13 +586,13 @@ def clear_all_caches():
     This prevents stale microcode pointer issues and segfaults between tests
     by ensuring all caches that may hold references to IDA objects are cleared.
     """
-    from d810.optimizers.microcode.flow.flattening.dispatcher_detection import DispatcherCache
-    from d810.hexrays.utils.tracker import MopTracker
+    from d810.evaluator.hexrays_microcode.tracker import MopTracker
     from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block
+    from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
+        DispatcherCache,
+    )
 
     # Clear all caches before test class
-    MOP_CONSTANT_CACHE.clear()
-    MOP_TO_AST_CACHE.clear()
     CORE_MOP_CONSTANT_CACHE.clear()
     CORE_MOP_TO_AST_CACHE.clear()
     DispatcherCache.clear_cache()
@@ -588,8 +602,6 @@ def clear_all_caches():
     yield
 
     # Clear again after test class to prevent cross-class contamination
-    MOP_CONSTANT_CACHE.clear()
-    MOP_TO_AST_CACHE.clear()
     CORE_MOP_CONSTANT_CACHE.clear()
     CORE_MOP_TO_AST_CACHE.clear()
     DispatcherCache.clear_cache()
@@ -873,12 +885,12 @@ def _d810_state_cm(*, all_rules=False):
 
     # Clear caches to prevent stale microcode pointer issues between tests
     # Import and clear from both locations to ensure complete cleanup
-    from d810.optimizers.microcode.flow.flattening.dispatcher_detection import DispatcherCache
-    from d810.hexrays.utils.tracker import MopTracker
+    from d810.evaluator.hexrays_microcode.tracker import MopTracker
     from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block
+    from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
+        DispatcherCache,
+    )
 
-    MOP_CONSTANT_CACHE.clear()
-    MOP_TO_AST_CACHE.clear()
     CORE_MOP_CONSTANT_CACHE.clear()
     CORE_MOP_TO_AST_CACHE.clear()
     DispatcherCache.clear_cache()
@@ -1058,7 +1070,9 @@ def capture_stats(request):
             expectations_dir.mkdir(exist_ok=True, parents=True)
 
             if binary_basename:
-                expectation_file = expectations_dir / f"{test_name}.{binary_basename}.json"
+                expectation_file = (
+                    expectations_dir / f"{test_name}.{binary_basename}.json"
+                )
             else:
                 expectation_file = expectations_dir / f"{test_name}.json"
 
@@ -1105,9 +1119,13 @@ def load_expected_stats(request):
         if filename is None:
             # Try binary-specific expectations first
             if binary_basename:
-                binary_specific = expectations_dir / f"{test_name}.{binary_basename}.json"
+                binary_specific = (
+                    expectations_dir / f"{test_name}.{binary_basename}.json"
+                )
                 if binary_specific.exists():
-                    logger.debug(f"Loading binary-specific expectations: {binary_specific}")
+                    logger.debug(
+                        f"Loading binary-specific expectations: {binary_specific}"
+                    )
                     with open(binary_specific) as f:
                         return json.load(f)
 
@@ -1242,6 +1260,7 @@ def pytest_configure(config):
     # Register the test capture plugin if --capture-to-db is enabled
     if config.getoption("--capture-to-db"):
         from tests.system.runtime.test_capture import CapturePlugin
+
         config.pluginmanager.register(CapturePlugin(config), "capture_plugin")
 
 
@@ -1271,6 +1290,7 @@ def db_capture(request):
         class NoOpCapture:
             def record(self, **kwargs):
                 pass
+
         return NoOpCapture()
 
     # Get test context
@@ -1301,6 +1321,8 @@ def db_capture(request):
             if binary_name:
                 request.node.user_properties.append(("binary_name", binary_name))
             if function_address:
-                request.node.user_properties.append(("function_address", function_address))
+                request.node.user_properties.append(
+                    ("function_address", function_address)
+                )
 
     return CaptureHelper()

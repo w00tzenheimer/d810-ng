@@ -4,19 +4,19 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from d810.core.typing import TypeAlias
 from d810.errors import AstEvaluationException
-from d810.evaluator.backend_registry import get_concrete_provider
+from d810.evaluator.concrete import _default_evaluator as _default_concrete_evaluator
+from d810.evaluator.concrete import ConcreteEvaluator
+from d810.evaluator.protocol import EvaluatorProtocol
 
-_provider = get_concrete_provider("concrete")
-ConcreteEvaluator = _provider.evaluator_type()
-_default_evaluator = _provider.default_evaluator()
+_default_evaluator: EvaluatorProtocol = _default_concrete_evaluator
 
 
 def evaluate_concrete(
     node: object,
     env: dict[int, int],
     *,
-    evaluator: object | None = None,
-) -> int:
+    evaluator: EvaluatorProtocol | None = None,
+) -> int | None:
     """Evaluate AST node using the configured concrete evaluator backend."""
     ev = evaluator if evaluator is not None else _default_evaluator
     return ev.evaluate(node, env)  # type: ignore[union-attr]

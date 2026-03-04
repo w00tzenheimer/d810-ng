@@ -37,7 +37,6 @@ from d810.hexrays.hexrays_helpers import (
     is_rotate_helper_call,
     structural_mop_hash,
 )
-from d810.speedups.expr.c_ast_evaluate import AstEvaluator
 from d810.core import NOT_GIVEN
 
 logger = getLogger(__name__)
@@ -138,10 +137,6 @@ cdef class AstBase:
     @abc.abstractmethod
     def get_pattern(self) -> str:
         raise NotImplementedError("AstBase.get_pattern must be overridden")
-
-    @abc.abstractmethod
-    def evaluate(self, dict_index_to_value: dict[int, int]) -> int:
-        raise NotImplementedError("AstBase.evaluate must be overridden")
 
     @abc.abstractmethod
     def get_depth_signature(self, depth: int) -> list[str]:
@@ -411,14 +406,6 @@ cdef class AstNode(AstBase):
             )
         else:
             raise ValueError(f"Invalid number of operands: {nb_operands}")
-
-    def evaluate_with_leaf_info(
-        self, leafs_info: list[AstInfo], leafs_value: list[int]
-    ) -> int:
-        return _DEFAULT_AST_EVALUATOR.evaluate_with_leaf_info(self, leafs_info, leafs_value)
-
-    def evaluate(self, dict_index_to_value: dict[int, int]) -> int:
-        return _DEFAULT_AST_EVALUATOR.evaluate(self, dict_index_to_value)
 
     def get_depth_signature(self, int depth):
         # Check cache first (fast path for frozen nodes)
@@ -752,12 +739,6 @@ cdef class AstLeaf(AstBase):
         if self.name is not None:
             return "AstLeaf('{0}')".format(self.name)
 
-    def evaluate_with_leaf_info(self, leafs_info, leafs_value):
-        return _DEFAULT_AST_EVALUATOR.evaluate_with_leaf_info(self, leafs_info, leafs_value)
-
-    def evaluate(self, dict_index_to_value):
-        return _DEFAULT_AST_EVALUATOR.evaluate(self, dict_index_to_value)
-
     def get_depth_signature(self, int depth):
         # Check cache first
         cdef list cached = self._depth_sig_cache.get(depth)
@@ -839,11 +820,6 @@ cdef class AstConstant(AstLeaf):
             else:
                 return True
         return self.expected_value == other.mop.nnn.value
-
-    def evaluate(self, dict_index_to_value=None):
-        if self.mop is not None and self.mop.t == ida_hexrays.mop_n:
-            return self.mop.nnn.value
-        return self.expected_value
 
     def get_depth_signature(self, int depth):
         # Check cache first (inherited from AstLeaf)
@@ -1174,9 +1150,6 @@ cdef class AstConstant(AstLeaf):
 #             )
 
 
-_DEFAULT_AST_EVALUATOR = AstEvaluator()
-
-
 cdef class AstProxy(AstBase):
     cdef public AstBase _target
     cdef public bint _mutable
@@ -1316,10 +1289,6 @@ cdef class AstProxy(AstBase):
     @_compat.override
     def get_pattern(self) -> str:
         return self._target.get_pattern()
-
-    @_compat.override
-    def evaluate(self, dict_index_to_value: dict[int, int]) -> int:
-        return self._target.evaluate(dict_index_to_value)
 
     @_compat.override
     def get_depth_signature(self, depth: int) -> list[str]:

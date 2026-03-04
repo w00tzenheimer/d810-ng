@@ -20,11 +20,11 @@ from d810.hexrays.utils.hexrays_helpers import (
     equal_mops_ignore_size,
     get_mop_index,
 )
-from d810.hexrays.utils.tracker import (
+from d810.evaluator.hexrays_microcode.tracker import (
     InstructionDefUseCollector,
     remove_segment_registers,
 )
-from d810.hexrays.utils.emulator import (
+from d810.hexrays.hexrays_microcode.emulator import (
     MicroCodeEnvironment,
     MicroCodeInterpreter,
 )

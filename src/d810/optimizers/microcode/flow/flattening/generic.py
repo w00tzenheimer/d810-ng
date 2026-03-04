@@ -33,7 +33,10 @@ import ida_hexrays
 import idc
 
 from d810.core import getLogger
-from d810.hexrays.utils.emulator import MicroCodeEnvironment, MicroCodeInterpreter
+from d810.hexrays.hexrays_microcode.emulator import (
+    MicroCodeEnvironment,
+    MicroCodeInterpreter,
+)
 from d810.hexrays.mutation.cfg_mutations import create_standalone_block, insert_goto_instruction
 from d810.hexrays.ir.cfg_queries import _serial_in_predset
 from d810.hexrays.mutation.cfg_mutations import (
@@ -67,7 +70,7 @@ from d810.hexrays.utils.hexrays_helpers import (
     extract_num_mop,
     get_mop_index,
 )
-from d810.hexrays.utils.tracker import (
+from d810.evaluator.hexrays_microcode.tracker import (
     InstructionDefUseCollector,
     MopHistory,
     MopTracker,

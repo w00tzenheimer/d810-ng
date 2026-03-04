@@ -44,20 +44,6 @@ def _ensure_ida_imports() -> None:
 
     idaapi = _idaapi
 
-    # Ensure Hex-Rays definitions are available
-    if not hasattr(idaapi, "MMAT_GENERATED"):
-        try:
-            import ida_hexrays
-
-            for k, v in ida_hexrays.__dict__.items():
-                if not k.startswith("_"):
-                    setattr(idaapi, k, v)
-        except ImportError:
-            logger.warning(
-                "Could not import ida_hexrays. Hex-Rays functionality may fail."
-            )
-
-
 # -----------------------------------------------------------------------------
 # Constants (lazily initialized)
 # -----------------------------------------------------------------------------
@@ -893,12 +879,12 @@ def _resolve_mop_from_maps(
     if mop is None:
         return None
 
-    mop_type = getattr(mop, "t", None)
-    mop_n_type = getattr(idaapi, "mop_n", 2)
-    mop_S_type = getattr(idaapi, "mop_S", None)
-    mop_r_type = getattr(idaapi, "mop_r", 1)
-    mop_l_type = getattr(idaapi, "mop_l", 9)
-    mop_d_type = getattr(idaapi, "mop_d", 4)
+    mop_type = mop.t
+    mop_n_type = idaapi.mop_n
+    mop_S_type = idaapi.mop_S
+    mop_r_type = idaapi.mop_r
+    mop_l_type = idaapi.mop_l
+    mop_d_type = idaapi.mop_d
 
     result: Optional[int] = None
 

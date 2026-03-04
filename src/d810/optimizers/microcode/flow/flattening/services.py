@@ -180,9 +180,12 @@ class PathEmulator:
         Returns:
             EmulationResult containing the target block and execution details.
         """
-        from d810.hexrays.utils.emulator import MicroCodeEnvironment, MicroCodeInterpreter
+        from d810.hexrays.hexrays_microcode.emulator import (
+            MicroCodeEnvironment,
+            MicroCodeInterpreter,
+        )
         from d810.hexrays.helper import format_minsn_t, format_mop_t
-        from d810.hexrays.utils.tracker import MopHistory, MopTracker
+        from d810.evaluator.hexrays_microcode.tracker import MopHistory, MopTracker
 
         context.logger.debug(
             "Emulating dispatcher %s from block %s",
