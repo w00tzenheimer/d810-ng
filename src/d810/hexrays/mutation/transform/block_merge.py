@@ -34,7 +34,7 @@ _M_GOTO_OPCODE = ida_hexrays.m_goto
 _MOP_B_TYPE = ida_hexrays.mop_b
 
 
-class BlockMergePass(FlowGraphTransform):
+class BlockMergeTransform(FlowGraphTransform):
     """Merge artificially split basic blocks by NOPing redundant gotos.
 
     This pass detects block pairs where:
@@ -74,7 +74,7 @@ class BlockMergePass(FlowGraphTransform):
         ...     flags=0, start_ea=0x1020, insn_snapshots=()
         ... )
         >>> cfg = FlowGraph(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
-        >>> pass_instance = BlockMergePass()
+        >>> pass_instance = BlockMergeTransform()
         >>> mods = pass_instance.transform(cfg)
         >>> len(mods)
         1
@@ -111,7 +111,7 @@ class BlockMergePass(FlowGraphTransform):
             ...     flags=0, start_ea=0x1000, insn_snapshots=()
             ... )
             >>> cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
-            >>> pass_instance = BlockMergePass()
+            >>> pass_instance = BlockMergeTransform()
             >>> mods = pass_instance.transform(cfg)
             >>> len(mods)
             0
@@ -193,4 +193,4 @@ class BlockMergePass(FlowGraphTransform):
         return False
 
 
-__all__ = ["BlockMergePass"]
+__all__ = ["BlockMergeTransform"]

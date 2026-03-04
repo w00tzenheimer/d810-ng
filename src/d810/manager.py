@@ -640,7 +640,7 @@ class D810Manager:
             PassPipeline instance with IDAIRTranslator and the 2 safe cleanup transform.
         """
         from d810.hexrays.mutation.ir_translator import IDAIRTranslator
-        from d810.cfg.pipeline import PassPipeline
+        from d810.cfg.pipeline import FlowGraphTransformPipeline
         from d810.hexrays.mutation.passes.goto_chain_removal import GotoChainRemovalPass
         from d810.cfg.passes.simplify_identical_branch import (
             SimplifyIdenticalBranchPass,
@@ -651,7 +651,7 @@ class D810Manager:
             SimplifyIdenticalBranchPass(),
             GotoChainRemovalPass(),
         ]
-        pipeline = PassPipeline(backend, passes)
+        pipeline = FlowGraphTransformPipeline(backend, passes)
         logger.info(
             "PassPipeline enabled: %s",
             repr(pipeline),

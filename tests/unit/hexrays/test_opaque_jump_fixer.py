@@ -9,7 +9,7 @@ import pytest
 from d810.cfg.passes.opaque_jump_fixer import OpaqueJumpFixerPass
 from d810.cfg.graph_modification import ConvertToGoto
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.pipeline import PassPipeline
+from d810.cfg.pipeline import FlowGraphTransformPipeline
 
 from tests.unit.hexrays.conftest import InMemoryBackend
 
@@ -163,7 +163,7 @@ class TestOpaqueJumpFixerPass:
         # Create pipeline with opaque jump fixer
         fixes = {0: 1}  # Block 0's opaque predicate always goes to 1
         pass_instance = OpaqueJumpFixerPass(fixes=fixes)
-        pipeline = PassPipeline(backend, [pass_instance])
+        pipeline = FlowGraphTransformPipeline(backend, [pass_instance])
 
         # Run pipeline
         total_mods = pipeline.run(blocks)
@@ -205,7 +205,7 @@ class TestOpaqueJumpFixerPass:
         # Create two transform: one for block 0, one for block 1
         pass1 = OpaqueJumpFixerPass(fixes={0: 1})
         pass2 = OpaqueJumpFixerPass(fixes={1: 3})
-        pipeline = PassPipeline(backend, [pass1, pass2])
+        pipeline = FlowGraphTransformPipeline(backend, [pass1, pass2])
 
         # Run pipeline
         total_mods = pipeline.run(blocks)

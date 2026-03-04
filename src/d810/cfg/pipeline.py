@@ -15,7 +15,7 @@ from d810.cfg.flowgraph import FlowGraph
 logger = getLogger(__name__, default_level=0)  # NOTSET: inherit from parent
 
 
-class PassPipeline:
+class FlowGraphTransformPipeline:
     """Run a sequence of FlowGraphTransform transforms through a CFGBackend.
 
     Usage:
@@ -66,4 +66,4 @@ class PassPipeline:
         return f"PassPipeline(backend={self.backend.name!r}, transform={pass_names})"
 
 
-__all__ = ["PassPipeline"]
+__all__ = ["FlowGraphTransformPipeline"]

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.pipeline import PassPipeline
+from d810.cfg.pipeline import FlowGraphTransformPipeline
 from d810.cfg.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
 from d810.cfg.passes.dead_block_elimination import DeadBlockEliminationPass
 from d810.hexrays.mutation.passes.goto_chain_removal import GotoChainRemovalPass
@@ -28,7 +28,7 @@ from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 # Factory: mirrors D810Manager._build_pass_pipeline() without IDA imports
 # ---------------------------------------------------------------------------
 
-def build_cleanup_pipeline() -> PassPipeline:
+def build_cleanup_pipeline() -> FlowGraphTransformPipeline:
     """Construct the PassPipeline with the 4 cleanup transform.
 
     This is the same logic as D810Manager._build_pass_pipeline(), extracted
@@ -44,7 +44,7 @@ def build_cleanup_pipeline() -> PassPipeline:
         GotoChainRemovalPass(),
         BlockMergePass(),
     ]
-    return PassPipeline(backend, passes)
+    return FlowGraphTransformPipeline(backend, passes)
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ class TestBuildPassPipeline:
     def test_returns_pass_pipeline_instance(self):
         """Factory returns a PassPipeline."""
         pipeline = build_cleanup_pipeline()
-        assert isinstance(pipeline, PassPipeline)
+        assert isinstance(pipeline, FlowGraphTransformPipeline)
 
     def test_pipeline_has_four_passes(self):
         """PassPipeline should contain exactly 4 cleanup transform."""
@@ -187,7 +187,7 @@ class TestFeatureFlagEnabled:
         if config.get("enable_pass_pipeline", False):
             _pass_pipeline = build_cleanup_pipeline()
         assert _pass_pipeline is not None
-        assert isinstance(_pass_pipeline, PassPipeline)
+        assert isinstance(_pass_pipeline, FlowGraphTransformPipeline)
 
     def test_gate_logic_yields_pipeline_with_four_passes(self):
         """Gate yields a pipeline with 4 transform when flag is True."""

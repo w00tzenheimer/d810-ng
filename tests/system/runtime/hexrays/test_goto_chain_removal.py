@@ -20,7 +20,7 @@ import pytest
 
 from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
-from d810.cfg.pipeline import PassPipeline
+from d810.cfg.pipeline import FlowGraphTransformPipeline
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from d810.hexrays.mutation.passes.goto_chain_removal import GotoChainRemovalPass
 
@@ -641,7 +641,7 @@ class TestGotoChainRemovalPassIntegration:
         blocks = {0: blk0, 10: blk10_goto, 20: blk20}
         backend = InMemoryBackend(blocks)
 
-        pipeline = PassPipeline(backend, [GotoChainRemovalPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [GotoChainRemovalPass()])
         total_mods = pipeline.run(blocks)
 
         assert total_mods == 1
@@ -668,7 +668,7 @@ class TestGotoChainRemovalPassIntegration:
         blocks = {0: blk0, 1: blk1}
         backend = InMemoryBackend(blocks)
 
-        pipeline = PassPipeline(backend, [GotoChainRemovalPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [GotoChainRemovalPass()])
         total_mods = pipeline.run(blocks)
 
         assert total_mods == 0
@@ -696,7 +696,7 @@ class TestGotoChainRemovalPassIntegration:
         blocks = {0: blk0, 10: blk10_goto, 20: blk20, 30: blk30}
         backend = InMemoryBackend(blocks)
 
-        pipeline = PassPipeline(backend, [GotoChainRemovalPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [GotoChainRemovalPass()])
         total_mods = pipeline.run(blocks)
 
         assert total_mods == 1
@@ -734,7 +734,7 @@ class TestGotoChainRemovalPassIntegration:
         blocks = {0: blk0, 5: blk5, 10: blk10_goto, 20: blk20}
         backend = InMemoryBackend(blocks)
 
-        pipeline = PassPipeline(backend, [GotoChainRemovalPass()])
+        pipeline = FlowGraphTransformPipeline(backend, [GotoChainRemovalPass()])
         total_mods = pipeline.run(blocks)
 
         assert total_mods == 2
