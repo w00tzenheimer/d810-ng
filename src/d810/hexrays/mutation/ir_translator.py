@@ -97,7 +97,7 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
 class IDAIRTranslator:
     """CFGBackend implementation for IDA Pro's Hex-Rays microcode.
 
-    Translates between the portable CFG representation and IDA's
+    Translates between the FlowGraph representation and IDA's
     mblock_t/mba_t structures using DeferredGraphModifier.
 
     Example:
@@ -115,13 +115,13 @@ class IDAIRTranslator:
         return "ida"
 
     def lift(self, mba: "ida_hexrays.mba_t") -> FlowGraph:
-        """Convert IDA's mba_t to PortableCFG snapshot.
+        """Convert IDA's mba_t to FlowGraph snapshot.
 
         Args:
             mba: IDA microcode block array to snapshot.
 
         Returns:
-            Portable CFG snapshot capturing current topology.
+            FlowGraph snapshot capturing current topology.
         """
         return lift(mba)
 

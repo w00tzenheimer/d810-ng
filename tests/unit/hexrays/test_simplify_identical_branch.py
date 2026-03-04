@@ -1,6 +1,6 @@
 """Tests for SimplifyIdenticalBranchPass.
 
-This module tests the CFGPass migration of make_2way_block_goto() functionality
+This module tests the FlowGraphTransform migration of make_2way_block_goto() functionality
 from cfg_mutations.py. Tests cover:
 - Detection of 2-way blocks with identical successors
 - Ignoring blocks that don't match the pattern

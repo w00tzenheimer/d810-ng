@@ -1,6 +1,6 @@
 """OpcodeDistributionCollector - instruction opcode frequency histogram.
 
-Fires at MMAT_PREOPTIMIZED (5). Accepts PortableCFG (unit tests) or
+Fires at MMAT_PREOPTIMIZED (5). Accepts FlowGraph (unit tests) or
 live mba_t (IDA runtime).
 
 Metrics produced:
@@ -36,7 +36,7 @@ class OpcodeDistributionCollector:
         counter: Counter[int] = Counter()
 
         if hasattr(target, "blocks") and hasattr(target, "entry_serial"):
-            # PortableCFG path
+            # FlowGraph path
             for blk in target.blocks.values():
                 for insn in getattr(blk, "insn_snapshots", ()):
                     counter[int(insn.opcode)] += 1

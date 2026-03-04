@@ -1,7 +1,7 @@
-"""Tests for CFGPass abstract base class and CFGBackend protocol.
+"""Tests for FlowGraphTransform abstract base class and CFGBackend protocol.
 
 This module tests:
-- CFGPass subclassing and validation
+- FlowGraphTransform subclassing and validation
 - CFGBackend protocol conformance (runtime_checkable)
 - InMemoryBackend implementation for testing
 - Concrete pass examples (NoOpPass, CountBlocksPass)
@@ -11,18 +11,18 @@ from __future__ import annotations
 import pytest
 
 from d810.cfg.protocol import IRTranslator
-from d810.cfg.passes._base import CFGPass
+from d810.cfg.passes._base import FlowGraphTransform
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from tests.unit.hexrays.conftest import InMemoryBackend
 
 
 # ============================================================================
-# Concrete CFGPass Examples for Testing
+# Concrete FlowGraphTransform Examples for Testing
 # ============================================================================
 
 
-class NoOpPass(CFGPass):
+class NoOpPass(FlowGraphTransform):
     """Pass that does nothing (returns empty modification list)."""
     name = "noop"
 
@@ -31,7 +31,7 @@ class NoOpPass(CFGPass):
         return []
 
 
-class CountBlocksPass(CFGPass):
+class CountBlocksPass(FlowGraphTransform):
     """Pass that returns ConvertToGoto for each block with nsucc==0."""
     name = "count_blocks"
     tags = frozenset({"test", "example"})
@@ -40,7 +40,7 @@ class CountBlocksPass(CFGPass):
         """Return ConvertToGoto for terminal blocks.
 
         Args:
-            cfg: Portable CFG to analyze.
+            cfg: FlowGraph to analyze.
 
         Returns:
             List with ConvertToGoto for each block with nsucc==0.
@@ -54,7 +54,7 @@ class CountBlocksPass(CFGPass):
         return modifications
 
 
-class ConditionalPass(CFGPass):
+class ConditionalPass(FlowGraphTransform):
     """Pass that only applies to CFGs with >2 blocks."""
     name = "conditional"
 
@@ -94,7 +94,7 @@ class TestInMemoryBackend:
         assert cfg.func_ea == 0
 
     def test_lift_with_blocks(self):
-        """Lift with blocks should return PortableCFG."""
+        """Lift with blocks should return FlowGraph."""
         # Create synthetic blocks
         blk0 = BlockSnapshot(
             serial=0, block_type=3, succs=(1,), preds=(),
@@ -137,7 +137,7 @@ class TestInMemoryBackend:
 
 
 class TestCFGPass:
-    """Tests for CFGPass abstract base class."""
+    """Tests for FlowGraphTransform abstract base class."""
 
     def test_noop_pass_returns_empty_list(self):
         """NoOpPass should return empty modification list."""
@@ -219,7 +219,7 @@ class TestCFGPass:
     def test_missing_name_raises_typeerror(self):
         """Defining a pass without 'name' should raise TypeError."""
         with pytest.raises(TypeError, match="must define 'name' class attribute"):
-            class MissingNamePass(CFGPass):
+            class MissingNamePass(FlowGraphTransform):
                 def transform(self, cfg: FlowGraph) -> list[GraphModification]:
                     return []
 
@@ -263,7 +263,7 @@ class TestIntegration:
         blocks = {0: blk0, 1: blk1, 2: blk2}
         backend = InMemoryBackend(blocks)
 
-        # Lift to PortableCFG
+        # Lift to FlowGraph
         cfg = backend.lift()
         assert cfg.num_blocks == 3
 

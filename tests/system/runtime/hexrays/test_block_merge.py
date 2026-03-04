@@ -1,6 +1,6 @@
 """Unit tests for BlockMergePass.
 
-Tests the CFGPass that merges artificially split basic blocks by NOPing
+Tests the FlowGraphTransform that merges artificially split basic blocks by NOPing
 redundant goto instructions.
 """
 from __future__ import annotations

@@ -1,6 +1,6 @@
-"""PassPipeline orchestrator for running CFGPass transforms through a CFGBackend.
+"""PassPipeline orchestrator for running FlowGraphTransform transforms through a CFGBackend.
 
-The pipeline lifts backend state to PortableCFG, runs each pass's transform,
+The pipeline lifts backend state to FlowGraph, runs each pass's transform,
 lowers the resulting modifications, verifies, and re-lifts if changes occurred.
 """
 from __future__ import annotations
@@ -8,7 +8,7 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from d810.core.typing import Any
 
-from d810.cfg.passes._base import CFGPass
+from d810.cfg.passes._base import FlowGraphTransform
 from d810.cfg.protocol import IRTranslator
 from d810.cfg.flowgraph import FlowGraph
 
@@ -16,14 +16,14 @@ logger = getLogger(__name__, default_level=0)  # NOTSET: inherit from parent
 
 
 class PassPipeline:
-    """Run a sequence of CFGPass transforms through a CFGBackend.
+    """Run a sequence of FlowGraphTransform transforms through a CFGBackend.
 
     Usage:
         pipeline = PassPipeline(backend, [pass1, pass2, pass3])
         total_changes = pipeline.run(backend_state)
     """
 
-    def __init__(self, backend: IRTranslator, passes: list[CFGPass]) -> None:
+    def __init__(self, backend: IRTranslator, passes: list[FlowGraphTransform]) -> None:
         self.backend = backend
         self.passes = list(passes)  # defensive copy
 

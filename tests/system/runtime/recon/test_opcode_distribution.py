@@ -1,4 +1,4 @@
-"""Unit tests for OpcodeDistributionCollector using PortableCFG + InsnSnapshot."""
+"""Unit tests for OpcodeDistributionCollector using FlowGraph + InsnSnapshot."""
 from __future__ import annotations
 import pytest
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
@@ -10,7 +10,7 @@ def _insn(opcode: int) -> InsnSnapshot:
 
 
 def _make_cfg_with_opcodes(opcode_lists: list[list[int]], func_ea: int = 0x401000) -> FlowGraph:
-    """Build a PortableCFG where each block has the given opcodes."""
+    """Build a FlowGraph where each block has the given opcodes."""
     blocks = {}
     for i, opcodes in enumerate(opcode_lists):
         insns = tuple(_insn(op) for op in opcodes)

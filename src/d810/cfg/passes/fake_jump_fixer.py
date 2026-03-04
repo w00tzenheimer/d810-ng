@@ -1,8 +1,8 @@
-"""CFGPass that fixes fake/opaque jumps by redirecting edges to correct targets.
+"""FlowGraphTransform that fixes fake/opaque jumps by redirecting edges to correct targets.
 
 This pass migrates the CFG-level edge redirection logic from UnflattenerFakeJump
 (src/d810/optimizers/microcode/flow/flattening/unflattener_fake_jump.py) into
-the CFGPass framework.
+the FlowGraphTransform framework.
 
 UnflattenerFakeJump uses MopTracker symbolic execution to determine if conditional
 jumps are always/never taken, then redirects predecessors to the correct target.
@@ -29,12 +29,12 @@ Example:
 """
 from __future__ import annotations
 
-from d810.cfg.passes._base import CFGPass
+from d810.cfg.passes._base import FlowGraphTransform
 from d810.cfg.graph_modification import GraphModification, RedirectBranch, RedirectGoto
 from d810.cfg.flowgraph import FlowGraph
 
 
-class FakeJumpFixerPass(CFGPass):
+class FakeJumpFixerPass(FlowGraphTransform):
     """Redirect edges for fake/opaque jumps based on pre-computed analysis.
 
     This pass applies pre-computed fake jump fixes (determined by MopTracker
@@ -105,7 +105,7 @@ class FakeJumpFixerPass(CFGPass):
         """Analyze CFG and return RedirectGoto/RedirectBranch for fake/opaque jumps.
 
         Args:
-            cfg: Portable CFG snapshot to analyze.
+            cfg: FlowGraph snapshot to analyze.
 
         Returns:
             List of RedirectGoto or RedirectBranch modifications for blocks where:
@@ -159,7 +159,7 @@ class FakeJumpFixerPass(CFGPass):
         """Check if this pass should run on the given CFG.
 
         Args:
-            cfg: Portable CFG snapshot to check.
+            cfg: FlowGraph snapshot to check.
 
         Returns:
             True if there are any pre-computed fixes, False otherwise.

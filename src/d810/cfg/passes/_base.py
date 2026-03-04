@@ -1,11 +1,11 @@
 """Abstract base class for CFG transformation passes.
 
-A CFGPass analyzes a PortableCFG and returns a list of GraphModification
+A FlowGraphTransform analyzes a FlowGraph and returns a list of GraphModification
 intents describing desired changes. Passes are backend-agnostic and operate
 only on the portable IR.
 
 Example:
-    >>> class RemoveDeadBlocks(CFGPass):
+    >>> class RemoveDeadBlocks(FlowGraphTransform):
     ...     name = "remove_dead_blocks"
     ...     tags = frozenset({"optimization", "cleanup"})
     ...
@@ -23,10 +23,10 @@ if TYPE_CHECKING:
     from d810.cfg.graph_modification import GraphModification
 
 
-class CFGPass(ABC):
+class FlowGraphTransform(ABC):
     """Abstract base class for CFG transformation passes.
 
-    A CFGPass analyzes a PortableCFG and returns a list of
+    A FlowGraphTransform analyzes a FlowGraph and returns a list of
     GraphModification intents describing desired changes.
 
     Subclasses must define:
@@ -42,7 +42,7 @@ class CFGPass(ABC):
         tags: Frozen set of category tags (default: empty frozenset).
 
     Example:
-        >>> class NoOpPass(CFGPass):
+        >>> class NoOpPass(FlowGraphTransform):
         ...     name = "noop"
         ...     def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         ...         return []
@@ -59,10 +59,10 @@ class CFGPass(ABC):
 
     @abstractmethod
     def transform(self, cfg: "FlowGraph") -> list["GraphModification"]:
-        """Analyze portable CFG, return modification intents.
+        """Analyze FlowGraph, return modification intents.
 
         Args:
-            cfg: Portable CFG snapshot to analyze.
+            cfg: FlowGraph snapshot to analyze.
 
         Returns:
             List of GraphModification intents describing desired changes.
@@ -77,7 +77,7 @@ class CFGPass(ABC):
         pre-conditions (e.g., skip if CFG has no blocks).
 
         Args:
-            cfg: Portable CFG snapshot to check.
+            cfg: FlowGraph snapshot to check.
 
         Returns:
             True if pass should run, False to skip.
@@ -89,4 +89,4 @@ class CFGPass(ABC):
         return f"{type(self).__name__}(name={self.name!r})"
 
 
-__all__ = ["CFGPass"]
+__all__ = ["FlowGraphTransform"]

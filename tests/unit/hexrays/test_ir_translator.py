@@ -333,7 +333,7 @@ class TestIDAIntegration:
     """
 
     def test_lift_returns_flowgraph(self):
-        """Test lift() returns a PortableCFG flowgraph for a real mba_t."""
+        """Test lift() returns a FlowGraph flowgraph for a real mba_t."""
         backend = IDAIRTranslator()
         assert hasattr(backend, "lift")
         assert callable(backend.lift)

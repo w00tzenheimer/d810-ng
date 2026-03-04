@@ -47,11 +47,11 @@
 #   ./run_system_tests_docker.sh system
 #   ./run_system_tests_docker.sh system -w my-worktree
 #   ./run_system_tests_docker.sh shell
-#   ./run_system_tests_docker.sh shell -w verifycpp-on-ngcfgpass -l
+#   ./run_system_tests_docker.sh shell -w verifycpp-on-ngFlowGraphTransform -l
 #   ./run_system_tests_docker.sh exec -- python -c 'print("hello world")'
 #   ./run_system_tests_docker.sh exec -- bash -c 'echo hi && $PYTHON -m pytest tests/unit/ -v'
 #   ./run_system_tests_docker.sh dump -f sub_7FFD3338C040 -m LOCOPT,CALLS,GLBOPT1,GLBOPT2 -p hodur_flag2.json -o hodur_flag2_dump.txt
-#   ./run_system_tests_docker.sh dump -f AntiDebug_ExceptionFilter -p example_libobfuscated.json -o antidebug_dump4.txt -w verifycpp-on-ngcfgpass -l
+#   ./run_system_tests_docker.sh dump -f AntiDebug_ExceptionFilter -p example_libobfuscated.json -o antidebug_dump4.txt -w verifycpp-on-ngFlowGraphTransform -l
 set -e
 
 DOCKER_IMAGE="${D810_DOCKER_IMAGE:-idapro-9.3}"

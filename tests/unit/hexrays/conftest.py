@@ -10,10 +10,10 @@ from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 
 
 class InMemoryBackend:
-    """Mock backend operating on synthetic PortableCFG.
+    """Mock backend operating on synthetic FlowGraph.
 
     Implements CFGBackend protocol without IDA dependency.
-    Used for testing CFGPass instances and PassPipeline in isolation.
+    Used for testing FlowGraphTransform instances and PassPipeline in isolation.
     """
 
     def __init__(self, blocks: dict[int, BlockSnapshot] | None = None):
@@ -32,13 +32,13 @@ class InMemoryBackend:
         return "in_memory"
 
     def lift(self, state: dict[int, BlockSnapshot] | None = None) -> FlowGraph:
-        """Lift blocks dict to PortableCFG.
+        """Lift blocks dict to FlowGraph.
 
         Args:
             state: Optional blocks dict (uses self.blocks if None).
 
         Returns:
-            PortableCFG with blocks from state or self.blocks.
+            FlowGraph with blocks from state or self.blocks.
         """
         self.lift_count += 1
         blocks = state if state is not None else self.blocks
