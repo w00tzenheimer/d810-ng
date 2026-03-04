@@ -35,7 +35,7 @@ import ida_hexrays
 
 from d810.core import getLogger, logging
 from d810.core.typing import TYPE_CHECKING
-from d810.optimizers.microcode.flow.analysis_stats import summarize_dispatcher_detection
+from d810.recon.flow.analysis_stats import summarize_dispatcher_detection
 
 # Optional emulation support
 try:

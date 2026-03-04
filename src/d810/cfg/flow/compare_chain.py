@@ -34,7 +34,7 @@ from collections.abc import Sequence
 from d810.core.logging import getLogger
 from dataclasses import dataclass
 
-from d810.optimizers.microcode.flow.state_var_alias import VarRef
+from d810.cfg.flow.state_var_alias import VarRef
 
 __all__ = [
     "BlockComparison",

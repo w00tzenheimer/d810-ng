@@ -11,6 +11,7 @@ import ida_hexrays
 
 from d810.core.stats import OptimizationStatistics
 from d810.hexrays.hexrays_hooks import InstructionOptimizerManager
+from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
 from d810.optimizers.microcode.instructions.pattern_matching import handler as _pattern_handler
 from d810.optimizers.microcode.instructions.pattern_matching.handler import PatternOptimizer
 
@@ -91,7 +92,9 @@ class TestInstructionScopeCaching:
     def test_instruction_scope_cache_is_used_per_function_and_maturity(
         self, libobfuscated_setup
     ):
-        manager = InstructionOptimizerManager(OptimizationStatistics(), Path("."))
+        manager = InstructionOptimizerManager(
+            OptimizationStatistics(), Path("."), optimizer_cls=InstructionOptimizer
+        )
         manager.analyzer = SimpleNamespace(analyze=lambda *_args, **_kwargs: None)
         capture = _CaptureOptimizer()
         manager.instruction_optimizers = [capture]

@@ -15,7 +15,7 @@ Key insight from cadecff integration:
         -> Transition: A -> B
 
 Usage:
-    from d810.optimizers.microcode.flow.compare_chain import DispatchTable
+    from d810.cfg.flow.compare_chain import DispatchTable
 
     dispatch_table = DispatchTable(entries, default_serial=99)
     state_writes = {10: [0x42, 0x100], 20: [0x200]}
@@ -41,7 +41,7 @@ from d810.core.logging import getLogger
 from collections import deque
 from dataclasses import dataclass
 
-from d810.optimizers.microcode.flow.compare_chain import DispatchTable
+from d810.cfg.flow.compare_chain import DispatchTable
 
 __all__ = [
     "CaseTransition",
@@ -190,7 +190,7 @@ class DispatchSimulator:
                 If not found -> add to unresolved
 
     Example:
-        >>> from d810.optimizers.microcode.flow.compare_chain import (
+        >>> from d810.cfg.flow.compare_chain import (
         ...     DispatchTable, CompareEntry
         ... )
         >>> # Dispatch table: 0x42 -> case 20, 0x100 -> case 30
@@ -239,7 +239,7 @@ class DispatchSimulator:
         Examples
         --------
         >>> # Simple linear chain
-        >>> from d810.optimizers.microcode.flow.compare_chain import (
+        >>> from d810.cfg.flow.compare_chain import (
         ...     DispatchTable, CompareEntry
         ... )
         >>> entries = (
@@ -312,7 +312,7 @@ class DispatchSimulator:
         Examples
         --------
         >>> # Simple lookup
-        >>> from d810.optimizers.microcode.flow.compare_chain import (
+        >>> from d810.cfg.flow.compare_chain import (
         ...     DispatchTable, CompareEntry
         ... )
         >>> entries = (CompareEntry(0x42, 20, 1),)

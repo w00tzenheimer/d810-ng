@@ -110,7 +110,7 @@ def _largest_dispatch_scc_size(
     if not dispatch_region:
         return 0
 
-    from d810.optimizers.microcode.flow.dispatch_region import DispatchRegionDetector
+    from d810.recon.flow.dispatch_region import DispatchRegionDetector
 
     # Build filtered adjacency dict containing only dispatch region nodes
     filtered_adj: dict[int, tuple[int, ...]] = {}
