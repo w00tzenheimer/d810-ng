@@ -160,7 +160,7 @@ from .platform import (
 )
 
 # Tracker components (extracted hot-path components)
-from .tracker_components import (
+from .tracker import (
     ImmutableBlockInfo,
     CachedBlockPath,
     MopSet,
@@ -310,7 +310,7 @@ __all__ = [
     "is_arch_specific_config",
     "resolve_arch_config",
     "ARCH_CONFIG_KEYS",
-    # tracker_components
+    # tracker
     "ImmutableBlockInfo",
     "CachedBlockPath",
     "MopSet",

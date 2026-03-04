@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import ida_hexrays
 
-from d810.cfg.passes._base import FlowGraphTransform
+from d810.cfg.transform._base import FlowGraphTransform
 from d810.cfg.graph_modification import GraphModification, NopInstructions
 from d810.cfg.flowgraph import FlowGraph
 

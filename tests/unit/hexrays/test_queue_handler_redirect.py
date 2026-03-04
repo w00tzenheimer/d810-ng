@@ -114,7 +114,7 @@ _D810_STUB_NAMES = (
     "d810.hexrays.expr.ast",
     "d810.hexrays.utils.emulator",
     "d810.hexrays.expr.z3_utils",
-    "d810.cfg.dominators",
+    "d810.cfg.dominator",
     "d810.optimizers.microcode.flow.flattening.dispatcher_detection",
     "d810.optimizers.microcode.flow.flattening.safeguards",
     "d810.optimizers.microcode.flow.flattening.transition_builder",

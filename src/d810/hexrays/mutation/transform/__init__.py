@@ -1,10 +1,10 @@
 """IDA/Hex-Rays specific mutation transform."""
 from __future__ import annotations
 
-from d810.hexrays.mutation.passes.block_merge import BlockMergePass
-from d810.hexrays.mutation.passes.goto_chain_removal import GotoChainRemovalPass
+from d810.hexrays.mutation.transform.block_merge import BlockMergeTransform
+from d810.hexrays.mutation.transform.goto_chain_removal import GotoChainRemovalPass
 
 __all__ = [
-    "BlockMergePass",
+    "BlockMergeTransform",
     "GotoChainRemovalPass",
 ]

@@ -8,7 +8,7 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from d810.core.typing import Any
 
-from d810.cfg.passes._base import FlowGraphTransform
+from d810.cfg.transform._base import FlowGraphTransform
 from d810.cfg.protocol import IRTranslator
 from d810.cfg.flowgraph import FlowGraph
 

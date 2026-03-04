@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.passes.fake_jump_fixer import FakeJumpFixerPass
+from d810.cfg.transform.fake_jump_fixer import FakeJumpFixerPass
 from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.pipeline import FlowGraphTransformPipeline
