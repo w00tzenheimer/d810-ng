@@ -32,7 +32,7 @@ import ida_hexrays
 import idaapi
 import idc
 
-from d810.hexrays.hexrays_microcode.emulator import (
+from d810.evaluator.hexrays_microcode.emulator import (
     MicroCodeEnvironment,
     MicroCodeInterpreter,
 )
