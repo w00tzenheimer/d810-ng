@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.optimizers.microcode.flow.constant_prop.lattice import (
+from d810.cfg.lattice import (
     BOTTOM,
     TOP,
     Const,

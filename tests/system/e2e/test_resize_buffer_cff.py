@@ -24,7 +24,7 @@ import pytest
 
 import idaapi
 
-from d810.testing.runner import run_deobfuscation_test, get_func_ea
+from d810.testing.runner import get_func_ea, run_deobfuscation_test
 from tests.system.cases.libobfuscated_comprehensive import RESIZE_BUFFER_CFF_CASES
 
 
@@ -33,7 +33,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 @pytest.fixture(scope="class")
@@ -124,6 +126,7 @@ class TestResizeBufferCFFIncremental:
     def _try_decompile(self, func_ea):
         """Attempt decompilation, returning (code_str, success) tuple."""
         from tests.system.conftest import _pseudocode_to_string
+
         result = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
         if result is None:
             return None, False
@@ -169,9 +172,9 @@ class TestResizeBufferCFFIncremental:
             "This means IDA cannot decompile it at all."
         )
         # Verify we see obfuscation indicators
-        assert self._has_resize_opaque_markers(code), (
-            "Expected resize opaque-state markers not found in baseline"
-        )
+        assert self._has_resize_opaque_markers(
+            code
+        ), "Expected resize opaque-state markers not found in baseline"
 
     @pytest.mark.ida_required
     def test_02_instruction_only(self, libobfuscated_setup, d810_state):
@@ -192,7 +195,9 @@ class TestResizeBufferCFFIncremental:
 
             code, success = self._try_decompile(func_ea)
 
-            self._print_code_summary("INSTRUCTION-ONLY (default_instruction_only.json)", code)
+            self._print_code_summary(
+                "INSTRUCTION-ONLY (default_instruction_only.json)", code
+            )
 
             if success:
                 print("\n  Stats (rules that fired):")
@@ -202,7 +207,9 @@ class TestResizeBufferCFFIncremental:
                 has_opaque_markers = self._has_resize_opaque_markers(code)
                 print(f"\n  Opaque/CFF markers remaining: {has_opaque_markers}")
                 if not has_opaque_markers:
-                    print("  --> FoldReadonlyDataRule successfully resolved table lookups")
+                    print(
+                        "  --> FoldReadonlyDataRule successfully resolved table lookups"
+                    )
                 else:
                     print("  --> Opaque table references NOT fully resolved")
             else:
@@ -250,7 +257,9 @@ class TestResizeBufferCFFIncremental:
                 print(f"\n  Opaque/CFF markers remaining: {has_opaque_markers}")
             else:
                 print("\n  FAILURE: flatfold config caused decompile() -> None")
-                print("  Block rules are the cause -- isolate further with per-rule tests.")
+                print(
+                    "  Block rules are the cause -- isolate further with per-rule tests."
+                )
 
             state.stop_d810()
 
@@ -282,14 +291,12 @@ class TestResizeBufferCFFIncremental:
         """
         import time as _time
 
-        from d810.hexrays.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
-        from d810.core import (
-            MOP_CONSTANT_CACHE as CORE_MOP_CONSTANT_CACHE,
-            MOP_TO_AST_CACHE as CORE_MOP_TO_AST_CACHE,
-        )
-        from d810.optimizers.microcode.flow.flattening.dispatcher_detection import DispatcherCache
+        from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
         from d810.evaluator.hexrays_microcode.tracker import MopTracker
         from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block
+        from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
+            DispatcherCache,
+        )
 
         # Rules known to cause infinite hangs inside idaapi.decompile() due to
         # MBA corruption (C-level, cannot be interrupted by SIGALRM).
@@ -310,7 +317,9 @@ class TestResizeBufferCFFIncremental:
             all_blk_rules = list(state.current_blk_rules)
             print(f"\n  Found {len(all_blk_rules)} block rules to test individually:")
             for rule in all_blk_rules:
-                skip_tag = " [WILL SKIP - known hang]" if rule.name in KNOWN_HANG_RULES else ""
+                skip_tag = (
+                    " [WILL SKIP - known hang]" if rule.name in KNOWN_HANG_RULES else ""
+                )
                 print(f"    - {rule.name}{skip_tag}")
 
             state.stop_d810()
@@ -325,8 +334,6 @@ class TestResizeBufferCFFIncremental:
                 # Clear all caches to prevent cross-contamination
                 MOP_CONSTANT_CACHE.clear()
                 MOP_TO_AST_CACHE.clear()
-                CORE_MOP_CONSTANT_CACHE.clear()
-                CORE_MOP_TO_AST_CACHE.clear()
                 DispatcherCache.clear_cache()
                 MopTracker.reset()
                 fix_pred_cond_jump_block.clear_cache()
@@ -398,13 +405,12 @@ class TestResizeBufferCFFIncremental:
         FixPredecessorOfConditionalJumpBlock, then decompiles and prints
         the entire pseudocode output for inspection.
         """
-        from d810.core import (
-            MOP_CONSTANT_CACHE,
-            MOP_TO_AST_CACHE
-        )
-        from d810.optimizers.microcode.flow.flattening.dispatcher_detection import DispatcherCache
+        from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
         from d810.evaluator.hexrays_microcode.tracker import MopTracker
         from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block
+        from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
+            DispatcherCache,
+        )
 
         func_ea = self._get_func_ea()
 
@@ -422,7 +428,9 @@ class TestResizeBufferCFFIncremental:
                     break
 
             if fixpred_rule is None:
-                pytest.skip("FixPredecessorOfConditionalJumpBlock not found in flatfold.json")
+                pytest.skip(
+                    "FixPredecessorOfConditionalJumpBlock not found in flatfold.json"
+                )
 
             # Clear all caches
             MOP_CONSTANT_CACHE.clear()
@@ -433,7 +441,9 @@ class TestResizeBufferCFFIncremental:
 
             # Set ONLY FixPredecessorOfConditionalJumpBlock as the active block rule
             state.current_blk_rules = [fixpred_rule]
-            print(f"\n  Block rules active: {[r.name for r in state.current_blk_rules]}")
+            print(
+                f"\n  Block rules active: {[r.name for r in state.current_blk_rules]}"
+            )
             print(f"  Instruction rules active: {len(state.current_ins_rules)}")
 
             state.start_d810()
@@ -459,6 +469,6 @@ class TestResizeBufferCFFIncremental:
 
             state.stop_d810()
 
-        assert code is not None, (
-            "decompile() returned None with only FixPredecessorOfConditionalJumpBlock active"
-        )
+        assert (
+            code is not None
+        ), "decompile() returned None with only FixPredecessorOfConditionalJumpBlock active"
