@@ -9,7 +9,7 @@ TODO:
 from __future__ import annotations
 
 from d810.cfg.graph_modification import GraphModification
-from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 
 
 class InMemoryBackend:
@@ -24,13 +24,13 @@ class InMemoryBackend:
     def name(self) -> str:
         return "in_memory"
 
-    def lift(self, state: dict[int, BlockSnapshot] | None = None) -> PortableCFG:
+    def lift(self, state: dict[int, BlockSnapshot] | None = None) -> FlowGraph:
         self.lift_count += 1
         blocks = state if state is not None else self.blocks
         if not blocks:
-            return PortableCFG(blocks={}, entry_serial=0, func_ea=0)
+            return FlowGraph(blocks={}, entry_serial=0, func_ea=0)
         entry_serial = min(blocks.keys())
-        return PortableCFG(
+        return FlowGraph(
             blocks=blocks,
             entry_serial=entry_serial,
             func_ea=blocks[entry_serial].start_ea,

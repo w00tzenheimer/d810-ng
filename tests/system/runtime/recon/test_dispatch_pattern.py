@@ -1,10 +1,10 @@
 from __future__ import annotations
 import pytest
-from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from d810.recon.collectors.dispatch_pattern import DispatchPatternCollector
 
 
-def _make_switch_cfg(func_ea: int = 0x401000) -> PortableCFG:
+def _make_switch_cfg(func_ea: int = 0x401000) -> FlowGraph:
     """CFG with one NWAY (switch) block fanning out to 5 targets."""
     blocks = {
         0: BlockSnapshot(serial=0, block_type=3, succs=(1,), preds=(), flags=0,
@@ -16,10 +16,10 @@ def _make_switch_cfg(func_ea: int = 0x401000) -> PortableCFG:
         blocks[i] = BlockSnapshot(serial=i, block_type=0, succs=(), preds=(1,),
                                    flags=0, start_ea=func_ea + i * 0x10,
                                    insn_snapshots=())
-    return PortableCFG(blocks=blocks, entry_serial=0, func_ea=func_ea)
+    return FlowGraph(blocks=blocks, entry_serial=0, func_ea=func_ea)
 
 
-def _make_linear_cfg(func_ea: int = 0x402000) -> PortableCFG:
+def _make_linear_cfg(func_ea: int = 0x402000) -> FlowGraph:
     blocks = {}
     for i in range(4):
         succs = (i + 1,) if i < 3 else ()
@@ -28,7 +28,7 @@ def _make_linear_cfg(func_ea: int = 0x402000) -> PortableCFG:
                                    succs=succs, preds=preds, flags=0,
                                    start_ea=func_ea + i * 0x10,
                                    insn_snapshots=())
-    return PortableCFG(blocks=blocks, entry_serial=0, func_ea=func_ea)
+    return FlowGraph(blocks=blocks, entry_serial=0, func_ea=func_ea)
 
 
 class TestDispatchPatternCollector:
@@ -77,6 +77,6 @@ class TestDispatchPatternCollector:
             4: BlockSnapshot(serial=4, block_type=1, succs=(1,), preds=(1,), flags=0,
                              start_ea=0x401040, insn_snapshots=()),
         }
-        cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x401000)
+        cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x401000)
         result = DispatchPatternCollector().collect(cfg, func_ea=0x401000, maturity=3)
         assert result.metrics["back_edge_count"] >= 3

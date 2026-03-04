@@ -13,7 +13,7 @@ import pytest
 
 from d810.cfg.graph_modification import NopInstructions
 from d810.cfg.pipeline import PassPipeline
-from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from d810.cfg.passes.dead_block_elimination import DeadBlockEliminationPass
 
 from tests.unit.hexrays.conftest import InMemoryBackend
@@ -37,7 +37,7 @@ class TestDeadBlockEliminationPass:
             serial=2, block_type=2, succs=(),preds=(1,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2},
             entry_serial=0, func_ea=0x1000
         )
@@ -72,7 +72,7 @@ class TestDeadBlockEliminationPass:
             serial=3, block_type=2, succs=(),preds=(),
             flags=0, start_ea=0x3000, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2_dead, 3: blk3_sentinel},
             entry_serial=0, func_ea=0x1000
         )
@@ -116,7 +116,7 @@ class TestDeadBlockEliminationPass:
             serial=11, block_type=2, succs=(),preds=(),
             flags=0, start_ea=0xB000, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 5: blk5_dead, 10: blk10_dead, 11: blk11_sentinel},
             entry_serial=0, func_ea=0x1000
         )
@@ -153,7 +153,7 @@ class TestDeadBlockEliminationPass:
             serial=3, block_type=2, succs=(),preds=(1, 2),
             flags=0, start_ea=0x1030, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2, 3: blk3},
             entry_serial=0, func_ea=0x1000
         )
@@ -180,7 +180,7 @@ class TestDeadBlockEliminationPass:
             serial=2, block_type=2, succs=(),preds=(),
             flags=0, start_ea=0x2000, insn_snapshots=(insn_placeholder,)
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2_dead},
             entry_serial=0, func_ea=0x1000
         )
@@ -216,7 +216,7 @@ class TestDeadBlockEliminationPass:
             serial=3, block_type=2, succs=(),preds=(),
             flags=0, start_ea=0x3000, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2_dead, 3: blk3_sentinel},
             entry_serial=0, func_ea=0x1000
         )
@@ -231,7 +231,7 @@ class TestDeadBlockEliminationPass:
 
     def test_empty_cfg_returns_empty(self):
         """Pass handles empty CFG gracefully."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0)
 
         pass_instance = DeadBlockEliminationPass()
         mods = pass_instance.transform(cfg)
@@ -276,7 +276,7 @@ class TestDeadBlockEliminationPass:
             serial=11, block_type=2, succs=(),preds=(),
             flags=0, start_ea=0xB000, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2, 3: blk3, 10: blk10_dead, 11: blk11_sentinel},
             entry_serial=0, func_ea=0x1000
         )
@@ -316,7 +316,7 @@ class TestDeadBlockEliminationPass:
             serial=3, block_type=2, succs=(),preds=(),
             flags=0, start_ea=0x3000, insn_snapshots=(insn3,)
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2_dead, 3: blk3_sentinel},
             entry_serial=0, func_ea=0x1000
         )
@@ -349,7 +349,7 @@ class TestDeadBlockEliminationPass:
             serial=2, block_type=2, succs=(),preds=(),
             flags=0, start_ea=0x2000, insn_snapshots=(insn2,)
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2_sentinel},
             entry_serial=0, func_ea=0x1000
         )
@@ -377,7 +377,7 @@ class TestDeadBlockEliminationPass:
             serial=50, block_type=2, succs=(),preds=(),
             flags=0, start_ea=0x5000, insn_snapshots=(insn50,)
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 50: blk50_sentinel},
             entry_serial=0, func_ea=0x1000
         )

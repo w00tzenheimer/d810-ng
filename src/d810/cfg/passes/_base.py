@@ -9,7 +9,7 @@ Example:
     ...     name = "remove_dead_blocks"
     ...     tags = frozenset({"optimization", "cleanup"})
     ...
-    ...     def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    ...     def transform(self, cfg: FlowGraph) -> list[GraphModification]:
     ...         # Analyze cfg, find dead blocks, return removal intents
     ...         return [RemoveBlock(serial=5)]
 """
@@ -19,7 +19,7 @@ from abc import ABC, abstractmethod
 from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from d810.cfg.flowgraph import PortableCFG
+    from d810.cfg.flowgraph import FlowGraph
     from d810.cfg.graph_modification import GraphModification
 
 
@@ -44,7 +44,7 @@ class CFGPass(ABC):
     Example:
         >>> class NoOpPass(CFGPass):
         ...     name = "noop"
-        ...     def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+        ...     def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         ...         return []
     """
 
@@ -58,7 +58,7 @@ class CFGPass(ABC):
             raise TypeError(f"{cls.__name__} must define 'name' class attribute")
 
     @abstractmethod
-    def transform(self, cfg: "PortableCFG") -> list["GraphModification"]:
+    def transform(self, cfg: "FlowGraph") -> list["GraphModification"]:
         """Analyze portable CFG, return modification intents.
 
         Args:
@@ -70,7 +70,7 @@ class CFGPass(ABC):
         """
         ...
 
-    def is_applicable(self, cfg: "PortableCFG") -> bool:
+    def is_applicable(self, cfg: "FlowGraph") -> bool:
         """Check if this pass should run on the given CFG.
 
         Default implementation always returns True. Override to add

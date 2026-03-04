@@ -21,7 +21,7 @@ import pytest
 from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.cfg.pipeline import PassPipeline
-from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from d810.hexrays.mutation.passes.goto_chain_removal import GotoChainRemovalPass
 
 from tests.system.runtime.hexrays.conftest import InMemoryBackend
@@ -55,7 +55,7 @@ class TestGotoChainRemovalPass:
             serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=(insn1a, insn1b)
         )
-        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = GotoChainRemovalPass()
         mods = pass_instance.transform(cfg)
@@ -79,7 +79,7 @@ class TestGotoChainRemovalPass:
             serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 10: blk10_goto, 20: blk20},
             entry_serial=0, func_ea=0x1000
         )
@@ -106,7 +106,7 @@ class TestGotoChainRemovalPass:
             serial=10, block_type=3, succs=(10,), preds=(0, 10),
             flags=0, start_ea=0x1100, insn_snapshots=(self_goto_insn,)
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 10: blk10_selfloop},
             entry_serial=0, func_ea=0x1000
         )
@@ -142,7 +142,7 @@ class TestGotoChainRemovalPass:
             serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 5: blk5, 10: blk10_goto, 20: blk20},
             entry_serial=0, func_ea=0x1000
         )
@@ -183,7 +183,7 @@ class TestGotoChainRemovalPass:
             serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 10: blk10, 20: blk20},
             entry_serial=0, func_ea=0x1000
         )
@@ -209,7 +209,7 @@ class TestGotoChainRemovalPass:
             serial=2, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2},
             entry_serial=0, func_ea=0x1000
         )
@@ -231,7 +231,7 @@ class TestGotoChainRemovalPass:
             serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = GotoChainRemovalPass()
         mods = pass_instance.transform(cfg)
@@ -241,7 +241,7 @@ class TestGotoChainRemovalPass:
 
     def test_empty_cfg_returns_empty(self):
         """Pass handles empty CFG gracefully."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0)
 
         pass_instance = GotoChainRemovalPass()
         mods = pass_instance.transform(cfg)
@@ -282,7 +282,7 @@ class TestGotoChainRemovalPass:
             serial=2, block_type=2, succs=(), preds=(1,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0_entry, 1: blk1_goto, 2: blk2},
             entry_serial=0, func_ea=0x1000
         )
@@ -330,7 +330,7 @@ class TestGotoChainRemovalPass:
             serial=40, block_type=2, succs=(), preds=(30,),
             flags=0, start_ea=0x4000, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 10: blk10_goto, 20: blk20, 30: blk30_goto, 40: blk40},
             entry_serial=0, func_ea=0x1000
         )
@@ -368,7 +368,7 @@ class TestGotoChainRemovalPass:
             serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 10: blk10, 20: blk20},
             entry_serial=0, func_ea=0x1000
         )
@@ -401,7 +401,7 @@ class TestGotoChainRemovalPass:
             serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 10: blk10_empty, 20: blk20},
             entry_serial=0, func_ea=0x1000
         )
@@ -437,7 +437,7 @@ class TestGotoChainRemovalPass:
             serial=30, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1300, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 10: blk10_goto, 20: blk20, 30: blk30},
             entry_serial=0, func_ea=0x1000
         )
@@ -470,7 +470,7 @@ class TestGotoChainRemovalPass:
             serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 10: blk10_goto, 20: blk20},
             entry_serial=0, func_ea=0x1000
         )
@@ -517,7 +517,7 @@ class TestGotoChainRemovalPass:
             serial=0, block_type=4, succs=(10, 99), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0_with_sentinel, 10: blk10, 99: blk99_sentinel},
             entry_serial=0, func_ea=0x1000
         )
@@ -543,7 +543,7 @@ class TestGotoChainRemovalPass:
             serial=0, block_type=3, succs=(0,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
         )
-        cfg = PortableCFG(blocks={0: blk0}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = GotoChainRemovalPass()
         mods = pass_instance.transform(cfg)
@@ -572,7 +572,7 @@ class TestGotoChainRemovalPass:
             serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 10: blk10, 20: blk20},
             entry_serial=0, func_ea=0x1000
         )
@@ -605,7 +605,7 @@ class TestGotoChainRemovalPass:
             serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 10: blk10, 20: blk20},
             entry_serial=0, func_ea=0x1000
         )

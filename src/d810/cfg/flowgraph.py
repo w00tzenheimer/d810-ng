@@ -75,7 +75,7 @@ class BlockSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class PortableCFG:
+class FlowGraph:
     """Complete snapshot of a control flow graph."""
 
     blocks: Mapping[int, BlockSnapshot]
@@ -132,4 +132,4 @@ class PortableCFG:
         )
 
 
-__all__ = ["InsnSnapshot", "BlockSnapshot", "PortableCFG"]
+__all__ = ["InsnSnapshot", "BlockSnapshot", "FlowGraph"]

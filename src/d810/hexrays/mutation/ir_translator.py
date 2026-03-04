@@ -19,7 +19,7 @@ from d810.cfg.graph_modification import (
     RemoveEdge,
     NopInstructions,
 )
-from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
@@ -76,7 +76,7 @@ def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
     )
 
 
-def lift(mba: "ida_hexrays.mba_t") -> PortableCFG:
+def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
     if not _IDA_AVAILABLE:
         raise RuntimeError("lift requires IDA Hexrays (ida_hexrays module not available)")
 
@@ -85,7 +85,7 @@ def lift(mba: "ida_hexrays.mba_t") -> PortableCFG:
         blk = mba.get_mblock(i)
         blocks[blk.serial] = lift_block(blk)
 
-    return PortableCFG(
+    return FlowGraph(
         blocks=blocks,
         entry_serial=0,
         func_ea=mba.entry_ea,
@@ -114,7 +114,7 @@ class IDAIRTranslator:
         """Unique identifier for the backend."""
         return "ida"
 
-    def lift(self, mba: "ida_hexrays.mba_t") -> PortableCFG:
+    def lift(self, mba: "ida_hexrays.mba_t") -> FlowGraph:
         """Convert IDA's mba_t to PortableCFG snapshot.
 
         Args:

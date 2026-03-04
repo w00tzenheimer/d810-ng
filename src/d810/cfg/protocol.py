@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from d810.core.typing import Any, Protocol, runtime_checkable
 
-from d810.cfg.flowgraph import PortableCFG
+from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.graph_modification import GraphModification
 
 
@@ -53,7 +53,7 @@ class CFGBackend(Protocol):
         """Unique identifier for the backend (e.g., 'hexrays', 'in_memory')."""
         ...
 
-    def lift(self, state: Any) -> PortableCFG:
+    def lift(self, state: Any) -> FlowGraph:
         """Convert backend-specific state to PortableCFG.
 
         Args:

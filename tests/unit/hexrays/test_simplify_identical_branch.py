@@ -12,7 +12,7 @@ import pytest
 
 from d810.cfg.graph_modification import ConvertToGoto
 from d810.cfg.pipeline import PassPipeline
-from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
 
 from tests.unit.hexrays.conftest import InMemoryBackend
@@ -32,7 +32,7 @@ class TestSimplifyIdenticalBranchPass:
             serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = SimplifyIdenticalBranchPass()
         mods = pass_instance.transform(cfg)
@@ -54,7 +54,7 @@ class TestSimplifyIdenticalBranchPass:
             serial=2, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2},
             entry_serial=0, func_ea=0x1000
         )
@@ -75,7 +75,7 @@ class TestSimplifyIdenticalBranchPass:
             serial=5, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1050, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk0, 5: blk5}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 5: blk5}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = SimplifyIdenticalBranchPass()
         mods = pass_instance.transform(cfg)
@@ -118,7 +118,7 @@ class TestSimplifyIdenticalBranchPass:
             serial=20, block_type=2, succs=(), preds=(10,),
             flags=0, start_ea=0x1200, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2, 3: blk3, 5: blk5, 10: blk10, 20: blk20},
             entry_serial=0, func_ea=0x1000
         )
@@ -152,7 +152,7 @@ class TestSimplifyIdenticalBranchPass:
             serial=2, block_type=3, succs=(5,), preds=(),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2},
             entry_serial=0, func_ea=0x1000
         )
@@ -164,7 +164,7 @@ class TestSimplifyIdenticalBranchPass:
 
     def test_empty_cfg_returns_empty(self):
         """Pass handles empty CFG gracefully."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0)
 
         pass_instance = SimplifyIdenticalBranchPass()
         mods = pass_instance.transform(cfg)

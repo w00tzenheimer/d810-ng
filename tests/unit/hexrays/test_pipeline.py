@@ -15,7 +15,7 @@ import pytest
 from d810.cfg.passes._base import CFGPass
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification, RedirectGoto
 from d810.cfg.pipeline import PassPipeline
-from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from tests.unit.hexrays.conftest import InMemoryBackend
 
 
@@ -85,7 +85,7 @@ class NoOpPass(CFGPass):
     """Pass that does nothing (returns empty modification list)."""
     name = "noop"
 
-    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         """Return empty list."""
         return []
 
@@ -94,7 +94,7 @@ class SingleModPass(CFGPass):
     """Pass that returns one ConvertToGoto modification."""
     name = "single_mod"
 
-    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         """Return single ConvertToGoto modification."""
         return [ConvertToGoto(block_serial=1, goto_target=0)]
 
@@ -103,7 +103,7 @@ class DoubleModPass(CFGPass):
     """Pass that returns two modifications."""
     name = "double_mod"
 
-    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         """Return two modifications."""
         return [
             ConvertToGoto(block_serial=1, goto_target=0),
@@ -115,11 +115,11 @@ class ConditionalPass(CFGPass):
     """Pass that only applies to CFGs with >2 blocks."""
     name = "conditional"
 
-    def is_applicable(self, cfg: PortableCFG) -> bool:
+    def is_applicable(self, cfg: FlowGraph) -> bool:
         """Only apply if more than 2 blocks."""
         return cfg.num_blocks > 2
 
-    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         """Return single modification."""
         return [ConvertToGoto(block_serial=1, goto_target=0)]
 
@@ -128,7 +128,7 @@ class CountingPass(CFGPass):
     """Pass that returns modifications equal to number of blocks in CFG."""
     name = "counting"
 
-    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         """Return one ConvertToGoto per block."""
         return [
             ConvertToGoto(block_serial=serial, goto_target=0)

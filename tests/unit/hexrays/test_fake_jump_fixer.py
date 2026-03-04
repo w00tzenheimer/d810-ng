@@ -9,7 +9,7 @@ import pytest
 
 from d810.cfg.passes.fake_jump_fixer import FakeJumpFixerPass
 from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
-from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.pipeline import PassPipeline
 
 from tests.unit.hexrays.conftest import InMemoryBackend
@@ -20,14 +20,14 @@ class TestFakeJumpFixerPass:
 
     def test_empty_fixes_not_applicable(self):
         """Pass with empty fixes should not be applicable."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000)
         pass_instance = FakeJumpFixerPass(fixes={})
 
         assert not pass_instance.is_applicable(cfg)
 
     def test_non_empty_fixes_applicable(self):
         """Pass with non-empty fixes should be applicable."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000)
         pass_instance = FakeJumpFixerPass(fixes={5: 10})
 
         assert pass_instance.is_applicable(cfg)
@@ -38,7 +38,7 @@ class TestFakeJumpFixerPass:
             serial=0, block_type=4, succs=(5, 10), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         pass_instance = FakeJumpFixerPass(fixes={})
 
         mods = pass_instance.transform(cfg)
@@ -50,7 +50,7 @@ class TestFakeJumpFixerPass:
             serial=5, block_type=4, succs=(10, 20), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={5: blk}, entry_serial=5, func_ea=0x1000)
+        cfg = FlowGraph(blocks={5: blk}, entry_serial=5, func_ea=0x1000)
         fixes = {5: 10}  # Block 5 always goes to 10, never 20
         pass_instance = FakeJumpFixerPass(fixes=fixes)
 
@@ -67,7 +67,7 @@ class TestFakeJumpFixerPass:
             serial=5, block_type=3, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={5: blk}, entry_serial=5, func_ea=0x1000)
+        cfg = FlowGraph(blocks={5: blk}, entry_serial=5, func_ea=0x1000)
         fixes = {5: 20}  # Block 5 should goto 20, not 10
         pass_instance = FakeJumpFixerPass(fixes=fixes)
 
@@ -84,7 +84,7 @@ class TestFakeJumpFixerPass:
             serial=5, block_type=3, succs=(10,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={5: blk}, entry_serial=5, func_ea=0x1000)
+        cfg = FlowGraph(blocks={5: blk}, entry_serial=5, func_ea=0x1000)
         fixes = {5: 10}  # Already goes to 10
         pass_instance = FakeJumpFixerPass(fixes=fixes)
 
@@ -105,7 +105,7 @@ class TestFakeJumpFixerPass:
             serial=20, block_type=3, succs=(99,), preds=(10,),
             flags=0, start_ea=0x3000, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={10: blk10, 15: blk15, 20: blk20},
             entry_serial=10, func_ea=0x1000
         )
@@ -127,7 +127,7 @@ class TestFakeJumpFixerPass:
             serial=5, block_type=4, succs=(10, 20), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={5: blk5}, entry_serial=5, func_ea=0x1000)
+        cfg = FlowGraph(blocks={5: blk5}, entry_serial=5, func_ea=0x1000)
         # Fix references block 99 which doesn't exist
         fixes = {99: 100}
         pass_instance = FakeJumpFixerPass(fixes=fixes)
@@ -145,7 +145,7 @@ class TestFakeJumpFixerPass:
             serial=10, block_type=3, succs=(99,), preds=(5,),
             flags=0, start_ea=0x2000, insn_snapshots=()
         )
-        cfg = PortableCFG(
+        cfg = FlowGraph(
             blocks={5: blk5, 10: blk10},
             entry_serial=5, func_ea=0x1000
         )
@@ -258,7 +258,7 @@ class TestFakeJumpFixerPass:
         pass_instance = FakeJumpFixerPass(fixes=None)
 
         assert pass_instance._fixes == {}
-        assert not pass_instance.is_applicable(PortableCFG(
+        assert not pass_instance.is_applicable(FlowGraph(
             blocks={}, entry_serial=0, func_ea=0x1000
         ))
 
@@ -268,7 +268,7 @@ class TestFakeJumpFixerPass:
             serial=5, block_type=2, succs=(), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={5: blk5}, entry_serial=5, func_ea=0x1000)
+        cfg = FlowGraph(blocks={5: blk5}, entry_serial=5, func_ea=0x1000)
         # Fix for 0-way block (should be ignored)
         fixes = {5: 10}
         pass_instance = FakeJumpFixerPass(fixes=fixes)
@@ -283,7 +283,7 @@ class TestFakeJumpFixerPass:
             serial=5, block_type=4, succs=(10, 10), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={5: blk5}, entry_serial=5, func_ea=0x1000)
+        cfg = FlowGraph(blocks={5: blk5}, entry_serial=5, func_ea=0x1000)
         fixes = {5: 10}
         pass_instance = FakeJumpFixerPass(fixes=fixes)
 
