@@ -619,13 +619,13 @@ class D810Manager:
         deferred here so that pass modules are never loaded when the flag is
         disabled (zero overhead guarantee).
 
-        The following passes are included:
+        The following transform are included:
         - SimplifyIdenticalBranchPass: 2-way blocks with identical targets -> goto
           (emits ConvertToGoto / RedirectBranch, handled correctly by deferred modifier)
         - GotoChainRemovalPass: consecutive goto chains -> direct target
           (emits RedirectGoto / RedirectBranch, handled correctly by deferred modifier)
 
-        The following passes are intentionally excluded at MMAT_GLBOPT2:
+        The following transform are intentionally excluded at MMAT_GLBOPT2:
         - DeadBlockEliminationPass: emits NopInstructions which calls blk.make_nop().
           make_nop() removes the goto but does not update block type or edges, so
           mba.verify(True) rejects the inconsistent state at MMAT_GLBOPT2.
@@ -637,7 +637,7 @@ class D810Manager:
         they require pre-computed fix dicts from the legacy analysis side.
 
         Returns:
-            PassPipeline instance with IDAIRTranslator and the 2 safe cleanup passes.
+            PassPipeline instance with IDAIRTranslator and the 2 safe cleanup transform.
         """
         from d810.hexrays.mutation.ir_translator import IDAIRTranslator
         from d810.cfg.pipeline import PassPipeline

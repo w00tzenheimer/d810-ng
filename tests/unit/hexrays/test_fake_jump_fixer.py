@@ -210,7 +210,7 @@ class TestFakeJumpFixerPass:
         assert mod.new_target == 1
 
     def test_multiple_passes_in_pipeline(self):
-        """Pass should work correctly when combined with other passes."""
+        """Pass should work correctly when combined with other transform."""
         # Create CFG with two fake jumps
         blk0 = BlockSnapshot(
             serial=0, block_type=4, succs=(1, 2), preds=(),
@@ -235,7 +235,7 @@ class TestFakeJumpFixerPass:
         blocks = {0: blk0, 1: blk1, 2: blk2, 3: blk3, 4: blk4}
         backend = InMemoryBackend(blocks)
 
-        # Create two passes: one for block 0, one for block 1
+        # Create two transform: one for block 0, one for block 1
         pass1 = FakeJumpFixerPass(fixes={0: 1})
         pass2 = FakeJumpFixerPass(fixes={1: 3})
         pipeline = PassPipeline(backend, [pass1, pass2])
@@ -243,7 +243,7 @@ class TestFakeJumpFixerPass:
         # Run pipeline
         total_mods = pipeline.run(blocks)
 
-        # Verify both passes applied
+        # Verify both transform applied
         assert total_mods == 2
         assert len(backend.applied_modifications) == 2
 

@@ -1,4 +1,4 @@
-"""Abstract base class for CFG transformation passes.
+"""Abstract base class for CFG transformation transform.
 
 A FlowGraphTransform analyzes a FlowGraph and returns a list of GraphModification
 intents describing desired changes. Passes are backend-agnostic and operate
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 class FlowGraphTransform(ABC):
-    """Abstract base class for CFG transformation passes.
+    """Abstract base class for CFG transformation transform.
 
     A FlowGraphTransform analyzes a FlowGraph and returns a list of
     GraphModification intents describing desired changes.

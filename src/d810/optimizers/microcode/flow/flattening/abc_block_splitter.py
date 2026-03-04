@@ -46,7 +46,7 @@ class BlockSplitOperation:
     opcode: int
     # NOTE: We intentionally do NOT store instructions_to_copy here.
     # Storing live minsn_t pointers during analysis causes stale pointer bugs
-    # when other CFG passes modify the graph before apply() runs.
+    # when other CFG transform modify the graph before apply() runs.
     # Instead, we collect instructions fresh at apply time.
 
 

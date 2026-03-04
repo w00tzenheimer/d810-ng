@@ -1,6 +1,6 @@
 """Protocol for CFG backends that can lift, lower, and verify modifications.
 
-CFGBackend defines the interface between backend-agnostic passes (operating
+CFGBackend defines the interface between backend-agnostic transform (operating
 on FlowGraph) and concrete backend implementations (IDA mba_t, in-memory
 graphs, etc.).
 

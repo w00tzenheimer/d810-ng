@@ -132,7 +132,7 @@ class PredecessorAnalysisCache:
         }
 
 
-# Global cache instance (shared across passes for performance)
+# Global cache instance (shared across transform for performance)
 _pred_analysis_cache = PredecessorAnalysisCache()
 
 

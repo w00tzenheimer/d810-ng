@@ -3,7 +3,7 @@
 This pass identifies blocks that are unreachable from the entry block via
 standard control flow (following successor edges). For each dead block,
 it emits a NopInstructions modification to clear all instructions, allowing
-IDA's subsequent cleanup passes to remove the empty block.
+IDA's subsequent cleanup transform to remove the empty block.
 
 Example:
     >>> # Entry block (0) connects to block 1

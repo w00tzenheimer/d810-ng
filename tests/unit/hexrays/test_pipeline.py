@@ -176,7 +176,7 @@ class TestPassPipeline:
         assert isinstance(backend.applied_modifications[0], ConvertToGoto)
 
     def test_multiple_passes_accumulate(self):
-        """Multiple passes should accumulate modification counts."""
+        """Multiple transform should accumulate modification counts."""
         backend = InMemoryBackend()
         pipeline = PassPipeline(backend, [SingleModPass(), DoubleModPass()])
 
@@ -272,7 +272,7 @@ class TestPassPipeline:
         assert backend.lift_count >= 1  # At least initial lift
 
     def test_relift_after_modifications_with_blocks(self):
-        """CFG should be re-lifted after successful modifications, subsequent passes see new state."""
+        """CFG should be re-lifted after successful modifications, subsequent transform see new state."""
         # Create initial CFG with 2 blocks
         blk0 = BlockSnapshot(
             serial=0, block_type=3, succs=(1,), preds=(),
@@ -313,7 +313,7 @@ class TestPassPipeline:
         assert "single_mod" in repr_str
 
     def test_defensive_copy_of_passes(self):
-        """PassPipeline should make defensive copy of passes list."""
+        """PassPipeline should make defensive copy of transform list."""
         backend = InMemoryBackend()
         passes = [NoOpPass()]
         pipeline = PassPipeline(backend, passes)
@@ -325,7 +325,7 @@ class TestPassPipeline:
         assert len(pipeline.passes) == 1
 
     def test_mixed_passes_some_skip(self):
-        """Pipeline with mix of applicable and non-applicable passes."""
+        """Pipeline with mix of applicable and non-applicable transform."""
         # Create 2-block CFG
         blk0 = BlockSnapshot(
             serial=0, block_type=3, succs=(1,), preds=(),
