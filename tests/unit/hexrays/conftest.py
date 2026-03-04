@@ -6,7 +6,7 @@ by multiple test modules without duplication.
 from __future__ import annotations
 
 from d810.cfg.graph_modification import GraphModification
-from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 
 
 class InMemoryBackend:
@@ -31,7 +31,7 @@ class InMemoryBackend:
         """Backend identifier."""
         return "in_memory"
 
-    def lift(self, state: dict[int, BlockSnapshot] | None = None) -> PortableCFG:
+    def lift(self, state: dict[int, BlockSnapshot] | None = None) -> FlowGraph:
         """Lift blocks dict to PortableCFG.
 
         Args:
@@ -44,10 +44,10 @@ class InMemoryBackend:
         blocks = state if state is not None else self.blocks
         # If empty, return minimal CFG with entry_serial=0
         if not blocks:
-            return PortableCFG(blocks={}, entry_serial=0, func_ea=0)
+            return FlowGraph(blocks={}, entry_serial=0, func_ea=0)
         # Otherwise use first block as entry
         entry_serial = min(blocks.keys())
-        return PortableCFG(
+        return FlowGraph(
             blocks=blocks,
             entry_serial=entry_serial,
             func_ea=blocks[entry_serial].start_ea

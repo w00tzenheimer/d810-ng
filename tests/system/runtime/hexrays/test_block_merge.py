@@ -11,7 +11,7 @@ import pytest
 from d810.cfg.graph_modification import NopInstructions
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.mutation.passes.block_merge import BlockMergePass
-from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 
 # IDA microcode constants
 _M_GOTO_OPCODE = ida_hexrays.m_goto
@@ -41,7 +41,7 @@ class TestBlockMergePass:
             serial=0, block_type=2, succs=(), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = BlockMergePass()
         mods = pass_instance.transform(cfg)
@@ -59,7 +59,7 @@ class TestBlockMergePass:
             serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = BlockMergePass()
         mods = pass_instance.transform(cfg)
@@ -88,7 +88,7 @@ class TestBlockMergePass:
             serial=2, block_type=2, succs=(), preds=(0, 1),
             flags=0, start_ea=0x3000, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk_a, 1: blk_b, 2: blk_c}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk_a, 1: blk_b, 2: blk_c}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = BlockMergePass()
         mods = pass_instance.transform(cfg)
@@ -104,7 +104,7 @@ class TestBlockMergePass:
             serial=0, block_type=3, succs=(0,), preds=(0,),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
         )
-        cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = BlockMergePass()
         mods = pass_instance.transform(cfg)
@@ -130,7 +130,7 @@ class TestBlockMergePass:
             serial=2, block_type=2, succs=(), preds=(1,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = BlockMergePass()
         mods = pass_instance.transform(cfg)
@@ -153,7 +153,7 @@ class TestBlockMergePass:
             serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = BlockMergePass()
         mods = pass_instance.transform(cfg)
@@ -171,7 +171,7 @@ class TestBlockMergePass:
             serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = BlockMergePass()
         mods = pass_instance.transform(cfg)
@@ -193,7 +193,7 @@ class TestBlockMergePass:
             serial=2, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = BlockMergePass()
         mods = pass_instance.transform(cfg)
@@ -208,7 +208,7 @@ class TestBlockMergePass:
             serial=0, block_type=3, succs=(99,), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(goto_insn,)
         )
-        cfg = PortableCFG(blocks={0: blk0}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = BlockMergePass()
         mods = pass_instance.transform(cfg)
@@ -222,7 +222,7 @@ class TestBlockMergePass:
             serial=0, block_type=2, succs=(), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
 
         assert pass_instance.is_applicable(cfg) is True
 
@@ -238,7 +238,7 @@ class TestBlockMergePass:
             serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = BlockMergePass()
         mods = pass_instance.transform(cfg)
@@ -258,7 +258,7 @@ class TestBlockMergePass:
             serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = BlockMergePass()
         mods = pass_instance.transform(cfg)
@@ -276,7 +276,7 @@ class TestBlockMergePass:
             serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = BlockMergePass()
         mods = pass_instance.transform(cfg)
@@ -295,7 +295,7 @@ class TestBlockMergePass:
             serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = BlockMergePass()
         mods = pass_instance.transform(cfg)

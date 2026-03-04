@@ -10,7 +10,7 @@ from d810.core.typing import Any
 
 from d810.cfg.passes._base import CFGPass
 from d810.cfg.protocol import CFGBackend
-from d810.cfg.flowgraph import PortableCFG
+from d810.cfg.flowgraph import FlowGraph
 
 logger = getLogger(__name__, default_level=0)  # NOTSET: inherit from parent
 

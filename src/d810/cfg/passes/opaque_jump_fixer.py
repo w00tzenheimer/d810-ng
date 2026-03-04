@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from d810.cfg.passes._base import CFGPass
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification
-from d810.cfg.flowgraph import PortableCFG
+from d810.cfg.flowgraph import FlowGraph
 
 
 class OpaqueJumpFixerPass(CFGPass):
@@ -52,7 +52,7 @@ class OpaqueJumpFixerPass(CFGPass):
         tags: Frozen set containing "deobfuscation" and "jump" tags.
 
     Example:
-        >>> from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
+        >>> from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
         >>> # Block 5 is a 2-way conditional with opaque predicate
         >>> blk5 = BlockSnapshot(
         ...     serial=5, block_type=2, succs=(10, 20), preds=(),
@@ -66,7 +66,7 @@ class OpaqueJumpFixerPass(CFGPass):
         ...     serial=20, block_type=1, succs=(99,), preds=(5,),
         ...     flags=0, start_ea=0x3000, insn_snapshots=()
         ... )
-        >>> cfg = PortableCFG(
+        >>> cfg = FlowGraph(
         ...     blocks={5: blk5, 10: blk10, 20: blk20},
         ...     entry_serial=5, func_ea=0x1000
         ... )
@@ -101,7 +101,7 @@ class OpaqueJumpFixerPass(CFGPass):
         """
         self._fixes = fixes or {}
 
-    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         """Analyze CFG and return ConvertToGoto for opaque conditional jumps.
 
         Args:
@@ -114,12 +114,12 @@ class OpaqueJumpFixerPass(CFGPass):
             Empty list if no fixes or all fixes reference nonexistent blocks.
 
         Example:
-            >>> from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
+            >>> from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
             >>> blk5 = BlockSnapshot(
             ...     serial=5, block_type=2, succs=(10, 20), preds=(),
             ...     flags=0, start_ea=0x1000, insn_snapshots=()
             ... )
-            >>> cfg = PortableCFG(blocks={5: blk5}, entry_serial=5, func_ea=0x1000)
+            >>> cfg = FlowGraph(blocks={5: blk5}, entry_serial=5, func_ea=0x1000)
             >>> # Fix for existing block
             >>> pass_instance = OpaqueJumpFixerPass(fixes={5: 10})
             >>> mods = pass_instance.transform(cfg)
@@ -142,7 +142,7 @@ class OpaqueJumpFixerPass(CFGPass):
                 mods.append(ConvertToGoto(block_serial=serial, goto_target=target))
         return mods
 
-    def is_applicable(self, cfg: PortableCFG) -> bool:
+    def is_applicable(self, cfg: FlowGraph) -> bool:
         """Check if this pass should run on the given CFG.
 
         Args:
@@ -152,8 +152,8 @@ class OpaqueJumpFixerPass(CFGPass):
             True if there are any pre-computed fixes, False otherwise.
 
         Example:
-            >>> from d810.cfg.flowgraph import PortableCFG
-            >>> cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000)
+            >>> from d810.cfg.flowgraph import FlowGraph
+            >>> cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000)
             >>> # Empty fixes: not applicable
             >>> pass_instance = OpaqueJumpFixerPass(fixes={})
             >>> pass_instance.is_applicable(cfg)

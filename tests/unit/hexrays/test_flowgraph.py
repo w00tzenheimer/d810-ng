@@ -9,7 +9,7 @@ import logging
 import pytest
 
 from d810.core.typing import TYPE_CHECKING
-from d810.cfg.flowgraph import InsnSnapshot, BlockSnapshot, PortableCFG
+from d810.cfg.flowgraph import InsnSnapshot, BlockSnapshot, FlowGraph
 
 if TYPE_CHECKING:
     from d810.hexrays.ir.mop_snapshot import MopSnapshot
@@ -209,7 +209,7 @@ class TestPortableCFG:
 
     def test_empty_cfg(self) -> None:
         """Test creation of empty CFG (edge case)."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000)
         assert cfg.num_blocks == 0
         assert cfg.entry_serial == 0
         assert cfg.func_ea == 0x1000
@@ -221,7 +221,7 @@ class TestPortableCFG:
             serial=0, block_type=0, succs=(), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         assert cfg.num_blocks == 1
         assert cfg.get_block(0) == blk
         assert cfg.successors(0) == ()
@@ -234,7 +234,7 @@ class TestPortableCFG:
             1: BlockSnapshot(1, 3, succs=(2,), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
             2: BlockSnapshot(2, 2, succs=(), preds=(1,), flags=0, start_ea=0x1200, insn_snapshots=()),
         }
-        cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
         assert cfg.num_blocks == 3
         assert cfg.successors(0) == (1,)
         assert cfg.successors(1) == (2,)
@@ -251,7 +251,7 @@ class TestPortableCFG:
             2: BlockSnapshot(2, 3, succs=(3,), preds=(0,), flags=0, start_ea=0x1200, insn_snapshots=()),
             3: BlockSnapshot(3, 2, succs=(), preds=(1, 2), flags=0, start_ea=0x1300, insn_snapshots=()),
         }
-        cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
         assert cfg.num_blocks == 4
         assert cfg.successors(0) == (1, 2)
         assert cfg.successors(1) == (3,)
@@ -267,7 +267,7 @@ class TestPortableCFG:
             3: BlockSnapshot(3, 2, succs=(), preds=(1,), flags=0, start_ea=0x1300, insn_snapshots=()),
             4: BlockSnapshot(4, 3, succs=(1,), preds=(2,), flags=0, start_ea=0x1400, insn_snapshots=()),
         }
-        cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
         assert cfg.num_blocks == 5
         assert cfg.successors(0) == (1,)
         assert cfg.successors(1) == (2, 3)
@@ -277,17 +277,17 @@ class TestPortableCFG:
 
     def test_get_block_missing(self) -> None:
         """Test get_block returns None for missing serial."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000)
         assert cfg.get_block(99) is None
 
     def test_successors_missing_block(self) -> None:
         """Test successors returns empty tuple for missing block."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000)
         assert cfg.successors(99) == ()
 
     def test_predecessors_missing_block(self) -> None:
         """Test predecessors returns empty tuple for missing block."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000)
         assert cfg.predecessors(99) == ()
 
     def test_as_adjacency_dict(self) -> None:
@@ -297,7 +297,7 @@ class TestPortableCFG:
             1: BlockSnapshot(1, 2, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
             2: BlockSnapshot(2, 2, succs=(), preds=(0,), flags=0, start_ea=0x1200, insn_snapshots=()),
         }
-        cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
         adj = cfg.as_adjacency_dict()
         assert adj == {0: [1, 2], 1: [], 2: []}
         # Verify it's mutable (returns lists, not tuples)
@@ -310,7 +310,7 @@ class TestPortableCFG:
             0: BlockSnapshot(0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
             1: BlockSnapshot(1, 2, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
         }
-        cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0xDEADBEEF)
+        cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0xDEADBEEF)
         r = repr(cfg)
         assert "PortableCFG" in r
         assert "nblocks=2" in r
@@ -319,26 +319,26 @@ class TestPortableCFG:
 
     def test_immutability(self) -> None:
         """Test that PortableCFG is frozen (immutable)."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000)
         with pytest.raises(Exception):
             cfg.entry_serial = 99  # type: ignore
 
     def test_negative_func_ea_validation(self) -> None:
         """Test that negative func_ea raises ValueError."""
         with pytest.raises(ValueError, match="func_ea must be non-negative"):
-            PortableCFG(blocks={}, entry_serial=0, func_ea=-1)
+            FlowGraph(blocks={}, entry_serial=0, func_ea=-1)
 
     def test_invalid_entry_serial_validation(self) -> None:
         """Test that non-existent entry_serial raises ValueError."""
         blk = BlockSnapshot(0, 0, succs=(), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
         with pytest.raises(ValueError, match="entry_serial 99 not in blocks"):
-            PortableCFG(blocks={0: blk}, entry_serial=99, func_ea=0x1000)
+            FlowGraph(blocks={0: blk}, entry_serial=99, func_ea=0x1000)
 
     def test_dangling_successor_warning(self, caplog) -> None:
         """Test that dangling successor references log warnings."""
         blk = BlockSnapshot(0, 3, succs=(99,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
         with caplog.at_level(logging.WARNING):
-            cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+            cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         assert "non-existent successor 99" in caplog.text
         assert cfg.num_blocks == 1  # Still created successfully
 
@@ -346,42 +346,42 @@ class TestPortableCFG:
         """Test that dangling predecessor references log warnings."""
         blk = BlockSnapshot(0, 0, succs=(), preds=(99,), flags=0, start_ea=0x1000, insn_snapshots=())
         with caplog.at_level(logging.WARNING):
-            cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+            cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         assert "non-existent predecessor 99" in caplog.text
         assert cfg.num_blocks == 1
 
     def test_metadata(self) -> None:
         """Test metadata field usage."""
         metadata = {"pass_name": "test_pass", "iteration": 5, "tags": ["optimized"]}
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000, metadata=metadata)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000, metadata=metadata)
         assert cfg.metadata == metadata
         assert cfg.metadata["pass_name"] == "test_pass"
 
     def test_equality(self) -> None:
         """Test equality comparison."""
         blk = BlockSnapshot(0, 0, succs=(), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
-        cfg1 = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
-        cfg2 = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
-        cfg3 = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x2000)
+        cfg1 = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+        cfg2 = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+        cfg3 = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x2000)
         assert cfg1 == cfg2
         assert cfg1 != cfg3
 
     def test_blocks_immutable(self) -> None:
         """PortableCFG.blocks should not allow mutation after construction."""
         blk = BlockSnapshot(serial=0, block_type=2, succs=(), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
-        cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         with pytest.raises(TypeError):
             cfg.blocks[99] = blk  # type: ignore
 
     def test_metadata_immutable(self) -> None:
         """PortableCFG.metadata should not allow mutation after construction."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000, metadata={"key": "value"})
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000, metadata={"key": "value"})
         with pytest.raises(TypeError):
             cfg.metadata["new_key"] = "new_value"  # type: ignore
 
     def test_not_hashable(self) -> None:
         """PortableCFG with MappingProxyType is not hashable (values may be mutable)."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000)
         with pytest.raises(TypeError):
             hash(cfg)
 
@@ -403,7 +403,7 @@ class TestPortableCFGIntegration:
             2: BlockSnapshot(2, 3, succs=(3,), preds=(0,), flags=0, start_ea=0x1200, insn_snapshots=(insn2,)),
             3: BlockSnapshot(3, 2, succs=(), preds=(1, 2), flags=0, start_ea=0x1300, insn_snapshots=(insn3,)),
         }
-        cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
 
         # Verify structure
         assert cfg.num_blocks == 4
@@ -430,7 +430,7 @@ class TestPortableCFGIntegration:
             2: BlockSnapshot(2, 4, succs=(1, 3), preds=(1,), flags=0, start_ea=0x1200, insn_snapshots=()),
             3: BlockSnapshot(3, 2, succs=(), preds=(2,), flags=0, start_ea=0x1300, insn_snapshots=()),
         }
-        cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
 
         # Verify loop header has backedge
         loop_header = cfg.get_block(1)
@@ -451,7 +451,7 @@ class TestPortableCFGIntegration:
             99: BlockSnapshot(99, 2, succs=(), preds=(88,), flags=0, start_ea=0x9900, insn_snapshots=()),
         }
         with caplog.at_level(logging.WARNING):
-            cfg = PortableCFG(blocks=blocks, entry_serial=0, func_ea=0x1000)
+            cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
         # Block 99 references non-existent predecessor 88
         assert "non-existent predecessor 88" in caplog.text
         assert cfg.num_blocks == 3

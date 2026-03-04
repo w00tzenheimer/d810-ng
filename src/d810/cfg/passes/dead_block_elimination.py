@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from d810.cfg.passes._base import CFGPass
 from d810.cfg.graph_modification import GraphModification, NopInstructions
-from d810.cfg.flowgraph import PortableCFG
+from d810.cfg.flowgraph import FlowGraph
 
 
 class DeadBlockEliminationPass(CFGPass):
@@ -30,7 +30,7 @@ class DeadBlockEliminationPass(CFGPass):
         tags: Frozen set containing "cleanup" and "topology" tags.
 
     Example:
-        >>> from d810.cfg.flowgraph import BlockSnapshot, PortableCFG, InsnSnapshot
+        >>> from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
         >>> # Create entry block (0) -> block 1
         >>> blk0 = BlockSnapshot(
         ...     serial=0, block_type=1, succs=(1,), preds=(),
@@ -51,7 +51,7 @@ class DeadBlockEliminationPass(CFGPass):
         ...     serial=3, block_type=0, succs=(), preds=(),
         ...     flags=0, start_ea=0x3000, insn_snapshots=()
         ... )
-        >>> cfg = PortableCFG(
+        >>> cfg = FlowGraph(
         ...     blocks={0: blk0, 1: blk1, 2: blk2, 3: blk3_dummy},
         ...     entry_serial=0, func_ea=0x1000
         ... )
@@ -67,7 +67,7 @@ class DeadBlockEliminationPass(CFGPass):
     name = "dead_block_elimination"
     tags = frozenset({"cleanup", "topology"})
 
-    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         """Analyze CFG and return NopInstructions for unreachable blocks.
 
         Args:
@@ -96,7 +96,7 @@ class DeadBlockEliminationPass(CFGPass):
             ...     serial=1, block_type=0, succs=(), preds=(0,),
             ...     flags=0, start_ea=0x1010, insn_snapshots=()
             ... )
-            >>> cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+            >>> cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
             >>> pass_instance = DeadBlockEliminationPass()
             >>> mods = pass_instance.transform(cfg)
             >>> len(mods)
@@ -133,7 +133,7 @@ class DeadBlockEliminationPass(CFGPass):
         return mods
 
     @staticmethod
-    def _find_reachable(cfg: PortableCFG) -> set[int]:
+    def _find_reachable(cfg: FlowGraph) -> set[int]:
         """Perform reachability analysis from entry block.
 
         Uses depth-first traversal to mark all blocks reachable from
@@ -158,7 +158,7 @@ class DeadBlockEliminationPass(CFGPass):
             ...     serial=2, block_type=0, succs=(), preds=(),
             ...     flags=0, start_ea=0x2000, insn_snapshots=()
             ... )
-            >>> cfg = PortableCFG(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
+            >>> cfg = FlowGraph(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
             >>> reachable = DeadBlockEliminationPass._find_reachable(cfg)
             >>> reachable == {0, 1}
             True

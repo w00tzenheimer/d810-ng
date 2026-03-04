@@ -17,7 +17,7 @@ import ida_hexrays
 
 from d810.cfg.passes._base import CFGPass
 from d810.cfg.graph_modification import GraphModification, RedirectBranch, RedirectGoto
-from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 
 _BLT_1WAY = ida_hexrays.BLT_1WAY
 _BLT_2WAY = ida_hexrays.BLT_2WAY
@@ -47,7 +47,7 @@ def _goto_targets_successor(operands: tuple, succ_serial: int) -> bool:
     return False
 
 
-def _is_simple_goto_block(blk: BlockSnapshot, cfg: PortableCFG) -> bool:
+def _is_simple_goto_block(blk: BlockSnapshot, cfg: FlowGraph) -> bool:
     """Return True if blk is a simple goto-only block (equivalent to is_simple_goto_block()).
 
     A simple goto block must satisfy ALL of:
@@ -112,7 +112,7 @@ class GotoChainRemovalPass(CFGPass):
         tags: Frozen set containing "cleanup" and "topology" tags.
 
     Example:
-        >>> from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
+        >>> from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
         >>> from d810.hexrays.ir.mop_snapshot import MopSnapshot
         >>> dest_mop = MopSnapshot(t=7, size=4, block_num=20)
         >>> goto_insn = InsnSnapshot(opcode=55, ea=0x1100, operands=(dest_mop,))
@@ -128,7 +128,7 @@ class GotoChainRemovalPass(CFGPass):
         ...     serial=20, block_type=2, succs=(), preds=(10,),
         ...     flags=0, start_ea=0x1200, insn_snapshots=()
         ... )
-        >>> cfg = PortableCFG(blocks={0: blk0, 10: blk10_goto, 20: blk20}, entry_serial=0, func_ea=0x1000)
+        >>> cfg = FlowGraph(blocks={0: blk0, 10: blk10_goto, 20: blk20}, entry_serial=0, func_ea=0x1000)
         >>> pass_instance = GotoChainRemovalPass()
         >>> mods = pass_instance.transform(cfg)
         >>> len(mods)
@@ -145,7 +145,7 @@ class GotoChainRemovalPass(CFGPass):
     name = "goto_chain_removal"
     tags = frozenset({"cleanup", "topology"})
 
-    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         """Analyze CFG and return edge-redirect modifications for goto-only blocks.
 
         Mirrors the logic of mba_remove_simple_goto_blocks() from cfg_mutations.py:
@@ -165,7 +165,7 @@ class GotoChainRemovalPass(CFGPass):
 
         Example:
             >>> # No goto-only blocks: no modifications
-            >>> from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
+            >>> from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
             >>> blk0 = BlockSnapshot(
             ...     serial=0, block_type=3, succs=(1,), preds=(),
             ...     flags=0, start_ea=0x1000, insn_snapshots=()
@@ -174,7 +174,7 @@ class GotoChainRemovalPass(CFGPass):
             ...     serial=1, block_type=2, succs=(), preds=(0,),
             ...     flags=0, start_ea=0x1010, insn_snapshots=()
             ... )
-            >>> cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+            >>> cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
             >>> pass_instance = GotoChainRemovalPass()
             >>> mods = pass_instance.transform(cfg)
             >>> len(mods)

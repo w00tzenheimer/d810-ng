@@ -13,7 +13,7 @@ import pytest
 from d810.cfg.protocol import CFGBackend
 from d810.cfg.passes._base import CFGPass
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification
-from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from tests.unit.hexrays.conftest import InMemoryBackend
 
 
@@ -26,7 +26,7 @@ class NoOpPass(CFGPass):
     """Pass that does nothing (returns empty modification list)."""
     name = "noop"
 
-    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         """Return empty list."""
         return []
 
@@ -36,7 +36,7 @@ class CountBlocksPass(CFGPass):
     name = "count_blocks"
     tags = frozenset({"test", "example"})
 
-    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         """Return ConvertToGoto for terminal blocks.
 
         Args:
@@ -58,11 +58,11 @@ class ConditionalPass(CFGPass):
     """Pass that only applies to CFGs with >2 blocks."""
     name = "conditional"
 
-    def is_applicable(self, cfg: PortableCFG) -> bool:
+    def is_applicable(self, cfg: FlowGraph) -> bool:
         """Only apply if more than 2 blocks."""
         return cfg.num_blocks > 2
 
-    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         """Return empty list (just for testing is_applicable)."""
         return []
 
@@ -141,7 +141,7 @@ class TestCFGPass:
 
     def test_noop_pass_returns_empty_list(self):
         """NoOpPass should return empty modification list."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0)
         pass_instance = NoOpPass()
 
         result = pass_instance.transform(cfg)
@@ -163,7 +163,7 @@ class TestCFGPass:
             serial=2, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1020, insn_snapshots=()
         )
-        cfg = PortableCFG(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
 
         pass_instance = CountBlocksPass()
         result = pass_instance.transform(cfg)
@@ -176,7 +176,7 @@ class TestCFGPass:
 
     def test_is_applicable_default_true(self):
         """Default is_applicable should return True."""
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0)
         pass_instance = NoOpPass()
 
         assert pass_instance.is_applicable(cfg) is True
@@ -192,7 +192,7 @@ class TestCFGPass:
             serial=1, block_type=2, succs=(), preds=(0,),
             flags=0, start_ea=0x1010, insn_snapshots=()
         )
-        small_cfg = PortableCFG(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
+        small_cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
         # Large CFG (3 blocks)
         blk2 = BlockSnapshot(
@@ -203,7 +203,7 @@ class TestCFGPass:
             serial=0, block_type=4, succs=(1, 2), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
         )
-        large_cfg = PortableCFG(
+        large_cfg = FlowGraph(
             blocks={0: blk0_large, 1: blk1, 2: blk2},
             entry_serial=0, func_ea=0x1000
         )
@@ -220,7 +220,7 @@ class TestCFGPass:
         """Defining a pass without 'name' should raise TypeError."""
         with pytest.raises(TypeError, match="must define 'name' class attribute"):
             class MissingNamePass(CFGPass):
-                def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+                def transform(self, cfg: FlowGraph) -> list[GraphModification]:
                     return []
 
     def test_repr(self):

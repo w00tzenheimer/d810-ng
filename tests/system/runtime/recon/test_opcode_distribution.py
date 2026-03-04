@@ -1,7 +1,7 @@
 """Unit tests for OpcodeDistributionCollector using PortableCFG + InsnSnapshot."""
 from __future__ import annotations
 import pytest
-from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from d810.recon.collectors.opcode_distribution import OpcodeDistributionCollector
 
 
@@ -9,7 +9,7 @@ def _insn(opcode: int) -> InsnSnapshot:
     return InsnSnapshot(opcode=opcode, operands=(), ea=0)
 
 
-def _make_cfg_with_opcodes(opcode_lists: list[list[int]], func_ea: int = 0x401000) -> PortableCFG:
+def _make_cfg_with_opcodes(opcode_lists: list[list[int]], func_ea: int = 0x401000) -> FlowGraph:
     """Build a PortableCFG where each block has the given opcodes."""
     blocks = {}
     for i, opcodes in enumerate(opcode_lists):
@@ -22,7 +22,7 @@ def _make_cfg_with_opcodes(opcode_lists: list[list[int]], func_ea: int = 0x40100
             flags=0, start_ea=func_ea + i * 0x10,
             insn_snapshots=insns,
         )
-    return PortableCFG(blocks=blocks, entry_serial=0, func_ea=func_ea)
+    return FlowGraph(blocks=blocks, entry_serial=0, func_ea=func_ea)
 
 
 class TestOpcodeDistributionCollector:
@@ -36,7 +36,7 @@ class TestOpcodeDistributionCollector:
         assert 5 in c.maturities  # MMAT_PREOPTIMIZED
 
     def test_empty_cfg_zero_counts(self):
-        cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x401000)
+        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x401000)
         result = OpcodeDistributionCollector().collect(cfg, func_ea=0x401000, maturity=5)
         assert result.metrics["total_insns"] == 0
         assert result.metrics["unique_opcodes"] == 0

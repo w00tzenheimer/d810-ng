@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from d810.cfg.passes._base import CFGPass
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification
-from d810.cfg.flowgraph import PortableCFG
+from d810.cfg.flowgraph import FlowGraph
 
 
 class SimplifyIdenticalBranchPass(CFGPass):
@@ -29,13 +29,13 @@ class SimplifyIdenticalBranchPass(CFGPass):
         tags: Frozen set containing "cleanup" tag.
 
     Example:
-        >>> from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
+        >>> from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
         >>> # Create 2-way block with identical successors
         >>> blk = BlockSnapshot(
         ...     serial=0, block_type=2, succs=(5, 5), preds=(),
         ...     flags=0, start_ea=0x1000, insn_snapshots=()
         ... )
-        >>> cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+        >>> cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         >>> pass_instance = SimplifyIdenticalBranchPass()
         >>> mods = pass_instance.transform(cfg)
         >>> len(mods)
@@ -48,7 +48,7 @@ class SimplifyIdenticalBranchPass(CFGPass):
     name = "simplify_identical_branch"
     tags = frozenset({"cleanup"})
 
-    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         """Analyze CFG and return ConvertToGoto for 2-way blocks with identical targets.
 
         Args:
@@ -66,7 +66,7 @@ class SimplifyIdenticalBranchPass(CFGPass):
             ...     serial=0, block_type=2, succs=(5, 10), preds=(),
             ...     flags=0, start_ea=0x1000, insn_snapshots=()
             ... )
-            >>> cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+            >>> cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
             >>> pass_instance = SimplifyIdenticalBranchPass()
             >>> mods = pass_instance.transform(cfg)
             >>> len(mods)

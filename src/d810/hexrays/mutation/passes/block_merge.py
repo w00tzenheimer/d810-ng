@@ -27,7 +27,7 @@ import ida_hexrays
 
 from d810.cfg.passes._base import CFGPass
 from d810.cfg.graph_modification import GraphModification, NopInstructions
-from d810.cfg.flowgraph import PortableCFG
+from d810.cfg.flowgraph import FlowGraph
 
 _BLT_1WAY = ida_hexrays.BLT_1WAY
 _M_GOTO_OPCODE = ida_hexrays.m_goto
@@ -56,7 +56,7 @@ class BlockMergePass(CFGPass):
         tags: Frozen set containing "cleanup" and "topology" tags.
 
     Example:
-        >>> from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
+        >>> from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
         >>> from d810.hexrays.ir.mop_snapshot import MopSnapshot
         >>> # Create mergeable pair: block 0 -> block 1 (1:1 relationship)
         >>> dest_mop = MopSnapshot(t=7, size=4, block_num=1)  # mop_b -> block 1
@@ -73,7 +73,7 @@ class BlockMergePass(CFGPass):
         ...     serial=2, block_type=2, succs=(), preds=(1,),
         ...     flags=0, start_ea=0x1020, insn_snapshots=()
         ... )
-        >>> cfg = PortableCFG(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
+        >>> cfg = FlowGraph(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
         >>> pass_instance = BlockMergePass()
         >>> mods = pass_instance.transform(cfg)
         >>> len(mods)
@@ -86,7 +86,7 @@ class BlockMergePass(CFGPass):
     name = "block_merge"
     tags = frozenset({"cleanup", "topology"})
 
-    def transform(self, cfg: PortableCFG) -> list[GraphModification]:
+    def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         """Analyze CFG and return NopInstructions for mergeable block pairs.
 
         Args:
@@ -110,7 +110,7 @@ class BlockMergePass(CFGPass):
             ...     serial=0, block_type=4, succs=(5, 10), preds=(),
             ...     flags=0, start_ea=0x1000, insn_snapshots=()
             ... )
-            >>> cfg = PortableCFG(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
+            >>> cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
             >>> pass_instance = BlockMergePass()
             >>> mods = pass_instance.transform(cfg)
             >>> len(mods)

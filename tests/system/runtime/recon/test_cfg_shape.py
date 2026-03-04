@@ -1,11 +1,11 @@
 """Unit tests for CFGShapeCollector using PortableCFG (no IDA dependency)."""
 from __future__ import annotations
 import pytest
-from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.recon.collectors.cfg_shape import CFGShapeCollector
 
 
-def _make_linear_cfg(n: int, func_ea: int = 0x401000) -> PortableCFG:
+def _make_linear_cfg(n: int, func_ea: int = 0x401000) -> FlowGraph:
     """Build a simple linear CFG: 0->1->2->...->( n-1)."""
     blocks = {}
     for i in range(n):
@@ -17,10 +17,10 @@ def _make_linear_cfg(n: int, func_ea: int = 0x401000) -> PortableCFG:
             flags=0, start_ea=func_ea + i * 0x10,
             insn_snapshots=(),
         )
-    return PortableCFG(blocks=blocks, entry_serial=0, func_ea=func_ea)
+    return FlowGraph(blocks=blocks, entry_serial=0, func_ea=func_ea)
 
 
-def _make_diamond_cfg(func_ea: int = 0x402000) -> PortableCFG:
+def _make_diamond_cfg(func_ea: int = 0x402000) -> FlowGraph:
     """Build a diamond CFG: 0->(1,2)->3."""
     blocks = {
         0: BlockSnapshot(serial=0, block_type=2, succs=(1, 2), preds=(), flags=0, start_ea=func_ea, insn_snapshots=()),
@@ -28,10 +28,10 @@ def _make_diamond_cfg(func_ea: int = 0x402000) -> PortableCFG:
         2: BlockSnapshot(serial=2, block_type=1, succs=(3,), preds=(0,), flags=0, start_ea=func_ea + 0x20, insn_snapshots=()),
         3: BlockSnapshot(serial=3, block_type=0, succs=(), preds=(1, 2), flags=0, start_ea=func_ea + 0x30, insn_snapshots=()),
     }
-    return PortableCFG(blocks=blocks, entry_serial=0, func_ea=func_ea)
+    return FlowGraph(blocks=blocks, entry_serial=0, func_ea=func_ea)
 
 
-def _make_flat_cfg(func_ea: int = 0x403000) -> PortableCFG:
+def _make_flat_cfg(func_ea: int = 0x403000) -> FlowGraph:
     """Build a flattening-like CFG: dispatcher block 1 dominated by entry,
     multiple predecessors feeding back into block 1 (state machine pattern).
 
@@ -46,7 +46,7 @@ def _make_flat_cfg(func_ea: int = 0x403000) -> PortableCFG:
         3: BlockSnapshot(serial=3, block_type=1, succs=(1,), preds=(1,), flags=0, start_ea=func_ea + 0x30, insn_snapshots=()),
         4: BlockSnapshot(serial=4, block_type=1, succs=(1,), preds=(1,), flags=0, start_ea=func_ea + 0x40, insn_snapshots=()),
     }
-    return PortableCFG(blocks=blocks, entry_serial=0, func_ea=func_ea)
+    return FlowGraph(blocks=blocks, entry_serial=0, func_ea=func_ea)
 
 
 class TestCFGShapeCollector:

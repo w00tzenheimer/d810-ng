@@ -225,7 +225,7 @@ from d810.hexrays.mutation.cfg_verify import (
     snapshot_block_for_capture)
 from d810.hexrays.mutation.cfg_mutations import (
     _rewire_edge)
-from d810.cfg.flowgraph import PortableCFG
+from d810.cfg.flowgraph import FlowGraph
 from d810.hexrays.mutation.ir_translator import lift
 
 if TYPE_CHECKING:
@@ -436,7 +436,7 @@ class DeferredGraphModifier:
     modifications: list[GraphModification] = field(default_factory=list)
     _applied: bool = False
     verify_failed: bool = False
-    _pre_snapshot: PortableCFG | None = None
+    _pre_snapshot: FlowGraph | None = None
     # Optional event emitter; when None, no events are emitted (zero overhead).
     event_emitter: EventEmitter | None = None
     # Metadata injected by callers so payloads carry rich context.
@@ -873,7 +873,7 @@ class DeferredGraphModifier:
         """Check if there are any queued modifications."""
         return len(self.modifications) > 0
 
-    def _restore_from_snapshot(self, snapshot: PortableCFG) -> bool:
+    def _restore_from_snapshot(self, snapshot: FlowGraph) -> bool:
         """Restore MBA topology from a PortableCFG snapshot.
 
         Best-effort restoration of block topology (edges, types, flags).
