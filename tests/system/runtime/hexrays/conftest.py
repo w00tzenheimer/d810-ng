@@ -1,0 +1,51 @@
+"""Shared fixtures/helpers for hexrays runtime tests.
+
+TODO:
+- This helper is currently only used by goto-chain-removal runtime tests and
+  could be inlined there (or this file deleted) if no other runtime tests use it.
+- Longer-term, replace this synthetic in-memory backend with tests that run
+  against a real IDA database/microcode context.
+"""
+from __future__ import annotations
+
+from d810.cfg.graph_modification import GraphModification
+from d810.cfg.portable_cfg import BlockSnapshot, PortableCFG
+
+
+class InMemoryBackend:
+    """Mock backend operating on synthetic PortableCFG for pass tests."""
+
+    def __init__(self, blocks: dict[int, BlockSnapshot] | None = None):
+        self.blocks = blocks or {}
+        self.applied_modifications: list[GraphModification] = []
+        self.lift_count = 0
+
+    @property
+    def name(self) -> str:
+        return "in_memory"
+
+    def lift(self, state: dict[int, BlockSnapshot] | None = None) -> PortableCFG:
+        self.lift_count += 1
+        blocks = state if state is not None else self.blocks
+        if not blocks:
+            return PortableCFG(blocks={}, entry_serial=0, func_ea=0)
+        entry_serial = min(blocks.keys())
+        return PortableCFG(
+            blocks=blocks,
+            entry_serial=entry_serial,
+            func_ea=blocks[entry_serial].start_ea,
+        )
+
+    def lower(
+        self,
+        modifications: list[GraphModification],
+        state: dict[int, BlockSnapshot] | None = None,
+    ) -> int:
+        self.applied_modifications.extend(modifications)
+        return len(modifications)
+
+    def verify(self, state: dict[int, BlockSnapshot] | None = None) -> bool:
+        return True
+
+
+__all__ = ["InMemoryBackend"]

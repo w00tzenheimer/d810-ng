@@ -1,9 +1,9 @@
-"""Unit tests for IDABackend.
+"""Unit tests for IDAIRTranslator.
 
 Tests the mapping logic between GraphModification and DeferredGraphModifier
 without requiring IDA runtime.
 
-Since IDABackend imports modules inside methods (to defer IDA dependency),
+Since IDAIRTranslator imports modules inside methods (to defer IDA dependency),
 we use sys.modules patching to provide mock implementations.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ import sys
 from unittest.mock import Mock, call
 import pytest
 
-from d810.hexrays.mutation.ida_backend import IDABackend
+from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.cfg.graph_modification import (
     RedirectGoto,
     RedirectBranch,
@@ -32,20 +32,20 @@ except ImportError:
     IDA_AVAILABLE = False
 
 
-class TestIDABackendBasics:
-    """Test basic IDABackend properties and interface."""
+class TestIDAIRTranslatorBasics:
+    """Test basic IDAIRTranslator properties and interface."""
 
     def test_backend_name(self):
-        """Test that IDABackend.name returns 'ida'."""
-        backend = IDABackend()
+        """Test that IDAIRTranslator.name returns 'ida'."""
+        backend = IDAIRTranslator()
         assert backend.name == "ida"
 
     @pytest.mark.skipif(not IDA_AVAILABLE, reason="Requires IDA")
     def test_backend_implements_protocol(self):
-        """Test that IDABackend conforms to CFGBackend protocol."""
+        """Test that IDAIRTranslator conforms to CFGBackend protocol."""
         from d810.cfg.cfg_backend import CFGBackend
 
-        backend = IDABackend()
+        backend = IDAIRTranslator()
         assert isinstance(backend, CFGBackend)
 
 
@@ -67,7 +67,7 @@ class TestModificationMapping:
         # Inject mock module into sys.modules before calling lower()
         sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
-            backend = IDABackend()
+            backend = IDAIRTranslator()
             mock_mba = Mock()
             modifications = [RedirectGoto(from_serial=10, old_target=20, new_target=30)]
 
@@ -93,7 +93,7 @@ class TestModificationMapping:
 
         sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
-            backend = IDABackend()
+            backend = IDAIRTranslator()
             mock_mba = Mock()
             modifications = [RedirectBranch(from_serial=10, old_target=20, new_target=30)]
 
@@ -118,7 +118,7 @@ class TestModificationMapping:
 
         sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
-            backend = IDABackend()
+            backend = IDAIRTranslator()
             mock_mba = Mock()
             modifications = [ConvertToGoto(block_serial=15, goto_target=25)]
 
@@ -142,7 +142,7 @@ class TestModificationMapping:
 
         sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
-            backend = IDABackend()
+            backend = IDAIRTranslator()
             mock_mba = Mock()
             modifications = [NopInstructions(block_serial=10, insn_eas=(0x1000, 0x1004, 0x1008))]
 
@@ -168,7 +168,7 @@ class TestModificationMapping:
 
         sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
-            backend = IDABackend()
+            backend = IDAIRTranslator()
             mock_mba = Mock()
             insn = InsnSnapshot(opcode=0x01, ea=0x1000, operands=())
             modifications = [InsertBlock(pred_serial=5, succ_serial=10, instructions=(insn,))]
@@ -191,7 +191,7 @@ class TestModificationMapping:
 
         sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
-            backend = IDABackend()
+            backend = IDAIRTranslator()
             mock_mba = Mock()
             modifications = [RemoveEdge(from_serial=10, to_serial=20)]
 
@@ -213,7 +213,7 @@ class TestModificationMapping:
 
         sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
-            backend = IDABackend()
+            backend = IDAIRTranslator()
             mock_mba = Mock()
             fake_mod = Mock()
             fake_mod.__class__.__name__ = "FakeModification"
@@ -238,7 +238,7 @@ class TestModificationMapping:
 
         sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
-            backend = IDABackend()
+            backend = IDAIRTranslator()
             mock_mba = Mock()
             modifications = [
                 RedirectGoto(from_serial=10, old_target=20, new_target=30),
@@ -262,7 +262,7 @@ class TestModificationMapping:
 
 
 class TestVerify:
-    """Test IDABackend.verify() method."""
+    """Test IDAIRTranslator.verify() method."""
 
     def test_verify_success(self):
         """Test verify() returns True when safe_verify succeeds."""
@@ -274,18 +274,18 @@ class TestVerify:
         original_attr = getattr(_hx_pkg, 'cfg_verify', None)
         original_mod = sys.modules.get('d810.hexrays.mutation.cfg_verify')
         # Patch both the package attribute and sys.modules so that
-        # `from d810.hexrays import cfg_verify` inside IDABackend.verify()
+        # `from d810.hexrays import cfg_verify` inside IDAIRTranslator.verify()
         # resolves to the mock regardless of which lookup path Python uses.
         _hx_pkg.cfg_verify = mock_cfg_verify
         sys.modules['d810.hexrays.mutation.cfg_verify'] = mock_cfg_verify
         try:
-            backend = IDABackend()
+            backend = IDAIRTranslator()
             mock_mba = Mock()
 
             result = backend.verify(mock_mba)
 
             assert result is True
-            mock_cfg_verify.safe_verify.assert_called_once_with(mock_mba, "IDABackend.verify()")
+            mock_cfg_verify.safe_verify.assert_called_once_with(mock_mba, "IDAIRTranslator.verify()")
         finally:
             if original_attr is not None:
                 _hx_pkg.cfg_verify = original_attr
@@ -308,7 +308,7 @@ class TestVerify:
         _hx_pkg.cfg_verify = mock_cfg_verify
         sys.modules['d810.hexrays.mutation.cfg_verify'] = mock_cfg_verify
         try:
-            backend = IDABackend()
+            backend = IDAIRTranslator()
             mock_mba = Mock()
 
             result = backend.verify(mock_mba)
@@ -334,18 +334,18 @@ class TestIDAIntegration:
 
     def test_lift_returns_portable_cfg(self):
         """Test lift() returns a PortableCFG for a real mba_t."""
-        backend = IDABackend()
+        backend = IDAIRTranslator()
         assert hasattr(backend, "lift")
         assert callable(backend.lift)
 
     def test_lower_accepts_real_mba(self):
         """Test lower() accepts a real mba_t instance."""
-        backend = IDABackend()
+        backend = IDAIRTranslator()
         assert hasattr(backend, "lower")
         assert callable(backend.lower)
 
     def test_verify_accepts_real_mba(self):
         """Test verify() accepts a real mba_t instance."""
-        backend = IDABackend()
+        backend = IDAIRTranslator()
         assert hasattr(backend, "verify")
         assert callable(backend.verify)

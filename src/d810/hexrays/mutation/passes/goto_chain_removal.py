@@ -13,13 +13,16 @@ Example:
 """
 from __future__ import annotations
 
+import ida_hexrays
+
 from d810.cfg.cfg_pass import CFGPass
 from d810.cfg.graph_modification import GraphModification, RedirectBranch, RedirectGoto
-from d810.cfg.microcode_constants import BLT_1WAY as _BLT_1WAY
-from d810.cfg.microcode_constants import BLT_2WAY as _BLT_2WAY
-from d810.cfg.microcode_constants import M_GOTO as _M_GOTO_OPCODE
-from d810.cfg.microcode_constants import MOP_B as _MOP_B_TYPE
 from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+
+_BLT_1WAY = ida_hexrays.BLT_1WAY
+_BLT_2WAY = ida_hexrays.BLT_2WAY
+_M_GOTO_OPCODE = ida_hexrays.m_goto
+_MOP_B_TYPE = ida_hexrays.mop_b
 
 
 def _goto_targets_successor(operands: tuple, succ_serial: int) -> bool:

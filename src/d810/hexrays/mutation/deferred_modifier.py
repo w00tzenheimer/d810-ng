@@ -1173,8 +1173,6 @@ class DeferredGraphModifier:
             logger.debug("_repair_wrong_successors: ida_hexrays not available, skipping")
             return 0
 
-        from d810.cfg.microcode_constants import BLT_STOP, BLT_0WAY
-
         repaired = 0
         qty = self.mba.qty
         for i in range(qty):
@@ -1235,7 +1233,7 @@ class DeferredGraphModifier:
 
             expected: set[int] = set()
 
-            if blk.type in (BLT_STOP, BLT_0WAY):
+            if blk.type in (ida_hexrays.BLT_STOP, ida_hexrays.BLT_0WAY):
                 # Exit / noret block: no successors expected
                 expected = set()
             elif tail.opcode == _ihr.m_goto:

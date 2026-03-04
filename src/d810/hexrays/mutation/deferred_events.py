@@ -50,10 +50,11 @@ Consumer (inside GenericDispatcherUnflatteningRule)::
 """
 from __future__ import annotations
 
-from d810.core.logging import getLogger
-from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, auto
+
+from d810.core.events import EventEmitter as CoreEventEmitter
+from d810.core.logging import getLogger
 from d810.core.typing import Callable
 
 _logger = getLogger("D810.deferred_events")
@@ -205,9 +206,8 @@ class DeferredEventPayload:
         }
 
 
-@dataclass
-class EventEmitter:
-    """Simple observer/pub-sub for :class:`DeferredEvent` notifications.
+class EventEmitter(CoreEventEmitter[DeferredEvent]):
+    """Deferred event emitter built on d810.core.events.EventEmitter.
 
     Handlers registered via :meth:`subscribe` receive a single positional
     argument: the :class:`DeferredEventPayload` dict.
@@ -232,12 +232,6 @@ class EventEmitter:
         emitter.emit(DeferredEvent.DEFERRED_VERIFY_FAILED, {"function_ea": 0x1000, ...})
     """
 
-    _handlers: dict[DeferredEvent, list[Callable[[dict], None]]] = field(
-        default_factory=lambda: defaultdict(list),
-        init=False,
-        repr=False,
-    )
-
     def subscribe(
         self,
         event: DeferredEvent,
@@ -249,7 +243,7 @@ class EventEmitter:
             event: The lifecycle event to subscribe to.
             callback: Callable that receives a single payload ``dict``.
         """
-        self._handlers[event].append(callback)
+        self.on(event, callback)
 
     def unsubscribe(
         self,
@@ -260,9 +254,7 @@ class EventEmitter:
 
         No-op if the callback was never registered.
         """
-        handlers = self._handlers.get(event)
-        if handlers and callback in handlers:
-            handlers.remove(callback)
+        self.remove(event, callback)
 
     def emit(self, event: DeferredEvent, payload: dict) -> None:
         """Dispatch *payload* to all subscribers for *event*.
@@ -273,7 +265,7 @@ class EventEmitter:
             event: The lifecycle event being fired.
             payload: Plain dict of primitive values (the event data).
         """
-        handlers = self._handlers.get(event)
+        handlers = tuple(self._listeners.get(event, ()))
         if not handlers:
             return
         for handler in handlers:

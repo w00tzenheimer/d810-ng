@@ -5,16 +5,17 @@ redundant goto instructions.
 """
 from __future__ import annotations
 
+import ida_hexrays
 import pytest
 
 from d810.cfg.graph_modification import NopInstructions
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
-from d810.cfg.passes.block_merge import BlockMergePass
+from d810.hexrays.mutation.passes.block_merge import BlockMergePass
 from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
 
-# IDA microcode constants (no IDA import required)
-_M_GOTO_OPCODE = 55   # ida_hexrays.m_goto == 0x37
-_MOP_B_TYPE = 7       # ida_hexrays.mop_b  == MOPT.MBLOCK
+# IDA microcode constants
+_M_GOTO_OPCODE = ida_hexrays.m_goto
+_MOP_B_TYPE = ida_hexrays.mop_b
 
 
 def _make_goto_insn(ea: int, target_serial: int) -> InsnSnapshot:
