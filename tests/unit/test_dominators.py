@@ -1,9 +1,9 @@
-"""Unit tests for d810.cfg.dominators."""
+"""Unit tests for d810.cfg.dominator."""
 from __future__ import annotations
 
 import pytest
 
-from d810.cfg.dominators import compute_dominators, dominates
+from d810.cfg.dominator import compute_dominators, dominates
 
 
 class MockBlock:

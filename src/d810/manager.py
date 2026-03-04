@@ -641,8 +641,8 @@ class D810Manager:
         """
         from d810.hexrays.mutation.ir_translator import IDAIRTranslator
         from d810.cfg.pipeline import FlowGraphTransformPipeline
-        from d810.hexrays.mutation.passes.goto_chain_removal import GotoChainRemovalPass
-        from d810.cfg.passes.simplify_identical_branch import (
+        from d810.hexrays.mutation.transform.goto_chain_removal import GotoChainRemovalPass
+        from d810.cfg.transform.simplify_identical_branch import (
             SimplifyIdenticalBranchPass,
         )
 

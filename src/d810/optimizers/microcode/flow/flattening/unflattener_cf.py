@@ -17,7 +17,7 @@ from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 from d810.hexrays.utils.hexrays_helpers import MicrocodeHelper, MicroInstruction, MicroOperand
 from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
-from d810.cfg.dominators import compute_dominators
+from d810.cfg.dominator import compute_dominators
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 

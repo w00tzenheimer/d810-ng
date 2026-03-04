@@ -15,12 +15,12 @@ from __future__ import annotations
 import pytest
 
 from d810.cfg.pipeline import FlowGraphTransformPipeline
-from d810.cfg.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
-from d810.cfg.passes.dead_block_elimination import DeadBlockEliminationPass
-from d810.hexrays.mutation.passes.goto_chain_removal import GotoChainRemovalPass
-from d810.hexrays.mutation.passes.block_merge import BlockMergePass
-from d810.cfg.passes.opaque_jump_fixer import OpaqueJumpFixerPass
-from d810.cfg.passes.fake_jump_fixer import FakeJumpFixerPass
+from d810.cfg.transform.simplify_identical_branch import SimplifyIdenticalBranchPass
+from d810.cfg.transform.dead_block_elimination import DeadBlockEliminationPass
+from d810.hexrays.mutation.transform.goto_chain_removal import GotoChainRemovalPass
+from d810.hexrays.mutation.transform.block_merge import BlockMergeTransform
+from d810.cfg.transform.opaque_jump_fixer import OpaqueJumpFixerPass
+from d810.cfg.transform.fake_jump_fixer import FakeJumpFixerPass
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 
 
@@ -42,7 +42,7 @@ def build_cleanup_pipeline() -> FlowGraphTransformPipeline:
         SimplifyIdenticalBranchPass(),
         DeadBlockEliminationPass(),
         GotoChainRemovalPass(),
-        BlockMergePass(),
+        BlockMergeTransform(),
     ]
     return FlowGraphTransformPipeline(backend, passes)
 
@@ -84,10 +84,10 @@ class TestBuildPassPipeline:
         assert GotoChainRemovalPass in pass_types
 
     def test_pipeline_contains_block_merge(self):
-        """BlockMergePass must be included."""
+        """BlockMergeTransform must be included."""
         pipeline = build_cleanup_pipeline()
         pass_types = [type(p) for p in pipeline.passes]
-        assert BlockMergePass in pass_types
+        assert BlockMergeTransform in pass_types
 
     def test_pipeline_excludes_opaque_jump_fixer(self):
         """OpaqueJumpFixerPass must NOT be included (requires pre-computed fixes)."""

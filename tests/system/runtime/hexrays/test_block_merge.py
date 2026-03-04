@@ -1,4 +1,4 @@
-"""Unit tests for BlockMergePass.
+"""Unit tests for BlockMergeTransform.
 
 Tests the FlowGraphTransform that merges artificially split basic blocks by NOPing
 redundant goto instructions.
@@ -10,7 +10,7 @@ import pytest
 
 from d810.cfg.graph_modification import NopInstructions
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
-from d810.hexrays.mutation.passes.block_merge import BlockMergePass
+from d810.hexrays.mutation.transform.block_merge import BlockMergeTransform
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 
 # IDA microcode constants
@@ -24,12 +24,12 @@ def _make_goto_insn(ea: int, target_serial: int) -> InsnSnapshot:
     return InsnSnapshot(opcode=_M_GOTO_OPCODE, ea=ea, operands=(dest_mop,))
 
 
-class TestBlockMergePass:
-    """Test suite for BlockMergePass."""
+class TestBlockMergeTransform:
+    """Test suite for BlockMergeTransform."""
 
     def test_pass_metadata(self):
         """Verify pass name and tags are correctly defined."""
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         assert pass_instance.name == "block_merge"
         assert "cleanup" in pass_instance.tags
         assert "topology" in pass_instance.tags
@@ -43,7 +43,7 @@ class TestBlockMergePass:
         )
         cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
 
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         mods = pass_instance.transform(cfg)
 
         assert mods == []
@@ -61,7 +61,7 @@ class TestBlockMergePass:
         )
         cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         mods = pass_instance.transform(cfg)
 
         assert len(mods) == 1
@@ -90,7 +90,7 @@ class TestBlockMergePass:
         )
         cfg = FlowGraph(blocks={0: blk_a, 1: blk_b, 2: blk_c}, entry_serial=0, func_ea=0x1000)
 
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         mods = pass_instance.transform(cfg)
 
         # Neither A nor B should be merged with C
@@ -106,7 +106,7 @@ class TestBlockMergePass:
         )
         cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
 
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         mods = pass_instance.transform(cfg)
 
         assert mods == []
@@ -132,7 +132,7 @@ class TestBlockMergePass:
         )
         cfg = FlowGraph(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
 
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         mods = pass_instance.transform(cfg)
 
         # Both pairs (0->1 and 1->2) should be detected
@@ -155,7 +155,7 @@ class TestBlockMergePass:
         )
         cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         mods = pass_instance.transform(cfg)
 
         # Should not emit NOP for EA=0 instruction
@@ -173,7 +173,7 @@ class TestBlockMergePass:
         )
         cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         mods = pass_instance.transform(cfg)
 
         assert mods == []
@@ -195,7 +195,7 @@ class TestBlockMergePass:
         )
         cfg = FlowGraph(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
 
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         mods = pass_instance.transform(cfg)
 
         assert mods == []
@@ -210,14 +210,14 @@ class TestBlockMergePass:
         )
         cfg = FlowGraph(blocks={0: blk0}, entry_serial=0, func_ea=0x1000)
 
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         mods = pass_instance.transform(cfg)
 
         assert mods == []
 
     def test_is_applicable_returns_true(self):
         """is_applicable should return True (default implementation)."""
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         blk = BlockSnapshot(
             serial=0, block_type=2, succs=(), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=()
@@ -240,7 +240,7 @@ class TestBlockMergePass:
         )
         cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         mods = pass_instance.transform(cfg)
 
         assert mods == []
@@ -260,7 +260,7 @@ class TestBlockMergePass:
         )
         cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         mods = pass_instance.transform(cfg)
 
         assert mods == []
@@ -278,7 +278,7 @@ class TestBlockMergePass:
         )
         cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         mods = pass_instance.transform(cfg)
 
         assert mods == []
@@ -297,7 +297,7 @@ class TestBlockMergePass:
         )
         cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
-        pass_instance = BlockMergePass()
+        pass_instance = BlockMergeTransform()
         mods = pass_instance.transform(cfg)
 
         assert mods == []

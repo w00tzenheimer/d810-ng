@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.passes._base import FlowGraphTransform
+from d810.cfg.transform._base import FlowGraphTransform
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification, RedirectGoto
 from d810.cfg.pipeline import FlowGraphTransformPipeline
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph

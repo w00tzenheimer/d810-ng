@@ -14,7 +14,7 @@ import pytest
 from d810.cfg.graph_modification import NopInstructions
 from d810.cfg.pipeline import FlowGraphTransformPipeline
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
-from d810.cfg.passes.dead_block_elimination import DeadBlockEliminationPass
+from d810.cfg.transform.dead_block_elimination import DeadBlockEliminationPass
 
 from tests.unit.hexrays.conftest import InMemoryBackend
 

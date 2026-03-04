@@ -14,7 +14,7 @@ from typing import Optional
 
 import ida_hexrays
 
-from d810.cfg.dominators import compute_dominators, dominates
+from d810.cfg.dominator import compute_dominators, dominates
 from d810.core import logging
 from d810.core.bits import unsigned_to_signed
 from d810.hexrays.expr.ast import minsn_to_ast
