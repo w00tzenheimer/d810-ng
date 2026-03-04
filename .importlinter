@@ -71,3 +71,32 @@ forbidden_modules =
     idc
     idautils
     idapro
+
+[importlinter:contract:recon-core-no-hexrays]
+name = Recon core modules must stay hexrays-agnostic
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    d810.recon.analysis
+    d810.recon.models
+    d810.recon.phase
+    d810.recon.store
+    d810.recon.collectors
+    d810.recon.flow.analysis_stats
+    d810.recon.flow.dispatch_region
+    d810.recon.flow.profile_classifier
+    d810.recon.flow.bst_model
+forbidden_modules =
+    d810.hexrays
+
+[importlinter:contract:hexrays-subsystems-no-hooks]
+name = Hexrays subsystems must not depend on hooks
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    d810.hexrays.ir
+    d810.hexrays.mutation
+    d810.hexrays.utils
+    d810.hexrays.expr
+forbidden_modules =
+    d810.hexrays.hooks

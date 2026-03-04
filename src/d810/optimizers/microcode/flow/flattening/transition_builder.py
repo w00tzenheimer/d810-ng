@@ -21,7 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from d810.core.typing import TYPE_CHECKING, Dict, List, Optional, Protocol
 
-from d810.hexrays.bst_analysis import BSTAnalysisResult, analyze_bst_dispatcher
+from d810.recon.flow.bst_analysis import analyze_bst_dispatcher
+from d810.recon.flow.bst_model import BSTAnalysisResult
 
 if TYPE_CHECKING:
     import ida_hexrays

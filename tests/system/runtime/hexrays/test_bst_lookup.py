@@ -1,5 +1,5 @@
 import pytest
-from d810.hexrays.bst_analysis import BSTAnalysisResult, resolve_target_via_bst
+from d810.recon.flow.bst_model import BSTAnalysisResult, resolve_target_via_bst
 
 
 def _make_bst_result(exact_map, range_map=None):

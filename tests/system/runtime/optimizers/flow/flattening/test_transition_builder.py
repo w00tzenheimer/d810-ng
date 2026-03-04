@@ -12,7 +12,7 @@ from d810.core.typing import Optional
 
 import pytest
 
-from d810.hexrays.bst_analysis import BSTAnalysisResult
+from d810.recon.flow.bst_model import BSTAnalysisResult
 from d810.optimizers.microcode.flow.flattening.transition_builder import (
     TransitionBuilder,
     TransitionResult,

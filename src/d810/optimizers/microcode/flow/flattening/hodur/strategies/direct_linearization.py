@@ -13,11 +13,11 @@ import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
-from d810.hexrays.bst_analysis import (
+from d810.hexrays.utils.bst_analysis import (
     _mop_matches_stkoff,
     find_bst_default_block,
-    resolve_target_via_bst,
 )
+from d810.recon.flow.bst_model import resolve_target_via_bst
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     collect_state_machine_blocks,
     evaluate_handler_paths,
