@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from d810.optimizers.microcode.flow.analysis_stats import (
+from d810.recon.flow.analysis_stats import (
     compute_flow_profile_stats,
     summarize_dispatcher_detection,
 )

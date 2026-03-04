@@ -77,7 +77,7 @@ class TestHelperRoutingViaRegistry:
     def test_p_ast_does_not_import_rotate_helpers(self) -> None:
         """p_ast.py source must not contain the dead _rotate_helpers import."""
         import pathlib
-        src = pathlib.Path("src/d810/expr/p_ast.py").read_text()
+        src = pathlib.Path("src/d810/hexrays/expr/p_ast.py").read_text()
         assert "from d810.core import bits as _rotate_helpers" not in src, (
             "p_ast.py must not contain 'from d810.core import bits as _rotate_helpers'"
         )

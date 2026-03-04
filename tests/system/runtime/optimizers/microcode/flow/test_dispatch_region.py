@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.optimizers.microcode.flow.dispatch_region import DispatchRegionDetector
+from d810.recon.flow.dispatch_region import DispatchRegionDetector
 
 
 class TestTarjanSCC:

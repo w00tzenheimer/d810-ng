@@ -8,7 +8,7 @@ No IDA dependency - uses synthetic VarRef/Assignment data.
 
 import pytest
 
-from d810.optimizers.microcode.flow.state_var_alias import (
+from d810.cfg.flow.state_var_alias import (
     Assignment,
     StateVarAliasExpander,
     VarRef,

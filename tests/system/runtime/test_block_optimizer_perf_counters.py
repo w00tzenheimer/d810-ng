@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from d810.core.stats import OptimizationStatistics
 from d810.hexrays.hexrays_hooks import BlockOptimizerManager
+from d810.optimizers.microcode.flow.context import FlowMaturityContext
 
 
 class _DummyRule:
@@ -62,7 +63,9 @@ def _make_block(func_ea: int = 0x401000):
 
 
 def test_scoped_perf_counters_track_calls_candidates_and_lookup_time():
-    manager = BlockOptimizerManager(OptimizationStatistics(), Path("."))
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
     manager.current_maturity = 1
     scoped_rule = _DummyRule("scoped")
     scope_service = _FakeRuleScopeService((scoped_rule,))
@@ -83,7 +86,9 @@ def test_scoped_perf_counters_track_calls_candidates_and_lookup_time():
 
 
 def test_no_scope_service_fail_closed_ignores_legacy_candidates():
-    manager = BlockOptimizerManager(OptimizationStatistics(), Path("."))
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
     manager.current_maturity = 1
     allowed = _DummyRule("allowed", whitelist=[0x401000])
     denied = _DummyRule("denied", blacklist=[0x401000])
@@ -101,7 +106,9 @@ def test_no_scope_service_fail_closed_ignores_legacy_candidates():
 
 
 def test_scoped_compare_mode_records_legacy_baseline_and_can_reset():
-    manager = BlockOptimizerManager(OptimizationStatistics(), Path("."))
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
     manager.current_maturity = 1
     legacy_allowed = _DummyRule("legacy_allowed", whitelist=[0x401000])
     legacy_denied = _DummyRule("legacy_denied", blacklist=[0x401000])
@@ -136,7 +143,9 @@ def test_scoped_compare_mode_records_legacy_baseline_and_can_reset():
 
 
 def test_scoped_rules_are_executed_in_priority_order():
-    manager = BlockOptimizerManager(OptimizationStatistics(), Path("."))
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
     manager.current_maturity = 1
     low = _DummyRule("low", patches=1, priority=10)
     high = _DummyRule("high", patches=1, priority=90)
@@ -153,7 +162,9 @@ def test_scoped_rules_are_executed_in_priority_order():
 
 
 def test_no_scope_service_does_not_execute_legacy_rules():
-    manager = BlockOptimizerManager(OptimizationStatistics(), Path("."))
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
     manager.current_maturity = 1
     low = _DummyRule("legacy_low", patches=1, priority=20)
     high = _DummyRule("legacy_high", patches=1, priority=80)
