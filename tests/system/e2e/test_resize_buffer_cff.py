@@ -398,10 +398,9 @@ class TestResizeBufferCFFIncremental:
         FixPredecessorOfConditionalJumpBlock, then decompiles and prints
         the entire pseudocode output for inspection.
         """
-        from d810.hexrays.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
         from d810.core import (
-            MOP_CONSTANT_CACHE as CORE_MOP_CONSTANT_CACHE,
-            MOP_TO_AST_CACHE as CORE_MOP_TO_AST_CACHE,
+            MOP_CONSTANT_CACHE,
+            MOP_TO_AST_CACHE
         )
         from d810.optimizers.microcode.flow.flattening.dispatcher_detection import DispatcherCache
         from d810.evaluator.hexrays_microcode.tracker import MopTracker
@@ -428,8 +427,6 @@ class TestResizeBufferCFFIncremental:
             # Clear all caches
             MOP_CONSTANT_CACHE.clear()
             MOP_TO_AST_CACHE.clear()
-            CORE_MOP_CONSTANT_CACHE.clear()
-            CORE_MOP_TO_AST_CACHE.clear()
             DispatcherCache.clear_cache()
             MopTracker.reset()
             fix_pred_cond_jump_block.clear_cache()

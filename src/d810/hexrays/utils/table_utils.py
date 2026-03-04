@@ -28,13 +28,11 @@ from d810.core import getLogger
 
 logger = getLogger(__name__)
 
-BADADDR: int = 0xFFFFFFFFFFFFFFFF
+BADADDR = idaapi.BADADDR
 
 
 def is_valid_database_ea(ea: int) -> bool:
     """Check whether ea falls within the loaded database address range."""
-    if not _IDA_AVAILABLE:
-        return False
     if ea == BADADDR:
         return False
     min_ea = idaapi.inf_get_min_ea()
@@ -113,10 +111,6 @@ def read_global_value(ea: int, size: int) -> Optional[int]:
     int or None
         The integer value at *ea*, or ``None`` if the read failed.
     """
-    if not _IDA_AVAILABLE:
-        logger.warning("read_global_value called without IDA -- returning None")
-        return None
-
     if ea == 0xFFFFFFFFFFFFFFFF:  # BADADDR
         return None
 
@@ -223,9 +217,6 @@ def validate_code_target(
     if not is_valid_database_ea(ea):
         return False
 
-    if not _IDA_AVAILABLE:
-        return False
-
     flags = ida_bytes.get_flags(ea)
     if ida_bytes.is_code(flags):
         return True
@@ -260,10 +251,6 @@ def find_xor_with_globals(blk: "mblock_t") -> List[XorKeyInfo]:
     list[XorKeyInfo]
         Discovered XOR key information.
     """
-    if not _IDA_AVAILABLE:
-        logger.warning("find_xor_with_globals called without IDA")
-        return []
-
     if blk is None:
         return []
 
@@ -403,7 +390,7 @@ def analyze_table_encoding(
     tuple[TableEncoding, int, int]
         ``(encoding, xor_key, base_offset)``
     """
-    if not _IDA_AVAILABLE or blk is None:
+    if blk is None:
         return (TableEncoding.DIRECT, 0, 0)
 
     has_xor = False
@@ -471,7 +458,7 @@ def find_table_reference(blk: "mblock_t") -> Optional[int]:
     int or None
         The effective address of the referenced table, or ``None``.
     """
-    if not _IDA_AVAILABLE or blk is None:
+    if blk is None:
         return None
 
     ins = blk.head

@@ -30,18 +30,10 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
-try:
-    import ida_hexrays
-
-    _IDA_AVAILABLE = True
-except ImportError:
-    _IDA_AVAILABLE = False
+import ida_hexrays
 
 
 def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
-    if not _IDA_AVAILABLE:
-        raise RuntimeError("lift_block requires IDA Hexrays (ida_hexrays module not available)")
-
     serial = blk.serial
     block_type = blk.type
     flags = blk.flags
@@ -77,9 +69,6 @@ def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
 
 
 def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
-    if not _IDA_AVAILABLE:
-        raise RuntimeError("lift requires IDA Hexrays (ida_hexrays module not available)")
-
     blocks = {}
     for i in range(mba.qty):
         blk = mba.get_mblock(i)
