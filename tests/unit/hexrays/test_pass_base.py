@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.protocol import CFGBackend
+from d810.cfg.protocol import IRTranslator
 from d810.cfg.passes._base import CFGPass
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
@@ -78,7 +78,7 @@ class TestInMemoryBackend:
     def test_conforms_to_protocol(self):
         """InMemoryBackend should satisfy CFGBackend protocol."""
         backend = InMemoryBackend()
-        assert isinstance(backend, CFGBackend)
+        assert isinstance(backend, IRTranslator)
 
     def test_name_property(self):
         """Backend should have 'name' property."""
