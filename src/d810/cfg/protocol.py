@@ -21,7 +21,7 @@ from d810.cfg.graph_modification import GraphModification
 
 
 @runtime_checkable
-class CFGBackend(Protocol):
+class IRTranslator(Protocol):
     """Protocol for CFG backends that can lift, lower, and verify modifications.
 
     A CFGBackend provides three core operations:
@@ -44,7 +44,7 @@ class CFGBackend(Protocol):
         ...     def lower(self, modifications, state): ...
         ...     def verify(self, state): ...
         >>> backend = InMemoryBackend()
-        >>> isinstance(backend, CFGBackend)
+        >>> isinstance(backend, IRTranslator)
         True
     """
 
@@ -111,4 +111,4 @@ class CFGBackend(Protocol):
         ...
 
 
-__all__ = ["CFGBackend"]
+__all__ = ["IRTranslator"]

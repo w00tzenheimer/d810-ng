@@ -43,10 +43,10 @@ class TestIDAIRTranslatorBasics:
     @pytest.mark.skipif(not IDA_AVAILABLE, reason="Requires IDA")
     def test_backend_implements_protocol(self):
         """Test that IDAIRTranslator conforms to CFGBackend protocol."""
-        from d810.cfg.protocol import CFGBackend
+        from d810.cfg.protocol import IRTranslator
 
         backend = IDAIRTranslator()
-        assert isinstance(backend, CFGBackend)
+        assert isinstance(backend, IRTranslator)
 
 
 class TestModificationMapping:

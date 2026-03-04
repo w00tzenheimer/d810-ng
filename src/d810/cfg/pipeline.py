@@ -9,7 +9,7 @@ from d810.core.logging import getLogger
 from d810.core.typing import Any
 
 from d810.cfg.passes._base import CFGPass
-from d810.cfg.protocol import CFGBackend
+from d810.cfg.protocol import IRTranslator
 from d810.cfg.flowgraph import FlowGraph
 
 logger = getLogger(__name__, default_level=0)  # NOTSET: inherit from parent
@@ -23,7 +23,7 @@ class PassPipeline:
         total_changes = pipeline.run(backend_state)
     """
 
-    def __init__(self, backend: CFGBackend, passes: list[CFGPass]) -> None:
+    def __init__(self, backend: IRTranslator, passes: list[CFGPass]) -> None:
         self.backend = backend
         self.passes = list(passes)  # defensive copy
 
