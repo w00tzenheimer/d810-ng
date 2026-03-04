@@ -32,7 +32,7 @@ from d810.core import typing
 import ida_hexrays
 
 from d810.core import getLogger
-from d810.expr.ast import AstNode, minsn_to_ast
+from d810.hexrays.expr.ast import AstNode, minsn_to_ast
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
 
@@ -40,10 +40,10 @@ if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
 
 # Import egglog backend
-from d810.mba.backends.egglog_backend import EGGLOG_AVAILABLE
+from d810.backends.egglog_backend import EGGLOG_AVAILABLE
 
 if EGGLOG_AVAILABLE:
-    from d810.mba.backends.egglog_backend import (
+    from d810.backends.egglog_backend import (
         AstToBitExprConverter,
         BitExpr,
         MBAEGraph,

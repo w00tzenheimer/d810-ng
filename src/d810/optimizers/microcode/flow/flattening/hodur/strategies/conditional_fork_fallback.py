@@ -15,13 +15,16 @@ import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
-from d810.hexrays.hexrays_utils import (
-    InstructionDefUseCollector,
+from d810.hexrays.hexrays_helpers import (
     append_mop_if_not_in_list,
+    equal_mops_ignore_size,
     get_mop_index,
+)
+from d810.hexrays.tracker import (
+    InstructionDefUseCollector,
     remove_segment_registers,
 )
-from d810.optimizers.microcode.chain_analysis import (
+from d810.hexrays.emulator import (
     MicroCodeEnvironment,
     MicroCodeInterpreter,
 )
@@ -37,11 +40,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
     ProposedEdit,
 )
-from d810.optimizers.microcode.flow.flattening.transition_builder import (
+from d810.hexrays.expr.z3_utils import (
     _resolve_mop_via_predecessors,
 )
-from d810.hexrays.hexrays_utils import equal_mops_ignore_size
-
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
         AnalysisSnapshot,

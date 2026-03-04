@@ -1,7 +1,7 @@
 import ida_hexrays
 
-from d810.expr.ast import AstConstant, AstLeaf, AstNode
-from d810.expr.z3_utils import (
+from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode
+from d810.hexrays.expr.z3_utils import (
     z3_check_always_nonzero,
     z3_check_always_zero,
     z3_check_mop_equality,

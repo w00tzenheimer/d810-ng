@@ -87,7 +87,7 @@ _SHIFT_OPCODES: frozenset[int] = frozenset({
 import d810.core.typing as typing
 from d810.core import getLogger
 from d810.errors import AstEvaluationException
-from d810.expr.p_ast import mop_to_ast
+from d810.hexrays.expr.p_ast import mop_to_ast
 from d810.hexrays.hexrays_helpers import extract_literal_from_mop
 from d810.hexrays.ida_utils import is_never_written_var
 from d810.optimizers.microcode.handler import ConfigParam
@@ -104,7 +104,7 @@ def _try_eval_pure_const_mop(mop: ida_hexrays.mop_t) -> Optional[int]:
     If *mop* is ``mop_n`` (an immediate constant), return its value directly.
 
     If *mop* is ``mop_d`` (the result of a sub-instruction), convert it to an
-    AST via :func:`~d810.expr.p_ast.mop_to_ast` and verify that every leaf in
+    AST via :func:`~d810.hexrays.expr.p_ast.mop_to_ast` and verify that every leaf in
     the tree is a constant.  When that holds, evaluate the tree with an empty
     variable dict (constants evaluate without any variable bindings) and return
     the resulting integer.

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.expr import p_ast
+from d810.hexrays.expr import p_ast
 
 
 class _MappedLeaf:

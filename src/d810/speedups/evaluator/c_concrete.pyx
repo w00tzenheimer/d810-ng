@@ -15,7 +15,7 @@ package refactor (Phase 5).
 See ``docs/plans/2026-02-18-evaluator-package-refactor.md``, section 4.6.
 
 Key differences from the deprecated ``c_ast_evaluate.pyx``:
-- Accepts plain Python ``AstBase`` objects from ``d810.expr.p_ast``
+- Accepts plain Python ``AstBase`` objects from ``d810.hexrays.expr.p_ast``
   (not the Cython types from ``d810.speedups.expr.c_ast``).
 - Helper lookup goes through :meth:`d810.evaluator.helpers.rotate._RotateHelper.lookup`
   instead of ``getattr(d810.core.bits, helper_name, None)``.
@@ -39,7 +39,7 @@ from d810.evaluator.helpers.rotate import _RotateHelper as _RotateHelperLookup
 
 logger = getLogger(__name__)
 
-# Lazy-loaded Python AST types from d810.expr.p_ast.
+# Lazy-loaded Python AST types from d810.hexrays.expr.p_ast.
 # Using plain Python types (not Cython c_ast types) so that
 # CythonConcreteEvaluator can be used with any AstBase instance,
 # including mock objects in unit tests.
@@ -52,7 +52,7 @@ cdef object _AstProxy = None
 cdef inline void _ensure_types_loaded():
     global _AstNode, _AstLeaf, _AstConstant, _AstProxy
     if _AstNode is None:
-        from d810.expr.ast import AstNode, AstLeaf, AstConstant, AstProxy
+        from d810.hexrays.expr.ast import AstNode, AstLeaf, AstConstant, AstProxy
         _AstNode = AstNode
         _AstLeaf = AstLeaf
         _AstConstant = AstConstant
@@ -99,7 +99,7 @@ cdef class CythonConcreteEvaluator:
     :mod:`d810.evaluator.concrete` swaps to this class when the extension
     is available.
 
-    Accepts plain Python ``AstBase`` instances from ``d810.expr.p_ast``;
+    Accepts plain Python ``AstBase`` instances from ``d810.hexrays.expr.p_ast``;
     no dependency on the Cython AST types in ``d810.speedups.expr.c_ast``.
     """
 

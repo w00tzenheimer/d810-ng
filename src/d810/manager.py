@@ -29,7 +29,7 @@ from d810.core.rule_scope import (
 )
 from d810.core.stats import OptimizationStatistics
 from d810.core.typing import TYPE_CHECKING
-from d810.expr.z3_utils import clear_z3_caches
+from d810.hexrays.expr.z3_utils import clear_z3_caches
 from d810.hexrays.ctree_hooks import CtreeOptimizationRule, CtreeOptimizerManager
 from d810.hexrays.hexrays_hooks import (
     BlockOptimizerManager,
@@ -37,10 +37,14 @@ from d810.hexrays.hexrays_hooks import (
     HexraysDecompilationHook,
     InstructionOptimizerManager,
 )
-from d810.mba.backends.ida import adapt_rules
+from d810.backends.ida import adapt_rules
 from d810.mba.rules import VerifiableRule
+from d810.optimizers.microcode.flow.context import FlowMaturityContext
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
-from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
+from d810.optimizers.microcode.instructions.handler import (
+    InstructionOptimizationRule,
+    InstructionOptimizer,
+)
 from d810.recon.collectors.cfg_shape import CFGShapeCollector
 from d810.recon.collectors.ctree_structure import CtreeStructureCollector
 from d810.recon.collectors.dispatch_pattern import DispatchPatternCollector
@@ -236,6 +240,24 @@ class D810Manager:
         if self._started:
             self.stop()
         logger.debug("Starting manager...")
+        # Ensure side-effect registrants are loaded before manager construction.
+        from d810.optimizers.microcode.instructions.pattern_matching import (
+            experimental,  # noqa: F401
+        )
+
+        try:
+            from d810.mba.backend_registry import get_egglog_provider
+
+            if bool(get_egglog_provider("egglog").is_available()):
+                from d810.optimizers.microcode.flow.egraph import (  # noqa: F401
+                    block_optimizer,
+                )
+                from d810.optimizers.microcode.instructions.egraph import (  # noqa: F401
+                    egglog_handler,
+                )
+        except ImportError:
+            pass
+
         self.rule_scope_service.attach(self.event_emitter)
         self._init_storage()
         self.rule_scope_service.set_overlay_provider(self._get_rule_overlay)
@@ -243,7 +265,7 @@ class D810Manager:
 
         # Instantiate core manager classes from registry
         self.instruction_optimizer = InstructionOptimizerManager(
-            self.stats, self.log_dir
+            self.stats, self.log_dir, optimizer_cls=InstructionOptimizer
         )
         project_name = str(self.config.get("project_name", ""))
         idb_key = str(self.config.get("idb_key", project_name))
@@ -253,7 +275,9 @@ class D810Manager:
             rule_scope_project_name=project_name,
             rule_scope_idb_key=idb_key,
         )
-        self.block_optimizer = BlockOptimizerManager(self.stats, self.log_dir)
+        self.block_optimizer = BlockOptimizerManager(
+            self.stats, self.log_dir, ctx_cls=FlowMaturityContext
+        )
         self.block_optimizer.configure(
             **self.block_optimizer_config,
             rule_scope_service=self.rule_scope_service,

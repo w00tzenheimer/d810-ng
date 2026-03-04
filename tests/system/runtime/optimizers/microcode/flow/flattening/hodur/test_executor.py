@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.optimizers.microcode.flow.flattening.hodur.executor import (
+from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     StageResult,
     VerificationGate,
 )

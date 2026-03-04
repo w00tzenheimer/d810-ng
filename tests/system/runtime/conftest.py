@@ -64,7 +64,7 @@ def collect_real_asts_from_mba(mba) -> list:
     Returns a list of (ast, minsn) tuples for instructions that
     successfully convert to AST trees.
     """
-    from d810.expr.ast import minsn_to_ast
+    from d810.hexrays.expr.ast import minsn_to_ast
 
     results = []
     for i in range(mba.qty):

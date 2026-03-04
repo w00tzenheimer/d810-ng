@@ -11,7 +11,7 @@ Benefits over the current ast_generator approach:
 4. Potential for more complex optimizations (associativity, etc.)
 
 Usage:
-    from d810.mba.backends.egglog_backend import EGraphOptimizer, check_egglog_available
+    from d810.backends.egglog_backend import EGraphOptimizer, check_egglog_available
 
     if check_egglog_available():
         optimizer = EGraphOptimizer()
@@ -23,7 +23,7 @@ from __future__ import annotations
 import functools
 
 from d810.core import logging, typing
-from d810.expr.ast import AstConstantProtocol, AstLeafProtocol, AstNode, AstNodeProtocol
+from d810.hexrays.expr.ast import AstConstantProtocol, AstLeafProtocol, AstNode, AstNodeProtocol
 
 egglog_logger = logging.getLogger("egglog", default_level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -42,6 +42,7 @@ except ImportError:
 
 import idaapi
 
+from d810.mba.backend_registry import EgglogProvider
 
 def check_egglog_available() -> bool:
     """Check if egglog is installed and available."""
@@ -806,6 +807,22 @@ def generate_equivalent_patterns(
             pass  # Not equivalent
 
     return equivalent
+
+
+class EgglogBackendProvider(EgglogProvider):
+    registrant_name = "egglog"
+
+    @classmethod
+    def is_available(cls) -> bool:
+        return EGGLOG_AVAILABLE
+
+    @classmethod
+    def pattern_expr_type(cls):
+        return PatternExpr
+
+    @classmethod
+    def verify_pattern_equivalence(cls, left, right) -> bool:
+        return verify_pattern_equivalence(left, right)
 
 
 # Example usage and testing

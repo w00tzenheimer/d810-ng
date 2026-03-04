@@ -33,7 +33,7 @@ import ida_hexrays
 import idc
 
 from d810.core import getLogger
-from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
+from d810.hexrays.emulator import MicroCodeEnvironment, MicroCodeInterpreter
 from d810.hexrays.cfg_mutations import create_standalone_block, insert_goto_instruction
 from d810.hexrays.cfg_queries import _serial_in_predset
 from d810.hexrays.cfg_utils import (

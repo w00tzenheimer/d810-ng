@@ -10,7 +10,7 @@ Future functionality:
 
 Example usage (after implementation):
     >>> from d810.mba import Var, MBARule
-    >>> from d810.mba.backends.egraph import MBARuleset, EGraphSimplifier
+    >>> from d810.backends.egraph import MBARuleset, EGraphSimplifier
     >>>
     >>> # Create ruleset from verified MBA rules
     >>> ruleset = MBARuleset([XorRule1(), XorRule2()])

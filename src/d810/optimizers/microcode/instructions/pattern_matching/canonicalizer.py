@@ -94,7 +94,7 @@ from d810.core import typing
 
 import ida_hexrays
 
-from d810.expr.ast import AstBase, AstConstant, AstConstantProtocol, AstLeaf, AstNode
+from d810.hexrays.expr.ast import AstBase, AstConstant, AstConstantProtocol, AstLeaf, AstNode
 
 # Operations where order does not matter (Associative-Commutative ops)
 COMMUTATIVE_OPS = {

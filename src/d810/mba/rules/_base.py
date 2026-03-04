@@ -5,8 +5,8 @@ symbolic expressions. Rules are defined using the DSL (d810.mba.dsl) and are
 completely independent of any backend (Z3, IDA, etc.).
 
 Verification and pattern matching are handled by backends:
-- d810.mba.backends.z3.verify_rule() - Z3-based verification
-- d810.mba.backends.ida.IDAPatternAdapter - IDA pattern matching
+- d810.backends.z3.verify_rule() - Z3-based verification
+- d810.backends.ida.IDAPatternAdapter - IDA pattern matching
 
 Registry Architecture:
     Rules inherit from Registrant for automatic registration. This avoids
@@ -15,7 +15,7 @@ Registry Architecture:
 
     Usage:
         # Verification (requires Z3):
-        from d810.mba.backends.z3 import verify_rule
+        from d810.backends.z3 import verify_rule
         for rule_cls in VerifiableRule.registry.values():
             verify_rule(rule_cls())
 
@@ -480,7 +480,7 @@ class VerifiableRule(SymbolicRule, Registrant):
                         # This is a defining constraint - add the computed value
                         import importlib
 
-                        _ast_mod = importlib.import_module("d810.expr.ast")
+                        _ast_mod = importlib.import_module("d810.hexrays.expr.ast")
                         match_context[var_name] = _ast_mod.AstConstant(var_name, value)
                     else:
                         # This is a checking constraint - verify it holds
@@ -505,7 +505,7 @@ class VerifiableRule(SymbolicRule, Registrant):
     def get_constraints(self, z3_vars: Dict[str, Any]) -> List:
         """Get Z3 constraints for rule verification.
 
-        This method is called by the Z3 backend (d810.mba.backends.z3) during
+        This method is called by the Z3 backend (d810.backends.z3) during
         rule verification. Subclasses can override this to provide custom Z3
         constraints that must hold for the rule to be valid.
 

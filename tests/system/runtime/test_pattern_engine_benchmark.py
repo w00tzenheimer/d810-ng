@@ -17,7 +17,7 @@ import ida_hexrays
 import idaapi
 import idc
 
-from d810.expr.p_ast import AstLeaf, AstNode, minsn_to_ast
+from d810.hexrays.expr.p_ast import AstLeaf, AstNode, minsn_to_ast
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (
     PatternStorage,
 )

@@ -1,6 +1,6 @@
 import abc
 
-from d810.expr.ast import AstNode
+from d810.hexrays.expr.ast import AstNode
 from d810.optimizers.microcode.instructions.handler import (
     GenericPatternRule,
     InstructionOptimizer,

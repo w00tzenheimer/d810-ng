@@ -9,7 +9,7 @@ import unittest
 
 
 # =============================================================================
-# Minimal standalone AST classes for testing (mirrors d810.expr.p_ast)
+# Minimal standalone AST classes for testing (mirrors d810.hexrays.expr.p_ast)
 # =============================================================================
 
 
@@ -103,7 +103,7 @@ class MockAstConstant(MockAstLeaf):
 
 
 class MockAstProxy(MockAstBase):
-    """Minimal AstProxy implementation that mirrors d810.expr.p_ast.AstProxy.
+    """Minimal AstProxy implementation that mirrors d810.hexrays.expr.p_ast.AstProxy.
 
     This implements clone-on-write semantics: when writing to a proxy that
     wraps a frozen target, the target is cloned first.

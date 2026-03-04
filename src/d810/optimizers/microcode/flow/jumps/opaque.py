@@ -1,8 +1,8 @@
 import ida_hexrays
 
 from d810.core.bits import unsigned_to_signed
-from d810.expr.ast import AstConstant, AstLeaf, AstNode, mop_to_ast
-from d810.expr.z3_utils import z3_check_mop_equality, z3_check_mop_inequality
+from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode, mop_to_ast
+from d810.hexrays.expr.z3_utils import z3_check_mop_equality, z3_check_mop_inequality
 from d810.optimizers.microcode.flow.jumps.handler import JumpOptimizationRule
 
 

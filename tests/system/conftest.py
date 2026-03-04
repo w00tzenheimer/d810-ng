@@ -92,7 +92,7 @@ if TYPE_CHECKING:
 
 import d810
 import d810._vendor.ida_reloader as reloadable
-from d810.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
+from d810.hexrays.expr.utils import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 # Also import from d810.core to ensure both cache locations are accessible
 from d810.core import (
     MOP_CONSTANT_CACHE as CORE_MOP_CONSTANT_CACHE,

@@ -17,9 +17,9 @@ import ida_hexrays
 from d810.cfg.dominators import compute_dominators, dominates
 from d810.core import logging
 from d810.core.bits import unsigned_to_signed
-from d810.expr.ast import minsn_to_ast
-from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
-from d810.expr.z3_utils import _resolve_mop_via_predecessors
+from d810.hexrays.expr.ast import minsn_to_ast
+from d810.hexrays.emulator import MicroCodeEnvironment, MicroCodeInterpreter
+from d810.hexrays.expr.z3_utils import _resolve_mop_via_predecessors
 from d810.hexrays.hexrays_formatters import format_mop_t
 from d810.hexrays.hexrays_helpers import (
     append_mop_if_not_in_list,
@@ -402,7 +402,7 @@ class HodurStateMachineDetector:
                 pass
 
         try:
-            from d810.expr.z3_utils import z3_check_mop_equality
+            from d810.hexrays.expr.z3_utils import z3_check_mop_equality
 
             return bool(z3_check_mop_equality(candidate, state_var))
         except Exception:

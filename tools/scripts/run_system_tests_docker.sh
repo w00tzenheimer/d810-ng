@@ -3,13 +3,13 @@
 # Paths are repo-relative; no host-specific paths.
 #
 # Usage:
-#   ./run_system_tests_docker.sh system [OPTIONS]
+#   ./run_system_tests_docker.sh system [OPTIONS] [-- PYTEST_ARGS...]
 #   ./run_system_tests_docker.sh dump [OPTIONS] [-- PYTEST_ARGS...]
 #   ./run_system_tests_docker.sh shell [OPTIONS]
 #   ./run_system_tests_docker.sh exec [OPTIONS] -- COMMAND [ARGS...]
 #
 # Commands:
-#   system    Run SETUP then: pytest tests/system -v
+#   system    Run SETUP then: pytest tests/system -v [PYTEST_ARGS...]
 #   dump      Run SETUP then: pytest -s tests/system/e2e/test_dump_function_pseudocode.py [OPTIONS]
 #   shell     Run SETUP then start an interactive bash (docker run -it)
 #   exec      Run SETUP then exec COMMAND with ARGS (e.g. exec -- python -c 'print(1)' or exec -- bash -c '...')
@@ -19,6 +19,7 @@
 # Options (system/shell/exec):
 #   -w, --worktree REL      Use worktree at REPO_ROOT/WORKTREE_ROOT/REL as /work (default worktree root: .worktrees)
 #   -l, --logs              Mount work dir .tmp/logs at /root/.idapro/logs
+#   --                      Remaining args passed to pytest (system only) or used as command separator (exec)
 #
 # Options (dump only):
 #   -f, --function NAME     Pass --dump-function-pseudocode NAME
@@ -205,7 +206,9 @@ run_bash_exec() {
 }
 
 if [ "$CMD" = "system" ]; then
-  run_bash "$SETUP_CMD && $ENV_TEST $IDA_VENV_PYTHON -m pytest tests/system -v"
+  SYSTEM_ARGS=()
+  [ ${#EXTRA_PYTEST[@]} -gt 0 ] && SYSTEM_ARGS+=("${EXTRA_PYTEST[@]}")
+  run_bash "$SETUP_CMD && $ENV_TEST $IDA_VENV_PYTHON -m pytest tests/system -v ${SYSTEM_ARGS[*]}"
   exit 0
 fi
 

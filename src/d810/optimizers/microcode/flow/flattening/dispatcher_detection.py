@@ -39,7 +39,7 @@ from d810.optimizers.microcode.flow.analysis_stats import summarize_dispatcher_d
 
 # Optional emulation support
 try:
-    from d810.expr.emulation_oracle import EmulationOracle, StateTransition
+    from d810.hexrays.expr.emulation_oracle import EmulationOracle, StateTransition
 
     EMULATION_AVAILABLE = True
 except ImportError:

@@ -12,17 +12,23 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING
 
+from d810.mba.backend_registry import get_egglog_provider
+
 if TYPE_CHECKING:
     from d810.mba.rules._base import VerifiableRule
 
 logger = getLogger(__name__)
 
 
+def _egglog_provider():
+    """Resolve egglog provider via registry-backed backend discovery."""
+    return get_egglog_provider("egglog")
+
+
 def _check_egglog_available() -> bool:
     """Check if egglog is available for use."""
     try:
-        from d810.mba.backends.egglog_backend import check_egglog_available
-        return check_egglog_available()
+        return _egglog_provider().is_available()
     except ImportError:
         return False
 
@@ -37,8 +43,8 @@ def _symbolic_expr_to_pattern_expr(expr, var_cache: dict | None = None):
     Returns:
         PatternExpr representation, or None if conversion fails.
     """
-    from d810.mba.backends.egglog_backend import PatternExpr
     from d810.mba.dsl import SymbolicExpressionProtocol
+    PatternExpr = _egglog_provider().pattern_expr_type()
 
     if var_cache is None:
         var_cache = {}
@@ -150,8 +156,8 @@ def _symbolic_expr_to_pattern_expr_positional(expr):
     Returns:
         PatternExpr representation with positional variable names, or None if conversion fails.
     """
-    from d810.mba.backends.egglog_backend import PatternExpr
     from d810.mba.dsl import SymbolicExpressionProtocol
+    PatternExpr = _egglog_provider().pattern_expr_type()
 
     if expr is None:
         return None
@@ -235,7 +241,7 @@ def check_rules_equivalent(rule1: "VerifiableRule", rule2: "VerifiableRule") -> 
         logger.warning("egglog not available for rule equivalence checking")
         return False
 
-    from d810.mba.backends.egglog_backend import verify_pattern_equivalence
+    verify_pattern_equivalence = _egglog_provider().verify_pattern_equivalence
 
     # Get patterns
     pattern1 = _get_rule_pattern(rule1)
@@ -290,7 +296,7 @@ def check_inverse_rules(rule1: "VerifiableRule", rule2: "VerifiableRule") -> boo
         logger.warning("egglog not available for inverse rule checking")
         return False
 
-    from d810.mba.backends.egglog_backend import verify_pattern_equivalence
+    verify_pattern_equivalence = _egglog_provider().verify_pattern_equivalence
 
     # Get pattern from rule1 and replacement from rule2
     pattern1 = _get_rule_pattern(rule1)

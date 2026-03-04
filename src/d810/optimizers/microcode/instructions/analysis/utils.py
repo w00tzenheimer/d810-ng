@@ -1,4 +1,4 @@
-from d810.expr.ast import AstLeaf, AstNode
+from d810.hexrays.expr.ast import AstLeaf, AstNode
 
 
 def get_possible_patterns(

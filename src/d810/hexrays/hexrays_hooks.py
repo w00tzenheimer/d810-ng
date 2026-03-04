@@ -16,7 +16,7 @@ from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
 from d810.core.rule_scope import PIPELINE_FLOW, PIPELINE_INSTRUCTION
 from d810.errors import D810Exception
-from d810.expr.z3_utils import log_z3_instructions
+from d810.hexrays.expr.z3_utils import log_z3_instructions
 from d810.hexrays.cfg_utils import safe_verify
 from d810.hexrays.hexrays_formatters import (
     count_minsn_nodes,
@@ -26,6 +26,7 @@ from d810.hexrays.hexrays_formatters import (
 )
 from d810.hexrays.hexrays_helpers import check_ins_mop_size_are_ok
 from d810.hexrays.microcode_dump import mba_to_dict
+from d810.mba.backend_registry import get_egglog_provider
 
 # ---------------------------------------------------------------------------
 # hash_minsn: Cython fast path with pure-Python fallback
@@ -72,32 +73,12 @@ def hash_minsn(ins: ida_hexrays.minsn_t, func_entry_ea: int = 0) -> int:
 # Note: VerifiableRule and adapt_rules are loaded/filtered in manager.py
 # Rules are added to PatternOptimizer via add_rule() based on project config
 
-# Import experimental rules that depend on optimizer extensions
-# These rules use context-aware features and can't be in mba.rules
-from d810.optimizers.microcode.instructions.pattern_matching import (  # noqa: F401
-    experimental,
-)
-
 # Try to import egglog-based optimizer (optional dependency)
 try:
-    from d810.mba.backends.egglog_backend import EGGLOG_AVAILABLE
-
-    if EGGLOG_AVAILABLE:
-        # Import to trigger auto-registration of EgglogOptimizer
-        # Import to trigger auto-registration of BlockLevelEgglogOptimizer
-        from d810.optimizers.microcode.flow.egraph import block_optimizer  # noqa: F401
-        from d810.optimizers.microcode.instructions.egraph import (  # noqa: F401
-            egglog_handler,
-        )
+    EGGLOG_AVAILABLE = bool(get_egglog_provider("egglog").is_available())
 except ImportError:
     EGGLOG_AVAILABLE = False
 from d810.hexrays.ctree_hooks import CtreeOptimizerManager
-from d810.optimizers.microcode.flow.context import FlowMaturityContext
-from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
-from d810.optimizers.microcode.instructions.handler import (
-    InstructionOptimizationRule,
-    InstructionOptimizer,
-)
 
 main_logger = getLogger("D810")
 optimizer_logger = getLogger("D810.optimizer")
@@ -146,6 +127,8 @@ if typing.TYPE_CHECKING:
     )
     from d810.optimizers.microcode.instructions.chain.handler import ChainOptimizer
     from d810.optimizers.microcode.instructions.early.handler import EarlyOptimizer
+    # ast-ignore no-hexrays-hook-direct-optimizer-imports
+    # ast-grep-ignore
     from d810.optimizers.microcode.instructions.egraph.egglog_handler import (
         EgglogOptimizer,
     )
@@ -159,11 +142,18 @@ if typing.TYPE_CHECKING:
 
 
 class InstructionOptimizerManager(ida_hexrays.optinsn_t):
-    def __init__(self, stats: OptimizationStatistics, log_dir: pathlib.Path):
+    def __init__(
+        self,
+        stats: OptimizationStatistics,
+        log_dir: pathlib.Path,
+        *,
+        optimizer_cls: type,
+    ):
         optimizer_logger.debug("Initializing {0}...".format(self.__class__.__name__))
         super().__init__()
         self.log_dir = log_dir
         self.stats = stats
+        self._instruction_optimizer_type = optimizer_cls
         self.instruction_visitor = InstructionVisitorManager(self)
         self._last_optimizer_tried = None
         self.current_maturity = None
@@ -193,22 +183,24 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self.instruction_optimizers = []
         self._active_optimizers: list = []
         # usage tracking moved to centralized statistics object
-        ChainOptimizer: type[ChainOptimizer] = InstructionOptimizer.get(
+        ChainOptimizer: type[ChainOptimizer] = self._instruction_optimizer_type.get(
             "ChainOptimizer"
         )
-        EarlyOptimizer: type[EarlyOptimizer] = InstructionOptimizer.get(
+        EarlyOptimizer: type[EarlyOptimizer] = self._instruction_optimizer_type.get(
             "EarlyOptimizer"
         )
-        InstructionAnalyzer: type[InstructionAnalyzer] = InstructionOptimizer.get(
-            "InstructionAnalyzer"
+        InstructionAnalyzer: type[InstructionAnalyzer] = (
+            self._instruction_optimizer_type.get("InstructionAnalyzer")
         )
-        PatternOptimizer: type[PatternOptimizer] = InstructionOptimizer.get(
+        PatternOptimizer: type[PatternOptimizer] = self._instruction_optimizer_type.get(
             "PatternOptimizer"
         )
-        PeepholeOptimizer: type[PeepholeOptimizer] = InstructionOptimizer.get(
+        PeepholeOptimizer: type[PeepholeOptimizer] = self._instruction_optimizer_type.get(
             "PeepholeOptimizer"
         )
-        Z3Optimizer: type[Z3Optimizer] = InstructionOptimizer.get("Z3Optimizer")
+        Z3Optimizer: type[Z3Optimizer] = self._instruction_optimizer_type.get(
+            "Z3Optimizer"
+        )
 
         # PatternOptimizer: Rules are added via add_rule() from D810Manager based on
         # project configuration. This ensures only rules enabled in the project's
@@ -232,7 +224,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         ENABLE_EGGLOG_OPTIMIZER = False  # Set to True to enable (SLOW!)
 
         if ENABLE_EGGLOG_OPTIMIZER and EGGLOG_AVAILABLE:
-            EgglogOptimizer: type[EgglogOptimizer] = InstructionOptimizer.get(
+            EgglogOptimizer: type[EgglogOptimizer] = self._instruction_optimizer_type.get(
                 "EgglogOptimizer"
             )
             if EgglogOptimizer is not None:
@@ -594,11 +586,18 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     # matching but never converges.
     _BASE_PASSES_PER_MATURITY = 2000
 
-    def __init__(self, stats: OptimizationStatistics, log_dir: pathlib.Path):
+    def __init__(
+        self,
+        stats: OptimizationStatistics,
+        log_dir: pathlib.Path,
+        *,
+        ctx_cls: type,
+    ):
         optimizer_logger.debug("Initializing {0}...".format(self.__class__.__name__))
         super().__init__()
         self.log_dir = log_dir
         self.stats = stats
+        self._flow_context_type = ctx_cls
         self.cfg_rules: list[FlowOptimizationRule] = []
         self._rule_scope_service = None
         self._rule_scope_project_name = ""
@@ -950,7 +949,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             return None
         key = (int(mba.entry_ea), int(self.current_maturity))
         if self._flow_context is None or self._flow_context_key != key:
-            self._flow_context = FlowMaturityContext(
+            self._flow_context = self._flow_context_type(
                 mba=mba,
                 func_ea=int(mba.entry_ea),
                 maturity=int(self.current_maturity),

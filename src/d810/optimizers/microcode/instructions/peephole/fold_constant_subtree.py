@@ -4,7 +4,7 @@ import ida_hexrays
 
 from d810.core import typing
 from d810.core import getLogger
-from d810.expr.ast import AstBase, minsn_to_ast
+from d810.hexrays.expr.ast import AstBase, minsn_to_ast
 from d810.hexrays.hexrays_formatters import format_mop_t, opcode_to_string, sanitize_ea
 from d810.hexrays.hexrays_helpers import AND_TABLE
 from d810.optimizers.microcode.instructions.peephole.handler import (

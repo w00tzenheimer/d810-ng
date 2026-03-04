@@ -1,4 +1,4 @@
-"""System tests for fetch_idb_value in d810.expr.emulator.
+"""System tests for fetch_idb_value in d810.hexrays.emulator.
 
 fetch_idb_value reads a value from the IDA database at a given address.
 It supports sizes 1, 2, 4, and 8 bytes. All other sizes (including 0,
@@ -11,7 +11,7 @@ import pytest
 import idaapi
 import idc
 
-from d810.expr.emulator import fetch_idb_value
+from d810.hexrays.emulator import fetch_idb_value
 
 
 @pytest.mark.ida_required

@@ -6,7 +6,7 @@ import ida_hexrays
 import idaapi
 
 from d810.core import getLogger
-from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter, fetch_idb_value
+from d810.hexrays.emulator import MicroCodeEnvironment, MicroCodeInterpreter, fetch_idb_value
 from d810.hexrays.cfg_utils import (
     change_1way_block_successor,
     change_2way_block_conditional_successor,

@@ -30,7 +30,7 @@ from d810.core.typing import Any, Dict, Optional
 
 import ida_hexrays
 
-from d810.expr.ast import AstLeaf
+from d810.hexrays.expr.ast import AstLeaf
 from d810.hexrays.hexrays_formatters import format_mop_t
 
 
