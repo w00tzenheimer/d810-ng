@@ -30,14 +30,14 @@ if TYPE_CHECKING:
 logger = getLogger(__name__)
 
 
-class IDABackend:
+class IDAIRTranslator:
     """CFGBackend implementation for IDA Pro's Hex-Rays microcode.
 
     Translates between the portable CFG representation and IDA's
     mblock_t/mba_t structures using DeferredGraphModifier.
 
     Example:
-        >>> backend = IDABackend()
+        >>> backend = IDAIRTranslator()
         >>> cfg = backend.lift(mba)
         >>> modifications = [ConvertToGoto(block_serial=3, goto_target=5)]
         >>> count = backend.lower(modifications, mba)
@@ -168,10 +168,10 @@ class IDABackend:
         from d810.hexrays.mutation import cfg_verify
 
         try:
-            cfg_verify.safe_verify(mba, "IDABackend.verify()")
+            cfg_verify.safe_verify(mba, "IDAIRTranslator.verify()")
             return True
         except RuntimeError:
             return False
 
 
-__all__ = ["IDABackend"]
+__all__ = ["IDAIRTranslator"]

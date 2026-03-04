@@ -637,16 +637,16 @@ class D810Manager:
         they require pre-computed fix dicts from the legacy analysis side.
 
         Returns:
-            PassPipeline instance with IDABackend and the 2 safe cleanup passes.
+            PassPipeline instance with IDAIRTranslator and the 2 safe cleanup passes.
         """
-        from d810.hexrays.mutation.ida_backend import IDABackend
+        from d810.hexrays.mutation.ir_translator import IDAIRTranslator
         from d810.cfg.pass_pipeline import PassPipeline
-        from d810.cfg.passes.goto_chain_removal import GotoChainRemovalPass
+        from d810.hexrays.mutation.passes.goto_chain_removal import GotoChainRemovalPass
         from d810.cfg.passes.simplify_identical_branch import (
             SimplifyIdenticalBranchPass,
         )
 
-        backend = IDABackend()
+        backend = IDAIRTranslator()
         passes = [
             SimplifyIdenticalBranchPass(),
             GotoChainRemovalPass(),

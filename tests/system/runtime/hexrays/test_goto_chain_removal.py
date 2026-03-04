@@ -15,19 +15,20 @@ Tests cover:
 """
 from __future__ import annotations
 
+import ida_hexrays
 import pytest
 
 from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.cfg.pass_pipeline import PassPipeline
 from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
-from d810.cfg.passes.goto_chain_removal import GotoChainRemovalPass
+from d810.hexrays.mutation.passes.goto_chain_removal import GotoChainRemovalPass
 
-from tests.unit.hexrays.conftest import InMemoryBackend
+from tests.system.runtime.hexrays.conftest import InMemoryBackend
 
-# Microcode constants (mirrors the pass constants)
-_M_GOTO_OPCODE = 55  # m_goto == 0x37
-_MOP_B_TYPE = 7      # mop_b
+# Microcode constants
+_M_GOTO_OPCODE = ida_hexrays.m_goto
+_MOP_B_TYPE = ida_hexrays.mop_b
 
 
 def _make_goto_insn(ea: int, dest_serial: int) -> InsnSnapshot:

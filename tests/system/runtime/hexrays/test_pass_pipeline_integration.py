@@ -17,11 +17,11 @@ import pytest
 from d810.cfg.pass_pipeline import PassPipeline
 from d810.cfg.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
 from d810.cfg.passes.dead_block_elimination import DeadBlockEliminationPass
-from d810.cfg.passes.goto_chain_removal import GotoChainRemovalPass
-from d810.cfg.passes.block_merge import BlockMergePass
+from d810.hexrays.mutation.passes.goto_chain_removal import GotoChainRemovalPass
+from d810.hexrays.mutation.passes.block_merge import BlockMergePass
 from d810.cfg.passes.opaque_jump_fixer import OpaqueJumpFixerPass
 from d810.cfg.passes.fake_jump_fixer import FakeJumpFixerPass
-from d810.hexrays.mutation.ida_backend import IDABackend
+from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ def build_cleanup_pipeline() -> PassPipeline:
     OpaqueJumpFixerPass and FakeJumpFixerPass are intentionally excluded:
     they require pre-computed fix dicts from the legacy analysis side.
     """
-    backend = IDABackend()
+    backend = IDAIRTranslator()
     passes = [
         SimplifyIdenticalBranchPass(),
         DeadBlockEliminationPass(),
@@ -101,10 +101,10 @@ class TestBuildPassPipeline:
         pass_types = [type(p) for p in pipeline.passes]
         assert FakeJumpFixerPass not in pass_types
 
-    def test_backend_is_ida_backend(self):
-        """PassPipeline should use IDABackend."""
+    def test_backend_is_ir_translator(self):
+        """PassPipeline should use IDAIRTranslator."""
         pipeline = build_cleanup_pipeline()
-        assert isinstance(pipeline.backend, IDABackend)
+        assert isinstance(pipeline.backend, IDAIRTranslator)
 
     def test_pipeline_repr_contains_pass_names(self):
         """PassPipeline repr should name all 4 passes."""
@@ -218,10 +218,15 @@ class TestBlockOptimizerManagerPipelineIntegration:
     def _read_hook_source(self) -> str:
         """Return the source of hexrays_hooks.py as a string."""
         import pathlib
-        hook_path = pathlib.Path(__file__).parent.parent.parent.parent / (
-            "src/d810/hexrays/hexrays_hooks.py"
+        repo_root = pathlib.Path(__file__).parent.parent.parent.parent.parent
+        candidates = (
+            repo_root / "src/d810/hexrays/hooks/hexrays_hooks.py",
+            repo_root / "src/d810/hexrays/hexrays_hooks.py",
         )
-        return hook_path.read_text(encoding="utf-8")
+        for hook_path in candidates:
+            if hook_path.exists():
+                return hook_path.read_text(encoding="utf-8")
+        raise FileNotFoundError(f"hexrays_hooks.py not found in candidates: {candidates}")
 
     def test_block_optimizer_has_pass_pipeline_attribute(self):
         """BlockOptimizerManager source must declare _pass_pipeline attribute."""
