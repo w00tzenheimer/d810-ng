@@ -33,7 +33,7 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode, minsn_to_ast
-from d810.hexrays.hexrays_formatters import format_minsn_t
+from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
 
 if typing.TYPE_CHECKING:

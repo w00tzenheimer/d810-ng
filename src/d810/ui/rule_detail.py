@@ -308,7 +308,7 @@ class RuleDetailPanel(QtWidgets.QWidget):
             if isinstance(v, int):
                 # It's likely a maturity enum value - convert to string
                 try:
-                    from d810.hexrays.hexrays_formatters import maturity_to_string
+                    from d810.hexrays.utils.hexrays_formatters import maturity_to_string
                     current_values_as_strings.add(maturity_to_string(v))
                 except ImportError:
                     current_values_as_strings.add(str(v))
@@ -485,7 +485,7 @@ class RuleDetailPanel(QtWidgets.QWidget):
         if not maturities:
             return ""
         try:
-            from d810.hexrays.hexrays_formatters import maturity_to_string
+            from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
             return ", ".join(maturity_to_string(m) for m in maturities)
         except ImportError:

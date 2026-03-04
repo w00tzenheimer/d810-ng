@@ -11,7 +11,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     VerificationGate,
 )
 
-from d810.hexrays.deferred_modifier import DeferredGraphModifier
+from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.optimizers.microcode.flow.flattening.safeguards import (
     should_apply_cfg_modifications,
 )

@@ -9,10 +9,10 @@ import logging
 import pytest
 
 from d810.core.typing import TYPE_CHECKING
-from d810.hexrays.portable_cfg import InsnSnapshot, BlockSnapshot, PortableCFG
+from d810.cfg.portable_cfg import InsnSnapshot, BlockSnapshot, PortableCFG
 
 if TYPE_CHECKING:
-    from d810.hexrays.mop_snapshot import MopSnapshot
+    from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
 
 class TestInsnSnapshot:

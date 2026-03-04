@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from ida_hexrays import mblock_t, minsn_t
 
 from d810.core import getLogger
-from d810.hexrays.table_utils import (
+from d810.hexrays.utils.table_utils import (
     find_table_reference,
     find_xor_with_globals,
     get_func_safe,

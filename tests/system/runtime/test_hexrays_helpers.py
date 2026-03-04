@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import ida_hexrays
 
-from d810.hexrays.hexrays_helpers import check_ins_mop_size_are_ok
+from d810.hexrays.utils.hexrays_helpers import check_ins_mop_size_are_ok
 
 
 @dataclass

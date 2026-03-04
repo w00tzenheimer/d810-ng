@@ -15,16 +15,16 @@ import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
-from d810.hexrays.hexrays_helpers import (
+from d810.hexrays.utils.hexrays_helpers import (
     append_mop_if_not_in_list,
     equal_mops_ignore_size,
     get_mop_index,
 )
-from d810.hexrays.tracker import (
+from d810.hexrays.utils.tracker import (
     InstructionDefUseCollector,
     remove_segment_registers,
 )
-from d810.hexrays.emulator import (
+from d810.hexrays.utils.emulator import (
     MicroCodeEnvironment,
     MicroCodeInterpreter,
 )

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
-from d810.hexrays import deferred_modifier as dm
+from d810.hexrays.mutation import deferred_modifier as dm
 
 
 class _FakeEdgeSet:

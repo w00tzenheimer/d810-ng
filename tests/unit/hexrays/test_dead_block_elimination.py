@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import pytest
 
-from d810.hexrays.graph_modification import NopInstructions
-from d810.hexrays.pass_pipeline import PassPipeline
-from d810.hexrays.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
-from d810.hexrays.passes.dead_block_elimination import DeadBlockEliminationPass
+from d810.cfg.graph_modification import NopInstructions
+from d810.cfg.pass_pipeline import PassPipeline
+from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.passes.dead_block_elimination import DeadBlockEliminationPass
 
 from tests.unit.hexrays.conftest import InMemoryBackend
 

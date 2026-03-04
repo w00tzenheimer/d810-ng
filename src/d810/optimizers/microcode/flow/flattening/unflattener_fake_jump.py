@@ -1,9 +1,9 @@
 import ida_hexrays
 
 from d810.core import getLogger
-from d810.hexrays.cfg_utils import change_1way_block_successor, safe_verify
-from d810.hexrays.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
-from d810.hexrays.tracker import MopTracker
+from d810.hexrays.ir.cfg_utils import change_1way_block_successor, safe_verify
+from d810.hexrays.utils.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
+from d810.hexrays.utils.tracker import MopTracker
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
 from d810.optimizers.microcode.flow.flattening.utils import get_all_possibles_values
 

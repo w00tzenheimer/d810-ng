@@ -92,16 +92,16 @@ def _mock_cfg_utils_import_deps():
     modules_to_mock = {
         "ida_hexrays": mock_hexrays,
         "idaapi": mock_idaapi,
-        "d810.hexrays.hexrays_formatters": SimpleNamespace(block_printer=lambda: _Printer()),
-        "d810.hexrays.hexrays_helpers": SimpleNamespace(CONDITIONAL_JUMP_OPCODES=frozenset()),
+        "d810.hexrays.utils.hexrays_formatters": SimpleNamespace(block_printer=lambda: _Printer()),
+        "d810.hexrays.utils.hexrays_helpers": SimpleNamespace(CONDITIONAL_JUMP_OPCODES=frozenset()),
     }
 
     # Ensure cfg_utils imports against this fixture's module mocks.
     popped = {}
     for mod_name in (
-        "d810.hexrays.cfg_utils",
-        "d810.hexrays.hexrays_formatters",
-        "d810.hexrays.hexrays_helpers",
+        "d810.hexrays.ir.cfg_utils",
+        "d810.hexrays.utils.hexrays_formatters",
+        "d810.hexrays.utils.hexrays_helpers",
     ):
         if mod_name in sys.modules:
             popped[mod_name] = sys.modules.pop(mod_name)
@@ -129,7 +129,7 @@ def _mock_cfg_utils_import_deps():
 
 def test_ensure_child_skips_default_child_rewrite(monkeypatch):
     """Default-child path must not create helper blocks (orphan risk / INTERR 50856)."""
-    from d810.hexrays import cfg_utils
+    from d810.hexrays.ir import cfg_utils
 
     mba = _FakeMBA(qty=20)
     father = _FakeBlock(
@@ -174,8 +174,8 @@ def test_ensure_child_skips_default_child_rewrite(monkeypatch):
 
 def test_ensure_child_conditional_path_rewires_via_helper_block(monkeypatch):
     """Conditional-child path should still perform the helper-block rewrite."""
-    from d810.hexrays import cfg_utils
-    from d810.hexrays import cfg_mutations
+    from d810.hexrays.ir import cfg_utils
+    from d810.hexrays.mutation import cfg_mutations
 
     mba = _FakeMBA(qty=120)
     father = _FakeBlock(
@@ -230,7 +230,7 @@ def test_ensure_child_conditional_path_rewires_via_helper_block(monkeypatch):
 )
 def test_ensure_child_guard_paths_noop(father_factory, monkeypatch):
     """Guard clauses should no-op without touching CFG rewrite helpers."""
-    from d810.hexrays import cfg_utils
+    from d810.hexrays.ir import cfg_utils
 
     mba = _FakeMBA(qty=20)
     child = _FakeBlock(9, mba, succs=[])
@@ -267,8 +267,8 @@ def test_ensure_child_guard_paths_noop(father_factory, monkeypatch):
 
 def test_create_block_0way_clears_goto_and_edges(monkeypatch):
     """0-way created blocks must not keep insert_nop_blk's goto (INTERR 50856 regression)."""
-    from d810.hexrays import cfg_mutations
-    from d810.hexrays import cfg_utils
+    from d810.hexrays.mutation import cfg_mutations
+    from d810.hexrays.ir import cfg_utils
 
     # Use the same ida_hexrays object that cfg_mutations bound at import time,
     # so our constants match exactly what create_block uses internally.
@@ -310,7 +310,7 @@ def test_create_block_0way_clears_goto_and_edges(monkeypatch):
 
 def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch):
     """safe_verify should emit a JSON artifact with focused block capture."""
-    from d810.hexrays import cfg_utils
+    from d810.hexrays.ir import cfg_utils
 
     mba = _FakeMBA(qty=6)
     _FakeBlock(0, mba, succs=[1], preds=[])
@@ -354,7 +354,7 @@ def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch):
 
 def test_verify_failure_analyzer_contract_matches_capture_artifact(tmp_path, monkeypatch, capsys):
     """Analyzer contract should accept payloads produced by safe_verify/capture_failure_artifact."""
-    from d810.hexrays import cfg_utils
+    from d810.hexrays.ir import cfg_utils
     from tools import analyze_verify_failures as avf
 
     mba = _FakeMBA(qty=7)

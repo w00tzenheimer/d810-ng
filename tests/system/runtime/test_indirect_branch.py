@@ -198,22 +198,22 @@ class TestTableUtils:
 
     @pytest.mark.ida_required
     def test_decode_direct(self, libobfuscated_setup):
-        from d810.hexrays.table_utils import TableEncoding, decode_table_entry
+        from d810.hexrays.utils.table_utils import TableEncoding, decode_table_entry
         assert decode_table_entry(0xDEAD, TableEncoding.DIRECT) == 0xDEAD
 
     @pytest.mark.ida_required
     def test_decode_offset(self, libobfuscated_setup):
-        from d810.hexrays.table_utils import TableEncoding, decode_table_entry
+        from d810.hexrays.utils.table_utils import TableEncoding, decode_table_entry
         assert decode_table_entry(0x100, TableEncoding.OFFSET, base=0x4000) == 0x4100
 
     @pytest.mark.ida_required
     def test_decode_xor(self, libobfuscated_setup):
-        from d810.hexrays.table_utils import TableEncoding, decode_table_entry
+        from d810.hexrays.utils.table_utils import TableEncoding, decode_table_entry
         assert decode_table_entry(0xFF00, TableEncoding.XOR, key=0x00FF) == 0xFFFF
 
     @pytest.mark.ida_required
     def test_decode_offset_xor(self, libobfuscated_setup):
-        from d810.hexrays.table_utils import TableEncoding, decode_table_entry
+        from d810.hexrays.utils.table_utils import TableEncoding, decode_table_entry
         result = decode_table_entry(
             0xFF00, TableEncoding.OFFSET_XOR, key=0x00FF, base=0x1000
         )
@@ -222,7 +222,7 @@ class TestTableUtils:
     @pytest.mark.ida_required
     def test_roundtrip_xor(self, libobfuscated_setup):
         """Encoding + decoding with XOR should produce the original address."""
-        from d810.hexrays.table_utils import TableEncoding, decode_table_entry
+        from d810.hexrays.utils.table_utils import TableEncoding, decode_table_entry
         original = 0x401000
         key = 0xCAFEBABE
         encoded = original ^ key
@@ -231,7 +231,7 @@ class TestTableUtils:
 
     @pytest.mark.ida_required
     def test_roundtrip_offset(self, libobfuscated_setup):
-        from d810.hexrays.table_utils import TableEncoding, decode_table_entry
+        from d810.hexrays.utils.table_utils import TableEncoding, decode_table_entry
         original = 0x401000
         base = 0x400000
         encoded = original - base
@@ -240,7 +240,7 @@ class TestTableUtils:
 
     @pytest.mark.ida_required
     def test_table_encoding_enum_values(self, libobfuscated_setup):
-        from d810.hexrays.table_utils import TableEncoding
+        from d810.hexrays.utils.table_utils import TableEncoding
         assert TableEncoding.DIRECT == 0
         assert TableEncoding.OFFSET == 1
         assert TableEncoding.XOR == 2

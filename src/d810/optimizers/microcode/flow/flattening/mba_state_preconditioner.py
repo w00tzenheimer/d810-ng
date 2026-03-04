@@ -33,8 +33,8 @@ from dataclasses import dataclass
 import ida_hexrays
 
 from d810.core import getLogger, typing
-from d810.hexrays.cfg_utils import safe_verify
-from d810.hexrays.hexrays_formatters import maturity_to_string
+from d810.hexrays.ir.cfg_utils import safe_verify
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRulePriority
 from d810.optimizers.microcode.handler import ConfigParam
 

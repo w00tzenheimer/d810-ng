@@ -88,8 +88,8 @@ import d810.core.typing as typing
 from d810.core import getLogger
 from d810.errors import AstEvaluationException
 from d810.hexrays.expr.p_ast import mop_to_ast
-from d810.hexrays.hexrays_helpers import extract_literal_from_mop
-from d810.hexrays.ida_utils import is_never_written_var
+from d810.hexrays.utils.hexrays_helpers import extract_literal_from_mop
+from d810.hexrays.utils.ida_utils import is_never_written_var
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,

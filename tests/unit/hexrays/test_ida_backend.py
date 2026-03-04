@@ -13,8 +13,8 @@ import sys
 from unittest.mock import Mock, call
 import pytest
 
-from d810.hexrays.backends.ida_backend import IDABackend
-from d810.hexrays.graph_modification import (
+from d810.hexrays.mutation.ida_backend import IDABackend
+from d810.cfg.graph_modification import (
     RedirectGoto,
     RedirectBranch,
     ConvertToGoto,
@@ -22,7 +22,7 @@ from d810.hexrays.graph_modification import (
     RemoveEdge,
     NopInstructions,
 )
-from d810.hexrays.portable_cfg import InsnSnapshot
+from d810.cfg.portable_cfg import InsnSnapshot
 
 # IDA availability guard
 try:
@@ -43,7 +43,7 @@ class TestIDABackendBasics:
     @pytest.mark.skipif(not IDA_AVAILABLE, reason="Requires IDA")
     def test_backend_implements_protocol(self):
         """Test that IDABackend conforms to CFGBackend protocol."""
-        from d810.hexrays.cfg_backend import CFGBackend
+        from d810.cfg.cfg_backend import CFGBackend
 
         backend = IDABackend()
         assert isinstance(backend, CFGBackend)
@@ -65,7 +65,7 @@ class TestModificationMapping:
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
         # Inject mock module into sys.modules before calling lower()
-        sys.modules['d810.hexrays.deferred_modifier'] = mock_deferred_module
+        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
             backend = IDABackend()
             mock_mba = Mock()
@@ -80,7 +80,7 @@ class TestModificationMapping:
             mock_modifier.apply.assert_called_once_with(enable_snapshot_rollback=True)
         finally:
             # Clean up mock module
-            sys.modules.pop('d810.hexrays.deferred_modifier', None)
+            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
 
     def test_redirect_branch_maps_to_queue_target_change(self):
         """Test RedirectBranch -> queue_target_change mapping (2-way blocks)."""
@@ -91,7 +91,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.deferred_modifier'] = mock_deferred_module
+        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
             backend = IDABackend()
             mock_mba = Mock()
@@ -105,7 +105,7 @@ class TestModificationMapping:
             )
             mock_modifier.apply.assert_called_once_with(enable_snapshot_rollback=True)
         finally:
-            sys.modules.pop('d810.hexrays.deferred_modifier', None)
+            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
 
     def test_convert_to_goto_maps_to_queue_convert_to_goto(self):
         """Test ConvertToGoto -> queue_convert_to_goto mapping."""
@@ -116,7 +116,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.deferred_modifier'] = mock_deferred_module
+        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
             backend = IDABackend()
             mock_mba = Mock()
@@ -129,7 +129,7 @@ class TestModificationMapping:
                 15, 25, description="convert 15 to goto 25"
             )
         finally:
-            sys.modules.pop('d810.hexrays.deferred_modifier', None)
+            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
 
     def test_nop_instructions_maps_to_queue_insn_nop(self):
         """Test NopInstructions -> queue_insn_nop mapping (one call per EA)."""
@@ -140,7 +140,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.deferred_modifier'] = mock_deferred_module
+        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
             backend = IDABackend()
             mock_mba = Mock()
@@ -156,7 +156,7 @@ class TestModificationMapping:
                 call(10, 0x1008, description="nop 0x1008 in block 10"),
             ])
         finally:
-            sys.modules.pop('d810.hexrays.deferred_modifier', None)
+            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
 
     def test_insert_block_logs_warning_and_skips(self, caplog):
         """Test InsertBlock logs warning and is skipped (not yet implemented)."""
@@ -166,7 +166,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.deferred_modifier'] = mock_deferred_module
+        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
             backend = IDABackend()
             mock_mba = Mock()
@@ -179,7 +179,7 @@ class TestModificationMapping:
             assert count == 0
             assert "InsertBlock(5->10) requires InsnSnapshot->minsn_t conversion" in caplog.text
         finally:
-            sys.modules.pop('d810.hexrays.deferred_modifier', None)
+            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
 
     def test_remove_edge_logs_warning_and_skips(self, caplog):
         """Test RemoveEdge logs warning and is skipped (not yet implemented)."""
@@ -189,7 +189,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.deferred_modifier'] = mock_deferred_module
+        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
             backend = IDABackend()
             mock_mba = Mock()
@@ -201,7 +201,7 @@ class TestModificationMapping:
             assert count == 0
             assert "RemoveEdge(10->20) not implemented" in caplog.text
         finally:
-            sys.modules.pop('d810.hexrays.deferred_modifier', None)
+            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
 
     def test_unknown_modification_type_logs_warning(self, caplog):
         """Test unknown modification type is handled gracefully."""
@@ -211,7 +211,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.deferred_modifier'] = mock_deferred_module
+        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
             backend = IDABackend()
             mock_mba = Mock()
@@ -225,7 +225,7 @@ class TestModificationMapping:
             assert count == 0
             assert "Unknown GraphModification type" in caplog.text
         finally:
-            sys.modules.pop('d810.hexrays.deferred_modifier', None)
+            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
 
     def test_multiple_modifications_batched(self):
         """Test multiple modifications are batched in one DeferredGraphModifier."""
@@ -236,7 +236,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.deferred_modifier'] = mock_deferred_module
+        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
         try:
             backend = IDABackend()
             mock_mba = Mock()
@@ -258,7 +258,7 @@ class TestModificationMapping:
             assert mock_modifier.apply.call_count == 1
             assert count == 3
         finally:
-            sys.modules.pop('d810.hexrays.deferred_modifier', None)
+            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
 
 
 class TestVerify:
@@ -272,12 +272,12 @@ class TestVerify:
         mock_cfg_verify.safe_verify.return_value = None
 
         original_attr = getattr(_hx_pkg, 'cfg_verify', None)
-        original_mod = sys.modules.get('d810.hexrays.cfg_verify')
+        original_mod = sys.modules.get('d810.hexrays.mutation.cfg_verify')
         # Patch both the package attribute and sys.modules so that
         # `from d810.hexrays import cfg_verify` inside IDABackend.verify()
         # resolves to the mock regardless of which lookup path Python uses.
         _hx_pkg.cfg_verify = mock_cfg_verify
-        sys.modules['d810.hexrays.cfg_verify'] = mock_cfg_verify
+        sys.modules['d810.hexrays.mutation.cfg_verify'] = mock_cfg_verify
         try:
             backend = IDABackend()
             mock_mba = Mock()
@@ -292,9 +292,9 @@ class TestVerify:
             else:
                 _hx_pkg.__dict__.pop('cfg_verify', None)
             if original_mod is not None:
-                sys.modules['d810.hexrays.cfg_verify'] = original_mod
+                sys.modules['d810.hexrays.mutation.cfg_verify'] = original_mod
             else:
-                sys.modules.pop('d810.hexrays.cfg_verify', None)
+                sys.modules.pop('d810.hexrays.mutation.cfg_verify', None)
 
     def test_verify_failure(self):
         """Test verify() returns False when safe_verify raises RuntimeError."""
@@ -304,9 +304,9 @@ class TestVerify:
         mock_cfg_verify.safe_verify.side_effect = RuntimeError("verify failed")
 
         original_attr = getattr(_hx_pkg, 'cfg_verify', None)
-        original_mod = sys.modules.get('d810.hexrays.cfg_verify')
+        original_mod = sys.modules.get('d810.hexrays.mutation.cfg_verify')
         _hx_pkg.cfg_verify = mock_cfg_verify
-        sys.modules['d810.hexrays.cfg_verify'] = mock_cfg_verify
+        sys.modules['d810.hexrays.mutation.cfg_verify'] = mock_cfg_verify
         try:
             backend = IDABackend()
             mock_mba = Mock()
@@ -320,9 +320,9 @@ class TestVerify:
             else:
                 _hx_pkg.__dict__.pop('cfg_verify', None)
             if original_mod is not None:
-                sys.modules['d810.hexrays.cfg_verify'] = original_mod
+                sys.modules['d810.hexrays.mutation.cfg_verify'] = original_mod
             else:
-                sys.modules.pop('d810.hexrays.cfg_verify', None)
+                sys.modules.pop('d810.hexrays.mutation.cfg_verify', None)
 
 
 @pytest.mark.skipif(not IDA_AVAILABLE, reason="Requires IDA")

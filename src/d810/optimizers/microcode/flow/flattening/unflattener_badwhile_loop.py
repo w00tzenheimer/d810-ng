@@ -10,7 +10,7 @@ TODO:
 import ida_hexrays
 
 from d810.core import getLogger
-from d810.hexrays.hexrays_helpers import append_mop_if_not_in_list
+from d810.hexrays.utils.hexrays_helpers import append_mop_if_not_in_list
 from d810.optimizers.microcode.flow.flattening.generic import (
     GenericDispatcherBlockInfo,
     GenericDispatcherCollector,

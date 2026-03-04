@@ -1,4 +1,4 @@
-"""System tests for d810.hexrays.table_utils.
+"""System tests for d810.hexrays.utils.table_utils.
 
 These tests exercise table_utils functions with real IDA Pro modules loaded.
 No mocks, no stubs, no _ensure_ida_stubs().
@@ -20,7 +20,7 @@ import platform
 
 import pytest
 
-from d810.hexrays.table_utils import (
+from d810.hexrays.utils.table_utils import (
     TableEncoding,
     XorKeyInfo,
     analyze_table_encoding,
@@ -615,13 +615,13 @@ class TestModuleImports:
     @pytest.mark.ida_required
     def test_ida_available_is_true(self, libobfuscated_setup):
         """In system tests, _IDA_AVAILABLE must be True."""
-        from d810.hexrays import table_utils
+        from d810.hexrays.utils import table_utils
         assert table_utils._IDA_AVAILABLE is True
 
     @pytest.mark.ida_required
     def test_ida_bytes_is_real_module(self, libobfuscated_setup):
         """ida_bytes should be a real module, not None."""
-        from d810.hexrays import table_utils
+        from d810.hexrays.utils import table_utils
         assert table_utils.ida_bytes is not None
         assert hasattr(table_utils.ida_bytes, "get_bytes")
         assert hasattr(table_utils.ida_bytes, "get_flags")
@@ -630,7 +630,7 @@ class TestModuleImports:
     @pytest.mark.ida_required
     def test_ida_hexrays_is_real_module(self, libobfuscated_setup):
         """ida_hexrays should be a real module, not None."""
-        from d810.hexrays import table_utils
+        from d810.hexrays.utils import table_utils
         assert table_utils.ida_hexrays is not None
         # Verify real IDA constants exist
         assert hasattr(table_utils.ida_hexrays, "m_xor")

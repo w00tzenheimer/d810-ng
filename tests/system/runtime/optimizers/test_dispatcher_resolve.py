@@ -44,7 +44,7 @@ from d810.optimizers.microcode.flow.flattening.generic import (
     GenericDispatcherBlockInfo,
     UnflatteningEvent,
 )
-from d810.hexrays.deferred_modifier import DeferredGraphModifier
+from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
 if TYPE_CHECKING:
     from ida_hexrays import mba_t, mblock_t

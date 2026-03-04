@@ -940,7 +940,7 @@ class TestMopFieldAccessOnRealMicrocode:
         This tests the MopTracker integration that analyze_blk depends on:
         creating a tracker with a real operand and searching backward.
         """
-        from d810.hexrays.tracker import MopTracker
+        from d810.hexrays.utils.tracker import MopTracker
 
         func_ea = get_func_ea("fake_jump_state_machine")
         if func_ea == idaapi.BADADDR:

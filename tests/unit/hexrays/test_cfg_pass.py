@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import pytest
 
-from d810.hexrays.cfg_backend import CFGBackend
-from d810.hexrays.cfg_pass import CFGPass
-from d810.hexrays.graph_modification import ConvertToGoto, GraphModification
-from d810.hexrays.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.cfg_backend import CFGBackend
+from d810.cfg.cfg_pass import CFGPass
+from d810.cfg.graph_modification import ConvertToGoto, GraphModification
+from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
 from tests.unit.hexrays.conftest import InMemoryBackend
 
 

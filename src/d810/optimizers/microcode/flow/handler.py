@@ -9,7 +9,7 @@ import ida_hexrays
 import idc
 
 from d810.core import getLogger, Registrant
-from d810.hexrays.hexrays_formatters import maturity_to_string
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.handler import ConfigParam, DEFAULT_FLOW_MATURITIES, OptimizationRule
 
 logger = getLogger("D810.optimizer")

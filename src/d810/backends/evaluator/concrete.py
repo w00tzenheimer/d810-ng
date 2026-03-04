@@ -35,7 +35,7 @@ from d810.core.bits import (
 from d810.core.logging import getLogger
 from d810.errors import AstEvaluationException
 from d810.evaluator.backend_registry import ConcreteEvaluatorProvider
-from d810.hexrays.mop_snapshot import MopSnapshot
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
 logger = getLogger(__name__)
 

@@ -5,7 +5,7 @@ source-level structural checks.  No IDA installation or stub manipulation is
 required — the logic is verified by inspecting the source text.
 
 Rationale for source-level approach:
-  ``fold_readonlydata.py`` transitively imports ``d810.hexrays.hexrays_helpers``
+  ``fold_readonlydata.py`` transitively imports ``d810.hexrays.utils.hexrays_helpers``
   which builds ``OPCODES_INFO`` at import time using every ``ida_hexrays.m_*``
   opcode constant.  When tests run in a shared process, an earlier test file
   (``test_helper_routing.py``) already populates ``sys.modules["ida_hexrays"]``

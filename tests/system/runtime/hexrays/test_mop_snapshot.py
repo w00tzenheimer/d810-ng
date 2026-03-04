@@ -1,7 +1,7 @@
 """Tests for MopSnapshot - requires IDA runtime for module import."""
 import pytest
 
-from d810.hexrays.mop_snapshot import MopSnapshot
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
 
 @pytest.mark.ida_required

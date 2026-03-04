@@ -33,10 +33,10 @@ import ida_hexrays
 import idc
 
 from d810.core import getLogger
-from d810.hexrays.emulator import MicroCodeEnvironment, MicroCodeInterpreter
-from d810.hexrays.cfg_mutations import create_standalone_block, insert_goto_instruction
-from d810.hexrays.cfg_queries import _serial_in_predset
-from d810.hexrays.cfg_utils import (
+from d810.hexrays.utils.emulator import MicroCodeEnvironment, MicroCodeInterpreter
+from d810.hexrays.mutation.cfg_mutations import create_standalone_block, insert_goto_instruction
+from d810.hexrays.ir.cfg_queries import _serial_in_predset
+from d810.hexrays.ir.cfg_utils import (
     change_1way_block_successor,
     coalesce_jtbl_cases,
     create_block,
@@ -47,20 +47,20 @@ from d810.hexrays.cfg_utils import (
     retarget_jtbl_block_cases,
     safe_verify,
 )
-from d810.hexrays.hexrays_formatters import (
+from d810.hexrays.utils.hexrays_formatters import (
     dump_microcode_for_debug,
     format_minsn_t,
     format_mop_list,
     format_mop_t,
 )
-from d810.hexrays.hexrays_helpers import (
+from d810.hexrays.utils.hexrays_helpers import (
     CONDITIONAL_JUMP_OPCODES,
     CONTROL_FLOW_OPCODES,
     append_mop_if_not_in_list,
     extract_num_mop,
     get_mop_index,
 )
-from d810.hexrays.tracker import (
+from d810.hexrays.utils.tracker import (
     InstructionDefUseCollector,
     MopHistory,
     MopTracker,
@@ -74,8 +74,8 @@ from d810.optimizers.microcode.flow.flattening.utils import (
     get_all_possibles_values,
 )
 from d810.core.registry import EventEmitter
-from d810.hexrays.deferred_events import DeferredEvent, EventEmitter as DeferredEventEmitter
-from d810.hexrays.deferred_modifier import DeferredGraphModifier, GraphModification
+from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter as DeferredEventEmitter
+from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier, GraphModification
 from d810.optimizers.microcode.flow.flattening.abc_block_splitter import (
     ABCBlockSplitter,
     ConditionalStateResolver,
@@ -119,7 +119,7 @@ class UnflatteningEvent:
     -------------------------------------------------------
     ::
 
-        from d810.hexrays.deferred_modifier import GraphModification, ModificationType
+        from d810.hexrays.mutation.deferred_modifier import GraphModification, ModificationType
 
         # During MMAT_CALLS, schedule cleanup for GLBOPT1
         mod = GraphModification(

@@ -3,7 +3,7 @@ from d810.core.typing import Any
 
 import ida_hexrays
 
-from d810.hexrays.hexrays_formatters import string_to_maturity
+from d810.hexrays.utils.hexrays_formatters import string_to_maturity
 
 
 @dataclass(frozen=True)

@@ -18,16 +18,16 @@ from d810.cfg.dominators import compute_dominators, dominates
 from d810.core import logging
 from d810.core.bits import unsigned_to_signed
 from d810.hexrays.expr.ast import minsn_to_ast
-from d810.hexrays.emulator import MicroCodeEnvironment, MicroCodeInterpreter
+from d810.hexrays.utils.emulator import MicroCodeEnvironment, MicroCodeInterpreter
 from d810.hexrays.expr.z3_utils import _resolve_mop_via_predecessors
-from d810.hexrays.hexrays_formatters import format_mop_t
-from d810.hexrays.hexrays_helpers import (
+from d810.hexrays.utils.hexrays_formatters import format_mop_t
+from d810.hexrays.utils.hexrays_helpers import (
     append_mop_if_not_in_list,
     equal_mops_ignore_size,
     extract_num_mop,
     get_mop_index,
 )
-from d810.hexrays.tracker import (
+from d810.hexrays.utils.tracker import (
     MopTracker,
 )
 from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (

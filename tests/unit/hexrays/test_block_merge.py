@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import pytest
 
-from d810.hexrays.graph_modification import NopInstructions
-from d810.hexrays.mop_snapshot import MopSnapshot
-from d810.hexrays.passes.block_merge import BlockMergePass
-from d810.hexrays.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.graph_modification import NopInstructions
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
+from d810.cfg.passes.block_merge import BlockMergePass
+from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
 
 # IDA microcode constants (no IDA import required)
 _M_GOTO_OPCODE = 55   # ida_hexrays.m_goto == 0x37

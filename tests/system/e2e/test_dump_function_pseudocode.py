@@ -28,7 +28,7 @@ import ida_hexrays
 import idaapi
 import idc
 
-from d810.hexrays.microcode_dump import dump_dispatcher_tree, dump_function_microcode
+from d810.hexrays.utils.microcode_dump import dump_dispatcher_tree, dump_function_microcode
 from d810.testing.runner import _resolve_test_project_index
 from d810.testing.skip_controls import unskip_cases_enabled
 
@@ -401,7 +401,7 @@ class TestDumpFunctionPseudocode:
 
         if dump_d810:
             # d810-active mode: decompile with d810 running, dump cfunc.mba
-            from d810.hexrays.microcode_dump import mba_to_dict
+            from d810.hexrays.utils.microcode_dump import mba_to_dict
 
             use_project = not request.config.getoption("--dump-no-project")
             project_name = request.config.getoption("--dump-project")

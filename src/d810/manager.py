@@ -30,8 +30,8 @@ from d810.core.rule_scope import (
 from d810.core.stats import OptimizationStatistics
 from d810.core.typing import TYPE_CHECKING
 from d810.hexrays.expr.z3_utils import clear_z3_caches
-from d810.hexrays.ctree_hooks import CtreeOptimizationRule, CtreeOptimizerManager
-from d810.hexrays.hexrays_hooks import (
+from d810.hexrays.hooks.ctree_hooks import CtreeOptimizationRule, CtreeOptimizerManager
+from d810.hexrays.hooks.hexrays_hooks import (
     BlockOptimizerManager,
     DecompilationEvent,
     HexraysDecompilationHook,
@@ -639,10 +639,10 @@ class D810Manager:
         Returns:
             PassPipeline instance with IDABackend and the 2 safe cleanup passes.
         """
-        from d810.hexrays.backends.ida_backend import IDABackend
-        from d810.hexrays.pass_pipeline import PassPipeline
-        from d810.hexrays.passes.goto_chain_removal import GotoChainRemovalPass
-        from d810.hexrays.passes.simplify_identical_branch import (
+        from d810.hexrays.mutation.ida_backend import IDABackend
+        from d810.cfg.pass_pipeline import PassPipeline
+        from d810.cfg.passes.goto_chain_removal import GotoChainRemovalPass
+        from d810.cfg.passes.simplify_identical_branch import (
             SimplifyIdenticalBranchPass,
         )
 

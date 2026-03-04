@@ -85,13 +85,13 @@ import idaapi
 from d810.core import getLogger
 from d810.errors import D810Z3Exception
 from d810.hexrays.expr.ast import AstLeaf, AstNode, minsn_to_ast, mop_to_ast, get_mop_key
-from d810.hexrays.hexrays_formatters import (
+from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,
     opcode_to_string,
 )
-from d810.hexrays.hexrays_helpers import get_mop_index, structural_mop_hash
-from d810.hexrays.mop_snapshot import MopSnapshot
+from d810.hexrays.utils.hexrays_helpers import get_mop_index, structural_mop_hash
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.speedups.bootstrap import ensure_speedups_on_path
 
 logger = getLogger(__name__)
@@ -572,7 +572,7 @@ def _resolve_memory_load_via_store(
             if store_addr is not None and load_addr is not None:
                 # Simple equality check - compare address operands
                 try:
-                    from d810.hexrays.hexrays_helpers import equal_mops_ignore_size
+                    from d810.hexrays.utils.hexrays_helpers import equal_mops_ignore_size
                     if equal_mops_ignore_size(load_addr, store_addr):
                         # Found matching store - return AST of stored value
                         # The stored value is in ldx_ins.l for stx
@@ -785,7 +785,7 @@ def _resolve_mop_to_ast_via_tracker(
 
     # FALLBACK: MopTracker for multi-predecessor cases or early maturity.
     try:
-        from d810.hexrays.tracker import MopTracker
+        from d810.hexrays.utils.tracker import MopTracker
     except ImportError:
         logger.debug("_resolve_mop_to_ast_via_tracker: MopTracker not available")
         return None

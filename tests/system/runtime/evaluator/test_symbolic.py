@@ -160,7 +160,7 @@ _OPC = _IDA_HEX
 # ---------------------------------------------------------------------------
 
 from d810.evaluator.symbolic import probe_is_constant  # noqa: E402
-from d810.hexrays.mop_snapshot import MopSnapshot  # noqa: E402
+from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

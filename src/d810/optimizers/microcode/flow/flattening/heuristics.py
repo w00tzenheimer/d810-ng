@@ -356,7 +356,7 @@ class DefUseCache:
 
         # TODO: In real implementation, use InstructionDefUseCollector
         # For now, this is a placeholder
-        # from d810.hexrays.tracker import InstructionDefUseCollector
+        # from d810.hexrays.utils.tracker import InstructionDefUseCollector
         # ins = blk.head
         # while ins:
         #     collector = InstructionDefUseCollector()
