@@ -40,10 +40,10 @@ if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
 
 # Import egglog backend
-from d810.backends.egglog_backend import EGGLOG_AVAILABLE
+from d810.backends.mba.egglog_backend import EGGLOG_AVAILABLE
 
 if EGGLOG_AVAILABLE:
-    from d810.backends.egglog_backend import (
+    from d810.backends.mba.egglog_backend import (
         AstToBitExprConverter,
         BitExpr,
         MBAEGraph,

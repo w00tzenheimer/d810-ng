@@ -1,4 +1,4 @@
-"""Unit tests for d810.evaluator.symbolic — probe_is_constant.
+"""Unit tests for d810.evaluator.evaluators — probe_is_constant.
 
 All tests are pure-Python; no IDA Pro is required.
 
@@ -159,7 +159,7 @@ _OPC = _IDA_HEX
 # Import the function under test AFTER the fake module is registered
 # ---------------------------------------------------------------------------
 
-from d810.evaluator.symbolic import probe_is_constant  # noqa: E402
+from d810.evaluator.evaluators import probe_is_constant  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 
 
@@ -315,12 +315,12 @@ class TestEvaluationErrors:
 
 
 # ---------------------------------------------------------------------------
-# Tests: importable from d810.evaluator.symbolic submodule
+# Tests: importable from d810.evaluator.evaluators submodule
 # ---------------------------------------------------------------------------
 
 
 class TestPublicAPIExport:
-    """probe_is_constant is accessible from d810.evaluator.symbolic."""
+    """probe_is_constant is accessible from d810.evaluator.evaluators."""
 
     def test_importable_from_submodule(self):
         """probe_is_constant imported at module level from submodule is callable."""
@@ -370,7 +370,7 @@ class TestSymbolicWithRealAst:
         pass through evaluate_concrete() without triggering
         'Unsupported AST node type' from the Cython dispatch.
         """
-        from d810.evaluator.symbolic import probe_is_constant
+        from d810.evaluator.evaluators import probe_is_constant
         from d810.errors import AstEvaluationException
 
         type_failures = []
@@ -403,7 +403,7 @@ class TestSymbolicWithRealAst:
         Walks real_asts to find a node whose sub_ast_info contains only
         constant leaves (AstConstant), then asserts probe_is_constant agrees.
         """
-        from d810.evaluator.symbolic import probe_is_constant
+        from d810.evaluator.evaluators import probe_is_constant
 
         found_and_checked = 0
 
@@ -432,7 +432,7 @@ class TestSymbolicWithRealAst:
         self, libobfuscated_setup, real_asts
     ):
         """probe_is_constant always returns a (bool, int|None) tuple for real ASTs."""
-        from d810.evaluator.symbolic import probe_is_constant
+        from d810.evaluator.evaluators import probe_is_constant
 
         for ast, _ins in real_asts[:20]:
             sub_infos = getattr(ast, "sub_ast_info_by_index", {})

@@ -13,7 +13,7 @@ import ida_pro
 import ida_xref
 
 from d810.core.logging import getLogger
-from d810.hexrays.ir.cfg_utils import safe_verify
+from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 from d810.hexrays.utils.hexrays_helpers import MicrocodeHelper, MicroInstruction, MicroOperand
 from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications

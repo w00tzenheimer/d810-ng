@@ -17,7 +17,7 @@ from d810.core.cymode import CythonMode
 from d810.core.rule_scope import PIPELINE_FLOW, PIPELINE_INSTRUCTION
 from d810.errors import D810Exception
 from d810.hexrays.expr.z3_utils import log_z3_instructions
-from d810.hexrays.ir.cfg_utils import safe_verify
+from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import (
     count_minsn_nodes,
     dump_microcode_for_debug,

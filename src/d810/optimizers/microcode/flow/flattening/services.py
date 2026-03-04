@@ -336,11 +336,12 @@ class CFGPatcher:
             >>> # Becomes:   block_5 -> block_42
             >>> changes = CFGPatcher.redirect_edge(context, block_5, block_42)
         """
-        from d810.hexrays.ir.cfg_utils import (
-            change_0way_block_successor,
-            change_1way_block_successor,
-            make_2way_block_goto,
-        )
+        from d810.hexrays.mutation.cfg_mutations import (
+            change_0way_block_successor)
+        from d810.hexrays.mutation.cfg_mutations import (
+            change_1way_block_successor)
+        from d810.hexrays.mutation.cfg_mutations import (
+            make_2way_block_goto)
 
         context.logger.debug(
             "Redirecting block %s to %s",
@@ -402,10 +403,10 @@ class CFGPatcher:
             >>> new_blk = CFGPatcher.insert_intermediate_block(
             ...     context, block_5, block_42, [add_instruction])
         """
-        from d810.hexrays.ir.cfg_utils import (
-            change_1way_block_successor,
-            create_block,
-        )
+        from d810.hexrays.mutation.cfg_mutations import (
+            change_1way_block_successor)
+        from d810.hexrays.mutation.cfg_mutations import (
+            create_block)
 
         context.logger.debug(
             "Inserting intermediate block between %s and %s with %d instructions",
@@ -476,7 +477,7 @@ class CFGPatcher:
             >>> changes = CFGPatcher.ensure_unconditional_predecessor(
             ...     context, block_5, dispatcher_block)
         """
-        from d810.hexrays.ir.cfg_utils import ensure_child_has_an_unconditional_father
+        from d810.hexrays.mutation.cfg_mutations import ensure_child_has_an_unconditional_father
 
         if father_block is None:
             return 0
@@ -516,7 +517,7 @@ class CFGPatcher:
             >>> dup, default = CFGPatcher.duplicate_block(context, dispatcher_block)
             >>> # dup is the new copy of dispatcher_block
         """
-        from d810.hexrays.ir.cfg_utils import duplicate_block
+        from d810.hexrays.mutation.cfg_mutations import duplicate_block
 
         context.logger.debug("Duplicating block %s", block.serial)
 
@@ -557,7 +558,7 @@ class CFGPatcher:
         Example:
             >>> changes = CFGPatcher.clean_cfg(context, mba)
         """
-        from d810.hexrays.ir.cfg_utils import mba_deep_cleaning
+        from d810.hexrays.mutation.cfg_mutations import mba_deep_cleaning
 
         context.logger.debug(
             "Cleaning CFG (merge_blocks=%s, maturity=%s)",

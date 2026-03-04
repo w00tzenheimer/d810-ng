@@ -4,7 +4,7 @@ This module provides constraint expression types that allow rules to specify
 constraints declaratively using operator overloading, rather than through lambda parsing.
 
 These classes are BACKEND-AGNOSTIC data structures. They describe *what* a constraint
-is, not *how* to verify it. The Z3-specific conversion is in d810.backends.z3.
+is, not *how* to verify it. The Z3-specific conversion is in d810.backends.mba.z3.
 
 Example:
     Instead of:
@@ -15,7 +15,7 @@ Example:
         CONSTRAINTS = [val_res == c2 - ONE]
 
 To convert constraints to Z3 for verification:
-    from d810.backends.z3 import constraint_to_z3
+    from d810.backends.mba.z3 import constraint_to_z3
     z3_bool = constraint_to_z3(constraint, z3_vars)
 """
 
@@ -125,7 +125,7 @@ class ConstraintExpr:
     They are pure data structures describing constraints. Backend-specific conversion
     (e.g., to Z3) is handled by visitor functions in the respective backend modules.
 
-    For Z3 conversion, use: d810.backends.z3.constraint_to_z3()
+    For Z3 conversion, use: d810.backends.mba.z3.constraint_to_z3()
     """
 
     def eval_and_define(

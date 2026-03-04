@@ -1,4 +1,4 @@
-"""Regression tests for cfg_utils CFG safety guards.
+"""Regression tests for CFG mutation/verify safety guards.
 
 These tests run with lightweight fake IDA modules and focus on crash-prone CFG helpers:
 1. ensure_child_has_an_unconditional_father() default-child handling
@@ -21,6 +21,9 @@ class _FakeSet(list):
     def _del(self, value):
         if value in self:
             self.remove(value)
+
+    def size(self) -> int:
+        return len(self)
 
 
 class _FakeMBA:
@@ -74,16 +77,26 @@ class _FakeBlock:
 
 
 @pytest.fixture(autouse=True)
-def _mock_cfg_utils_import_deps():
-    """Load cfg_utils with minimal fake IDA/transitive Hex-Rays deps."""
+def _mock_cfg_import_deps():
+    """Load cfg mutation/verify modules with minimal fake IDA/transitive deps."""
+    class _DummyHooks:
+        def hook(self):
+            return True
+
+        def unhook(self):
+            return True
+
     mock_hexrays = SimpleNamespace(
         BLT_0WAY=0,
         BLT_1WAY=1,
         BLT_2WAY=2,
         MBL_GOTO=0x20,
         m_goto=0x37,
+        m_ijmp=0x56,
+        Hexrays_Hooks=_DummyHooks,
     )
     mock_idaapi = SimpleNamespace()
+    mock_ida_pro = SimpleNamespace()
 
     class _Printer:
         def get_block_mc(self):
@@ -92,14 +105,17 @@ def _mock_cfg_utils_import_deps():
     modules_to_mock = {
         "ida_hexrays": mock_hexrays,
         "idaapi": mock_idaapi,
+        "ida_pro": mock_ida_pro,
         "d810.hexrays.utils.hexrays_formatters": SimpleNamespace(block_printer=lambda: _Printer()),
         "d810.hexrays.utils.hexrays_helpers": SimpleNamespace(CONDITIONAL_JUMP_OPCODES=frozenset()),
     }
 
-    # Ensure cfg_utils imports against this fixture's module mocks.
+    # Ensure cfg mutation/verify imports against this fixture's module mocks.
     popped = {}
     for mod_name in (
-        "d810.hexrays.ir.cfg_utils",
+        "d810.hexrays.mutation.cfg_mutations",
+        "d810.hexrays.mutation.cfg_verify",
+        "d810.hexrays.ir.cfg_queries",
         "d810.hexrays.utils.hexrays_formatters",
         "d810.hexrays.utils.hexrays_helpers",
     ):
@@ -129,7 +145,7 @@ def _mock_cfg_utils_import_deps():
 
 def test_ensure_child_skips_default_child_rewrite(monkeypatch):
     """Default-child path must not create helper blocks (orphan risk / INTERR 50856)."""
-    from d810.hexrays.ir import cfg_utils
+    from d810.hexrays.mutation import cfg_mutations
 
     mba = _FakeMBA(qty=20)
     father = _FakeBlock(
@@ -142,27 +158,27 @@ def test_ensure_child_skips_default_child_rewrite(monkeypatch):
 
     calls = {"insert": 0, "c1": 0, "c2": 0}
     monkeypatch.setattr(
-        cfg_utils,
+        cfg_mutations,
         "insert_nop_blk",
         lambda *_a, **_k: calls.__setitem__("insert", calls["insert"] + 1),
     )
     monkeypatch.setattr(
-        cfg_utils,
+        cfg_mutations,
         "change_1way_block_successor",
         lambda *_a, **_k: calls.__setitem__("c1", calls["c1"] + 1),
     )
     monkeypatch.setattr(
-        cfg_utils,
+        cfg_mutations,
         "change_2way_block_conditional_successor",
         lambda *_a, **_k: calls.__setitem__("c2", calls["c2"] + 1),
     )
     monkeypatch.setattr(
-        cfg_utils,
+        cfg_mutations,
         "create_standalone_block",
         lambda *_a, **_k: pytest.fail("create_standalone_block should not be called"),
     )
 
-    changed = cfg_utils.ensure_child_has_an_unconditional_father(
+    changed = cfg_mutations.ensure_child_has_an_unconditional_father(
         father,
         child,
         verify=False,
@@ -174,7 +190,6 @@ def test_ensure_child_skips_default_child_rewrite(monkeypatch):
 
 def test_ensure_child_conditional_path_rewires_via_helper_block(monkeypatch):
     """Conditional-child path should still perform the helper-block rewrite."""
-    from d810.hexrays.ir import cfg_utils
     from d810.hexrays.mutation import cfg_mutations
 
     mba = _FakeMBA(qty=120)
@@ -208,7 +223,7 @@ def test_ensure_child_conditional_path_rewires_via_helper_block(monkeypatch):
     monkeypatch.setattr(cfg_mutations, "create_standalone_block", _create_standalone)
     monkeypatch.setattr(cfg_mutations, "change_2way_block_conditional_successor", _change_2way)
 
-    changed = cfg_utils.ensure_child_has_an_unconditional_father(
+    changed = cfg_mutations.ensure_child_has_an_unconditional_father(
         father,
         child,
         verify=False,
@@ -230,34 +245,34 @@ def test_ensure_child_conditional_path_rewires_via_helper_block(monkeypatch):
 )
 def test_ensure_child_guard_paths_noop(father_factory, monkeypatch):
     """Guard clauses should no-op without touching CFG rewrite helpers."""
-    from d810.hexrays.ir import cfg_utils
+    from d810.hexrays.mutation import cfg_mutations
 
     mba = _FakeMBA(qty=20)
     child = _FakeBlock(9, mba, succs=[])
     father = father_factory(mba)
 
     monkeypatch.setattr(
-        cfg_utils,
+        cfg_mutations,
         "insert_nop_blk",
         lambda *_a, **_k: pytest.fail("insert_nop_blk should not be called"),
     )
     monkeypatch.setattr(
-        cfg_utils,
+        cfg_mutations,
         "create_standalone_block",
         lambda *_a, **_k: pytest.fail("create_standalone_block should not be called"),
     )
     monkeypatch.setattr(
-        cfg_utils,
+        cfg_mutations,
         "change_1way_block_successor",
         lambda *_a, **_k: pytest.fail("change_1way_block_successor should not be called"),
     )
     monkeypatch.setattr(
-        cfg_utils,
+        cfg_mutations,
         "change_2way_block_conditional_successor",
         lambda *_a, **_k: pytest.fail("change_2way_block_conditional_successor should not be called"),
     )
 
-    changed = cfg_utils.ensure_child_has_an_unconditional_father(
+    changed = cfg_mutations.ensure_child_has_an_unconditional_father(
         father,
         child,
         verify=False,
@@ -268,7 +283,6 @@ def test_ensure_child_guard_paths_noop(father_factory, monkeypatch):
 def test_create_block_0way_clears_goto_and_edges(monkeypatch):
     """0-way created blocks must not keep insert_nop_blk's goto (INTERR 50856 regression)."""
     from d810.hexrays.mutation import cfg_mutations
-    from d810.hexrays.ir import cfg_utils
 
     # Use the same ida_hexrays object that cfg_mutations bound at import time,
     # so our constants match exactly what create_block uses internally.
@@ -290,7 +304,7 @@ def test_create_block_0way_clears_goto_and_edges(monkeypatch):
     # insert_nop_blk directly via module-level name).
     monkeypatch.setattr(cfg_mutations, "insert_nop_blk", lambda _blk: new_blk)
 
-    result = cfg_utils.create_block(
+    result = cfg_mutations.create_block(
         ref_blk,
         blk_ins=[],
         is_0_way=True,
@@ -310,7 +324,7 @@ def test_create_block_0way_clears_goto_and_edges(monkeypatch):
 
 def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch):
     """safe_verify should emit a JSON artifact with focused block capture."""
-    from d810.hexrays.ir import cfg_utils
+    from d810.hexrays.mutation import cfg_verify
 
     mba = _FakeMBA(qty=6)
     _FakeBlock(0, mba, succs=[1], preds=[])
@@ -333,7 +347,7 @@ def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch):
     monkeypatch.setenv("D810_VERIFY_CAPTURE_DIR", str(tmp_path))
 
     with pytest.raises(RuntimeError):
-        cfg_utils.safe_verify(
+        cfg_verify.safe_verify(
             mba,
             "unit-test verify failure",
             capture_blocks=[1],
@@ -354,7 +368,7 @@ def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch):
 
 def test_verify_failure_analyzer_contract_matches_capture_artifact(tmp_path, monkeypatch, capsys):
     """Analyzer contract should accept payloads produced by safe_verify/capture_failure_artifact."""
-    from d810.hexrays.ir import cfg_utils
+    from d810.hexrays.mutation import cfg_verify
     from tools import analyze_verify_failures as avf
 
     mba = _FakeMBA(qty=7)
@@ -380,7 +394,7 @@ def test_verify_failure_analyzer_contract_matches_capture_artifact(tmp_path, mon
     monkeypatch.setenv("D810_VERIFY_CAPTURE_DIR", str(tmp_path))
 
     with pytest.raises(RuntimeError):
-        cfg_utils.safe_verify(
+        cfg_verify.safe_verify(
             mba,
             "unit-test analyzer contract",
             capture_blocks=[1, 2],

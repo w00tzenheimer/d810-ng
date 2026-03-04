@@ -11,7 +11,7 @@ import pytest
 from d810.cfg.graph_modification import NopInstructions
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.mutation.passes.block_merge import BlockMergePass
-from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
 
 # IDA microcode constants
 _M_GOTO_OPCODE = ida_hexrays.m_goto

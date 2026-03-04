@@ -410,7 +410,7 @@ class AstNode(AstBase):
     def evaluate_with_leaf_info(
         self, leafs_info: list[AstInfo], leafs_value: list[int]
     ) -> int:
-        from d810.evaluator.concrete import evaluate_concrete
+        from d810.evaluator.evaluators import evaluate_concrete
         return evaluate_concrete(self, {
             li.ast.ast_index: lv
             for li, lv in zip(leafs_info, leafs_value)
@@ -418,7 +418,7 @@ class AstNode(AstBase):
         })
 
     def evaluate(self, dict_index_to_value: dict[int, int]) -> int:
-        from d810.evaluator.concrete import evaluate_concrete
+        from d810.evaluator.evaluators import evaluate_concrete
         return evaluate_concrete(self, dict_index_to_value)
 
     def get_depth_signature(self, depth):
@@ -761,7 +761,7 @@ class AstLeaf(AstBase):
             return "AstLeaf('{0}')".format(self.name)
 
     def evaluate_with_leaf_info(self, leafs_info, leafs_value):
-        from d810.evaluator.concrete import evaluate_concrete
+        from d810.evaluator.evaluators import evaluate_concrete
         return evaluate_concrete(self, {
             li.ast.ast_index: lv
             for li, lv in zip(leafs_info, leafs_value)
@@ -769,7 +769,7 @@ class AstLeaf(AstBase):
         })
 
     def evaluate(self, dict_index_to_value):
-        from d810.evaluator.concrete import evaluate_concrete
+        from d810.evaluator.evaluators import evaluate_concrete
         return evaluate_concrete(self, dict_index_to_value)
 
     def get_depth_signature(self, depth):
@@ -867,7 +867,7 @@ class AstConstant(AstLeaf):
         return self.expected_value == other_value
 
     def evaluate(self, dict_index_to_value=None):
-        from d810.evaluator.concrete import evaluate_concrete
+        from d810.evaluator.evaluators import evaluate_concrete
         return evaluate_concrete(self, dict_index_to_value or {})
 
     def get_depth_signature(self, depth):

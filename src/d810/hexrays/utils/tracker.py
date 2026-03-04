@@ -7,11 +7,12 @@ import idaapi
 
 from d810.core import getLogger
 from d810.hexrays.utils.emulator import MicroCodeEnvironment, MicroCodeInterpreter, fetch_idb_value
-from d810.hexrays.ir.cfg_utils import (
-    change_1way_block_successor,
-    change_2way_block_conditional_successor,
-    duplicate_block,
-)
+from d810.hexrays.mutation.cfg_mutations import (
+    change_1way_block_successor)
+from d810.hexrays.mutation.cfg_mutations import (
+    change_2way_block_conditional_successor)
+from d810.hexrays.mutation.cfg_mutations import (
+    duplicate_block)
 from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,

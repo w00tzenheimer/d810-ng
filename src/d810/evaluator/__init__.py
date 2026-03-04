@@ -17,9 +17,9 @@ Exports (Phase 3):
 
 Example::
 
-    from d810.evaluator.concrete import evaluate_concrete
+    from d810.evaluator.evaluators import evaluate_concrete
     from d810.evaluator.helpers.rotate import _RotateHelper
-    from d810.evaluator.symbolic import probe_is_constant
+    from d810.evaluator.evaluators import probe_is_constant
 
     fn = _RotateHelper.lookup("__ROL4__")
     assert fn is not None

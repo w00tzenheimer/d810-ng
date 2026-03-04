@@ -30,14 +30,14 @@ if CythonMode().is_enabled():
 
 # Pure Python fallback when Cython is disabled or failed to import
 if get_stack_or_reg_name is None:
-    from d810.hexrays.ir.cfg_utils import get_stack_var_name as get_stack_or_reg_name
+    from d810.hexrays.ir.mop_utils import get_stack_var_name as get_stack_or_reg_name
 from d810.errors import (
     EmulationException,
     EmulationIndirectJumpException,
     UnresolvedMopException,
     WritableMemoryReadException,
 )
-from d810.hexrays.ir.cfg_utils import get_block_serials_by_address
+from d810.hexrays.ir.cfg_queries import get_block_serials_by_address
 from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,

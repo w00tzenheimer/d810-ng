@@ -11,7 +11,7 @@ Benefits over the current ast_generator approach:
 4. Potential for more complex optimizations (associativity, etc.)
 
 Usage:
-    from d810.backends.egglog_backend import EGraphOptimizer, check_egglog_available
+    from d810.backends.mba.egglog_backend import EGraphOptimizer, check_egglog_available
 
     if check_egglog_available():
         optimizer = EGraphOptimizer()

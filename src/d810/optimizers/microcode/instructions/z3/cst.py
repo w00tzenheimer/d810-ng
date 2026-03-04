@@ -56,7 +56,7 @@ class Z3ConstantOptimization(Z3Rule):
         if logger.debug_on:
             logger.debug("Found candidate: %s", format_minsn_t(instruction))
         try:
-            from d810.evaluator.symbolic import probe_is_constant
+            from d810.evaluator.evaluators import probe_is_constant
 
             is_const, val_0 = probe_is_constant(tmp, leaf_info_list)
             if logger.debug_on:

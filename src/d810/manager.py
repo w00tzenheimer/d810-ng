@@ -37,7 +37,7 @@ from d810.hexrays.hooks.hexrays_hooks import (
     HexraysDecompilationHook,
     InstructionOptimizerManager,
 )
-from d810.backends.ida import adapt_rules
+from d810.backends.mba.ida import adapt_rules
 from d810.mba.rules import VerifiableRule
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
@@ -640,7 +640,7 @@ class D810Manager:
             PassPipeline instance with IDAIRTranslator and the 2 safe cleanup passes.
         """
         from d810.hexrays.mutation.ir_translator import IDAIRTranslator
-        from d810.cfg.pass_pipeline import PassPipeline
+        from d810.cfg.pipeline import PassPipeline
         from d810.hexrays.mutation.passes.goto_chain_removal import GotoChainRemovalPass
         from d810.cfg.passes.simplify_identical_branch import (
             SimplifyIdenticalBranchPass,

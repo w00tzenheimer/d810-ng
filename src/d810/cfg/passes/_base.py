@@ -19,7 +19,7 @@ from abc import ABC, abstractmethod
 from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from d810.cfg.portable_cfg import PortableCFG
+    from d810.cfg.flowgraph import PortableCFG
     from d810.cfg.graph_modification import GraphModification
 
 

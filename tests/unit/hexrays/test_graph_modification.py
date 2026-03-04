@@ -20,7 +20,7 @@ from d810.cfg.graph_modification import (
     NopInstructions,
     GraphModification,
 )
-from d810.cfg.portable_cfg import InsnSnapshot
+from d810.cfg.flowgraph import InsnSnapshot
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
 

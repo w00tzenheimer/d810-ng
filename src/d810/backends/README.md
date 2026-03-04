@@ -23,7 +23,7 @@ d810/mba/backends/
 
 **API:**
 ```python
-from d810.backends.z3 import z3_prove_equivalence, Z3_INSTALLED
+from d810.backends.mba.z3 import z3_prove_equivalence, Z3_INSTALLED
 
 if Z3_INSTALLED:
     is_equiv, counterexample = z3_prove_equivalence(pattern, replacement)
@@ -51,7 +51,7 @@ functions. The pure MBA verification via `z3_prove_equivalence()` works without 
 
 **API:**
 ```python
-from d810.backends.ida import IDAPatternAdapter, IDANodeVisitor, adapt_rules
+from d810.backends.mba.ida import IDAPatternAdapter, IDANodeVisitor, adapt_rules
 
 # Adapt rules for IDA integration
 ida_rules = adapt_rules(rule_instances)
@@ -78,7 +78,7 @@ ast_node = visitor.visit(pattern)
 
 **Planned API:**
 ```python
-from d810.backends.egraph import MBARuleset, EGraphSimplifier
+from d810.backends.mba.egraph import MBARuleset, EGraphSimplifier
 from d810.mba import Var
 
 # Create ruleset from verified MBA rules
@@ -135,11 +135,11 @@ Each backend handles its own imports gracefully:
 from d810.hexrays.expr.z3_utils import z3_check_mop_equality
 
 # New (for pure MBA framework)
-from d810.backends.z3 import z3_prove_equivalence
+from d810.backends.mba.z3 import z3_prove_equivalence
 ```
 
 The old `d810.hexrays.expr.z3_utils` is kept for backward compatibility with existing
-d810 optimizers. New code should use `d810.backends.z3` for pure verification.
+d810 optimizers. New code should use `d810.backends.mba.z3` for pure verification.
 
 ## Adding a New Backend
 

@@ -112,7 +112,7 @@ def test_permutation_deeply_nested():
 def test_egglog_verification():
     """Test egglog equivalence verification of patterns."""
     try:
-        from d810.backends.egglog_backend import (
+        from d810.backends.mba.egglog_backend import (
             EGGLOG_AVAILABLE,
             PatternExpr,
             verify_pattern_equivalence,
@@ -152,7 +152,7 @@ def test_egglog_verification():
 def test_egglog_nonequivalence():
     """Test that egglog correctly identifies non-equivalent patterns."""
     try:
-        from d810.backends.egglog_backend import (
+        from d810.backends.mba.egglog_backend import (
             EGGLOG_AVAILABLE,
             PatternExpr,
             verify_pattern_equivalence,
@@ -177,7 +177,7 @@ def test_egglog_nonequivalence():
 def test_symbolic_to_pattern_conversion():
     """Test conversion from SymbolicExpression to PatternExpr."""
     try:
-        from d810.backends.egglog_backend import (
+        from d810.backends.mba.egglog_backend import (
             EGGLOG_AVAILABLE,
             PatternExpr,
             verify_pattern_equivalence,
@@ -235,7 +235,7 @@ def test_symbolic_to_pattern_conversion():
 def test_full_pattern_generation_pipeline():
     """Test the full pipeline: generate permutations, filter with egglog."""
     try:
-        from d810.backends.egglog_backend import (
+        from d810.backends.mba.egglog_backend import (
             EGGLOG_AVAILABLE,
             PatternExpr,
             verify_pattern_equivalence,

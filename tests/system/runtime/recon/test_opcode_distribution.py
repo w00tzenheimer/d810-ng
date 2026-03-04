@@ -1,7 +1,7 @@
 """Unit tests for OpcodeDistributionCollector using PortableCFG + InsnSnapshot."""
 from __future__ import annotations
 import pytest
-from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
 from d810.recon.collectors.opcode_distribution import OpcodeDistributionCollector
 
 

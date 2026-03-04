@@ -9,7 +9,7 @@ ARCHITECTURE: Two Z3 Modules in d810
 
 There are TWO separate Z3 utility modules in d810, serving different purposes:
 
-1. d810.backends.z3 (PURE - no IDA)
+1. d810.backends.mba.z3 (PURE - no IDA)
    --------------------------------------
    Purpose: Verify optimization rules using pure symbolic expressions.
    Input:   d810.mba.dsl.SymbolicExpression (platform-independent DSL)
@@ -43,7 +43,7 @@ The separation enables:
 4. Clear dependency boundaries (mba/ never imports IDA modules)
 
 If you need to verify a SymbolicExpression (from d810.mba.dsl), use:
-    from d810.backends.z3 import prove_equivalence
+    from d810.backends.mba.z3 import prove_equivalence
 
 If you need to verify actual IDA microcode (AstNode/mop_t), use this module:
     from d810.hexrays.expr.z3_utils import z3_check_mop_equality

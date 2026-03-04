@@ -14,7 +14,7 @@ from pathlib import Path
 import libcst as cst
 
 IMPORT_OLD = "d810.hexrays.ir.portable_cfg"
-IMPORT_NEW = "d810.cfg.portable_cfg"
+IMPORT_NEW = "d810.cfg.flowgraph"
 
 CFG_PORTABLE_CFG = '''"""Backend-agnostic IR for CFG snapshots (pure model layer)."""
 from __future__ import annotations
@@ -159,7 +159,7 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING
 
-from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
 from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
@@ -237,7 +237,7 @@ __all__ = ["lift", "lift_block"]
 HEXRAYS_PORTABLE_CFG_SHIM = '''"""Compatibility shim for portable CFG model + Hex-Rays lift helpers."""
 from __future__ import annotations
 
-from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
 from d810.hexrays.ir.lift_portable_cfg import lift, lift_block
 
 __all__ = [

@@ -11,8 +11,8 @@ from __future__ import annotations
 import pytest
 
 from d810.cfg.graph_modification import ConvertToGoto
-from d810.cfg.pass_pipeline import PassPipeline
-from d810.cfg.portable_cfg import BlockSnapshot, PortableCFG
+from d810.cfg.pipeline import PassPipeline
+from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
 from d810.cfg.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
 
 from tests.unit.hexrays.conftest import InMemoryBackend

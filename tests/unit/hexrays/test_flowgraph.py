@@ -1,4 +1,4 @@
-"""Unit tests for portable_cfg module.
+"""Unit tests for flowgraph module.
 
 Tests the frozen dataclass IR for CFG snapshots without requiring IDA runtime.
 """
@@ -9,7 +9,7 @@ import logging
 import pytest
 
 from d810.core.typing import TYPE_CHECKING
-from d810.cfg.portable_cfg import InsnSnapshot, BlockSnapshot, PortableCFG
+from d810.cfg.flowgraph import InsnSnapshot, BlockSnapshot, PortableCFG
 
 if TYPE_CHECKING:
     from d810.hexrays.ir.mop_snapshot import MopSnapshot

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.pass_pipeline import PassPipeline
+from d810.cfg.pipeline import PassPipeline
 from d810.cfg.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
 from d810.cfg.passes.dead_block_elimination import DeadBlockEliminationPass
 from d810.hexrays.mutation.passes.goto_chain_removal import GotoChainRemovalPass

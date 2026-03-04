@@ -25,9 +25,9 @@ from __future__ import annotations
 
 import ida_hexrays
 
-from d810.cfg.cfg_pass import CFGPass
+from d810.cfg.passes._base import CFGPass
 from d810.cfg.graph_modification import GraphModification, NopInstructions
-from d810.cfg.portable_cfg import PortableCFG
+from d810.cfg.flowgraph import PortableCFG
 
 _BLT_1WAY = ida_hexrays.BLT_1WAY
 _M_GOTO_OPCODE = ida_hexrays.m_goto
@@ -56,7 +56,7 @@ class BlockMergePass(CFGPass):
         tags: Frozen set containing "cleanup" and "topology" tags.
 
     Example:
-        >>> from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+        >>> from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
         >>> from d810.hexrays.ir.mop_snapshot import MopSnapshot
         >>> # Create mergeable pair: block 0 -> block 1 (1:1 relationship)
         >>> dest_mop = MopSnapshot(t=7, size=4, block_num=1)  # mop_b -> block 1

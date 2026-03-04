@@ -12,7 +12,7 @@ ARCHITECTURE: Two Z3 Modules in d810
 
 There are TWO separate Z3 utility modules in d810, serving different purposes:
 
-1. THIS FILE: d810.backends.z3 (PURE - no IDA)
+1. THIS FILE: d810.backends.mba.z3 (PURE - no IDA)
    ------------------------------------------------
    Purpose: Verify optimization rules using pure symbolic expressions.
    Input:   d810.mba.dsl.SymbolicExpression (platform-independent DSL)
@@ -25,7 +25,7 @@ There are TWO separate Z3 utility modules in d810, serving different purposes:
 
    Example:
        from d810.mba.dsl import Var
-       from d810.backends.z3 import prove_equivalence
+       from d810.backends.mba.z3 import prove_equivalence
 
        x, y = Var("x"), Var("y")
        assert prove_equivalence((x | y) - (x & y), x ^ y)  # XOR identity
@@ -113,7 +113,7 @@ class Z3VerificationEngine:
     the VerificationEngine protocol defined in d810.mba.verifier.
 
     Usage:
-        >>> from d810.backends.z3 import Z3VerificationEngine
+        >>> from d810.backends.mba.z3 import Z3VerificationEngine
         >>> from d810.mba.dsl import Var
         >>> engine = Z3VerificationEngine()
         >>> x, y = Var("x"), Var("y")
@@ -696,7 +696,7 @@ def verify_rule(
         ImportError: If Z3 is not installed.
 
     Example:
-        >>> from d810.backends.z3 import verify_rule
+        >>> from d810.backends.mba.z3 import verify_rule
         >>> from d810.mba.dsl import Var
         >>> x, y = Var("x"), Var("y")
         >>>

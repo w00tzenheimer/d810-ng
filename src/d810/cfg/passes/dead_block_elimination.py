@@ -12,9 +12,9 @@ Example:
 """
 from __future__ import annotations
 
-from d810.cfg.cfg_pass import CFGPass
+from d810.cfg.passes._base import CFGPass
 from d810.cfg.graph_modification import GraphModification, NopInstructions
-from d810.cfg.portable_cfg import PortableCFG
+from d810.cfg.flowgraph import PortableCFG
 
 
 class DeadBlockEliminationPass(CFGPass):
@@ -30,7 +30,7 @@ class DeadBlockEliminationPass(CFGPass):
         tags: Frozen set containing "cleanup" and "topology" tags.
 
     Example:
-        >>> from d810.cfg.portable_cfg import BlockSnapshot, PortableCFG, InsnSnapshot
+        >>> from d810.cfg.flowgraph import BlockSnapshot, PortableCFG, InsnSnapshot
         >>> # Create entry block (0) -> block 1
         >>> blk0 = BlockSnapshot(
         ...     serial=0, block_type=1, succs=(1,), preds=(),

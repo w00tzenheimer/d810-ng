@@ -29,9 +29,9 @@ Example:
 """
 from __future__ import annotations
 
-from d810.cfg.cfg_pass import CFGPass
+from d810.cfg.passes._base import CFGPass
 from d810.cfg.graph_modification import GraphModification, RedirectBranch, RedirectGoto
-from d810.cfg.portable_cfg import PortableCFG
+from d810.cfg.flowgraph import PortableCFG
 
 
 class FakeJumpFixerPass(CFGPass):
@@ -52,7 +52,7 @@ class FakeJumpFixerPass(CFGPass):
         tags: Frozen set containing "unflattening" and "cleanup" tags.
 
     Example:
-        >>> from d810.cfg.portable_cfg import BlockSnapshot, PortableCFG
+        >>> from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
         >>> # Block 5 is a 2-way conditional with fake/opaque jump
         >>> blk5 = BlockSnapshot(
         ...     serial=5, block_type=2, succs=(10, 20), preds=(),
@@ -115,7 +115,7 @@ class FakeJumpFixerPass(CFGPass):
             Empty list if no fixes or all fixes reference nonexistent blocks.
 
         Example:
-            >>> from d810.cfg.portable_cfg import BlockSnapshot, PortableCFG
+            >>> from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
             >>> blk5 = BlockSnapshot(
             ...     serial=5, block_type=2, succs=(10, 20), preds=(),
             ...     flags=0, start_ea=0x1000, insn_snapshots=()
@@ -165,7 +165,7 @@ class FakeJumpFixerPass(CFGPass):
             True if there are any pre-computed fixes, False otherwise.
 
         Example:
-            >>> from d810.cfg.portable_cfg import PortableCFG
+            >>> from d810.cfg.flowgraph import PortableCFG
             >>> cfg = PortableCFG(blocks={}, entry_serial=0, func_ea=0x1000)
             >>> # Empty fixes: not applicable
             >>> pass_instance = FakeJumpFixerPass(fixes={})
