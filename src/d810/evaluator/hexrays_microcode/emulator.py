@@ -51,7 +51,7 @@ from d810.hexrays.utils.hexrays_helpers import (
     equal_mops_ignore_size,
     get_mop_index,
 )
-from d810.hexrays.utils.ida_utils import is_never_written_var
+from d810.hexrays.utils.ida_utils import is_never_written_var, fetch_idb_value
 
 emulator_log = getLogger(__name__)
 
