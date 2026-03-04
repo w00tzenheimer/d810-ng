@@ -1,7 +1,7 @@
 """Unit tests for PassPipeline feature-flag integration.
 
 Tests verify:
-- PassPipeline is constructed with the correct 4 cleanup passes when flag is enabled
+- PassPipeline is constructed with the correct 4 cleanup transform when flag is enabled
 - PassPipeline is NOT constructed when flag is disabled (zero overhead)
 - HexraysDecompilationHook source accepts pass_pipeline kwarg defaulting to None
 - _build_pass_pipeline() returns the right pass types
@@ -29,7 +29,7 @@ from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 # ---------------------------------------------------------------------------
 
 def build_cleanup_pipeline() -> PassPipeline:
-    """Construct the PassPipeline with the 4 cleanup passes.
+    """Construct the PassPipeline with the 4 cleanup transform.
 
     This is the same logic as D810Manager._build_pass_pipeline(), extracted
     here so unit tests can exercise it without importing ida_hexrays.
@@ -61,7 +61,7 @@ class TestBuildPassPipeline:
         assert isinstance(pipeline, PassPipeline)
 
     def test_pipeline_has_four_passes(self):
-        """PassPipeline should contain exactly 4 cleanup passes."""
+        """PassPipeline should contain exactly 4 cleanup transform."""
         pipeline = build_cleanup_pipeline()
         assert len(pipeline.passes) == 4
 
@@ -107,7 +107,7 @@ class TestBuildPassPipeline:
         assert isinstance(pipeline.backend, IDAIRTranslator)
 
     def test_pipeline_repr_contains_pass_names(self):
-        """PassPipeline repr should name all 4 passes."""
+        """PassPipeline repr should name all 4 transform."""
         pipeline = build_cleanup_pipeline()
         r = repr(pipeline)
         assert "simplify_identical_branch" in r
@@ -190,7 +190,7 @@ class TestFeatureFlagEnabled:
         assert isinstance(_pass_pipeline, PassPipeline)
 
     def test_gate_logic_yields_pipeline_with_four_passes(self):
-        """Gate yields a pipeline with 4 passes when flag is True."""
+        """Gate yields a pipeline with 4 transform when flag is True."""
         config = {"enable_pass_pipeline": True}
         _pass_pipeline = None
         if config.get("enable_pass_pipeline", False):

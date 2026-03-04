@@ -28,9 +28,9 @@ class PassPipeline:
         self.passes = list(passes)  # defensive copy
 
     def run(self, backend_state: Any) -> int:
-        """Execute all passes against backend_state.
+        """Execute all transform against backend_state.
 
-        Returns total count of applied modifications across all passes.
+        Returns total count of applied modifications across all transform.
         """
         total = 0
         cfg = self.backend.lift(backend_state)
@@ -52,7 +52,7 @@ class PassPipeline:
 
             if not self.backend.verify(backend_state):
                 logger.warning("Pass %s failed verification, aborting pipeline", pass_.name)
-                break  # Stop all further passes - MBA may be corrupted
+                break  # Stop all further transform - MBA may be corrupted
 
             # Re-lift only when changes were applied successfully
             cfg = self.backend.lift(backend_state)
@@ -63,7 +63,7 @@ class PassPipeline:
 
     def __repr__(self) -> str:
         pass_names = [p.name for p in self.passes]
-        return f"PassPipeline(backend={self.backend.name!r}, passes={pass_names})"
+        return f"PassPipeline(backend={self.backend.name!r}, transform={pass_names})"
 
 
 __all__ = ["PassPipeline"]

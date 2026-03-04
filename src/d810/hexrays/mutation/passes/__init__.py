@@ -1,4 +1,4 @@
-"""IDA/Hex-Rays specific mutation passes."""
+"""IDA/Hex-Rays specific mutation transform."""
 from __future__ import annotations
 
 from d810.hexrays.mutation.passes.block_merge import BlockMergePass
