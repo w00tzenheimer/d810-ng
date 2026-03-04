@@ -180,7 +180,7 @@ class PathEmulator:
         Returns:
             EmulationResult containing the target block and execution details.
         """
-        from d810.hexrays.hexrays_microcode.emulator import (
+        from d810.evaluator.hexrays_microcode.emulator import (
             MicroCodeEnvironment,
             MicroCodeInterpreter,
         )
