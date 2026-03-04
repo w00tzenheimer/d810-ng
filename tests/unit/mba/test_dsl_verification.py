@@ -133,7 +133,7 @@ class TestZ3Verification:
 
     def test_visitor_import(self):
         """Test that Z3VerificationVisitor can be imported without IDA."""
-        from d810.backends.z3 import Z3VerificationVisitor
+        from d810.backends.mba.z3 import Z3VerificationVisitor
 
         visitor = Z3VerificationVisitor(bit_width=32)
         assert visitor is not None
@@ -142,7 +142,7 @@ class TestZ3Verification:
     def test_visitor_converts_variable(self):
         """Test Z3VerificationVisitor converts variables to Z3 BitVec."""
         from d810.mba.dsl import Var
-        from d810.backends.z3 import Z3VerificationVisitor
+        from d810.backends.mba.z3 import Z3VerificationVisitor
 
         x = Var("x")
         visitor = Z3VerificationVisitor()
@@ -154,7 +154,7 @@ class TestZ3Verification:
     def test_visitor_converts_constant(self):
         """Test Z3VerificationVisitor converts constants to Z3 BitVecVal."""
         from d810.mba.dsl import Const
-        from d810.backends.z3 import Z3VerificationVisitor
+        from d810.backends.mba.z3 import Z3VerificationVisitor
 
         one = Const("ONE", 1)
         visitor = Z3VerificationVisitor()
@@ -166,7 +166,7 @@ class TestZ3Verification:
     def test_visitor_converts_expression(self):
         """Test Z3VerificationVisitor converts complex expression."""
         from d810.mba.dsl import Var
-        from d810.backends.z3 import Z3VerificationVisitor
+        from d810.backends.mba.z3 import Z3VerificationVisitor
 
         x, y = Var("x"), Var("y")
         expr = (x | y) - (x & y)
@@ -185,14 +185,14 @@ class TestProveEquivalence:
 
     def test_prove_equivalence_import(self):
         """Test prove_equivalence can be imported without IDA."""
-        from d810.backends.z3 import prove_equivalence
+        from d810.backends.mba.z3 import prove_equivalence
 
         assert callable(prove_equivalence)
 
     def test_xor_identity_1(self):
         """Test XOR identity: (x | y) - (x & y) = x ^ y."""
         from d810.mba.dsl import Var
-        from d810.backends.z3 import prove_equivalence
+        from d810.backends.mba.z3 import prove_equivalence
 
         x, y = Var("x"), Var("y")
         pattern = (x | y) - (x & y)
@@ -205,7 +205,7 @@ class TestProveEquivalence:
     def test_xor_identity_2(self):
         """Test XOR identity: x + y - 2*(x & y) = x ^ y."""
         from d810.mba.dsl import Const, Var
-        from d810.backends.z3 import prove_equivalence
+        from d810.backends.mba.z3 import prove_equivalence
 
         x, y = Var("x"), Var("y")
         TWO = Const("2", 2)
@@ -219,7 +219,7 @@ class TestProveEquivalence:
     def test_bnot_identity(self):
         """Test bitwise NOT identity: ~x = -x - 1."""
         from d810.mba.dsl import Const, Var
-        from d810.backends.z3 import prove_equivalence
+        from d810.backends.mba.z3 import prove_equivalence
 
         x = Var("x")
         ONE = Const("1", 1)
@@ -232,7 +232,7 @@ class TestProveEquivalence:
     def test_add_commutativity(self):
         """Test addition is commutative: x + y = y + x."""
         from d810.mba.dsl import Var
-        from d810.backends.z3 import prove_equivalence
+        from d810.backends.mba.z3 import prove_equivalence
 
         x, y = Var("x"), Var("y")
         is_equiv, _ = prove_equivalence(x + y, y + x)
@@ -241,7 +241,7 @@ class TestProveEquivalence:
     def test_non_equivalent_detected(self):
         """Test that non-equivalent expressions are detected."""
         from d810.mba.dsl import Var
-        from d810.backends.z3 import prove_equivalence
+        from d810.backends.mba.z3 import prove_equivalence
 
         x, y = Var("x"), Var("y")
         pattern = x + y

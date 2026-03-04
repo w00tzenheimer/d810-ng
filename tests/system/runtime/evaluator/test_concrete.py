@@ -1,4 +1,4 @@
-"""Unit tests for d810.evaluator.concrete — ConcreteEvaluator.
+"""Unit tests for d810.evaluator.evaluators — ConcreteEvaluator.
 
 These tests exercise every opcode in the dispatch chain using lightweight
 mock AST objects.  No IDA Pro is required; the tests are pure-Python.
@@ -25,7 +25,7 @@ import types
 
 import pytest
 
-from d810.evaluator.concrete import ConcreteEvaluator, evaluate_concrete
+from d810.evaluator.evaluators import ConcreteEvaluator, evaluate_concrete
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
 
@@ -847,7 +847,7 @@ class TestConcreteWithRealAst:
 
     def test_cython_evaluator_is_active(self, libobfuscated_setup):
         """_default_evaluator is a CythonConcreteEvaluator when speedups are built."""
-        from d810.evaluator.concrete import _default_evaluator
+        from d810.evaluator.evaluators import _default_evaluator
 
         try:
             from d810.speedups.evaluator.c_concrete import CythonConcreteEvaluator
@@ -859,7 +859,7 @@ class TestConcreteWithRealAst:
 
     def test_evaluate_concrete_real_astnode(self, libobfuscated_setup, real_asts):
         """evaluate_concrete() returns an integer for a real AstNode from minsn_to_ast()."""
-        from d810.evaluator.concrete import evaluate_concrete
+        from d810.evaluator.evaluators import evaluate_concrete
         from d810.hexrays.expr.p_ast import AstBase
 
         # Pick any non-leaf AST node from the real collection
@@ -909,7 +909,7 @@ class TestConcreteWithRealAst:
         transparently.  This test verifies that no 'Unsupported AST node type'
         exception is raised for any AST in real_asts.
         """
-        from d810.evaluator.concrete import evaluate_concrete
+        from d810.evaluator.evaluators import evaluate_concrete
         from d810.errors import AstEvaluationException
 
         proxy_count = 0
@@ -960,7 +960,7 @@ class TestConcreteWithRealAst:
         with an empty env must either return an int or raise a non-type-dispatch
         error.
         """
-        from d810.evaluator.concrete import evaluate_concrete
+        from d810.evaluator.evaluators import evaluate_concrete
         from d810.errors import AstEvaluationException
 
         checked = 0

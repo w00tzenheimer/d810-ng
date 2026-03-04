@@ -17,16 +17,16 @@ import libcst as cst
 
 MODULE_RENAMES: dict[str, str] = {
     # Current paths after phase 1
-    "d810.hexrays.mutation.cfg_pass": "d810.cfg.cfg_pass",
-    "d810.hexrays.mutation.cfg_backend": "d810.cfg.cfg_backend",
-    "d810.hexrays.mutation.pass_pipeline": "d810.cfg.pass_pipeline",
+    "d810.hexrays.mutation.cfg_pass": "d810.cfg.passes._base",
+    "d810.hexrays.mutation.cfg_backend": "d810.cfg.protocol",
+    "d810.hexrays.mutation.pass_pipeline": "d810.cfg.pipeline",
     "d810.hexrays.mutation.graph_modification": "d810.cfg.graph_modification",
     "d810.hexrays.mutation.passes": "d810.cfg.passes",
     "d810.hexrays.utils.microcode_constants": "d810.cfg.microcode_constants",
     # Legacy pre-phase-1 paths (safety)
-    "d810.hexrays.cfg_pass": "d810.cfg.cfg_pass",
-    "d810.hexrays.cfg_backend": "d810.cfg.cfg_backend",
-    "d810.hexrays.pass_pipeline": "d810.cfg.pass_pipeline",
+    "d810.hexrays.cfg_pass": "d810.cfg.passes._base",
+    "d810.hexrays.cfg_backend": "d810.cfg.protocol",
+    "d810.hexrays.pass_pipeline": "d810.cfg.pipeline",
     "d810.hexrays.graph_modification": "d810.cfg.graph_modification",
     "d810.hexrays.passes": "d810.cfg.passes",
     "d810.hexrays.microcode_constants": "d810.cfg.microcode_constants",

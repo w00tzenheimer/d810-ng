@@ -36,17 +36,24 @@ from d810.core import getLogger
 from d810.hexrays.utils.emulator import MicroCodeEnvironment, MicroCodeInterpreter
 from d810.hexrays.mutation.cfg_mutations import create_standalone_block, insert_goto_instruction
 from d810.hexrays.ir.cfg_queries import _serial_in_predset
-from d810.hexrays.ir.cfg_utils import (
-    change_1way_block_successor,
-    coalesce_jtbl_cases,
-    create_block,
-    downgrade_nway_null_tail_to_1way,
-    ensure_child_has_an_unconditional_father,
-    ensure_last_block_is_goto,
-    mba_deep_cleaning,
-    retarget_jtbl_block_cases,
-    safe_verify,
-)
+from d810.hexrays.mutation.cfg_mutations import (
+    change_1way_block_successor)
+from d810.hexrays.mutation.cfg_mutations import (
+    coalesce_jtbl_cases)
+from d810.hexrays.mutation.cfg_mutations import (
+    create_block)
+from d810.hexrays.mutation.cfg_mutations import (
+    downgrade_nway_null_tail_to_1way)
+from d810.hexrays.mutation.cfg_mutations import (
+    ensure_child_has_an_unconditional_father)
+from d810.hexrays.mutation.cfg_mutations import (
+    ensure_last_block_is_goto)
+from d810.hexrays.mutation.cfg_mutations import (
+    mba_deep_cleaning)
+from d810.hexrays.mutation.cfg_mutations import (
+    retarget_jtbl_block_cases)
+from d810.hexrays.mutation.cfg_verify import (
+    safe_verify)
 from d810.hexrays.utils.hexrays_formatters import (
     dump_microcode_for_debug,
     format_minsn_t,

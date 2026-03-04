@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from d810.core.typing import Any, Protocol, runtime_checkable
 
-from d810.cfg.portable_cfg import PortableCFG
+from d810.cfg.flowgraph import PortableCFG
 from d810.cfg.graph_modification import GraphModification
 
 

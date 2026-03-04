@@ -47,11 +47,12 @@ from d810.hexrays.utils.table_utils import (
 )
 
 from d810.optimizers.microcode.handler import ConfigParam
-from d810.hexrays.ir.cfg_utils import (
-    change_0way_block_successor,
-    change_1way_block_successor,
-    safe_verify,
-)
+from d810.hexrays.mutation.cfg_mutations import (
+    change_0way_block_successor)
+from d810.hexrays.mutation.cfg_mutations import (
+    change_1way_block_successor)
+from d810.hexrays.mutation.cfg_verify import (
+    safe_verify)
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
 logger = getLogger("D810.optimizer")

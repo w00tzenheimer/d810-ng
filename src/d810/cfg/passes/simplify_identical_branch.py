@@ -10,9 +10,9 @@ Example:
 """
 from __future__ import annotations
 
-from d810.cfg.cfg_pass import CFGPass
+from d810.cfg.passes._base import CFGPass
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification
-from d810.cfg.portable_cfg import PortableCFG
+from d810.cfg.flowgraph import PortableCFG
 
 
 class SimplifyIdenticalBranchPass(CFGPass):
@@ -29,7 +29,7 @@ class SimplifyIdenticalBranchPass(CFGPass):
         tags: Frozen set containing "cleanup" tag.
 
     Example:
-        >>> from d810.cfg.portable_cfg import BlockSnapshot, PortableCFG
+        >>> from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
         >>> # Create 2-way block with identical successors
         >>> blk = BlockSnapshot(
         ...     serial=0, block_type=2, succs=(5, 5), preds=(),

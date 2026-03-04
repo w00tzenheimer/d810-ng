@@ -26,7 +26,7 @@ from d810.mba.dsl import (
     Var,
 )
 from d810.mba.rules import VerifiableRule
-from d810.backends.z3 import prove_equivalence
+from d810.backends.mba.z3 import prove_equivalence
 
 # =============================================================================
 # Test Rule Definitions (Pure DSL - No IDA)

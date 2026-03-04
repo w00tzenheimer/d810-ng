@@ -20,8 +20,8 @@ import pytest
 
 from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
-from d810.cfg.pass_pipeline import PassPipeline
-from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.pipeline import PassPipeline
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
 from d810.hexrays.mutation.passes.goto_chain_removal import GotoChainRemovalPass
 
 from tests.system.runtime.hexrays.conftest import InMemoryBackend

@@ -199,23 +199,34 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter
-from d810.hexrays.ir.cfg_utils import (
-    capture_failure_artifact,
-    change_1way_block_successor,
-    change_2way_block_conditional_successor,
-    create_block,
-    create_standalone_block,
-    duplicate_block,
-    insert_nop_blk,
-    log_block_info,
-    make_2way_block_goto,
-    mba_deep_cleaning,
-    safe_verify,
-    snapshot_block_for_capture,
-    _rewire_edge,
-)
-from d810.cfg.portable_cfg import PortableCFG
-from d810.hexrays.ir.lift_portable_cfg import lift
+from d810.hexrays.mutation.cfg_verify import (
+    capture_failure_artifact)
+from d810.hexrays.mutation.cfg_mutations import (
+    change_1way_block_successor)
+from d810.hexrays.mutation.cfg_mutations import (
+    change_2way_block_conditional_successor)
+from d810.hexrays.mutation.cfg_mutations import (
+    create_block)
+from d810.hexrays.mutation.cfg_mutations import (
+    create_standalone_block)
+from d810.hexrays.mutation.cfg_mutations import (
+    duplicate_block)
+from d810.hexrays.mutation.cfg_mutations import (
+    insert_nop_blk)
+from d810.hexrays.mutation.cfg_verify import (
+    log_block_info)
+from d810.hexrays.mutation.cfg_mutations import (
+    make_2way_block_goto)
+from d810.hexrays.mutation.cfg_mutations import (
+    mba_deep_cleaning)
+from d810.hexrays.mutation.cfg_verify import (
+    safe_verify)
+from d810.hexrays.mutation.cfg_verify import (
+    snapshot_block_for_capture)
+from d810.hexrays.mutation.cfg_mutations import (
+    _rewire_edge)
+from d810.cfg.flowgraph import PortableCFG
+from d810.hexrays.mutation.ir_translator import lift
 
 if TYPE_CHECKING:
     pass

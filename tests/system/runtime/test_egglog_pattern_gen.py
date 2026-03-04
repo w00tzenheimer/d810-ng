@@ -256,8 +256,8 @@ def test_xor_not_equivalence_from_module():
     print("=" * 60)
 
     try:
-        from d810.backends.egglog_backend import PatternExpr as ModulePatternExpr
-        from d810.backends.egglog_backend import verify_pattern_equivalence
+        from d810.backends.mba.egglog_backend import PatternExpr as ModulePatternExpr
+        from d810.backends.mba.egglog_backend import verify_pattern_equivalence
     except ImportError:
         print("SKIP: Could not import module (PYTHONPATH issue)")
         return

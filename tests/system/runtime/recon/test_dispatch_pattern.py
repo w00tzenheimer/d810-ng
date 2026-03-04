@@ -1,6 +1,6 @@
 from __future__ import annotations
 import pytest
-from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, PortableCFG
 from d810.recon.collectors.dispatch_pattern import DispatchPatternCollector
 
 

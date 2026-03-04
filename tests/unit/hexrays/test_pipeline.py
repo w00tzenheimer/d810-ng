@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.cfg_pass import CFGPass
+from d810.cfg.passes._base import CFGPass
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification, RedirectGoto
-from d810.cfg.pass_pipeline import PassPipeline
-from d810.cfg.portable_cfg import BlockSnapshot, PortableCFG
+from d810.cfg.pipeline import PassPipeline
+from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
 from tests.unit.hexrays.conftest import InMemoryBackend
 
 

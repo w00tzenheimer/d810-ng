@@ -23,11 +23,12 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.core.bits import unsigned_to_signed
-from d810.hexrays.ir.cfg_utils import (
-    make_2way_block_goto,
-    safe_verify,
-    update_blk_successor,
-)
+from d810.hexrays.mutation.cfg_mutations import (
+    make_2way_block_goto)
+from d810.hexrays.mutation.cfg_verify import (
+    safe_verify)
+from d810.hexrays.mutation.cfg_mutations import (
+    update_blk_successor)
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.utils.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
 from d810.hexrays.utils.tracker import MopTracker

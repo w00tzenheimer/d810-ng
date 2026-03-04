@@ -8,9 +8,9 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from d810.core.typing import Any
 
-from d810.cfg.cfg_pass import CFGPass
-from d810.cfg.cfg_backend import CFGBackend
-from d810.cfg.portable_cfg import PortableCFG
+from d810.cfg.passes._base import CFGPass
+from d810.cfg.protocol import CFGBackend
+from d810.cfg.flowgraph import PortableCFG
 
 logger = getLogger(__name__, default_level=0)  # NOTSET: inherit from parent
 

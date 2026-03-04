@@ -7,7 +7,7 @@ These tests exercise the pure list-manipulation logic in DeferredGraphModifier:
 
 No IDA runtime is required. The module stubs out IDA C++ extension modules and
 the d810 hexrays submodules that subclass them (cfg_verify, hexrays_formatters,
-hexrays_helpers, cfg_queries, cfg_utils, cfg_mutations, cfg.portable_cfg) using
+hexrays_helpers, cfg_queries, cfg_mutations, cfg.flowgraph) using
 plain ``types.ModuleType`` instances — NOT ``unittest.mock.Mock`` — so the
 no-IDA-mock rule enforced by tests/unit/conftest.py is respected.
 """
@@ -53,9 +53,8 @@ _D810_STUB_NAMES = (
     "d810.hexrays.utils.hexrays_formatters",
     "d810.hexrays.utils.hexrays_helpers",
     "d810.hexrays.ir.cfg_queries",
-    "d810.hexrays.ir.cfg_utils",
     "d810.hexrays.mutation.cfg_mutations",
-    "d810.cfg.portable_cfg",
+    "d810.cfg.flowgraph",
 )
 
 # Record originals so we can restore after the import (good hygiene, though

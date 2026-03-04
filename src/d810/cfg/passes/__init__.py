@@ -1,14 +1,7 @@
-"""CFGPass implementations for common CFG transformations."""
-from __future__ import annotations
+"""CFG pass package.
 
-from d810.cfg.passes.dead_block_elimination import DeadBlockEliminationPass
-from d810.cfg.passes.fake_jump_fixer import FakeJumpFixerPass
-from d810.cfg.passes.opaque_jump_fixer import OpaqueJumpFixerPass
-from d810.cfg.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
+Import pass classes from their concrete modules to avoid package-level
+import cycles (e.g. `d810.cfg.passes.dead_block_elimination`).
+"""
 
-__all__ = [
-    "DeadBlockEliminationPass",
-    "FakeJumpFixerPass",
-    "OpaqueJumpFixerPass",
-    "SimplifyIdenticalBranchPass",
-]
+__all__: list[str] = []

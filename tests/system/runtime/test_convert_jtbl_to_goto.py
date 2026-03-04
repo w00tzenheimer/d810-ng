@@ -30,8 +30,8 @@ import pytest
 import ida_hexrays
 import idaapi
 import idc
-
-from d810.hexrays.ir.cfg_utils import convert_jtbl_to_goto, _serial_in_predset
+from d810.hexrays.mutation.cfg_mutations import convert_jtbl_to_goto
+from d810.hexrays.ir.cfg_queries import _serial_in_predset
 
 if TYPE_CHECKING:
     pass

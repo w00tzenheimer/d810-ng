@@ -23,7 +23,8 @@ from d810.core.typing import TYPE_CHECKING
 import ida_hexrays
 
 from d810.core import getLogger
-from d810.hexrays.ir.cfg_utils import safe_verify, change_1way_block_successor
+from d810.hexrays.mutation.cfg_verify import safe_verify
+from d810.hexrays.mutation.cfg_mutations import change_1way_block_successor
 from d810.hexrays.utils.hexrays_helpers import dup_mop
 
 if TYPE_CHECKING:

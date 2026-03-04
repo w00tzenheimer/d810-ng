@@ -9,7 +9,7 @@ TODO:
 from __future__ import annotations
 
 from d810.cfg.graph_modification import GraphModification
-from d810.cfg.portable_cfg import BlockSnapshot, PortableCFG
+from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
 
 
 class InMemoryBackend:

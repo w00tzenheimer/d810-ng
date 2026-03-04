@@ -8,8 +8,8 @@ import pytest
 
 from d810.cfg.passes.opaque_jump_fixer import OpaqueJumpFixerPass
 from d810.cfg.graph_modification import ConvertToGoto
-from d810.cfg.portable_cfg import BlockSnapshot, PortableCFG
-from d810.cfg.pass_pipeline import PassPipeline
+from d810.cfg.flowgraph import BlockSnapshot, PortableCFG
+from d810.cfg.pipeline import PassPipeline
 
 from tests.unit.hexrays.conftest import InMemoryBackend
 

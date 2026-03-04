@@ -22,7 +22,7 @@ from d810.cfg.graph_modification import (
     RemoveEdge,
     NopInstructions,
 )
-from d810.cfg.portable_cfg import InsnSnapshot
+from d810.cfg.flowgraph import InsnSnapshot
 
 # IDA availability guard
 try:
@@ -43,7 +43,7 @@ class TestIDAIRTranslatorBasics:
     @pytest.mark.skipif(not IDA_AVAILABLE, reason="Requires IDA")
     def test_backend_implements_protocol(self):
         """Test that IDAIRTranslator conforms to CFGBackend protocol."""
-        from d810.cfg.cfg_backend import CFGBackend
+        from d810.cfg.protocol import CFGBackend
 
         backend = IDAIRTranslator()
         assert isinstance(backend, CFGBackend)
@@ -332,8 +332,8 @@ class TestIDAIntegration:
     These tests verify that the backend can interact with real IDA types.
     """
 
-    def test_lift_returns_portable_cfg(self):
-        """Test lift() returns a PortableCFG for a real mba_t."""
+    def test_lift_returns_flowgraph(self):
+        """Test lift() returns a PortableCFG flowgraph for a real mba_t."""
         backend = IDAIRTranslator()
         assert hasattr(backend, "lift")
         assert callable(backend.lift)

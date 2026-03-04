@@ -106,7 +106,7 @@ _D810_STUB_NAMES = (
     "d810.hexrays.ir.cfg_queries",
     "d810.hexrays.ir.cfg_utils",
     "d810.hexrays.mutation.cfg_mutations",
-    "d810.cfg.portable_cfg",
+    "d810.cfg.flowgraph",
     "d810.hexrays.utils.tracker",
     "d810.hexrays.utils.bst_analysis",
     "d810.hexrays.utils.arch_utils",

@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from d810.core.typing import Union
 
 # Import InsnSnapshot from Phase 3 (portable CFG layer)
-from d810.cfg.portable_cfg import InsnSnapshot
+from d810.cfg.flowgraph import InsnSnapshot
 
 
 @dataclass(frozen=True)

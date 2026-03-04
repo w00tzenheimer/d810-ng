@@ -16,7 +16,7 @@ IMPORTANT: Z3 Module Separation
 
 There are TWO Z3 modules in d810 - do NOT confuse them:
 
-1. d810.backends.z3 (THIS PACKAGE - pure, no IDA)
+1. d810.backends.mba.z3 (THIS PACKAGE - pure, no IDA)
    - Works with: SymbolicExpression (platform-independent)
    - Use for: Unit tests, CI, TDD, mathematical verification
    - Exports: Z3VerificationVisitor, prove_equivalence, verify_rule

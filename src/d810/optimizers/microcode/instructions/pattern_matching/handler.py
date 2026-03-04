@@ -31,7 +31,7 @@ pattern_search_logger = getLogger("D810.pattern_search")
 
 if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
-    from d810.backends.ida import IDAPatternAdapter
+    from d810.backends.mba.ida import IDAPatternAdapter
 
 
 @dataclasses.dataclass
