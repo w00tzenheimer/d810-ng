@@ -24,7 +24,7 @@ There are TWO Z3 modules in d810 - do NOT confuse them:
 2. d810.hexrays.expr.z3_utils (SEPARATE - IDA-specific)
    - Works with: AstNode, mop_t, minsn_t (IDA types)
    - Use for: Runtime verification inside IDA Pro plugin
-   - Exports: ast_to_z3_expression, z3_check_mop_equality
+   - Exports: AstNodeZ3Visitor, z3_check_mop_equality
 
 See the module docstrings in each file for full details.
 =============================================================================

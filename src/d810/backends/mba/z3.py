@@ -37,7 +37,7 @@ There are TWO separate Z3 utility modules in d810, serving different purposes:
    Use:     Runtime verification inside IDA Pro plugin
 
    Key exports:
-   - ast_to_z3_expression(): Converts AstNode -> Z3 BitVec
+   - AstNodeZ3Visitor: Converts AstNode -> Z3 BitVec
    - z3_check_mop_equality(): Check if two mop_t are equivalent
    - z3_prove_equivalence(): Prove AstNode equivalence with mop_t context
 

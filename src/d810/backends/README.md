@@ -31,7 +31,7 @@ if Z3_INSTALLED:
 
 **Key functions:**
 - `z3_prove_equivalence()` - Prove two expressions are equivalent
-- `ast_to_z3_expression()` - Convert AST to Z3 bitvector expression
+- `AstNodeZ3Visitor` - Convert AST to Z3 bitvector expressions
 - `get_solver()` - Get configured Z3 solver instance
 - `z3_check_mop_equality()` - IDA mop_t equality checking (legacy)
 
