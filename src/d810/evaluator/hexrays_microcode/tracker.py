@@ -7,10 +7,6 @@ import idaapi
 
 from d810.core import getLogger
 from d810.core.typing import TYPE_CHECKING
-from d810.hexrays.hexrays_microcode.emulator import (
-    MicroCodeEnvironment,
-    MicroCodeInterpreter,
-)
 from d810.hexrays.mutation.cfg_mutations import (
     change_1way_block_successor,
     change_2way_block_conditional_successor,
@@ -29,9 +25,13 @@ from d810.hexrays.utils.hexrays_helpers import (
     get_mop_index,
 )
 from d810.hexrays.utils.ida_utils import fetch_idb_value, is_never_written_var
-
+from d810.evaluator.hexrays_microcode.emulator import (
+    MicroCodeEnvironment,
+    MicroCodeInterpreter,
+)
 if TYPE_CHECKING:
     from d810.core.typing import Union
+
 
 # This module can be use to find the instruction that define the value of a mop. Basically, you:
 # 1 - Create a MopTracker object with the list of mops to search
