@@ -55,7 +55,7 @@ def create_test_database(db_path: str) -> None:
         # MopTracker starting
         {
             "timestamp": "2024-12-04T10:00:00.100000",
-            "logger": "d810.hexrays.utils.tracker",
+            "logger": "d810.evaluator.hexrays_microcode.tracker",
             "level": "DEBUG",
             "levelno": 10,
             "function": "search_backward",
@@ -67,7 +67,7 @@ def create_test_database(db_path: str) -> None:
         # History 0 - resolved
         {
             "timestamp": "2024-12-04T10:00:00.200000",
-            "logger": "d810.hexrays.utils.tracker",
+            "logger": "d810.evaluator.hexrays_microcode.tracker",
             "level": "DEBUG",
             "levelno": 10,
             "function": "search_backward",
@@ -79,7 +79,7 @@ def create_test_database(db_path: str) -> None:
         # History 1 - unresolved (back-edge)
         {
             "timestamp": "2024-12-04T10:00:00.300000",
-            "logger": "d810.hexrays.utils.tracker",
+            "logger": "d810.evaluator.hexrays_microcode.tracker",
             "level": "DEBUG",
             "levelno": 10,
             "function": "search_backward",
@@ -91,7 +91,7 @@ def create_test_database(db_path: str) -> None:
         # History 2 - unresolved (back-edge)
         {
             "timestamp": "2024-12-04T10:00:00.400000",
-            "logger": "d810.hexrays.utils.tracker",
+            "logger": "d810.evaluator.hexrays_microcode.tracker",
             "level": "DEBUG",
             "levelno": 10,
             "function": "search_backward",
@@ -103,7 +103,7 @@ def create_test_database(db_path: str) -> None:
         # History 3 - resolved
         {
             "timestamp": "2024-12-04T10:00:00.500000",
-            "logger": "d810.hexrays.utils.tracker",
+            "logger": "d810.evaluator.hexrays_microcode.tracker",
             "level": "DEBUG",
             "levelno": 10,
             "function": "search_backward",
@@ -115,7 +115,7 @@ def create_test_database(db_path: str) -> None:
         # History 4 - resolved but DIFFERENT value (spurious path!)
         {
             "timestamp": "2024-12-04T10:00:00.600000",
-            "logger": "d810.hexrays.utils.tracker",
+            "logger": "d810.evaluator.hexrays_microcode.tracker",
             "level": "DEBUG",
             "levelno": 10,
             "function": "search_backward",
@@ -201,7 +201,7 @@ class TestLogAnalystIntegration:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT COUNT(*) FROM logs
-            WHERE logger LIKE 'd810.hexrays.utils.tracker%'
+            WHERE logger LIKE 'd810.evaluator.hexrays_microcode.tracker%'
         """)
         count = cursor.fetchone()[0]
         conn.close()
@@ -226,7 +226,7 @@ class TestLogAnalystIntegration:
         cursor.execute("""
             SELECT json_extract(extra, '$.value') as value
             FROM logs
-            WHERE logger LIKE 'd810.hexrays.utils.tracker%'
+            WHERE logger LIKE 'd810.evaluator.hexrays_microcode.tracker%'
             AND json_extract(extra, '$.resolved') = 1
             ORDER BY id
         """)
@@ -244,7 +244,7 @@ class TestLogAnalystIntegration:
         cursor.execute("""
             SELECT DISTINCT json_extract(extra, '$.value') as value
             FROM logs
-            WHERE logger LIKE 'd810.hexrays.utils.tracker%'
+            WHERE logger LIKE 'd810.evaluator.hexrays_microcode.tracker%'
             AND json_extract(extra, '$.resolved') = 1
         """)
         unique_values = [row[0] for row in cursor.fetchall()]
@@ -284,7 +284,7 @@ LOG_ANALYST_QUERIES = {
             json_extract(extra, '$.value') as value,
             json_extract(extra, '$.path') as path
         FROM logs
-        WHERE logger LIKE 'd810.hexrays.utils.tracker%'
+        WHERE logger LIKE 'd810.evaluator.hexrays_microcode.tracker%'
         AND test_id = ?
         AND message LIKE 'History%'
         ORDER BY id
@@ -295,7 +295,7 @@ LOG_ANALYST_QUERIES = {
             COUNT(DISTINCT json_extract(extra, '$.value')) as unique_values,
             COUNT(*) as total_resolved
         FROM logs
-        WHERE logger LIKE 'd810.hexrays.utils.tracker%'
+        WHERE logger LIKE 'd810.evaluator.hexrays_microcode.tracker%'
         AND test_id = ?
         AND json_extract(extra, '$.resolved') = 1
     """,

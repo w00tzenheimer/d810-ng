@@ -82,6 +82,7 @@ class _LvarProxy:
     def __hash__(self):
         return hash((self.idx, self.off))
 
+
 @dataclass(frozen=True, slots=True)
 class MopSnapshot:
     """Immutable, pure-Python snapshot of an ida_hexrays.mop_t.

@@ -76,6 +76,7 @@ from d810.core.typing import Optional
 import ida_hexrays
 import ida_segment
 import idaapi
+from d810.evaluator.evaluators import evaluate_concrete
 
 # Opcodes where the right operand (shift amount) must have size == 1.
 # Folding a constant into ins.r with a larger size triggers INTERR 50835.
@@ -136,7 +137,7 @@ def _try_eval_pure_const_mop(mop: ida_hexrays.mop_t) -> Optional[int]:
         if not all(leaf.is_constant() for leaf in leaves):
             return None
 
-        result = ast.evaluate({})
+        result = evaluate_concrete(ast, {})
         if result is None:
             return None
         return int(result)

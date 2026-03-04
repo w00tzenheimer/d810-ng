@@ -14,7 +14,7 @@ available it is swapped in at import time (Phase 5).
 
 Usage::
 
-    from d810.backends.evaluator.concrete import evaluate_concrete
+    from d810.evaluator.concrete import evaluate_concrete
 
     result = evaluate_concrete(ast_node, {leaf_idx: value, ...})
 """
@@ -34,13 +34,13 @@ from d810.core.bits import (
 )
 from d810.core.logging import getLogger
 from d810.errors import AstEvaluationException
-from d810.evaluator.backend_registry import ConcreteEvaluatorProvider
+from d810.evaluator.protocol import EvaluatorProtocol
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
 logger = getLogger(__name__)
 
 
-class ConcreteEvaluator:
+class ConcreteEvaluator(EvaluatorProtocol):
     """Concrete microcode AST interpreter.
 
     Replaces the ``evaluate()`` method on ``AstNode`` / ``AstLeaf``.
@@ -61,7 +61,7 @@ class ConcreteEvaluator:
     # Public API
     # ------------------------------------------------------------------
 
-    def evaluate(self, node: object, env: dict[int, int]) -> int:
+    def evaluate(self, node: object, env: dict[int, int]) -> int | None:
         """Evaluate *node* given concrete leaf bindings in *env*.
 
         This is the primary dispatch entry point.  It calls either
@@ -92,7 +92,7 @@ class ConcreteEvaluator:
         node: object,
         leafs_info: list,
         leafs_value: list[int],
-    ) -> int:
+    ) -> int | None:
         """Evaluate *node* using per-leaf info objects and a value list.
 
         Convenience wrapper used by ``Z3ConstantOptimization`` and the
@@ -118,7 +118,7 @@ class ConcreteEvaluator:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _eval_leaf(self, node: object, env: dict[int, int]) -> int:
+    def _eval_leaf(self, node: object, env: dict[int, int]) -> int | None:
         """Evaluate a leaf node (``AstLeaf`` / ``AstConstant``).
 
         Args:
@@ -146,7 +146,7 @@ class ConcreteEvaluator:
         assert node.ast_index is not None  # type: ignore[union-attr]
         return env.get(node.ast_index)  # type: ignore[union-attr, return-value]
 
-    def _eval_node(self, node: object, env: dict[int, int]) -> int:
+    def _eval_node(self, node: object, env: dict[int, int]) -> int | None:
         """Evaluate an interior ``AstNode``.
 
         Implements the full opcode dispatch chain extracted verbatim from
@@ -483,8 +483,8 @@ def evaluate_concrete(
     node: object,
     env: dict[int, int],
     *,
-    evaluator: object | None = None,
-) -> int:
+    evaluator: EvaluatorProtocol | None = None,
+) -> int | None:
     """Public entry point for concrete AST evaluation.
 
     Uses the Cython evaluator when available (Phase 5), otherwise falls
@@ -509,15 +509,3 @@ __all__ = [
     "evaluate_concrete",
     "_default_evaluator",
 ]
-
-
-class ConcreteProvider(ConcreteEvaluatorProvider):
-    registrant_name = "concrete"
-
-    @classmethod
-    def evaluator_type(cls) -> type[ConcreteEvaluator]:
-        return ConcreteEvaluator
-
-    @classmethod
-    def default_evaluator(cls) -> ConcreteEvaluator:
-        return _default_evaluator

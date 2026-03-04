@@ -39,7 +39,8 @@ from d810.recon.flow.analysis_stats import summarize_dispatcher_detection
 
 # Optional emulation support
 try:
-    from d810.hexrays.expr.emulation_oracle import EmulationOracle, StateTransition
+    from d810.backends.emulation.common import StateTransition
+    from d810.backends.emulation.oracle import EmulationOracle
 
     EMULATION_AVAILABLE = True
 except ImportError:

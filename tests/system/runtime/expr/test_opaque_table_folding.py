@@ -32,8 +32,11 @@ import ida_hexrays
 import idaapi
 import idc
 
-from d810.hexrays.utils.emulator import MicroCodeEnvironment, MicroCodeInterpreter
-from d810.hexrays.utils.tracker import MopTracker
+from d810.hexrays.hexrays_microcode.emulator import (
+    MicroCodeEnvironment,
+    MicroCodeInterpreter,
+)
+from d810.evaluator.hexrays_microcode.tracker import MopTracker
 from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
     FoldReadonlyDataRule,
 )

@@ -288,7 +288,7 @@ class TestResizeBufferCFFIncremental:
             MOP_TO_AST_CACHE as CORE_MOP_TO_AST_CACHE,
         )
         from d810.optimizers.microcode.flow.flattening.dispatcher_detection import DispatcherCache
-        from d810.hexrays.utils.tracker import MopTracker
+        from d810.evaluator.hexrays_microcode.tracker import MopTracker
         from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block
 
         # Rules known to cause infinite hangs inside idaapi.decompile() due to
@@ -404,7 +404,7 @@ class TestResizeBufferCFFIncremental:
             MOP_TO_AST_CACHE as CORE_MOP_TO_AST_CACHE,
         )
         from d810.optimizers.microcode.flow.flattening.dispatcher_detection import DispatcherCache
-        from d810.hexrays.utils.tracker import MopTracker
+        from d810.evaluator.hexrays_microcode.tracker import MopTracker
         from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block
 
         func_ea = self._get_func_ea()

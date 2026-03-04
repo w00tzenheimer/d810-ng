@@ -36,10 +36,10 @@ layers =
     d810.optimizers
     d810.recon
     d810.backends
+    d810.evaluator
     d810.hexrays
     d810.mba
     d810.cfg
-    d810.evaluator
     d810.core
     d810.errors
 ignore_imports =
