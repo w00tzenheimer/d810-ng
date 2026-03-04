@@ -1,7 +1,7 @@
 """Unit tests for CFGShapeCollector using PortableCFG (no IDA dependency)."""
 from __future__ import annotations
 import pytest
-from d810.hexrays.portable_cfg import BlockSnapshot, PortableCFG
+from d810.cfg.portable_cfg import BlockSnapshot, PortableCFG
 from d810.recon.collectors.cfg_shape import CFGShapeCollector
 
 

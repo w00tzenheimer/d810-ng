@@ -4,7 +4,7 @@
 Overview
 --------
 `analyze_verify_failures.py` is a triage helper for JSON artifacts emitted by
-`d810.hexrays.cfg_utils.capture_failure_artifact()`. It condenses noisy verify
+`d810.hexrays.ir.cfg_utils.capture_failure_artifact()`. It condenses noisy verify
 failures into:
 
 1. A directory-level summary (entry EAs, phases, modification types, top errors)

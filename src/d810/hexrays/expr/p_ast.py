@@ -17,7 +17,7 @@ from d810.core.bits import (
     unsigned_to_signed,
 )
 from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
-from d810.hexrays.hexrays_formatters import (
+from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,
     mop_tree,
@@ -25,7 +25,7 @@ from d810.hexrays.hexrays_formatters import (
     opcode_to_string,
     sanitize_ea,
 )
-from d810.hexrays.hexrays_helpers import (
+from d810.hexrays.utils.hexrays_helpers import (
     AND_TABLE,
     MBA_RELATED_OPCODES,
     MINSN_TO_AST_FORBIDDEN_OPCODES,
@@ -34,7 +34,7 @@ from d810.hexrays.hexrays_helpers import (
     equal_mops_ignore_size,
     is_rotate_helper_call,
 )
-from d810.hexrays.mop_snapshot import MopSnapshot
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.core import NOT_GIVEN, NotGiven
 
 logger = getLogger(__name__)

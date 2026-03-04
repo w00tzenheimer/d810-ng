@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from d810.core.stats import OptimizationStatistics
-from d810.hexrays.hexrays_hooks import BlockOptimizerManager
+from d810.hexrays.hooks.hexrays_hooks import BlockOptimizerManager
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 
 

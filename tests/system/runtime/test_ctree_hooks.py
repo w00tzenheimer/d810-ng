@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from d810.core.stats import OptimizationStatistics
-from d810.hexrays.ctree_hooks import (
+from d810.hexrays.hooks.ctree_hooks import (
     CtreeOptimizerManager,
     CtreeOptimizationRule,
 )

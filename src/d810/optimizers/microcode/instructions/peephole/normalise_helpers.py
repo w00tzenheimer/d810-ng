@@ -11,13 +11,13 @@ from d810.core.bits import get_parity_flag
 from d810.evaluator.helpers.rotate import _RotateHelper as _HelperLookup
 from d810.hexrays.expr.ast import AstBase, AstLeaf, AstNode, mop_to_ast
 from d810.hexrays.expr.z3_utils import _find_def_in_block
-from d810.hexrays.hexrays_formatters import (  # noqa: F401 - debug only
+from d810.hexrays.utils.hexrays_formatters import (  # noqa: F401 - debug only
     format_mop_t,
     mop_type_to_string,
     opcode_to_string,
     sanitize_ea,
 )
-from d810.hexrays.hexrays_helpers import (  # already maps size->mask
+from d810.hexrays.utils.hexrays_helpers import (  # already maps size->mask
     AND_TABLE,
     CONTROL_FLOW_OPCODES,
     OPCODES_INFO,

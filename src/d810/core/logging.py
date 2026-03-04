@@ -720,7 +720,7 @@ def debug_scope(
 
     Usage:
         with debug_scope(
-            loggers=['d810.hexrays.tracker'],
+            loggers=['d810.hexrays.utils.tracker'],
             db_path='test.db',
             test_id='test_abc_f6'
         ):

@@ -82,7 +82,7 @@ def test_maturity_gate_allows_optimizer_at_correct_maturity():
     assert rule.calls == 1, f"Rule was not called at correct maturity"
 
 
-from d810.hexrays.hexrays_hooks import InstructionOptimizerManager
+from d810.hexrays.hooks.hexrays_hooks import InstructionOptimizerManager
 
 
 class _MockOptimizer:

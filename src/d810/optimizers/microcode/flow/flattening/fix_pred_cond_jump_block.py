@@ -23,14 +23,14 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.core.bits import unsigned_to_signed
-from d810.hexrays.cfg_utils import (
+from d810.hexrays.ir.cfg_utils import (
     make_2way_block_goto,
     safe_verify,
     update_blk_successor,
 )
-from d810.hexrays.deferred_modifier import DeferredGraphModifier
-from d810.hexrays.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
-from d810.hexrays.tracker import MopTracker
+from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+from d810.hexrays.utils.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
+from d810.hexrays.utils.tracker import MopTracker
 from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
     DispatcherCache,
     DispatcherType,
@@ -201,7 +201,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         if blk.serial in self._state_var_repr_cache:
             return self._state_var_repr_cache[blk.serial]
 
-        from d810.hexrays.hexrays_formatters import format_mop_t
+        from d810.hexrays.utils.hexrays_formatters import format_mop_t
         rep = format_mop_t(blk.tail.l)
         self._state_var_repr_cache[blk.serial] = rep
         return rep

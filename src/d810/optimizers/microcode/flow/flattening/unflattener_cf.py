@@ -13,9 +13,9 @@ import ida_pro
 import ida_xref
 
 from d810.core.logging import getLogger
-from d810.hexrays.cfg_utils import safe_verify
-from d810.hexrays.hexrays_formatters import format_minsn_t
-from d810.hexrays.hexrays_helpers import MicrocodeHelper, MicroInstruction, MicroOperand
+from d810.hexrays.ir.cfg_utils import safe_verify
+from d810.hexrays.utils.hexrays_formatters import format_minsn_t
+from d810.hexrays.utils.hexrays_helpers import MicrocodeHelper, MicroInstruction, MicroOperand
 from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
 from d810.cfg.dominators import compute_dominators
 from d810.optimizers.microcode.handler import ConfigParam
@@ -483,7 +483,7 @@ class CfUnflattenModifier:
     """
 
     def __init__(self, mba: ida_hexrays.mba_t):
-        from d810.hexrays.deferred_modifier import DeferredGraphModifier
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
         self._mba = mba
         self._deferred = DeferredGraphModifier(mba)
         # Track queued changes for compatibility with original API (e.g., len(dgm.edges))

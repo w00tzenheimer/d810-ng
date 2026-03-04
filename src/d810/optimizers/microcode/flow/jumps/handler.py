@@ -4,12 +4,12 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode, mop_to_ast
-from d810.hexrays.cfg_utils import (
+from d810.hexrays.ir.cfg_utils import (
     change_2way_block_conditional_successor,
     is_conditional_jump,
     make_2way_block_goto,
 )
-from d810.hexrays.hexrays_formatters import (
+from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
     opcode_to_string,
     string_to_maturity,

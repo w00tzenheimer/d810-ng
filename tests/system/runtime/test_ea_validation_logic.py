@@ -1,5 +1,5 @@
 """Unit tests for EA validation helpers without IDA."""
-from d810.hexrays.table_utils import (
+from d810.hexrays.utils.table_utils import (
     BADADDR, is_valid_database_ea, is_code_ea, get_func_safe, get_flags_safe,
     validate_code_target,
 )

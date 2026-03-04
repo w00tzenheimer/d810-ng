@@ -324,7 +324,7 @@ class EqualityConstraint(ConstraintExpr):
         try:
             import importlib
 
-            helpers = importlib.import_module("d810.hexrays.hexrays_helpers")
+            helpers = importlib.import_module("d810.hexrays.utils.hexrays_helpers")
             return helpers.equal_bnot_mop(left_mop, right_mop)
         except ImportError:
             # IDA not available - can't check structural constraint

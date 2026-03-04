@@ -242,7 +242,7 @@ class VerifiableRule(SymbolicRule, Registrant):
             try:
                 import importlib
 
-                _fmt = importlib.import_module("d810.hexrays.hexrays_formatters")
+                _fmt = importlib.import_module("d810.hexrays.utils.hexrays_formatters")
                 string_to_maturity = _fmt.string_to_maturity
                 self.maturities = [
                     string_to_maturity(x) for x in self.config["maturities"]

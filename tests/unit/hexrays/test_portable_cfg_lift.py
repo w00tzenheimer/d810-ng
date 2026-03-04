@@ -1,4 +1,4 @@
-"""Unit tests for portable_cfg lift functions.
+"""Unit tests for lift_portable_cfg lift functions.
 
 Tests the lift() and lift_block() functions' behavior when IDA is not available.
 IDA-dependent tests (with actual mba_t objects) go in tests/system/runtime/.
@@ -9,7 +9,7 @@ import pytest
 def test_lift_raises_when_ida_not_available(monkeypatch):
     """Test that lift() raises RuntimeError when IDA is not available."""
     # Import the module first
-    from d810.hexrays import portable_cfg
+    from d810.hexrays.ir import lift_portable_cfg as portable_cfg
 
     # Monkeypatch the IDA availability flag
     monkeypatch.setattr(portable_cfg, "_IDA_AVAILABLE", False)
@@ -22,7 +22,7 @@ def test_lift_raises_when_ida_not_available(monkeypatch):
 def test_lift_block_raises_when_ida_not_available(monkeypatch):
     """Test that lift_block() raises RuntimeError when IDA is not available."""
     # Import the module first
-    from d810.hexrays import portable_cfg
+    from d810.hexrays.ir import lift_portable_cfg as portable_cfg
 
     # Monkeypatch the IDA availability flag
     monkeypatch.setattr(portable_cfg, "_IDA_AVAILABLE", False)

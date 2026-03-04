@@ -9,7 +9,7 @@ import platform
 
 import pytest
 
-from d810.hexrays.mop_snapshot import MopSnapshot
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups import (
     BindingsProxy,
     MatchBinding,

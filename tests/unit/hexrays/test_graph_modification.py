@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.hexrays.graph_modification import (
+from d810.cfg.graph_modification import (
     RedirectGoto,
     RedirectBranch,
     ConvertToGoto,
@@ -20,8 +20,8 @@ from d810.hexrays.graph_modification import (
     NopInstructions,
     GraphModification,
 )
-from d810.hexrays.portable_cfg import InsnSnapshot
-from d810.hexrays.mop_snapshot import MopSnapshot
+from d810.cfg.portable_cfg import InsnSnapshot
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
 
 # ============================================================================

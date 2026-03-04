@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.core.stats import OptimizationStatistics
-from d810.hexrays.hexrays_hooks import InstructionOptimizerManager
+from d810.hexrays.hooks.hexrays_hooks import InstructionOptimizerManager
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
 from d810.optimizers.microcode.instructions.pattern_matching import handler as _pattern_handler
 from d810.optimizers.microcode.instructions.pattern_matching.handler import PatternOptimizer

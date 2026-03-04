@@ -32,8 +32,8 @@ import ida_hexrays
 import idaapi
 import idc
 
-from d810.hexrays.emulator import MicroCodeEnvironment, MicroCodeInterpreter
-from d810.hexrays.tracker import MopTracker
+from d810.hexrays.utils.emulator import MicroCodeEnvironment, MicroCodeInterpreter
+from d810.hexrays.utils.tracker import MopTracker
 from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
     FoldReadonlyDataRule,
 )
@@ -298,7 +298,7 @@ class TestMopTrackerResolvesGlobals:
             addr = mop.g
 
             # Check if this is truly never written
-            from d810.hexrays.ida_utils import is_never_written_var
+            from d810.hexrays.utils.ida_utils import is_never_written_var
             never_written = is_never_written_var(addr)
 
             print(f"\n  Block {serial}, {op_name}: addr=0x{addr:x}, never_written={never_written}")
@@ -497,7 +497,7 @@ class TestFoldReadonlyDataRuleWritableConstants:
 
             if seg and (seg.perm & idaapi.SEGPERM_WRITE):
                 # This is a writable segment
-                from d810.hexrays.ida_utils import is_never_written_var
+                from d810.hexrays.utils.ida_utils import is_never_written_var
                 never_written = is_never_written_var(addr)
                 is_foldable = rule._is_foldable_address(addr)
 

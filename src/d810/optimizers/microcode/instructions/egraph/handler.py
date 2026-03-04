@@ -44,14 +44,14 @@ from d810.hexrays.expr.ast import (
     AstNodeProtocol,
     minsn_to_ast,
 )
-from d810.hexrays.hexrays_formatters import format_minsn_t
+from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 
 # Additional helpers for some rules.  These functions and tables are
 # imported from the original helpers module.  They are used in the
 # candidate checks below.  If these symbols are not available at
 # runtime, importing them will raise which allows the caller to see
 # that the helpers are missing.
-from d810.hexrays.hexrays_helpers import (
+from d810.hexrays.utils.hexrays_helpers import (
     AND_TABLE,
     equal_bnot_mop,
     equal_mops_ignore_size,

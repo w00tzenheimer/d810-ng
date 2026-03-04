@@ -1,5 +1,5 @@
 """Guard test: ensures MopSnapshot class body is complete (catches indentation regressions)."""
-from d810.hexrays.mop_snapshot import MopSnapshot
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
 
 def test_mop_snapshot_has_all_fields():

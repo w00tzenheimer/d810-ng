@@ -32,8 +32,8 @@ if TYPE_CHECKING:
     from ida_hexrays import mblock_t, minsn_t
 
 from d810.core import getLogger
-from d810.hexrays import arch_utils
-from d810.hexrays.table_utils import is_valid_database_ea, read_global_value
+from d810.hexrays.utils import arch_utils
+from d810.hexrays.utils.table_utils import is_valid_database_ea, read_global_value
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRulePriority
 from d810.optimizers.microcode.flow.jumps.indirect_call import IndirectCallResolver

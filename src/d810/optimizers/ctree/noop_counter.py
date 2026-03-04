@@ -8,7 +8,7 @@ from __future__ import annotations
 from d810.core import typing
 
 from d810.core import getLogger
-from d810.hexrays.ctree_hooks import CtreeOptimizationRule
+from d810.hexrays.hooks.ctree_hooks import CtreeOptimizationRule
 
 logger = getLogger("D810.optimizer")
 

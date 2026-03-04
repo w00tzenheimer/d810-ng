@@ -1,4 +1,4 @@
-"""Unit tests for d810.hexrays.deferred_events.
+"""Unit tests for d810.hexrays.mutation.deferred_events.
 
 Coverage:
 - DeferredEvent enum completeness
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.hexrays.deferred_events import DeferredEvent, DeferredEventPayload, EventEmitter
+from d810.hexrays.mutation.deferred_events import DeferredEvent, DeferredEventPayload, EventEmitter
 
 
 # ---------------------------------------------------------------------------

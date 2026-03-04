@@ -31,7 +31,7 @@ import ida_hexrays
 import idaapi
 import idc
 
-from d810.hexrays.cfg_utils import convert_jtbl_to_goto, _serial_in_predset
+from d810.hexrays.ir.cfg_utils import convert_jtbl_to_goto, _serial_in_predset
 
 if TYPE_CHECKING:
     pass

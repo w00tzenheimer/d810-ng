@@ -211,7 +211,7 @@ def find_state_assignment_in_block(blk, state_mop) -> int | None:
         return None
 
     # Import here to avoid circular dependency
-    from d810.hexrays.hexrays_helpers import equal_mops_ignore_size
+    from d810.hexrays.utils.hexrays_helpers import equal_mops_ignore_size
 
     # Scan instructions backward from tail
     ins = blk.tail

@@ -406,7 +406,7 @@ class ConstraintPredicate:
             if var1 not in ctx or var2 not in ctx:
                 return False
             if ignore_size:
-                helpers = importlib.import_module("d810.hexrays.hexrays_helpers")
+                helpers = importlib.import_module("d810.hexrays.utils.hexrays_helpers")
                 return helpers.equal_mops_ignore_size(ctx[var1].mop, ctx[var2].mop)
             else:
                 return ctx[var1].mop == ctx[var2].mop
@@ -434,7 +434,7 @@ class ConstraintPredicate:
 
             if var1 not in ctx or var2 not in ctx:
                 return False
-            helpers = importlib.import_module("d810.hexrays.hexrays_helpers")
+            helpers = importlib.import_module("d810.hexrays.utils.hexrays_helpers")
             return helpers.equal_bnot_mop(ctx[var1].mop, ctx[var2].mop)
 
         return check

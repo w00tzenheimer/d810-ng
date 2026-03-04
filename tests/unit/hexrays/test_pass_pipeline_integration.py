@@ -7,21 +7,21 @@ Tests verify:
 - _build_pass_pipeline() returns the right pass types
 
 These tests avoid importing IDA-dependent modules (ida_hexrays, d810.manager,
-d810.hexrays.hexrays_hooks). Construction logic is tested through a standalone
+d810.hexrays.hooks.hexrays_hooks). Construction logic is tested through a standalone
 factory that mirrors what D810Manager._build_pass_pipeline() does.
 """
 from __future__ import annotations
 
 import pytest
 
-from d810.hexrays.pass_pipeline import PassPipeline
-from d810.hexrays.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
-from d810.hexrays.passes.dead_block_elimination import DeadBlockEliminationPass
-from d810.hexrays.passes.goto_chain_removal import GotoChainRemovalPass
-from d810.hexrays.passes.block_merge import BlockMergePass
-from d810.hexrays.passes.opaque_jump_fixer import OpaqueJumpFixerPass
-from d810.hexrays.passes.fake_jump_fixer import FakeJumpFixerPass
-from d810.hexrays.backends.ida_backend import IDABackend
+from d810.cfg.pass_pipeline import PassPipeline
+from d810.cfg.passes.simplify_identical_branch import SimplifyIdenticalBranchPass
+from d810.cfg.passes.dead_block_elimination import DeadBlockEliminationPass
+from d810.cfg.passes.goto_chain_removal import GotoChainRemovalPass
+from d810.cfg.passes.block_merge import BlockMergePass
+from d810.cfg.passes.opaque_jump_fixer import OpaqueJumpFixerPass
+from d810.cfg.passes.fake_jump_fixer import FakeJumpFixerPass
+from d810.hexrays.mutation.ida_backend import IDABackend
 
 
 # ---------------------------------------------------------------------------

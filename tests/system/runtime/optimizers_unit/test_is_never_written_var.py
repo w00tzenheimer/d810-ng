@@ -1,4 +1,4 @@
-"""System tests for is_never_written_var in d810.hexrays.ida_utils.
+"""System tests for is_never_written_var in d810.hexrays.utils.ida_utils.
 
 is_never_written_var checks whether a variable at a given address is never
 written to by any code. It returns True only when:
@@ -14,7 +14,7 @@ import idaapi
 import idc
 import pytest
 
-from d810.hexrays.ida_utils import is_never_written_var
+from d810.hexrays.utils.ida_utils import is_never_written_var
 
 
 @pytest.mark.ida_required

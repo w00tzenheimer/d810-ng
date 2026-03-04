@@ -21,8 +21,8 @@ from types import MappingProxyType
 
 from d810.recon.models import CandidateFlag, ReconResult
 
-from d810.hexrays.microcode_constants import BLT_2WAY as _BLT_2WAY
-from d810.hexrays.microcode_constants import BLT_NWAY as _BLT_NWAY
+from d810.cfg.microcode_constants import BLT_2WAY as _BLT_2WAY
+from d810.cfg.microcode_constants import BLT_NWAY as _BLT_NWAY
 
 _MMAT_CALLS = 3
 _MMAT_GLBOPT1 = 14

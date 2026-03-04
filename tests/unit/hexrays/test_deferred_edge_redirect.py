@@ -7,7 +7,7 @@ These tests exercise the pure list-manipulation logic in DeferredGraphModifier:
 
 No IDA runtime is required. The module stubs out IDA C++ extension modules and
 the d810 hexrays submodules that subclass them (cfg_verify, hexrays_formatters,
-hexrays_helpers, cfg_queries, cfg_utils, cfg_mutations, portable_cfg) using
+hexrays_helpers, cfg_queries, cfg_utils, cfg_mutations, cfg.portable_cfg) using
 plain ``types.ModuleType`` instances — NOT ``unittest.mock.Mock`` — so the
 no-IDA-mock rule enforced by tests/unit/conftest.py is respected.
 """
@@ -26,7 +26,7 @@ class _IntAutoStub(types.ModuleType):
     """A ModuleType that returns a unique integer for any unknown attribute.
 
     This satisfies comparisons like ``MMAT_GENERATED < MMAT_CALLS`` that
-    appear in d810.hexrays.hexrays_helpers module-level code.
+    appear in d810.hexrays.utils.hexrays_helpers module-level code.
     """
     _counter: int = 0
 
@@ -49,13 +49,13 @@ _IDA_STUB_NAMES = (
 # d810 submodules that define classes inheriting from IDA C++ extension types.
 # Stubbing them prevents TypeError from Python's C-extension subclassing rules.
 _D810_STUB_NAMES = (
-    "d810.hexrays.cfg_verify",
-    "d810.hexrays.hexrays_formatters",
-    "d810.hexrays.hexrays_helpers",
-    "d810.hexrays.cfg_queries",
-    "d810.hexrays.cfg_utils",
-    "d810.hexrays.cfg_mutations",
-    "d810.hexrays.portable_cfg",
+    "d810.hexrays.mutation.cfg_verify",
+    "d810.hexrays.utils.hexrays_formatters",
+    "d810.hexrays.utils.hexrays_helpers",
+    "d810.hexrays.ir.cfg_queries",
+    "d810.hexrays.ir.cfg_utils",
+    "d810.hexrays.mutation.cfg_mutations",
+    "d810.cfg.portable_cfg",
 )
 
 # Record originals so we can restore after the import (good hygiene, though
@@ -70,7 +70,7 @@ for _name in _IDA_STUB_NAMES + _D810_STUB_NAMES:
 # DeferredGraphModifier, GraphModification, and ModificationType are pure
 # Python dataclasses/enums — they must import successfully with IDA stubs in
 # place.  An ImportError here is a real regression and must FAIL loudly.
-from d810.hexrays.deferred_modifier import (
+from d810.hexrays.mutation.deferred_modifier import (
     DeferredGraphModifier,
     GraphModification,
     ModificationType,

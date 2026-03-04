@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import pytest
 
-from d810.hexrays.passes.opaque_jump_fixer import OpaqueJumpFixerPass
-from d810.hexrays.graph_modification import ConvertToGoto
-from d810.hexrays.portable_cfg import BlockSnapshot, PortableCFG
-from d810.hexrays.pass_pipeline import PassPipeline
+from d810.cfg.passes.opaque_jump_fixer import OpaqueJumpFixerPass
+from d810.cfg.graph_modification import ConvertToGoto
+from d810.cfg.portable_cfg import BlockSnapshot, PortableCFG
+from d810.cfg.pass_pipeline import PassPipeline
 
 from tests.unit.hexrays.conftest import InMemoryBackend
 

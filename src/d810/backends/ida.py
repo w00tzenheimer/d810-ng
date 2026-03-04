@@ -26,7 +26,7 @@ from d810.hexrays.expr.ast import (
     AstNode,
     minsn_to_ast,
 )
-from d810.hexrays.mop_snapshot import MopSnapshot
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.mba.dsl import SymbolicExpression, SymbolicExpressionProtocol
 from d810.mba.constraints import (
     ComparisonConstraintProtocol,
@@ -185,7 +185,7 @@ class _LeafWrapper:
         self.ea = leaf.ea
         # Handle both MopSnapshot (from Phase 2) and raw mop_t
         # Phase 2 changed AstLeaf.mop to store MopSnapshot for safety
-        from d810.hexrays.mop_snapshot import MopSnapshot
+        from d810.hexrays.ir.mop_snapshot import MopSnapshot
         if isinstance(leaf.mop, MopSnapshot):
             self.dst_mop = leaf.mop.to_mop()  # Reconstruct owned mop_t
         else:

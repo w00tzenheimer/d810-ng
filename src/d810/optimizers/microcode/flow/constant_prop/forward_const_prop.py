@@ -18,15 +18,15 @@ import ida_segment
 import idaapi
 
 from d810.core import CythonMode, getLogger, typing
-from d810.hexrays.cfg_utils import (
+from d810.hexrays.ir.cfg_utils import (
     _VALID_MOP_SIZES,
     extract_base_and_offset,
     get_stack_var_name,
     safe_make_number,
     safe_verify,
 )
-from d810.hexrays.hexrays_formatters import maturity_to_string
-from d810.hexrays.hexrays_helpers import AND_TABLE
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
+from d810.hexrays.utils.hexrays_helpers import AND_TABLE
 from d810.optimizers.microcode.flow.handler import (
     FlowOptimizationRule,
     FlowRulePriority,

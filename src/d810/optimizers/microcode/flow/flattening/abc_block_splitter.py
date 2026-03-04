@@ -23,12 +23,12 @@ from d810.core.typing import TYPE_CHECKING
 import ida_hexrays
 
 from d810.core import getLogger
-from d810.hexrays.cfg_utils import safe_verify, change_1way_block_successor
-from d810.hexrays.hexrays_helpers import dup_mop
+from d810.hexrays.ir.cfg_utils import safe_verify, change_1way_block_successor
+from d810.hexrays.utils.hexrays_helpers import dup_mop
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.generic import GenericDispatcherInfo
-    from d810.hexrays.tracker import MopHistory
+    from d810.hexrays.utils.tracker import MopHistory
 
 logger = getLogger("D810.abc_splitter")
 
@@ -321,7 +321,7 @@ class ConditionalStateResolver:
 
     def _resolve_target_for_state(self, state_value: int) -> ida_hexrays.mblock_t | None:
         """Resolve dispatcher target for a given state value."""
-        from d810.hexrays.emulator import (
+        from d810.hexrays.utils.emulator import (
             MicroCodeInterpreter, MicroCodeEnvironment
         )
 

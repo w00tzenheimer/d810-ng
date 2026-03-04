@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import pytest
 
-from d810.hexrays.graph_modification import RedirectBranch, RedirectGoto
-from d810.hexrays.mop_snapshot import MopSnapshot
-from d810.hexrays.pass_pipeline import PassPipeline
-from d810.hexrays.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
-from d810.hexrays.passes.goto_chain_removal import GotoChainRemovalPass
+from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
+from d810.cfg.pass_pipeline import PassPipeline
+from d810.cfg.portable_cfg import BlockSnapshot, InsnSnapshot, PortableCFG
+from d810.cfg.passes.goto_chain_removal import GotoChainRemovalPass
 
 from tests.unit.hexrays.conftest import InMemoryBackend
 
