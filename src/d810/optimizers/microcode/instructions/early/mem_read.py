@@ -2,7 +2,7 @@ from d810.core.typing import Any, Optional
 
 import ida_hexrays
 
-from d810.expr.ast import AstConstant, AstLeaf, AstNode
+from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode
 from d810.hexrays.ida_utils import (
     is_never_written_var,
     is_read_only_inited_var,

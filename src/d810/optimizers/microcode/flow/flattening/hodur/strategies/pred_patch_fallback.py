@@ -26,7 +26,8 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
     ProposedEdit,
 )
-from d810.tracker.mop_tracker import MopTracker, get_all_possibles_values
+from d810.hexrays.tracker import MopTracker
+from d810.optimizers.microcode.flow.flattening.utils import get_all_possibles_values
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (

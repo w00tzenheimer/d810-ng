@@ -9,7 +9,7 @@ ARCHITECTURE: Two Z3 Modules in d810
 
 There are TWO separate Z3 utility modules in d810, serving different purposes:
 
-1. d810.mba.backends.z3 (PURE - no IDA)
+1. d810.backends.z3 (PURE - no IDA)
    --------------------------------------
    Purpose: Verify optimization rules using pure symbolic expressions.
    Input:   d810.mba.dsl.SymbolicExpression (platform-independent DSL)
@@ -20,10 +20,10 @@ There are TWO separate Z3 utility modules in d810, serving different purposes:
    - prove_equivalence(): Prove two SymbolicExpressions are equivalent
    - verify_rule(): Verify a rule's PATTERN equals its REPLACEMENT
 
-2. THIS FILE: d810.expr.z3_utils (IDA-SPECIFIC)
+2. THIS FILE: d810.hexrays.expr.z3_utils (IDA-SPECIFIC)
    ---------------------------------------------
    Purpose: Z3 verification of actual IDA microcode during deobfuscation.
-   Input:   d810.expr.ast.AstNode (wraps IDA mop_t/minsn_t)
+   Input:   d810.hexrays.expr.ast.AstNode (wraps IDA mop_t/minsn_t)
    Use:     Runtime verification inside IDA Pro plugin
 
    Key exports:
@@ -43,10 +43,10 @@ The separation enables:
 4. Clear dependency boundaries (mba/ never imports IDA modules)
 
 If you need to verify a SymbolicExpression (from d810.mba.dsl), use:
-    from d810.mba.backends.z3 import prove_equivalence
+    from d810.backends.z3 import prove_equivalence
 
 If you need to verify actual IDA microcode (AstNode/mop_t), use this module:
-    from d810.expr.z3_utils import z3_check_mop_equality
+    from d810.hexrays.expr.z3_utils import z3_check_mop_equality
 
 =============================================================================
 TODO: Refactor to Visitor Pattern
@@ -84,7 +84,7 @@ import idaapi
 
 from d810.core import getLogger
 from d810.errors import D810Z3Exception
-from d810.expr.ast import AstLeaf, AstNode, minsn_to_ast, mop_to_ast, get_mop_key
+from d810.hexrays.expr.ast import AstLeaf, AstNode, minsn_to_ast, mop_to_ast, get_mop_key
 from d810.hexrays.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,
@@ -1248,7 +1248,7 @@ def z3_prove_equivalence(
                          that demonstrate the difference. None if equivalent.
 
     Example:
-        >>> from d810.expr.ast import AstNode, AstLeaf
+        >>> from d810.hexrays.expr.ast import AstNode, AstLeaf
         >>> from ida_hexrays import m_add, m_sub, m_xor, m_or, m_and
         >>> # Pattern: (x | y) - (x & y)
         >>> pattern = AstNode(m_sub,

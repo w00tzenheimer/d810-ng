@@ -5,7 +5,7 @@ It defines:
 1. VerificationEngine protocol - interface for verification backends
 2. MBARule classes - rule definitions that use engines for verification
 
-The module is BACKEND-AGNOSTIC. Backend implementations (Z3, etc.) are in d810.mba.backends.
+The module is BACKEND-AGNOSTIC. Backend implementations (Z3, etc.) are in d810.backends.
 
 This is the extraction of pure verification logic from d810.optimizers.rules,
 designed to work without IDA Pro dependencies.
@@ -17,6 +17,7 @@ import abc
 from dataclasses import dataclass, field
 from d810.core.typing import Any, Dict, List, Protocol, runtime_checkable
 
+from d810.mba.backend_registry import get_verification_engine
 from d810.mba.dsl import SymbolicExpression, SymbolicExpressionProtocol
 
 # =============================================================================
@@ -128,9 +129,7 @@ def get_default_engine() -> VerificationEngine:
     Raises:
         ImportError: If Z3 is not installed.
     """
-    from d810.mba.backends.z3 import Z3VerificationEngine
-
-    return Z3VerificationEngine()
+    return get_verification_engine("z3")
 
 
 # =============================================================================

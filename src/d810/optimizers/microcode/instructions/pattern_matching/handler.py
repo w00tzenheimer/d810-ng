@@ -8,7 +8,7 @@ from d810.core import typing
 import ida_hexrays
 
 from d810.core import getLogger
-from d810.expr.ast import AstBase, AstNode, AstNodeProtocol, minsn_to_ast
+from d810.hexrays.expr.ast import AstBase, AstNode, AstNodeProtocol, minsn_to_ast
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.handler import (
     GenericPatternRule,
@@ -31,7 +31,7 @@ pattern_search_logger = getLogger("D810.pattern_search")
 
 if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
-    from d810.mba.backends.ida import IDAPatternAdapter
+    from d810.backends.ida import IDAPatternAdapter
 
 
 @dataclasses.dataclass
@@ -573,7 +573,7 @@ class PatternOptimizer(InstructionOptimizer):
             return None
         try:
             # Reuse the tracker-aware AST resolver already used by Z3 helpers.
-            from d810.expr.z3_utils import _recursively_resolve_ast
+            from d810.hexrays.expr.z3_utils import _recursively_resolve_ast
         except Exception:
             return None
         try:

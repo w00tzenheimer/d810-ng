@@ -34,7 +34,7 @@ from d810.core import typing
 import ida_hexrays  # noqa: F401,F403
 
 from d810.core import getLogger
-from d810.expr.ast import (
+from d810.hexrays.expr.ast import (
     AstBase,
     AstConstant,
     AstConstantProtocol,

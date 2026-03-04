@@ -15,7 +15,7 @@ from __future__ import annotations
 from d810.core import typing
 
 if typing.TYPE_CHECKING:
-    from d810.expr.p_ast import AstBase, AstConstant, AstLeaf, AstNode
+    from d810.hexrays.expr.p_ast import AstBase, AstConstant, AstLeaf, AstNode
 
 from d810.hexrays.mop_snapshot import MopSnapshot
 

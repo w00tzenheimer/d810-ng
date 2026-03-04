@@ -1,8 +1,8 @@
 from d810.core import getLogger
 
 # TODO: this doesn't belong in this module, move it a different module
-tracker_logger = getLogger("d810.expr.tracker")
-emulator_logger = getLogger("d810.expr.emulator")
+tracker_logger = getLogger("d810.hexrays.expr.tracker")
+emulator_logger = getLogger("d810.hexrays.emulator")
 
 
 class UnflatteningException(Exception):

@@ -164,7 +164,7 @@ from d810.hexrays.mop_snapshot import MopSnapshot  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Minimal mock AST node / leaf helpers (no IDA types, no d810.expr.p_ast)
+# Minimal mock AST node / leaf helpers (no IDA types, no d810.hexrays.expr.p_ast)
 # ---------------------------------------------------------------------------
 
 

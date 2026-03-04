@@ -177,7 +177,7 @@ _OPC = _IDA_HEX  # same namespace, cleaner name
 
 
 # ---------------------------------------------------------------------------
-# Minimal mock AST node / leaf classes (no IDA types, no d810.expr.p_ast)
+# Minimal mock AST node / leaf classes (no IDA types, no d810.hexrays.expr.p_ast)
 # ---------------------------------------------------------------------------
 
 class _Leaf:
@@ -860,7 +860,7 @@ class TestConcreteWithRealAst:
     def test_evaluate_concrete_real_astnode(self, libobfuscated_setup, real_asts):
         """evaluate_concrete() returns an integer for a real AstNode from minsn_to_ast()."""
         from d810.evaluator.concrete import evaluate_concrete
-        from d810.expr.p_ast import AstBase
+        from d810.hexrays.expr.p_ast import AstBase
 
         # Pick any non-leaf AST node from the real collection
         ast_nodes = [(ast, ins) for ast, ins in real_asts if not ast.is_leaf()]
@@ -929,7 +929,7 @@ class TestConcreteWithRealAst:
 
             # Check if any sub-AST is an AstProxy instance
             try:
-                from d810.expr.ast import AstProxy
+                from d810.hexrays.expr.ast import AstProxy
                 for info in sub_infos.values():
                     if isinstance(getattr(info, "ast", None), AstProxy):
                         proxy_count += 1

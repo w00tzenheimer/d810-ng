@@ -3,7 +3,7 @@ from d810.core import typing
 
 import ida_hexrays
 
-from d810.expr.ast import AstNode, AstNodeProtocol
+from d810.hexrays.expr.ast import AstNode, AstNodeProtocol
 from d810.optimizers.microcode.instructions.handler import (
     GenericPatternRule,
     InstructionOptimizer,

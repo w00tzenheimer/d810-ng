@@ -28,13 +28,6 @@ source_modules =
     tests.unit
 forbidden_modules =
     d810.optimizers
-ignore_imports =
-    tests.unit.optimizers.microcode.flow.constant_prop.test_lattice -> d810.optimizers.microcode.flow.constant_prop.lattice
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_strategy_types -> d810.optimizers.microcode.flow.flattening.hodur.strategy
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_analysis_snapshot -> d810.optimizers.microcode.flow.flattening.hodur.snapshot
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner -> d810.optimizers.microcode.flow.flattening.hodur.planner
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner -> d810.optimizers.microcode.flow.flattening.hodur.strategy
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_executor -> d810.optimizers.microcode.flow.flattening.hodur.strategy
 [importlinter:contract:layered-architecture]
 name = Layered architecture prevents upward imports
 type = layers
@@ -42,25 +35,24 @@ layers =
     d810.ui
     d810.optimizers
     d810.recon
+    d810.backends
     d810.hexrays
     d810.mba
-    d810.expr
     d810.cfg
     d810.evaluator
     d810.core
     d810.errors
 ignore_imports =
-    # hexrays hooks import optimizers at runtime (plugin wiring — legitimate inversion)
-    d810.hexrays.hexrays_hooks -> d810.optimizers.microcode.flow.context
-    d810.hexrays.hexrays_hooks -> d810.optimizers.microcode.flow.handler
-    d810.hexrays.hexrays_hooks -> d810.optimizers.microcode.instructions.handler
-    d810.hexrays.hexrays_hooks -> d810.optimizers.microcode.instructions.pattern_matching.experimental
-    d810.hexrays.hexrays_hooks -> d810.optimizers.microcode.instructions.egraph.egglog_handler
-    d810.hexrays.ctree_hooks -> d810.optimizers.microcode.handler
-    # evaluator uses hexrays mop snapshot (IDA type wrapper)
-    d810.evaluator.concrete -> d810.hexrays.mop_snapshot
-    # mba IDA backend uses hexrays mop snapshot
-    d810.mba.backends.ida -> d810.hexrays.mop_snapshot
+
+[importlinter:contract:mba-core-no-hexrays]
+name = MBA core must not import hexrays
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    d810.mba
+    d810.mba.rules
+forbidden_modules =
+    d810.hexrays
 
 [importlinter:contract:actions-no-direct-ida-imports]
 name = Actions modules must not directly import IDA packages

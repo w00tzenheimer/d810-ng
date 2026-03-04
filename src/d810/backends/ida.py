@@ -18,7 +18,7 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.errors import AstEvaluationException
-from d810.expr.ast import (
+from d810.hexrays.expr.ast import (
     AstConstant,
     AstConstantProtocol,
     AstLeaf,
@@ -36,7 +36,7 @@ from d810.mba.constraints import (
 
 # Import egglog pattern generation (optional - graceful fallback if not available)
 try:
-    from d810.mba.backends.egglog_backend import (
+    from d810.backends.egglog_backend import (
         EGGLOG_AVAILABLE,
         PatternExpr,
         verify_pattern_equivalence,
@@ -414,7 +414,7 @@ class IDAPatternAdapter:
 
     Example:
         >>> from d810.mba.rules import VerifiableRule
-        >>> from d810.mba.backends.ida import IDAPatternAdapter
+        >>> from d810.backends.ida import IDAPatternAdapter
         >>>
         >>> # Create adapter from rule
         >>> adapter = IDAPatternAdapter(my_rule)
@@ -831,7 +831,7 @@ def adapt_rules(rules: List[VerifiableRule]) -> List[IDAPatternAdapter]:
 
     Example:
         >>> from d810.mba.rules import VerifiableRule
-        >>> from d810.mba.backends.ida import adapt_rules
+        >>> from d810.backends.ida import adapt_rules
         >>>
         >>> rule_instances = VerifiableRule.instantiate_all()
         >>> ida_rules = adapt_rules(rule_instances)

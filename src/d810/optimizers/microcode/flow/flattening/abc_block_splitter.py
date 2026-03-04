@@ -321,7 +321,7 @@ class ConditionalStateResolver:
 
     def _resolve_target_for_state(self, state_value: int) -> ida_hexrays.mblock_t | None:
         """Resolve dispatcher target for a given state value."""
-        from d810.expr.emulator import (
+        from d810.hexrays.emulator import (
             MicroCodeInterpreter, MicroCodeEnvironment
         )
 

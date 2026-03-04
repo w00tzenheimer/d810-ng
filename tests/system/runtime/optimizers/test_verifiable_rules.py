@@ -23,7 +23,7 @@ NOTE: Rules are automatically discovered and loaded by the conftest.py
 import pytest
 
 from d810.mba.rules import VerifiableRule
-from d810.mba.backends.z3 import verify_rule
+from d810.backends.z3 import verify_rule
 
 
 def get_all_rules():

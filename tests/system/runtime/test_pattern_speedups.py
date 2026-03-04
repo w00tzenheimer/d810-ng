@@ -21,7 +21,7 @@ import ida_hexrays
 import idaapi
 import idc
 
-from d810.expr.p_ast import (
+from d810.hexrays.expr.p_ast import (
     AstConstant,
     AstLeaf,
     AstNode,

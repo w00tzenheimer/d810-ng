@@ -5,8 +5,8 @@ import ida_hexrays
 from d810.core import typing
 from d810.core import getLogger
 from d810.errors import AstEvaluationException
-from d810.expr.ast import AstConstant, AstNode, AstProxy, minsn_to_ast
-from d810.expr.z3_utils import z3_check_mop_equality
+from d810.hexrays.expr.ast import AstConstant, AstNode, AstProxy, minsn_to_ast
+from d810.hexrays.expr.z3_utils import z3_check_mop_equality
 from d810.hexrays.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.z3.handler import Z3Rule
 

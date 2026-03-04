@@ -175,7 +175,7 @@ from .tracker_components import (
 # =============================================================================
 # These caches are defined here to avoid circular imports. They were previously
 # in d810.optimizers.caching, but that module has IDA-specific imports that
-# create circular dependencies when d810.expr.p_ast tries to import them.
+# create circular dependencies when d810.hexrays.expr.p_ast tries to import them.
 
 
 @survives_reload(reload_key="_SHARED_MOP_CACHES")

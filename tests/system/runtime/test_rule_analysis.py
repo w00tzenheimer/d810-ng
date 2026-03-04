@@ -9,7 +9,7 @@ import pytest
 
 # Check if egglog is available
 try:
-    from d810.mba.backends.egglog_backend import check_egglog_available
+    from d810.backends.egglog_backend import check_egglog_available
     EGGLOG_AVAILABLE = check_egglog_available()
 except ImportError:
     EGGLOG_AVAILABLE = False

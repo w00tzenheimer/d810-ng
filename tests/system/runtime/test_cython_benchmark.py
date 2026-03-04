@@ -23,7 +23,7 @@ try:
 except ImportError:
     CYTHON_AVAILABLE = False
 
-from d810.expr import p_ast as python_ast
+from d810.hexrays.expr import p_ast as python_ast
 
 
 @pytest.mark.skipif(not CYTHON_AVAILABLE, reason="Cython extensions not built")

@@ -117,7 +117,7 @@ if CythonMode().is_enabled():
         _USING_CYTHON = True
     except (ModuleNotFoundError, ImportError):
         # Fall back to pure Python implementation
-        from d810.expr.p_ast import (
+        from d810.hexrays.expr.p_ast import (
             AstBase,
             AstConstant,
             AstLeaf,
@@ -132,7 +132,7 @@ if CythonMode().is_enabled():
         _USING_CYTHON = False
 else:
     # CythonMode disabled, use pure Python
-    from d810.expr.p_ast import (
+    from d810.hexrays.expr.p_ast import (
         AstBase,
         AstConstant,
         AstLeaf,

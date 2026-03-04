@@ -1,4 +1,4 @@
-from d810.expr.ast import AstConstant, AstLeaf, AstNode
+from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode
 from d810.hexrays.hexrays_helpers import equal_bnot_mop, equal_mops_bypass_xdu
 from d810.optimizers.microcode.flow.jumps.handler import JumpOptimizationRule
 

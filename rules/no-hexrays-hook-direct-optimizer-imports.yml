@@ -1,0 +1,30 @@
+# Prevent hook-layer regressions where hexrays hooks directly import optimizer
+# runtime modules. Wiring must go through manager composition/injection.
+
+id: no-hexrays-hook-direct-optimizer-imports
+language: python
+severity: error
+
+files:
+  - "src/d810/hexrays/hexrays_hooks.py"
+  - "src/d810/hexrays/ctree_hooks.py"
+
+message: |
+  Do not directly import optimizer handler modules from hexrays hook modules.
+  Use manager-driven composition/injection instead.
+
+rule:
+  all:
+    - any:
+        - pattern: from d810.optimizers.microcode.flow.context import $$$
+        - pattern: from d810.optimizers.microcode.flow.handler import $$$
+        - pattern: from d810.optimizers.microcode.instructions.handler import $$$
+        - pattern: from d810.optimizers.microcode.instructions.pattern_matching.experimental import $$$
+        - pattern: from d810.optimizers.microcode.instructions.egraph.egglog_handler import $$$
+        - pattern: from d810.optimizers.microcode.handler import $$$
+    - not:
+        inside:
+          kind: if_statement
+          has:
+            field: condition
+            regex: TYPE_CHECKING

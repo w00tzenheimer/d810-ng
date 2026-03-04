@@ -2,7 +2,7 @@
 
 WARNING: This module must remain IDA-INDEPENDENT. Do not add imports from:
     - ida_hexrays, idaapi, idautils, idc
-    - d810.expr.ast (AstNode is IDA-coupled)
+    - d810.hexrays.expr.ast (AstNode is IDA-coupled)
     - d810.hexrays.*
     - d810.optimizers.*
 
@@ -12,7 +12,7 @@ ARCHITECTURE: Two Z3 Modules in d810
 
 There are TWO separate Z3 utility modules in d810, serving different purposes:
 
-1. THIS FILE: d810.mba.backends.z3 (PURE - no IDA)
+1. THIS FILE: d810.backends.z3 (PURE - no IDA)
    ------------------------------------------------
    Purpose: Verify optimization rules using pure symbolic expressions.
    Input:   d810.mba.dsl.SymbolicExpression (platform-independent DSL)
@@ -25,15 +25,15 @@ There are TWO separate Z3 utility modules in d810, serving different purposes:
 
    Example:
        from d810.mba.dsl import Var
-       from d810.mba.backends.z3 import prove_equivalence
+       from d810.backends.z3 import prove_equivalence
 
        x, y = Var("x"), Var("y")
        assert prove_equivalence((x | y) - (x & y), x ^ y)  # XOR identity
 
-2. d810.expr.z3_utils (IDA-SPECIFIC)
+2. d810.hexrays.expr.z3_utils (IDA-SPECIFIC)
    ----------------------------------
    Purpose: Z3 verification of actual IDA microcode during deobfuscation.
-   Input:   d810.expr.ast.AstNode (wraps IDA mop_t/minsn_t)
+   Input:   d810.hexrays.expr.ast.AstNode (wraps IDA mop_t/minsn_t)
    Use:     Runtime verification inside IDA Pro plugin
 
    Key exports:
@@ -63,6 +63,7 @@ from d810.core.typing import TYPE_CHECKING, Any, Dict
 
 from d810.core import getLogger
 from d810.errors import D810Z3Exception
+from d810.mba.backend_registry import VerificationEngineProvider
 
 logger = getLogger(__name__)
 
@@ -112,7 +113,7 @@ class Z3VerificationEngine:
     the VerificationEngine protocol defined in d810.mba.verifier.
 
     Usage:
-        >>> from d810.mba.backends.z3 import Z3VerificationEngine
+        >>> from d810.backends.z3 import Z3VerificationEngine
         >>> from d810.mba.dsl import Var
         >>> engine = Z3VerificationEngine()
         >>> x, y = Var("x"), Var("y")
@@ -183,6 +184,14 @@ class Z3VerificationEngine:
             constraints=constraints,
             bit_width=bit_width
         )
+
+
+class Z3VerificationProvider(VerificationEngineProvider):
+    registrant_name = "z3"
+
+    @classmethod
+    def create_engine(cls) -> Z3VerificationEngine:
+        return Z3VerificationEngine()
 
 
 # =============================================================================
@@ -687,7 +696,7 @@ def verify_rule(
         ImportError: If Z3 is not installed.
 
     Example:
-        >>> from d810.mba.backends.z3 import verify_rule
+        >>> from d810.backends.z3 import verify_rule
         >>> from d810.mba.dsl import Var
         >>> x, y = Var("x"), Var("y")
         >>>

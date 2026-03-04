@@ -28,7 +28,7 @@ def test_jnz_rule_mod_identity_exists():
 def test_jnz_rule_mod_identity_pattern_structure():
     """Test the pattern has correct structure for smod/umod."""
     from d810.optimizers.microcode.flow.jumps.opaque import JnzRuleModIdentity
-    from d810.expr.ast import AstNode
+    from d810.hexrays.expr.ast import AstNode
     
     rule = JnzRuleModIdentity()
     

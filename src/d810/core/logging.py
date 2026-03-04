@@ -499,7 +499,7 @@ def getLogger(name: str, default_level: int = logging.INFO) -> D810Logger:
        sensible default directory.  This makes interactive sessions like
 
        >>> from d810.core import getLogger
-       >>> log = getLogger("d810.expr.ast")
+       >>> log = getLogger("d810.hexrays.expr.ast")
 
        work without the user having to remember to call
        :pyfunc:`configure_loggers` first.

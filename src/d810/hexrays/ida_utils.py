@@ -1,7 +1,7 @@
 """Low-level IDA utility helpers for cross-reference and segment queries.
 
 These functions wrap IDA SDK calls (xrefblk_t, segment permissions, is_loaded)
-and live in the ``d810.hexrays`` layer so that both ``d810.expr`` and
+and live in the ``d810.hexrays`` layer so that both ``d810.hexrays.expr`` and
 ``d810.optimizers`` can use them without creating circular dependencies.
 """
 
