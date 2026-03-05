@@ -8,11 +8,13 @@ keeps an owned mop_t clone so reconstruction remains accurate.
 This module uses Cython acceleration when available, falling back to
 pure Python implementation otherwise.
 """
+
 from __future__ import annotations
 
-from d810.core.logging import getLogger
 from dataclasses import dataclass, field
 
+from d810.core.cymode import CythonMode
+from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -20,56 +22,72 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
-from d810.core.cymode import CythonMode
 
 # Proxy classes for sub-object access (duck-typing layer)
 class _NnnProxy:
     """Mimics mnumber_t for .nnn.value access."""
-    __slots__ = ('value',)
+
+    __slots__ = ("value",)
+
     def __init__(self, value: int):
         self.value = value
+
     def __eq__(self, other):
         if isinstance(other, _NnnProxy):
             return self.value == other.value
         return NotImplemented
+
     def __hash__(self):
         return hash(self.value)
+
     def __bool__(self):
         return True  # mop.nnn is truthy when present
 
+
 class _StkvarProxy:
     """Mimics stkvar_ref_t for .s.off access."""
-    __slots__ = ('off',)
+
+    __slots__ = ("off",)
+
     def __init__(self, off: int):
         self.off = off
+
     @property
     def start_ea(self):
         return None  # not available in snapshot
+
     @property
     def mba(self):
         return None  # not available in snapshot
+
     def __eq__(self, other):
         if isinstance(other, _StkvarProxy):
             return self.off == other.off
         # For comparison with real stkvar_ref_t, compare .off
-        if hasattr(other, 'off'):
+        if hasattr(other, "off"):
             return self.off == other.off
         return NotImplemented
+
     def __hash__(self):
         return hash(self.off)
 
+
 class _LvarProxy:
     """Mimics lvar_ref_t for .l.idx/.l.off access."""
-    __slots__ = ('idx', 'off')
+
+    __slots__ = ("idx", "off")
+
     def __init__(self, idx: int, off: int):
         self.idx = idx
         self.off = off
+
     def __eq__(self, other):
         if isinstance(other, _LvarProxy):
             return self.idx == other.idx and self.off == other.off
-        if hasattr(other, 'idx') and hasattr(other, 'off'):
+        if hasattr(other, "idx") and hasattr(other, "off"):
             return self.idx == other.idx and self.off == other.off
         return NotImplemented
+
     def __hash__(self):
         return hash((self.idx, self.off))
 
@@ -91,20 +109,22 @@ class MopSnapshot:
     size: int
     valnum: int = 0
     # Type-specific fields - only the relevant one is set per type.
-    value: int | None = None        # mop_n: nnn.value
-    reg: int | None = None          # mop_r: r
-    stkoff: int | None = None       # mop_S: s.off (if s is not None)
-    gaddr: int | None = None        # mop_v: g
-    lvar_idx: int | None = None     # mop_l: l.idx
-    lvar_off: int | None = None     # mop_l: l.off
-    block_num: int | None = None    # mop_b: b
+    value: int | None = None  # mop_n: nnn.value
+    reg: int | None = None  # mop_r: r
+    stkoff: int | None = None  # mop_S: s.off (if s is not None)
+    gaddr: int | None = None  # mop_v: g
+    lvar_idx: int | None = None  # mop_l: l.idx
+    lvar_off: int | None = None  # mop_l: l.off
+    block_num: int | None = None  # mop_b: b
     helper_name: str | None = None  # mop_h: helper (helper function name)
-    const_str: str | None = None    # mop_str: cstr
-    pair_lo_t: int | None = None    # mop_p: pair.lop.t
-    pair_hi_t: int | None = None    # mop_p: pair.hop.t
+    const_str: str | None = None  # mop_str: cstr
+    pair_lo_t: int | None = None  # mop_p: pair.lop.t
+    pair_hi_t: int | None = None  # mop_p: pair.hop.t
     # Owned clone for operand types that cannot be rebuilt from scalar fields.
     # Excluded from dataclass equality/hash to keep structural semantics stable.
-    owned_mop: object | None = field(default=None, compare=False, hash=False, repr=False)
+    owned_mop: object | None = field(
+        default=None, compare=False, hash=False, repr=False
+    )
 
     @classmethod
     def from_mop(cls, mop: ida_hexrays.mop_t) -> MopSnapshot:
@@ -117,13 +137,13 @@ class MopSnapshot:
         t = mop.t
         base: dict = dict(t=t, size=mop.size, valnum=getattr(mop, "valnum", 0))
         needs_owned_clone = t in {
-            ida_hexrays.mop_d,    # nested instruction
-            ida_hexrays.mop_f,    # argument list
-            ida_hexrays.mop_a,    # address operand
-            ida_hexrays.mop_c,    # switch cases
-            ida_hexrays.mop_p,    # pair
-            ida_hexrays.mop_S,    # stack var (requires mba_t to synthesize)
-            ida_hexrays.mop_l,    # local var (requires mba_t to synthesize)
+            ida_hexrays.mop_d,  # nested instruction
+            ida_hexrays.mop_f,  # argument list
+            ida_hexrays.mop_a,  # address operand
+            ida_hexrays.mop_c,  # switch cases
+            ida_hexrays.mop_p,  # pair
+            ida_hexrays.mop_S,  # stack var (requires mba_t to synthesize)
+            ida_hexrays.mop_l,  # local var (requires mba_t to synthesize)
             ida_hexrays.mop_str,  # string literal
         }
         if needs_owned_clone:
@@ -194,10 +214,18 @@ class MopSnapshot:
         ``get_mop_key()`` function in p_ast.py.
         """
         return (
-            self.t, self.size, self.valnum,
-            self.value, self.reg, self.stkoff, self.gaddr,
-            self.lvar_idx, self.lvar_off, self.block_num,
-            self.helper_name, self.const_str,
+            self.t,
+            self.size,
+            self.valnum,
+            self.value,
+            self.reg,
+            self.stkoff,
+            self.gaddr,
+            self.lvar_idx,
+            self.lvar_off,
+            self.block_num,
+            self.helper_name,
+            self.const_str,
         )
 
     def to_mop(self) -> ida_hexrays.mop_t:
@@ -309,12 +337,14 @@ class MopSnapshot:
         This covers complex attributes like .d, .pair, .a, .f, .c, .fpc,
         .dstr(), .oprops, etc. that cannot be snapshotted as scalars.
         """
-        if name.startswith('_'):
+        if name.startswith("_"):
             raise AttributeError(name)
-        owned = object.__getattribute__(self, 'owned_mop')
+        owned = object.__getattribute__(self, "owned_mop")
         if owned is not None:
             return getattr(owned, name)
-        raise AttributeError(f"'MopSnapshot' object has no attribute '{name}' (no owned_mop)")
+        raise AttributeError(
+            f"'MopSnapshot' object has no attribute '{name}' (no owned_mop)"
+        )
 
 
 # Try to import Cython speedups if CythonMode is enabled
@@ -323,4 +353,3 @@ if CythonMode().is_enabled():
         from d810.speedups.cythxr.mop_snapshot import MopSnapshot
     except ImportError:
         pass
-

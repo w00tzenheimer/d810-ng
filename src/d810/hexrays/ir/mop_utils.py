@@ -4,17 +4,56 @@ This module contains utility functions for working with microcode operands
 (mop_t) and variable names. Split from cfg_utils.py as part of the
 CFG Pass Pipeline refactor (Phase 1).
 """
+
 from __future__ import annotations
 
 import functools
 
 import ida_hexrays
 
-from d810.core import getLogger
+from d810.core import MOP_TO_AST_CACHE, getLogger
+from d810.hexrays.expr.ast import (
+    AstBase,
+    AstConstant,
+    AstLeaf,
+    AstNode,
+    AstProxy,
+    get_constant_mop,
+    get_mop_key,
+)
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
+from d810.hexrays.utils.hexrays_formatters import (
+    format_mop_t,
+    mop_tree,
+    mop_type_to_string,
+    opcode_to_string,
+    sanitize_ea,
+)
+from d810.hexrays.utils.hexrays_helpers import (
+    MBA_RELATED_OPCODES,
+    OPCODES_INFO,
+    is_rotate_helper_call,
+)
 
-helper_logger = getLogger(__name__)
+logger = getLogger(__name__)
 
 _VALID_MOP_SIZES = frozenset({1, 2, 4, 8, 16})
+
+
+class AstBuilderContext:
+    """Manages the state during the recursive construction of an AST.
+
+    This avoids passing multiple related arguments through the recursion
+    and provides a clean way to store the lookup dictionary.
+    """
+
+    def __init__(self):
+        # The list of unique AST nodes. The index in this list is the ast_index.
+        self.unique_asts: list[AstBase] = []
+
+        # The fast lookup dictionary.
+        # Maps a mop's unique key to its index in the unique_asts list.
+        self.mop_key_to_index: dict[tuple[int, str], int] = {}
 
 
 def safe_make_number(mop, value, size):
@@ -25,7 +64,7 @@ def safe_make_number(mop, value, size):
     crashing Hex-Rays' C++ verify / optimize_local passes.
     """
     if size not in _VALID_MOP_SIZES:
-        helper_logger.warning("Invalid mop size %d, defaulting to 4", size)
+        logger.warning("Invalid mop size %d, defaulting to 4", size)
         size = 4
     mask = (1 << (size * 8)) - 1
     mop.make_number(value & mask, size)
@@ -90,7 +129,9 @@ def get_stack_var_name(mop: ida_hexrays.mop_t) -> str | None:
     return name
 
 
-def extract_base_and_offset(mop: ida_hexrays.mop_t) -> tuple[ida_hexrays.mop_t | None, int]:
+def extract_base_and_offset(
+    mop: ida_hexrays.mop_t,
+) -> tuple[ida_hexrays.mop_t | None, int]:
     if (
         mop.t == ida_hexrays.mop_d
         and mop.d is not None
@@ -104,49 +145,6 @@ def extract_base_and_offset(mop: ida_hexrays.mop_t) -> tuple[ida_hexrays.mop_t |
             off = mop.d.l.nnn.value if mop.d.l and mop.d.l.t == ida_hexrays.mop_n else 0
             return mop.d.r, off
     return None, 0
-
-
-from d810.core import MOP_TO_AST_CACHE
-from d810.hexrays.expr.p_ast import (
-    AstBase,
-    AstConstant,
-    AstLeaf,
-    AstNode,
-    AstProxy,
-    get_constant_mop,
-    get_mop_key,
-)
-from d810.hexrays.ir.mop_snapshot import MopSnapshot
-from d810.hexrays.utils.hexrays_formatters import (
-    format_mop_t,
-    mop_tree,
-    mop_type_to_string,
-    opcode_to_string,
-    sanitize_ea,
-)
-from d810.hexrays.utils.hexrays_helpers import (
-    MBA_RELATED_OPCODES,
-    OPCODES_INFO,
-    is_rotate_helper_call,
-)
-
-logger = getLogger(__name__)
-
-
-class AstBuilderContext:
-    """Manages the state during the recursive construction of an AST.
-
-    This avoids passing multiple related arguments through the recursion
-    and provides a clean way to store the lookup dictionary.
-    """
-
-    def __init__(self):
-        # The list of unique AST nodes. The index in this list is the ast_index.
-        self.unique_asts: list[AstBase] = []
-
-        # The fast lookup dictionary.
-        # Maps a mop's unique key to its index in the unique_asts list.
-        self.mop_key_to_index: dict[tuple[int, str], int] = {}
 
 
 def mop_to_ast_internal(
@@ -401,7 +399,9 @@ def mop_to_ast_internal(
         # For non-constants, store a snapshot that create_mop() can reconstruct.
         if tree.is_constant():
             # Preserve previously assigned cached constant mop (from get_constant_mop)
-            tree.mop = getattr(tree, "mop", None) or get_constant_mop(tree.value, mop.size)
+            tree.mop = getattr(tree, "mop", None) or get_constant_mop(
+                tree.value, mop.size
+            )
         else:
             # Non-constant leaf: store snapshot instead of borrowed reference
             tree = AstLeaf(format_mop_t(mop))
