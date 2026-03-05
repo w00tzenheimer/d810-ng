@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from d810.core import logging
 
+from d810.cfg.flow.graph_checks import SemanticGate, detect_terminal_cycles
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     EditType,
     PlanFragment,
@@ -22,9 +23,13 @@ executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 class TransactionalExecutor:
     """Applies plan fragments via DeferredGraphModifier with verification gates."""
 
-    def __init__(self, mba: object, gate: VerificationGate | None = None):
+    def __init__(
+        self,
+        mba: object,
+        gate: VerificationGate | SemanticGate | None = None,
+    ):
         self.mba = mba
-        self.gate = gate or VerificationGate()
+        self.gate = gate or SemanticGate()
         self._total_changes = 0
 
     def execute_pipeline(
@@ -65,24 +70,89 @@ class TransactionalExecutor:
                 error="safeguard rejected modifications",
             )
 
-        changes = deferred.apply(run_optimize_local=True, run_deep_cleaning=False)
+        changes = deferred.apply(
+            run_optimize_local=True,
+            run_deep_cleaning=False,
+            verify_each_mod=True,
+            rollback_on_verify_failure=True,
+            continue_on_verify_failure=True,
+            enable_snapshot_rollback=True,
+        )
         self._total_changes += changes
 
+        # 1. Compute diagnostic metrics (logged, not gated)
+        reachable_blocks = self._compute_reachable_blocks()
+        qty = self.mba.qty if self.mba is not None else 0
+        block_reachability = len(reachable_blocks) / qty if qty > 0 else 0.0
+
+        handler_entry_serials: set[int] = fragment.metadata.get(
+            "handler_entry_serials", set()
+        )
+        if handler_entry_serials:
+            reachable_handlers = handler_entry_serials & reachable_blocks
+            handler_reachability = len(reachable_handlers) / len(handler_entry_serials)
+        else:
+            handler_reachability = block_reachability
+
+        executor_logger.info(
+            "Stage %s diagnostics: block_reachability=%.2f, handler_reachability=%.2f",
+            fragment.strategy_name,
+            block_reachability,
+            handler_reachability,
+        )
+
+        # 2. Semantic check: terminal cycles
+        adj = self._build_adjacency_list(self.mba)
+        terminal_exits: set[int] = fragment.metadata.get("terminal_exit_blocks", set())
+        dispatcher_serial: int = fragment.metadata.get("dispatcher_serial", -1)
+        cycle_result = detect_terminal_cycles(
+            adj, terminal_exits, handler_entry_serials, dispatcher_serial
+        )
+        if not cycle_result.passed:
+            for cyc in cycle_result.cycles:
+                executor_logger.warning(
+                    "Terminal cycle: blk[%d] re-enters blk[%d] via %s",
+                    cyc.terminal_block, cyc.reentry_target, cyc.path,
+                )
+
+        # 3. Build StageResult with semantic data
         result = StageResult(
             strategy_name=fragment.strategy_name,
             edits_applied=changes,
-            reachability_after=self._compute_reachability(),
+            reachability_after=block_reachability,
+            handler_reachability=handler_reachability,
+            terminal_cycles=cycle_result.cycles,
         )
 
+        # 4. Gate check
         if not self.gate.check(result):
             result.rollback_needed = True
             result.success = False
-            result.error = "verification gate failed"
+            result.error = "semantic gate failed"
             executor_logger.warning(
-                "Stage %s failed verification gate: reachability=%.2f",
+                "Stage %s failed semantic gate: "
+                "terminal_cycles=%d, conflict_count=%d",
                 fragment.strategy_name,
-                result.reachability_after,
+                len(result.terminal_cycles),
+                result.conflict_count_after,
             )
+            # Restore MBA to pre-apply snapshot if available
+            if deferred._pre_snapshot is not None:
+                if deferred._restore_from_snapshot(deferred._pre_snapshot):
+                    executor_logger.info(
+                        "Stage %s: gate failed, MBA restored from snapshot",
+                        fragment.strategy_name,
+                    )
+                else:
+                    executor_logger.error(
+                        "Stage %s: gate failed, snapshot rollback failed",
+                        fragment.strategy_name,
+                    )
+            else:
+                executor_logger.warning(
+                    "Stage %s: gate failed, no snapshot available for rollback",
+                    fragment.strategy_name,
+                )
 
         return result
 
@@ -125,13 +195,27 @@ class TransactionalExecutor:
                 edit.source_block,
             )
 
-    def _compute_reachability(self) -> float:
-        """Compute fraction of blocks reachable from entry."""
+    def _build_adjacency_list(self, mba: object) -> dict[int, list[int]]:
+        """Build adjacency list from live MBA block graph."""
+        adj: dict[int, list[int]] = {}
+        if mba is None:
+            return adj
+        for i in range(mba.qty):
+            blk = mba.get_mblock(i)
+            succs = []
+            if blk is not None:
+                for j in range(blk.nsucc()):
+                    succs.append(blk.succ(j))
+            adj[i] = succs
+        return adj
+
+    def _compute_reachable_blocks(self) -> set[int]:
+        """Return the set of block serials reachable from entry via DFS."""
         if self.mba is None:
-            return 0.0
+            return set()
         qty = self.mba.qty
         if qty == 0:
-            return 0.0
+            return set()
         visited: set[int] = set()
         queue = [0]
         while queue:
@@ -143,4 +227,4 @@ class TransactionalExecutor:
             if blk is not None:
                 for i in range(blk.nsucc()):
                     queue.append(blk.succ(i))
-        return len(visited) / qty
+        return visited
