@@ -36,8 +36,8 @@ from d810.recon.flow.bst_analysis import (
     _find_pre_header_state,
     _detect_state_var_stkoff,
 )
-from d810.recon.collectors.handler_transitions import (
-    build_handler_transitions_report,
+from d810.recon.flow.transition_report import (
+    build_dispatcher_transition_report,
 )
 
 # Defer IDA imports until needed - allows module to be imported for CLI --help
@@ -663,33 +663,32 @@ def dump_dispatcher_tree(
     if not handler_serials:
         sections.append("<no handlers found in BST>")
     else:
-        report = build_handler_transitions_report(
+        report = build_dispatcher_transition_report(
             mba=mba,
             dispatcher_entry_serial=dispatcher_entry_serial,
             state_var_stkoff=state_var_stkoff,
-            handler_serials=handler_serials,
-            handler_state_map=handler_state_map,
-            handler_range_map=handler_range_map,
-            transitions=transitions,
+            transitions_hint_by_handler=transitions,
             state_var_lvar_idx=state_var_lvar_idx,
-            diag_lines=diag_section,
+            capture_diagnostics=True,
             max_diag_handlers=3,
         )
+        if report.diagnostics:
+            diag_section.extend(list(report.diagnostics))
 
-        for entry in report.entries:
-            chain_str = f"chain={list(entry.chain[:4])}" if entry.chain else ""
+        for row in report.rows:
+            chain_str = f"chain={list(row.chain_preview)}" if row.chain_preview else ""
             sections.append(
-                f"{entry.state_label} -> blk[{entry.handler_serial}]:  "
-                f"{entry.label}  {chain_str}"
+                f"{row.state_label} -> blk[{row.handler_serial}]:  "
+                f"{row.transition_label}  {chain_str}"
             )
 
         sections.append("")
         sections.append(
-            f"Summary: {report.total_handlers} handlers, "
-            f"{report.known_count} with known transitions, "
-            f"{report.conditional_count} conditional, "
-            f"{report.exit_count} exits, "
-            f"{report.unknown_count} unknown"
+            f"Summary: {report.summary.handlers_total} handlers, "
+            f"{report.summary.known_count} with known transitions, "
+            f"{report.summary.conditional_count} conditional, "
+            f"{report.summary.exit_count} exits, "
+            f"{report.summary.unknown_count} unknown"
         )
 
     # --- Section 4: Diagnostics ---
