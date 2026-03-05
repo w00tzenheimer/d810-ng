@@ -1226,6 +1226,16 @@ def pytest_addoption(parser):
         ),
     )
     parser.addoption(
+        "--dump-force-rettype",
+        action="store",
+        default=None,
+        help=(
+            "Force the return type of the dumped function before decompilation. "
+            "Accepts a C type string (e.g. '__int64'). Applied via ida_typeinf before "
+            "both BEFORE and AFTER decompilations so the type persists across both runs."
+        ),
+    )
+    parser.addoption(
         "--unskip-research",
         action="store_true",
         default=False,

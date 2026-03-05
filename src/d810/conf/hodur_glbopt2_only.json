@@ -1,0 +1,16 @@
+{
+    "description": "Isolation experiment: HodurUnflattener ONLY at GLBOPT2. JumpFixer removed. Nothing touches CFG at GLBOPT1 — state machine survives intact to GLBOPT2.",
+    "ins_rules": [],
+    "blk_rules": [
+        {
+            "name": "HodurUnflattener",
+            "is_activated": true,
+            "config": {
+                "max_state_constants": 100,
+                "min_state_constant": 16777216,
+                "enable_transition_validator": true,
+                "enable_transition_uddu_validator": true
+            }
+        }
+    ]
+}
