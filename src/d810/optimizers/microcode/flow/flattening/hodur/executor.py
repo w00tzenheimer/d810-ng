@@ -1,6 +1,8 @@
 """Transactional executor for Hodur unflattening pipeline."""
 from __future__ import annotations
 
+from collections import Counter
+
 from d810.core import logging
 
 from d810.cfg.flow.edit_simulator import simulate_edits
@@ -78,9 +80,21 @@ class TransactionalExecutor:
         preflight_forbidden = fragment.metadata.get("forbidden_blocks", set())
         preflight_exits = fragment.metadata.get("exit_blocks", set())
 
+        stage_name = fragment.strategy_name
         if all_edits:
             pre_adj = self._build_adjacency_list(self.mba)
             sim_adj = simulate_edits(pre_adj, all_edits)
+
+            # Diagnostic: log edit breakdown by kind
+            kind_counts = Counter(e.kind for e in all_edits)
+            kind_summary = ", ".join(
+                "%s=%d" % (k, v) for k, v in sorted(kind_counts.items())
+            )
+            executor_logger.info(
+                "Preflight: %d edits (%s), terminal_exits=%s, forbidden=%d blocks",
+                len(all_edits), kind_summary,
+                preflight_exits, len(preflight_forbidden),
+            )
 
             # Prove each terminal redirect target is a valid sink
             for edit in terminal_edits:
@@ -116,10 +130,32 @@ class TransactionalExecutor:
                     "Preflight REJECT: terminal cycles detected in simulated graph"
                 )
                 return StageResult(
-                    strategy_name=fragment.strategy_name,
+                    strategy_name=stage_name,
                     success=False,
                     rollback_needed=False,
                     error="semantic preflight: terminal cycles detected",
+                )
+
+            # Conservative edge-split guard: reject if edge_split_redirect edits
+            # coexist with terminal exits in the MBA stop region (last 3 blocks).
+            # The simulator can't model serial drift from duplicate_block.
+            has_edge_splits = any(
+                e.kind == "edge_split_redirect" for e in all_edits
+            )
+            mba_qty = self.mba.qty if self.mba is not None else 0
+            stop_region = {mba_qty - 1 - i for i in range(3)} if mba_qty >= 3 else set()
+            terminal_in_stop = preflight_terminal_exits & stop_region
+            if has_edge_splits and terminal_in_stop:
+                executor_logger.warning(
+                    "Preflight REJECT: edge_split_redirect + terminal exits in stop region "
+                    "(serials %s) — serial drift risk, cannot simulate safely",
+                    terminal_in_stop,
+                )
+                return StageResult(
+                    strategy_name=stage_name,
+                    success=False,
+                    rollback_needed=False,
+                    error="semantic preflight: edge_split + stop-region terminal (serial drift risk)",
                 )
 
         changes = deferred.apply(
