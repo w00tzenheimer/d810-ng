@@ -19,10 +19,68 @@ def _site(site_id: str, origin_block: int) -> ReturnSite:
     return ReturnSite(
         site_id=site_id,
         origin_block=origin_block,
-        guard_hash="gh_" + site_id,
         expected_terminal_kind="return",
-        provenance="test",
     )
+
+
+# ---------------------------------------------------------------------------
+# Test: ReturnSite fields and defaults
+# ---------------------------------------------------------------------------
+
+
+def test_return_site_minimal_construction() -> None:
+    """ReturnSite can be constructed with only required fields."""
+    site = ReturnSite(
+        site_id="s_min",
+        origin_block=7,
+        expected_terminal_kind="return",
+    )
+    assert site.site_id == "s_min"
+    assert site.origin_block == 7
+    assert site.expected_terminal_kind == "return"
+    assert site.guard_hash == ""
+    assert site.provenance == ""
+    assert site.metadata == {}
+
+
+def test_return_site_metadata_populated() -> None:
+    """ReturnSite stores metadata dict and exposes it correctly."""
+    meta = {"dispatcher_entry": 0, "state_const": 0x1234, "transition_kind": "EXIT"}
+    site = ReturnSite(
+        site_id="s_full",
+        origin_block=42,
+        expected_terminal_kind="return",
+        metadata=meta,
+    )
+    assert site.metadata == meta
+    assert site.metadata["state_const"] == 0x1234
+    assert site.origin_block == 42
+    assert site.site_id == "s_full"
+
+
+def test_return_site_hashable() -> None:
+    """ReturnSite is hashable (frozen dataclass; metadata field excluded from hash)."""
+    site = ReturnSite(
+        site_id="s_hash",
+        origin_block=10,
+        expected_terminal_kind="return",
+        metadata={"some": "data"},
+    )
+    s = {site}  # must not raise TypeError
+    assert site in s
+
+
+def test_return_site_optional_guard_hash_and_provenance() -> None:
+    """guard_hash and provenance can be set for backward compatibility."""
+    site = ReturnSite(
+        site_id="s_compat",
+        origin_block=5,
+        expected_terminal_kind="return",
+        guard_hash="deadbeefdeadbeef",
+        provenance="transition_report_exit",
+    )
+    assert site.guard_hash == "deadbeefdeadbeef"
+    assert site.provenance == "transition_report_exit"
 
 
 def _linear_graph() -> tuple[dict[int, list[int]], int, frozenset[int]]:

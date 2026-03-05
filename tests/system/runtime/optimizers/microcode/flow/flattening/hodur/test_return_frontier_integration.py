@@ -86,7 +86,7 @@ class TestProviderToCollectorPipeline:
             10: [_FakePath(exit_block=2, final_state=None)],
             20: [_FakePath(exit_block=3, final_state=None)],
         }
-        return_sites = provider.collect_return_sites(
+        return_sites = provider.collect_return_sites_legacy(
             snapshot=None, handler_paths=handler_paths  # type: ignore[arg-type]
         )
         assert len(return_sites) == 2
@@ -114,7 +114,7 @@ class TestProviderToCollectorPipeline:
         handler_paths = {
             1: [_FakePath(exit_block=2, final_state=None)],
         }
-        return_sites = provider.collect_return_sites(
+        return_sites = provider.collect_return_sites_legacy(
             snapshot=None, handler_paths=handler_paths  # type: ignore[arg-type]
         )
 
@@ -151,7 +151,7 @@ class TestProviderToCollectorPipeline:
         handler_paths = {
             20: [_FakePath(exit_block=3, final_state=None)],
         }
-        return_sites = provider.collect_return_sites(
+        return_sites = provider.collect_return_sites_legacy(
             snapshot=None, handler_paths=handler_paths  # type: ignore[arg-type]
         )
 
@@ -198,7 +198,7 @@ class TestProviderToCollectorPipeline:
         handler_paths = {
             10: [_FakePath(exit_block=2, final_state=None)],
         }
-        return_sites = provider.collect_return_sites(
+        return_sites = provider.collect_return_sites_legacy(
             snapshot=None, handler_paths=handler_paths  # type: ignore[arg-type]
         )
 
@@ -238,7 +238,7 @@ class TestProviderToCollectorPipeline:
                 _FakePath(exit_block=12, final_state=0xDEAD),  # non-terminal, skipped
             ],
         }
-        return_sites = provider.collect_return_sites(
+        return_sites = provider.collect_return_sites_legacy(
             snapshot=None, handler_paths=handler_paths  # type: ignore[arg-type]
         )
         assert len(return_sites) == 2
@@ -265,7 +265,7 @@ class TestProviderToCollectorPipeline:
         collector = ReturnFrontierCollector()
 
         handler_paths = {1: [_FakePath(exit_block=5, final_state=None)]}
-        return_sites = provider.collect_return_sites(
+        return_sites = provider.collect_return_sites_legacy(
             snapshot=None, handler_paths=handler_paths  # type: ignore[arg-type]
         )
         succs = {0: [5], 5: []}

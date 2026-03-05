@@ -372,31 +372,56 @@ class HodurUnflattener(GenericUnflatteningRule):
     ) -> None:
         """Collect return sites and record pre_plan audit stage.
 
-        When *handler_paths* is provided (from the DirectLinearization strategy),
-        uses :class:`HodurReturnSiteProvider` to extract terminal return paths.
-        Falls back to MBA exit block scan when no handler_paths are available
-        (legacy strategies or first-pass before BST analysis).
+        Builds return sites from the dispatcher transition report (handler-centric),
+        so each EXIT/UNKNOWN handler becomes a distinct site keyed by handler_serial.
+        Falls back to MBA exit block scan when the transition report is unavailable.
 
         Args:
             snapshot: Current immutable analysis snapshot.
-            handler_paths: Optional mapping of handler_serial -> evaluated paths,
-                provided by DirectLinearization strategy after fragment collection.
+            handler_paths: Optional mapping of handler_serial -> evaluated paths
+                (retained for signature compatibility; no longer the primary source).
         """
         from d810.cfg.flow.return_frontier import ReturnSite
+        from d810.recon.flow.transition_report import build_dispatcher_transition_report
 
-        # Build return_sites from handler_paths if available, otherwise from exit blocks
+        # Build return_sites once per maturity level
         if not self._audit_return_sites:
-            if handler_paths:
+            report = None
+            # Attempt to build transition report using BST dispatcher serial + stkoff
+            if snapshot.bst_dispatcher_serial >= 0:
+                try:
+                    stkoff = self._get_effective_state_var_stkoff(snapshot.state_machine)
+                    report = build_dispatcher_transition_report(
+                        snapshot.mba,
+                        snapshot.bst_dispatcher_serial,
+                        state_var_stkoff=stkoff,
+                    )
+                except Exception as exc:
+                    unflat_logger.warning(
+                        "RETURN_FRONTIER_AUDIT: transition report failed: %s", exc
+                    )
+
+            if report is not None and report.rows:
                 self._audit_return_sites = self._return_site_provider.collect_return_sites(
+                    report
+                )
+                unflat_logger.info(
+                    "RETURN_FRONTIER_AUDIT: using transition report (%d rows -> %d sites)",
+                    len(report.rows),
+                    len(self._audit_return_sites),
+                )
+            elif handler_paths:
+                # Fallback: use handler_paths from DirectLinearization fragment
+                self._audit_return_sites = self._return_site_provider.collect_return_sites_legacy(
                     snapshot, handler_paths
                 )
                 unflat_logger.info(
-                    "RETURN_FRONTIER_AUDIT: using handler_paths (%d handlers -> %d sites)",
+                    "RETURN_FRONTIER_AUDIT: fallback to handler_paths (%d handlers -> %d sites)",
                     len(handler_paths),
                     len(self._audit_return_sites),
                 )
             else:
-                # Fallback: derive return sites from MBA exit blocks (nsucc==0)
+                # Last resort: derive return sites from MBA exit blocks (nsucc==0)
                 exits = self._find_exit_blocks()
                 sites: list[ReturnSite] = []
                 for blk_serial in sorted(exits):
