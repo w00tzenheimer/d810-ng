@@ -48,7 +48,7 @@ def format_z3_equivalence_script(
     Returns None when either instruction cannot be converted to an AST.
     The caller is responsible for writing the returned string to a logger.
     """
-    from d810.hexrays.expr.ast import minsn_to_ast
+    from d810.hexrays.ir.minsn_utils import minsn_to_ast
 
     orig_mba_tree = minsn_to_ast(original_ins)
     new_mba_tree = minsn_to_ast(new_ins)

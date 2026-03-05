@@ -24,8 +24,8 @@ from d810.hexrays.expr.ast import (
     AstLeaf,
     AstLeafProtocol,
     AstNode,
-    minsn_to_ast,
 )
+from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.mba.dsl import SymbolicExpression, SymbolicExpressionProtocol
 from d810.mba.constraints import (

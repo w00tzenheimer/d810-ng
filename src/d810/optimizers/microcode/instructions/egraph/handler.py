@@ -42,8 +42,8 @@ from d810.hexrays.expr.ast import (
     AstLeafProtocol,
     AstNode,
     AstNodeProtocol,
-    minsn_to_ast,
 )
+from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 
 # Additional helpers for some rules.  These functions and tables are

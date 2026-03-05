@@ -9,7 +9,8 @@ from d810.core import CacheImpl
 from d810.core import getLogger
 from d810.core.bits import get_parity_flag
 from d810.evaluator.helpers.rotate import _RotateHelper as _HelperLookup
-from d810.hexrays.expr.ast import AstBase, AstLeaf, AstNode, mop_to_ast
+from d810.hexrays.expr.ast import AstBase, AstLeaf, AstNode
+from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.recon.flow.def_search import find_def_in_block
 from d810.hexrays.utils.hexrays_formatters import (  # noqa: F401 - debug only
     format_mop_t,
