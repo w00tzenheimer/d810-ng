@@ -66,6 +66,9 @@ for _name in _IDA_STUB_NAMES + _D810_STUB_NAMES:
     if _name not in sys.modules:
         sys.modules[_name] = _IntAutoStub(_name)
 
+# Snapshot ALL d810/ida modules before import so we can clean up transitive imports.
+_pre_import_d810_keys = {k for k in sys.modules if k.startswith(("d810.", "ida"))}
+
 # DeferredGraphModifier, GraphModification, and ModificationType are pure
 # Python dataclasses/enums — they must import successfully with IDA stubs in
 # place.  An ImportError here is a real regression and must FAIL loudly.
@@ -81,6 +84,11 @@ for _name, _orig in _saved.items():
         sys.modules.pop(_name, None)
     else:
         sys.modules[_name] = _orig
+
+# Remove any new d810/ida modules that appeared as transitive side effects.
+_post_import_d810_keys = {k for k in sys.modules if k.startswith(("d810.", "ida"))}
+for _leaked in _post_import_d810_keys - _pre_import_d810_keys:
+    sys.modules.pop(_leaked, None)
 
 import pytest
 

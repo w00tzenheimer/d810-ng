@@ -113,6 +113,8 @@ _D810_STUB_NAMES = (
     "d810.hexrays.utils.table_utils",
     "d810.hexrays.expr.ast",
     "d810.hexrays.hexrays_microcode.emulator",
+    "d810.evaluator.hexrays_microcode",
+    "d810.evaluator.hexrays_microcode.emulator",
     "d810.hexrays.expr.z3_utils",
     "d810.cfg.dominator",
     "d810.recon.flow.dispatcher_detection",
@@ -127,6 +129,9 @@ _D810_STUB_NAMES = (
     "d810.optimizers.microcode.flow.jumps.indirect_branch",
     "d810.optimizers.microcode.flow.jumps.indirect_call",
     "d810.optimizers.microcode.flow.identity_call",
+    # structuring package and its submodules (imported by flow/__init__.py else branch)
+    "d810.optimizers.microcode.flow.structuring",
+    "d810.optimizers.microcode.flow.structuring.epilogue_cloner",
 )
 
 _saved: dict[str, types.ModuleType | None] = {}
@@ -145,6 +150,9 @@ _saved["d810.optimizers.microcode.flow.flattening.generic"] = sys.modules.get(
 )
 sys.modules["d810.optimizers.microcode.flow.flattening.generic"] = _generic_stub
 
+# Snapshot ALL d810/ida modules before import so we can clean up transitive imports.
+_pre_import_d810_keys = {k for k in sys.modules if k.startswith(("d810.", "ida"))}
+
 # Now import — HandlerPathResult is a pure dataclass; HodurUnflattener we only
 # bind its method, never call __init__.
 from d810.optimizers.microcode.flow.flattening.unflattener_hodur import (  # noqa: E402
@@ -152,12 +160,18 @@ from d810.optimizers.microcode.flow.flattening.unflattener_hodur import (  # noq
     HodurUnflattener,
 )
 
-# Restore saved modules after import (good hygiene).
+# Restore explicitly saved modules and remove any transitive d810/ida imports
+# that were introduced during the import above (prevents stub pollution).
 for _name, _orig in _saved.items():
     if _orig is None:
         sys.modules.pop(_name, None)
     else:
         sys.modules[_name] = _orig
+
+# Remove any new d810/ida modules that appeared as transitive side effects.
+_post_import_d810_keys = {k for k in sys.modules if k.startswith(("d810.", "ida"))}
+for _leaked in _post_import_d810_keys - _pre_import_d810_keys:
+    sys.modules.pop(_leaked, None)
 
 import pytest  # noqa: E402
 

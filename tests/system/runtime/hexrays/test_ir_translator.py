@@ -49,6 +49,34 @@ class TestIDAIRTranslatorBasics:
         assert isinstance(backend, IRTranslator)
 
 
+def _patch_deferred_module(mock_deferred_module):
+    """Patch deferred_modifier in both sys.modules and the mutation package attribute.
+
+    Python's ``from pkg import mod`` checks the package's __dict__ first.
+    If another test file imported deferred_modifier under IDA stubs, the
+    package attribute may point to a stale (polluted) module object.
+    We must patch both to ensure our mock is used.
+    """
+    import d810.hexrays.mutation as _mut_pkg
+    orig_sysmod = sys.modules.get('d810.hexrays.mutation.deferred_modifier')
+    orig_attr = getattr(_mut_pkg, 'deferred_modifier', None)
+    sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
+    _mut_pkg.deferred_modifier = mock_deferred_module  # type: ignore[attr-defined]
+    return orig_sysmod, orig_attr, _mut_pkg
+
+
+def _unpatch_deferred_module(orig_sysmod, orig_attr, _mut_pkg):
+    """Restore deferred_modifier in both sys.modules and the mutation package."""
+    if orig_sysmod is None:
+        sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
+    else:
+        sys.modules['d810.hexrays.mutation.deferred_modifier'] = orig_sysmod
+    if orig_attr is None:
+        _mut_pkg.__dict__.pop('deferred_modifier', None)
+    else:
+        _mut_pkg.deferred_modifier = orig_attr  # type: ignore[attr-defined]
+
+
 class TestModificationMapping:
     """Test GraphModification -> DeferredGraphModifier mapping logic.
 
@@ -64,8 +92,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        # Inject mock module into sys.modules before calling lower()
-        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
+        orig_sysmod, orig_attr, _mut_pkg = _patch_deferred_module(mock_deferred_module)
         try:
             backend = IDAIRTranslator()
             mock_mba = Mock()
@@ -79,8 +106,7 @@ class TestModificationMapping:
             )
             mock_modifier.apply.assert_called_once_with(enable_snapshot_rollback=True)
         finally:
-            # Clean up mock module
-            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
+            _unpatch_deferred_module(orig_sysmod, orig_attr, _mut_pkg)
 
     def test_redirect_branch_maps_to_queue_target_change(self):
         """Test RedirectBranch -> queue_target_change mapping (2-way blocks)."""
@@ -91,7 +117,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
+        orig_sysmod, orig_attr, _mut_pkg = _patch_deferred_module(mock_deferred_module)
         try:
             backend = IDAIRTranslator()
             mock_mba = Mock()
@@ -105,7 +131,7 @@ class TestModificationMapping:
             )
             mock_modifier.apply.assert_called_once_with(enable_snapshot_rollback=True)
         finally:
-            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
+            _unpatch_deferred_module(orig_sysmod, orig_attr, _mut_pkg)
 
     def test_convert_to_goto_maps_to_queue_convert_to_goto(self):
         """Test ConvertToGoto -> queue_convert_to_goto mapping."""
@@ -116,7 +142,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
+        orig_sysmod, orig_attr, _mut_pkg = _patch_deferred_module(mock_deferred_module)
         try:
             backend = IDAIRTranslator()
             mock_mba = Mock()
@@ -129,7 +155,7 @@ class TestModificationMapping:
                 15, 25, description="convert 15 to goto 25"
             )
         finally:
-            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
+            _unpatch_deferred_module(orig_sysmod, orig_attr, _mut_pkg)
 
     def test_nop_instructions_maps_to_queue_insn_nop(self):
         """Test NopInstructions -> queue_insn_nop mapping (one call per EA)."""
@@ -140,7 +166,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
+        orig_sysmod, orig_attr, _mut_pkg = _patch_deferred_module(mock_deferred_module)
         try:
             backend = IDAIRTranslator()
             mock_mba = Mock()
@@ -156,7 +182,7 @@ class TestModificationMapping:
                 call(10, 0x1008, description="nop 0x1008 in block 10"),
             ])
         finally:
-            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
+            _unpatch_deferred_module(orig_sysmod, orig_attr, _mut_pkg)
 
     def test_insert_block_logs_warning_and_skips(self, caplog):
         """Test InsertBlock logs warning and is skipped (not yet implemented)."""
@@ -166,7 +192,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
+        orig_sysmod, orig_attr, _mut_pkg = _patch_deferred_module(mock_deferred_module)
         try:
             backend = IDAIRTranslator()
             mock_mba = Mock()
@@ -179,7 +205,7 @@ class TestModificationMapping:
             assert count == 0
             assert "InsertBlock(5->10) requires InsnSnapshot->minsn_t conversion" in caplog.text
         finally:
-            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
+            _unpatch_deferred_module(orig_sysmod, orig_attr, _mut_pkg)
 
     def test_remove_edge_logs_warning_and_skips(self, caplog):
         """Test RemoveEdge logs warning and is skipped (not yet implemented)."""
@@ -189,7 +215,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
+        orig_sysmod, orig_attr, _mut_pkg = _patch_deferred_module(mock_deferred_module)
         try:
             backend = IDAIRTranslator()
             mock_mba = Mock()
@@ -201,7 +227,7 @@ class TestModificationMapping:
             assert count == 0
             assert "RemoveEdge(10->20) not implemented" in caplog.text
         finally:
-            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
+            _unpatch_deferred_module(orig_sysmod, orig_attr, _mut_pkg)
 
     def test_unknown_modification_type_logs_warning(self, caplog):
         """Test unknown modification type is handled gracefully."""
@@ -211,7 +237,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
+        orig_sysmod, orig_attr, _mut_pkg = _patch_deferred_module(mock_deferred_module)
         try:
             backend = IDAIRTranslator()
             mock_mba = Mock()
@@ -225,7 +251,7 @@ class TestModificationMapping:
             assert count == 0
             assert "Unknown GraphModification type" in caplog.text
         finally:
-            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
+            _unpatch_deferred_module(orig_sysmod, orig_attr, _mut_pkg)
 
     def test_multiple_modifications_batched(self):
         """Test multiple modifications are batched in one DeferredGraphModifier."""
@@ -236,7 +262,7 @@ class TestModificationMapping:
         mock_deferred_module = Mock()
         mock_deferred_module.DeferredGraphModifier.return_value = mock_modifier
 
-        sys.modules['d810.hexrays.mutation.deferred_modifier'] = mock_deferred_module
+        orig_sysmod, orig_attr, _mut_pkg = _patch_deferred_module(mock_deferred_module)
         try:
             backend = IDAIRTranslator()
             mock_mba = Mock()
@@ -258,7 +284,7 @@ class TestModificationMapping:
             assert mock_modifier.apply.call_count == 1
             assert count == 3
         finally:
-            sys.modules.pop('d810.hexrays.mutation.deferred_modifier', None)
+            _unpatch_deferred_module(orig_sysmod, orig_attr, _mut_pkg)
 
 
 class TestVerify:
