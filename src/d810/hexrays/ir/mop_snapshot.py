@@ -13,12 +13,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import ida_hexrays
+
 from d810.core.cymode import CythonMode
 from d810.core.logging import getLogger
-from d810.core.typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    import ida_hexrays
 
 logger = getLogger(__name__)
 
