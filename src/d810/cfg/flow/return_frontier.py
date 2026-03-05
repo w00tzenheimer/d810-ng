@@ -183,7 +183,7 @@ class ReturnFrontierAudit:
         """Log a concise summary of the audit."""
         report = self.report()
         logger.info(
-            "RETURN_FRONTIER_AUDIT: %d sites, %d intact, %d broken",
+            "RETURN_FRONTIER_AUDIT: %d sites, %d intact, %d broken (diagnostic only, not gated)",
             report["total_sites"],
             report["intact_count"],
             report["broken_count"],

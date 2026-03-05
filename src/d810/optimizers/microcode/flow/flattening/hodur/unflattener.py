@@ -412,8 +412,8 @@ class HodurUnflattener(GenericUnflatteningRule):
                         state_var_stkoff=stkoff,
                     )
                 except Exception as exc:
-                    unflat_logger.warning(
-                        "RETURN_FRONTIER_AUDIT: transition report failed: %s", exc
+                    unflat_logger.info(
+                        "RETURN_FRONTIER_AUDIT: transition report failed (diagnostic only): %s", exc
                     )
 
             if report is not None and report.rows:
@@ -469,7 +469,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             maturity=self.cur_maturity,
         )
         unflat_logger.info(
-            "RETURN_FRONTIER_AUDIT[pre_plan]: sites=%d broken=%d",
+            "RETURN_FRONTIER_AUDIT[pre_plan]: sites=%d broken=%d (diagnostic only, not gated)",
             result.metrics.get("total_sites", 0),
             result.metrics.get("broken_count", 0),
         )
@@ -496,7 +496,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             maturity=self.cur_maturity,
         )
         unflat_logger.info(
-            "RETURN_FRONTIER_AUDIT[%s]: sites=%d broken=%d",
+            "RETURN_FRONTIER_AUDIT[%s]: sites=%d broken=%d (diagnostic only, not gated)",
             stage_name,
             result.metrics.get("total_sites", 0),
             result.metrics.get("broken_count", 0),
