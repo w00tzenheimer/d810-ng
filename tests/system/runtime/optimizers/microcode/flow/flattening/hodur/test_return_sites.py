@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from d810.core.typing import Optional, Tuple
 
 import pytest
 

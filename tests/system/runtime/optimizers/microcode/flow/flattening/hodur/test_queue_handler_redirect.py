@@ -1,33 +1,46 @@
 """Tests for HodurUnflattener._queue_handler_redirect.
 
 These tests call the REAL production method on HodurUnflattener by binding it
-to a mock instance. Mock objects are used as legitimate test doubles for
-mba/block instances, not as IDA module stubs.
+to a hand-rolled test double.  No mocks are used.
 
-Runs in IDA environment (system/runtime); skips gracefully without IDA.
+Pure-logic unit test.  The only IDA dependency is the import of
+``HodurUnflattener`` itself (which transitively imports ``ida_hexrays``).
+The method under test uses only duck-typed ``self.mba`` / ``self.deferred``
+protocols, so the test doubles are plain Python classes.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import pytest
-from unittest.mock import MagicMock
 
-ida_hexrays = pytest.importorskip("ida_hexrays")
-
-from d810.optimizers.microcode.flow.flattening.unflattener_hodur import (
+from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     HandlerPathResult,
-    HodurUnflattener,
+)
+
+try:
+    from d810.optimizers.microcode.flow.flattening.hodur.unflattener import (
+        HodurUnflattener,
+    )
+except ImportError:
+    HodurUnflattener = None  # type: ignore[assignment,misc]
+
+pytestmark = pytest.mark.skipif(
+    HodurUnflattener is None,
+    reason="HodurUnflattener requires ida_hexrays at import time",
 )
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Hand-rolled test doubles (no mocks)
 # ---------------------------------------------------------------------------
 
 class _FakeMblock:
     """Minimal mblock double with configurable successors."""
 
-    def __init__(self, succs: list[int]) -> None:
+    def __init__(self, succs: list[int], preds: list[int] | None = None) -> None:
         self._succs = succs
+        self._preds = preds or []
 
     def nsucc(self) -> int:
         return len(self._succs)
@@ -35,17 +48,59 @@ class _FakeMblock:
     def succ(self, i: int) -> int:
         return self._succs[i]
 
+    def npred(self) -> int:
+        return len(self._preds)
 
-def _make_instance(blocks: dict[int, _FakeMblock]) -> MagicMock:
-    """Create a mock HodurUnflattener instance with the REAL _queue_handler_redirect bound."""
-    instance = MagicMock()
-    instance.mba.get_mblock.side_effect = lambda serial: blocks.get(serial)
-    # Bind the REAL production method to the mock instance.
-    instance._queue_handler_redirect = (
-        HodurUnflattener._queue_handler_redirect.__get__(instance)
-    )
-    return instance
+    def pred(self, i: int) -> int:
+        return self._preds[i]
 
+
+@dataclass
+class _CallRecord:
+    method: str
+    kwargs: dict
+
+
+@dataclass
+class _FakeDeferred:
+    """Records queue_goto_change / queue_edge_redirect calls for assertions."""
+
+    calls: list[_CallRecord] = field(default_factory=list)
+
+    def queue_goto_change(self, **kwargs) -> None:
+        self.calls.append(_CallRecord("queue_goto_change", kwargs))
+
+    def queue_edge_redirect(self, **kwargs) -> None:
+        self.calls.append(_CallRecord("queue_edge_redirect", kwargs))
+
+
+class _FakeMba:
+    """Minimal mba double that returns _FakeMblock by serial."""
+
+    def __init__(self, blocks: dict[int, _FakeMblock]) -> None:
+        self._blocks = blocks
+
+    def get_mblock(self, serial: int):
+        return self._blocks.get(serial)
+
+
+class _FakeInstance:
+    """Test double standing in for HodurUnflattener ``self``."""
+
+    def __init__(self, blocks: dict[int, _FakeMblock]) -> None:
+        self.mba = _FakeMba(blocks)
+        self.deferred = _FakeDeferred()
+        self._last_redirect_meta = None
+        # Bind the REAL production method to this instance.
+        assert HodurUnflattener is not None
+        self._queue_handler_redirect = (
+            HodurUnflattener._queue_handler_redirect.__get__(self)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _call(
     *,
@@ -56,12 +111,12 @@ def _call(
     claimed_edges: dict[tuple[int, int], int] | None = None,
     bst_node_blocks: set[int] | None = None,
     reason: str = "test",
-) -> tuple[bool, MagicMock]:
+) -> tuple[bool, _FakeInstance]:
     """Call the production method; return (result, instance) for assertions."""
     ce = claimed_exits if claimed_exits is not None else {}
     ck = claimed_edges if claimed_edges is not None else {}
     bn = bst_node_blocks if bst_node_blocks is not None else set()
-    instance = _make_instance(blocks)
+    instance = _FakeInstance(blocks)
     result = instance._queue_handler_redirect(
         path=path,
         target=target,
@@ -102,9 +157,13 @@ class TestDirectPathUnclaimed:
             claimed_exits=claimed_exits,
         )
         assert result is True
-        instance.deferred.queue_goto_change.assert_called_once_with(
-            block_serial=10, new_target=30, rule_priority=550, description="test",
-        )
+        assert len(instance.deferred.calls) == 1
+        c = instance.deferred.calls[0]
+        assert c.method == "queue_goto_change"
+        assert c.kwargs["block_serial"] == 10
+        assert c.kwargs["new_target"] == 30
+        assert c.kwargs["rule_priority"] == 550
+        assert c.kwargs["description"] == "test"
         assert claimed_exits[10] == 30
 
     def test_claimed_exits_updated(self):
@@ -129,8 +188,7 @@ class TestSameTargetNoop:
             claimed_exits={10: 30},
         )
         assert result is True
-        instance.deferred.queue_goto_change.assert_not_called()
-        instance.deferred.queue_edge_redirect.assert_not_called()
+        assert len(instance.deferred.calls) == 0
 
 
 class TestConflictEdgeRedirect:
@@ -144,11 +202,12 @@ class TestConflictEdgeRedirect:
             claimed_exits={10: 99},
         )
         assert result is True
-        instance.deferred.queue_edge_redirect.assert_called_once()
-        kw = instance.deferred.queue_edge_redirect.call_args.kwargs
-        assert kw["new_target"] == 30
-        assert kw["via_pred"] == 5
-        assert kw["src_block"] == 10
+        assert len(instance.deferred.calls) == 1
+        c = instance.deferred.calls[0]
+        assert c.method == "queue_edge_redirect"
+        assert c.kwargs["new_target"] == 30
+        assert c.kwargs["via_pred"] == 5
+        assert c.kwargs["src_block"] == 10
 
 
 class TestEscalationWalksBackward:
@@ -168,11 +227,12 @@ class TestEscalationWalksBackward:
             claimed_edges={(10, 5): 99},
         )
         assert result is True
-        instance.deferred.queue_edge_redirect.assert_called_once()
-        kw = instance.deferred.queue_edge_redirect.call_args.kwargs
-        assert kw["src_block"] == 5
-        assert kw["via_pred"] == 3
-        assert kw["new_target"] == 30
+        assert len(instance.deferred.calls) == 1
+        c = instance.deferred.calls[0]
+        assert c.method == "queue_edge_redirect"
+        assert c.kwargs["src_block"] == 5
+        assert c.kwargs["via_pred"] == 3
+        assert c.kwargs["new_target"] == 30
 
 
 class TestEscalationShapeValidation:
@@ -195,9 +255,9 @@ class TestEscalationShapeValidation:
             claimed_edges={(10, 8): 99},
         )
         assert result is True
-        kw = instance.deferred.queue_edge_redirect.call_args.kwargs
-        assert kw["src_block"] == 5
-        assert kw["via_pred"] == 2
+        c = instance.deferred.calls[0]
+        assert c.kwargs["src_block"] == 5
+        assert c.kwargs["via_pred"] == 2
 
     def test_skips_when_pred_nsucc_gt1(self):
         # pair (5,3): blk3.nsucc()=2 -> INVALID for seg_pred
@@ -213,7 +273,7 @@ class TestEscalationShapeValidation:
             claimed_edges={(10, 5): 99},
         )
         assert result is False
-        instance.deferred.queue_edge_redirect.assert_not_called()
+        assert len(instance.deferred.calls) == 0
 
     def test_skips_when_edge_does_not_exist(self):
         # pair (5,3): blk3.succ(0)=77 != 5 -> edge 3->5 doesn't exist
@@ -229,7 +289,7 @@ class TestEscalationShapeValidation:
             claimed_edges={(10, 5): 99},
         )
         assert result is False
-        instance.deferred.queue_edge_redirect.assert_not_called()
+        assert len(instance.deferred.calls) == 0
 
 
 class TestEscalationAllClaimedReturnsFalse:
@@ -248,7 +308,7 @@ class TestEscalationAllClaimedReturnsFalse:
             claimed_edges={(10, 5): 99, (5, 3): 99},
         )
         assert result is False
-        instance.deferred.queue_edge_redirect.assert_not_called()
+        assert len(instance.deferred.calls) == 0
 
 
 class TestShortOrderedPathReturnsFalse:
@@ -262,5 +322,4 @@ class TestShortOrderedPathReturnsFalse:
             claimed_exits={10: 99},
         )
         assert result is False
-        instance.deferred.queue_goto_change.assert_not_called()
-        instance.deferred.queue_edge_redirect.assert_not_called()
+        assert len(instance.deferred.calls) == 0
