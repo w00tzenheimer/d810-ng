@@ -34,10 +34,10 @@ from d810.hexrays.utils.hexrays_helpers import (
 from d810.evaluator.hexrays_microcode.tracker import (
     MopTracker,
 )
-from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
+from d810.recon.flow.dispatcher_detection import (
     DispatcherCache,
 )
-from d810.optimizers.microcode.flow.flattening.transition_builder import (
+from d810.recon.flow.transition_builder import (
     StateHandler,
     StateTransition,
     StateUpdateSite,

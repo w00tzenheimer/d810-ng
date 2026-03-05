@@ -4,7 +4,7 @@ This module provides functionality to dump Hex-Rays microcode into
 JSON format for debugging, visualization, and LLM-based analysis.
 
 Usage (from IDA Python or via headless script):
-    from d810.hexrays.utils.microcode_dump import dump_microcode_json, dump_function_microcode
+    from d810.recon.microcode_dump import dump_microcode_json, dump_function_microcode
 
     # Dump to dict
     result = dump_function_microcode(func_ea)
@@ -24,7 +24,7 @@ from dataclasses import dataclass, field, asdict
 from enum import IntEnum
 
 from d810.core.typing import List, Optional, Dict, Any, Union, Tuple, TYPE_CHECKING
-from d810.hexrays.utils.bst_analysis import (
+from d810.recon.flow.bst_analysis import (
     analyze_bst_dispatcher,
     BSTAnalysisResult,
     _get_mop_const_value,
@@ -553,7 +553,7 @@ def dump_mba_json(
 
 # -----------------------------------------------------------------------------
 # Dispatcher Tree Visualization
-# (BST analysis helpers imported from d810.hexrays.utils.bst_analysis)
+# (BST analysis helpers imported from d810.recon.flow.bst_analysis)
 # -----------------------------------------------------------------------------
 
 
@@ -786,13 +786,13 @@ def main_cli():
         epilog="""
 Examples:
   # Dump function at address 0x650 from a binary
-  python -m d810.hexrays.utils.microcode_dump binary.dylib 0x650
+  python -m d810.recon.microcode_dump binary.dylib 0x650
 
   # Dump at specific maturity level
-  python -m d810.hexrays.utils.microcode_dump binary.dylib 0x650 --maturity PREOPTIMIZED
+  python -m d810.recon.microcode_dump binary.dylib 0x650 --maturity PREOPTIMIZED
 
   # Save output to file
-  python -m d810.hexrays.utils.microcode_dump binary.dylib 0x650 -o output.json
+  python -m d810.recon.microcode_dump binary.dylib 0x650 -o output.json
         """,
     )
     parser.add_argument("binary", help="Path to the binary file to analyze")

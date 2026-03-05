@@ -90,14 +90,14 @@ from d810.optimizers.microcode.flow.flattening.abc_block_splitter import (
     ABCBlockSplitter,
     ConditionalStateResolver,
 )
-from d810.optimizers.microcode.flow.flattening.conditional_exit import (
+from d810.recon.flow.conditional_exit import (
     classify_exit_block,
     ExitBlockType,
     get_loopback_successor,
     get_exit_successor,
-    resolve_loopback_target,
 )
-from d810.optimizers.microcode.flow.flattening.loop_prover import (
+from d810.hexrays.ir.conditional_exit import resolve_loopback_target
+from d810.recon.flow.loop_prover import (
     SingleIterationLoopTracker,
     prove_single_iteration,
 )

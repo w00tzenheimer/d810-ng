@@ -10,13 +10,13 @@ from d810.recon.flow.analysis_stats import (
     FlowProfileStats,
     compute_flow_profile_stats,
 )
-from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
+from d810.recon.flow.dispatcher_detection import (
     DispatcherCache,
     DispatcherType,
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
+    from d810.recon.flow.dispatcher_detection import (
         BlockAnalysis,
         DispatcherAnalysis,
     )

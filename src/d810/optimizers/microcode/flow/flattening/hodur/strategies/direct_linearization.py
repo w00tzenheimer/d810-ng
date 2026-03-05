@@ -13,7 +13,7 @@ import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
-from d810.hexrays.utils.bst_analysis import (
+from d810.recon.flow.bst_analysis import (
     _mop_matches_stkoff,
     find_bst_default_block,
 )
@@ -33,7 +33,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
     ProposedEdit,
 )
-from d810.optimizers.microcode.flow.flattening.transition_builder import (
+from d810.recon.flow.transition_builder import (
     _get_state_var_stkoff,
 )
 

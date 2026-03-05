@@ -13,16 +13,15 @@ logic lives in the hodur sub-package; this class is a thin coordinator that:
 from __future__ import annotations
 
 import ida_hexrays
+from pathlib import Path
+from types import SimpleNamespace
 
 from d810.core import logging
 from d810.hexrays.utils.hexrays_formatters import format_mop_t
-from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
+from d810.recon.flow.dispatcher_detection import (
     DispatcherCache,
 )
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
-from d810.optimizers.microcode.flow.flattening.transition_builder import (
-    TransitionBuilder,
-)
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     HODUR_STATE_CHECK_OPCODES,
@@ -53,6 +52,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 from d810.optimizers.microcode.flow.flattening.hodur.executor import (
     TransactionalExecutor,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
+    HodurReturnSiteProvider,
+)
+from d810.recon.collectors.return_frontier import ReturnFrontierCollector
 
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
 
@@ -79,6 +82,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         ida_hexrays.MMAT_GLBOPT1,
         ida_hexrays.MMAT_GLBOPT2,
     ]
+    RETURN_FRONTIER_AUDIT_ENABLED: bool = True  # Default on for debugging
     DEFAULT_MAX_PASSES = 3
     HARD_MAX_PASSES = 10
     MOP_TRACKER_MAX_NB_BLOCK = 100
@@ -132,6 +136,11 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._planner = UnflatteningPlanner(PipelinePolicy())
         self._gate = VerificationGate()
 
+        # Return frontier audit components
+        self._return_site_provider = HodurReturnSiteProvider()
+        self._return_frontier_collector = ReturnFrontierCollector()
+        self._audit_return_sites: tuple = ()  # Populated at pre_plan, reused across stages
+
     def configure(self, kwargs: dict) -> None:
         super().configure(kwargs)
         if "min_state_constant" in self.config:
@@ -158,6 +167,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             self._pass0_redirect_ledger = []
             self._pass0_handler_entries = set()
             self._last_redirect_meta = None
+            # Reset audit for new maturity
+            if self.RETURN_FRONTIER_AUDIT_ENABLED:
+                self._return_frontier_collector.reset()
+                self._audit_return_sites = ()
 
         # Gate on actual Hodur runs, not block callback count
         if self._actual_pass_count >= self.max_passes:
@@ -218,6 +231,10 @@ class HodurUnflattener(GenericUnflatteningRule):
         # 2. Build immutable snapshot (includes BST analysis, reachability, etc.)
         snapshot = self._build_snapshot(self.mba, state_machine, detector)
 
+        # Return frontier audit: pre_plan stage
+        if self.RETURN_FRONTIER_AUDIT_ENABLED:
+            self._audit_pre_plan(snapshot)
+
         # 3. Collect plan fragments from all applicable strategies
         fragments = []
         for strategy in self._strategies:
@@ -243,11 +260,19 @@ class HodurUnflattener(GenericUnflatteningRule):
             total_handlers=snapshot.handler_count,
         )
 
+        # Return frontier audit: post_plan stage (mods queued but not applied)
+        if self.RETURN_FRONTIER_AUDIT_ENABLED and self._return_frontier_collector._audit:
+            self._record_audit_stage("post_plan")
+
         # 5. Executor applies transactional stages
         executor = TransactionalExecutor(self.mba, gate=self._gate)
         results = executor.execute_pipeline(pipeline, total_handlers=snapshot.handler_count)
 
         nb_changes = executor.total_changes
+
+        # Return frontier audit: post_apply stage
+        if self.RETURN_FRONTIER_AUDIT_ENABLED and self._return_frontier_collector._audit:
+            self._record_audit_stage("post_apply")
 
         # 6. Log summary
         self._log_pipeline_results(results, nb_changes)
@@ -279,7 +304,109 @@ class HodurUnflattener(GenericUnflatteningRule):
             )
 
         self._actual_pass_count += 1
+
+        # Return frontier audit: post_pipeline stage + artifact write
+        if self.RETURN_FRONTIER_AUDIT_ENABLED and self._return_frontier_collector._audit:
+            self._record_audit_stage("post_pipeline")
+            self._return_frontier_collector._artifact_dir = Path(
+                f".tmp/recon/{self.cur_maturity}"
+            )
+            self._return_frontier_collector.write_artifact(self.mba.entry_ea)
+            self._return_frontier_collector._audit.summary_log()
+
         return nb_changes
+
+    # ------------------------------------------------------------------
+    # Return frontier audit helpers
+    # ------------------------------------------------------------------
+
+    def _build_successor_map(self) -> dict[int, list[int]]:
+        """Build successor map from current MBA state."""
+        succs: dict[int, list[int]] = {}
+        for i in range(self.mba.qty):
+            blk = self.mba.get_mblock(i)
+            succs[i] = [blk.succ(j) for j in range(blk.nsucc())]
+        return succs
+
+    def _find_exit_blocks(self) -> frozenset[int]:
+        """Find blocks with 0 successors (function exits)."""
+        exits: set[int] = set()
+        for i in range(self.mba.qty):
+            blk = self.mba.get_mblock(i)
+            if blk.nsucc() == 0:
+                exits.add(i)
+        return frozenset(exits)
+
+    def _audit_pre_plan(self, snapshot: AnalysisSnapshot) -> None:
+        """Collect return sites from exit blocks and record pre_plan audit stage.
+
+        Handler paths are internal to strategies, so return sites are derived
+        directly from MBA exit blocks (nsucc==0) at the pre_plan stage.
+        """
+        from d810.cfg.flow.return_frontier import ReturnSite
+
+        # Build return_sites from MBA exit blocks if not yet populated for this pass
+        if not self._audit_return_sites:
+            exits = self._find_exit_blocks()
+            sites: list[ReturnSite] = []
+            for blk_serial in sorted(exits):
+                site = ReturnSite(
+                    site_id=f"hodur_exit_{blk_serial}",
+                    origin_block=blk_serial,
+                    guard_hash=f"{blk_serial:016x}",
+                    expected_terminal_kind="return",
+                    provenance="pre_plan_exit_block_scan",
+                )
+                sites.append(site)
+            self._audit_return_sites = tuple(sites)
+
+        succs = self._build_successor_map()
+        exits = self._find_exit_blocks()
+        target = SimpleNamespace(metadata={
+            "return_sites": self._audit_return_sites,
+            "cfg_successors": succs,
+            "cfg_entry": 0,
+            "cfg_exits": exits,
+            "stage_name": "pre_plan",
+        })
+        result = self._return_frontier_collector.collect(
+            target=target,
+            func_ea=self.mba.entry_ea,
+            maturity=self.cur_maturity,
+        )
+        unflat_logger.info(
+            "RETURN_FRONTIER_AUDIT[pre_plan]: sites=%d broken=%d",
+            result.metrics.get("total_sites", 0),
+            result.metrics.get("broken_count", 0),
+        )
+
+    def _record_audit_stage(self, stage_name: str) -> None:
+        """Record a return frontier audit stage from current MBA state."""
+        succs = self._build_successor_map()
+        exits = self._find_exit_blocks()
+        return_sites = (
+            self._return_frontier_collector._audit.return_sites
+            if self._return_frontier_collector._audit is not None
+            else self._audit_return_sites
+        )
+        target = SimpleNamespace(metadata={
+            "return_sites": return_sites,
+            "cfg_successors": succs,
+            "cfg_entry": 0,
+            "cfg_exits": exits,
+            "stage_name": stage_name,
+        })
+        result = self._return_frontier_collector.collect(
+            target=target,
+            func_ea=self.mba.entry_ea,
+            maturity=self.cur_maturity,
+        )
+        unflat_logger.info(
+            "RETURN_FRONTIER_AUDIT[%s]: sites=%d broken=%d",
+            stage_name,
+            result.metrics.get("total_sites", 0),
+            result.metrics.get("broken_count", 0),
+        )
 
     def _build_snapshot(
         self,
@@ -363,7 +490,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Try detector first (passes detector object, not mop_t)
         if self._detector is not None:
             try:
-                from d810.optimizers.microcode.flow.flattening.transition_builder import (
+                from d810.recon.flow.transition_builder import (
                     _get_state_var_stkoff,
                 )
 

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     import ida_hexrays
 
-from d810.optimizers.microcode.flow.flattening.transition_builder import (
+from d810.recon.flow.transition_builder import (
     StateHandler,
     StateTransition,
     StateUpdateSite,

@@ -11,7 +11,7 @@ from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
 
-from d810.hexrays.utils.bst_analysis import (
+from d810.recon.flow.bst_analysis import (
     _forward_eval_insn,
     _mop_matches_stkoff,
     find_bst_default_block,

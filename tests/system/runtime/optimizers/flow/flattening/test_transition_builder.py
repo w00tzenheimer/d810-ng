@@ -13,7 +13,7 @@ from d810.core.typing import Optional
 import pytest
 
 from d810.recon.flow.bst_model import BSTAnalysisResult
-from d810.optimizers.microcode.flow.flattening.transition_builder import (
+from d810.recon.flow.transition_builder import (
     TransitionBuilder,
     TransitionResult,
     _convert_bst_to_result,
@@ -306,8 +306,7 @@ class TestTransitionBuilderSelection:
         assert result is None
 
     def test_returns_none_when_all_single_strategy_returns_none(self):
-        # TransitionBuilder(strategies=[]) uses the default list (falsy empty
-        # list triggers the `or` fallback), so test "all None" via one strategy.
+        # Builder has no implicit default list; explicit strategy returns None.
         s = self._make_strategy("only_none", None)
         builder = TransitionBuilder(strategies=[s])
         result = builder.build(mba=None, detector=None)
@@ -341,12 +340,13 @@ class TestTransitionBuilderSelection:
         assert s2.build_call_count == 1
 
     def test_default_strategies_instantiated(self):
-        from d810.optimizers.microcode.flow.flattening.transition_builder import (
+        from d810.optimizers.microcode.flow.flattening.hodur.transition_strategies import (
             BFSWithMopTrackerStrategy,
             BSTWalkerStrategy,
+            default_hodur_transition_strategies,
         )
 
-        builder = TransitionBuilder()
+        builder = TransitionBuilder(strategies=default_hodur_transition_strategies())
         assert len(builder.strategies) == 2
         assert isinstance(builder.strategies[0], BSTWalkerStrategy)
         assert isinstance(builder.strategies[1], BFSWithMopTrackerStrategy)

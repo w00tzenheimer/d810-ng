@@ -294,7 +294,7 @@ class TestResizeBufferCFFIncremental:
         from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
         from d810.evaluator.hexrays_microcode.tracker import MopTracker
         from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block
-        from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
+        from d810.recon.flow.dispatcher_detection import (
             DispatcherCache,
         )
 
@@ -408,7 +408,7 @@ class TestResizeBufferCFFIncremental:
         from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
         from d810.evaluator.hexrays_microcode.tracker import MopTracker
         from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block
-        from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
+        from d810.recon.flow.dispatcher_detection import (
             DispatcherCache,
         )
 
