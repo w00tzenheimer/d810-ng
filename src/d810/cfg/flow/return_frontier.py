@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Mapping, Sequence
+from typing import Mapping, Optional, Sequence
 
 from d810.cfg.postdominator import compute_postdom_tree
 
@@ -28,17 +28,20 @@ class ReturnSite:
 
     Attributes:
         site_id: Unique identifier for this return site.
-        origin_block: Block serial where the return occurs.
-        guard_hash: Stable hash for matching sites across pipeline stages.
+        origin_block: Block serial where the return occurs (handler entry serial
+            when built from a transition report).
         expected_terminal_kind: One of ``"return"``, ``"exit"``, ``"noreturn"``.
+        guard_hash: Stable hash for matching sites across pipeline stages.
         provenance: Human-readable source (e.g. which analysis produced this).
+        metadata: Arbitrary key/value metadata attached by the provider.
     """
 
     site_id: str
     origin_block: int
-    guard_hash: str
     expected_terminal_kind: str  # "return", "exit", "noreturn"
-    provenance: str
+    guard_hash: str = ""
+    provenance: str = ""
+    metadata: dict = field(default_factory=dict, hash=False, compare=False)
 
 
 @dataclass(frozen=True)

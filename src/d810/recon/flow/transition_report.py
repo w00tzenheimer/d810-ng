@@ -201,9 +201,7 @@ def build_dispatcher_transition_report(
                 next_state = hinted
 
         conditional_states = tuple(sorted(walk.get("conditional_states", set())))
-        is_exit = bool(walk.get("exit")) or (
-            not bool(walk.get("back_edge")) and bool(walk.get("chain"))
-        )
+        is_exit = bool(walk.get("exit"))
 
         if is_exit:
             kind = TransitionKind.EXIT
