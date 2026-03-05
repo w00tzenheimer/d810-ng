@@ -192,7 +192,7 @@ class TestDispatcherFatherResolveIntegration:
         print(f"  Block type: nsucc={test_father.nsucc()}")
 
         try:
-            from d810.optimizers.microcode.flow.flattening.utils import (
+            from d810.optimizers.microcode.flow.flattening.exceptions import (
                 NotResolvableFatherException,
             )
 
@@ -245,7 +245,7 @@ class TestDispatcherFatherResolveIntegration:
         initial_queue_size = len(deferred_modifier.modifications)
 
         try:
-            from d810.optimizers.microcode.flow.flattening.utils import (
+            from d810.optimizers.microcode.flow.flattening.exceptions import (
                 NotResolvableFatherException,
             )
 

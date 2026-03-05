@@ -458,6 +458,31 @@ class LoggerConfigurator:
         LevelFlag.bump_config_version()
 
 
+@contextmanager
+def suppress_loggers(
+    logger_names: list[str],
+    level: str | int = "ERROR",
+):
+    """Temporarily set log level for the given loggers; restore on exit."""
+    if isinstance(level, str):
+        level_int = getattr(logging, level.upper(), None)
+        if level_int is None:
+            raise ValueError(f"Unknown logging level: {level}")
+    else:
+        level_int = level
+    saved = []
+    for name in logger_names:
+        log = getLogger(name)
+        saved.append((name, log.getEffectiveLevel()))
+        log.setLevel(level_int)
+    try:
+        yield
+    finally:
+        for name, prev in saved:
+            getLogger(name).setLevel(prev)
+        LevelFlag.bump_config_version()
+
+
 def clear_logs(log_dir: str | pathlib.Path) -> None:
     """Removes the log directory."""
     shutil.rmtree(log_dir, ignore_errors=True)

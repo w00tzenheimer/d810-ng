@@ -7,10 +7,10 @@ identify Hodur-style while-loop CFF patterns.
 of one analysis pass and is passed to every strategy's ``plan()`` method.
 ``ReachabilityInfo`` is a helper frozen dataclass used within snapshots.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 import ida_hexrays
 
@@ -18,11 +18,15 @@ from d810.cfg.dominator import compute_dominators, dominates
 from d810.core import logging
 from d810.core.bits import unsigned_to_signed
 from d810.evaluator.evaluators import evaluate_concrete
-from d810.hexrays.expr.ast import minsn_to_ast
 from d810.evaluator.hexrays_microcode.emulator import (
     MicroCodeEnvironment,
     MicroCodeInterpreter,
 )
+from d810.evaluator.hexrays_microcode.tracker import (
+    MopTracker,
+    get_all_possibles_values,
+)
+from d810.hexrays.expr.ast import minsn_to_ast
 from d810.hexrays.expr.z3_utils import _resolve_mop_via_predecessors
 from d810.hexrays.utils.hexrays_formatters import format_mop_t
 from d810.hexrays.utils.hexrays_helpers import (
@@ -31,20 +35,12 @@ from d810.hexrays.utils.hexrays_helpers import (
     extract_num_mop,
     get_mop_index,
 )
-from d810.evaluator.hexrays_microcode.tracker import (
-    MopTracker,
-)
-from d810.recon.flow.dispatcher_detection import (
-    DispatcherCache,
-)
+from d810.optimizers.microcode.flow.flattening.hodur.datamodel import HodurStateMachine
+from d810.recon.flow.dispatcher_detection import DispatcherCache
 from d810.recon.flow.transition_builder import (
     StateHandler,
     StateTransition,
     StateUpdateSite,
-)
-from d810.optimizers.microcode.flow.flattening.utils import get_all_possibles_values
-from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
-    HodurStateMachine,
 )
 
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)

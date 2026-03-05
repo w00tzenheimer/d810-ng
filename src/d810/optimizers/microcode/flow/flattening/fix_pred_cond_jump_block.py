@@ -38,7 +38,7 @@ from d810.recon.flow.dispatcher_detection import (
 )
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
 from d810.optimizers.microcode.flow.handler import FlowRulePriority
-from d810.optimizers.microcode.flow.flattening.utils import get_all_possibles_values
+from d810.evaluator.hexrays_microcode.tracker import get_all_possibles_values
 
 unflat_logger = getLogger("D810.unflat")
 

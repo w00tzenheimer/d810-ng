@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import time as _time
+from contextlib import nullcontext
 
 import ida_hexrays
 import idaapi
 
 from d810.core import getLogger
+from d810.core.logging import suppress_loggers
 from d810.core.typing import TYPE_CHECKING
+from d810.evaluator.hexrays_microcode.emulator import (
+    MicroCodeEnvironment,
+    MicroCodeInterpreter,
+)
 from d810.hexrays.mutation.cfg_mutations import (
     change_1way_block_successor,
     change_2way_block_conditional_successor,
@@ -25,10 +31,7 @@ from d810.hexrays.utils.hexrays_helpers import (
     get_mop_index,
 )
 from d810.hexrays.utils.ida_utils import fetch_idb_value, is_never_written_var
-from d810.evaluator.hexrays_microcode.emulator import (
-    MicroCodeEnvironment,
-    MicroCodeInterpreter,
-)
+
 if TYPE_CHECKING:
     from d810.core.typing import Union
 
@@ -1176,3 +1179,22 @@ def remove_segment_registers(
         else:
             new_mop_list.append(mop)
     return new_mop_list
+
+
+def get_all_possibles_values(mop_histories, searched_mop_list, verbose=False):
+    ctx = nullcontext() if verbose else suppress_loggers(__name__, "ERROR")
+    with ctx:
+        return [
+            [
+                mop_history.get_mop_constant_value(searched_mop)
+                for searched_mop in searched_mop_list
+            ]
+            for mop_history in mop_histories
+        ]
+
+
+def check_if_all_values_are_found(mop_cst_values_list):
+    for cst_list in mop_cst_values_list:
+        if None in cst_list:
+            return False
+    return True
