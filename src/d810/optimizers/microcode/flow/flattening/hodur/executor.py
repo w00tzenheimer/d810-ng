@@ -129,15 +129,39 @@ class TransactionalExecutor:
                 preflight_handler_entries, preflight_dispatcher,
             )
             if not cycle_result_pre.passed:
-                executor_logger.warning(
-                    "Preflight REJECT: terminal cycles detected in simulated graph"
+                # --- Incremental filtering: remove cycle-causing edits ---
+                filtered_edits, removed_count = self._filter_cycle_edits(
+                    pre_adj, all_edits, terminal_edits,
+                    preflight_handler_entries, preflight_dispatcher,
+                    fragment,
                 )
-                return StageResult(
-                    strategy_name=stage_name,
-                    success=False,
-                    rollback_needed=False,
-                    error="semantic preflight: terminal cycles detected",
-                )
+                if filtered_edits is None:
+                    # Could not resolve cycles even after filtering
+                    executor_logger.warning(
+                        "Preflight REJECT: terminal cycles persist after filtering"
+                    )
+                    return StageResult(
+                        strategy_name=stage_name,
+                        success=False,
+                        rollback_needed=False,
+                        error="semantic preflight: terminal cycles detected",
+                    )
+                # Update edit lists and re-queue deferred modifier
+                all_edits = filtered_edits
+                terminal_edits = [
+                    e for e in terminal_edits if e in all_edits
+                ]
+                # Rebuild deferred modifier with filtered edits only
+                deferred = DeferredGraphModifier(self.mba)
+                # Build set of kept SimulatedEdit signatures for matching
+                kept_sources = {(e.source, e.new_target) for e in all_edits}
+                for edit in fragment.proposed_edits:
+                    src = edit.source_block
+                    tgt = edit.target_block
+                    if (src, tgt) in kept_sources:
+                        self._apply_edit(deferred, edit)
+                if not deferred.has_modifications():
+                    return StageResult(strategy_name=fragment.strategy_name)
 
 
         changes = deferred.apply(
@@ -231,6 +255,120 @@ class TransactionalExecutor:
     @property
     def total_changes(self) -> int:
         return self._total_changes
+
+    def _filter_cycle_edits(
+        self,
+        pre_adj: dict[int, list[int]],
+        all_edits: list,
+        terminal_edits: list,
+        handler_entries: set[int],
+        dispatcher: int,
+        fragment: PlanFragment,
+        max_rounds: int = 3,
+    ) -> tuple[list | None, int]:
+        """Remove cycle-causing edits incrementally.
+
+        For each cycle, identify edge_split_redirect edits whose clone nodes
+        participate in the cycle path or whose new_target is the cycle's
+        terminal_block. Remove those edits and re-simulate.
+
+        Args:
+            pre_adj: Original (pre-edit) adjacency list.
+            all_edits: Full list of SimulatedEdit objects.
+            terminal_edits: Terminal redirect edits (subset of all_edits).
+            handler_entries: Handler entry block serials.
+            dispatcher: Dispatcher block serial.
+            fragment: The PlanFragment being executed.
+            max_rounds: Maximum filtering iterations.
+
+        Returns:
+            (filtered_edits, removed_count) if cycles resolved, or
+            (None, removed_count) if cycles persist after max_rounds.
+        """
+        terminal_exit_blocks = set(fragment.metadata.get("terminal_exit_blocks", set()))
+        current_edits = list(all_edits)
+        total_removed = 0
+
+        for round_idx in range(max_rounds):
+            sim_result = simulate_edits(pre_adj, current_edits)
+            sim_adj = sim_result.adj
+
+            # Build terminal exits for cycle detection
+            te_set = set(terminal_exit_blocks)
+            for te in terminal_edits:
+                if te in current_edits:
+                    te_set.add(te.new_target)
+            te_set = te_set | sim_result.created_clones
+
+            cycle_result = detect_terminal_cycles(
+                sim_adj, te_set, handler_entries, dispatcher,
+            )
+            if cycle_result.passed:
+                if total_removed > 0:
+                    executor_logger.warning(
+                        "Preflight: filtered %d/%d edits "
+                        "(removed %d cycle-causing edge-splits in %d rounds)",
+                        len(current_edits), len(all_edits),
+                        total_removed, round_idx + 1,
+                    )
+                return current_edits, total_removed
+
+            # Collect nodes involved in cycles
+            cycle_nodes: set[int] = set()
+            for cyc in cycle_result.cycles:
+                cycle_nodes.add(cyc.terminal_block)
+                cycle_nodes.add(cyc.reentry_target)
+                for node in cyc.path:
+                    cycle_nodes.add(node)
+
+            # Find edge_split_redirect edits whose clone nodes are in cycles
+            # Clone serials are virtual nodes created by simulation
+            edits_to_remove: set[int] = set()
+            for i, edit in enumerate(current_edits):
+                if edit.kind == "edge_split_redirect":
+                    # Check if the clone (created for this edit) could be
+                    # in the cycle. We re-simulate to find which clone serials
+                    # map to which edits. Since clones are assigned sequentially,
+                    # we can track by checking if new_target or source is in cycles.
+                    if edit.new_target in cycle_nodes or edit.source in cycle_nodes:
+                        edits_to_remove.add(i)
+
+            if not edits_to_remove:
+                # No edge_split edits to remove — cycles caused by goto_redirects
+                # that we cannot safely filter; reject the stage
+                return None, total_removed
+
+            removed_this_round = len(edits_to_remove)
+            total_removed += removed_this_round
+            current_edits = [
+                e for i, e in enumerate(current_edits)
+                if i not in edits_to_remove
+            ]
+            executor_logger.info(
+                "Preflight filter round %d: removed %d edits, %d remaining",
+                round_idx + 1, removed_this_round, len(current_edits),
+            )
+
+        # Exhausted max_rounds — do one final check
+        sim_result = simulate_edits(pre_adj, current_edits)
+        te_set = set(terminal_exit_blocks)
+        for te in terminal_edits:
+            if te in current_edits:
+                te_set.add(te.new_target)
+        te_set = te_set | sim_result.created_clones
+        cycle_result = detect_terminal_cycles(
+            sim_result.adj, te_set, handler_entries, dispatcher,
+        )
+        if cycle_result.passed:
+            executor_logger.warning(
+                "Preflight: filtered %d/%d edits "
+                "(removed %d cycle-causing edge-splits in %d rounds)",
+                len(current_edits), len(all_edits),
+                total_removed, max_rounds,
+            )
+            return current_edits, total_removed
+
+        return None, total_removed
 
     def _apply_edit(self, deferred: object, edit: ProposedEdit) -> None:
         """Convert a ProposedEdit to a deferred modifier operation."""
