@@ -13,6 +13,8 @@ import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
+from d810.cfg.flow.edit_simulator import SimulatedEdit
+from d810.cfg.flow.graph_checks import prove_terminal_sink
 from d810.recon.flow.bst_analysis import (
     _mop_matches_stkoff,
     find_bst_default_block,
@@ -165,6 +167,30 @@ class DirectHandlerLinearizationStrategy:
 
         # Track terminal exit blocks for semantic gate cycle detection
         terminal_exit_blocks: set[int] = set()
+
+        # Preflight: collect terminal redirect edits for executor simulation
+        terminal_redirect_edits: list[SimulatedEdit] = []
+        handler_entry_set: set[int] = set(all_handlers.keys())
+        pre_header_serial: int | None = getattr(bst_result, "pre_header_serial", None)
+        forbidden_blocks: set[int] = {dispatcher_serial} | handler_entry_set
+        if pre_header_serial is not None:
+            forbidden_blocks.add(pre_header_serial)
+        # exit_blocks: blocks with 0 successors
+        exit_blocks: set[int] = set()
+        for i in range(mba.qty):
+            blk_i = mba.get_mblock(i)
+            if blk_i is not None and blk_i.nsucc() == 0:
+                exit_blocks.add(i)
+
+        # Build adjacency for prove_terminal_sink validation
+        _preflight_adj: dict[int, list[int]] = {}
+        for i in range(mba.qty):
+            blk_i = mba.get_mblock(i)
+            succs = []
+            if blk_i is not None:
+                for j in range(blk_i.nsucc()):
+                    succs.append(blk_i.succ(j))
+            _preflight_adj[i] = succs
 
         def _queue_redirect(
             path: object,
@@ -412,6 +438,20 @@ class DirectHandlerLinearizationStrategy:
                         mba, dispatcher_serial, sm_blocks
                     )
                     if terminal_target is not None and terminal_target != path.exit_block:
+                        # Validate terminal sink before accepting redirect
+                        sink_proof = prove_terminal_sink(
+                            terminal_target, _preflight_adj, exit_blocks, forbidden_blocks
+                        )
+                        if not sink_proof.ok:
+                            logger.warning(
+                                "Handler blk[%d] (state=0x%x): terminal redirect "
+                                "blk[%d] -> blk[%d] REJECTED: %s (witness: %s)",
+                                handler_serial, incoming_state,
+                                path.exit_block, terminal_target,
+                                sink_proof.reason, sink_proof.witness_path,
+                            )
+                            continue
+
                         _reason = (
                             f"hodur-linear: blk[{handler_serial}] "
                             f"terminal exit blk[{path.exit_block}] -> exit blk[{terminal_target}]"
@@ -421,6 +461,15 @@ class DirectHandlerLinearizationStrategy:
                             ok = _emit_redirect(meta, path, incoming_state, "terminal_exit", handler_serial)
                             if ok:
                                 linearized_blocks.add(path.exit_block)
+                                # Collect SimulatedEdit for executor preflight
+                                exit_blk_obj = mba.get_mblock(path.exit_block)
+                                old_tgt = exit_blk_obj.succ(0) if exit_blk_obj is not None and exit_blk_obj.nsucc() > 0 else 0
+                                terminal_redirect_edits.append(SimulatedEdit(
+                                    kind="goto_redirect",
+                                    source=path.exit_block,
+                                    old_target=old_tgt,
+                                    new_target=terminal_target,
+                                ))
                                 # NOP dead state writes on the terminal path
                                 for write_blk, write_ea in path.state_writes:
                                     edits.append(ProposedEdit(
@@ -751,6 +800,21 @@ class DirectHandlerLinearizationStrategy:
                         mba, dispatcher_serial, sm_blocks
                     )
                     if terminal_target is not None and terminal_target != path.exit_block:
+                        # Validate terminal sink before accepting redirect
+                        sink_proof = prove_terminal_sink(
+                            terminal_target, _preflight_adj, exit_blocks, forbidden_blocks
+                        )
+                        if not sink_proof.ok:
+                            logger.warning(
+                                "Hidden blk[%d]: terminal redirect "
+                                "blk[%d] -> blk[%d] REJECTED: %s (witness: %s)",
+                                rootwalk_blk,
+                                path.exit_block, terminal_target,
+                                sink_proof.reason, sink_proof.witness_path,
+                            )
+                            resolved_count += 1
+                            continue
+
                         _reason = (
                             f"hodur-linear: hidden blk[{rootwalk_blk}] "
                             f"terminal exit blk[{path.exit_block}] -> exit blk[{terminal_target}]"
@@ -760,6 +824,15 @@ class DirectHandlerLinearizationStrategy:
                             ok = _emit_redirect(meta, path, 0, "hidden_terminal_exit", rootwalk_blk)
                             if ok:
                                 linearized_blocks.add(path.exit_block)
+                                # Collect SimulatedEdit for executor preflight
+                                exit_blk_obj = mba.get_mblock(path.exit_block)
+                                old_tgt = exit_blk_obj.succ(0) if exit_blk_obj is not None and exit_blk_obj.nsucc() > 0 else 0
+                                terminal_redirect_edits.append(SimulatedEdit(
+                                    kind="goto_redirect",
+                                    source=path.exit_block,
+                                    old_target=old_tgt,
+                                    new_target=terminal_target,
+                                ))
                                 for write_blk, write_ea in path.state_writes:
                                     edits.append(ProposedEdit(
                                         edit_type=EditType.NOP_INSN,
@@ -947,5 +1020,8 @@ class DirectHandlerLinearizationStrategy:
                 "handler_entry_serials": set(all_handlers.keys()),
                 "terminal_exit_blocks": terminal_exit_blocks,
                 "dispatcher_serial": dispatcher_serial,
+                "terminal_redirect_edits": terminal_redirect_edits,
+                "forbidden_blocks": forbidden_blocks,
+                "exit_blocks": exit_blocks,
             },
         )
