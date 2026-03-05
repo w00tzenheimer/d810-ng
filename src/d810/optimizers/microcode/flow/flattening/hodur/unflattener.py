@@ -132,8 +132,22 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._pass0_handler_entries: set[int] = set()
         self._last_redirect_meta: dict | None = None
 
-        # Strategy pipeline components
-        self._strategies = [cls() for cls in ALL_STRATEGIES]
+        # Strategy pipeline components — disable fallback strategies until
+        # rollback infrastructure is reliable (see semantic-gate-replacement plan).
+        _DISABLED_STRATEGIES = {
+            "PredPatchFallbackStrategy",
+            "ConditionalForkFallbackStrategy",
+            "AssignmentMapFallbackStrategy",
+        }
+        self._strategies = [
+            cls()
+            for cls in ALL_STRATEGIES
+            if cls.__name__ not in _DISABLED_STRATEGIES
+        ]
+        unflat_logger.info(
+            "Active strategies: %s",
+            [type(s).__name__ for s in self._strategies],
+        )
         self._planner = UnflatteningPlanner(PipelinePolicy())
         self._gate = SemanticGate()
 
