@@ -22,10 +22,11 @@ from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_FALLBACK,
     BenefitMetrics,
-    EditType,
     OwnershipScope,
     PlanFragment,
-    ProposedEdit,
+)
+from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
+    ModificationBuilder,
 )
 
 if TYPE_CHECKING:
@@ -111,7 +112,8 @@ class AssignmentMapFallbackStrategy:
         if not handlers or state_var is None:
             return None
 
-        edits: list[ProposedEdit] = []
+        builder = ModificationBuilder.from_snapshot(snapshot)
+        modifications: list = []
         owned_blocks: set[int] = set()
 
         state_machine_blocks = collect_state_machine_blocks(sm)
@@ -124,7 +126,7 @@ class AssignmentMapFallbackStrategy:
             state_constants=state_constants,
             state_var=state_var,
             ida_hexrays=ida_hexrays,
-            edits=edits,
+            edits=modifications,
             owned_blocks=owned_blocks,
         )
 
@@ -139,11 +141,11 @@ class AssignmentMapFallbackStrategy:
             find_terminal_exit_target=find_terminal_exit_target,
             detector=detector,
             ida_hexrays=ida_hexrays,
-            edits=edits,
+            edits=modifications,
             owned_blocks=owned_blocks,
         )
 
-        if not edits:
+        if not modifications:
             return None
 
         ownership = OwnershipScope(
@@ -160,7 +162,7 @@ class AssignmentMapFallbackStrategy:
         return PlanFragment(
             strategy_name=self.name,
             family=self.family,
-            proposed_edits=edits,
+            modifications=modifications,
             ownership=ownership,
             prerequisites=["direct_handler_linearization"],
             expected_benefit=benefit,
@@ -289,18 +291,12 @@ class AssignmentMapFallbackStrategy:
                             blk_serial,
                             insn.ea,
                         )
-                        edits.append(ProposedEdit(
-                            edit_type=EditType.NOP_INSN,
-                            source_block=blk_serial,
-                            instruction_ea=insn.ea,
-                            metadata={
-                                "reason": (
-                                    f"hodur-assignment-map: dead state write"
-                                    f" in blk[{blk_serial}]"
-                                ),
-                                "strategy": self.name,
-                            },
-                        ))
+                        modifications.append(
+                            builder.nop_instruction(
+                                source_block=blk_serial,
+                                instruction_ea=insn.ea,
+                            )
+                        )
                         owned_blocks.add(blk_serial)
                     insn = insn.next
 
@@ -359,20 +355,12 @@ class AssignmentMapFallbackStrategy:
                     ]
                     if forward_succs:
                         forward_target = forward_succs[0]
-                        # Emit BLOCK_DUPLICATE as a placeholder (not yet
-                        # implemented in executor, will log a warning).
-                        edits.append(ProposedEdit(
-                            edit_type=EditType.BLOCK_DUPLICATE,
-                            source_block=pred_serial,
-                            target_block=forward_target,
-                            metadata={
-                                "reason": (
-                                    f"assignment-map resolver: converted 2-way exit"
-                                    f" blk[{pred_serial}] to goto blk[{forward_target}]"
-                                ),
-                                "strategy": self.name,
-                            },
-                        ))
+                        modifications.append(
+                            builder.duplicate_block(
+                                source_block=pred_serial,
+                                target_block=forward_target,
+                            )
+                        )
                         owned_blocks.add(pred_serial)
                         logger.info(
                             "Assignment-map resolver: converted 2-way exit blk[%d] "
@@ -426,18 +414,12 @@ class AssignmentMapFallbackStrategy:
                     else None
                 )
                 if exit_tgt is not None:
-                    edits.append(ProposedEdit(
-                        edit_type=EditType.GOTO_REDIRECT,
-                        source_block=pred_serial,
-                        target_block=exit_tgt,
-                        metadata={
-                            "reason": (
-                                f"assignment-map resolver: terminal state 0x{target_state:x}"
-                                f" blk[{pred_serial}] -> exit blk[{exit_tgt}]"
-                            ),
-                            "strategy": self.name,
-                        },
-                    ))
+                    modifications.append(
+                        builder.goto_redirect(
+                            source_block=pred_serial,
+                            target_block=exit_tgt,
+                        )
+                    )
                     owned_blocks.add(pred_serial)
                     logger.info(
                         "Assignment-map resolver: terminal state 0x%x "
@@ -455,19 +437,12 @@ class AssignmentMapFallbackStrategy:
             if handler_entry is None:
                 continue
 
-            edits.append(ProposedEdit(
-                edit_type=EditType.GOTO_REDIRECT,
-                source_block=pred_serial,
-                target_block=handler_entry,
-                metadata={
-                    "reason": (
-                        f"assignment-map resolver: block {pred_serial}"
-                        f" (state 0x{target_state:x}) -> handler block {handler_entry}"
-                        f" (via check block {dispatcher_target})"
-                    ),
-                    "strategy": self.name,
-                },
-            ))
+            modifications.append(
+                builder.goto_redirect(
+                    source_block=pred_serial,
+                    target_block=handler_entry,
+                )
+            )
             owned_blocks.add(pred_serial)
             logger.info(
                 "Assignment-map resolver: block %d (state 0x%x) -> handler block %d"

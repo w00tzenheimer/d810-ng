@@ -35,12 +35,13 @@ from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_FALLBACK,
     BenefitMetrics,
-    EditType,
     OwnershipScope,
     PlanFragment,
-    ProposedEdit,
 )
 from d810.recon.flow.def_search import resolve_mop_via_predecessors
+from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
+    ModificationBuilder,
+)
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
         AnalysisSnapshot,
@@ -385,7 +386,8 @@ class ConditionalForkFallbackStrategy:
                 continue
             conditional_groups.setdefault(from_block, []).append(t)
 
-        edits: list[ProposedEdit] = []
+        builder = ModificationBuilder.from_snapshot(snapshot)
+        modifications: list = []
         owned_blocks: set[int] = set()
         owned_transitions: set[tuple[int, int]] = set()
         resolved = 0
@@ -490,19 +492,12 @@ class ConditionalForkFallbackStrategy:
 
             # Emit CONDITIONAL_REDIRECT: source_block is from_blk_serial (the handler
             # exit block); metadata carries the reference block (cond_block) and targets.
-            edits.append(
-                ProposedEdit(
-                    edit_type=EditType.CONDITIONAL_REDIRECT,
+            modifications.append(
+                builder.conditional_redirect(
                     source_block=from_blk_serial,
-                    target_block=taken_target,
-                    metadata={
-                        "ref_block": cond_block,
-                        "conditional_target": taken_target,
-                        "fallthrough_target": fall_target,
-                        "description": "Hodur conditional fork: block %d -> %d/%d"
-                        % (cond_block, taken_target, fall_target),
-                        "strategy": self.name,
-                    },
+                    conditional_target=taken_target,
+                    fallthrough_target=fall_target,
+                    ref_block=cond_block,
                 )
             )
             owned_blocks.add(from_blk_serial)
@@ -526,7 +521,7 @@ class ConditionalForkFallbackStrategy:
                 if from_s is not None and to_s is not None:
                     owned_transitions.add((from_s, to_s))
 
-        if not edits:
+        if not modifications:
             return None
 
         ownership = OwnershipScope(
@@ -543,7 +538,7 @@ class ConditionalForkFallbackStrategy:
         return PlanFragment(
             strategy_name=self.name,
             family=self.family,
-            proposed_edits=edits,
+            modifications=modifications,
             ownership=ownership,
             prerequisites=["direct_handler_linearization"],
             expected_benefit=benefit,

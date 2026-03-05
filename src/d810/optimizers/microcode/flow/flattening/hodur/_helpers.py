@@ -2,7 +2,7 @@
 
 These are module-level functions extracted from the original HodurUnflattener
 monolith.  They operate on live IDA mba_t objects but do NOT mutate the CFG —
-all mutations are expressed as ProposedEdit objects by the calling strategy.
+all mutations are expressed as GraphModification objects by the calling strategy.
 """
 from __future__ import annotations
 

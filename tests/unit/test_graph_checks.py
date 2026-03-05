@@ -11,6 +11,7 @@ from d810.cfg.flow.graph_checks import (
     prove_terminal_sink,
     SemanticCheckResult,
     SemanticGate,
+    check_edge_split_structural_legality,
 )
 
 
@@ -233,3 +234,49 @@ class TestPreflightCycleRejection:
             dispatcher=0,
         )
         assert result.passed
+
+
+class TestEdgeSplitStructuralLegality:
+    def test_valid_edge_split_passes(self):
+        adj = {0: [1], 1: [2], 2: []}
+        edits = [
+            SimulatedEdit(
+                kind="edge_split_redirect",
+                source=1,
+                old_target=2,
+                new_target=5,
+                via_pred=0,
+            )
+        ]
+        result = check_edge_split_structural_legality(adj, edits)
+        assert result.passed
+
+    def test_via_pred_must_be_one_way(self):
+        adj = {0: [1, 9], 1: [2], 2: [], 9: []}
+        edits = [
+            SimulatedEdit(
+                kind="edge_split_redirect",
+                source=1,
+                old_target=2,
+                new_target=5,
+                via_pred=0,
+            )
+        ]
+        result = check_edge_split_structural_legality(adj, edits)
+        assert not result.passed
+        assert "predecessor must be 1-way" in result.reason
+
+    def test_old_target_must_match_source_successor(self):
+        adj = {0: [1], 1: [2], 2: []}
+        edits = [
+            SimulatedEdit(
+                kind="edge_split_redirect",
+                source=1,
+                old_target=99,
+                new_target=5,
+                via_pred=0,
+            )
+        ]
+        result = check_edge_split_structural_legality(adj, edits)
+        assert not result.passed
+        assert "old_target mismatch" in result.reason

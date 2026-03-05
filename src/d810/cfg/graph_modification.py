@@ -19,6 +19,9 @@ These frozen types map to DeferredGraphModifier modification types:
 - RedirectGoto       -> BLOCK_GOTO_CHANGE (1-way blocks only)
 - RedirectBranch     -> BLOCK_TARGET_CHANGE (2-way conditional blocks only)
 - ConvertToGoto      -> BLOCK_CONVERT_TO_GOTO
+- EdgeRedirectViaPredSplit -> EDGE_REDIRECT_VIA_PRED_SPLIT
+- CreateConditionalRedirect -> BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT
+- DuplicateBlock     -> (future use, backend currently warns/skips)
 - InsertBlock        -> BLOCK_CREATE_WITH_REDIRECT
 - RemoveEdge         -> (future use, not yet in DeferredGraphModifier)
 - NopInstructions    -> BLOCK_NOP_INSNS
@@ -112,6 +115,54 @@ class ConvertToGoto:
 
 
 @dataclass(frozen=True)
+class EdgeRedirectViaPredSplit:
+    """Clone source block path and redirect one predecessor edge via clone.
+
+    Maps to DeferredGraphModifier's EDGE_REDIRECT_VIA_PRED_SPLIT.
+
+    Attributes:
+        src_block: Source block that is cloned for split redirection.
+        old_target: Existing successor target on the source path.
+        new_target: New successor target on the cloned path.
+        via_pred: Predecessor whose edge to src_block is rewired to clone.
+        rule_priority: Rule priority for conflict resolution.
+    """
+
+    src_block: int
+    old_target: int
+    new_target: int
+    via_pred: int
+    rule_priority: int = 550
+
+
+@dataclass(frozen=True)
+class CreateConditionalRedirect:
+    """Create a conditional 2-way block by cloning a reference block.
+
+    Maps to DeferredGraphModifier's BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT.
+    """
+
+    source_block: int
+    ref_block: int
+    conditional_target: int
+    fallthrough_target: int
+
+
+@dataclass(frozen=True)
+class DuplicateBlock:
+    """Request duplication of a block and predecessor redirect.
+
+    Backend support is intentionally deferred in Phase 1; translators should
+    emit diagnostics and skip.
+    """
+
+    source_block: int
+    target_block: int | None
+    pred_serial: int | None = None
+    patch_kind: str = ""
+
+
+@dataclass(frozen=True)
 class InsertBlock:
     """Insert a new block between pred and succ with given instructions.
 
@@ -188,6 +239,9 @@ GraphModification = Union[
     RedirectGoto,
     RedirectBranch,
     ConvertToGoto,
+    EdgeRedirectViaPredSplit,
+    CreateConditionalRedirect,
+    DuplicateBlock,
     InsertBlock,
     RemoveEdge,
     NopInstructions,
@@ -198,6 +252,9 @@ __all__ = [
     "RedirectGoto",
     "RedirectBranch",
     "ConvertToGoto",
+    "EdgeRedirectViaPredSplit",
+    "CreateConditionalRedirect",
+    "DuplicateBlock",
     "InsertBlock",
     "RemoveEdge",
     "NopInstructions",

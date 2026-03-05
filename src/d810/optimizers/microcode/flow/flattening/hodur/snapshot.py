@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from d810.cfg.flowgraph import FlowGraph
     from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
         HodurStateMachine,
     )
@@ -63,6 +64,7 @@ class AnalysisSnapshot:
     pass_number: int = 0
     resolved_transitions: frozenset = field(default_factory=frozenset)
     initial_transitions: tuple = ()
+    flow_graph: FlowGraph | None = None
 
     @property
     def state_constants(self) -> set:

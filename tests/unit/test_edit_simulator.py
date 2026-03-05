@@ -1,7 +1,18 @@
 """Unit tests for edit simulator (no IDA dependency)."""
 import pytest
 
-from d810.cfg.flow.edit_simulator import SimulatedEdit, SimulationResult, simulate_edits
+from d810.cfg.flow.edit_simulator import (
+    SimulatedEdit,
+    SimulationResult,
+    graph_modifications_to_simulated_edits,
+    simulate_edits,
+)
+from d810.cfg.graph_modification import (
+    ConvertToGoto,
+    CreateConditionalRedirect,
+    EdgeRedirectViaPredSplit,
+    RedirectGoto,
+)
 
 
 class TestSimulateEdits:
@@ -161,3 +172,39 @@ class TestSimulateEdits:
         catch = detect_terminal_cycles(sim_result.adj, {219, clone}, {180}, dispatcher=0)
         assert not catch.passed
         assert any(c.reentry_target == 180 for c in catch.cycles)
+
+    def test_create_conditional_redirect_creates_virtual_conditional_clone(self):
+        adj = {0: [1], 1: [2], 2: []}
+        edits = [SimulatedEdit(
+            kind="create_conditional_redirect",
+            source=0,
+            old_target=1,
+            new_target=10,
+            fallthrough_target=11,
+        )]
+        sim = simulate_edits(adj, edits)
+        clone = next(iter(sim.created_clones))
+        assert sim.adj[0] == [clone]
+        assert sim.adj[clone] == [10, 11]
+
+
+class TestModificationProjection:
+    def test_graph_modifications_to_simulated_edits(self):
+        mods = [
+            RedirectGoto(from_serial=1, old_target=2, new_target=3),
+            ConvertToGoto(block_serial=4, goto_target=5),
+            EdgeRedirectViaPredSplit(src_block=6, old_target=7, new_target=8, via_pred=9),
+            CreateConditionalRedirect(
+                source_block=10,
+                ref_block=11,
+                conditional_target=12,
+                fallthrough_target=13,
+            ),
+        ]
+        edits = graph_modifications_to_simulated_edits(mods)
+        assert [e.kind for e in edits] == [
+            "goto_redirect",
+            "convert_to_goto",
+            "edge_split_redirect",
+            "create_conditional_redirect",
+        ]

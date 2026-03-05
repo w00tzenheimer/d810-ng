@@ -17,6 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from d810.core import logging
+from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.utils.hexrays_formatters import format_mop_t
 from d810.recon.flow.dispatcher_detection import (
     DispatcherCache,
@@ -150,6 +151,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         )
         self._planner = UnflatteningPlanner(PipelinePolicy())
         self._gate = SemanticGate()
+        self._cfg_translator = IDAIRTranslator()
 
         # Return frontier audit components
         self._return_site_provider = HodurReturnSiteProvider()
@@ -533,6 +535,9 @@ class HodurUnflattener(GenericUnflatteningRule):
             except Exception:
                 bst_result = None
 
+        # Lift virtual CFG snapshot once per pass for strategy planning.
+        flow_graph = self._cfg_translator.lift(mba)
+
         # Dispatcher cache
         dispatcher_cache = DispatcherCache.get_or_create(mba)
 
@@ -571,6 +576,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             pass_number=self._actual_pass_count,
             resolved_transitions=frozenset(self._resolved_transitions),
             initial_transitions=tuple(self._initial_transitions or []),
+            flow_graph=flow_graph,
         )
 
     def _get_effective_state_var_stkoff(

@@ -21,13 +21,14 @@ from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_FALLBACK,
     BenefitMetrics,
-    EditType,
     OwnershipScope,
     PlanFragment,
-    ProposedEdit,
 )
 from d810.evaluator.hexrays_microcode.tracker import MopTracker
 from d810.evaluator.hexrays_microcode.tracker import get_all_possibles_values
+from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
+    ModificationBuilder,
+)
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
@@ -170,7 +171,8 @@ class PredPatchFallbackStrategy:
         if not handlers or state_var is None:
             return None
 
-        edits: list[ProposedEdit] = []
+        builder = ModificationBuilder.from_snapshot(snapshot)
+        modifications: list = []
         owned_blocks: set[int] = set()
         nb_changes = 0
 
@@ -334,49 +336,37 @@ class PredPatchFallbackStrategy:
                     )
                     patches_fall_through.append((pred_serial, handler.check_block, fall_through))
 
-        # Emit ProposedEdits for fall-through patches (jump never taken)
+        # Emit block-duplication requests for fall-through patches (jump never taken)
         for pred_serial, check_serial, fall_through in patches_fall_through:
             # BLOCK_DUPLICATE: duplicate check_serial, then make new block go to fall_through,
             # then redirect pred to new block.
-            edits.append(
-                ProposedEdit(
-                    edit_type=EditType.BLOCK_DUPLICATE,
+            modifications.append(
+                builder.duplicate_block(
                     source_block=check_serial,
                     target_block=fall_through,
-                    metadata={
-                        "pred_serial": pred_serial,
-                        "patch_kind": "fall_through",
-                        "strategy": self.name,
-                        "description": "pred_patch: pred %d -> dup check %d -> %d"
-                        % (pred_serial, check_serial, fall_through),
-                    },
+                    pred_serial=pred_serial,
+                    patch_kind="fall_through",
                 )
             )
             owned_blocks.add(pred_serial)
             owned_blocks.add(check_serial)
             nb_changes += 1
 
-        # Emit ProposedEdits for jump-taken patches
+        # Emit block-duplication requests for jump-taken patches
         for pred_serial, check_serial, jump_target in patches_jump_taken:
-            edits.append(
-                ProposedEdit(
-                    edit_type=EditType.BLOCK_DUPLICATE,
+            modifications.append(
+                builder.duplicate_block(
                     source_block=check_serial,
                     target_block=jump_target,
-                    metadata={
-                        "pred_serial": pred_serial,
-                        "patch_kind": "jump_taken",
-                        "strategy": self.name,
-                        "description": "pred_patch: pred %d -> dup check %d -> %d"
-                        % (pred_serial, check_serial, jump_target),
-                    },
+                    pred_serial=pred_serial,
+                    patch_kind="jump_taken",
                 )
             )
             owned_blocks.add(pred_serial)
             owned_blocks.add(check_serial)
             nb_changes += 1
 
-        if not edits:
+        if not modifications:
             return None
 
         ownership = OwnershipScope(
@@ -393,7 +383,7 @@ class PredPatchFallbackStrategy:
         return PlanFragment(
             strategy_name=self.name,
             family=self.family,
-            proposed_edits=edits,
+            modifications=modifications,
             ownership=ownership,
             prerequisites=["direct_handler_linearization"],
             expected_benefit=benefit,

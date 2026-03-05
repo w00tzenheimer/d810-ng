@@ -8,15 +8,14 @@ from __future__ import annotations
 
 import pytest
 
+from d810.cfg.graph_modification import DuplicateBlock
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
     FAMILY_FALLBACK,
     BenefitMetrics,
-    EditType,
     OwnershipScope,
     PlanFragment,
-    ProposedEdit,
     UnflatteningStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
@@ -230,8 +229,8 @@ class TestEdgeSplitConstructor:
         fragment = s.plan(_empty_snapshot())
         assert fragment is not None
         assert not fragment.is_empty()
-        for edit in fragment.proposed_edits:
-            assert edit.edit_type == EditType.BLOCK_DUPLICATE
+        for modification in fragment.modifications:
+            assert isinstance(modification, DuplicateBlock)
 
     def test_plan_ownership_contains_conflict_blocks(self):
         s = EdgeSplitConflictResolutionStrategy(conflict_blocks={7, 13})
@@ -268,7 +267,7 @@ class TestPrerequisites:
         frag = PlanFragment(
             strategy_name="hidden_handler_closure",
             family=FAMILY_DIRECT,
-            proposed_edits=[],
+            modifications=[],
             ownership=OwnershipScope(
                 blocks=frozenset(), edges=frozenset(), transitions=frozenset()
             ),

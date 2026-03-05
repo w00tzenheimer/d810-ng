@@ -15,6 +15,9 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     RedirectBranch,
     ConvertToGoto,
+    EdgeRedirectViaPredSplit,
+    CreateConditionalRedirect,
+    DuplicateBlock,
     InsertBlock,
     RemoveEdge,
     NopInstructions,
@@ -122,6 +125,9 @@ class IDAIRTranslator:
         - RedirectGoto   -> queue_goto_change (1-way blocks)
         - RedirectBranch -> queue_conditional_target_change (2-way conditional blocks)
         - ConvertToGoto  -> queue_convert_to_goto
+        - EdgeRedirectViaPredSplit -> queue_edge_redirect(via_pred=...)
+        - CreateConditionalRedirect -> queue_create_conditional_redirect
+        - DuplicateBlock -> (not yet implemented, logs warning and skips)
         - InsertBlock    -> queue_create_and_redirect
         - RemoveEdge     -> (not yet implemented, logs warning and skips)
         - NopInstructions -> queue_insn_nop
@@ -161,6 +167,46 @@ class IDAIRTranslator:
                     # Map to BLOCK_CONVERT_TO_GOTO
                     modifier.queue_convert_to_goto(serial, target, description=f"convert {serial} to goto {target}")
 
+                case EdgeRedirectViaPredSplit(
+                    src_block=src,
+                    old_target=old,
+                    new_target=new,
+                    via_pred=pred,
+                    rule_priority=priority,
+                ):
+                    modifier.queue_edge_redirect(
+                        src_block=src,
+                        old_target=old,
+                        new_target=new,
+                        via_pred=pred,
+                        rule_priority=priority,
+                        description=f"edge redirect via pred split: pred={pred} src={src} {old}->{new}",
+                    )
+
+                case CreateConditionalRedirect(
+                    source_block=src,
+                    ref_block=ref,
+                    conditional_target=cond_target,
+                    fallthrough_target=fallthrough_target,
+                ):
+                    modifier.queue_create_conditional_redirect(
+                        source_blk_serial=src,
+                        ref_blk_serial=ref,
+                        conditional_target_serial=cond_target,
+                        fallthrough_target_serial=fallthrough_target,
+                        description=(
+                            f"create conditional redirect src={src} ref={ref} "
+                            f"cond={cond_target} fallthrough={fallthrough_target}"
+                        ),
+                    )
+
+                case DuplicateBlock(source_block=src, target_block=target, pred_serial=pred):
+                    logger.warning(
+                        "DuplicateBlock(source=%d, target=%s, pred=%s) not implemented, skipping",
+                        src, target, pred,
+                    )
+                    continue
+
                 case InsertBlock(pred_serial=pred, succ_serial=succ, instructions=insns):
                     # Map to BLOCK_CREATE_WITH_REDIRECT
                     # Note: DeferredGraphModifier expects a list of minsn_t, but InsertBlock
@@ -191,7 +237,14 @@ class IDAIRTranslator:
                     continue
 
         # Apply all queued modifications with snapshot rollback enabled
-        result_count = modifier.apply(enable_snapshot_rollback=True)
+        result_count = modifier.apply(
+            run_optimize_local=True,
+            run_deep_cleaning=False,
+            verify_each_mod=True,
+            rollback_on_verify_failure=True,
+            continue_on_verify_failure=True,
+            enable_snapshot_rollback=True,
+        )
 
         # If verify failed (even after rollback attempt), signal the pipeline
         # to stop by returning 0. A positive result with verify_failed=True
