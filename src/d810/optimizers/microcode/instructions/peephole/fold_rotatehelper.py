@@ -9,7 +9,7 @@ from d810.core import typing
 from d810.core import getLogger
 from d810.evaluator.helpers.rotate import _RotateHelper as _HelperLookup
 from d810.hexrays.expr.ast import mop_to_ast
-from d810.hexrays.expr.z3_utils import _find_def_in_block
+from d810.recon.flow.def_search import find_def_in_block
 from d810.hexrays.utils.hexrays_formatters import format_mop_t, opcode_to_string, sanitize_ea
 from d810.hexrays.utils.hexrays_helpers import AND_TABLE  # already maps size->mask
 from d810.hexrays.utils.hexrays_helpers import extract_literal_from_mop, is_rotate_helper_call
@@ -67,7 +67,7 @@ def _resolve_mop_to_constant(
 
     1. If *mop* is an immediate (``mop_n``): return its value directly.
     2. If *mop* is a register (``mop_r``) and *blk* is available: use
-       :func:`_find_def_in_block` to locate the defining instruction.
+       :func:`find_def_in_block` to locate the defining instruction.
 
        - If the def is ``mov #const -> reg``: return the constant.
        - If the def is a ROL/ROR call with all-constant args: evaluate and
@@ -87,7 +87,7 @@ def _resolve_mop_to_constant(
 
     # Register def-search path (requires block context).
     if mop.t == ida_hexrays.mop_r and blk is not None and ins is not None:
-        def_ins = _find_def_in_block(mop, blk, ins)
+        def_ins = find_def_in_block(mop, blk, ins)
         if def_ins is not None:
             # Case 1: simple mov #const, reg
             if (

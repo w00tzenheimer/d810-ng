@@ -1,12 +1,7 @@
 import ida_hexrays
 
 from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode
-from d810.hexrays.expr.z3_utils import (
-    z3_check_always_nonzero,
-    z3_check_always_zero,
-    z3_check_mop_equality,
-    z3_check_mop_inequality,
-)
+from d810.backends.ast.z3 import Z3MopProver
 from d810.optimizers.microcode.instructions.z3.handler import Z3Rule
 
 
@@ -30,10 +25,10 @@ class Z3setzRuleGeneric(Z3Rule):
         x0_mop = candidate["x_0"].mop
         x1_mop = candidate["x_1"].mop
 
-        if z3_check_mop_equality(x0_mop, x1_mop):
+        if Z3MopProver().are_equal(x0_mop, x1_mop):
             candidate.add_constant_leaf("val_res", 1, res_size)
             return True
-        if z3_check_mop_inequality(x0_mop, x1_mop):
+        if Z3MopProver().are_unequal(x0_mop, x1_mop):
             candidate.add_constant_leaf("val_res", 0, res_size)
             return True
 
@@ -42,11 +37,11 @@ class Z3setzRuleGeneric(Z3Rule):
         if x1_mop is not None and x1_mop.t == ida_hexrays.mop_n and x1_mop.nnn.value == 0:
             # setz(expr, 0) - check if expr is always 0 or always nonzero
             # Pass block/instruction context for backward tracking of register definitions
-            if z3_check_always_zero(x0_mop, self._current_blk, self._current_ins):
+            if Z3MopProver(blk=self._current_blk, ins=self._current_ins).is_always_zero(x0_mop):
                 # expr is always 0, so setz(0, 0) = 1
                 candidate.add_constant_leaf("val_res", 1, res_size)
                 return True
-            if z3_check_always_nonzero(x0_mop, self._current_blk, self._current_ins):
+            if Z3MopProver(blk=self._current_blk, ins=self._current_ins).is_always_nonzero(x0_mop):
                 # expr is always nonzero, so setz(nonzero, 0) = 0
                 candidate.add_constant_leaf("val_res", 0, res_size)
                 return True
@@ -74,10 +69,10 @@ class Z3setnzRuleGeneric(Z3Rule):
         x0_mop = candidate["x_0"].mop
         x1_mop = candidate["x_1"].mop
 
-        if z3_check_mop_equality(x0_mop, x1_mop):
+        if Z3MopProver().are_equal(x0_mop, x1_mop):
             candidate.add_constant_leaf("val_res", 0, res_size)
             return True
-        if z3_check_mop_inequality(x0_mop, x1_mop):
+        if Z3MopProver().are_unequal(x0_mop, x1_mop):
             candidate.add_constant_leaf("val_res", 1, res_size)
             return True
 
@@ -86,11 +81,11 @@ class Z3setnzRuleGeneric(Z3Rule):
         if x1_mop is not None and x1_mop.t == ida_hexrays.mop_n and x1_mop.nnn.value == 0:
             # setnz(expr, 0) - check if expr is always 0 or always nonzero
             # Pass block/instruction context for backward tracking of register definitions
-            if z3_check_always_zero(x0_mop, self._current_blk, self._current_ins):
+            if Z3MopProver(blk=self._current_blk, ins=self._current_ins).is_always_zero(x0_mop):
                 # expr is always 0, so setnz(0, 0) = 0
                 candidate.add_constant_leaf("val_res", 0, res_size)
                 return True
-            if z3_check_always_nonzero(x0_mop, self._current_blk, self._current_ins):
+            if Z3MopProver(blk=self._current_blk, ins=self._current_ins).is_always_nonzero(x0_mop):
                 # expr is always nonzero, so setnz(nonzero, 0) = 1
                 candidate.add_constant_leaf("val_res", 1, res_size)
                 return True
@@ -117,10 +112,10 @@ class Z3lnotRuleGeneric(Z3Rule):
         operand_size = candidate["x_0"].size or 1
         val_0_mop = ida_hexrays.mop_t()
         val_0_mop.make_number(0, operand_size)
-        if z3_check_mop_equality(candidate["x_0"].mop, val_0_mop):
+        if Z3MopProver().are_equal(candidate["x_0"].mop, val_0_mop):
             candidate.add_constant_leaf("val_res", 1, res_size)
             return True
-        if z3_check_mop_inequality(candidate["x_0"].mop, val_0_mop):
+        if Z3MopProver().are_unequal(candidate["x_0"].mop, val_0_mop):
             candidate.add_constant_leaf("val_res", 0, res_size)
             return True
         return False
@@ -143,12 +138,12 @@ class Z3SmodRuleGeneric(Z3Rule):
         res_size = candidate.dst_mop.size if candidate.dst_mop else 1
         cst_0_mop = ida_hexrays.mop_t()
         cst_0_mop.make_number(0, res_size)
-        if z3_check_mop_equality(candidate.mop, cst_0_mop):
+        if Z3MopProver().are_equal(candidate.mop, cst_0_mop):
             candidate.add_leaf("val_res", cst_0_mop)
             return True
         cst_1_mop = ida_hexrays.mop_t()
         cst_1_mop.make_number(1, res_size)
-        if z3_check_mop_equality(candidate.mop, cst_1_mop):
+        if Z3MopProver().are_equal(candidate.mop, cst_1_mop):
             candidate.add_leaf("val_res", cst_1_mop)
             return True
         return False

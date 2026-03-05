@@ -573,11 +573,11 @@ class PatternOptimizer(InstructionOptimizer):
             return None
         try:
             # Reuse the tracker-aware AST resolver already used by Z3 helpers.
-            from d810.hexrays.expr.z3_utils import _recursively_resolve_ast
+            from d810.recon.flow.def_search import recursively_resolve_ast
         except Exception:
             return None
         try:
-            resolved = _recursively_resolve_ast(ast, blk, ins, depth=0, max_depth=6, cache={})
+            resolved = recursively_resolve_ast(ast, blk, ins, depth=0, max_depth=6, cache={})
         except Exception:
             return None
         if resolved is None or resolved is ast:
