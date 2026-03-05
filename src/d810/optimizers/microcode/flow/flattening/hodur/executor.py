@@ -101,7 +101,10 @@ class TransactionalExecutor:
                     )
 
             # Also run detect_terminal_cycles on simulated graph
-            preflight_terminal_exits = fragment.metadata.get("terminal_exit_blocks", set())
+            preflight_terminal_exits = set(fragment.metadata.get("terminal_exit_blocks", set()))
+            # Include redirect targets so cycle detector walks from them too
+            for te in terminal_edits:
+                preflight_terminal_exits.add(te.new_target)
             preflight_handler_entries = fragment.metadata.get("handler_entry_serials", set())
             preflight_dispatcher = fragment.metadata.get("dispatcher_serial", -1)
             cycle_result_pre = detect_terminal_cycles(
