@@ -5,7 +5,9 @@ import pytest
 
 from d810.cfg.flow.graph_checks import (
     TerminalCycle,
+    TerminalSinkResult,
     detect_terminal_cycles,
+    prove_terminal_sink,
     SemanticCheckResult,
     SemanticGate,
 )
@@ -72,6 +74,60 @@ class TestDetectTerminalCycles:
         result = detect_terminal_cycles(adj, terminal_exits, handler_entries, dispatcher)
         assert not result.passed
         assert len(result.cycles) == 1
+
+
+class TestProveTerminalSink:
+    def test_clean_sink(self):
+        # start -> intermediate -> exit (0 succs). PASS.
+        adj = _make_adj([(10, 11), (11, 12)])
+        # 12 has no outgoing edges — it's an exit
+        exits = {12}
+        forbidden = {0, 1, 2}
+        result = prove_terminal_sink(10, adj, exits, forbidden)
+        assert result.ok
+        assert result.reaches_exit
+        assert not result.reaches_forbidden
+        assert not result.has_nonexit_cycle
+
+    def test_reaches_forbidden(self):
+        # start -> handler_entry. FAIL, reaches_forbidden=True.
+        adj = _make_adj([(10, 1)])
+        exits = {99}
+        forbidden = {1, 2, 3}
+        result = prove_terminal_sink(10, adj, exits, forbidden)
+        assert not result.ok
+        assert result.reaches_forbidden
+        assert result.reason == "reaches forbidden block"
+        assert 1 in result.witness_path
+
+    def test_no_exit(self):
+        # start -> A -> B (no exit reachable). FAIL, reaches_exit=False.
+        adj = _make_adj([(10, 11), (11, 12)])
+        exits = {99}  # unreachable exit
+        forbidden = set()
+        result = prove_terminal_sink(10, adj, exits, forbidden)
+        assert not result.ok
+        assert not result.reaches_exit
+        assert result.reason == "no exit reachable"
+
+    def test_cycle_in_subgraph(self):
+        # start -> A -> B -> A (cycle, no exit). FAIL.
+        adj: dict[int, list[int]] = {10: [11], 11: [12], 12: [11, 99]}
+        exits = {99}
+        forbidden = set()
+        result = prove_terminal_sink(10, adj, exits, forbidden)
+        assert not result.ok
+        assert result.has_nonexit_cycle
+        assert result.reason == "cycle in non-exit subgraph"
+
+    def test_mixed_paths_forbidden_priority(self):
+        # start -> exit AND start -> forbidden. FAIL (forbidden takes priority).
+        adj: dict[int, list[int]] = {10: [99, 1], 99: [], 1: []}
+        exits = {99}
+        forbidden = {1}
+        result = prove_terminal_sink(10, adj, exits, forbidden)
+        assert not result.ok
+        assert result.reaches_forbidden
 
 
 def _fake_result(**kwargs):
