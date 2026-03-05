@@ -20,6 +20,7 @@ class SimulatedEdit:
     source: int
     old_target: int
     new_target: int
+    via_pred: int | None = None  # only for edge_split_redirect
 
 
 def simulate_edits(
@@ -62,15 +63,23 @@ def simulate_edits(
             result[edit.source] = [edit.new_target]
 
         elif edit.kind == "edge_split_redirect":
-            # Conservative over-approximation: add new_target to source's successors.
-            # In reality, an intermediate node is created, but for cycle detection
-            # purposes modelling the new reachability edge is sufficient.
-            new_succs = list(succs)
-            try:
-                idx = new_succs.index(edit.old_target)
-                new_succs[idx] = edit.new_target
-            except ValueError:
-                new_succs.append(edit.new_target)
-            result[edit.source] = new_succs
+            if edit.via_pred is not None:
+                # Model IDA's edge-split: clone source block, rewire via_pred.
+                # 1. Create virtual clone node with [new_target] as successor.
+                clone_serial = max(result.keys()) + 1
+                result[clone_serial] = [edit.new_target]
+                # 2. Rewire via_pred: replace source with clone in via_pred's successors.
+                if edit.via_pred in result:
+                    result[edit.via_pred] = [
+                        clone_serial if s == edit.source else s
+                        for s in result[edit.via_pred]
+                    ]
+                # 3. Original source keeps its edges unchanged.
+            else:
+                # Fallback for edge_split without via_pred: conservative add.
+                new_succs = list(succs)
+                if edit.new_target not in new_succs:
+                    new_succs.append(edit.new_target)
+                result[edit.source] = new_succs
 
     return result
