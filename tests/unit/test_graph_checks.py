@@ -208,7 +208,7 @@ class TestPreflightCycleRejection:
         bad_edit = SimulatedEdit(
             kind="goto_redirect", source=30, old_target=99, new_target=10,
         )
-        sim_adj = simulate_edits(adj, [bad_edit])
+        sim_adj = simulate_edits(adj, [bad_edit]).adj
         result = detect_terminal_cycles(
             sim_adj,
             terminal_exits={30},
@@ -225,7 +225,7 @@ class TestPreflightCycleRejection:
         good_edit = SimulatedEdit(
             kind="goto_redirect", source=30, old_target=0, new_target=99,
         )
-        sim_adj = simulate_edits(adj, [good_edit])
+        sim_adj = simulate_edits(adj, [good_edit]).adj
         result = detect_terminal_cycles(
             sim_adj,
             terminal_exits={30},

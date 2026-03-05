@@ -2,7 +2,20 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+@dataclass
+class SimulationResult:
+    """Result of simulate_edits: adjacency dict plus metadata about created nodes.
+
+    Attributes:
+        adj: Post-edit adjacency dict (block serial -> successor serials).
+        created_clones: Set of virtual clone node serials created by edge_split_redirect.
+    """
+
+    adj: dict[int, list[int]]
+    created_clones: set[int] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -43,6 +56,7 @@ def simulate_edits(
         A new adjacency dict with all edits applied. The original is not modified.
     """
     result: dict[int, list[int]] = copy.deepcopy(adj)
+    created_clones: set[int] = set()
 
     for edit in edits:
         succs = result.get(edit.source, [])
@@ -68,6 +82,7 @@ def simulate_edits(
                 # 1. Create virtual clone node with [new_target] as successor.
                 clone_serial = max(result.keys()) + 1
                 result[clone_serial] = [edit.new_target]
+                created_clones.add(clone_serial)
                 # 2. Rewire via_pred: replace source with clone in via_pred's successors.
                 if edit.via_pred in result:
                     result[edit.via_pred] = [
@@ -82,4 +97,4 @@ def simulate_edits(
                     new_succs.append(edit.new_target)
                 result[edit.source] = new_succs
 
-    return result
+    return SimulationResult(adj=result, created_clones=created_clones)
