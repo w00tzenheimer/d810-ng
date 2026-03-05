@@ -19,9 +19,9 @@ from d810.hexrays.utils.hexrays_formatters import (
     count_minsn_nodes,
     dump_microcode_for_debug,
     format_minsn_t,
-    format_z3_equivalence_script,
     maturity_to_string,
 )
+from d810.hexrays.ir.minsn_utils import build_z3_equivalence_proof
 from d810.hexrays.utils.hexrays_helpers import check_ins_mop_size_are_ok
 from d810.mba.backend_registry import get_egglog_provider
 
@@ -558,7 +558,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
 
                     if self.generate_z3_code:
                         try:
-                            z3_script = format_z3_equivalence_script(new_ins, ins)
+                            z3_script = build_z3_equivalence_proof(new_ins, ins)
                             if z3_script is not None:
                                 z3_file_logger.info(z3_script)
                         except KeyError:
