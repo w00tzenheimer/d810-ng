@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Mapping, Optional, Tuple
+from d810.core.typing import Any, Mapping, Optional, Tuple
 
 from d810.recon.flow.bst_analysis import (
     _detect_state_var_stkoff,
