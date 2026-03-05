@@ -3,7 +3,7 @@ import ida_hexrays
 from d810.evaluator.evaluators import evaluate_concrete
 from d810.core.bits import unsigned_to_signed
 from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode, mop_to_ast
-from d810.hexrays.expr.z3_utils import z3_check_mop_equality, z3_check_mop_inequality
+from d810.backends.ast.z3 import Z3MopProver
 from d810.optimizers.microcode.flow.jumps.handler import JumpOptimizationRule
 
 
@@ -358,7 +358,7 @@ class JmpRuleZ3Const(JumpOptimizationRule):
         return super().check_pattern_and_replace(blk, instruction, left_ast, right_ast)
 
     def check_candidate(self, opcode, left_candidate, right_candidate):
-        if opcode in (ida_hexrays.m_jnz, ida_hexrays.m_jz) and z3_check_mop_equality(
+        if opcode in (ida_hexrays.m_jnz, ida_hexrays.m_jz) and Z3MopProver().are_equal(
             left_candidate.mop, right_candidate.mop
         ):
             self.jump_replacement_block_serial = _target_for_relation(
@@ -368,7 +368,7 @@ class JmpRuleZ3Const(JumpOptimizationRule):
                 fallthrough_target=self.direct_block_serial,
             )
             return True
-        if opcode in (ida_hexrays.m_jnz, ida_hexrays.m_jz) and z3_check_mop_inequality(
+        if opcode in (ida_hexrays.m_jnz, ida_hexrays.m_jz) and Z3MopProver().are_unequal(
             left_candidate.mop, right_candidate.mop
         ):
             self.jump_replacement_block_serial = _target_for_relation(

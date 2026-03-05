@@ -43,6 +43,7 @@ layers =
     d810.core
     d810.errors
 ignore_imports =
+    d810.backends.ast.z3 -> d810.recon.flow.def_search
 
 [importlinter:contract:mba-core-no-hexrays]
 name = MBA core must not import hexrays

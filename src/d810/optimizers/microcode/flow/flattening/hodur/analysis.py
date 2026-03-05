@@ -27,7 +27,7 @@ from d810.evaluator.hexrays_microcode.tracker import (
     get_all_possibles_values,
 )
 from d810.hexrays.expr.ast import minsn_to_ast
-from d810.hexrays.expr.z3_utils import _resolve_mop_via_predecessors
+from d810.recon.flow.def_search import resolve_mop_via_predecessors
 from d810.hexrays.utils.hexrays_formatters import format_mop_t
 from d810.hexrays.utils.hexrays_helpers import (
     append_mop_if_not_in_list,
@@ -402,9 +402,9 @@ class HodurStateMachineDetector:
                 pass
 
         try:
-            from d810.hexrays.expr.z3_utils import z3_check_mop_equality
+            from d810.backends.ast.z3 import Z3MopProver
 
-            return bool(z3_check_mop_equality(candidate, state_var))
+            return bool(Z3MopProver().are_equal(candidate, state_var))
         except Exception:
             return False
 

@@ -21,10 +21,10 @@ There are TWO Z3 modules in d810 - do NOT confuse them:
    - Use for: Unit tests, CI, TDD, mathematical verification
    - Exports: Z3VerificationVisitor, prove_equivalence, verify_rule
 
-2. d810.hexrays.expr.z3_utils (SEPARATE - IDA-specific)
+2. d810.backends.ast.z3 (IDA-specific)
    - Works with: AstNode, mop_t, minsn_t (IDA types)
    - Use for: Runtime verification inside IDA Pro plugin
-   - Exports: AstNodeZ3Visitor, z3_check_mop_equality
+   - Exports: Z3MopProver, AstNodeZ3Visitor
 
 See the module docstrings in each file for full details.
 =============================================================================

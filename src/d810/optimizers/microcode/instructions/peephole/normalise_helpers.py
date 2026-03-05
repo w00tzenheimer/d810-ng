@@ -10,7 +10,7 @@ from d810.core import getLogger
 from d810.core.bits import get_parity_flag
 from d810.evaluator.helpers.rotate import _RotateHelper as _HelperLookup
 from d810.hexrays.expr.ast import AstBase, AstLeaf, AstNode, mop_to_ast
-from d810.hexrays.expr.z3_utils import _find_def_in_block
+from d810.recon.flow.def_search import find_def_in_block
 from d810.hexrays.utils.hexrays_formatters import (  # noqa: F401 - debug only
     format_mop_t,
     mop_type_to_string,
@@ -615,7 +615,7 @@ def _eval_subtree(
             and mop.t in (ida_hexrays.mop_S, ida_hexrays.mop_r, ida_hexrays.mop_l)
         ):
             try:
-                def_ins = _find_def_in_block(mop, blk, ins)
+                def_ins = find_def_in_block(mop, blk, ins)
                 if def_ins is not None:
                     # Case 1: simple mov #const -> var
                     if (

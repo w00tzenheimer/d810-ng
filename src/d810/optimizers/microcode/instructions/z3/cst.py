@@ -6,7 +6,7 @@ from d810.core import typing
 from d810.core import getLogger
 from d810.errors import AstEvaluationException
 from d810.hexrays.expr.ast import AstConstant, AstNode, AstProxy, minsn_to_ast
-from d810.hexrays.expr.z3_utils import z3_check_mop_equality
+from d810.backends.ast.z3 import Z3MopProver
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.z3.handler import Z3Rule
 
@@ -75,9 +75,9 @@ class Z3ConstantOptimization(Z3Rule):
             #   return new_instruction
             c_res_mop = ida_hexrays.mop_t()
             c_res_mop.make_number(val_0, tmp.mop.size or 1)
-            if z3_check_mop_equality(tmp.mop, c_res_mop):
+            if Z3MopProver().are_equal(tmp.mop, c_res_mop):
                 if logger.debug_on:
-                    logger.debug("  z3_check_mop_equality is equal")
+                    logger.debug("  Z3MopProver.are_equal confirmed equality")
 
                 tmp.add_constant_leaf("c_res", val_0, tmp.mop.size)
                 # TODO(w00tzenheimer): should we recompute caches so that leafs_by_name contains the new constant leaf?

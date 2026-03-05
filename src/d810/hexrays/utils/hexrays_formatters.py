@@ -438,3 +438,8 @@ def dump_microcode_for_debug(
 
 def sanitize_ea(ea: int) -> int:
     return ea & idaapi.BADADDR  # BADADDR = 0xFFFF_FFFF_FFFF_FFFF on x64
+
+
+# Z3 equivalence script formatting moved to
+# d810.hexrays.utils.z3_script_formatter to break the import cycle:
+#   hexrays_formatters -> ast -> p_ast -> hexrays_formatters

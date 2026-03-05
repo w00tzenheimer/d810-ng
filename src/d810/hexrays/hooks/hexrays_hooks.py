@@ -14,7 +14,7 @@ from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
 from d810.core.rule_scope import PIPELINE_FLOW, PIPELINE_INSTRUCTION
 from d810.errors import D810Exception
-from d810.hexrays.expr.z3_utils import log_z3_instructions
+from d810.hexrays.utils.z3_script_formatter import format_z3_equivalence_script
 from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import (
     count_minsn_nodes,
@@ -79,6 +79,7 @@ from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
 
 main_logger = getLogger("D810")
 optimizer_logger = getLogger("D810.optimizer")
+z3_file_logger = getLogger("D810.z3_test")
 
 DEFAULT_OPTIMIZATION_PATTERN_MATURITIES = [
     ida_hexrays.MMAT_PREOPTIMIZED,
@@ -126,7 +127,6 @@ if typing.TYPE_CHECKING:
     from d810.optimizers.microcode.instructions.early.handler import EarlyOptimizer
 
     # ast-ignore no-hexrays-hook-direct-optimizer-imports
-    # ast-grep-ignore
     from d810.optimizers.microcode.instructions.egraph.egglog_handler import (
         EgglogOptimizer,
     )
@@ -558,7 +558,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
 
                     if self.generate_z3_code:
                         try:
-                            log_z3_instructions(new_ins, ins)
+                            z3_script = format_z3_equivalence_script(new_ins, ins)
+                            if z3_script is not None:
+                                z3_file_logger.info(z3_script)
                         except KeyError:
                             pass
                     return True

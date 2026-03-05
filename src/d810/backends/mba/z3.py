@@ -30,16 +30,15 @@ There are TWO separate Z3 utility modules in d810, serving different purposes:
        x, y = Var("x"), Var("y")
        assert prove_equivalence((x | y) - (x & y), x ^ y)  # XOR identity
 
-2. d810.hexrays.expr.z3_utils (IDA-SPECIFIC)
-   ----------------------------------
+2. d810.backends.ast.z3 (IDA-SPECIFIC)
+   ------------------------------------
    Purpose: Z3 verification of actual IDA microcode during deobfuscation.
    Input:   d810.hexrays.expr.ast.AstNode (wraps IDA mop_t/minsn_t)
    Use:     Runtime verification inside IDA Pro plugin
 
    Key exports:
+   - Z3MopProver: Stateful prover with caching and optional CFG context
    - AstNodeZ3Visitor: Converts AstNode -> Z3 BitVec
-   - z3_check_mop_equality(): Check if two mop_t are equivalent
-   - z3_prove_equivalence(): Prove AstNode equivalence with mop_t context
 
 =============================================================================
 WHY TWO MODULES?

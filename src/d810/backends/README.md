@@ -31,17 +31,15 @@ if Z3_INSTALLED:
 
 **Key functions:**
 - `z3_prove_equivalence()` - Prove two expressions are equivalent
-- `AstNodeZ3Visitor` - Convert AST to Z3 bitvector expressions
+- `Z3VerificationVisitor` - Convert SymbolicExpression to Z3 bitvector expressions
 - `get_solver()` - Get configured Z3 solver instance
-- `z3_check_mop_equality()` - IDA mop_t equality checking (legacy)
 
 **Use cases:**
 - Verifying MBA rule correctness (used by `MBARule.verify()`)
-- Checking instruction equivalence in IDA
 - Proving optimization correctness
 
-**Note:** This backend has some IDA dependencies for legacy `z3_check_mop_equality()`
-functions. The pure MBA verification via `z3_prove_equivalence()` works without IDA.
+**Note:** This backend is pure Python (no IDA). For IDA-specific Z3 verification,
+see `d810.backends.ast.z3.Z3MopProver`.
 
 ### 2. IDA Backend (`ida.py`)
 
@@ -127,19 +125,15 @@ Each backend handles its own imports gracefully:
 3. **Graceful degradation** - Missing backends don't break other functionality
 4. **Forward compatibility** - Adding new backends doesn't break existing code
 
-## Backward Compatibility
+## Module Layout
 
-**Old locations still work:**
 ```python
-# Old (still works for IDA integration)
-from d810.hexrays.expr.z3_utils import z3_check_mop_equality
+# IDA-specific Z3 verification (AstNode/mop_t)
+from d810.backends.ast.z3 import Z3MopProver
 
-# New (for pure MBA framework)
+# Pure symbolic verification (SymbolicExpression, no IDA)
 from d810.backends.mba.z3 import z3_prove_equivalence
 ```
-
-The old `d810.hexrays.expr.z3_utils` is kept for backward compatibility with existing
-d810 optimizers. New code should use `d810.backends.mba.z3` for pure verification.
 
 ## Adding a New Backend
 

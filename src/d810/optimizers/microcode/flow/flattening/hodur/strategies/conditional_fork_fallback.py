@@ -40,9 +40,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
     ProposedEdit,
 )
-from d810.hexrays.expr.z3_utils import (
-    _resolve_mop_via_predecessors,
-)
+from d810.recon.flow.def_search import resolve_mop_via_predecessors
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
         AnalysisSnapshot,
@@ -301,7 +299,7 @@ class ConditionalForkFallbackStrategy:
         for mop in use_before_def:
             if state_var is not None and equal_mops_ignore_size(mop, state_var):
                 continue
-            ast = _resolve_mop_via_predecessors(mop, from_blk, from_blk.tail)
+            ast = resolve_mop_via_predecessors(mop, from_blk, from_blk.tail)
             if ast is None or not hasattr(ast, "value") or ast.value is None:
                 return None
             try:

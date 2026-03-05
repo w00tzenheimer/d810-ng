@@ -32,7 +32,7 @@ from d810.core.rule_scope import (
 )
 from d810.core.stats import OptimizationStatistics
 from d810.core.typing import TYPE_CHECKING
-from d810.hexrays.expr.z3_utils import clear_z3_caches
+from d810.backends.ast.z3 import Z3MopProver
 from d810.hexrays.hooks.ctree_hooks import CtreeOptimizationRule, CtreeOptimizerManager
 from d810.hexrays.hooks.hexrays_hooks import (
     BlockOptimizerManager,
@@ -614,7 +614,7 @@ class D810Manager:
             self.stats.reset,
             MOP_CONSTANT_CACHE.clear,
             MOP_TO_AST_CACHE.clear,
-            clear_z3_caches,
+            Z3MopProver().clear_caches,
             self.instruction_optimizer.reset_cycle_detection,
             self.block_optimizer.reset_pass_counter,
             self.block_optimizer.reset_pipeline_tracker,
