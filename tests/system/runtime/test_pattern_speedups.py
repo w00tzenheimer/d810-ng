@@ -25,8 +25,8 @@ from d810.hexrays.expr.p_ast import (
     AstConstant,
     AstLeaf,
     AstNode,
-    minsn_to_ast,
 )
+from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups import (
     MatchBindings,
     OpcodeIndexedStorage,

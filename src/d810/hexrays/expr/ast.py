@@ -140,11 +140,6 @@ else:
 
     _USING_CYTHON = False
 
-# Builder functions live in the IR layer (they convert FROM IDA IR types TO AST types).
-# Re-exported here for backward compatibility.
-from d810.hexrays.ir.minsn_utils import minsn_to_ast
-from d810.hexrays.ir.mop_utils import mop_to_ast
-
 __all__ = [
     # Classes
     "AstBase",
@@ -160,6 +155,4 @@ __all__ = [
     # Functions
     "get_constant_mop",
     "get_mop_key",
-    "minsn_to_ast",
-    "mop_to_ast",
 ]

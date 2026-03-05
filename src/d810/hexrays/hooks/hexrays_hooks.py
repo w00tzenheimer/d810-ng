@@ -14,12 +14,12 @@ from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
 from d810.core.rule_scope import PIPELINE_FLOW, PIPELINE_INSTRUCTION
 from d810.errors import D810Exception
-from d810.hexrays.utils.z3_script_formatter import format_z3_equivalence_script
 from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import (
     count_minsn_nodes,
     dump_microcode_for_debug,
     format_minsn_t,
+    format_z3_equivalence_script,
     maturity_to_string,
 )
 from d810.hexrays.utils.hexrays_helpers import check_ins_mop_size_are_ok
