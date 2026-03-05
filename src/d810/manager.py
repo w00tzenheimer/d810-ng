@@ -3,6 +3,8 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import inspect
+import json
+import os
 import pathlib
 import pstats
 import tempfile
@@ -13,6 +15,7 @@ try:
 except ImportError:
     cProfile = None  # type: ignore[assignment]
 
+from d810.backends.mba.ida import adapt_rules
 from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE, typing
 from d810.core.config import D810Configuration, ProjectConfiguration
 from d810.core.logging import clear_logs, configure_loggers, getLogger
@@ -37,7 +40,6 @@ from d810.hexrays.hooks.hexrays_hooks import (
     HexraysDecompilationHook,
     InstructionOptimizerManager,
 )
-from d810.backends.mba.ida import adapt_rules
 from d810.mba.rules import VerifiableRule
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
@@ -49,6 +51,7 @@ from d810.recon.collectors.cfg_shape import CFGShapeCollector
 from d810.recon.collectors.ctree_structure import CtreeStructureCollector
 from d810.recon.collectors.dispatch_pattern import DispatchPatternCollector
 from d810.recon.collectors.opcode_distribution import OpcodeDistributionCollector
+from d810.recon.microcode_dump import mba_to_dict
 from d810.recon.phase import ReconPhase
 from d810.recon.store import ReconStore
 
@@ -236,13 +239,42 @@ class D810Manager:
         self.cprofiler.snapshot(str(output_path))
         logger.info("Profiling segment dumped for %s: %s", label, output_path)
 
+    def capture_post_d810_mba(
+        self,
+        mba: typing.Any,
+        maturity: int,
+    ) -> None:
+        """Write post-maturity MBA snapshot when configured via environment."""
+        capture_mat_str = os.environ.get("D810_CAPTURE_POST_MATURITY")
+        if not capture_mat_str:
+            return
+        try:
+            target_mat = int(capture_mat_str)
+        except ValueError:
+            return
+        if int(maturity) != target_mat:
+            return
+        capture_file = os.environ.get("D810_CAPTURE_POST_FILE", "/tmp/d810_capture.txt")
+        try:
+            data = mba_to_dict(mba)
+            with open(capture_file, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+            logger.info(
+                "Post-D810 MBA captured at maturity %s -> %s (%d blocks)",
+                _maturity_name(maturity),
+                capture_file,
+                data.get("num_blocks", -1),
+            )
+        except Exception:
+            logger.exception("Post-D810 capture failed")
+
     def start(self):
         if self._started:
             self.stop()
         logger.debug("Starting manager...")
         # Ensure side-effect registrants are loaded before manager construction.
-        from d810.optimizers.microcode.instructions.pattern_matching import (
-            experimental,  # noqa: F401
+        from d810.optimizers.microcode.instructions.pattern_matching import (  # noqa: F401
+            experimental,
         )
 
         try:
@@ -606,8 +638,12 @@ class D810Manager:
         self.event_emitter.on(
             DecompilationEvent.MATURITY_CHANGED, self.dump_profiling_segment
         )
+        self.event_emitter.on(
+            DecompilationEvent.POST_D810_CAPTURE, self.capture_post_d810_mba
+        )
 
         self.instruction_optimizer.event_emitter = self.event_emitter
+        self.block_optimizer.event_emitter = self.event_emitter
         self.instruction_optimizer.install()
         self.block_optimizer.install()
         self.hx_decompiler_hook.hook()
@@ -639,11 +675,13 @@ class D810Manager:
         Returns:
             PassPipeline instance with IDAIRTranslator and the 2 safe cleanup transform.
         """
-        from d810.hexrays.mutation.ir_translator import IDAIRTranslator
         from d810.cfg.pipeline import FlowGraphTransformPipeline
-        from d810.hexrays.mutation.transform.goto_chain_removal import GotoChainRemovalPass
         from d810.cfg.transform.simplify_identical_branch import (
             SimplifyIdenticalBranchPass,
+        )
+        from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+        from d810.hexrays.mutation.transform.goto_chain_removal import (
+            GotoChainRemovalPass,
         )
 
         backend = IDAIRTranslator()

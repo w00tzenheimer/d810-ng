@@ -33,9 +33,11 @@ from d810.recon.flow.bst_analysis import (
     _mop_matches_stkoff,
     _resolve_mop_value_in_block,
     _extract_state_from_block,
-    _walk_handler_chain,
     _find_pre_header_state,
     _detect_state_var_stkoff,
+)
+from d810.recon.collectors.handler_transitions import (
+    build_handler_transitions_report,
 )
 
 # Defer IDA imports until needed - allows module to be imported for CLI --help
@@ -661,104 +663,33 @@ def dump_dispatcher_tree(
     if not handler_serials:
         sections.append("<no handlers found in BST>")
     else:
-        # Build entries: list of (state_const, handler_serial, walk_result)
-        entries = []
-        diag_handler_count = 0
-        for h_serial in sorted(handler_serials):
-            state_const = handler_state_map.get(h_serial)
-            if state_var_stkoff is not None:
-                # Collect diagnostics for the first 3 handlers only
-                handler_diag: Optional[List[str]] = None
-                if diag_handler_count < 3:
-                    handler_diag = []
-                    diag_section.append(f"Handler blk[{h_serial}] (state={hex(state_const) if state_const is not None else '?'}):")
-                    diag_handler_count += 1
+        report = build_handler_transitions_report(
+            mba=mba,
+            dispatcher_entry_serial=dispatcher_entry_serial,
+            state_var_stkoff=state_var_stkoff,
+            handler_serials=handler_serials,
+            handler_state_map=handler_state_map,
+            handler_range_map=handler_range_map,
+            transitions=transitions,
+            state_var_lvar_idx=state_var_lvar_idx,
+            diag_lines=diag_section,
+            max_diag_handlers=3,
+        )
 
-                # Each handler gets a fresh visited set so it can walk into
-                # blocks other handlers have already visited, while still
-                # preventing self-cycles within its own walk.
-                per_handler_visited: set = set()
-                walk = _walk_handler_chain(
-                    mba,
-                    h_serial,
-                    dispatcher_entry_serial,
-                    state_var_stkoff,
-                    chain_visited=per_handler_visited,
-                    diag_lines=handler_diag,
-                    state_var_lvar_idx=state_var_lvar_idx,
-                )
-                if handler_diag:
-                    diag_section.extend(handler_diag)
-            else:
-                walk = {"next_state": None, "back_edge": False, "exit": False, "chain": []}
-            entries.append((state_const, h_serial, walk))
-
-        # Sort by state constant (None sorts last)
-        entries.sort(key=lambda e: (e[0] is None, e[0] if e[0] is not None else 0))
-
-        known_count = 0
-        exit_count = 0
-        unknown_count = 0
-        conditional_count = 0
-
-        for state_const, h_serial, walk in entries:
-            if state_const is not None:
-                state_label = f"State 0x{state_const:08x}"
-            else:
-                rng = handler_range_map.get(h_serial)
-                if rng is not None and rng[0] is not None and rng[1] is not None:
-                    state_label = f"State range [0x{rng[0]:x}..0x{rng[1]:x}]"
-                else:
-                    state_label = "State <unknown>"
-            next_state = walk.get("next_state")
-
-            # If transitions dict provided, prefer its value
-            if transitions is not None:
-                trans_next = transitions.get(h_serial)
-                if trans_next is not None and next_state is None:
-                    next_state = trans_next
-
-            # A handler that completes its chain without ever reaching the
-            # dispatcher back-edge (and without a 0-successor exit block) is
-            # also classified as an exit — it doesn't loop back to the state
-            # machine (e.g., a `break` that falls through to a return path).
-            is_exit = walk.get("exit") or (
-                not walk.get("back_edge") and walk.get("chain")
-            )
-            if is_exit:
-                label = "RETURN (exit)"
-                exit_count += 1
-            elif walk.get("back_edge") and next_state is not None:
-                label = f"next=0x{next_state:08x} (back-edge)"
-                known_count += 1
-            elif walk.get("conditional_states"):
-                cond_hex = ", ".join(
-                    f"0x{s:08x}" for s in sorted(walk["conditional_states"])
-                )
-                label = f"conditional transition -> {{{cond_hex}}}"
-                conditional_count += 1
-            elif walk.get("back_edge"):
-                label = "back-edge (next state unknown)"
-                unknown_count += 1
-            elif next_state is not None:
-                label = f"next=0x{next_state:08x}"
-                known_count += 1
-            else:
-                label = "unknown"
-                unknown_count += 1
-
-            chain_str = f"chain={walk['chain'][:4]}" if walk["chain"] else ""
+        for entry in report.entries:
+            chain_str = f"chain={list(entry.chain[:4])}" if entry.chain else ""
             sections.append(
-                f"{state_label} -> blk[{h_serial}]:  {label}  {chain_str}"
+                f"{entry.state_label} -> blk[{entry.handler_serial}]:  "
+                f"{entry.label}  {chain_str}"
             )
 
         sections.append("")
         sections.append(
-            f"Summary: {len(handler_serials)} handlers, "
-            f"{known_count} with known transitions, "
-            f"{conditional_count} conditional, "
-            f"{exit_count} exits, "
-            f"{unknown_count} unknown"
+            f"Summary: {report.total_handlers} handlers, "
+            f"{report.known_count} with known transitions, "
+            f"{report.conditional_count} conditional, "
+            f"{report.exit_count} exits, "
+            f"{report.unknown_count} unknown"
         )
 
     # --- Section 4: Diagnostics ---

@@ -231,10 +231,6 @@ class HodurUnflattener(GenericUnflatteningRule):
         # 2. Build immutable snapshot (includes BST analysis, reachability, etc.)
         snapshot = self._build_snapshot(self.mba, state_machine, detector)
 
-        # Return frontier audit: pre_plan stage
-        if self.RETURN_FRONTIER_AUDIT_ENABLED:
-            self._audit_pre_plan(snapshot)
-
         # 3. Collect plan fragments from all applicable strategies
         fragments = []
         for strategy in self._strategies:
@@ -248,6 +244,12 @@ class HodurUnflattener(GenericUnflatteningRule):
                     continue
                 if fragment is not None:
                     fragments.append(fragment)
+
+        # Return frontier audit: pre_plan stage (after fragment collection so
+        # handler_paths from DirectLinearization strategy are available)
+        if self.RETURN_FRONTIER_AUDIT_ENABLED:
+            handler_paths = self._extract_handler_paths_from_fragments(fragments)
+            self._audit_pre_plan(snapshot, handler_paths=handler_paths)
 
         if not fragments:
             unflat_logger.info("No strategy produced a plan fragment")
@@ -337,28 +339,80 @@ class HodurUnflattener(GenericUnflatteningRule):
                 exits.add(i)
         return frozenset(exits)
 
-    def _audit_pre_plan(self, snapshot: AnalysisSnapshot) -> None:
-        """Collect return sites from exit blocks and record pre_plan audit stage.
+    def _extract_handler_paths_from_fragments(
+        self, fragments: list
+    ) -> "dict[int, list[HandlerPathResult]]":
+        """Extract handler_paths from the DirectLinearization fragment metadata.
 
-        Handler paths are internal to strategies, so return sites are derived
-        directly from MBA exit blocks (nsucc==0) at the pre_plan stage.
+        Iterates collected fragments and returns the handler_paths dict from
+        the first fragment that contains it (direct_handler_linearization strategy).
+        Falls back to empty dict when no fragment provides handler_paths.
+
+        Args:
+            fragments: List of PlanFragment objects collected from strategies.
+
+        Returns:
+            Mapping of handler_serial -> list[HandlerPathResult], or empty dict.
+        """
+        for fragment in fragments:
+            hp = fragment.metadata.get("handler_paths")
+            if hp:
+                unflat_logger.info(
+                    "Extracted handler_paths from fragment '%s': %d handlers",
+                    fragment.strategy_name,
+                    len(hp),
+                )
+                return hp
+        return {}
+
+    def _audit_pre_plan(
+        self,
+        snapshot: AnalysisSnapshot,
+        handler_paths: "dict[int, list[HandlerPathResult]] | None" = None,
+    ) -> None:
+        """Collect return sites and record pre_plan audit stage.
+
+        When *handler_paths* is provided (from the DirectLinearization strategy),
+        uses :class:`HodurReturnSiteProvider` to extract terminal return paths.
+        Falls back to MBA exit block scan when no handler_paths are available
+        (legacy strategies or first-pass before BST analysis).
+
+        Args:
+            snapshot: Current immutable analysis snapshot.
+            handler_paths: Optional mapping of handler_serial -> evaluated paths,
+                provided by DirectLinearization strategy after fragment collection.
         """
         from d810.cfg.flow.return_frontier import ReturnSite
 
-        # Build return_sites from MBA exit blocks if not yet populated for this pass
+        # Build return_sites from handler_paths if available, otherwise from exit blocks
         if not self._audit_return_sites:
-            exits = self._find_exit_blocks()
-            sites: list[ReturnSite] = []
-            for blk_serial in sorted(exits):
-                site = ReturnSite(
-                    site_id=f"hodur_exit_{blk_serial}",
-                    origin_block=blk_serial,
-                    guard_hash=f"{blk_serial:016x}",
-                    expected_terminal_kind="return",
-                    provenance="pre_plan_exit_block_scan",
+            if handler_paths:
+                self._audit_return_sites = self._return_site_provider.collect_return_sites(
+                    snapshot, handler_paths
                 )
-                sites.append(site)
-            self._audit_return_sites = tuple(sites)
+                unflat_logger.info(
+                    "RETURN_FRONTIER_AUDIT: using handler_paths (%d handlers -> %d sites)",
+                    len(handler_paths),
+                    len(self._audit_return_sites),
+                )
+            else:
+                # Fallback: derive return sites from MBA exit blocks (nsucc==0)
+                exits = self._find_exit_blocks()
+                sites: list[ReturnSite] = []
+                for blk_serial in sorted(exits):
+                    site = ReturnSite(
+                        site_id=f"hodur_exit_{blk_serial}",
+                        origin_block=blk_serial,
+                        guard_hash=f"{blk_serial:016x}",
+                        expected_terminal_kind="return",
+                        provenance="pre_plan_exit_block_scan",
+                    )
+                    sites.append(site)
+                self._audit_return_sites = tuple(sites)
+                unflat_logger.info(
+                    "RETURN_FRONTIER_AUDIT: fallback to exit block scan (%d sites)",
+                    len(self._audit_return_sites),
+                )
 
         succs = self._build_successor_map()
         exits = self._find_exit_blocks()
