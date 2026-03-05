@@ -1181,7 +1181,7 @@ def remove_segment_registers(
     return new_mop_list
 
 
-def get_all_possibles_values(mop_histories, searched_mop_list, verbose=False):
+def get_all_possibles_values(mop_histories: list[MopHistory], searched_mop_list: list[ida_hexrays.mop_t], verbose: bool = False) -> list[list[int | None]]:
     ctx = nullcontext() if verbose else suppress_loggers(__name__, "ERROR")
     with ctx:
         return [
