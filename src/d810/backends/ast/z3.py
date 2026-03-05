@@ -59,7 +59,8 @@ import idaapi
 
 from d810.core import getLogger
 from d810.errors import D810Z3Exception
-from d810.hexrays.expr.ast import AstLeaf, AstNode, mop_to_ast
+from d810.hexrays.expr.ast import AstLeaf, AstNode
+from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,

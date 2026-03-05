@@ -23,7 +23,9 @@ from d810.core import typing
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import getLogger
-from d810.hexrays.expr.ast import AstLeaf, AstNode, minsn_to_ast, mop_to_ast, get_mop_key
+from d810.hexrays.expr.ast import AstLeaf, AstNode, get_mop_key
+from d810.hexrays.ir.minsn_utils import minsn_to_ast
+from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t, format_mop_t
 from d810.hexrays.utils.hexrays_helpers import equal_mops_ignore_size
 

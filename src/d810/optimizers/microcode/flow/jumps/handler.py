@@ -3,7 +3,8 @@ from d810.core.typing import Union
 import ida_hexrays
 
 from d810.core import getLogger
-from d810.hexrays.expr.ast import AstNode, mop_to_ast
+from d810.hexrays.expr.ast import AstNode
+from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.hexrays.mutation.cfg_mutations import (
     change_2way_block_conditional_successor)
 from d810.hexrays.ir.cfg_queries import (

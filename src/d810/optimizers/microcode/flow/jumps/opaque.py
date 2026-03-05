@@ -2,7 +2,8 @@ import ida_hexrays
 
 from d810.evaluator.evaluators import evaluate_concrete
 from d810.core.bits import unsigned_to_signed
-from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode, mop_to_ast
+from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode
+from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.backends.ast.z3 import Z3MopProver
 from d810.optimizers.microcode.flow.jumps.handler import JumpOptimizationRule
 

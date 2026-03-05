@@ -8,7 +8,8 @@ from d810.core import typing
 import ida_hexrays
 
 from d810.core import getLogger
-from d810.hexrays.expr.ast import AstBase, AstNode, AstNodeProtocol, minsn_to_ast
+from d810.hexrays.expr.ast import AstBase, AstNode, AstNodeProtocol
+from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.handler import (
     GenericPatternRule,
