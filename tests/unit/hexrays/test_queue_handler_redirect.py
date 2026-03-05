@@ -118,7 +118,7 @@ _D810_STUB_NAMES = (
     "d810.recon.flow.dispatcher_detection",
     "d810.optimizers.microcode.flow.flattening.safeguards",
     "d810.recon.flow.transition_builder",
-    "d810.optimizers.microcode.flow.flattening.utils",
+    "d810.optimizers.microcode.flow.flattening.exceptions",
     # flow/__init__.py imports these under the `else` branch when ida_hexrays
     # appears importable — stub them to prevent deep transitive pulls.
     "d810.optimizers.microcode.flow.constant_prop.global_const_inline",

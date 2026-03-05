@@ -6,7 +6,7 @@ from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
 from d810.evaluator.hexrays_microcode.tracker import MopTracker
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
-from d810.optimizers.microcode.flow.flattening.utils import get_all_possibles_values
+from d810.evaluator.hexrays_microcode.tracker import get_all_possibles_values
 
 unflat_logger = getLogger("D810.unflat")
 

@@ -74,14 +74,14 @@ from d810.evaluator.hexrays_microcode.tracker import (
     InstructionDefUseCollector,
     MopHistory,
     MopTracker,
+    check_if_all_values_are_found,
     duplicate_histories,
+    get_all_possibles_values,
     remove_segment_registers,
 )
-from d810.optimizers.microcode.flow.flattening.utils import (
+from d810.optimizers.microcode.flow.flattening.exceptions import (
     NotDuplicableFatherException,
     NotResolvableFatherException,
-    check_if_all_values_are_found,
-    get_all_possibles_values,
 )
 from d810.core.registry import EventEmitter
 from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter as DeferredEventEmitter
