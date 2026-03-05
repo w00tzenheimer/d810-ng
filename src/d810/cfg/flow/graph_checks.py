@@ -67,3 +67,43 @@ def detect_terminal_cycles(
                     queue.append((succ, path + [succ]))
 
     return SemanticCheckResult(passed=len(cycles) == 0, cycles=cycles)
+
+
+@dataclass
+class SemanticGate:
+    """Semantic correctness gate -- replaces structural VerificationGate.
+
+    Acceptance criteria:
+    1. No terminal cycles (terminal handlers must not re-enter dispatcher/handlers)
+    2. Conflict count below safety bound
+
+    Block reachability and handler reachability are logged as diagnostics
+    but do NOT cause gate failure.
+
+    The ``result`` argument must expose ``terminal_cycles`` (list) and
+    ``conflict_count_after`` (int) attributes.  This is deliberately
+    duck-typed so the gate can be unit-tested without importing from the
+    optimizers layer.
+
+    Attributes:
+        max_conflict_count: Upper bound on conflict count.
+    """
+
+    max_conflict_count: int = 10
+
+    def check(self, result: object) -> bool:
+        """Return True iff the result passes all semantic checks.
+
+        Args:
+            result: Object with ``terminal_cycles`` and
+                ``conflict_count_after`` attributes (e.g. ``StageResult``).
+
+        Returns:
+            True when no terminal cycles exist and conflict count is
+            at or below the maximum.
+        """
+        if getattr(result, "terminal_cycles", None):
+            return False
+        if getattr(result, "conflict_count_after", 0) > self.max_conflict_count:
+            return False
+        return True

@@ -281,8 +281,10 @@ class StageResult:
 
     strategy_name: str
     edits_applied: int = 0
-    reachability_after: float = 1.0
+    reachability_after: float = 1.0          # DIAGNOSTIC ONLY
+    handler_reachability: float = 1.0        # DIAGNOSTIC ONLY
     conflict_count_after: int = 0
+    terminal_cycles: list = field(default_factory=list)  # gate-critical
     success: bool = True
     rollback_needed: bool = False
     error: str | None = None
@@ -295,9 +297,24 @@ class StageResult:
 
 @dataclass
 class VerificationGate:
-    """Post-stage verification thresholds."""
+    """Post-stage verification thresholds.
 
-    min_reachability: float = 0.7
+    After direct linearization, dispatcher and BST blocks become dead code,
+    so block-level reachability drops significantly (e.g. to ~0.66).  This is
+    *expected*.  The primary correctness metric is **handler reachability** --
+    the fraction of handler entry blocks that remain reachable from the
+    function entry.  Block-level reachability is kept only as a catastrophic-
+    failure floor.
+
+    Attributes:
+        min_reachability: Catastrophic floor for block-level reachability.
+        min_handler_reachability: Primary gate -- fraction of handler entries
+            that must be reachable after the stage.
+        max_conflict_count: Upper bound on conflict count.
+    """
+
+    min_reachability: float = 0.3
+    min_handler_reachability: float = 0.9
     max_conflict_count: int = 10
 
     def check(self, result: StageResult) -> bool:
@@ -307,11 +324,21 @@ class VerificationGate:
             result: The stage result to check.
 
         Returns:
-            True when reachability is above the minimum and conflict count is
-            at or below the maximum.
+            True when handler reachability is above the minimum, block-level
+            reachability is above the catastrophic floor, and conflict count
+            is at or below the maximum.
         """
         if result.reachability_after < self.min_reachability:
+            return False
+        if result.handler_reachability < self.min_handler_reachability:
             return False
         if result.conflict_count_after > self.max_conflict_count:
             return False
         return True
+
+
+# ---------------------------------------------------------------------------
+# SemanticGate (re-exported from cfg layer for convenience)
+# ---------------------------------------------------------------------------
+
+from d810.cfg.flow.graph_checks import SemanticGate  # noqa: E402
