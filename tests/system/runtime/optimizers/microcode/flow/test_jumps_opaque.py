@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
+from d810.backends.ast.z3 import Z3MopProver
 from d810.optimizers.microcode.flow.jumps import opaque
 
 
@@ -53,8 +54,8 @@ def test_jmp_rule_z3_const_uses_constant_fallback_for_jnz(monkeypatch):
     rule.jump_original_block_serial = 17
     rule.direct_block_serial = 19
 
-    monkeypatch.setattr(opaque, "z3_check_mop_equality", lambda _l, _r: False)
-    monkeypatch.setattr(opaque, "z3_check_mop_inequality", lambda _l, _r: False)
+    monkeypatch.setattr(Z3MopProver, "are_equal", lambda _self, _l, _r: False)
+    monkeypatch.setattr(Z3MopProver, "are_unequal", lambda _self, _l, _r: False)
     monkeypatch.setattr(opaque, "_constant_jump_taken", lambda _op, _l, _r: False)
 
     left = SimpleNamespace(mop=object())
@@ -69,8 +70,8 @@ def test_jmp_rule_z3_const_uses_constant_fallback_for_jz(monkeypatch):
     rule.jump_original_block_serial = 17
     rule.direct_block_serial = 19
 
-    monkeypatch.setattr(opaque, "z3_check_mop_equality", lambda _l, _r: False)
-    monkeypatch.setattr(opaque, "z3_check_mop_inequality", lambda _l, _r: False)
+    monkeypatch.setattr(Z3MopProver, "are_equal", lambda _self, _l, _r: False)
+    monkeypatch.setattr(Z3MopProver, "are_unequal", lambda _self, _l, _r: False)
     monkeypatch.setattr(opaque, "_constant_jump_taken", lambda _op, _l, _r: True)
 
     left = SimpleNamespace(mop=object())
@@ -85,8 +86,8 @@ def test_jmp_rule_z3_const_returns_false_when_no_solver_or_constant_result(monke
     rule.jump_original_block_serial = 17
     rule.direct_block_serial = 19
 
-    monkeypatch.setattr(opaque, "z3_check_mop_equality", lambda _l, _r: False)
-    monkeypatch.setattr(opaque, "z3_check_mop_inequality", lambda _l, _r: False)
+    monkeypatch.setattr(Z3MopProver, "are_equal", lambda _self, _l, _r: False)
+    monkeypatch.setattr(Z3MopProver, "are_unequal", lambda _self, _l, _r: False)
     monkeypatch.setattr(opaque, "_constant_jump_taken", lambda _op, _l, _r: None)
 
     left = SimpleNamespace(mop=object())
