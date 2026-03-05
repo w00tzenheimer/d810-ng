@@ -136,27 +136,6 @@ class TransactionalExecutor:
                     error="semantic preflight: terminal cycles detected",
                 )
 
-            # Conservative edge-split guard: reject if edge_split_redirect edits
-            # coexist with terminal exits in the MBA stop region (last 3 blocks).
-            # The simulator can't model serial drift from duplicate_block.
-            has_edge_splits = any(
-                e.kind == "edge_split_redirect" for e in all_edits
-            )
-            mba_qty = self.mba.qty if self.mba is not None else 0
-            stop_region = {mba_qty - 1 - i for i in range(3)} if mba_qty >= 3 else set()
-            terminal_in_stop = preflight_terminal_exits & stop_region
-            if has_edge_splits and terminal_in_stop:
-                executor_logger.warning(
-                    "Preflight REJECT: edge_split_redirect + terminal exits in stop region "
-                    "(serials %s) — serial drift risk, cannot simulate safely",
-                    terminal_in_stop,
-                )
-                return StageResult(
-                    strategy_name=stage_name,
-                    success=False,
-                    rollback_needed=False,
-                    error="semantic preflight: edge_split + stop-region terminal (serial drift risk)",
-                )
 
         changes = deferred.apply(
             run_optimize_local=True,

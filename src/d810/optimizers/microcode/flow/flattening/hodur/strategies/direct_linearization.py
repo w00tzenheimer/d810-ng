@@ -397,6 +397,7 @@ class DirectHandlerLinearizationStrategy:
                     source=src_block,
                     old_target=old_target,
                     new_target=target,
+                    via_pred=via_pred,
                 ))
                 pass0_ledger.append({
                     "category": category,
@@ -494,6 +495,7 @@ class DirectHandlerLinearizationStrategy:
                                     source=term_src,
                                     old_target=old_tgt,
                                     new_target=terminal_target,
+                                    via_pred=meta.get("via_pred"),
                                 ))
                                 # Track redirect target so cycle detector walks from it too
                                 terminal_exit_blocks.add(terminal_target)
@@ -862,6 +864,7 @@ class DirectHandlerLinearizationStrategy:
                                     source=term_src,
                                     old_target=old_tgt,
                                     new_target=terminal_target,
+                                    via_pred=meta.get("via_pred"),
                                 ))
                                 # Track redirect target so cycle detector walks from it too
                                 terminal_exit_blocks.add(terminal_target)
