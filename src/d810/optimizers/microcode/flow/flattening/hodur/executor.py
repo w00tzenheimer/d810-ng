@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from d810.core import logging
 
-from d810.cfg.flow.graph_checks import SemanticGate, detect_terminal_cycles
+from d810.cfg.flow.edit_simulator import simulate_edits
+from d810.cfg.flow.graph_checks import SemanticGate, detect_terminal_cycles, prove_terminal_sink
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     EditType,
     PlanFragment,
@@ -69,6 +70,52 @@ class TransactionalExecutor:
                 success=False,
                 error="safeguard rejected modifications",
             )
+
+        # ---- Pre-apply semantic preflight ----
+        terminal_edits = fragment.metadata.get("terminal_redirect_edits", [])
+        preflight_forbidden = fragment.metadata.get("forbidden_blocks", set())
+        preflight_exits = fragment.metadata.get("exit_blocks", set())
+
+        if terminal_edits:
+            pre_adj = self._build_adjacency_list(self.mba)
+            sim_adj = simulate_edits(pre_adj, terminal_edits)
+
+            # Prove each terminal redirect target is a valid sink
+            for edit in terminal_edits:
+                sink_result = prove_terminal_sink(
+                    edit.new_target, sim_adj, preflight_exits, preflight_forbidden
+                )
+                if not sink_result.ok:
+                    executor_logger.warning(
+                        "Preflight REJECT: redirect %d->%d failed: %s (witness: %s)",
+                        edit.source, edit.new_target,
+                        sink_result.reason, sink_result.witness_path,
+                    )
+                    return StageResult(
+                        strategy_name=fragment.strategy_name,
+                        success=False,
+                        rollback_needed=False,
+                        error="semantic preflight: %s" % sink_result.reason,
+                    )
+
+            # Also run detect_terminal_cycles on simulated graph
+            preflight_terminal_exits = fragment.metadata.get("terminal_exit_blocks", set())
+            preflight_handler_entries = fragment.metadata.get("handler_entry_serials", set())
+            preflight_dispatcher = fragment.metadata.get("dispatcher_serial", -1)
+            cycle_result_pre = detect_terminal_cycles(
+                sim_adj, preflight_terminal_exits,
+                preflight_handler_entries, preflight_dispatcher,
+            )
+            if not cycle_result_pre.passed:
+                executor_logger.warning(
+                    "Preflight REJECT: terminal cycles detected in simulated graph"
+                )
+                return StageResult(
+                    strategy_name=fragment.strategy_name,
+                    success=False,
+                    rollback_needed=False,
+                    error="semantic preflight: terminal cycles detected",
+                )
 
         changes = deferred.apply(
             run_optimize_local=True,
@@ -148,11 +195,13 @@ class TransactionalExecutor:
                         "Stage %s: gate failed, snapshot rollback failed",
                         fragment.strategy_name,
                     )
+                    result.error = "fatal: MBA corrupted, aborting pipeline"
             else:
                 executor_logger.warning(
                     "Stage %s: gate failed, no snapshot available for rollback",
                     fragment.strategy_name,
                 )
+                result.error = "fatal: MBA corrupted, aborting pipeline"
 
         return result
 
