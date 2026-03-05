@@ -45,6 +45,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.planner import (
     PipelinePolicy,
     UnflatteningPlanner,
 )
+from d810.cfg.flow.graph_checks import SemanticGate
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     StageResult,
     VerificationGate,
@@ -134,7 +135,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Strategy pipeline components
         self._strategies = [cls() for cls in ALL_STRATEGIES]
         self._planner = UnflatteningPlanner(PipelinePolicy())
-        self._gate = VerificationGate()
+        self._gate = SemanticGate()
 
         # Return frontier audit components
         self._return_site_provider = HodurReturnSiteProvider()

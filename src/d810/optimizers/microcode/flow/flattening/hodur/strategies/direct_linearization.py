@@ -163,6 +163,9 @@ class DirectHandlerLinearizationStrategy:
         # Accumulate all evaluated handler paths for return site extraction
         all_handler_paths: dict[int, list[HandlerPathResult]] = {}
 
+        # Track terminal exit blocks for semantic gate cycle detection
+        terminal_exit_blocks: set[int] = set()
+
         def _queue_redirect(
             path: object,
             target: int,
@@ -387,14 +390,64 @@ class DirectHandlerLinearizationStrategy:
 
             for path in paths:
                 if path.final_state is None:
-                    # Terminal path — handler already exits naturally.
-                    logger.info(
-                        "Handler blk[%d] (state=0x%x): terminal exit via blk[%d]",
-                        handler_serial,
-                        incoming_state,
-                        path.exit_block,
+                    # Terminal path — handler exits (e.g. m_ret or 0-succ block).
+                    # The exit block may still goto the dispatcher; redirect it to
+                    # the function's real exit corridor so it survives DCE.
+                    terminal_exit_blocks.add(path.exit_block)
+                    exit_blk = mba.get_mblock(path.exit_block)
+                    if exit_blk is not None and exit_blk.nsucc() == 0:
+                        # Block already has no successors (true terminal) — nothing to do.
+                        logger.info(
+                            "Handler blk[%d] (state=0x%x): true terminal exit via blk[%d] (0 succs)",
+                            handler_serial,
+                            incoming_state,
+                            path.exit_block,
+                        )
+                        resolved_count += 1
+                        continue
+
+                    # Exit block still has successors (likely goto dispatcher).
+                    # Find the function's terminal exit target.
+                    terminal_target = find_terminal_exit_target(
+                        mba, dispatcher_serial, sm_blocks
                     )
-                    resolved_count += 1
+                    if terminal_target is not None and terminal_target != path.exit_block:
+                        _reason = (
+                            f"hodur-linear: blk[{handler_serial}] "
+                            f"terminal exit blk[{path.exit_block}] -> exit blk[{terminal_target}]"
+                        )
+                        meta = _queue_redirect(path, terminal_target, _reason)
+                        if meta is not None and meta["kind"] not in ("already_claimed", "already_claimed_edge"):
+                            ok = _emit_redirect(meta, path, incoming_state, "terminal_exit", handler_serial)
+                            if ok:
+                                linearized_blocks.add(path.exit_block)
+                                # NOP dead state writes on the terminal path
+                                for write_blk, write_ea in path.state_writes:
+                                    edits.append(ProposedEdit(
+                                        edit_type=EditType.NOP_INSN,
+                                        source_block=write_blk,
+                                        instruction_ea=write_ea,
+                                        metadata={
+                                            "reason": f"hodur-linear: dead state write (terminal) in blk[{write_blk}]",
+                                            "strategy": "direct_handler_linearization",
+                                        },
+                                    ))
+                                logger.info(
+                                    "Handler blk[%d] (state=0x%x): terminal exit blk[%d] -> exit blk[%d]",
+                                    handler_serial,
+                                    incoming_state,
+                                    path.exit_block,
+                                    terminal_target,
+                                )
+                        resolved_count += 1
+                    else:
+                        logger.info(
+                            "Handler blk[%d] (state=0x%x): terminal exit via blk[%d] (no redirect target found)",
+                            handler_serial,
+                            incoming_state,
+                            path.exit_block,
+                        )
+                        resolved_count += 1
                     continue
 
                 target_serial = resolve_target_via_bst(bst_result, path.final_state)
@@ -687,7 +740,49 @@ class DirectHandlerLinearizationStrategy:
 
             for path in hidden_paths:
                 if path.final_state is None:
-                    continue  # Terminal path, no redirect needed
+                    # Terminal path — redirect to function exit if the block
+                    # still has successors (goto dispatcher).
+                    terminal_exit_blocks.add(path.exit_block)
+                    exit_blk = mba.get_mblock(path.exit_block)
+                    if exit_blk is not None and exit_blk.nsucc() == 0:
+                        resolved_count += 1
+                        continue  # True terminal, nothing to do.
+                    terminal_target = find_terminal_exit_target(
+                        mba, dispatcher_serial, sm_blocks
+                    )
+                    if terminal_target is not None and terminal_target != path.exit_block:
+                        _reason = (
+                            f"hodur-linear: hidden blk[{rootwalk_blk}] "
+                            f"terminal exit blk[{path.exit_block}] -> exit blk[{terminal_target}]"
+                        )
+                        meta = _queue_redirect(path, terminal_target, _reason)
+                        if meta is not None and meta["kind"] not in ("already_claimed", "already_claimed_edge"):
+                            ok = _emit_redirect(meta, path, 0, "hidden_terminal_exit", rootwalk_blk)
+                            if ok:
+                                linearized_blocks.add(path.exit_block)
+                                for write_blk, write_ea in path.state_writes:
+                                    edits.append(ProposedEdit(
+                                        edit_type=EditType.NOP_INSN,
+                                        source_block=write_blk,
+                                        instruction_ea=write_ea,
+                                        metadata={
+                                            "reason": (
+                                                f"hodur-linear: dead state write"
+                                                f" (hidden terminal blk[{rootwalk_blk}]) in blk[{write_blk}]"
+                                            ),
+                                            "strategy": "direct_handler_linearization",
+                                        },
+                                    ))
+                                logger.info(
+                                    "hodur-linear: hidden blk[%d] terminal exit blk[%d] -> exit blk[%d]",
+                                    rootwalk_blk,
+                                    path.exit_block,
+                                    terminal_target,
+                                )
+                        resolved_count += 1
+                    else:
+                        resolved_count += 1
+                    continue
 
                 # Try exact BST resolution first
                 target = resolve_target_via_bst(bst_result, path.final_state)
@@ -849,5 +944,8 @@ class DirectHandlerLinearizationStrategy:
                 "hidden_processed": hidden_processed,
                 "resolved_transitions": set(owned_transitions),
                 "handler_paths": all_handler_paths,
+                "handler_entry_serials": set(all_handlers.keys()),
+                "terminal_exit_blocks": terminal_exit_blocks,
+                "dispatcher_serial": dispatcher_serial,
             },
         )
