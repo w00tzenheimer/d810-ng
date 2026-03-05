@@ -170,6 +170,8 @@ class DirectHandlerLinearizationStrategy:
 
         # Preflight: collect terminal redirect edits for executor simulation
         terminal_redirect_edits: list[SimulatedEdit] = []
+        # All redirect edits (terminal + non-terminal) for full preflight simulation
+        all_redirect_edits: list[SimulatedEdit] = []
         handler_entry_set: set[int] = set(all_handlers.keys())
         pre_header_serial: int | None = getattr(bst_result, "pre_header_serial", None)
         forbidden_blocks: set[int] = {dispatcher_serial} | handler_entry_set
@@ -326,7 +328,11 @@ class DirectHandlerLinearizationStrategy:
             }
 
         def _emit_redirect(meta: dict, path: object, incoming_state: int, category: str, handler_serial: int) -> bool:
-            """Convert a redirect metadata dict into ProposedEdit(s) and append to edits."""
+            """Convert a redirect metadata dict into ProposedEdit(s) and append to edits.
+
+            Also collects a SimulatedEdit into all_redirect_edits for preflight
+            simulation using the same source block as the actual queued edit.
+            """
             kind = meta["kind"]
             target = meta["target"]
             src_block = meta["source_block"]
@@ -347,6 +353,15 @@ class DirectHandlerLinearizationStrategy:
                 ))
                 owned_blocks.add(src_block)
                 owned_edges.add((src_block, target))
+                # Collect SimulatedEdit using same source as actual edit
+                src_blk_obj = mba.get_mblock(src_block)
+                old_tgt = src_blk_obj.succ(0) if src_blk_obj is not None and src_blk_obj.nsucc() > 0 else 0
+                all_redirect_edits.append(SimulatedEdit(
+                    kind="goto_redirect",
+                    source=src_block,
+                    old_target=old_tgt,
+                    new_target=target,
+                ))
                 pass0_ledger.append({
                     "category": category,
                     "handler_entry": handler_serial,
@@ -376,6 +391,13 @@ class DirectHandlerLinearizationStrategy:
                 ))
                 owned_blocks.add(src_block)
                 owned_edges.add((src_block, target))
+                # Collect SimulatedEdit for edge redirect using same source as actual edit
+                all_redirect_edits.append(SimulatedEdit(
+                    kind="edge_split_redirect",
+                    source=src_block,
+                    old_target=old_target,
+                    new_target=target,
+                ))
                 pass0_ledger.append({
                     "category": category,
                     "handler_entry": handler_serial,
@@ -462,11 +484,14 @@ class DirectHandlerLinearizationStrategy:
                             if ok:
                                 linearized_blocks.add(path.exit_block)
                                 # Collect SimulatedEdit for executor preflight
-                                exit_blk_obj = mba.get_mblock(path.exit_block)
-                                old_tgt = exit_blk_obj.succ(0) if exit_blk_obj is not None and exit_blk_obj.nsucc() > 0 else 0
+                                # Use meta["source_block"] to match actual edit source
+                                term_src = meta["source_block"]
+                                term_src_obj = mba.get_mblock(term_src)
+                                old_tgt = term_src_obj.succ(0) if term_src_obj is not None and term_src_obj.nsucc() > 0 else 0
+                                sim_kind = "edge_split_redirect" if meta["kind"] == "edge" else "goto_redirect"
                                 terminal_redirect_edits.append(SimulatedEdit(
-                                    kind="goto_redirect",
-                                    source=path.exit_block,
+                                    kind=sim_kind,
+                                    source=term_src,
                                     old_target=old_tgt,
                                     new_target=terminal_target,
                                 ))
@@ -825,11 +850,14 @@ class DirectHandlerLinearizationStrategy:
                             if ok:
                                 linearized_blocks.add(path.exit_block)
                                 # Collect SimulatedEdit for executor preflight
-                                exit_blk_obj = mba.get_mblock(path.exit_block)
-                                old_tgt = exit_blk_obj.succ(0) if exit_blk_obj is not None and exit_blk_obj.nsucc() > 0 else 0
+                                # Use meta["source_block"] to match actual edit source
+                                term_src = meta["source_block"]
+                                term_src_obj = mba.get_mblock(term_src)
+                                old_tgt = term_src_obj.succ(0) if term_src_obj is not None and term_src_obj.nsucc() > 0 else 0
+                                sim_kind = "edge_split_redirect" if meta["kind"] == "edge" else "goto_redirect"
                                 terminal_redirect_edits.append(SimulatedEdit(
-                                    kind="goto_redirect",
-                                    source=path.exit_block,
+                                    kind=sim_kind,
+                                    source=term_src,
                                     old_target=old_tgt,
                                     new_target=terminal_target,
                                 ))
@@ -1021,6 +1049,7 @@ class DirectHandlerLinearizationStrategy:
                 "terminal_exit_blocks": terminal_exit_blocks,
                 "dispatcher_serial": dispatcher_serial,
                 "terminal_redirect_edits": terminal_redirect_edits,
+                "all_redirect_edits": all_redirect_edits,
                 "forbidden_blocks": forbidden_blocks,
                 "exit_blocks": exit_blocks,
             },

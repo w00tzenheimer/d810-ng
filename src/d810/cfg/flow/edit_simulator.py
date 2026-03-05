@@ -16,7 +16,7 @@ class SimulatedEdit:
         new_target: Block serial of the new target.
     """
 
-    kind: str  # "goto_redirect", "conditional_redirect", "convert_to_goto"
+    kind: str  # "goto_redirect", "conditional_redirect", "convert_to_goto", "edge_split_redirect"
     source: int
     old_target: int
     new_target: int
@@ -60,5 +60,17 @@ def simulate_edits(
         elif edit.kind == "convert_to_goto":
             # Replace ALL successors with single new_target
             result[edit.source] = [edit.new_target]
+
+        elif edit.kind == "edge_split_redirect":
+            # Conservative over-approximation: add new_target to source's successors.
+            # In reality, an intermediate node is created, but for cycle detection
+            # purposes modelling the new reachability edge is sufficient.
+            new_succs = list(succs)
+            try:
+                idx = new_succs.index(edit.old_target)
+                new_succs[idx] = edit.new_target
+            except ValueError:
+                new_succs.append(edit.new_target)
+            result[edit.source] = new_succs
 
     return result

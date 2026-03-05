@@ -45,3 +45,17 @@ class TestSimulateEdits:
         result = simulate_edits(adj, edits)
         assert result[0] == [2]
         assert result[1] == [3]
+
+    def test_edge_split_redirect(self):
+        """edge_split_redirect replaces old_target with new_target."""
+        adj = {0: [1, 2], 1: [], 2: []}
+        edits = [SimulatedEdit(kind="edge_split_redirect", source=0, old_target=1, new_target=3)]
+        result = simulate_edits(adj, edits)
+        assert result[0] == [3, 2]
+
+    def test_edge_split_redirect_missing_old_target(self):
+        """edge_split_redirect appends when old_target not in successors."""
+        adj = {0: [1], 1: []}
+        edits = [SimulatedEdit(kind="edge_split_redirect", source=0, old_target=99, new_target=3)]
+        result = simulate_edits(adj, edits)
+        assert 3 in result[0]

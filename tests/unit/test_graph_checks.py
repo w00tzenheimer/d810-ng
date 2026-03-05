@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from d810.cfg.flow.edit_simulator import SimulatedEdit, simulate_edits
 from d810.cfg.flow.graph_checks import (
     TerminalCycle,
     TerminalSinkResult,
@@ -129,6 +130,16 @@ class TestProveTerminalSink:
         assert not result.ok
         assert result.reaches_forbidden
 
+    def test_start_is_forbidden(self):
+        # start itself is in forbidden set. FAIL immediately.
+        adj: dict[int, list[int]] = {180: [219], 219: []}
+        exits = {219}
+        forbidden = {180}
+        result = prove_terminal_sink(180, adj, exits, forbidden)
+        assert not result.ok
+        assert result.reaches_forbidden
+        assert result.reason == "start block is forbidden"
+
 
 def _fake_result(**kwargs):
     """Build a duck-typed StageResult for SemanticGate testing."""
@@ -166,3 +177,41 @@ class TestSemanticGate:
         gate = SemanticGate()
         result = _fake_result(reachability_after=0.1)
         assert gate.check(result)
+
+
+class TestPreflightCycleRejection:
+    """End-to-end preflight: simulate_edits + detect_terminal_cycles catches cycles."""
+
+    def test_redirect_creates_cycle_detected(self):
+        # Handler entries: 10, 20. Dispatcher: 0. Terminal exit: 30.
+        # Graph: 0->10, 10->20, 20->30, 30->99 (exit).
+        # Bad edit: redirect 30->10 (terminal re-enters handler).
+        adj = _make_adj([(0, 10), (10, 20), (20, 30), (30, 99)])
+        bad_edit = SimulatedEdit(
+            kind="goto_redirect", source=30, old_target=99, new_target=10,
+        )
+        sim_adj = simulate_edits(adj, [bad_edit])
+        result = detect_terminal_cycles(
+            sim_adj,
+            terminal_exits={30},
+            handler_entries={10, 20},
+            dispatcher=0,
+        )
+        assert not result.passed
+        assert any(c.reentry_target == 10 for c in result.cycles)
+
+    def test_clean_redirect_no_cycle(self):
+        # Redirect terminal to a true exit — no cycle.
+        adj = _make_adj([(0, 10), (10, 20), (20, 30), (30, 0)])
+        adj[99] = []  # true exit node with 0 successors
+        good_edit = SimulatedEdit(
+            kind="goto_redirect", source=30, old_target=0, new_target=99,
+        )
+        sim_adj = simulate_edits(adj, [good_edit])
+        result = detect_terminal_cycles(
+            sim_adj,
+            terminal_exits={30},
+            handler_entries={10, 20},
+            dispatcher=0,
+        )
+        assert result.passed
