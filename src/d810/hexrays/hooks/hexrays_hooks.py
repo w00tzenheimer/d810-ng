@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import enum
-import importlib
-import json
 import math
-import os
 import pathlib
 import time
 from collections import defaultdict
@@ -127,6 +124,7 @@ if typing.TYPE_CHECKING:
     )
     from d810.optimizers.microcode.instructions.chain.handler import ChainOptimizer
     from d810.optimizers.microcode.instructions.early.handler import EarlyOptimizer
+
     # ast-ignore no-hexrays-hook-direct-optimizer-imports
     # ast-grep-ignore
     from d810.optimizers.microcode.instructions.egraph.egglog_handler import (
@@ -195,8 +193,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         PatternOptimizer: type[PatternOptimizer] = self._instruction_optimizer_type.get(
             "PatternOptimizer"
         )
-        PeepholeOptimizer: type[PeepholeOptimizer] = self._instruction_optimizer_type.get(
-            "PeepholeOptimizer"
+        PeepholeOptimizer: type[PeepholeOptimizer] = (
+            self._instruction_optimizer_type.get("PeepholeOptimizer")
         )
         Z3Optimizer: type[Z3Optimizer] = self._instruction_optimizer_type.get(
             "Z3Optimizer"
@@ -224,8 +222,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         ENABLE_EGGLOG_OPTIMIZER = False  # Set to True to enable (SLOW!)
 
         if ENABLE_EGGLOG_OPTIMIZER and EGGLOG_AVAILABLE:
-            EgglogOptimizer: type[EgglogOptimizer] = self._instruction_optimizer_type.get(
-                "EgglogOptimizer"
+            EgglogOptimizer: type[EgglogOptimizer] = (
+                self._instruction_optimizer_type.get("EgglogOptimizer")
             )
             if EgglogOptimizer is not None:
                 self.add_optimizer(
@@ -631,6 +629,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # Accessing stale mop_t pointers after pipeline mutations causes segfaults.
         self._pipeline_just_fired: bool = False
         # usage tracking moved to centralized statistics object
+        # Optional event emitter - set by D810Manager after construction.
+        self.event_emitter = None
 
     def reset_pass_counter(self) -> None:
         """Reset the per-maturity pass counter and generation counter.
@@ -763,48 +763,6 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self._pass_count = self._max_passes_current + 1
         return 0
 
-    def _maybe_capture_post_d810(self, mba: ida_hexrays.mbl_array_t) -> None:
-        """Snapshot the MBA to a file when D810_CAPTURE_POST_MATURITY matches.
-
-        Called right before maturity advances so self.current_maturity is the
-        maturity whose D810 rules just finished running.  The snapshot is written
-        to D810_CAPTURE_POST_FILE (default /tmp/d810_capture.txt) as JSON-lines
-        so callers can parse blocks without a running IDA session.
-
-        Environment variables
-        ---------------------
-        D810_CAPTURE_POST_MATURITY : str
-            Integer maturity level to capture (e.g. "5" for MMAT_GLBOPT1).
-        D810_CAPTURE_POST_FILE : str
-            Destination path for the dump (default: /tmp/d810_capture.txt).
-        """
-        capture_mat_str = os.environ.get("D810_CAPTURE_POST_MATURITY")
-        if not capture_mat_str:
-            return
-        try:
-            target_mat = int(capture_mat_str)
-        except ValueError:
-            return
-        if self.current_maturity != target_mat:
-            return
-        capture_file = os.environ.get("D810_CAPTURE_POST_FILE", "/tmp/d810_capture.txt")
-        try:
-            mba_to_dict = getattr(
-                importlib.import_module("d810.recon.microcode_dump"),
-                "mba_to_dict",
-            )
-            data = mba_to_dict(mba)
-            with open(capture_file, "w") as fh:
-                json.dump(data, fh, indent=2)
-            optimizer_logger.info(
-                "Post-D810 MBA captured at maturity %s -> %s (%d blocks)",
-                maturity_to_string(target_mat),
-                capture_file,
-                data.get("num_blocks", -1),
-            )
-        except Exception:
-            optimizer_logger.exception("Post-D810 capture failed")
-
     def log_info_on_input(self, blk: ida_hexrays.mblock_t):
         mba: ida_hexrays.mbl_array_t = blk.mba
 
@@ -815,10 +773,15 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     maturity_to_string(mba.maturity),
                 )
 
-            # Post-D810 capture: when the optimizer advances past a maturity, the
-            # previous maturity's rules have all fired.  If D810_CAPTURE_POST_MATURITY
-            # matches self.current_maturity (the just-completed one), snapshot the MBA.
-            self._maybe_capture_post_d810(mba)
+            # Notify listeners that D810 just finished running for the previous
+            # maturity level. Policy decisions (capture/logging/etc.) are handled
+            # by subscribers in the manager layer.
+            if self.current_maturity is not None and self.event_emitter is not None:
+                self.event_emitter.emit(
+                    DecompilationEvent.POST_D810_CAPTURE,
+                    mba,
+                    int(self.current_maturity),
+                )
 
             self.current_maturity = mba.maturity
             self._pipeline_just_fired = False
@@ -1073,6 +1036,7 @@ class DecompilationEvent(enum.Enum):
     STARTED = "decompilation_started"
     FINISHED = "decompilation_finished"
     MATURITY_CHANGED = "maturity_changed"
+    POST_D810_CAPTURE = "post_d810_capture"
 
 
 class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):

@@ -160,6 +160,9 @@ class DirectHandlerLinearizationStrategy:
         pass0_ledger: list[dict] = []
         linearized_blocks: set[int] = set()
 
+        # Accumulate all evaluated handler paths for return site extraction
+        all_handler_paths: dict[int, list[HandlerPathResult]] = {}
+
         def _queue_redirect(
             path: object,
             target: int,
@@ -379,6 +382,7 @@ class DirectHandlerLinearizationStrategy:
                 )
                 continue
 
+            all_handler_paths[handler_serial] = list(paths)
             linearized_blocks.add(handler_serial)
 
             for path in paths:
@@ -844,5 +848,6 @@ class DirectHandlerLinearizationStrategy:
                 "bst_rootwalk_targets": bst_rootwalk_targets,
                 "hidden_processed": hidden_processed,
                 "resolved_transitions": set(owned_transitions),
+                "handler_paths": all_handler_paths,
             },
         )

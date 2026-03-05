@@ -456,8 +456,8 @@ class TestDumpFunctionPseudocode:
         if dump_d810_maturity:
             # Post-D810 mid-pipeline capture: run decompile with D810 active,
             # but capture the MBA state *after* D810 finishes at the requested
-            # maturity via the D810_CAPTURE_POST_MATURITY env-var hook in
-            # BlockOptimizerManager._maybe_capture_post_d810().
+            # maturity via the D810_CAPTURE_POST_MATURITY env-var policy handled
+            # by D810Manager's post-maturity capture subscriber.
 
             _d810_mat_map = {
                 "GENERATED": 1,
