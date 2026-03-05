@@ -83,7 +83,8 @@ class TransactionalExecutor:
         stage_name = fragment.strategy_name
         if all_edits:
             pre_adj = self._build_adjacency_list(self.mba)
-            sim_adj = simulate_edits(pre_adj, all_edits)
+            sim_result = simulate_edits(pre_adj, all_edits)
+            sim_adj = sim_result.adj
 
             # Diagnostic: log edit breakdown by kind
             kind_counts = Counter(e.kind for e in all_edits)
@@ -119,6 +120,8 @@ class TransactionalExecutor:
             # Include redirect targets so cycle detector walks from them too
             for te in terminal_edits:
                 preflight_terminal_exits.add(te.new_target)
+            # Include clone nodes created by edge-split simulation
+            preflight_terminal_exits = preflight_terminal_exits | sim_result.created_clones
             preflight_handler_entries = fragment.metadata.get("handler_entry_serials", set())
             preflight_dispatcher = fragment.metadata.get("dispatcher_serial", -1)
             cycle_result_pre = detect_terminal_cycles(
