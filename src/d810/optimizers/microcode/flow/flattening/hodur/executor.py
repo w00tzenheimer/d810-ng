@@ -73,12 +73,14 @@ class TransactionalExecutor:
 
         # ---- Pre-apply semantic preflight ----
         terminal_edits = fragment.metadata.get("terminal_redirect_edits", [])
+        # Prefer all_redirect_edits (full edit set); fall back to terminal-only
+        all_edits = fragment.metadata.get("all_redirect_edits", []) or terminal_edits
         preflight_forbidden = fragment.metadata.get("forbidden_blocks", set())
         preflight_exits = fragment.metadata.get("exit_blocks", set())
 
-        if terminal_edits:
+        if all_edits:
             pre_adj = self._build_adjacency_list(self.mba)
-            sim_adj = simulate_edits(pre_adj, terminal_edits)
+            sim_adj = simulate_edits(pre_adj, all_edits)
 
             # Prove each terminal redirect target is a valid sink
             for edit in terminal_edits:

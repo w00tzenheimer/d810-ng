@@ -106,6 +106,16 @@ def prove_terminal_sink(
     Returns:
         TerminalSinkResult with ok=True if start is a valid terminal sink.
     """
+    # Check start itself against forbidden set
+    if start in forbidden:
+        return TerminalSinkResult(
+            ok=False,
+            reason="start block is forbidden",
+            witness_path=[start],
+            reaches_forbidden=True,
+            reachable_count=1,
+        )
+
     # BFS to find all reachable nodes and check forbidden / exit reachability
     visited: set[int] = set()
     parent: dict[int, int | None] = {start: None}
