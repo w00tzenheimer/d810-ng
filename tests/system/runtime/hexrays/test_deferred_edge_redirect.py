@@ -1,96 +1,23 @@
-"""Unit tests for EDGE_REDIRECT_VIA_PRED_SPLIT queue/coalesce logic.
+"""Tests for EDGE_REDIRECT_VIA_PRED_SPLIT queue/coalesce logic.
 
 These tests exercise the pure list-manipulation logic in DeferredGraphModifier:
 - queue_edge_redirect() delegation and queuing
 - coalesce() deduplication and conflict resolution for the new mod type
 - Priority ordering
 
-No IDA runtime is required. The module stubs out IDA C++ extension modules and
-the d810 hexrays submodules that subclass them (cfg_verify, hexrays_formatters,
-hexrays_helpers, cfg_queries, cfg_mutations, cfg.flowgraph) using
-plain ``types.ModuleType`` instances — NOT ``unittest.mock.Mock`` — so the
-no-IDA-mock rule enforced by tests/unit/conftest.py is respected.
+Runs in IDA environment (system/runtime); skips gracefully without IDA.
 """
 from __future__ import annotations
 
-import sys
-import types
+import pytest
 
+ida_hexrays = pytest.importorskip("ida_hexrays")
 
-# ---------------------------------------------------------------------------
-# Module-level stub installation
-# ---------------------------------------------------------------------------
-# Must happen BEFORE any d810 import that transitively reaches ida_hexrays.
-
-class _IntAutoStub(types.ModuleType):
-    """A ModuleType that returns a unique integer for any unknown attribute.
-
-    This satisfies comparisons like ``MMAT_GENERATED < MMAT_CALLS`` that
-    appear in d810.hexrays.utils.hexrays_helpers module-level code.
-    """
-    _counter: int = 0
-
-    def __getattr__(self, name: str) -> int:
-        if name.startswith("__"):
-            raise AttributeError(name)
-        _IntAutoStub._counter += 1
-        val: int = _IntAutoStub._counter
-        setattr(self, name, val)
-        return val
-
-
-_IDA_STUB_NAMES = (
-    "ida_hexrays", "ida_pro", "idaapi", "ida_bytes", "ida_funcs",
-    "ida_kernwin", "ida_name", "ida_nalt", "ida_segment", "ida_typeinf",
-    "ida_ua", "ida_xref", "ida_gdl", "ida_lines", "ida_range",
-    "ida_ida", "idc", "idautils",
-)
-
-# d810 submodules that define classes inheriting from IDA C++ extension types.
-# Stubbing them prevents TypeError from Python's C-extension subclassing rules.
-_D810_STUB_NAMES = (
-    "d810.hexrays.mutation.cfg_verify",
-    "d810.hexrays.utils.hexrays_formatters",
-    "d810.hexrays.utils.hexrays_helpers",
-    "d810.hexrays.ir.cfg_queries",
-    "d810.hexrays.mutation.cfg_mutations",
-    "d810.cfg.flowgraph",
-)
-
-# Record originals so we can restore after the import (good hygiene, though
-# these modules will not be present in a standard unit-test environment).
-_saved: dict[str, types.ModuleType | None] = {}
-
-for _name in _IDA_STUB_NAMES + _D810_STUB_NAMES:
-    _saved[_name] = sys.modules.get(_name)
-    if _name not in sys.modules:
-        sys.modules[_name] = _IntAutoStub(_name)
-
-# Snapshot ALL d810/ida modules before import so we can clean up transitive imports.
-_pre_import_d810_keys = {k for k in sys.modules if k.startswith(("d810.", "ida"))}
-
-# DeferredGraphModifier, GraphModification, and ModificationType are pure
-# Python dataclasses/enums — they must import successfully with IDA stubs in
-# place.  An ImportError here is a real regression and must FAIL loudly.
 from d810.hexrays.mutation.deferred_modifier import (
     DeferredGraphModifier,
     GraphModification,
     ModificationType,
 )
-
-# Restore saved modules (remove stubs we added) after the import succeeds.
-for _name, _orig in _saved.items():
-    if _orig is None:
-        sys.modules.pop(_name, None)
-    else:
-        sys.modules[_name] = _orig
-
-# Remove any new d810/ida modules that appeared as transitive side effects.
-_post_import_d810_keys = {k for k in sys.modules if k.startswith(("d810.", "ida"))}
-for _leaked in _post_import_d810_keys - _pre_import_d810_keys:
-    sys.modules.pop(_leaked, None)
-
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +97,7 @@ class TestQueueEdgeRedirectNewType:
 
 
 # ---------------------------------------------------------------------------
-# Test 3: coalesce deduplication — exact duplicates are dropped
+# Test 3: coalesce deduplication --- exact duplicates are dropped
 # ---------------------------------------------------------------------------
 
 class TestCoalesceDedup:
@@ -213,7 +140,7 @@ class TestCoalesceDedup:
 
 
 # ---------------------------------------------------------------------------
-# Test 4: coalesce conflict resolution — highest rule_priority wins
+# Test 4: coalesce conflict resolution --- highest rule_priority wins
 # ---------------------------------------------------------------------------
 
 class TestCoalesceConflict:
@@ -279,7 +206,7 @@ class TestCoalesceNoCrossContamination:
 
 
 # ---------------------------------------------------------------------------
-# Test 6: priority ordering — EDGE_REDIRECT (8) sorts between 5 and 10
+# Test 6: priority ordering --- EDGE_REDIRECT (8) sorts between 5 and 10
 # ---------------------------------------------------------------------------
 
 class TestPriorityOrdering:

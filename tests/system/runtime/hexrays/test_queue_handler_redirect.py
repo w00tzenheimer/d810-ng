@@ -1,179 +1,22 @@
-"""Unit tests for HodurUnflattener._queue_handler_redirect.
+"""Tests for HodurUnflattener._queue_handler_redirect.
 
 These tests call the REAL production method on HodurUnflattener by binding it
-to a mock instance.  All IDA C++ extension modules and the d810 submodules
-that subclass them are stubbed out at module level (same technique used in
-test_deferred_edge_redirect.py) so no IDA runtime is required.
+to a mock instance. Mock objects are used as legitimate test doubles for
+mba/block instances, not as IDA module stubs.
 
-Mock approach
--------------
-- IDA C++ modules (ida_hexrays, ida_pro, …) get an _IntAutoStub that returns
-  unique integers for attribute access, satisfying constant comparisons.
-- d810 submodules whose classes inherit from IDA types at module level are also
-  _IntAutoStub-ed to prevent TypeError from Python's C-extension rules.
-- ``d810.optimizers.microcode.flow.flattening.generic`` and
-  ``d810.optimizers.microcode.handler`` are given hand-crafted stub modules
-  that expose real Python base classes (``GenericUnflatteningRule``,
-  ``ConfigParam``) with the minimal surface needed for HodurUnflattener's
-  class-body to parse.
-- The other flattening submodules imported by unflattener_hodur (dispatcher_detection,
-  safeguards, transition_builder, utils) are _IntAutoStub-ed as their symbols
-  are only used inside method bodies, never at class-definition time.
-- ``object.__new__(HodurUnflattener)`` creates an uninitialised instance;
-  ``HodurUnflattener._queue_handler_redirect.__get__(instance)`` binds the
-  REAL production method to it.  ``instance.mba`` and ``instance.deferred``
-  are MagicMock objects.
+Runs in IDA environment (system/runtime); skips gracefully without IDA.
 """
 from __future__ import annotations
 
-import sys
-import types
-from dataclasses import dataclass
-from d810.core.typing import Any
+import pytest
 from unittest.mock import MagicMock
 
+ida_hexrays = pytest.importorskip("ida_hexrays")
 
-# ---------------------------------------------------------------------------
-# Step 1: _IntAutoStub — satisfies integer constant comparisons in IDA modules
-# ---------------------------------------------------------------------------
-
-class _IntAutoStub(types.ModuleType):
-    """Returns a unique int for any unknown attribute access."""
-
-    _counter: int = 0
-
-    def __getattr__(self, name: str) -> int:
-        if name.startswith("__"):
-            raise AttributeError(name)
-        _IntAutoStub._counter += 1
-        val: int = _IntAutoStub._counter
-        setattr(self, name, val)
-        return val
-
-
-# ---------------------------------------------------------------------------
-# Step 2: Hand-crafted stub for d810.optimizers.microcode.handler
-#         Provides a real ConfigParam dataclass (frozen=True to match prod).
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class _ConfigParam:
-    name: str
-    type: type
-    default: Any
-    description: str
-    choices: tuple | None = None
-
-
-_handler_stub = types.ModuleType("d810.optimizers.microcode.handler")
-_handler_stub.ConfigParam = _ConfigParam  # type: ignore[attr-defined]
-
-
-# ---------------------------------------------------------------------------
-# Step 3: Hand-crafted stub for d810.optimizers.microcode.flow.flattening.generic
-#         Provides a real GenericUnflatteningRule base class with CONFIG_SCHEMA=().
-# ---------------------------------------------------------------------------
-
-class _GenericUnflatteningRule:
-    """Minimal stub base class for HodurUnflattener."""
-    CONFIG_SCHEMA: tuple = ()
-    CATEGORY: str = ""
-    PRIORITY: int = 0
-    DEFAULT_UNFLATTENING_MATURITIES: list = []
-
-
-_generic_stub = types.ModuleType("d810.optimizers.microcode.flow.flattening.generic")
-_generic_stub.GenericUnflatteningRule = _GenericUnflatteningRule  # type: ignore[attr-defined]
-
-
-# ---------------------------------------------------------------------------
-# Step 4: Install all stubs BEFORE any d810 import
-# ---------------------------------------------------------------------------
-
-_IDA_STUB_NAMES = (
-    "ida_hexrays", "ida_pro", "idaapi", "ida_bytes", "ida_funcs",
-    "ida_kernwin", "ida_name", "ida_nalt", "ida_segment", "ida_typeinf",
-    "ida_ua", "ida_xref", "ida_gdl", "ida_lines", "ida_range",
-    "ida_ida", "idc", "idautils", "ida_idp",
-)
-
-# d810 submodules with IDA-inheriting classes at module level, or with deep
-# transitive IDA imports that are only used inside method bodies.
-_D810_STUB_NAMES = (
-    "d810.hexrays.mutation.cfg_verify",
-    "d810.hexrays.utils.hexrays_formatters",
-    "d810.hexrays.utils.hexrays_helpers",
-    "d810.hexrays.ir.cfg_queries",
-    "d810.hexrays.ir.cfg_utils",
-    "d810.hexrays.mutation.cfg_mutations",
-    "d810.cfg.flowgraph",
-    "d810.evaluator.hexrays_microcode.tracker",
-    "d810.recon.flow.bst_analysis",
-    "d810.hexrays.utils.arch_utils",
-    "d810.hexrays.utils.table_utils",
-    "d810.hexrays.expr.ast",
-    "d810.hexrays.hexrays_microcode.emulator",
-    "d810.evaluator.hexrays_microcode",
-    "d810.evaluator.hexrays_microcode.emulator",
-    "d810.hexrays.expr.z3_utils",
-    "d810.cfg.dominator",
-    "d810.recon.flow.dispatcher_detection",
-    "d810.optimizers.microcode.flow.flattening.safeguards",
-    "d810.recon.flow.transition_builder",
-    "d810.optimizers.microcode.flow.flattening.exceptions",
-    # flow/__init__.py imports these under the `else` branch when ida_hexrays
-    # appears importable — stub them to prevent deep transitive pulls.
-    "d810.optimizers.microcode.flow.constant_prop.global_const_inline",
-    "d810.optimizers.microcode.flow.flattening.block_merge",
-    "d810.optimizers.microcode.flow.flattening.mba_state_preconditioner",
-    "d810.optimizers.microcode.flow.jumps.indirect_branch",
-    "d810.optimizers.microcode.flow.jumps.indirect_call",
-    "d810.optimizers.microcode.flow.identity_call",
-    # structuring package and its submodules (imported by flow/__init__.py else branch)
-    "d810.optimizers.microcode.flow.structuring",
-    "d810.optimizers.microcode.flow.structuring.epilogue_cloner",
-)
-
-_saved: dict[str, types.ModuleType | None] = {}
-
-for _name in _IDA_STUB_NAMES + _D810_STUB_NAMES:
-    _saved[_name] = sys.modules.get(_name)
-    if _name not in sys.modules:
-        sys.modules[_name] = _IntAutoStub(_name)
-
-# Install the hand-crafted stubs (overwrite any auto-stub if already present).
-_saved["d810.optimizers.microcode.handler"] = sys.modules.get("d810.optimizers.microcode.handler")
-sys.modules["d810.optimizers.microcode.handler"] = _handler_stub
-
-_saved["d810.optimizers.microcode.flow.flattening.generic"] = sys.modules.get(
-    "d810.optimizers.microcode.flow.flattening.generic"
-)
-sys.modules["d810.optimizers.microcode.flow.flattening.generic"] = _generic_stub
-
-# Snapshot ALL d810/ida modules before import so we can clean up transitive imports.
-_pre_import_d810_keys = {k for k in sys.modules if k.startswith(("d810.", "ida"))}
-
-# Now import — HandlerPathResult is a pure dataclass; HodurUnflattener we only
-# bind its method, never call __init__.
-from d810.optimizers.microcode.flow.flattening.unflattener_hodur import (  # noqa: E402
+from d810.optimizers.microcode.flow.flattening.unflattener_hodur import (
     HandlerPathResult,
     HodurUnflattener,
 )
-
-# Restore explicitly saved modules and remove any transitive d810/ida imports
-# that were introduced during the import above (prevents stub pollution).
-for _name, _orig in _saved.items():
-    if _orig is None:
-        sys.modules.pop(_name, None)
-    else:
-        sys.modules[_name] = _orig
-
-# Remove any new d810/ida modules that appeared as transitive side effects.
-_post_import_d810_keys = {k for k in sys.modules if k.startswith(("d810.", "ida"))}
-for _leaked in _post_import_d810_keys - _pre_import_d810_keys:
-    sys.modules.pop(_leaked, None)
-
-import pytest  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
