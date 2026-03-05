@@ -198,6 +198,17 @@ class TestDumpFunctionPseudocode:
                 if func_ea == idaapi.BADADDR:
                     raise AssertionError(f"Function '{function_name}' not found")
 
+                force_rettype = request.config.getoption("--dump-force-rettype", default=None)
+                if force_rettype:
+                    import ida_typeinf
+                    tif = ida_typeinf.tinfo_t()
+                    decl_str = f"{force_rettype} __fastcall {function_name}(void);"
+                    if ida_typeinf.parse_decl(tif, None, decl_str, ida_typeinf.PT_SIL):
+                        ida_typeinf.apply_tinfo(func_ea, tif, ida_typeinf.TINFO_DEFINITE)
+                        print(f"[FORCE-RETTYPE] Applied: {decl_str}")
+                    else:
+                        print(f"[FORCE-RETTYPE] FAILED to parse: {decl_str}")
+
                 state.stop_d810()
                 before = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
                 if before is None:
