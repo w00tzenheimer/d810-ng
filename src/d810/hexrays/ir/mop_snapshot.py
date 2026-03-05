@@ -13,24 +13,12 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from dataclasses import dataclass, field
 
-from d810.core.typing import NewType, TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import ida_hexrays
 
 logger = getLogger(__name__)
-
-# Type aliases for documentation and static analysis.
-# OwnedMop: a mop_t created by our code (via mop_t(), make_number, dup_mop).
-# BorrowedMop: a mop_t obtained from IDA's internal trees (blk.tail.l, etc.).
-#   BorrowedMop MUST NOT be stored beyond the current callback scope.
-if TYPE_CHECKING:
-    import ida_hexrays
-    OwnedMop = NewType("OwnedMop", ida_hexrays.mop_t)
-    BorrowedMop = NewType("BorrowedMop", ida_hexrays.mop_t)
-else:
-    OwnedMop = NewType("OwnedMop", object)
-    BorrowedMop = NewType("BorrowedMop", object)
 
 from d810.core.cymode import CythonMode
 
