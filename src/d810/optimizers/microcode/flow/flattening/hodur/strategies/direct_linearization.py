@@ -495,6 +495,8 @@ class DirectHandlerLinearizationStrategy:
                                     old_target=old_tgt,
                                     new_target=terminal_target,
                                 ))
+                                # Track redirect target so cycle detector walks from it too
+                                terminal_exit_blocks.add(terminal_target)
                                 # NOP dead state writes on the terminal path
                                 for write_blk, write_ea in path.state_writes:
                                     edits.append(ProposedEdit(
@@ -861,6 +863,8 @@ class DirectHandlerLinearizationStrategy:
                                     old_target=old_tgt,
                                     new_target=terminal_target,
                                 ))
+                                # Track redirect target so cycle detector walks from it too
+                                terminal_exit_blocks.add(terminal_target)
                                 for write_blk, write_ea in path.state_writes:
                                     edits.append(ProposedEdit(
                                         edit_type=EditType.NOP_INSN,
