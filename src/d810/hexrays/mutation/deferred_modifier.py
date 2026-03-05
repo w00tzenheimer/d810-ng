@@ -1776,6 +1776,17 @@ class DeferredGraphModifier:
                         _p = self._mod_payload(mod, i)
                         _p["result"] = "failed"
                         self._emit(DeferredEvent.DEFERRED_MOD_FAILED, _p)
+                    # Edge-split precondition failures are safe rejections
+                    # (block opcode changed between analysis and apply time).
+                    # Skip the failed edit and continue with remaining mods
+                    # instead of aborting the entire batch.
+                    if mod.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
+                        logger.warning(
+                            "Skipping failed edge-split [%d] and continuing "
+                            "(safe precondition rejection, not MBA corruption)",
+                            i,
+                        )
+                        continue
                     logger.warning(
                         "Aborting deferred apply after first failed modification "
                         "to avoid compounding CFG corruption"
@@ -2037,7 +2048,7 @@ class DeferredGraphModifier:
                     via_pred, src_block,
                 )
                 # Remove any successor that is not src_block from pred_blk succset,
-                # add src_block back.
+                # add src_block back.  Also detach clone from its targets.
                 succs = [pred_blk.succset[i] for i in range(pred_blk.succset.size())]
                 for s in succs:
                     if s != src_block:
@@ -2045,6 +2056,20 @@ class DeferredGraphModifier:
                         clone_blk = self.mba.get_mblock(s)
                         if clone_blk is not None:
                             clone_blk.predset._del(via_pred)
+                            # Detach clone from its successors' predsets
+                            clone_succs = [
+                                clone_blk.succset[j]
+                                for j in range(clone_blk.succset.size())
+                            ]
+                            for cs in clone_succs:
+                                tgt_blk = self.mba.get_mblock(cs)
+                                if tgt_blk is not None:
+                                    tgt_blk.predset._del(s)
+                                    tgt_blk.mark_lists_dirty()
+                            # Isolate clone: clear its succset
+                            while clone_blk.succset.size() > 0:
+                                clone_blk.succset._del(clone_blk.succset[0])
+                            clone_blk.mark_lists_dirty()
                 if not any(
                     pred_blk.succset[i] == src_block
                     for i in range(pred_blk.succset.size())
@@ -2442,7 +2467,45 @@ class DeferredGraphModifier:
 
         mba = self.mba
 
-        # Preconditions
+        # ── Legality gate ──────────────────────────────────────────────
+        # Both blocks must have explicit tails with expected opcodes.
+        if blk.tail is None or blk.tail.opcode != ida_hexrays.m_goto:
+            logger.warning(
+                "EDGE_SPLIT_ILLEGAL_PRECOND: src blk[%d] tail is not m_goto",
+                blk.serial,
+            )
+            return False
+
+        via_pred_blk_pre = mba.get_mblock(via_pred)
+        if via_pred_blk_pre is not None:
+            _vp_tail = via_pred_blk_pre.tail
+            if _vp_tail is None:
+                logger.warning(
+                    "EDGE_SPLIT_ILLEGAL_PRECOND: via_pred blk[%d] has no tail",
+                    via_pred,
+                )
+                return False
+            if _vp_tail.opcode != ida_hexrays.m_goto and not ida_hexrays.is_mcode_jcond(_vp_tail.opcode):
+                logger.warning(
+                    "EDGE_SPLIT_ILLEGAL_PRECOND: via_pred blk[%d] tail is not goto/jcond (opcode=%d)",
+                    via_pred, _vp_tail.opcode,
+                )
+                return False
+
+        # via_pred must currently target src
+        if via_pred_blk_pre is not None:
+            _vp_targets_src = any(
+                via_pred_blk_pre.succset[i] == blk.serial
+                for i in range(via_pred_blk_pre.succset.size())
+            )
+            if not _vp_targets_src:
+                logger.warning(
+                    "EDGE_SPLIT_ILLEGAL_PRECOND: via_pred blk[%d] does not target src blk[%d]",
+                    via_pred, blk.serial,
+                )
+                return False
+
+        # ── Original preconditions ─────────────────────────────────────
         # Guard: src_block must be 1-way (clone inherits its successor).
         if blk.nsucc() != 1:
             logger.warning(
@@ -2460,9 +2523,9 @@ class DeferredGraphModifier:
         if via_pred_blk is None:
             logger.warning("via_pred block %d not found", via_pred)
             return False
-        if via_pred_blk.nsucc() != 1:
+        if via_pred_blk.nsucc() not in (1, 2):
             logger.warning(
-                "via_pred block %d has %d successors, expected 1",
+                "via_pred block %d has %d successors, expected 1 or 2",
                 via_pred, via_pred_blk.nsucc(),
             )
             return False
@@ -2557,6 +2620,116 @@ class DeferredGraphModifier:
 
             # Step 7: Mark chains dirty so IDA rebuilds def-use.
             mba.mark_chains_dirty()
+
+            # ── Step 8: Local reciprocity assertions ──────────────────────
+            # Verify that the edge-split produced a consistent graph before
+            # returning success.  On failure, attempt local rollback.
+            reciprocity_ok = True
+
+            # 8a: clone.predset must contain via_pred
+            if not any(
+                clone_blk.predset[i] == via_pred
+                for i in range(clone_blk.predset.size())
+            ):
+                logger.error(
+                    "RECIPROCITY_FAIL: clone blk[%d] predset missing via_pred %d",
+                    clone_blk.serial, via_pred,
+                )
+                reciprocity_ok = False
+
+            # 8b: via_pred.succset must contain clone
+            if not any(
+                via_pred_blk.succset[i] == clone_blk.serial
+                for i in range(via_pred_blk.succset.size())
+            ):
+                logger.error(
+                    "RECIPROCITY_FAIL: via_pred blk[%d] succset missing clone %d",
+                    via_pred, clone_blk.serial,
+                )
+                reciprocity_ok = False
+
+            # 8c: clone.succset must contain new_target
+            if not any(
+                clone_blk.succset[i] == new_target
+                for i in range(clone_blk.succset.size())
+            ):
+                logger.error(
+                    "RECIPROCITY_FAIL: clone blk[%d] succset missing new_target %d",
+                    clone_blk.serial, new_target,
+                )
+                reciprocity_ok = False
+
+            # 8d: new_target.predset must contain clone
+            new_target_blk = mba.get_mblock(new_target)
+            if new_target_blk is not None and not any(
+                new_target_blk.predset[i] == clone_blk.serial
+                for i in range(new_target_blk.predset.size())
+            ):
+                logger.error(
+                    "RECIPROCITY_FAIL: new_target blk[%d] predset missing clone %d",
+                    new_target, clone_blk.serial,
+                )
+                reciprocity_ok = False
+
+            # 8e: src.predset must NOT contain via_pred (it was moved to clone)
+            if any(
+                blk.predset[i] == via_pred
+                for i in range(blk.predset.size())
+            ):
+                logger.error(
+                    "RECIPROCITY_FAIL: src blk[%d] predset still contains via_pred %d",
+                    blk.serial, via_pred,
+                )
+                reciprocity_ok = False
+
+            if not reciprocity_ok:
+                logger.error(
+                    "RECIPROCITY_FAIL: edge-split blk[%d] structurally inconsistent, "
+                    "attempting rollback",
+                    blk.serial,
+                )
+                # Best-effort local revert — uses the rollback closure pattern
+                # from _prepare_rollback but inline since we have all locals.
+                try:
+                    # Rewire via_pred back to src
+                    succs = [
+                        via_pred_blk.succset[i]
+                        for i in range(via_pred_blk.succset.size())
+                    ]
+                    for s in succs:
+                        if s != blk.serial:
+                            via_pred_blk.succset._del(s)
+                            orphan = mba.get_mblock(s)
+                            if orphan is not None:
+                                orphan.predset._del(via_pred)
+                    if not any(
+                        via_pred_blk.succset[i] == blk.serial
+                        for i in range(via_pred_blk.succset.size())
+                    ):
+                        via_pred_blk.succset.push_back(blk.serial)
+                    if not any(
+                        blk.predset[i] == via_pred
+                        for i in range(blk.predset.size())
+                    ):
+                        blk.predset.push_back(via_pred)
+                    # Detach clone from new_target
+                    if new_target_blk is not None:
+                        new_target_blk.predset._del(clone_blk.serial)
+                    # Isolate clone: clear its succset
+                    while clone_blk.succset.size() > 0:
+                        clone_blk.succset._del(clone_blk.succset[0])
+                    via_pred_blk.mark_lists_dirty()
+                    blk.mark_lists_dirty()
+                    clone_blk.mark_lists_dirty()
+                    if new_target_blk is not None:
+                        new_target_blk.mark_lists_dirty()
+                    mba.mark_chains_dirty()
+                except Exception as rb_exc:
+                    logger.error(
+                        "RECIPROCITY_FAIL: rollback also failed for blk[%d]: %s",
+                        blk.serial, rb_exc,
+                    )
+                return False
 
             logger.debug(
                 "edge_redirect_via_pred_split: done — pred=%d -> clone=%d -> %d "
