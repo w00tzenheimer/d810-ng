@@ -143,6 +143,7 @@ class TestAnalysisSnapshot:
         assert snap.resolved_transitions == frozenset()
         assert snap.initial_transitions == ()
         assert snap.dispatcher_cache is None
+        assert snap.flow_graph is None
 
     def test_frozen(self) -> None:
         snap = self._make_snapshot()

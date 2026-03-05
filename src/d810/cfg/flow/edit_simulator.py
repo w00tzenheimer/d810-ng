@@ -4,6 +4,15 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 
+from d810.cfg.graph_modification import (
+    ConvertToGoto,
+    CreateConditionalRedirect,
+    EdgeRedirectViaPredSplit,
+    GraphModification,
+    RedirectBranch,
+    RedirectGoto,
+)
+
 
 @dataclass
 class SimulationResult:
@@ -12,10 +21,12 @@ class SimulationResult:
     Attributes:
         adj: Post-edit adjacency dict (block serial -> successor serials).
         created_clones: Set of virtual clone node serials created by edge_split_redirect.
+        clone_origins: Mapping of virtual clone node serial to the edit that created it.
     """
 
     adj: dict[int, list[int]]
     created_clones: set[int] = field(default_factory=set)
+    clone_origins: dict[int, SimulatedEdit] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -34,12 +45,90 @@ class SimulatedEdit:
     old_target: int
     new_target: int
     via_pred: int | None = None  # only for edge_split_redirect
+    fallthrough_target: int | None = None  # only for create_conditional_redirect
+
+
+def graph_modifications_to_simulated_edits(
+    modifications: list[GraphModification],
+) -> list[SimulatedEdit]:
+    """Project GraphModification list to simulator-friendly edit ops."""
+    simulated: list[SimulatedEdit] = []
+
+    for mod in modifications:
+        match mod:
+            case RedirectGoto(from_serial=src, old_target=old, new_target=new):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="goto_redirect",
+                        source=src,
+                        old_target=old,
+                        new_target=new,
+                    )
+                )
+
+            case RedirectBranch(from_serial=src, old_target=old, new_target=new):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="conditional_redirect",
+                        source=src,
+                        old_target=old,
+                        new_target=new,
+                    )
+                )
+
+            case ConvertToGoto(block_serial=src, goto_target=new):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="convert_to_goto",
+                        source=src,
+                        old_target=-1,
+                        new_target=new,
+                    )
+                )
+
+            case EdgeRedirectViaPredSplit(
+                src_block=src,
+                old_target=old,
+                new_target=new,
+                via_pred=pred,
+            ):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="edge_split_redirect",
+                        source=src,
+                        old_target=old,
+                        new_target=new,
+                        via_pred=pred,
+                    )
+                )
+
+            case CreateConditionalRedirect(
+                source_block=src,
+                ref_block=ref,
+                conditional_target=conditional,
+                fallthrough_target=fallthrough,
+            ):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="create_conditional_redirect",
+                        source=src,
+                        old_target=ref,
+                        new_target=conditional,
+                        fallthrough_target=fallthrough,
+                    )
+                )
+
+            case _:
+                # Nop/Insert/Remove/Duplicate have no topology effect in preflight.
+                continue
+
+    return simulated
 
 
 def simulate_edits(
     adj: dict[int, list[int]],
     edits: list[SimulatedEdit],
-) -> dict[int, list[int]]:
+) -> SimulationResult:
     """Apply edits to a COPY of adj, return new adjacency. No MBA mutation.
 
     Operations:
@@ -57,6 +146,7 @@ def simulate_edits(
     """
     result: dict[int, list[int]] = copy.deepcopy(adj)
     created_clones: set[int] = set()
+    clone_origins: dict[int, SimulatedEdit] = {}
 
     for edit in edits:
         succs = result.get(edit.source, [])
@@ -80,9 +170,10 @@ def simulate_edits(
             if edit.via_pred is not None:
                 # Model IDA's edge-split: clone source block, rewire via_pred.
                 # 1. Create virtual clone node with [new_target] as successor.
-                clone_serial = max(result.keys()) + 1
+                clone_serial = max(result.keys(), default=-1) + 1
                 result[clone_serial] = [edit.new_target]
                 created_clones.add(clone_serial)
+                clone_origins[clone_serial] = edit
                 # 2. Rewire via_pred: replace source with clone in via_pred's successors.
                 if edit.via_pred in result:
                     result[edit.via_pred] = [
@@ -97,4 +188,29 @@ def simulate_edits(
                     new_succs.append(edit.new_target)
                 result[edit.source] = new_succs
 
-    return SimulationResult(adj=result, created_clones=created_clones)
+        elif edit.kind == "create_conditional_redirect":
+            # Model as creating a virtual conditional clone that source points to.
+            clone_serial = max(result.keys(), default=-1) + 1
+            clone_succs = [edit.new_target]
+            if (
+                edit.fallthrough_target is not None
+                and edit.fallthrough_target != edit.new_target
+            ):
+                clone_succs.append(edit.fallthrough_target)
+            result[clone_serial] = clone_succs
+            created_clones.add(clone_serial)
+            clone_origins[clone_serial] = edit
+
+            new_succs = list(succs)
+            try:
+                idx = new_succs.index(edit.old_target)
+                new_succs[idx] = clone_serial
+            except ValueError:
+                new_succs.append(clone_serial)
+            result[edit.source] = new_succs
+
+    return SimulationResult(
+        adj=result,
+        created_clones=created_clones,
+        clone_origins=clone_origins,
+    )

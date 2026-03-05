@@ -1,15 +1,16 @@
 """Core protocol types for the Hodur strategy-based unflattening pipeline.
 
-All types in this module are pure Python — no IDA imports — so they can be
+All types in this module are pure Python - no IDA imports - so they can be
 fully exercised by unit tests without an IDA environment.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum, auto
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from d810.cfg.graph_modification import GraphModification
+    from d810.cfg.flowgraph import FlowGraph
     # AnalysisSnapshot lives in an IDA-dependent module; import only for type
     # checking so this module remains importable in unit-test environments.
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
@@ -23,48 +24,6 @@ if TYPE_CHECKING:
 FAMILY_DIRECT: str = "direct"
 FAMILY_FALLBACK: str = "fallback"
 FAMILY_CLEANUP: str = "cleanup"
-
-
-# ---------------------------------------------------------------------------
-# EditType
-# ---------------------------------------------------------------------------
-
-
-class EditType(Enum):
-    """Describes the kind of microcode mutation a strategy wants to apply."""
-
-    GOTO_REDIRECT = auto()
-    CONVERT_TO_GOTO = auto()
-    NOP_INSN = auto()
-    BLOCK_DUPLICATE = auto()
-    CONDITIONAL_REDIRECT = auto()
-    EDGE_REDIRECT = auto()  # Clone src block; redirect one predecessor to clone
-
-
-# ---------------------------------------------------------------------------
-# ProposedEdit
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ProposedEdit:
-    """An atomic microcode edit proposed by a strategy.
-
-    Args:
-        edit_type: The kind of mutation to perform.
-        source_block: Serial number of the block containing the edit site.
-        target_block: Serial number of the destination block, if applicable.
-        instruction_ea: Effective address of the instruction to mutate, if applicable.
-        metadata: Arbitrary key/value pairs for debugging and logging.
-    """
-
-    edit_type: EditType
-    source_block: int
-    target_block: int | None = None
-    instruction_ea: int | None = None
-    metadata: dict = field(default_factory=dict)  # type: ignore[type-arg]
-    """Mutable metadata dict. Contents can change despite frozen dataclass.
-    Strategies should treat as write-once after construction."""
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +115,7 @@ class BenefitMetrics:
         transitions_resolved: Number of state transitions that become explicit gotos.
         blocks_freed: Number of dispatcher or BST blocks that become dead code.
         conflict_density: Estimated proportion of owned resources that conflict
-            with other concurrently-active strategies (0.0–1.0+).
+            with other concurrently-active strategies (0.0-1.0+).
     """
 
     handlers_resolved: int
@@ -191,34 +150,30 @@ class PlanFragment:
 
     Args:
         strategy_name: Identifier of the strategy that produced this fragment.
-        family: Strategy family — one of :data:`FAMILY_DIRECT`,
+        family: Strategy family - one of :data:`FAMILY_DIRECT`,
             :data:`FAMILY_FALLBACK`, or :data:`FAMILY_CLEANUP`.
-        proposed_edits: Ordered list of atomic edits to apply.
         ownership: Microcode resources claimed by this plan.
         prerequisites: Names of other strategies whose fragments must be applied
             before this one.
         expected_benefit: Estimated benefit of applying this plan.
-        risk_score: Estimated probability (0.0–1.0) that applying this plan
+        risk_score: Estimated probability (0.0-1.0) that applying this plan
             introduces a correctness error.
+        modifications: Ordered list of backend-agnostic graph modifications.
     """
 
     strategy_name: str
     family: str
-    proposed_edits: list[ProposedEdit]
     ownership: OwnershipScope
     prerequisites: list[str]
     expected_benefit: BenefitMetrics
     risk_score: float
     metadata: dict = field(default_factory=dict)  # type: ignore[type-arg]
     """Arbitrary strategy-specific metadata (e.g. pass0 ledger, bookkeeping for G2)."""
+    modifications: list[GraphModification] = field(default_factory=list)
 
     def is_empty(self) -> bool:
-        """Return True when this fragment proposes no edits.
-
-        Returns:
-            True iff ``proposed_edits`` is empty.
-        """
-        return len(self.proposed_edits) == 0
+        """Return True when this fragment proposes no graph-affecting actions."""
+        return len(self.modifications) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +197,7 @@ class UnflatteningStrategy(Protocol):
 
     @property
     def family(self) -> str:
-        """Strategy family — one of :data:`FAMILY_DIRECT`, :data:`FAMILY_FALLBACK`,
+        """Strategy family - one of :data:`FAMILY_DIRECT`, :data:`FAMILY_FALLBACK`,
         or :data:`FAMILY_CLEANUP`."""
         ...
 
@@ -258,14 +213,14 @@ class UnflatteningStrategy(Protocol):
         ...
 
     def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
-        """Produce a :class:`PlanFragment` describing all desired edits.
+        """Produce a :class:`PlanFragment` describing desired modifications.
 
         Args:
             snapshot: Read-only view of the current function's analysis state.
 
         Returns:
-            A :class:`PlanFragment` with at least one edit, or ``None`` when
-            the strategy has nothing to contribute.
+            A :class:`PlanFragment` with at least one modification, or ``None``
+            when the strategy has nothing to contribute.
         """
         ...
 
@@ -300,20 +255,20 @@ class VerificationGate:
     """Post-stage verification thresholds.
 
     After direct linearization, dispatcher and BST blocks become dead code,
-    so block-level reachability drops significantly (e.g. to ~0.66).  This is
-    *expected*.  The primary correctness metric is **handler reachability** --
+    so block-level reachability drops significantly (e.g. to ~0.66). This is
+    *expected*. The primary correctness metric is **handler reachability** -
     the fraction of handler entry blocks that remain reachable from the
-    function entry.  Block-level reachability is kept only as a catastrophic-
+    function entry. Block-level reachability is kept only as a catastrophic-
     failure floor.
 
     Attributes:
         min_reachability: Catastrophic floor for block-level reachability.
-        min_handler_reachability: Primary gate -- fraction of handler entries
+        min_handler_reachability: Primary gate - fraction of handler entries
             that must be reachable after the stage.
         max_conflict_count: Upper bound on conflict count.
     """
 
-    min_reachability: float = 0.3
+    min_reachability: float = 0.7
     min_handler_reachability: float = 0.9
     max_conflict_count: int = 10
 
@@ -335,6 +290,42 @@ class VerificationGate:
         if result.conflict_count_after > self.max_conflict_count:
             return False
         return True
+
+    def check_flow_graph(
+        self,
+        cfg: FlowGraph,
+        handler_entry_serials: set[int] | None = None,
+        conflict_count_after: int = 0,
+    ) -> bool:
+        """Evaluate gate thresholds directly from a virtual FlowGraph snapshot."""
+        if not cfg.blocks:
+            return False
+
+        visited: set[int] = set()
+        queue: list[int] = [cfg.entry_serial]
+        while queue:
+            serial = queue.pop()
+            if serial in visited or serial not in cfg.blocks:
+                continue
+            visited.add(serial)
+            queue.extend(cfg.successors(serial))
+
+        block_reachability = len(visited) / len(cfg.blocks)
+
+        if handler_entry_serials:
+            reachable_handlers = visited & handler_entry_serials
+            handler_reachability = len(reachable_handlers) / len(handler_entry_serials)
+        else:
+            handler_reachability = block_reachability
+
+        return self.check(
+            StageResult(
+                strategy_name="flow_graph_gate",
+                reachability_after=block_reachability,
+                handler_reachability=handler_reachability,
+                conflict_count_after=conflict_count_after,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -5,17 +5,32 @@ from collections import Counter
 
 from d810.core import logging
 
-from d810.cfg.flow.edit_simulator import simulate_edits
-from d810.cfg.flow.graph_checks import SemanticGate, detect_terminal_cycles, prove_terminal_sink
+from d810.cfg.flow.edit_simulator import (
+    SimulatedEdit,
+    graph_modifications_to_simulated_edits,
+    simulate_edits,
+)
+from d810.cfg.flow.graph_checks import (
+    SemanticGate,
+    check_edge_split_structural_legality,
+    detect_terminal_cycles,
+    prove_terminal_sink,
+)
+from d810.cfg.flowgraph import FlowGraph
+from d810.cfg.graph_modification import (
+    ConvertToGoto,
+    CreateConditionalRedirect,
+    EdgeRedirectViaPredSplit,
+    GraphModification,
+    RedirectBranch,
+    RedirectGoto,
+)
+from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
-    EditType,
     PlanFragment,
-    ProposedEdit,
     StageResult,
     VerificationGate,
 )
-
-from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.optimizers.microcode.flow.flattening.safeguards import (
     should_apply_cfg_modifications,
 )
@@ -23,16 +38,42 @@ from d810.optimizers.microcode.flow.flattening.safeguards import (
 executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 
 
+def _preflight_priority(mod: GraphModification) -> int:
+    """Mirror DeferredGraphModifier apply priority for topology simulation."""
+    from d810.cfg.graph_modification import (
+        ConvertToGoto,
+        CreateConditionalRedirect,
+        EdgeRedirectViaPredSplit,
+        InsertBlock,
+        RedirectBranch,
+        RedirectGoto,
+    )
+
+    match mod:
+        case InsertBlock() | CreateConditionalRedirect():
+            return 5
+        case EdgeRedirectViaPredSplit():
+            return 8
+        case RedirectGoto() | RedirectBranch():
+            return 10
+        case ConvertToGoto():
+            return 20
+        case _:
+            return 1000
+
+
 class TransactionalExecutor:
-    """Applies plan fragments via DeferredGraphModifier with verification gates."""
+    """Applies plan fragments through GraphModification lowering with gates."""
 
     def __init__(
         self,
         mba: object,
         gate: VerificationGate | SemanticGate | None = None,
+        translator: IDAIRTranslator | None = None,
     ):
         self.mba = mba
         self.gate = gate or SemanticGate()
+        self.translator = translator or IDAIRTranslator()
         self._total_changes = 0
 
     def execute_pipeline(
@@ -45,143 +86,45 @@ class TransactionalExecutor:
             results.append(result)
             if result.rollback_needed:
                 executor_logger.warning(
-                    "Stage %s failed gate check — skipping remaining pipeline",
+                    "Stage %s failed gate check - skipping remaining pipeline",
                     fragment.strategy_name,
                 )
                 break
         return results
 
     def execute_stage(self, fragment: PlanFragment, total_handlers: int) -> StageResult:
-        """Execute one plan fragment through DeferredGraphModifier."""
+        """Execute one plan fragment through IDAIRTranslator lowering."""
         if fragment.is_empty():
             return StageResult(strategy_name=fragment.strategy_name)
 
-        deferred = DeferredGraphModifier(self.mba)
-
-        for edit in fragment.proposed_edits:
-            self._apply_edit(deferred, edit)
-
-        if not deferred.has_modifications():
+        modifications = list(fragment.modifications)
+        if not modifications:
             return StageResult(strategy_name=fragment.strategy_name)
 
-        num_redirected = len(deferred.modifications)
-        if not should_apply_cfg_modifications(num_redirected, total_handlers, "hodur"):
-            deferred.reset()
+        pre_cfg = self.translator.lift(self.mba)
+        num_modifications = len(modifications)
+        if not should_apply_cfg_modifications(num_modifications, total_handlers, "hodur"):
             return StageResult(
                 strategy_name=fragment.strategy_name,
                 success=False,
                 error="safeguard rejected modifications",
             )
 
-        # ---- Pre-apply semantic preflight ----
-        terminal_edits = fragment.metadata.get("terminal_redirect_edits", [])
-        # Prefer all_redirect_edits (full edit set); fall back to terminal-only
-        all_edits = fragment.metadata.get("all_redirect_edits", []) or terminal_edits
-        preflight_forbidden = fragment.metadata.get("forbidden_blocks", set())
-        preflight_exits = fragment.metadata.get("exit_blocks", set())
+        modifications, preflight_error = self._run_preflight(fragment, pre_cfg, modifications)
+        if preflight_error is not None:
+            return preflight_error
+        if not modifications:
+            return StageResult(strategy_name=fragment.strategy_name)
 
-        stage_name = fragment.strategy_name
-        if all_edits:
-            pre_adj = self._build_adjacency_list(self.mba)
-            sim_result = simulate_edits(pre_adj, all_edits)
-            sim_adj = sim_result.adj
-
-            # Diagnostic: log edit breakdown by kind
-            kind_counts = Counter(e.kind for e in all_edits)
-            kind_summary = ", ".join(
-                "%s=%d" % (k, v) for k, v in sorted(kind_counts.items())
-            )
-            executor_logger.info(
-                "Preflight: %d edits (%s), terminal_exits=%s, forbidden=%d blocks",
-                len(all_edits), kind_summary,
-                preflight_exits, len(preflight_forbidden),
-            )
-
-            # Prove each terminal redirect target is a valid sink
-            for edit in terminal_edits:
-                sink_result = prove_terminal_sink(
-                    edit.new_target, sim_adj, preflight_exits, preflight_forbidden
-                )
-                if not sink_result.ok:
-                    executor_logger.warning(
-                        "Preflight REJECT: redirect %d->%d failed: %s (witness: %s)",
-                        edit.source, edit.new_target,
-                        sink_result.reason, sink_result.witness_path,
-                    )
-                    return StageResult(
-                        strategy_name=fragment.strategy_name,
-                        success=False,
-                        rollback_needed=False,
-                        error="semantic preflight: %s" % sink_result.reason,
-                    )
-
-            # Also run detect_terminal_cycles on simulated graph
-            preflight_terminal_exits = set(fragment.metadata.get("terminal_exit_blocks", set()))
-            # Include redirect targets so cycle detector walks from them too
-            for te in terminal_edits:
-                preflight_terminal_exits.add(te.new_target)
-            # Include clone nodes created by edge-split simulation
-            preflight_terminal_exits = preflight_terminal_exits | sim_result.created_clones
-            preflight_handler_entries = fragment.metadata.get("handler_entry_serials", set())
-            preflight_dispatcher = fragment.metadata.get("dispatcher_serial", -1)
-            cycle_result_pre = detect_terminal_cycles(
-                sim_adj, preflight_terminal_exits,
-                preflight_handler_entries, preflight_dispatcher,
-            )
-            if not cycle_result_pre.passed:
-                # --- Incremental filtering: remove cycle-causing edits ---
-                filtered_edits, removed_count = self._filter_cycle_edits(
-                    pre_adj, all_edits, terminal_edits,
-                    preflight_handler_entries, preflight_dispatcher,
-                    fragment,
-                )
-                if filtered_edits is None:
-                    # Could not resolve cycles even after filtering
-                    executor_logger.warning(
-                        "Preflight REJECT: terminal cycles persist after filtering"
-                    )
-                    return StageResult(
-                        strategy_name=stage_name,
-                        success=False,
-                        rollback_needed=False,
-                        error="semantic preflight: terminal cycles detected",
-                    )
-                # Update edit lists and re-queue deferred modifier
-                all_edits = filtered_edits
-                terminal_edits = [
-                    e for e in terminal_edits if e in all_edits
-                ]
-                # Rebuild deferred modifier with filtered edits only
-                deferred = DeferredGraphModifier(self.mba)
-                # Build set of kept SimulatedEdit signatures for matching
-                kept_sources = {(e.source, e.new_target) for e in all_edits}
-                for edit in fragment.proposed_edits:
-                    src = edit.source_block
-                    tgt = edit.target_block
-                    if (src, tgt) in kept_sources:
-                        self._apply_edit(deferred, edit)
-                if not deferred.has_modifications():
-                    return StageResult(strategy_name=fragment.strategy_name)
-
-
-        changes = deferred.apply(
-            run_optimize_local=True,
-            run_deep_cleaning=False,
-            verify_each_mod=True,
-            rollback_on_verify_failure=True,
-            continue_on_verify_failure=True,
-            enable_snapshot_rollback=True,
-        )
+        changes = self.translator.lower(modifications, self.mba)
         self._total_changes += changes
 
-        # 1. Compute diagnostic metrics (logged, not gated)
-        reachable_blocks = self._compute_reachable_blocks()
-        qty = self.mba.qty if self.mba is not None else 0
+        post_cfg = self.translator.lift(self.mba)
+        reachable_blocks = self._compute_reachability_from_cfg(post_cfg)
+        qty = len(post_cfg.blocks)
         block_reachability = len(reachable_blocks) / qty if qty > 0 else 0.0
 
-        handler_entry_serials: set[int] = fragment.metadata.get(
-            "handler_entry_serials", set()
-        )
+        handler_entry_serials: set[int] = set(fragment.metadata.get("handler_entry_serials", set()))
         if handler_entry_serials:
             reachable_handlers = handler_entry_serials & reachable_blocks
             handler_reachability = len(reachable_handlers) / len(handler_entry_serials)
@@ -195,10 +138,13 @@ class TransactionalExecutor:
             handler_reachability,
         )
 
-        # 2. Semantic check: terminal cycles
-        adj = self._build_adjacency_list(self.mba)
-        terminal_exits: set[int] = fragment.metadata.get("terminal_exit_blocks", set())
-        dispatcher_serial: int = fragment.metadata.get("dispatcher_serial", -1)
+        adj = post_cfg.as_adjacency_dict()
+        terminal_exits: set[int] = set(fragment.metadata.get("terminal_exit_blocks", set()))
+        terminal_exits |= self._derive_terminal_targets(
+            graph_modifications_to_simulated_edits(modifications),
+            terminal_exits,
+        )
+        dispatcher_serial: int = int(fragment.metadata.get("dispatcher_serial", -1))
         cycle_result = detect_terminal_cycles(
             adj, terminal_exits, handler_entry_serials, dispatcher_serial
         )
@@ -206,10 +152,11 @@ class TransactionalExecutor:
             for cyc in cycle_result.cycles:
                 executor_logger.warning(
                     "Terminal cycle: blk[%d] re-enters blk[%d] via %s",
-                    cyc.terminal_block, cyc.reentry_target, cyc.path,
+                    cyc.terminal_block,
+                    cyc.reentry_target,
+                    cyc.path,
                 )
 
-        # 3. Build StageResult with semantic data
         result = StageResult(
             strategy_name=fragment.strategy_name,
             edits_applied=changes,
@@ -218,37 +165,24 @@ class TransactionalExecutor:
             terminal_cycles=cycle_result.cycles,
         )
 
-        # 4. Gate check
-        if not self.gate.check(result):
+        gate_ok = self.gate.check(result)
+        if isinstance(self.gate, VerificationGate):
+            gate_ok = self.gate.check_flow_graph(
+                post_cfg,
+                handler_entry_serials=handler_entry_serials,
+                conflict_count_after=result.conflict_count_after,
+            )
+
+        if not gate_ok:
             result.rollback_needed = True
             result.success = False
             result.error = "semantic gate failed"
             executor_logger.warning(
-                "Stage %s failed semantic gate: "
-                "terminal_cycles=%d, conflict_count=%d",
+                "Stage %s failed semantic gate: terminal_cycles=%d, conflict_count=%d",
                 fragment.strategy_name,
                 len(result.terminal_cycles),
                 result.conflict_count_after,
             )
-            # Restore MBA to pre-apply snapshot if available
-            if deferred._pre_snapshot is not None:
-                if deferred._restore_from_snapshot(deferred._pre_snapshot):
-                    executor_logger.info(
-                        "Stage %s: gate failed, MBA restored from snapshot",
-                        fragment.strategy_name,
-                    )
-                else:
-                    executor_logger.error(
-                        "Stage %s: gate failed, snapshot rollback failed",
-                        fragment.strategy_name,
-                    )
-                    result.error = "fatal: MBA corrupted, aborting pipeline"
-            else:
-                executor_logger.warning(
-                    "Stage %s: gate failed, no snapshot available for rollback",
-                    fragment.strategy_name,
-                )
-                result.error = "fatal: MBA corrupted, aborting pipeline"
 
         return result
 
@@ -256,185 +190,280 @@ class TransactionalExecutor:
     def total_changes(self) -> int:
         return self._total_changes
 
-    def _filter_cycle_edits(
+    def _run_preflight(
         self,
+        fragment: PlanFragment,
+        pre_cfg: FlowGraph,
+        modifications: list[GraphModification],
+    ) -> tuple[list[GraphModification], StageResult | None]:
+        ordered_modifications = sorted(modifications, key=_preflight_priority)
+        simulated_edits = graph_modifications_to_simulated_edits(ordered_modifications)
+        if not simulated_edits:
+            return modifications, None
+
+        pre_adj = pre_cfg.as_adjacency_dict()
+        structural = check_edge_split_structural_legality(pre_adj, simulated_edits)
+        if not structural.passed:
+            executor_logger.warning(
+                "Preflight REJECT: structural legality failed: %s (%s)",
+                structural.reason,
+                structural.diagnostics,
+            )
+            return modifications, StageResult(
+                strategy_name=fragment.strategy_name,
+                success=False,
+                error=f"structural preflight: {structural.reason}",
+            )
+
+        sim_result = simulate_edits(pre_adj, simulated_edits)
+        sim_adj = sim_result.adj
+
+        kind_counts = Counter(e.kind for e in simulated_edits)
+        kind_summary = ", ".join("%s=%d" % (k, v) for k, v in sorted(kind_counts.items()))
+        executor_logger.info(
+            "Preflight: %d edits (%s)",
+            len(simulated_edits),
+            kind_summary,
+        )
+
+        terminal_exits = set(fragment.metadata.get("terminal_exit_blocks", set()))
+        handler_entries = set(fragment.metadata.get("handler_entry_serials", set()))
+        dispatcher = int(fragment.metadata.get("dispatcher_serial", -1))
+
+        forbidden_blocks = set(fragment.metadata.get("forbidden_blocks", set()))
+        exit_blocks = set(fragment.metadata.get("exit_blocks", set()))
+
+        terminal_targets = self._derive_terminal_targets(simulated_edits, terminal_exits)
+        for target in sorted(terminal_targets):
+            sink_result = prove_terminal_sink(target, sim_adj, exit_blocks, forbidden_blocks)
+            if not sink_result.ok:
+                executor_logger.warning(
+                    "Preflight REJECT: terminal target %d failed sink proof: %s (witness=%s)",
+                    target,
+                    sink_result.reason,
+                    sink_result.witness_path,
+                )
+                return modifications, StageResult(
+                    strategy_name=fragment.strategy_name,
+                    success=False,
+                    error=f"semantic preflight: {sink_result.reason}",
+                )
+
+        filtered_modifications = self._filter_cycle_modifications(
+            fragment,
+            pre_adj,
+            terminal_exits,
+            handler_entries,
+            dispatcher,
+            modifications,
+        )
+        if filtered_modifications is None:
+            executor_logger.warning(
+                "Preflight REJECT: terminal cycles persist after filtering"
+            )
+            return modifications, StageResult(
+                strategy_name=fragment.strategy_name,
+                success=False,
+                error="semantic preflight: terminal cycles detected",
+            )
+        if filtered_modifications != modifications:
+            modifications = filtered_modifications
+            ordered_modifications = sorted(modifications, key=_preflight_priority)
+            simulated_edits = graph_modifications_to_simulated_edits(ordered_modifications)
+            sim_result = simulate_edits(pre_adj, simulated_edits)
+            sim_adj = sim_result.adj
+            terminal_targets = self._derive_terminal_targets(simulated_edits, terminal_exits)
+
+        preflight_cycle_seeds = set(terminal_exits)
+        preflight_cycle_seeds |= terminal_targets
+        preflight_cycle_seeds |= self._derive_terminal_clone_seeds(
+            sim_result.clone_origins,
+            terminal_exits,
+        )
+        cycle_result = detect_terminal_cycles(
+            sim_adj,
+            preflight_cycle_seeds,
+            handler_entries,
+            dispatcher,
+        )
+        if not cycle_result.passed:
+            executor_logger.warning(
+                "Preflight REJECT: terminal cycles detected (%d cycles)",
+                len(cycle_result.cycles),
+            )
+            return modifications, StageResult(
+                strategy_name=fragment.strategy_name,
+                success=False,
+                error="semantic preflight: terminal cycles detected",
+            )
+
+        return modifications, None
+
+    def _filter_cycle_modifications(
+        self,
+        fragment: PlanFragment,
         pre_adj: dict[int, list[int]],
-        all_edits: list,
-        terminal_edits: list,
+        terminal_exits: set[int],
         handler_entries: set[int],
         dispatcher: int,
-        fragment: PlanFragment,
+        original_modifications: list[GraphModification],
         max_rounds: int = 3,
-    ) -> tuple[list | None, int]:
-        """Remove cycle-causing edits incrementally.
+    ) -> list[GraphModification] | None:
+        """Port baseline cycle filtering using redirect-only modifications."""
+        pre_header_serial = fragment.metadata.get("pre_header_serial")
+        redirect_modifications: list[GraphModification] = []
+        for mod in original_modifications:
+            match mod:
+                case RedirectGoto(from_serial=src) | RedirectBranch(from_serial=src):
+                    if src == pre_header_serial:
+                        continue
+                    redirect_modifications.append(mod)
+                case ConvertToGoto(block_serial=src):
+                    if src == pre_header_serial:
+                        continue
+                    redirect_modifications.append(mod)
+                case CreateConditionalRedirect(source_block=src):
+                    if src == pre_header_serial:
+                        continue
+                    redirect_modifications.append(mod)
+                case EdgeRedirectViaPredSplit(src_block=src):
+                    if src == pre_header_serial:
+                        continue
+                    redirect_modifications.append(mod)
 
-        For each cycle, identify edge_split_redirect edits whose clone nodes
-        participate in the cycle path or whose new_target is the cycle's
-        terminal_block. Remove those edits and re-simulate.
+        if not redirect_modifications:
+            return original_modifications
 
-        Args:
-            pre_adj: Original (pre-edit) adjacency list.
-            all_edits: Full list of SimulatedEdit objects.
-            terminal_edits: Terminal redirect edits (subset of all_edits).
-            handler_entries: Handler entry block serials.
-            dispatcher: Dispatcher block serial.
-            fragment: The PlanFragment being executed.
-            max_rounds: Maximum filtering iterations.
+        sorted_redirect_modifications = sorted(
+            redirect_modifications,
+            key=_preflight_priority,
+        )
+        redirect_simulated = graph_modifications_to_simulated_edits(
+            sorted_redirect_modifications
+        )
+        if not redirect_simulated:
+            return original_modifications
 
-        Returns:
-            (filtered_edits, removed_count) if cycles resolved, or
-            (None, removed_count) if cycles persist after max_rounds.
-        """
-        terminal_exit_blocks = set(fragment.metadata.get("terminal_exit_blocks", set()))
-        current_edits = list(all_edits)
+        current_pairs = list(zip(sorted_redirect_modifications, redirect_simulated))
+        terminal_redirects = [
+            simulated
+            for _, simulated in current_pairs
+            if simulated.source in terminal_exits or simulated.via_pred in terminal_exits
+        ]
         total_removed = 0
 
         for round_idx in range(max_rounds):
+            current_edits = [simulated for _, simulated in current_pairs]
             sim_result = simulate_edits(pre_adj, current_edits)
-            sim_adj = sim_result.adj
-
-            # Build terminal exits for cycle detection
-            te_set = set(terminal_exit_blocks)
-            for te in terminal_edits:
-                if te in current_edits:
-                    te_set.add(te.new_target)
-            te_set = te_set | sim_result.created_clones
+            cycle_seeds = set(terminal_exits)
+            for terminal_edit in terminal_redirects:
+                if terminal_edit in current_edits:
+                    cycle_seeds.add(terminal_edit.new_target)
+            cycle_seeds |= sim_result.created_clones
 
             cycle_result = detect_terminal_cycles(
-                sim_adj, te_set, handler_entries, dispatcher,
+                sim_result.adj,
+                cycle_seeds,
+                handler_entries,
+                dispatcher,
             )
             if cycle_result.passed:
-                if total_removed > 0:
-                    executor_logger.warning(
-                        "Preflight: filtered %d/%d edits "
-                        "(removed %d cycle-causing edge-splits in %d rounds)",
-                        len(current_edits), len(all_edits),
-                        total_removed, round_idx + 1,
-                    )
-                return current_edits, total_removed
+                if total_removed == 0:
+                    return original_modifications
 
-            # Collect nodes involved in cycles
+                kept_counts = Counter(mod for mod, _ in current_pairs)
+                kept_redirect_modifications: list[GraphModification] = []
+                for mod in redirect_modifications:
+                    if kept_counts[mod] == 0:
+                        continue
+                    kept_redirect_modifications.append(mod)
+                    kept_counts[mod] -= 1
+
+                executor_logger.warning(
+                    "Preflight: filtered %d/%d redirect modifications (removed %d cycle-causing edge-splits in %d rounds)",
+                    len(kept_redirect_modifications),
+                    len(redirect_modifications),
+                    total_removed,
+                    round_idx + 1,
+                )
+                return kept_redirect_modifications
+
             cycle_nodes: set[int] = set()
             for cyc in cycle_result.cycles:
                 cycle_nodes.add(cyc.terminal_block)
                 cycle_nodes.add(cyc.reentry_target)
-                for node in cyc.path:
-                    cycle_nodes.add(node)
+                cycle_nodes.update(cyc.path)
 
-            # Find edge_split_redirect edits whose clone nodes are in cycles
-            # Clone serials are virtual nodes created by simulation
             edits_to_remove: set[int] = set()
-            for i, edit in enumerate(current_edits):
-                if edit.kind == "edge_split_redirect":
-                    # Check if the clone (created for this edit) could be
-                    # in the cycle. We re-simulate to find which clone serials
-                    # map to which edits. Since clones are assigned sequentially,
-                    # we can track by checking if new_target or source is in cycles.
-                    if edit.new_target in cycle_nodes or edit.source in cycle_nodes:
-                        edits_to_remove.add(i)
+            for idx, (_, edit) in enumerate(current_pairs):
+                if edit.kind != "edge_split_redirect":
+                    continue
+                if edit.new_target in cycle_nodes or edit.source in cycle_nodes:
+                    edits_to_remove.add(idx)
 
             if not edits_to_remove:
-                # No edge_split edits to remove — cycles caused by goto_redirects
-                # that we cannot safely filter; reject the stage
-                return None, total_removed
+                return None
 
-            removed_this_round = len(edits_to_remove)
-            total_removed += removed_this_round
-            current_edits = [
-                e for i, e in enumerate(current_edits)
-                if i not in edits_to_remove
+            total_removed += len(edits_to_remove)
+            current_pairs = [
+                pair for idx, pair in enumerate(current_pairs) if idx not in edits_to_remove
             ]
             executor_logger.info(
                 "Preflight filter round %d: removed %d edits, %d remaining",
-                round_idx + 1, removed_this_round, len(current_edits),
+                round_idx + 1,
+                len(edits_to_remove),
+                len(current_pairs),
             )
 
-        # Exhausted max_rounds — do one final check
-        sim_result = simulate_edits(pre_adj, current_edits)
-        te_set = set(terminal_exit_blocks)
-        for te in terminal_edits:
-            if te in current_edits:
-                te_set.add(te.new_target)
-        te_set = te_set | sim_result.created_clones
-        cycle_result = detect_terminal_cycles(
-            sim_result.adj, te_set, handler_entries, dispatcher,
-        )
-        if cycle_result.passed:
-            executor_logger.warning(
-                "Preflight: filtered %d/%d edits "
-                "(removed %d cycle-causing edge-splits in %d rounds)",
-                len(current_edits), len(all_edits),
-                total_removed, max_rounds,
-            )
-            return current_edits, total_removed
+        return None
 
-        return None, total_removed
+    def _derive_terminal_clone_seeds(
+        self,
+        clone_origins: dict[int, SimulatedEdit],
+        terminal_exits: set[int],
+    ) -> set[int]:
+        seeds: set[int] = set()
+        for clone_serial, edit in clone_origins.items():
+            if edit.kind == "edge_split_redirect":
+                if edit.source in terminal_exits or edit.via_pred in terminal_exits:
+                    seeds.add(clone_serial)
+            elif edit.kind == "create_conditional_redirect":
+                if edit.source in terminal_exits:
+                    seeds.add(clone_serial)
+        return seeds
 
-    def _apply_edit(self, deferred: object, edit: ProposedEdit) -> None:
-        """Convert a ProposedEdit to a deferred modifier operation."""
-        if edit.edit_type == EditType.GOTO_REDIRECT:
-            blk = self.mba.get_mblock(edit.source_block)
-            if blk is None:
-                return
-            if blk.nsucc() == 1:
-                deferred.queue_goto_change(edit.source_block, edit.target_block)
-            elif blk.nsucc() == 2:
-                deferred.queue_convert_to_goto(edit.source_block, edit.target_block)
-        elif edit.edit_type == EditType.CONVERT_TO_GOTO:
-            deferred.queue_convert_to_goto(edit.source_block, edit.target_block)
-        elif edit.edit_type == EditType.NOP_INSN:
-            if edit.instruction_ea is not None:
-                deferred.queue_insn_nop(edit.source_block, edit.instruction_ea)
-        elif edit.edit_type == EditType.CONDITIONAL_REDIRECT:
-            deferred.queue_conditional_target_change(edit.source_block, edit.target_block)
-        elif edit.edit_type == EditType.EDGE_REDIRECT:
-            old_target = edit.metadata.get("old_target", 0)
-            via_pred = edit.metadata.get("via_pred")
-            if via_pred is not None and edit.target_block is not None:
-                deferred.queue_edge_redirect(
-                    src_block=edit.source_block,
-                    old_target=old_target,
-                    new_target=edit.target_block,
-                    via_pred=via_pred,
-                    rule_priority=edit.metadata.get("rule_priority", 550),
-                    description=edit.metadata.get("description", ""),
-                )
-        elif edit.edit_type == EditType.BLOCK_DUPLICATE:
-            executor_logger.warning(
-                "BLOCK_DUPLICATE not yet implemented for block %d",
-                edit.source_block,
-            )
+    def _derive_terminal_targets(
+        self,
+        edits: list[SimulatedEdit],
+        terminal_exits: set[int],
+    ) -> set[int]:
+        targets: set[int] = set()
+        for edit in edits:
+            if edit.kind in {"goto_redirect", "conditional_redirect", "convert_to_goto"}:
+                if edit.source in terminal_exits:
+                    targets.add(edit.new_target)
+            elif edit.kind == "edge_split_redirect":
+                if edit.source in terminal_exits or edit.via_pred in terminal_exits:
+                    targets.add(edit.new_target)
+            elif edit.kind == "create_conditional_redirect":
+                if edit.source in terminal_exits:
+                    targets.add(edit.new_target)
+                    if edit.fallthrough_target is not None:
+                        targets.add(edit.fallthrough_target)
+        return targets
 
-    def _build_adjacency_list(self, mba: object) -> dict[int, list[int]]:
-        """Build adjacency list from live MBA block graph."""
-        adj: dict[int, list[int]] = {}
-        if mba is None:
-            return adj
-        for i in range(mba.qty):
-            blk = mba.get_mblock(i)
-            succs = []
-            if blk is not None:
-                for j in range(blk.nsucc()):
-                    succs.append(blk.succ(j))
-            adj[i] = succs
-        return adj
-
-    def _compute_reachable_blocks(self) -> set[int]:
-        """Return the set of block serials reachable from entry via DFS."""
-        if self.mba is None:
+    def _compute_reachability_from_cfg(self, cfg: FlowGraph) -> set[int]:
+        """Return block serials reachable from entry in a FlowGraph snapshot."""
+        if not cfg.blocks:
             return set()
-        qty = self.mba.qty
-        if qty == 0:
-            return set()
+
         visited: set[int] = set()
-        queue = [0]
+        queue: list[int] = [cfg.entry_serial]
+
         while queue:
             serial = queue.pop()
-            if serial in visited or serial < 0 or serial >= qty:
+            if serial in visited or serial not in cfg.blocks:
                 continue
             visited.add(serial)
-            blk = self.mba.get_mblock(serial)
-            if blk is not None:
-                for i in range(blk.nsucc()):
-                    queue.append(blk.succ(i))
+            queue.extend(cfg.successors(serial))
         return visited

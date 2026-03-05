@@ -13,7 +13,6 @@ import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
-from d810.cfg.flow.edit_simulator import SimulatedEdit
 from d810.cfg.flow.graph_checks import prove_terminal_sink
 from d810.recon.flow.bst_analysis import (
     _mop_matches_stkoff,
@@ -26,14 +25,15 @@ from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     find_terminal_exit_target,
     resolve_exit_via_bst_default,
 )
+from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
+    ModificationBuilder,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import HandlerPathResult
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_DIRECT,
     BenefitMetrics,
-    EditType,
     OwnershipScope,
     PlanFragment,
-    ProposedEdit,
 )
 from d810.recon.flow.transition_builder import (
     _get_state_var_stkoff,
@@ -57,9 +57,9 @@ class DirectHandlerLinearizationStrategy:
     for each handler entry, runs DFS forward evaluation, resolves exit states via BST
     lookup, and proposes redirects from handler exit blocks to target handler entries.
 
-    No CFG mutations are performed — all work is encoded as
-    :class:`~d810.optimizers.microcode.flow.flattening.hodur.strategy.ProposedEdit`
-    objects inside a :class:`~d810.optimizers.microcode.flow.flattening.hodur.strategy.PlanFragment`.
+    No CFG mutations are performed until execution time; strategies emit
+    backend-agnostic graph modifications inside a
+    :class:`~d810.optimizers.microcode.flow.flattening.hodur.strategy.PlanFragment`.
     """
 
     @property
@@ -148,7 +148,8 @@ class DirectHandlerLinearizationStrategy:
                 mid = low if low is not None else (high if high is not None else 0)
                 all_handlers[serial] = mid
 
-        edits: list[ProposedEdit] = []
+        builder = ModificationBuilder.from_snapshot(snapshot)
+        modifications: list = []
         owned_blocks: set[int] = set()
         owned_edges: set[tuple[int, int]] = set()
         owned_transitions: set[tuple[int, int]] = set()
@@ -168,10 +169,6 @@ class DirectHandlerLinearizationStrategy:
         # Track terminal exit blocks for semantic gate cycle detection
         terminal_exit_blocks: set[int] = set()
 
-        # Preflight: collect terminal redirect edits for executor simulation
-        terminal_redirect_edits: list[SimulatedEdit] = []
-        # All redirect edits (terminal + non-terminal) for full preflight simulation
-        all_redirect_edits: list[SimulatedEdit] = []
         handler_entry_set: set[int] = set(all_handlers.keys())
         pre_header_serial: int | None = getattr(bst_result, "pre_header_serial", None)
         forbidden_blocks: set[int] = {dispatcher_serial} | handler_entry_set
@@ -204,7 +201,7 @@ class DirectHandlerLinearizationStrategy:
             Returns a dict with redirect metadata, or None on failure.
             This mirrors _queue_handler_redirect from the original, but instead
             of calling deferred.queue_*, it returns a descriptor that the outer
-            function converts to ProposedEdit objects.
+            function converts to graph modifications.
             """
             exit_blk = mba.get_mblock(path.exit_block)
 
@@ -327,12 +324,16 @@ class DirectHandlerLinearizationStrategy:
                 "old_target": old_target,
             }
 
-        def _emit_redirect(meta: dict, path: object, incoming_state: int, category: str, handler_serial: int) -> bool:
-            """Convert a redirect metadata dict into ProposedEdit(s) and append to edits.
+        def _append_nop(source_block: int, instruction_ea: int) -> None:
+            modifications.append(
+                builder.nop_instruction(
+                    source_block=source_block,
+                    instruction_ea=instruction_ea,
+                )
+            )
 
-            Also collects a SimulatedEdit into all_redirect_edits for preflight
-            simulation using the same source block as the actual queued edit.
-            """
+        def _emit_redirect(meta: dict, path: object, incoming_state: int, category: str, handler_serial: int) -> bool:
+            """Convert redirect metadata into graph modifications."""
             kind = meta["kind"]
             target = meta["target"]
             src_block = meta["source_block"]
@@ -341,27 +342,14 @@ class DirectHandlerLinearizationStrategy:
                 return True  # Already queued, no new edit needed.
 
             if kind == "plain":
-                edits.append(ProposedEdit(
-                    edit_type=EditType.GOTO_REDIRECT,
-                    source_block=src_block,
-                    target_block=target,
-                    metadata={
-                        "reason": f"hodur-linear: blk[{handler_serial}] -> blk[{target}]",
-                        "rule_priority": 550,
-                        "strategy": "direct_handler_linearization",
-                    },
-                ))
+                modifications.append(
+                    builder.goto_redirect(
+                        source_block=src_block,
+                        target_block=target,
+                    )
+                )
                 owned_blocks.add(src_block)
                 owned_edges.add((src_block, target))
-                # Collect SimulatedEdit using same source as actual edit
-                src_blk_obj = mba.get_mblock(src_block)
-                old_tgt = src_blk_obj.succ(0) if src_blk_obj is not None and src_blk_obj.nsucc() > 0 else 0
-                all_redirect_edits.append(SimulatedEdit(
-                    kind="goto_redirect",
-                    source=src_block,
-                    old_target=old_tgt,
-                    new_target=target,
-                ))
                 pass0_ledger.append({
                     "category": category,
                     "handler_entry": handler_serial,
@@ -377,28 +365,17 @@ class DirectHandlerLinearizationStrategy:
             if kind == "edge":
                 via_pred = meta["via_pred"]
                 old_target = meta["old_target"]
-                edits.append(ProposedEdit(
-                    edit_type=EditType.EDGE_REDIRECT,
-                    source_block=src_block,
-                    target_block=target,
-                    metadata={
-                        "old_target": old_target,
-                        "via_pred": via_pred,
-                        "rule_priority": 550,
-                        "description": f"hodur-linear: blk[{handler_serial}] edge redirect -> blk[{target}]",
-                        "strategy": "direct_handler_linearization",
-                    },
-                ))
+                modifications.append(
+                    builder.edge_redirect(
+                        source_block=src_block,
+                        target_block=target,
+                        old_target=old_target,
+                        via_pred=via_pred,
+                        rule_priority=550,
+                    )
+                )
                 owned_blocks.add(src_block)
                 owned_edges.add((src_block, target))
-                # Collect SimulatedEdit for edge redirect using same source as actual edit
-                all_redirect_edits.append(SimulatedEdit(
-                    kind="edge_split_redirect",
-                    source=src_block,
-                    old_target=old_target,
-                    new_target=target,
-                    via_pred=via_pred,
-                ))
                 pass0_ledger.append({
                     "category": category,
                     "handler_entry": handler_serial,
@@ -484,32 +461,17 @@ class DirectHandlerLinearizationStrategy:
                             ok = _emit_redirect(meta, path, incoming_state, "terminal_exit", handler_serial)
                             if ok:
                                 linearized_blocks.add(path.exit_block)
-                                # Collect SimulatedEdit for executor preflight
-                                # Use meta["source_block"] to match actual edit source
-                                term_src = meta["source_block"]
-                                term_src_obj = mba.get_mblock(term_src)
-                                old_tgt = term_src_obj.succ(0) if term_src_obj is not None and term_src_obj.nsucc() > 0 else 0
-                                sim_kind = "edge_split_redirect" if meta["kind"] == "edge" else "goto_redirect"
-                                terminal_redirect_edits.append(SimulatedEdit(
-                                    kind=sim_kind,
-                                    source=term_src,
-                                    old_target=old_tgt,
-                                    new_target=terminal_target,
-                                    via_pred=meta.get("via_pred"),
-                                ))
                                 # Track redirect target so cycle detector walks from it too
                                 terminal_exit_blocks.add(terminal_target)
                                 # NOP dead state writes on the terminal path
                                 for write_blk, write_ea in path.state_writes:
-                                    edits.append(ProposedEdit(
-                                        edit_type=EditType.NOP_INSN,
+                                    _append_nop(
+
                                         source_block=write_blk,
+
                                         instruction_ea=write_ea,
-                                        metadata={
-                                            "reason": f"hodur-linear: dead state write (terminal) in blk[{write_blk}]",
-                                            "strategy": "direct_handler_linearization",
-                                        },
-                                    ))
+
+                                    )
                                 logger.info(
                                     "Handler blk[%d] (state=0x%x): terminal exit blk[%d] -> exit blk[%d]",
                                     handler_serial,
@@ -574,15 +536,13 @@ class DirectHandlerLinearizationStrategy:
                                 linearized_blocks.add(path.exit_block)
                                 # NOP dead state writes in exit path
                                 for write_blk, write_ea in path.state_writes:
-                                    edits.append(ProposedEdit(
-                                        edit_type=EditType.NOP_INSN,
+                                    _append_nop(
+
                                         source_block=write_blk,
+
                                         instruction_ea=write_ea,
-                                        metadata={
-                                            "reason": f"hodur-linear: dead state write (exit) in blk[{write_blk}]",
-                                            "strategy": "direct_handler_linearization",
-                                        },
-                                    ))
+
+                                    )
                                 # NOP dead state_var writes in the resolved exit target block.
                                 exit_blk = mba.get_mblock(exit_target)
                                 if exit_blk is not None and exit_target not in bst_node_blocks:
@@ -603,15 +563,13 @@ class DirectHandlerLinearizationStrategy:
                                                 exit_target,
                                                 scan_insn.ea,
                                             )
-                                            edits.append(ProposedEdit(
-                                                edit_type=EditType.NOP_INSN,
+                                            _append_nop(
+
                                                 source_block=exit_target,
+
                                                 instruction_ea=scan_insn.ea,
-                                                metadata={
-                                                    "reason": f"hodur-linear: dead state write (exit target) in blk[{exit_target}]",
-                                                    "strategy": "direct_handler_linearization",
-                                                },
-                                            ))
+
+                                            )
                                         scan_insn = scan_insn.next
                                 resolved_count += 1
                                 owned_transitions.add((incoming_state, path.final_state))
@@ -664,15 +622,13 @@ class DirectHandlerLinearizationStrategy:
                             write_blk_obj = mba.get_mblock(write_blk)
                             if write_blk_obj is not None and write_blk_obj.npred() > 1:
                                 continue
-                            edits.append(ProposedEdit(
-                                edit_type=EditType.NOP_INSN,
+                            _append_nop(
+
                                 source_block=write_blk,
+
                                 instruction_ea=write_ea,
-                                metadata={
-                                    "reason": f"hodur-linear: dead state write in blk[{write_blk}]",
-                                    "strategy": "direct_handler_linearization",
-                                },
-                            ))
+
+                            )
                         resolved_count += 1
                         owned_transitions.add((incoming_state, path.final_state))
 
@@ -756,15 +712,13 @@ class DirectHandlerLinearizationStrategy:
                     ok = _emit_redirect(meta, _synthetic_path, written_state, "bst_default_backedge", serial)
                     if ok:
                         if state_write_ea is not None:
-                            edits.append(ProposedEdit(
-                                edit_type=EditType.NOP_INSN,
+                            _append_nop(
+
                                 source_block=serial,
+
                                 instruction_ea=state_write_ea,
-                                metadata={
-                                    "reason": f"hodur-linear: dead state write (BST default) in blk[{serial}]",
-                                    "strategy": "direct_handler_linearization",
-                                },
-                            ))
+
+                            )
                         target_blk = mba.get_mblock(target)
                         if target_blk is not None and target not in bst_node_blocks:
                             scan_insn = target_blk.head
@@ -776,15 +730,13 @@ class DirectHandlerLinearizationStrategy:
                                         scan_insn.d, state_var_stkoff, mba=mba
                                     )
                                 ):
-                                    edits.append(ProposedEdit(
-                                        edit_type=EditType.NOP_INSN,
+                                    _append_nop(
+
                                         source_block=target,
+
                                         instruction_ea=scan_insn.ea,
-                                        metadata={
-                                            "reason": f"hodur-linear: dead state write (BST default target) in blk[{target}]",
-                                            "strategy": "direct_handler_linearization",
-                                        },
-                                    ))
+
+                                    )
                                 scan_insn = scan_insn.next
                         resolved_count += 1
 
@@ -853,34 +805,16 @@ class DirectHandlerLinearizationStrategy:
                             ok = _emit_redirect(meta, path, 0, "hidden_terminal_exit", rootwalk_blk)
                             if ok:
                                 linearized_blocks.add(path.exit_block)
-                                # Collect SimulatedEdit for executor preflight
-                                # Use meta["source_block"] to match actual edit source
-                                term_src = meta["source_block"]
-                                term_src_obj = mba.get_mblock(term_src)
-                                old_tgt = term_src_obj.succ(0) if term_src_obj is not None and term_src_obj.nsucc() > 0 else 0
-                                sim_kind = "edge_split_redirect" if meta["kind"] == "edge" else "goto_redirect"
-                                terminal_redirect_edits.append(SimulatedEdit(
-                                    kind=sim_kind,
-                                    source=term_src,
-                                    old_target=old_tgt,
-                                    new_target=terminal_target,
-                                    via_pred=meta.get("via_pred"),
-                                ))
                                 # Track redirect target so cycle detector walks from it too
                                 terminal_exit_blocks.add(terminal_target)
                                 for write_blk, write_ea in path.state_writes:
-                                    edits.append(ProposedEdit(
-                                        edit_type=EditType.NOP_INSN,
+                                    _append_nop(
+
                                         source_block=write_blk,
+
                                         instruction_ea=write_ea,
-                                        metadata={
-                                            "reason": (
-                                                f"hodur-linear: dead state write"
-                                                f" (hidden terminal blk[{rootwalk_blk}]) in blk[{write_blk}]"
-                                            ),
-                                            "strategy": "direct_handler_linearization",
-                                        },
-                                    ))
+
+                                    )
                                 logger.info(
                                     "hodur-linear: hidden blk[%d] terminal exit blk[%d] -> exit blk[%d]",
                                     rootwalk_blk,
@@ -966,18 +900,13 @@ class DirectHandlerLinearizationStrategy:
                             write_blk_obj = mba.get_mblock(write_blk)
                             if write_blk_obj is not None and write_blk_obj.npred() > 1:
                                 continue  # Skip NOP on shared multi-pred blocks
-                            edits.append(ProposedEdit(
-                                edit_type=EditType.NOP_INSN,
+                            _append_nop(
+
                                 source_block=write_blk,
+
                                 instruction_ea=write_ea,
-                                metadata={
-                                    "reason": (
-                                        f"hodur-linear: dead state write"
-                                        f" (hidden-handler blk[{rootwalk_blk}]) in blk[{write_blk}]"
-                                    ),
-                                    "strategy": "direct_handler_linearization",
-                                },
-                            ))
+
+                            )
                         resolved_count += 1
 
         # ---- Pre-header redirect ----
@@ -987,17 +916,12 @@ class DirectHandlerLinearizationStrategy:
             initial_handler = resolve_target_via_bst(bst_result, initial_state)
             if initial_handler is not None:
                 _reason = "hodur-linear: pre-header -> initial handler"
-                edits.append(ProposedEdit(
-                    edit_type=EditType.GOTO_REDIRECT,
-                    source_block=pre_header_serial,
-                    target_block=initial_handler,
-                    metadata={
-                        "role": "pre_header",
-                        "reason": _reason,
-                        "rule_priority": 550,
-                        "strategy": "direct_handler_linearization",
-                    },
-                ))
+                modifications.append(
+                    builder.goto_redirect(
+                        source_block=pre_header_serial,
+                        target_block=initial_handler,
+                    )
+                )
                 owned_blocks.add(pre_header_serial)
                 owned_edges.add((pre_header_serial, initial_handler))
                 pass0_ledger.append({
@@ -1018,7 +942,7 @@ class DirectHandlerLinearizationStrategy:
             len(all_handlers),
         )
 
-        if not edits:
+        if not modifications:
             return None
 
         # Claim BST node blocks as influenced.
@@ -1038,7 +962,7 @@ class DirectHandlerLinearizationStrategy:
         return PlanFragment(
             strategy_name=self.name,
             family=self.family,
-            proposed_edits=edits,
+            modifications=modifications,
             ownership=ownership,
             prerequisites=[],
             expected_benefit=benefit,
@@ -1055,9 +979,8 @@ class DirectHandlerLinearizationStrategy:
                 "handler_entry_serials": set(all_handlers.keys()),
                 "terminal_exit_blocks": terminal_exit_blocks,
                 "dispatcher_serial": dispatcher_serial,
-                "terminal_redirect_edits": terminal_redirect_edits,
-                "all_redirect_edits": all_redirect_edits,
                 "forbidden_blocks": forbidden_blocks,
                 "exit_blocks": exit_blocks,
+                "pre_header_serial": pre_header_serial,
             },
         )

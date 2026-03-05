@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 
+from d810.cfg.flow.edit_simulator import SimulatedEdit, simulate_edits
+
 
 @dataclass(frozen=True)
 class TerminalCycle:
@@ -21,6 +23,74 @@ class SemanticCheckResult:
     passed: bool
     cycles: list[TerminalCycle] = field(default_factory=list)
     diagnostics: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class StructuralCheckResult:
+    """Result of structural legality checks before live apply."""
+
+    passed: bool
+    reason: str = ""
+    diagnostics: dict[str, object] = field(default_factory=dict)
+
+
+def check_edge_split_structural_legality(
+    adj: dict[int, list[int]],
+    edits: list[SimulatedEdit],
+) -> StructuralCheckResult:
+    """Validate edge-split edits against pre-apply graph invariants.
+
+    Checks are evaluated incrementally against a simulated pre-state:
+    1. ``src_block`` must be 1-way.
+    2. ``via_pred`` must be 1-way.
+    3. ``via_pred -> src_block`` must exist.
+    4. ``src_block -> old_target`` must exist.
+    """
+    current_adj: dict[int, list[int]] = {k: list(v) for k, v in adj.items()}
+
+    for idx, edit in enumerate(edits):
+        if edit.kind == "edge_split_redirect" and edit.via_pred is not None:
+            src_succs = current_adj.get(edit.source, [])
+            pred_succs = current_adj.get(edit.via_pred, [])
+
+            if len(src_succs) != 1:
+                return StructuralCheckResult(
+                    passed=False,
+                    reason="edge-split source block must be 1-way (INTERR 50860 guard)",
+                    diagnostics={"index": idx, "source": edit.source, "src_succs": src_succs},
+                )
+            if len(pred_succs) != 1:
+                return StructuralCheckResult(
+                    passed=False,
+                    reason="edge-split predecessor must be 1-way (INTERR 50858 guard)",
+                    diagnostics={"index": idx, "via_pred": edit.via_pred, "pred_succs": pred_succs},
+                )
+            if edit.source not in pred_succs:
+                return StructuralCheckResult(
+                    passed=False,
+                    reason="edge-split predecessor edge to source is missing (INTERR 50858 guard)",
+                    diagnostics={
+                        "index": idx,
+                        "via_pred": edit.via_pred,
+                        "source": edit.source,
+                        "pred_succs": pred_succs,
+                    },
+                )
+            if edit.old_target not in src_succs:
+                return StructuralCheckResult(
+                    passed=False,
+                    reason="edge-split source old_target mismatch (INTERR 50860 guard)",
+                    diagnostics={
+                        "index": idx,
+                        "source": edit.source,
+                        "old_target": edit.old_target,
+                        "src_succs": src_succs,
+                    },
+                )
+
+        current_adj = simulate_edits(current_adj, [edit]).adj
+
+    return StructuralCheckResult(passed=True)
 
 
 def detect_terminal_cycles(

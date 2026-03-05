@@ -18,6 +18,9 @@ from d810.cfg.graph_modification import (
     InsertBlock,
     RemoveEdge,
     NopInstructions,
+    EdgeRedirectViaPredSplit,
+    CreateConditionalRedirect,
+    DuplicateBlock,
     GraphModification,
 )
 from d810.cfg.flowgraph import InsnSnapshot
@@ -97,6 +100,50 @@ def test_nop_instructions_empty_eas():
     assert mod.block_serial == 10
     assert len(mod.insn_eas) == 0
     assert mod.insn_eas == ()
+
+
+def test_edge_redirect_via_pred_split_construction():
+    """Test EdgeRedirectViaPredSplit construction and field access."""
+    mod = EdgeRedirectViaPredSplit(
+        src_block=10,
+        old_target=20,
+        new_target=30,
+        via_pred=5,
+        rule_priority=777,
+    )
+    assert mod.src_block == 10
+    assert mod.old_target == 20
+    assert mod.new_target == 30
+    assert mod.via_pred == 5
+    assert mod.rule_priority == 777
+
+
+def test_create_conditional_redirect_construction():
+    """Test CreateConditionalRedirect construction and field access."""
+    mod = CreateConditionalRedirect(
+        source_block=1,
+        ref_block=2,
+        conditional_target=3,
+        fallthrough_target=4,
+    )
+    assert mod.source_block == 1
+    assert mod.ref_block == 2
+    assert mod.conditional_target == 3
+    assert mod.fallthrough_target == 4
+
+
+def test_duplicate_block_construction():
+    """Test DuplicateBlock construction and field access."""
+    mod = DuplicateBlock(
+        source_block=9,
+        target_block=11,
+        pred_serial=7,
+        patch_kind="jump_taken",
+    )
+    assert mod.source_block == 9
+    assert mod.target_block == 11
+    assert mod.pred_serial == 7
+    assert mod.patch_kind == "jump_taken"
 
 
 # ============================================================================
@@ -270,6 +317,13 @@ def test_isinstance_discrimination():
     insert = InsertBlock(pred_serial=5, succ_serial=10, instructions=())
     remove = RemoveEdge(from_serial=10, to_serial=20)
     nop = NopInstructions(block_serial=10, insn_eas=(0x1000,))
+    edge_split = EdgeRedirectViaPredSplit(
+        src_block=10, old_target=20, new_target=30, via_pred=5
+    )
+    cond_redirect = CreateConditionalRedirect(
+        source_block=1, ref_block=2, conditional_target=3, fallthrough_target=4
+    )
+    duplicate = DuplicateBlock(source_block=9, target_block=11, pred_serial=7)
 
     assert isinstance(redirect_goto, RedirectGoto)
     assert isinstance(redirect_branch, RedirectBranch)
@@ -277,6 +331,9 @@ def test_isinstance_discrimination():
     assert isinstance(insert, InsertBlock)
     assert isinstance(remove, RemoveEdge)
     assert isinstance(nop, NopInstructions)
+    assert isinstance(edge_split, EdgeRedirectViaPredSplit)
+    assert isinstance(cond_redirect, CreateConditionalRedirect)
+    assert isinstance(duplicate, DuplicateBlock)
 
     # Cross-type checks
     assert not isinstance(redirect_goto, RedirectBranch)
@@ -293,6 +350,13 @@ def test_match_statement_discrimination():
     insert = InsertBlock(pred_serial=5, succ_serial=10, instructions=())
     remove = RemoveEdge(from_serial=10, to_serial=20)
     nop = NopInstructions(block_serial=10, insn_eas=(0x1000,))
+    edge_split = EdgeRedirectViaPredSplit(
+        src_block=10, old_target=20, new_target=30, via_pred=5
+    )
+    cond_redirect = CreateConditionalRedirect(
+        source_block=1, ref_block=2, conditional_target=3, fallthrough_target=4
+    )
+    duplicate = DuplicateBlock(source_block=9, target_block=11, pred_serial=7)
 
     def classify(mod: GraphModification) -> str:
         match mod:
@@ -308,6 +372,12 @@ def test_match_statement_discrimination():
                 return "remove"
             case NopInstructions():
                 return "nop"
+            case EdgeRedirectViaPredSplit():
+                return "edge_split"
+            case CreateConditionalRedirect():
+                return "create_conditional"
+            case DuplicateBlock():
+                return "duplicate"
             case _:
                 return "unknown"
 
@@ -317,6 +387,9 @@ def test_match_statement_discrimination():
     assert classify(insert) == "insert"
     assert classify(remove) == "remove"
     assert classify(nop) == "nop"
+    assert classify(edge_split) == "edge_split"
+    assert classify(cond_redirect) == "create_conditional"
+    assert classify(duplicate) == "duplicate"
 
 
 def test_match_statement_field_extraction():

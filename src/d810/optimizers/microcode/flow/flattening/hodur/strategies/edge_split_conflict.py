@@ -15,10 +15,11 @@ from d810.core import logging
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_DIRECT,
     BenefitMetrics,
-    EditType,
     OwnershipScope,
     PlanFragment,
-    ProposedEdit,
+)
+from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
+    ModificationBuilder,
 )
 
 if TYPE_CHECKING:
@@ -103,24 +104,20 @@ class EdgeSplitConflictResolutionStrategy:
         if not conflict_blocks:
             return None
 
-        edits: list[ProposedEdit] = []
+        builder = ModificationBuilder.from_snapshot(snapshot)
+        modifications: list = []
         owned_blocks: set[int] = set()
 
         for blk_serial in sorted(conflict_blocks):
             owned_blocks.add(blk_serial)
-            edits.append(
-                ProposedEdit(
-                    edit_type=EditType.BLOCK_DUPLICATE,
+            modifications.append(
+                builder.duplicate_block(
                     source_block=blk_serial,
                     target_block=None,
-                    metadata={
-                        "role": "conflict_split",
-                        "strategy": self.name,
-                    },
                 )
             )
 
-        if not edits:
+        if not modifications:
             return None
 
         ownership = OwnershipScope(
@@ -137,7 +134,7 @@ class EdgeSplitConflictResolutionStrategy:
         return PlanFragment(
             strategy_name=self.name,
             family=self.family,
-            proposed_edits=edits,
+            modifications=modifications,
             ownership=ownership,
             prerequisites=[],
             expected_benefit=benefit,

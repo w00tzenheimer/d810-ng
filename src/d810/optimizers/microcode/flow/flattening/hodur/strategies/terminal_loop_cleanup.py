@@ -19,10 +19,11 @@ from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_CLEANUP,
     BenefitMetrics,
-    EditType,
     OwnershipScope,
     PlanFragment,
-    ProposedEdit,
+)
+from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
+    ModificationBuilder,
 )
 
 if TYPE_CHECKING:
@@ -99,7 +100,8 @@ class TerminalLoopCleanupStrategy:
         if not handlers:
             return None
 
-        edits: list[ProposedEdit] = []
+        builder = ModificationBuilder.from_snapshot(snapshot)
+        modifications: list = []
         owned_blocks: set[int] = set()
 
         state_machine_blocks = collect_state_machine_blocks(sm)
@@ -114,7 +116,7 @@ class TerminalLoopCleanupStrategy:
             first_check_block=first_check_block,
             find_terminal_exit_target=find_terminal_exit_target,
             ida_hexrays=ida_hexrays,
-            edits=edits,
+            edits=modifications,
             owned_blocks=owned_blocks,
         )
 
@@ -126,7 +128,7 @@ class TerminalLoopCleanupStrategy:
             first_check_block=first_check_block,
             find_terminal_exit_target=find_terminal_exit_target,
             ida_hexrays=ida_hexrays,
-            edits=edits,
+            edits=modifications,
             owned_blocks=owned_blocks,
         )
 
@@ -137,11 +139,11 @@ class TerminalLoopCleanupStrategy:
             state_machine_blocks=state_machine_blocks,
             find_terminal_exit_target=find_terminal_exit_target,
             ida_hexrays=ida_hexrays,
-            edits=edits,
+            edits=modifications,
             owned_blocks=owned_blocks,
         )
 
-        if not edits:
+        if not modifications:
             return None
 
         ownership = OwnershipScope(
@@ -151,14 +153,14 @@ class TerminalLoopCleanupStrategy:
         )
         benefit = BenefitMetrics(
             handlers_resolved=0,
-            transitions_resolved=len(edits),
+            transitions_resolved=len(modifications),
             blocks_freed=len(owned_blocks),
             conflict_density=0.0,
         )
         return PlanFragment(
             strategy_name=self.name,
             family=self.family,
-            proposed_edits=edits,
+            modifications=modifications,
             ownership=ownership,
             prerequisites=[],
             expected_benefit=benefit,
@@ -347,7 +349,7 @@ class TerminalLoopCleanupStrategy:
             first_check_block=first_check_block,
             find_terminal_exit_target=find_terminal_exit_target,
             ida_hexrays=ida_hexrays,
-            edits=edits,
+            edits=modifications,
             owned_blocks=owned_blocks,
         ):
             return
@@ -405,28 +407,20 @@ class TerminalLoopCleanupStrategy:
                 success_target,
             )
             if blk.nsucc() == 1:
-                edits.append(ProposedEdit(
-                    edit_type=EditType.GOTO_REDIRECT,
-                    source_block=blk_serial,
-                    target_block=success_target,
-                    metadata={
-                        "reason": "terminal loopback -> success path",
-                        "rule_priority": 50,
-                        "strategy": self.name,
-                    },
-                ))
+                modifications.append(
+                    builder.goto_redirect(
+                        source_block=blk_serial,
+                        target_block=success_target,
+                    )
+                )
                 owned_blocks.add(blk_serial)
             elif blk.nsucc() == 2:
-                edits.append(ProposedEdit(
-                    edit_type=EditType.CONVERT_TO_GOTO,
-                    source_block=blk_serial,
-                    target_block=success_target,
-                    metadata={
-                        "reason": "terminal loopback cond -> success path",
-                        "rule_priority": 50,
-                        "strategy": self.name,
-                    },
-                ))
+                modifications.append(
+                    builder.convert_to_goto(
+                        source_block=blk_serial,
+                        target_block=success_target,
+                    )
+                )
                 owned_blocks.add(blk_serial)
 
     def _queue_legacy_terminal_backedge_fix(
@@ -488,16 +482,12 @@ class TerminalLoopCleanupStrategy:
             if blk.tail.l.t != ida_hexrays.mop_b or blk.tail.l.b != first_check_block:
                 continue
 
-            edits.append(ProposedEdit(
-                edit_type=EditType.GOTO_REDIRECT,
-                source_block=blk_serial,
-                target_block=success_target,
-                metadata={
-                    "reason": "terminal back-edge -> success path (legacy)",
-                    "rule_priority": 50,
-                    "strategy": self.name,
-                },
-            ))
+            modifications.append(
+                builder.goto_redirect(
+                    source_block=blk_serial,
+                    target_block=success_target,
+                )
+            )
             owned_blocks.add(blk_serial)
             queued_any = True
 
@@ -542,16 +532,12 @@ class TerminalLoopCleanupStrategy:
 
             succ = next(iter(blk.succset))
             if succ == blk.serial and blk.serial != exit_target:
-                edits.append(ProposedEdit(
-                    edit_type=EditType.GOTO_REDIRECT,
-                    source_block=blk.serial,
-                    target_block=exit_target,
-                    metadata={
-                        "reason": "fix_degenerate_terminal_loop",
-                        "rule_priority": 50,
-                        "strategy": self.name,
-                    },
-                ))
+                modifications.append(
+                    builder.goto_redirect(
+                        source_block=blk.serial,
+                        target_block=exit_target,
+                    )
+                )
                 owned_blocks.add(blk.serial)
                 logger.info(
                     "Queued redirect: terminal self-loop block %d -> %d",
@@ -571,16 +557,12 @@ class TerminalLoopCleanupStrategy:
                 and blk.serial != exit_target
                 and succ != exit_target
             ):
-                edits.append(ProposedEdit(
-                    edit_type=EditType.GOTO_REDIRECT,
-                    source_block=blk.serial,
-                    target_block=exit_target,
-                    metadata={
-                        "reason": "fix_degenerate_terminal_loop",
-                        "rule_priority": 50,
-                        "strategy": self.name,
-                    },
-                ))
+                modifications.append(
+                    builder.goto_redirect(
+                        source_block=blk.serial,
+                        target_block=exit_target,
+                    )
+                )
                 owned_blocks.add(blk.serial)
                 logger.info(
                     "Queued redirect: terminal 2-block loop %d<->%d via %d",

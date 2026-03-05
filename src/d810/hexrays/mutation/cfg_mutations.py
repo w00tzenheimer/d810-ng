@@ -1037,6 +1037,58 @@ def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t, verify: bool = Tru
     for prev_serial in prev_pred_serials:
         duplicated_blk.predset._del(prev_serial)
 
+    # Fix fall-through predecessor disruption: copy_block inserts the clone
+    # at qty-1 (before exit), pushing the exit up. If clone.prevb is a
+    # fall-through block (no explicit goto/jcond/ijmp), its physical
+    # adjacency now targets the clone. IDA's verifier checks bidirectional
+    # edge consistency, so we must ensure clone.predset contains prevb.
+    #
+    # For non-ret fall-through: insert explicit goto to the shifted exit.
+    # For m_ret: skip - can't safely redirect without being verifier-hostile.
+    # Clone edges will be rewired by callers (e.g. edge-split).
+    prev_blk = duplicated_blk.prevb
+    if prev_blk is not None and prev_blk.serial != block_to_duplicate.serial:
+        tail = prev_blk.tail
+        has_explicit_target = (
+            tail is not None
+            and (
+                tail.opcode == ida_hexrays.m_goto
+                or ida_hexrays.is_mcode_jcond(tail.opcode)
+                or tail.opcode == ida_hexrays.m_ijmp
+            )
+        )
+        if not has_explicit_target and prev_blk.nsucc() == 1:
+            if tail is not None and tail.opcode == ida_hexrays.m_ret:
+                # m_ret: can't safely redirect. Leave as-is.
+                # Clone edges will be rewired by caller (edge-split).
+                helper_logger.debug(
+                    "  Skipping m_ret fall-through fix for blk[%d] (verifier-hostile)",
+                    prev_blk.serial,
+                )
+            else:
+                # Normal fall-through: insert explicit goto to shifted exit.
+                original_target = prev_blk.succset[0]
+                exit_serial = mba.qty - 1
+                if original_target == duplicated_blk.serial:
+                    original_target = exit_serial
+                insert_goto_instruction(
+                    prev_blk, original_target, nop_previous_instruction=False
+                )
+                prev_blk.succset._del(duplicated_blk.serial)
+                if original_target not in [
+                    prev_blk.succset[i] for i in range(prev_blk.succset.size())
+                ]:
+                    prev_blk.succset.push_back(original_target)
+                prev_blk.type = ida_hexrays.BLT_1WAY
+                prev_blk.flags |= ida_hexrays.MBL_GOTO
+                prev_blk.mark_lists_dirty()
+                helper_logger.debug(
+                    "  Fixed fall-through: blk[%d] now gotos %d (was falling through to clone %d)",
+                    prev_blk.serial,
+                    original_target,
+                    duplicated_blk.serial,
+                )
+
     helper_logger.debug(
         "  Duplicated {0} -> {1}".format(
             block_to_duplicate.serial, duplicated_blk.serial
