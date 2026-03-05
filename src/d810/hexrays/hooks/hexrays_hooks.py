@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import enum
+import importlib
 import json
 import math
 import os
@@ -25,7 +26,6 @@ from d810.hexrays.utils.hexrays_formatters import (
     maturity_to_string,
 )
 from d810.hexrays.utils.hexrays_helpers import check_ins_mop_size_are_ok
-from d810.hexrays.utils.microcode_dump import mba_to_dict
 from d810.mba.backend_registry import get_egglog_provider
 
 # ---------------------------------------------------------------------------
@@ -789,7 +789,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             return
         capture_file = os.environ.get("D810_CAPTURE_POST_FILE", "/tmp/d810_capture.txt")
         try:
-
+            mba_to_dict = getattr(
+                importlib.import_module("d810.recon.microcode_dump"),
+                "mba_to_dict",
+            )
             data = mba_to_dict(mba)
             with open(capture_file, "w") as fh:
                 json.dump(data, fh, indent=2)

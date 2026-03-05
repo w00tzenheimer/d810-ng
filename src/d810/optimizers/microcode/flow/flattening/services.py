@@ -635,7 +635,7 @@ class OLLVMDispatcherFinder:
         from d810.optimizers.microcode.flow.flattening.unflattener import (
             OllvmDispatcherInfo,
         )
-        from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
+        from d810.recon.flow.dispatcher_detection import (
             DispatcherCache,
         )
 

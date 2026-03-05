@@ -7,7 +7,7 @@ which is critical for proper control flow reconstruction during unflattening.
 import types
 import unittest
 
-from d810.optimizers.microcode.flow.flattening.conditional_exit import (
+from d810.recon.flow.conditional_exit import (
     ExitBlockType,
     classify_exit_block,
     get_loopback_successor,
