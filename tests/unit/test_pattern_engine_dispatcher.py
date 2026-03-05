@@ -5,12 +5,11 @@ Tests the engine selection matrix:
 - Cython available + disabled (D810_NO_CYTHON=1) -> _USING_CYTHON = False
 - Cython unavailable (ImportError) -> _USING_CYTHON = False
 """
+
 import importlib
 import os
 import sys
 from unittest import mock
-
-import pytest
 
 
 def _reload_engine():
@@ -26,8 +25,9 @@ def _reload_engine():
     # 3. Clear any modules that import and cache CythonMode
     cymode_mod = "d810.core.cymode"
     if cymode_mod in sys.modules:
-        from d810.core.registry import SingletonMeta
         from d810.core.cymode import CythonMode
+        from d810.core.registry import SingletonMeta
+
         # Clear singleton cache via the proper test helper
         SingletonMeta._reset_for_test(CythonMode)
         # Delete cymode module to force re-read of D810_NO_CYTHON env var
@@ -124,10 +124,10 @@ class TestHandlerEngineIntegration:
         """Verify engine.py exports all symbols that handler.py imports."""
         engine = _reload_engine()
         # Check all symbols that handler.py imports from engine.py
-        assert hasattr(engine, 'OpcodeIndexedStorage')
-        assert hasattr(engine, 'match_pattern_nomut')
-        assert hasattr(engine, 'get_engine_info')
-        assert hasattr(engine, '_USING_CYTHON')
+        assert hasattr(engine, "OpcodeIndexedStorage")
+        assert hasattr(engine, "match_pattern_nomut")
+        assert hasattr(engine, "get_engine_info")
+        assert hasattr(engine, "_USING_CYTHON")
 
     def test_get_engine_info_contract(self):
         """get_engine_info returns expected dict structure."""
@@ -165,8 +165,14 @@ class TestCrossBackendParity:
             assert auto_info["backend"] in ("python", "cython")
 
         # Both engines expose identical API surface
-        for attr in ("OpcodeIndexedStorage", "match_pattern_nomut", "MatchBindings",
-                      "compute_fingerprint", "PatternFingerprint", "RulePatternEntry"):
+        for attr in (
+            "OpcodeIndexedStorage",
+            "match_pattern_nomut",
+            "MatchBindings",
+            "compute_fingerprint",
+            "PatternFingerprint",
+            "RulePatternEntry",
+        ):
             assert hasattr(py_engine, attr), f"Python engine missing {attr}"
             assert hasattr(auto_engine, attr), f"Auto engine missing {attr}"
 
