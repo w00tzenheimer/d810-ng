@@ -44,16 +44,24 @@ def __getattr__(name: str):
     }:
         module = import_module("d810.cfg.contracts.transaction_policy")
         return getattr(module, name)
+    if name in {
+        "CfgTransactionEngine",
+        "TransactionResult",
+    }:
+        module = import_module("d810.cfg.contracts.transaction_engine")
+        return getattr(module, name)
     raise AttributeError(name)
 
 
 __all__ = [
     "CfgContractViolationError",
+    "CfgTransactionEngine",
     "FailureClassification",
     "IDACfgContract",
     "NATIVE_ORACLE_AVAILABLE",
     "TRANSACTION_PHASES",
     "TransactionPhase",
+    "TransactionResult",
     "block_list_consistency",
     "block_type_vs_tail",
     "check_all_insn_invariants",
