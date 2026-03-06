@@ -117,9 +117,11 @@ class CfgTransactionEngine:
             return TransactionResult.failed("backend_apply", exc)
 
         if count == 0:
-            # lower() returned 0 -- verify_failed or no modifications applied
+            # lower() returned 0 -- use translator's reported phase to distinguish
+            # pre-mutation rejections (lowering) from post-mutation failures (native_verify)
+            phase = getattr(self._translator, 'last_lowering_phase', None) or "backend_apply"
             return TransactionResult.failed(
-                "backend_apply",
+                phase,
                 RuntimeError(
                     "translator.lower() returned 0 applied modifications"
                 ),

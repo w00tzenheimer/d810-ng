@@ -128,16 +128,49 @@ class TestCfgTransactionEngine:
         assert result.classification is not None
         assert result.classification.rollback_needed is True
 
-    def test_apply_lower_returns_zero(
+    def test_apply_lower_returns_zero_no_phase_attribute(
         self, translator: MagicMock, plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
     ) -> None:
+        """When translator has no last_lowering_phase, default to backend_apply."""
         translator.lower.return_value = 0
+        # Remove auto-created attribute so getattr falls back to None
+        del translator.last_lowering_phase
         engine = CfgTransactionEngine(translator)
 
         result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
 
         assert result.success is False
         assert result.failure_phase == "backend_apply"
+        assert result.classification is not None
+        assert result.classification.rollback_needed is True
+
+    def test_apply_lower_returns_zero_premutation_rejection(
+        self, translator: MagicMock, plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+    ) -> None:
+        """Pre-mutation lowering rejection: phase='lowering', no rollback needed."""
+        translator.lower.return_value = 0
+        translator.last_lowering_phase = "lowering"
+        engine = CfgTransactionEngine(translator)
+
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+
+        assert result.success is False
+        assert result.failure_phase == "lowering"
+        assert result.classification is not None
+        assert result.classification.rollback_needed is False
+
+    def test_apply_lower_returns_zero_native_verify_failure(
+        self, translator: MagicMock, plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+    ) -> None:
+        """Post-mutation verify failure: phase='native_verify', rollback needed."""
+        translator.lower.return_value = 0
+        translator.last_lowering_phase = "native_verify"
+        engine = CfgTransactionEngine(translator)
+
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+
+        assert result.success is False
+        assert result.failure_phase == "native_verify"
         assert result.classification is not None
         assert result.classification.rollback_needed is True
 
