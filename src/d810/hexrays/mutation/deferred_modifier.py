@@ -375,6 +375,9 @@ class GraphModification:
     conditional_target: int | None = None
     # For BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: fallthrough target
     fallthrough_target: int | None = None
+    # For BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: expected final serials
+    expected_conditional_serial: int | None = None
+    expected_fallthrough_serial: int | None = None
     # For EDGE_REDIRECT_VIA_PRED_SPLIT: block to clone
     src_block: int | None = None
     # For EDGE_REDIRECT_VIA_PRED_SPLIT: current successor being replaced on clone
@@ -757,6 +760,8 @@ class DeferredGraphModifier:
         ref_blk_serial: int,
         conditional_target_serial: int,
         fallthrough_target_serial: int,
+        expected_conditional_serial: int | None = None,
+        expected_fallthrough_serial: int | None = None,
         description: str = "",
     ) -> None:
         """
@@ -778,6 +783,8 @@ class DeferredGraphModifier:
             ref_blk_serial: Block to copy instructions from (should be conditional)
             conditional_target_serial: Target for jcc taken branch
             fallthrough_target_serial: Target for fallthrough (via NOP-goto)
+            expected_conditional_serial: Expected final serial for cloned conditional block
+            expected_fallthrough_serial: Expected final serial for NOP fallthrough block
             description: Optional description for logging
         """
         self.modifications.append(GraphModification(
@@ -786,6 +793,8 @@ class DeferredGraphModifier:
             new_target=ref_blk_serial,  # Reference block to copy from
             conditional_target=conditional_target_serial,
             fallthrough_target=fallthrough_target_serial,
+            expected_conditional_serial=expected_conditional_serial,
+            expected_fallthrough_serial=expected_fallthrough_serial,
             priority=5,  # Very high priority - create blocks before other changes
             description=description or (
                 f"create conditional block after {source_blk_serial} "
@@ -2186,7 +2195,12 @@ class DeferredGraphModifier:
 
         elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT:
             return self._apply_create_conditional_redirect(
-                blk, mod.new_target, mod.conditional_target, mod.fallthrough_target
+                blk,
+                mod.new_target,
+                mod.conditional_target,
+                mod.fallthrough_target,
+                expected_conditional_serial=mod.expected_conditional_serial,
+                expected_fallthrough_serial=mod.expected_fallthrough_serial,
             )
 
         elif mod.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
@@ -2400,6 +2414,9 @@ class DeferredGraphModifier:
         ref_blk_serial: int,
         conditional_target_serial: int,
         fallthrough_target_serial: int,
+        *,
+        expected_conditional_serial: int | None = None,
+        expected_fallthrough_serial: int | None = None,
     ) -> bool:
         """
         Create a conditional 2-way block with two wired successors.
@@ -2464,6 +2481,26 @@ class DeferredGraphModifier:
                 logger.warning(
                     "duplicate_block did not create NOP fallthrough for block %d",
                     new_cond_blk.serial
+                )
+                return False
+            if (
+                expected_conditional_serial is not None
+                and new_cond_blk.serial != expected_conditional_serial
+            ):
+                logger.warning(
+                    "create_conditional_redirect: created conditional blk[%d], expected blk[%d]",
+                    new_cond_blk.serial,
+                    expected_conditional_serial,
+                )
+                return False
+            if (
+                expected_fallthrough_serial is not None
+                and nop_blk.serial != expected_fallthrough_serial
+            ):
+                logger.warning(
+                    "create_conditional_redirect: created fallthrough blk[%d], expected blk[%d]",
+                    nop_blk.serial,
+                    expected_fallthrough_serial,
                 )
                 return False
 
