@@ -152,6 +152,7 @@ def test_executor_preflight_uses_backend_order(monkeypatch: pytest.MonkeyPatch):
     assert len(translator.lower_calls) == 1
     assert translator.lower_calls[0].as_graph_modifications() == fragment.modifications
     assert translator.lower_calls[0].contains_block_creation
+    assert not translator.lower_calls[0].legacy_block_operations
 
 
 def test_executor_rejects_block_creation_when_policy_disabled(monkeypatch: pytest.MonkeyPatch):

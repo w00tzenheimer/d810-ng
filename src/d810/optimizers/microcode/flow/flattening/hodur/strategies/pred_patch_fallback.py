@@ -2,8 +2,9 @@
 
 For dispatcher predecessors where direct linearization couldn't resolve the
 state value, this fallback strategy traces state values backward using
-MopTracker.  If a unique state is inferred, it proposes a GOTO_REDIRECT.
-If multiple predecessors disagree, it may propose BLOCK_DUPLICATE.
+MopTracker. If a unique state is inferred, it proposes a direct edge redirect.
+Conditional fork cases that still require true duplication remain disabled in
+Phase B and are logged explicitly.
 
 Corresponds to ``HodurUnflattener._resolve_and_patch`` and
 ``_infer_unique_state_at_block_end``.
@@ -45,7 +46,7 @@ _MOP_TRACKER_MAX_NB_PATH = 15
 
 
 class PredPatchFallbackStrategy:
-    """Propose GOTO_REDIRECT or BLOCK_DUPLICATE edits for remaining dispatcher preds.
+    """Propose direct edge redirects for remaining dispatcher predecessors.
 
     After direct linearization, some blocks still point to dispatcher check
     blocks.  This strategy uses MopTracker backward tracing to identify the
@@ -146,16 +147,17 @@ class PredPatchFallbackStrategy:
         always has, we can bypass the check and go directly to the appropriate handler.
 
         Patching strategy (same as FixPredecessorOfConditionalJumpBlock):
-        1. Propose BLOCK_DUPLICATE for the check block
-        2. Propose CONVERT_TO_GOTO to make the duplicate unconditionally go to target
-        3. Propose GOTO_REDIRECT to redirect the predecessor to the duplicate
+        When the predecessor has a unique known state value, redirect its edge
+        away from the dispatcher check block directly. Cases that still require
+        true duplication are skipped until symbolic duplicate materialization
+        exists.
 
         Args:
             snapshot: Immutable analysis snapshot for the current function.
 
         Returns:
-            A PlanFragment with GOTO_REDIRECT or BLOCK_DUPLICATE edits, or
-            None when no unresolved predecessors exist.
+            A PlanFragment with direct edge redirects, or None when no
+            unresolved predecessors exist.
         """
         if not self.is_applicable(snapshot):
             return None
@@ -182,8 +184,6 @@ class PredPatchFallbackStrategy:
         patches_fall_through: list[tuple[int, int, int]] = []
         patches_jump_taken: list[tuple[int, int, int]] = []
         # Track conditional predecessors already queued to avoid duplicate patches
-        conditional_preds_patched: set[int] = set()
-
         # For each state check block
         for state_val, handler in handlers.items():
             check_blk = mba.get_mblock(handler.check_block)
@@ -230,13 +230,12 @@ class PredPatchFallbackStrategy:
                     )
                     if (
                         len(unique_values) == 2
-                        and pred_serial not in conditional_preds_patched
                     ):
                         # Attempt conditional transition resolution:
                         # The predecessor is a 2-way block where each path sets a
-                        # different state value.  Walk the check-block chain for each
-                        # value and, if both resolve to a valid handler block, propose
-                        # BLOCK_DUPLICATE edits to redirect the two successor edges.
+                        # different state value. This still requires true block
+                        # duplication/splitting to stay precise, so keep it
+                        # disabled until symbolic duplicate materialization exists.
                         val_list = list(unique_values)
                         handler_targets = [
                             self._resolve_conditional_chain_target(
@@ -257,9 +256,6 @@ class PredPatchFallbackStrategy:
                                 check_blk.tail is not None
                                 and check_opcode in HODUR_STATE_CHECK_OPCODES
                             ):
-                                # Determine which resolved handler corresponds to the
-                                # jump-taken vs fall-through edge of pred_blk by using
-                                # the check block's comparison against state_val.
                                 all_resolved = True
                                 for idx, v in enumerate(val_list):
                                     jt_for_v = HodurStateMachineDetector._is_jump_taken_for_state(
@@ -271,23 +267,15 @@ class PredPatchFallbackStrategy:
                                     if jt_for_v is None:
                                         all_resolved = False
                                         break
-                                    h_tgt = handler_targets[idx]
-                                    if jt_for_v:
-                                        patches_jump_taken.append(
-                                            (pred_serial, handler.check_block, h_tgt)
-                                        )
-                                    else:
-                                        patches_fall_through.append(
-                                            (pred_serial, handler.check_block, h_tgt)
-                                        )
                                 if all_resolved:
-                                    logger.debug(
-                                        "Conditional fork at pred %d: values %s -> handlers %s",
+                                    logger.warning(
+                                        "PredPatchFallback: skipping conditional fork at pred %d "
+                                        "because DuplicateBlock materialization is disabled "
+                                        "(values=%s handlers=%s)",
                                         pred_serial,
                                         [hex(v) for v in val_list],
                                         [hex(h) for h in handler_targets],
                                     )
-                                    conditional_preds_patched.add(pred_serial)
                     continue
 
                 pred_state = flat_values[0]
@@ -336,30 +324,26 @@ class PredPatchFallbackStrategy:
                     )
                     patches_fall_through.append((pred_serial, handler.check_block, fall_through))
 
-        # Emit block-duplication requests for fall-through patches (jump never taken)
+        # Emit direct edge redirects for fall-through patches (jump never taken)
         for pred_serial, check_serial, fall_through in patches_fall_through:
-            # BLOCK_DUPLICATE: duplicate check_serial, then make new block go to fall_through,
-            # then redirect pred to new block.
             modifications.append(
-                builder.duplicate_block(
-                    source_block=check_serial,
+                builder.edge_redirect(
+                    source_block=pred_serial,
                     target_block=fall_through,
-                    pred_serial=pred_serial,
-                    patch_kind="fall_through",
+                    old_target=check_serial,
                 )
             )
             owned_blocks.add(pred_serial)
             owned_blocks.add(check_serial)
             nb_changes += 1
 
-        # Emit block-duplication requests for jump-taken patches
+        # Emit direct edge redirects for jump-taken patches
         for pred_serial, check_serial, jump_target in patches_jump_taken:
             modifications.append(
-                builder.duplicate_block(
-                    source_block=check_serial,
+                builder.edge_redirect(
+                    source_block=pred_serial,
                     target_block=jump_target,
-                    pred_serial=pred_serial,
-                    patch_kind="jump_taken",
+                    old_target=check_serial,
                 )
             )
             owned_blocks.add(pred_serial)

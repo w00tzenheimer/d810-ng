@@ -322,9 +322,9 @@ class AssignmentMapFallbackStrategy:
         use assignment_map to directly resolve and redirect them, bypassing
         MopTracker backward tracing which fails on modified CFG.
 
-        Note: BLOCK_DUPLICATE edits for 2-way exit blocks are emitted but are
-        not yet fully implemented in the executor — they will be logged as
-        warnings.
+        Note: 2-way exit blocks outside the state-machine region are lowered to
+        direct ``ConvertToGoto`` edits here. True block duplication remains
+        disabled until symbolic duplicate materialization exists.
         """
         if not assignment_map:
             return
@@ -356,7 +356,7 @@ class AssignmentMapFallbackStrategy:
                     if forward_succs:
                         forward_target = forward_succs[0]
                         modifications.append(
-                            builder.duplicate_block(
+                            builder.convert_to_goto(
                                 source_block=pred_serial,
                                 target_block=forward_target,
                             )
@@ -364,7 +364,7 @@ class AssignmentMapFallbackStrategy:
                         owned_blocks.add(pred_serial)
                         logger.info(
                             "Assignment-map resolver: converted 2-way exit blk[%d] "
-                            "to goto blk[%d]",
+                            "to direct goto blk[%d]",
                             pred_serial,
                             forward_target,
                         )

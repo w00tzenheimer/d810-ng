@@ -237,6 +237,56 @@ def test_apply_executes_post_apply_hook(monkeypatch):
     assert modifier.verify_failed is False
 
 
+def test_apply_pre_rejects_illegal_edge_split_trampoline_and_continues(monkeypatch):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(
+            dm.ModificationType.EDGE_SPLIT_TRAMPOLINE,
+            block_serial=0,
+            new_target=1,
+            src_block=2,
+            old_target=3,
+            via_pred=4,
+            expected_serial=5,
+            priority=5,
+            description="bad trampoline",
+        ),
+        dm.GraphModification(
+            dm.ModificationType.INSN_NOP,
+            block_serial=0,
+            insn_ea=0x1000,
+            priority=10,
+            description="good nop",
+        ),
+    ]
+
+    calls: list[dm.ModificationType] = []
+
+    monkeypatch.setattr(
+        modifier,
+        "_check_edge_split_trampoline_preconditions",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        modifier,
+        "_apply_single",
+        lambda mod: calls.append(mod.mod_type) or True,
+    )
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        dm,
+        "mba_deep_cleaning",
+        lambda *_a, **_k: setattr(mba, "cleaned", mba.cleaned + 1),
+    )
+
+    applied = modifier.apply(run_optimize_local=False, run_deep_cleaning=False)
+
+    assert applied == 1
+    assert calls == [dm.ModificationType.INSN_NOP]
+
+
 def test_apply_marks_verify_failed_on_post_apply_hook_exception(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)

@@ -24,8 +24,10 @@ from d810.cfg.graph_modification import (
 )
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from d810.cfg.plan import (
+    compile_patch_plan,
     LegacyBlockOperation,
     PatchConvertToGoto,
+    PatchEdgeSplitTrampoline,
     PatchNopInstructions,
     PatchPlan,
     PatchRedirectBranch,
@@ -133,10 +135,11 @@ class IDAIRTranslator:
     def lower(self, patch_plan: PatchPlan, mba: "ida_hexrays.mba_t") -> int:
         """Apply a PatchPlan to mba via DeferredGraphModifier.
 
-        ``PatchPlan`` concrete operations are lowered directly. Block-creating
-        edits remain explicit legacy fallback steps until symbolic block
-        materialization is implemented. Those steps can be rejected before any
-        live mutation when ``allow_legacy_block_creation`` is disabled.
+        ``PatchPlan`` concrete operations are lowered directly. Supported
+        block-creating steps are materialized through backend queue/apply
+        operations. Unsupported block creation remains explicit legacy fallback
+        and can be rejected before any live mutation when
+        ``allow_legacy_block_creation`` is disabled.
 
         Args:
             patch_plan: Finalized backend execution plan.
@@ -161,9 +164,10 @@ class IDAIRTranslator:
                 "IDAIRTranslator.lower() now requires PatchPlan; "
                 "compile GraphModification lists before lowering"
             )
-        if patch_plan.contains_block_creation and not self.allow_legacy_block_creation:
+        patch_plan = self.prepare_patch_plan(patch_plan, mba)
+        if patch_plan.legacy_block_operations and not self.allow_legacy_block_creation:
             logger.warning(
-                "PatchPlan contains %d block-creating steps but legacy block creation is disabled",
+                "PatchPlan contains %d legacy block-creating steps but legacy block creation is disabled",
                 len(patch_plan.legacy_block_operations),
             )
             return 0
@@ -177,6 +181,8 @@ class IDAIRTranslator:
                 len(patch_plan.legacy_block_operations),
             )
 
+        verify_each_mod = not patch_plan.contains_block_creation
+
         for step in patch_plan.steps:
             self._queue_patch_step(modifier, step)
 
@@ -184,9 +190,9 @@ class IDAIRTranslator:
         result_count = modifier.apply(
             run_optimize_local=True,
             run_deep_cleaning=False,
-            verify_each_mod=True,
-            rollback_on_verify_failure=True,
-            continue_on_verify_failure=True,
+            verify_each_mod=verify_each_mod,
+            rollback_on_verify_failure=verify_each_mod,
+            continue_on_verify_failure=verify_each_mod,
             enable_snapshot_rollback=True,
         )
 
@@ -201,6 +207,55 @@ class IDAIRTranslator:
             return 0
 
         return result_count
+
+    def prepare_patch_plan(
+        self,
+        patch_plan: PatchPlan,
+        mba: "ida_hexrays.mba_t",
+    ) -> PatchPlan:
+        """Reject live-unsupported trampoline edits and rebuild serial assignments."""
+        if not patch_plan.planner_modifications:
+            return patch_plan
+
+        from d810.hexrays.mutation import deferred_modifier
+
+        modifier = deferred_modifier.DeferredGraphModifier(mba)
+        rejected_edges: set[tuple[int, int, int, int]] = set()
+
+        for step in patch_plan.concrete_operations:
+            if not isinstance(step, PatchEdgeSplitTrampoline):
+                continue
+            if modifier._check_edge_split_trampoline_preconditions(
+                source_block_serial=step.source_serial,
+                via_pred=step.via_pred,
+                old_target=step.old_target,
+                new_target=step.new_target,
+            ):
+                continue
+            rejected_edges.add(
+                (step.source_serial, step.old_target, step.via_pred, step.new_target)
+            )
+
+        if not rejected_edges:
+            return patch_plan
+
+        filtered_modifications: list[GraphModification] = []
+        for mod in patch_plan.planner_modifications:
+            if isinstance(mod, EdgeRedirectViaPredSplit) and (
+                mod.src_block,
+                mod.old_target,
+                mod.via_pred,
+                mod.new_target,
+            ) in rejected_edges:
+                continue
+            filtered_modifications.append(mod)
+
+        logger.warning(
+            "Recompiling PatchPlan after rejecting %d unsupported edge-split trampoline(s)",
+            len(rejected_edges),
+        )
+        return compile_patch_plan(filtered_modifications, self.lift(mba))
+
 
     def _queue_patch_step(
         self,
@@ -243,6 +298,25 @@ class IDAIRTranslator:
                         ea,
                         description=f"nop {hex(ea)} in block {serial}",
                     )
+
+            case PatchEdgeSplitTrampoline(
+                source_serial=src,
+                via_pred=pred,
+                apply_old_target=old,
+                new_target=new,
+                assigned_serial=assigned,
+            ):
+                modifier.queue_edge_split_trampoline(
+                    source_block=src,
+                    via_pred=pred,
+                    old_target=old,
+                    new_target=new,
+                    expected_serial=assigned,
+                    description=(
+                        f"edge-split trampoline pred={pred} src={src} "
+                        f"{old}->{new} via {assigned}"
+                    ),
+                )
 
             case LegacyBlockOperation(modification=mod):
                 self._queue_legacy_block_operation(modifier, mod)
