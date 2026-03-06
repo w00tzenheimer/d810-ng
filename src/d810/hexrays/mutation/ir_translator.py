@@ -26,6 +26,7 @@ from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from d810.cfg.plan import (
     compile_patch_plan,
     LegacyBlockOperation,
+    PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchEdgeSplitTrampoline,
     PatchNopInstructions,
@@ -284,7 +285,7 @@ class IDAIRTranslator:
             match step:
                 case PatchRedirectGoto() | PatchRedirectBranch() | PatchConvertToGoto():
                     continue
-                case PatchNopInstructions() | PatchEdgeSplitTrampoline():
+                case PatchNopInstructions() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect():
                     continue
                 case PatchRemoveEdge(from_serial=src, to_serial=dst):
                     reasons.append(f"PatchRemoveEdge({src}->{dst})")
@@ -371,6 +372,28 @@ class IDAIRTranslator:
                     description=(
                         f"edge-split trampoline pred={pred} src={src} "
                         f"{old}->{new} via {assigned}"
+                    ),
+                )
+
+            case PatchConditionalRedirect(
+                source_serial=src,
+                ref_block=ref,
+                conditional_target=conditional_target,
+                fallthrough_target=fallthrough_target,
+                assigned_serial=assigned,
+                fallthrough_serial=fallthrough_serial,
+            ):
+                modifier.queue_create_conditional_redirect(
+                    source_blk_serial=src,
+                    ref_blk_serial=ref,
+                    conditional_target_serial=conditional_target,
+                    fallthrough_target_serial=fallthrough_target,
+                    expected_conditional_serial=assigned,
+                    expected_fallthrough_serial=fallthrough_serial,
+                    description=(
+                        f"conditional redirect src={src} ref={ref} "
+                        f"cond={conditional_target} ft={fallthrough_target} "
+                        f"via {assigned}/{fallthrough_serial}"
                     ),
                 )
 

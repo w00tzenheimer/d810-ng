@@ -164,6 +164,28 @@ class PatchEdgeSplitTrampoline:
     template_block: int
 
 
+@dataclass(frozen=True)
+class PatchConditionalRedirect:
+    """Finalized materialization of a cloned conditional block plus NOP fallthrough."""
+
+    block_id: VirtualBlockId
+    assigned_serial: int
+    fallthrough_block_id: VirtualBlockId
+    fallthrough_serial: int
+    source_serial: int
+    ref_block: int
+    conditional_target: int
+    fallthrough_target: int
+
+    def to_graph_modification(self) -> CreateConditionalRedirect:
+        return CreateConditionalRedirect(
+            source_block=self.source_serial,
+            ref_block=self.ref_block,
+            conditional_target=self.conditional_target,
+            fallthrough_target=self.fallthrough_target,
+        )
+
+
 BlockCreatingGraphModification = Union[
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
@@ -196,6 +218,7 @@ PatchOperation = Union[
     PatchRemoveEdge,
     PatchNopInstructions,
     PatchEdgeSplitTrampoline,
+    PatchConditionalRedirect,
 ]
 
 PatchStep = Union[PatchOperation, LegacyBlockOperation]
@@ -258,6 +281,13 @@ class _VirtualIdAllocator:
 class _PendingEdgeSplitTrampoline:
     modification: EdgeRedirectViaPredSplit
     block_id: VirtualBlockId
+
+
+@dataclass(frozen=True)
+class _PendingConditionalRedirect:
+    modification: CreateConditionalRedirect
+    block_id: VirtualBlockId
+    fallthrough_block_id: VirtualBlockId
 
 
 def is_block_creating_modification(modification: GraphModification) -> bool:
@@ -350,30 +380,11 @@ def _build_relocation_map(
     )
 
 
-def _compile_symbolic_block_step(
+def _compile_legacy_block_step(
     modification: BlockCreatingGraphModification,
     allocator: _VirtualIdAllocator,
 ) -> tuple[LegacyBlockOperation, PatchBlockSpec]:
     match modification:
-        case CreateConditionalRedirect(
-            source_block=src,
-            ref_block=ref,
-            conditional_target=conditional,
-            fallthrough_target=fallthrough,
-        ):
-            block_id = allocator.alloc("conditional_redirect")
-            outgoing_edges = [PatchEdgeRef(source=block_id, target=conditional)]
-            if fallthrough != conditional:
-                outgoing_edges.append(PatchEdgeRef(source=block_id, target=fallthrough))
-            spec = PatchBlockSpec(
-                block_id=block_id,
-                kind="conditional_redirect_clone",
-                template_block=ref,
-                incoming_edge=PatchEdgeRef(source=src, target=ref),
-                outgoing_edges=tuple(outgoing_edges),
-            )
-            return LegacyBlockOperation(modification=modification, block_id=block_id), spec
-
         case DuplicateBlock(source_block=src, target_block=target, pred_serial=pred):
             block_id = allocator.alloc("duplicate_block")
             outgoing_edges: tuple[PatchEdgeRef, ...] = ()
@@ -463,6 +474,33 @@ def _finalize_step(
                 template_block=src,
             )
 
+        case _PendingConditionalRedirect(
+            modification=CreateConditionalRedirect(
+                source_block=src,
+                ref_block=ref,
+                conditional_target=conditional,
+                fallthrough_target=fallthrough,
+            ),
+            block_id=block_id,
+            fallthrough_block_id=fallthrough_block_id,
+        ):
+            assigned_serial = relocation_map.assigned_serial_for(block_id)
+            fallthrough_serial = relocation_map.assigned_serial_for(fallthrough_block_id)
+            if assigned_serial is None:
+                raise ValueError(f"Missing assigned serial for {block_id}")
+            if fallthrough_serial is None:
+                raise ValueError(f"Missing assigned serial for {fallthrough_block_id}")
+            return PatchConditionalRedirect(
+                block_id=block_id,
+                assigned_serial=assigned_serial,
+                fallthrough_block_id=fallthrough_block_id,
+                fallthrough_serial=fallthrough_serial,
+                source_serial=src,
+                ref_block=relocation_map.rewrite_serial(ref),
+                conditional_target=relocation_map.rewrite_serial(conditional),
+                fallthrough_target=relocation_map.rewrite_serial(fallthrough),
+            )
+
         case LegacyBlockOperation():
             return step
 
@@ -532,8 +570,74 @@ def compile_patch_plan(
                     _PendingEdgeSplitTrampoline(modification=modification, block_id=block_id)
                 )
 
-            case CreateConditionalRedirect() | DuplicateBlock() | InsertBlock():
-                legacy_step, spec = _compile_symbolic_block_step(modification, allocator)
+            case CreateConditionalRedirect(
+                source_block=src,
+                ref_block=ref,
+                conditional_target=conditional,
+                fallthrough_target=fallthrough,
+            ):
+                if cfg is None:
+                    block_id = allocator.alloc("conditional_redirect")
+                    outgoing_edges = [PatchEdgeRef(source=block_id, target=conditional)]
+                    if fallthrough != conditional:
+                        outgoing_edges.append(PatchEdgeRef(source=block_id, target=fallthrough))
+                    raw_steps.append(
+                        LegacyBlockOperation(modification=modification, block_id=block_id)
+                    )
+                    new_blocks.append(
+                        PatchBlockSpec(
+                            block_id=block_id,
+                            kind="conditional_redirect_clone",
+                            template_block=ref,
+                            incoming_edge=PatchEdgeRef(source=src, target=ref),
+                            outgoing_edges=tuple(outgoing_edges),
+                        )
+                    )
+                else:
+                    block_id = allocator.alloc("conditional_redirect")
+                    fallthrough_block_id = allocator.alloc("conditional_redirect_fallthrough")
+                    new_blocks.append(
+                        PatchBlockSpec(
+                            block_id=block_id,
+                            kind="conditional_redirect_clone",
+                            template_block=ref,
+                            incoming_edge=PatchEdgeRef(source=src, target=ref),
+                            outgoing_edges=(
+                                PatchEdgeRef(source=block_id, target=conditional),
+                                PatchEdgeRef(
+                                    source=block_id,
+                                    target=fallthrough_block_id,
+                                ),
+                            ),
+                        )
+                    )
+                    new_blocks.append(
+                        PatchBlockSpec(
+                            block_id=fallthrough_block_id,
+                            kind="conditional_redirect_fallthrough",
+                            template_block=ref,
+                            incoming_edge=PatchEdgeRef(
+                                source=block_id,
+                                target=fallthrough_block_id,
+                            ),
+                            outgoing_edges=(
+                                PatchEdgeRef(
+                                    source=fallthrough_block_id,
+                                    target=fallthrough,
+                                ),
+                            ),
+                        )
+                    )
+                    raw_steps.append(
+                        _PendingConditionalRedirect(
+                            modification=modification,
+                            block_id=block_id,
+                            fallthrough_block_id=fallthrough_block_id,
+                        )
+                    )
+
+            case DuplicateBlock() | InsertBlock():
+                legacy_step, spec = _compile_legacy_block_step(modification, allocator)
                 raw_steps.append(legacy_step)
                 new_blocks.append(spec)
 
@@ -572,6 +676,7 @@ __all__ = [
     "PatchRemoveEdge",
     "PatchNopInstructions",
     "PatchEdgeSplitTrampoline",
+    "PatchConditionalRedirect",
     "LegacyBlockOperation",
     "PatchOperation",
     "PatchStep",

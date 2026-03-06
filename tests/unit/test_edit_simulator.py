@@ -201,9 +201,12 @@ class TestSimulateEdits:
             fallthrough_target=11,
         )]
         sim = simulate_edits(adj, edits)
-        clone = next(iter(sim.created_clones))
+        assert len(sim.created_clones) == 2
+        clone = min(sim.created_clones)
+        nop_blk = max(sim.created_clones)
         assert sim.adj[0] == [clone]
-        assert sim.adj[clone] == [10, 11]
+        assert sim.adj[clone] == [10, nop_blk]
+        assert sim.adj[nop_blk] == [11]
 
 
 class TestModificationProjection:
@@ -296,6 +299,37 @@ class TestModificationProjection:
         assert sim.adj[2] == [3]
         assert sim.adj[3] == []
         assert prove_terminal_sink(2, sim.adj, exits={3}, forbidden=set()).ok
+
+    def test_patch_plan_conditional_redirect_relocates_stop(self):
+        cfg = FlowGraph(
+            blocks={
+                0: _block(0, (1,), ()),
+                1: _block(1, (2, 5), (0,)),
+                2: _block(2, (), (1,)),
+                5: _block(5, (), (1,)),
+            },
+            entry_serial=0,
+            func_ea=0,
+        )
+
+        patch_plan = compile_patch_plan(
+            [
+                CreateConditionalRedirect(
+                    source_block=0,
+                    ref_block=1,
+                    conditional_target=5,
+                    fallthrough_target=2,
+                )
+            ],
+            cfg,
+        )
+
+        sim = simulate_edits(cfg.as_adjacency_dict(), patch_plan_to_simulated_edits(patch_plan))
+
+        assert sim.adj[0] == [5]
+        assert sim.adj[5] == [7, 6]
+        assert sim.adj[6] == [2]
+        assert sim.adj[7] == []
 
     def test_remove_edge_is_simulated(self):
         sim = simulate_edits(

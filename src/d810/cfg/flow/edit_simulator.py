@@ -16,6 +16,7 @@ from d810.cfg.graph_modification import (
 )
 from d810.cfg.plan import (
     LegacyBlockOperation,
+    PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchEdgeSplitTrampoline,
     PatchPlan,
@@ -58,6 +59,7 @@ class SimulatedEdit:
     via_pred: int | None = None  # only for edge_split_redirect
     fallthrough_target: int | None = None  # only for create_conditional_redirect
     created_serial: int | None = None  # finalized serial for symbolic block creation
+    secondary_created_serial: int | None = None  # second block for multi-block creation
     stop_serial_before: int | None = None
     stop_serial_after: int | None = None
 
@@ -222,6 +224,28 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                         new_target=new,
                         via_pred=pred,
                         created_serial=assigned,
+                        stop_serial_before=stop_serial_before,
+                        stop_serial_after=stop_serial_after,
+                    )
+                )
+
+            case PatchConditionalRedirect(
+                source_serial=src,
+                ref_block=ref,
+                conditional_target=conditional,
+                fallthrough_target=fallthrough,
+                assigned_serial=assigned,
+                fallthrough_serial=fallthrough_serial,
+            ):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="create_conditional_redirect",
+                        source=src,
+                        old_target=ref,
+                        new_target=conditional,
+                        fallthrough_target=fallthrough,
+                        created_serial=assigned,
+                        secondary_created_serial=fallthrough_serial,
                         stop_serial_before=stop_serial_before,
                         stop_serial_after=stop_serial_after,
                     )
@@ -400,15 +424,21 @@ def simulate_edits(
             clone_serial = edit.created_serial
             if clone_serial is None:
                 clone_serial = max(result.keys(), default=-1) + 1
-            clone_succs = [edit.new_target]
-            if (
-                edit.fallthrough_target is not None
-                and edit.fallthrough_target != edit.new_target
-            ):
-                clone_succs.append(edit.fallthrough_target)
+            fallthrough_serial = edit.secondary_created_serial
+            if fallthrough_serial is None:
+                fallthrough_serial = max({*result.keys(), clone_serial}, default=-1) + 1
+                if fallthrough_serial == clone_serial:
+                    fallthrough_serial += 1
+            clone_succs = [edit.new_target, fallthrough_serial]
             result[clone_serial] = clone_succs
+            if edit.fallthrough_target is None:
+                result[fallthrough_serial] = []
+            else:
+                result[fallthrough_serial] = [edit.fallthrough_target]
             created_clones.add(clone_serial)
+            created_clones.add(fallthrough_serial)
             clone_origins[clone_serial] = edit
+            clone_origins[fallthrough_serial] = edit
 
             new_succs = list(succs)
             try:

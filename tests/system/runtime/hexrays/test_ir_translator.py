@@ -15,6 +15,7 @@ ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
+    CreateConditionalRedirect,
     EdgeRedirectViaPredSplit,
     InsertBlock,
     RedirectGoto,
@@ -132,6 +133,8 @@ class _FakeDeferredGraphModifier:
         ref_blk_serial: int,
         conditional_target_serial: int,
         fallthrough_target_serial: int,
+        expected_conditional_serial: int | None = None,
+        expected_fallthrough_serial: int | None = None,
         description: str = "",
     ) -> None:
         self.calls.append(
@@ -141,6 +144,8 @@ class _FakeDeferredGraphModifier:
                 ref_blk_serial,
                 conditional_target_serial,
                 fallthrough_target_serial,
+                expected_conditional_serial,
+                expected_fallthrough_serial,
                 description,
             )
         )
@@ -318,6 +323,46 @@ class TestIDAIntegration:
 
         assert count == 0
         assert created == []
+
+    def test_lower_applies_conditional_redirect_patch_plan(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                CreateConditionalRedirect(
+                    source_block=44,
+                    ref_block=45,
+                    conditional_target=199,
+                    fallthrough_target=2,
+                )
+            ],
+            _cfg(),
+        )
+
+        count = backend.lower(patch_plan, object())
+
+        assert count == 1
+        assert len(created) == 1
+        assert created[0].calls[0][0] == "create_conditional"
+        assert created[0].calls[0][1:7] == (44, 45, 201, 2, 199, 200)
 
     def test_lower_rejects_unsupported_legacy_insert_block_when_enabled(
         self,

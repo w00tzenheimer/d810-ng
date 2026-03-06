@@ -15,6 +15,7 @@ from d810.cfg.graph_modification import (
 from d810.cfg.plan import (
     LegacyBlockOperation,
     PatchBlockSpec,
+    PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchEdgeSplitTrampoline,
     PatchNopInstructions,
@@ -44,6 +45,19 @@ def _cfg() -> FlowGraph:
             9: _block(9, (10,), ()),
             10: _block(10, (11,), (9,)),
             11: _block(11, (), (10,)),
+        },
+        entry_serial=9,
+        func_ea=0,
+    )
+
+
+def _conditional_cfg() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            9: _block(9, (10,), ()),
+            10: _block(10, (11, 14), (9,)),
+            11: _block(11, (), (10,)),
+            14: _block(14, (), (10,)),
         },
         entry_serial=9,
         func_ea=0,
@@ -119,6 +133,44 @@ def test_compile_patch_plan_finalizes_edge_split_trampoline():
     assert patch_plan.legacy_block_operations == ()
 
 
+def test_compile_patch_plan_finalizes_conditional_redirect():
+    patch_plan = compile_patch_plan(
+        [
+            CreateConditionalRedirect(
+                source_block=9,
+                ref_block=10,
+                conditional_target=14,
+                fallthrough_target=11,
+            )
+        ],
+        _conditional_cfg(),
+    )
+
+    assert patch_plan.contains_block_creation
+    assert patch_plan.steps == (
+        PatchConditionalRedirect(
+            block_id=VirtualBlockId(namespace="conditional_redirect", ordinal=0),
+            assigned_serial=14,
+            fallthrough_block_id=VirtualBlockId(
+                namespace="conditional_redirect_fallthrough",
+                ordinal=1,
+            ),
+            fallthrough_serial=15,
+            source_serial=9,
+            ref_block=10,
+            conditional_target=16,
+            fallthrough_target=11,
+        ),
+    )
+    assert [spec.kind for spec in patch_plan.new_blocks] == [
+        "conditional_redirect_clone",
+        "conditional_redirect_fallthrough",
+    ]
+    assert patch_plan.relocation_map.stop_serial_before == 14
+    assert patch_plan.relocation_map.stop_serial_after == 16
+    assert patch_plan.legacy_block_operations == ()
+
+
 def test_compile_patch_plan_records_symbolic_block_specs_for_remaining_legacy_block_creation():
     instructions = (InsnSnapshot(opcode=0x77, ea=0x2000, operands=()),)
     modifications = [
@@ -140,16 +192,18 @@ def test_compile_patch_plan_records_symbolic_block_specs_for_remaining_legacy_bl
     patch_plan = compile_patch_plan(modifications, _cfg())
 
     assert patch_plan.contains_block_creation
-    assert len(patch_plan.new_blocks) == 3
+    assert len(patch_plan.new_blocks) == 4
     assert all(isinstance(spec, PatchBlockSpec) for spec in patch_plan.new_blocks)
     assert all(isinstance(spec.block_id, VirtualBlockId) for spec in patch_plan.new_blocks)
     assert [spec.kind for spec in patch_plan.new_blocks] == [
         "edge_split_trampoline",
         "conditional_redirect_clone",
+        "conditional_redirect_fallthrough",
         "insert_block",
     ]
     assert isinstance(patch_plan.steps[0], PatchEdgeSplitTrampoline)
-    assert len(patch_plan.legacy_block_operations) == 2
+    assert isinstance(patch_plan.steps[1], PatchConditionalRedirect)
+    assert len(patch_plan.legacy_block_operations) == 1
     assert all(isinstance(step, LegacyBlockOperation) for step in patch_plan.legacy_block_operations)
     assert patch_plan.as_graph_modifications() == modifications
 

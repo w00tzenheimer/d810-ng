@@ -288,6 +288,55 @@ def test_apply_pre_rejects_illegal_edge_split_trampoline_and_continues(monkeypat
     assert calls == [dm.ModificationType.INSN_NOP]
 
 
+def test_create_conditional_redirect_rejects_unexpected_serial(monkeypatch):
+    mba = _FakeMBA()
+    source = _FakeBlock(5)
+    ref = _FakeBlock(6)
+    mba.blocks.update({5: source, 6: ref})
+    mba.qty = len(mba.blocks)
+
+    modifier = dm.DeferredGraphModifier(mba)
+
+    monkeypatch.setattr(dm.ida_hexrays, "is_mcode_jcond", lambda _opcode: True)
+    monkeypatch.setattr(
+        dm,
+        "duplicate_block",
+        lambda *_a, **_k: (_FakeBlock(7), _FakeBlock(8)),
+    )
+
+    cond_calls = {"count": 0}
+    ft_calls = {"count": 0}
+    src_calls = {"count": 0}
+    monkeypatch.setattr(
+        dm,
+        "change_2way_block_conditional_successor",
+        lambda *_a, **_k: cond_calls.__setitem__("count", cond_calls["count"] + 1) or True,
+    )
+    monkeypatch.setattr(
+        dm,
+        "change_1way_block_successor",
+        lambda blk, *_a, **_k: (
+            ft_calls.__setitem__("count", ft_calls["count"] + 1)
+            if blk.serial == 8
+            else src_calls.__setitem__("count", src_calls["count"] + 1)
+        ) or True,
+    )
+
+    ok = modifier._apply_create_conditional_redirect(
+        source_blk=source,
+        ref_blk_serial=6,
+        conditional_target_serial=10,
+        fallthrough_target_serial=11,
+        expected_conditional_serial=9,
+        expected_fallthrough_serial=8,
+    )
+
+    assert ok is False
+    assert cond_calls["count"] == 0
+    assert ft_calls["count"] == 0
+    assert src_calls["count"] == 0
+
+
 def test_apply_marks_verify_failed_on_post_apply_hook_exception(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
