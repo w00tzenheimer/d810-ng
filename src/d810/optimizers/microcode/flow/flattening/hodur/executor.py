@@ -95,7 +95,8 @@ class TransactionalExecutor:
         self.allow_legacy_block_creation = allow_legacy_block_creation
         self.cfg_contract = cfg_contract
         self.translator = translator or IDAIRTranslator(
-            allow_legacy_block_creation=allow_legacy_block_creation
+            allow_legacy_block_creation=allow_legacy_block_creation,
+            contract=self.cfg_contract,
         )
         self._total_changes = 0
 
@@ -183,33 +184,20 @@ class TransactionalExecutor:
             len(patch_plan.legacy_block_operations),
         )
 
-        contract_post_error: str | None = None
-
-        def _post_apply_contract_check() -> None:
-            nonlocal contract_post_error
-            violations = self._run_cfg_contract_check("post", patch_plan)
-            if not violations:
-                return
-            contract_post_error = self._format_contract_violations(violations)
-            raise RuntimeError(contract_post_error)
-
-        changes = self.translator.lower(
-            patch_plan,
-            self.mba,
-            post_apply_hook=_post_apply_contract_check,
-        )
-        if contract_post_error is not None:
+        try:
+            changes = self.translator.lower(patch_plan, self.mba)
+        except CfgContractViolationError as exc:
             executor_logger.warning(
                 "CFG contract post-check rejected stage %s: %s",
                 fragment.strategy_name,
-                contract_post_error,
+                exc.summary,
             )
             return StageResult(
                 strategy_name=fragment.strategy_name,
-                edits_applied=changes,
+                edits_applied=0,
                 success=False,
                 rollback_needed=True,
-                error=f"cfg contract post-check failed: {contract_post_error}",
+                error=f"cfg contract post-check failed: {exc.summary}",
             )
         self._total_changes += changes
 

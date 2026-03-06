@@ -62,11 +62,18 @@ def _base_fragment() -> dict:
 
 
 class _FakeTranslator:
-    def __init__(self, pre_cfg: FlowGraph, post_cfg: FlowGraph | None = None):
+    def __init__(
+        self,
+        pre_cfg: FlowGraph,
+        post_cfg: FlowGraph | None = None,
+        *,
+        contract: object | None = None,
+    ):
         self.pre_cfg = pre_cfg
         self.post_cfg = post_cfg if post_cfg is not None else pre_cfg
         self.lift_calls = 0
         self.lower_calls: list[PatchPlan] = []
+        self.contract = contract
 
     def lift(self, mba: object) -> FlowGraph:  # noqa: ARG002
         self.lift_calls += 1
@@ -78,13 +85,15 @@ class _FakeTranslator:
     def lower(
         self,
         patch_plan: PatchPlan,
-        mba: object,  # noqa: ARG002
+        mba: object,
         *,
         post_apply_hook=None,
     ) -> int:
         self.lower_calls.append(patch_plan)
         if post_apply_hook is not None:
             post_apply_hook()
+        if self.contract is not None:
+            self.contract.verify(mba, plan=patch_plan, phase="post")
         return len(patch_plan.as_graph_modifications())
 
 
@@ -285,12 +294,14 @@ def test_executor_runs_cfg_contract_pre_and_post(monkeypatch: pytest.MonkeyPatch
             self.calls.append(phase)
             return ()
 
+    contract = _Contract()
+    translator = _FakeTranslator(pre_cfg=cfg, contract=contract)
+
     fragment = PlanFragment(
         modifications=[RedirectGoto(from_serial=1, old_target=2, new_target=2)],
         **_base_fragment(),
     )
     live_mba = types.SimpleNamespace(qty=0, get_mblock=lambda _i: None)
-    contract = _Contract()
 
     executor = TransactionalExecutor(
         mba=live_mba,
