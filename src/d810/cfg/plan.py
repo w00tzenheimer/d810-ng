@@ -513,6 +513,19 @@ def _infer_conditional_target(block: BlockSnapshot) -> int | None:
     return None
 
 
+def _infer_fallthrough_target(
+    block: BlockSnapshot,
+    *,
+    conditional_target: int,
+) -> int | None:
+    if block.nsucc != 2:
+        return None
+    for succ in block.succs:
+        if succ != conditional_target:
+            return succ
+    return None
+
+
 def _classify_duplicate_pred_redirect(
     cfg: FlowGraph,
     *,
@@ -594,7 +607,9 @@ def _compile_duplicate_block_step(
     if pred_redirect_kind not in {"one_way", "conditional"}:
         return None
 
-    if source_block.nsucc > 1:
+    if source_block.nsucc > 2:
+        return None
+    if source_block.nsucc == 2 and modification.target_block is not None:
         return None
 
     block_id = allocator.alloc("duplicate_block")
@@ -604,6 +619,9 @@ def _compile_duplicate_block_step(
     )
     clone_outgoing_edges: list[PatchEdgeRef] = []
     specs: list[PatchBlockSpec] = []
+    conditional_target: int | None = None
+    fallthrough_target: int | None = None
+    fallthrough_block_id: VirtualBlockId | None = None
 
     if source_block.nsucc == 0:
         if modification.target_block is not None:
@@ -618,6 +636,36 @@ def _compile_duplicate_block_step(
             else source_block.succs[0]
         )
         clone_outgoing_edges.append(PatchEdgeRef(source=block_id, target=clone_target))
+
+    elif source_block.nsucc == 2:
+        conditional_target = _infer_conditional_target(source_block)
+        if conditional_target is None:
+            return None
+        fallthrough_target = _infer_fallthrough_target(
+            source_block,
+            conditional_target=conditional_target,
+        )
+        if fallthrough_target is None:
+            return None
+
+        fallthrough_block_id = allocator.alloc("duplicate_block_fallthrough")
+        clone_outgoing_edges.extend(
+            (
+                PatchEdgeRef(source=block_id, target=conditional_target),
+                PatchEdgeRef(source=block_id, target=fallthrough_block_id),
+            )
+        )
+        specs.append(
+            PatchBlockSpec(
+                block_id=fallthrough_block_id,
+                kind="duplicate_block_fallthrough",
+                template_block=modification.source_block,
+                incoming_edge=PatchEdgeRef(source=block_id, target=fallthrough_block_id),
+                outgoing_edges=(
+                    PatchEdgeRef(source=fallthrough_block_id, target=fallthrough_target),
+                ),
+            )
+        )
 
     specs.insert(
         0,
@@ -635,6 +683,9 @@ def _compile_duplicate_block_step(
             block_id=block_id,
             pred_redirect_kind=pred_redirect_kind,
             source_successors=source_block.succs,
+            conditional_target=conditional_target,
+            fallthrough_target=fallthrough_target,
+            fallthrough_block_id=fallthrough_block_id,
         ),
         tuple(specs),
     )

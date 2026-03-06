@@ -92,6 +92,32 @@ def _conditional_cfg() -> FlowGraph:
     )
 
 
+def _conditional_duplicate_cfg() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            8: _block(8, (10,), ()),
+            10: _block(
+                10,
+                (11, 12),
+                (8,),
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0x70,
+                        ea=0x1010,
+                        operands=(_BlockRef(11),),
+                        operand_slots=(("d", _BlockRef(11)),),
+                    ),
+                ),
+            ),
+            11: _block(11, (), (10,)),
+            12: _block(12, (), (10,)),
+            13: _block(13, (), ()),
+        },
+        entry_serial=8,
+        func_ea=0,
+    )
+
+
 def test_compile_patch_plan_converts_existing_block_rewrites():
     modifications = [
         RedirectGoto(from_serial=1, old_target=2, new_target=3),
@@ -286,6 +312,44 @@ def test_compile_patch_plan_keeps_unsupported_duplicate_block_legacy():
     assert len(patch_plan.legacy_block_operations) == 1
     assert isinstance(patch_plan.legacy_block_operations[0], LegacyBlockOperation)
     assert patch_plan.new_blocks[0].kind == "duplicate_block"
+
+
+def test_compile_patch_plan_finalizes_conditional_duplicate_block():
+    patch_plan = compile_patch_plan(
+        [
+            DuplicateBlock(
+                source_block=10,
+                target_block=None,
+                pred_serial=8,
+            )
+        ],
+        _conditional_duplicate_cfg(),
+    )
+
+    assert patch_plan.contains_block_creation
+    assert patch_plan.steps == (
+        PatchDuplicateBlock(
+            block_id=VirtualBlockId(namespace="duplicate_block", ordinal=0),
+            assigned_serial=13,
+            source_serial=10,
+            pred_serial=8,
+            pred_redirect_kind="one_way",
+            source_successors=(11, 12),
+            target_serial=None,
+            conditional_target=11,
+            fallthrough_target=12,
+            fallthrough_block_id=VirtualBlockId(
+                namespace="duplicate_block_fallthrough",
+                ordinal=1,
+            ),
+            fallthrough_serial=14,
+        ),
+    )
+    assert [spec.kind for spec in patch_plan.new_blocks] == [
+        "duplicate_block_clone",
+        "duplicate_block_fallthrough",
+    ]
+    assert patch_plan.legacy_block_operations == ()
 
 
 def test_compile_patch_plan_records_symbolic_block_specs_for_remaining_legacy_block_creation():

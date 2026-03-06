@@ -183,7 +183,8 @@ class PredPatchFallbackStrategy:
         # patches_jump_taken:   list of (pred_blk_serial, check_blk_serial, jump_target_serial)
         patches_fall_through: list[tuple[int, int, int]] = []
         patches_jump_taken: list[tuple[int, int, int]] = []
-        # Track conditional predecessors already queued to avoid duplicate patches
+        duplicate_forks: list[tuple[int, int]] = []
+        queued_duplicate_forks: set[tuple[int, int]] = set()
         # For each state check block
         for state_val, handler in handlers.items():
             check_blk = mba.get_mblock(handler.check_block)
@@ -233,9 +234,8 @@ class PredPatchFallbackStrategy:
                     ):
                         # Attempt conditional transition resolution:
                         # The predecessor is a 2-way block where each path sets a
-                        # different state value. This still requires true block
-                        # duplication/splitting to stay precise, so keep it
-                        # disabled until symbolic duplicate materialization exists.
+                        # different state value. Preserve that runtime split by
+                        # duplicating the handler check block for this predecessor.
                         val_list = list(unique_values)
                         handler_targets = [
                             self._resolve_conditional_chain_target(
@@ -268,14 +268,19 @@ class PredPatchFallbackStrategy:
                                         all_resolved = False
                                         break
                                 if all_resolved:
-                                    logger.warning(
-                                        "PredPatchFallback: skipping conditional fork at pred %d "
-                                        "because DuplicateBlock materialization is disabled "
-                                        "(values=%s handlers=%s)",
+                                    fork_key = (pred_serial, handler.check_block)
+                                    if fork_key in queued_duplicate_forks:
+                                        continue
+                                    logger.info(
+                                        "PredPatchFallback: duplicating conditional fork at pred %d "
+                                        "through check %d (values=%s handlers=%s)",
                                         pred_serial,
+                                        handler.check_block,
                                         [hex(v) for v in val_list],
                                         [hex(h) for h in handler_targets],
                                     )
+                                    queued_duplicate_forks.add(fork_key)
+                                    duplicate_forks.append(fork_key)
                     continue
 
                 pred_state = flat_values[0]
@@ -344,6 +349,19 @@ class PredPatchFallbackStrategy:
                     source_block=pred_serial,
                     target_block=jump_target,
                     old_target=check_serial,
+                )
+            )
+            owned_blocks.add(pred_serial)
+            owned_blocks.add(check_serial)
+            nb_changes += 1
+
+        for pred_serial, check_serial in duplicate_forks:
+            modifications.append(
+                builder.duplicate_block(
+                    source_block=check_serial,
+                    target_block=None,
+                    pred_serial=pred_serial,
+                    patch_kind="conditional_fork",
                 )
             )
             owned_blocks.add(pred_serial)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import platform
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -37,6 +38,11 @@ from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 _DEFAULT_TEST_BINARY = "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
 
 
+@dataclass(frozen=True)
+class _BlockRef:
+    block_num: int
+
+
 def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
@@ -56,6 +62,36 @@ def _cfg() -> FlowGraph:
             44: _block(44, (45,), ()),
             122: _block(122, (45,), ()),
             45: _block(45, (2,), (44, 122)),
+            199: _block(199, (), ()),
+        },
+        entry_serial=44,
+        func_ea=0,
+    )
+
+
+def _conditional_duplicate_cfg() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            2: _block(2, (), (45,)),
+            3: _block(3, (), (45,)),
+            44: _block(44, (45,), ()),
+            122: _block(122, (45,), ()),
+            45: BlockSnapshot(
+                serial=45,
+                block_type=2,
+                succs=(2, 3),
+                preds=(44, 122),
+                flags=0,
+                start_ea=0,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0x70,
+                        ea=0x1010,
+                        operands=(_BlockRef(2),),
+                        operand_slots=(("d", _BlockRef(2)),),
+                    ),
+                ),
+            ),
             199: _block(199, (), ()),
         },
         entry_serial=44,
@@ -141,6 +177,38 @@ def _find_duplicate_candidate(mba) -> tuple[int, int] | None:
                 pred_blk.nsucc() == 1
                 and pred_blk.succ(0) == source_blk.serial
                 and source_blk.succ(0) != pred_blk.serial
+            ):
+                return pred_blk.serial, source_blk.serial
+    return None
+
+
+def _find_conditional_duplicate_candidate(mba) -> tuple[int, int] | None:
+    for i in range(mba.qty):
+        source_blk = mba.get_mblock(i)
+        if source_blk is None:
+            continue
+        if source_blk.serial == 0:
+            continue
+        if source_blk.type in (ida_hexrays.BLT_XTRN, ida_hexrays.BLT_STOP):
+            continue
+        if source_blk.nsucc() != 2:
+            continue
+        if source_blk.tail is None or not ida_hexrays.is_mcode_jcond(source_blk.tail.opcode):
+            continue
+
+        for pred_idx in range(source_blk.npred()):
+            pred_serial = source_blk.pred(pred_idx)
+            pred_blk = mba.get_mblock(pred_serial)
+            if pred_blk is None or pred_blk.serial == 0:
+                continue
+            if pred_blk.nsucc() == 1 and pred_blk.succ(0) == source_blk.serial:
+                return pred_blk.serial, source_blk.serial
+            if (
+                pred_blk.nsucc() == 2
+                and pred_blk.tail is not None
+                and ida_hexrays.is_mcode_jcond(pred_blk.tail.opcode)
+                and pred_blk.tail.d.t == ida_hexrays.mop_b
+                and pred_blk.tail.d.b == source_blk.serial
             ):
                 return pred_blk.serial, source_blk.serial
     return None
@@ -409,6 +477,51 @@ class TestIDAIntegration:
         assert duplicated_blk is not None
         assert duplicated_blk.nsucc() == len(duplicate_step.source_successors)
 
+    def test_lower_applies_conditional_duplicate_block_patch_plan_to_real_mba(self, libobfuscated_setup):
+        mba = _get_real_mba()
+        candidate = _find_conditional_duplicate_candidate(mba)
+        if candidate is None:
+            pytest.skip(
+                "No supported predecessor/source pair available for conditional DuplicateBlock runtime test"
+            )
+
+        pred_serial, source_serial = candidate
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                DuplicateBlock(
+                    source_block=source_serial,
+                    target_block=None,
+                    pred_serial=pred_serial,
+                )
+            ],
+            backend.lift(mba),
+        )
+        duplicate_step = next(
+            step for step in patch_plan.steps if isinstance(step, PatchDuplicateBlock)
+        )
+
+        assert duplicate_step.fallthrough_serial is not None
+
+        count = backend.lower(patch_plan, mba)
+
+        assert count == 1
+        mba.verify(True)
+
+        pred_blk = mba.get_mblock(pred_serial)
+        assert pred_blk is not None
+        assert duplicate_step.assigned_serial in {
+            pred_blk.succ(i) for i in range(pred_blk.nsucc())
+        }
+
+        duplicated_blk = mba.get_mblock(duplicate_step.assigned_serial)
+        assert duplicated_blk is not None
+        assert duplicated_blk.nsucc() == 2
+
+        duplicated_default = mba.get_mblock(duplicate_step.fallthrough_serial)
+        assert duplicated_default is not None
+        assert duplicated_default.nsucc() == 1
+
     def test_lower_applies_concrete_patch_plan(self, monkeypatch: pytest.MonkeyPatch):
         created: list[_FakeDeferredGraphModifier] = []
 
@@ -633,6 +746,45 @@ class TestIDAIntegration:
         assert len(created) == 1
         assert created[0].calls[0][0] == "duplicate_block"
         assert created[0].calls[0][1:6] == (45, 44, 200, 199, None)
+
+    def test_lower_applies_conditional_duplicate_block_patch_plan(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                DuplicateBlock(
+                    source_block=45,
+                    target_block=None,
+                    pred_serial=44,
+                )
+            ],
+            _conditional_duplicate_cfg(),
+        )
+
+        count = backend.lower(patch_plan, object())
+
+        assert count == 1
+        assert len(created) == 1
+        assert created[0].calls[0][0] == "duplicate_block"
+        assert created[0].calls[0][1:6] == (45, 44, None, 199, 200)
 
     def test_lower_rejects_unsupported_legacy_insert_block_when_enabled(
         self,
