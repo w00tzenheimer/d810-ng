@@ -372,3 +372,63 @@ class TestComposePipelineProvenance:
         assert pipeline == []
         assert provenance.accepted_count == 0
         assert provenance.rejected_count == 0
+
+
+# ---------------------------------------------------------------------------
+# K1.3: Strategy polling provenance (INAPPLICABLE / CRASHED)
+# ---------------------------------------------------------------------------
+
+
+def test_inapplicable_strategy_record():
+    """Strategies that return is_applicable=False get INAPPLICABLE record."""
+    row = DecisionRecord(
+        strategy_name="SomeStrategy",
+        family=FAMILY_DIRECT,
+        phase=DecisionPhase.INAPPLICABLE,
+        reason_code=DecisionReasonCode.REJECTED_INAPPLICABLE,
+        reason="is_applicable returned False",
+    )
+    assert row.phase == DecisionPhase.INAPPLICABLE
+    assert not row.is_accepted
+
+
+def test_crashed_strategy_record():
+    """Strategies that crash during plan() get CRASHED record."""
+    row = DecisionRecord(
+        strategy_name="BrokenStrategy",
+        family=FAMILY_FALLBACK,
+        phase=DecisionPhase.CRASHED,
+        reason_code=DecisionReasonCode.REJECTED_CRASHED,
+        reason="plan() raised: KeyError('missing')",
+        notes="KeyError('missing')",
+    )
+    assert row.phase == DecisionPhase.CRASHED
+    assert not row.is_accepted
+    assert "KeyError" in row.notes
+
+
+def test_pre_planner_records_prepended_to_provenance():
+    """Pre-planner INAPPLICABLE/CRASHED records appear before planner rows."""
+    pre = DecisionRecord(
+        strategy_name="Skipped",
+        family=FAMILY_DIRECT,
+        phase=DecisionPhase.INAPPLICABLE,
+        reason_code=DecisionReasonCode.REJECTED_INAPPLICABLE,
+        reason="is_applicable returned False",
+    )
+    planner_row = DecisionRecord(
+        strategy_name="Selected",
+        family=FAMILY_DIRECT,
+        phase=DecisionPhase.SELECTED,
+        reason_code=DecisionReasonCode.ACCEPTED,
+        reason="selected",
+    )
+    # Simulate merging as the unflattener does
+    planner_prov = PipelineProvenance(rows=(planner_row,))
+    merged = PipelineProvenance(
+        rows=(pre,) + planner_prov.rows,
+        input_summary=planner_prov.input_summary,
+    )
+    assert merged.rows[0].phase == DecisionPhase.INAPPLICABLE
+    assert merged.rows[1].phase == DecisionPhase.SELECTED
+    assert len(merged.rows) == 2
