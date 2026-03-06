@@ -28,6 +28,8 @@ source_modules =
     tests.unit
 forbidden_modules =
     d810.optimizers
+ignore_imports =
+    tests.unit.optimizers.microcode.flow.flattening.hodur.test_provenance -> d810.optimizers.microcode.flow.flattening.hodur.provenance
 [importlinter:contract:layered-architecture]
 name = Layered architecture prevents upward imports
 type = layers
