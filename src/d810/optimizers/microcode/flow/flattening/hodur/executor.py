@@ -38,6 +38,8 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 from d810.optimizers.microcode.flow.flattening.safeguards import (
     should_apply_cfg_modifications,
 )
+from d810.recon.flow.terminal_return_audit import build_terminal_return_audit
+from d810.evaluator.hexrays_microcode.terminal_return_proof import prove_terminal_returns
 
 executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 
@@ -241,6 +243,9 @@ class TransactionalExecutor:
             handler_reachability=handler_reachability,
             terminal_cycles=cycle_result.cycles,
         )
+
+        # --- Terminal return audit (diagnostic, never gates success) ---
+        self._run_terminal_return_audit(fragment, pre_cfg, result)
 
         gate_ok = self.gate.check(result)
         if isinstance(self.gate, VerificationGate):
@@ -635,3 +640,63 @@ class TransactionalExecutor:
             visited.add(serial)
             queue.extend(cfg.successors(serial))
         return visited
+
+    def _run_terminal_return_audit(
+        self,
+        fragment: PlanFragment,
+        pre_cfg: FlowGraph,
+        result: StageResult,
+    ) -> None:
+        """Run terminal return audit and optional proof as diagnostic metadata.
+
+        This is purely diagnostic -- it never gates stage success. Errors are
+        caught and logged at DEBUG level.
+
+        Args:
+            fragment: The plan fragment whose metadata contains handler_paths.
+            pre_cfg: The pre-linearization FlowGraph snapshot.
+            result: The StageResult to attach metadata to.
+        """
+        handler_paths = fragment.metadata.get("handler_paths", {})
+        if not handler_paths:
+            return
+
+        terminal_handler_serials: set[int] = set()
+        exit_map: dict[int, int | None] = {}
+        for handler_serial, paths in handler_paths.items():
+            for path in paths:
+                if path.final_state is None:
+                    terminal_handler_serials.add(handler_serial)
+            if paths:
+                exit_map[handler_serial] = getattr(paths[0], "exit_block", None)
+
+        if not terminal_handler_serials:
+            return
+
+        try:
+            audit = build_terminal_return_audit(
+                cfg=pre_cfg,
+                terminal_handler_serials=terminal_handler_serials,
+                exit_map=exit_map,
+                total_handlers=len(handler_paths),
+            )
+            result.metadata["terminal_return_audit"] = audit
+            executor_logger.info("Terminal return audit: %s", audit.summary())
+        except Exception:
+            executor_logger.debug(
+                "Terminal return audit failed", exc_info=True
+            )
+            return
+
+        if not audit.sites:
+            return
+
+        try:
+            proof = prove_terminal_returns(self.mba, audit)
+            result.metadata["terminal_return_proof"] = proof
+            executor_logger.info("Terminal return proof: %s", proof.summary())
+        except Exception:
+            executor_logger.debug(
+                "Terminal return proof skipped (IDA not available or error)",
+                exc_info=True,
+            )
