@@ -5,11 +5,15 @@ from .registry import survives_reload, SingletonMeta
 
 
 def _get_default_cython_enabled() -> bool:
-    """Check D810_NO_CYTHON env var to determine default state."""
+    """Check D810_NO_CYTHON env var and Cython availability."""
     env_val = os.environ.get("D810_NO_CYTHON", "").lower()
     if env_val in ("1", "true", "yes"):
         return False
-    return True
+    try:
+        import cython  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 @survives_reload()
