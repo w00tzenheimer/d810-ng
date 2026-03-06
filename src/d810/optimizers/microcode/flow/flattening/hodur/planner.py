@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from d810.core.typing import TYPE_CHECKING
 
 from d810.core.logging import getLogger
 from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
@@ -15,7 +16,13 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_FALLBACK,
     OwnershipScope,
     PlanFragment,
+    UnflatteningStrategy,
 )
+
+if TYPE_CHECKING:
+    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+        AnalysisSnapshot,
+    )
 
 logger = getLogger(__name__)
 
@@ -34,6 +41,74 @@ class UnflatteningPlanner:
 
     def __init__(self, policy: PipelinePolicy | None = None):
         self.policy = policy or PipelinePolicy()
+
+    def plan(
+        self,
+        snapshot: AnalysisSnapshot,
+        strategies: list[UnflatteningStrategy],
+        inputs: PlannerInputs | None = None,
+    ) -> tuple[list[PlanFragment], PipelineProvenance]:
+        """Poll strategies, collect fragments, and compose the pipeline.
+
+        This is the primary public API. It owns:
+        1. Strategy polling (``is_applicable`` + ``plan``).
+        2. Fragment collection.
+        3. Pipeline composition via :meth:`compose_pipeline`.
+        4. Provenance generation (including INAPPLICABLE/CRASHED records).
+
+        Args:
+            snapshot: Read-only view of the current function's analysis state.
+            strategies: Ordered list of strategy instances to poll.
+            inputs: Structured envelope with recon artifacts and handler count.
+
+        Returns:
+            A tuple of (ordered pipeline, complete provenance ledger).
+        """
+        fragments: list[PlanFragment] = []
+        pre_planner_records: list[DecisionRecord] = []
+
+        for strategy in strategies:
+            if not strategy.is_applicable(snapshot):
+                pre_planner_records.append(DecisionRecord(
+                    strategy_name=strategy.name,
+                    family=strategy.family,
+                    phase=DecisionPhase.INAPPLICABLE,
+                    reason_code=DecisionReasonCode.REJECTED_INAPPLICABLE,
+                    reason="is_applicable returned False",
+                ))
+                continue
+            try:
+                fragment = strategy.plan(snapshot)
+            except Exception as e:
+                logger.warning(
+                    "Strategy %s crashed: %s", strategy.name, e,
+                )
+                pre_planner_records.append(DecisionRecord(
+                    strategy_name=strategy.name,
+                    family=strategy.family,
+                    phase=DecisionPhase.CRASHED,
+                    reason_code=DecisionReasonCode.REJECTED_CRASHED,
+                    reason=f"plan() raised: {e}",
+                    notes=str(e),
+                ))
+                continue
+            if fragment is not None:
+                fragments.append(fragment)
+
+        # Compose pipeline from collected fragments
+        pipeline, provenance = self.compose_pipeline(
+            fragments,
+            inputs=inputs,
+        )
+
+        # Prepend strategy-level INAPPLICABLE/CRASHED records to planner provenance
+        if pre_planner_records:
+            provenance = PipelineProvenance(
+                rows=tuple(pre_planner_records) + provenance.rows,
+                input_summary=provenance.input_summary,
+            )
+
+        return pipeline, provenance
 
     def compose_pipeline(
         self,

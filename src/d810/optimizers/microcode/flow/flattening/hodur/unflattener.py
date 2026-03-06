@@ -48,7 +48,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.planner import (
 from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     DecisionPhase,
     DecisionReasonCode,
-    DecisionRecord,
     GateAccounting,
     PipelineProvenance,
     PlannerInputs,
@@ -271,49 +270,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         # 2. Build immutable snapshot (includes BST analysis, reachability, etc.)
         snapshot = self._build_snapshot(self.mba, state_machine, detector)
 
-        # 3. Collect plan fragments from all applicable strategies
-        fragments = []
-        pre_planner_records: list[DecisionRecord] = []
-        for strategy in self._strategies:
-            if not strategy.is_applicable(snapshot):
-                pre_planner_records.append(DecisionRecord(
-                    strategy_name=strategy.name,
-                    family=strategy.family,
-                    phase=DecisionPhase.INAPPLICABLE,
-                    reason_code=DecisionReasonCode.REJECTED_INAPPLICABLE,
-                    reason="is_applicable returned False",
-                ))
-                continue
-            try:
-                fragment = strategy.plan(snapshot)
-            except Exception as e:
-                unflat_logger.warning(
-                    "Strategy %s crashed: %s", strategy.name, e
-                )
-                pre_planner_records.append(DecisionRecord(
-                    strategy_name=strategy.name,
-                    family=strategy.family,
-                    phase=DecisionPhase.CRASHED,
-                    reason_code=DecisionReasonCode.REJECTED_CRASHED,
-                    reason=f"plan() raised: {e}",
-                    notes=str(e),
-                ))
-                continue
-            if fragment is not None:
-                fragments.append(fragment)
-
-        # Return frontier audit: pre_plan stage (after fragment collection so
-        # handler_paths from DirectLinearization strategy are available)
-        if self.RETURN_FRONTIER_AUDIT_ENABLED:
-            handler_paths = self._extract_handler_paths_from_fragments(fragments)
-            self._audit_pre_plan(snapshot, handler_paths=handler_paths)
-
-        if not fragments:
-            unflat_logger.info("No strategy produced a plan fragment")
-            self._actual_pass_count += 1
-            return 0
-
-        # 4. Planner composes pipeline — build PlannerInputs from recon artifacts
+        # 3-4. Planner owns strategy polling + pipeline composition
         transition_report = load_transition_report_from_store(
             func_ea=self.mba.entry_ea,
             maturity=self.cur_maturity,
@@ -330,16 +287,21 @@ class HodurUnflattener(GenericUnflatteningRule):
             return_frontier=None,  # return frontier sites not yet a planner input
             terminal_return_audit=return_frontier_audit,
         )
-        pipeline, provenance = self._planner.compose_pipeline(
-            fragments,
-            inputs=planner_inputs,
+        pipeline, provenance = self._planner.plan(
+            snapshot, self._strategies, inputs=planner_inputs,
         )
-        # Prepend strategy-level INAPPLICABLE/CRASHED records to planner provenance
-        if pre_planner_records:
-            provenance = PipelineProvenance(
-                rows=tuple(pre_planner_records) + provenance.rows,
-                input_summary=provenance.input_summary,
-            )
+
+        # Return frontier audit: pre_plan stage (after fragment collection so
+        # handler_paths from DirectLinearization strategy are available)
+        if self.RETURN_FRONTIER_AUDIT_ENABLED:
+            handler_paths = self._extract_handler_paths_from_fragments(pipeline)
+            self._audit_pre_plan(snapshot, handler_paths=handler_paths)
+
+        if not pipeline:
+            unflat_logger.info("No strategy produced a plan fragment")
+            self._actual_pass_count += 1
+            return 0
+
         self._last_provenance = provenance
         unflat_logger.info("Planner provenance: %s", provenance.summary())
 
