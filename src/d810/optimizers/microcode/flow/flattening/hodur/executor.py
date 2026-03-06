@@ -18,7 +18,7 @@ from d810.cfg.flow.graph_checks import (
     prove_terminal_sink,
 )
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.contracts import IDACfgContract
+from d810.cfg.contracts import CfgContractViolationError, IDACfgContract
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
@@ -299,6 +299,13 @@ class TransactionalExecutor:
         contract = self._get_cfg_contract()
         if contract is None:
             return []
+        verify = getattr(contract, "verify", None)
+        if callable(verify):
+            try:
+                verify(self.mba, patch_plan, phase=phase)
+            except CfgContractViolationError as exc:
+                return list(exc.violations)
+            return []
         if phase == "pre":
             return contract.check_pre(self.mba, patch_plan)
         if phase == "post":
@@ -307,17 +314,7 @@ class TransactionalExecutor:
 
     @staticmethod
     def _format_contract_violations(violations: list) -> str:
-        summaries: list[str] = []
-        for violation in violations[:3]:
-            location = (
-                f"blk[{violation.block_serial}]"
-                if getattr(violation, "block_serial", None) is not None
-                else "global"
-            )
-            summaries.append(f"{violation.code}@{location}")
-        if len(violations) > 3:
-            summaries.append(f"+{len(violations) - 3} more")
-        return ", ".join(summaries)
+        return IDACfgContract.summarize_violations(violations)
 
     def _filter_backend_unsupported_modifications(
         self,

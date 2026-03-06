@@ -15,6 +15,8 @@ def insn_checks_enabled() -> bool:
 def __getattr__(name: str):
     if name == "IDACfgContract":
         return import_module("d810.cfg.contracts.ida_contract").IDACfgContract
+    if name == "CfgContractViolationError":
+        return import_module("d810.cfg.contracts.ida_contract").CfgContractViolationError
     if name == "check_all_insn_invariants":
         return import_module("d810.cfg.contracts.insn_invariants").check_all_insn_invariants
     if name in {
@@ -38,6 +40,7 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    "CfgContractViolationError",
     "IDACfgContract",
     "NATIVE_ORACLE_AVAILABLE",
     "block_list_consistency",

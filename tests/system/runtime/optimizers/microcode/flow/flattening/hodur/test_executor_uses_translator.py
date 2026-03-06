@@ -275,13 +275,15 @@ def test_executor_runs_cfg_contract_pre_and_post(monkeypatch: pytest.MonkeyPatch
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        def check_pre(self, mba: object, plan: PatchPlan) -> list:  # noqa: ARG002
-            self.calls.append("pre")
-            return []
-
-        def check_post(self, mba: object, plan: PatchPlan) -> list:  # noqa: ARG002
-            self.calls.append("post")
-            return []
+        def verify(
+            self,
+            mba: object,  # noqa: ARG002
+            plan: PatchPlan,  # noqa: ARG002
+            *,
+            phase: str,
+        ) -> tuple:
+            self.calls.append(phase)
+            return ()
 
     fragment = PlanFragment(
         modifications=[RedirectGoto(from_serial=1, old_target=2, new_target=2)],
