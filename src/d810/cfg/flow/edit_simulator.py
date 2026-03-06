@@ -4,6 +4,22 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 
+try:
+    import ida_hexrays
+except ImportError:  # pragma: no cover - exercised in non-IDA unit tests.
+    class _FallbackHexRays:
+        BLT_NONE = 0
+        BLT_STOP = 1
+        BLT_0WAY = 2
+        BLT_1WAY = 3
+        BLT_2WAY = 4
+
+        m_nop = 0
+        m_goto = 2
+        m_jcnd = 3
+
+    ida_hexrays = _FallbackHexRays()  # type: ignore[assignment]
+
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
@@ -14,6 +30,7 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     RemoveEdge,
 )
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.plan import (
     LegacyBlockOperation,
     PatchConditionalRedirect,
@@ -26,6 +43,15 @@ from d810.cfg.plan import (
     PatchRedirectBranch,
     PatchRedirectGoto,
 )
+
+_BLT_NONE = int(getattr(ida_hexrays, "BLT_NONE", 0))
+_BLT_STOP = int(getattr(ida_hexrays, "BLT_STOP", 1))
+_BLT_0WAY = int(getattr(ida_hexrays, "BLT_0WAY", 2))
+_BLT_1WAY = int(getattr(ida_hexrays, "BLT_1WAY", 3))
+_BLT_2WAY = int(getattr(ida_hexrays, "BLT_2WAY", 4))
+_M_NOP = int(getattr(ida_hexrays, "m_nop", 0))
+_M_GOTO = int(getattr(ida_hexrays, "m_goto", 2))
+_M_JCND = int(getattr(ida_hexrays, "m_jcnd", 3))
 
 
 @dataclass
@@ -67,6 +93,174 @@ class SimulatedEdit:
     secondary_created_serial: int | None = None  # second block for multi-block creation
     stop_serial_before: int | None = None
     stop_serial_after: int | None = None
+
+
+def _tail_opcode_for_existing_block(
+    block: BlockSnapshot,
+    patch_plan: PatchPlan,
+) -> int | None:
+    for step in patch_plan.steps:
+        match step:
+            case PatchConvertToGoto(block_serial=serial) if serial == block.serial:
+                return _M_GOTO
+            case PatchRedirectGoto(from_serial=serial) if (
+                serial == block.serial and int(block.block_type) == _BLT_1WAY
+            ):
+                return _M_GOTO
+    return block.tail_opcode
+
+
+def _block_type_for_projected_shape(
+    *,
+    template_block: BlockSnapshot | None,
+    kind: str,
+    succs: tuple[int, ...],
+    tail_opcode: int | None,
+) -> int:
+    if kind in {"conditional_redirect_clone", "duplicate_block_clone"} and len(succs) == 2:
+        return _BLT_2WAY
+    if kind.endswith("fallthrough") or kind in {"edge_split_trampoline", "insert_block"}:
+        if len(succs) >= 2:
+            return _BLT_2WAY
+        if len(succs) == 1:
+            return _BLT_1WAY
+        return _BLT_0WAY
+    if template_block is not None:
+        return int(template_block.block_type)
+    if tail_opcode == _M_JCND and len(succs) == 2:
+        return _BLT_2WAY
+    if len(succs) == 1:
+        return _BLT_1WAY
+    if len(succs) == 0:
+        return _BLT_0WAY
+    return _BLT_NONE
+
+
+def _tail_opcode_for_projected_block(
+    *,
+    kind: str,
+    template_block: BlockSnapshot | None,
+    instructions,
+    succs: tuple[int, ...],
+) -> int | None:
+    if instructions:
+        return int(instructions[-1].opcode)
+    if kind in {"conditional_redirect_clone", "duplicate_block_clone"} and len(succs) == 2:
+        if template_block is not None and template_block.tail_opcode is not None:
+            return int(template_block.tail_opcode)
+        return _M_JCND
+    if kind.endswith("fallthrough") or kind in {"edge_split_trampoline", "insert_block"}:
+        return _M_GOTO if succs else _M_NOP
+    if template_block is not None:
+        return template_block.tail_opcode
+    return _M_GOTO if succs else _M_NOP
+
+
+def _build_pred_map(adj: dict[int, list[int]]) -> dict[int, tuple[int, ...]]:
+    preds: dict[int, list[int]] = {serial: [] for serial in adj}
+    for serial, succs in adj.items():
+        for succ in succs:
+            if succ in preds:
+                preds[succ].append(serial)
+    return {
+        serial: tuple(pred_list)
+        for serial, pred_list in preds.items()
+    }
+
+
+def _project_existing_blocks(
+    pre_cfg: FlowGraph,
+    patch_plan: PatchPlan,
+    adj: dict[int, list[int]],
+) -> dict[int, BlockSnapshot]:
+    projected: dict[int, BlockSnapshot] = {}
+    for block in pre_cfg.blocks.values():
+        projected_serial = patch_plan.relocation_map.rewrite_serial(block.serial)
+        projected[projected_serial] = BlockSnapshot(
+            serial=projected_serial,
+            block_type=int(block.block_type),
+            succs=tuple(adj.get(projected_serial, ())),
+            preds=(),
+            flags=int(block.flags),
+            start_ea=int(block.start_ea),
+            insn_snapshots=tuple(block.insn_snapshots),
+            tail_opcode=_tail_opcode_for_existing_block(block, patch_plan),
+        )
+    return projected
+
+
+def _project_created_blocks(
+    pre_cfg: FlowGraph,
+    patch_plan: PatchPlan,
+    adj: dict[int, list[int]],
+) -> dict[int, BlockSnapshot]:
+    projected: dict[int, BlockSnapshot] = {}
+    for spec in patch_plan.new_blocks:
+        assigned_serial = patch_plan.relocation_map.assigned_serial_for(spec.block_id)
+        if assigned_serial is None:
+            continue
+        succs = tuple(adj.get(assigned_serial, ()))
+        template_block = (
+            pre_cfg.get_block(spec.template_block)
+            if spec.template_block is not None
+            else None
+        )
+        instructions = tuple(spec.instructions or ())
+        tail_opcode = _tail_opcode_for_projected_block(
+            kind=spec.kind,
+            template_block=template_block,
+            instructions=instructions,
+            succs=succs,
+        )
+        projected[assigned_serial] = BlockSnapshot(
+            serial=assigned_serial,
+            block_type=_block_type_for_projected_shape(
+                template_block=template_block,
+                kind=spec.kind,
+                succs=succs,
+                tail_opcode=tail_opcode,
+            ),
+            succs=succs,
+            preds=(),
+            flags=int(getattr(template_block, "flags", 0)),
+            start_ea=int(getattr(template_block, "start_ea", pre_cfg.func_ea)),
+            insn_snapshots=instructions or tuple(getattr(template_block, "insn_snapshots", ())),
+            tail_opcode=tail_opcode,
+        )
+    return projected
+
+
+def project_post_state(pre_cfg: FlowGraph, patch_plan: PatchPlan) -> FlowGraph:
+    """Project a PatchPlan onto a new FlowGraph without mutating live MBA state."""
+    simulated = simulate_edits(
+        pre_cfg.as_adjacency_dict(),
+        patch_plan_to_simulated_edits(patch_plan),
+    )
+    projected_blocks = _project_existing_blocks(pre_cfg, patch_plan, simulated.adj)
+    projected_blocks.update(_project_created_blocks(pre_cfg, patch_plan, simulated.adj))
+    pred_map = _build_pred_map(simulated.adj)
+    finalized_blocks = {
+        serial: BlockSnapshot(
+            serial=block.serial,
+            block_type=block.block_type,
+            succs=tuple(simulated.adj.get(serial, ())),
+            preds=pred_map.get(serial, ()),
+            flags=block.flags,
+            start_ea=block.start_ea,
+            insn_snapshots=block.insn_snapshots,
+            tail_opcode=block.tail_opcode,
+        )
+        for serial, block in projected_blocks.items()
+    }
+    return FlowGraph(
+        blocks=finalized_blocks,
+        entry_serial=patch_plan.relocation_map.rewrite_serial(pre_cfg.entry_serial),
+        func_ea=pre_cfg.func_ea,
+        metadata={
+            **dict(pre_cfg.metadata),
+            "projected_from_patch_plan": True,
+        },
+    )
 
 
 def graph_modifications_to_simulated_edits(

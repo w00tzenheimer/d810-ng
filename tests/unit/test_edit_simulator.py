@@ -1,11 +1,13 @@
 """Unit tests for edit simulator (no IDA dependency)."""
 import pytest
 
+from d810.cfg.flow import edit_simulator as _edit_simulator
 from d810.cfg.flow.edit_simulator import (
     SimulatedEdit,
     SimulationResult,
     graph_modifications_to_simulated_edits,
     patch_plan_to_simulated_edits,
+    project_post_state,
     simulate_edits,
 )
 from d810.cfg.flow.graph_checks import prove_terminal_sink
@@ -269,6 +271,102 @@ class TestSimulateEdits:
         assert sim.adj[14] == [12, 15]
         assert sim.adj[15] == [11]
         assert sim.adj[16] == []
+
+
+class TestProjectPostState:
+    def test_project_post_state_normalizes_one_way_redirect_tail_to_goto(self):
+        cfg = FlowGraph(
+            blocks={
+                1: BlockSnapshot(
+                    serial=1,
+                    block_type=3,
+                    succs=(2,),
+                    preds=(0,),
+                    flags=0,
+                    start_ea=0x1010,
+                    insn_snapshots=(),
+                    tail_opcode=4,
+                ),
+                2: BlockSnapshot(
+                    serial=2,
+                    block_type=2,
+                    succs=(),
+                    preds=(1,),
+                    flags=0,
+                    start_ea=0x1020,
+                    insn_snapshots=(),
+                    tail_opcode=0,
+                ),
+            },
+            entry_serial=1,
+            func_ea=0x1000,
+        )
+
+        patch_plan = compile_patch_plan(
+            [RedirectGoto(from_serial=1, old_target=2, new_target=9)],
+            cfg,
+        )
+
+        projected = project_post_state(cfg, patch_plan)
+
+        assert projected.blocks[1].succs == (9,)
+        assert projected.blocks[1].tail_opcode == _edit_simulator._M_GOTO
+
+    def test_project_post_state_rebuilds_created_block_preds(self):
+        cfg = FlowGraph(
+            blocks={
+                0: BlockSnapshot(
+                    serial=0,
+                    block_type=3,
+                    succs=(1,),
+                    preds=(),
+                    flags=0,
+                    start_ea=0x1000,
+                    insn_snapshots=(),
+                    tail_opcode=2,
+                ),
+                1: BlockSnapshot(
+                    serial=1,
+                    block_type=3,
+                    succs=(2,),
+                    preds=(0,),
+                    flags=0,
+                    start_ea=0x1010,
+                    insn_snapshots=(),
+                    tail_opcode=2,
+                ),
+                2: BlockSnapshot(
+                    serial=2,
+                    block_type=2,
+                    succs=(),
+                    preds=(1,),
+                    flags=0,
+                    start_ea=0x1020,
+                    insn_snapshots=(),
+                    tail_opcode=0,
+                ),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+
+        patch_plan = compile_patch_plan(
+            [
+                InsertBlock(
+                    pred_serial=1,
+                    succ_serial=2,
+                    instructions=(),
+                )
+            ],
+            cfg,
+        )
+
+        projected = project_post_state(cfg, patch_plan)
+
+        assert projected.blocks[1].succs == (2,)
+        assert projected.blocks[2].preds == (1,)
+        assert projected.blocks[2].succs == (3,)
+        assert projected.blocks[3].preds == (2,)
 
 
 class TestModificationProjection:

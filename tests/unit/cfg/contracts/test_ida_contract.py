@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import pytest
 
+from d810.cfg.flow import edit_simulator
 from d810.cfg.contracts.ida_contract import (
     CfgContractViolationError,
     IDACfgContract,
 )
 from d810.cfg.contracts.report import InvariantViolation
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.cfg.plan import PatchPlan
 
 
 def test_verify_returns_empty_tuple_when_no_violations(monkeypatch: pytest.MonkeyPatch):
@@ -34,3 +37,41 @@ def test_verify_raises_with_summarized_violations(monkeypatch: pytest.MonkeyPatc
     assert exc_info.value.phase == "post"
     assert exc_info.value.violations == tuple(violations)
     assert exc_info.value.summary == "CFG_BAD@blk[7]"
+
+
+def test_check_projected_runs_virtual_cfg_invariants(monkeypatch: pytest.MonkeyPatch):
+    contract = IDACfgContract()
+    projected_cfg = FlowGraph(
+        blocks={
+            0: BlockSnapshot(
+                serial=0,
+                block_type=3,
+                succs=(1,),
+                preds=(),
+                flags=0,
+                start_ea=0,
+                insn_snapshots=(),
+                tail_opcode=2,
+            ),
+            1: BlockSnapshot(
+                serial=1,
+                block_type=2,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0,
+                insn_snapshots=(),
+                tail_opcode=0,
+            ),
+        },
+        entry_serial=0,
+        func_ea=0,
+    )
+
+    monkeypatch.setattr(edit_simulator, "project_post_state", lambda *_a, **_k: projected_cfg)
+
+    violations = contract.check_projected(projected_cfg, PatchPlan())
+
+    assert [violation.code for violation in violations] == [
+        "CFG_50858_SUCC_PRED_MISMATCH",
+    ]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import MappingProxyType
 from d810.core.typing import Any, Iterable
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 
 try:
     import ida_hexrays
@@ -102,10 +103,16 @@ def _vector_values(vec: Any | None) -> list[int]:
 
 
 def _succ_list(blk) -> list[int]:
+    snapshot_succs = getattr(blk, "succs", None)
+    if snapshot_succs is not None and not callable(snapshot_succs):
+        return [int(v) for v in snapshot_succs]
     return _vector_values(getattr(blk, "succset", None))
 
 
 def _pred_list(blk) -> list[int]:
+    snapshot_preds = getattr(blk, "preds", None)
+    if snapshot_preds is not None and not callable(snapshot_preds):
+        return [int(v) for v in snapshot_preds]
     return _vector_values(getattr(blk, "predset", None))
 
 
@@ -141,10 +148,14 @@ def _same_block_ref(left, right) -> bool:
 def _serials_for_scope(mba, focus_serials: Iterable[int] | None) -> list[int]:
     if focus_serials is not None:
         return [int(s) for s in focus_serials]
+    if isinstance(mba, FlowGraph):
+        return sorted(int(s) for s in mba.blocks)
     return list(range(int(mba.qty)))
 
 
 def _safe_get_block(mba, serial: int):
+    if isinstance(mba, FlowGraph):
+        return mba.get_block(serial)
     if serial < 0 or serial >= int(mba.qty):
         return None
     try:
@@ -160,6 +171,45 @@ def _insn_ea(tail) -> int | None:
         return int(tail.ea)
     except Exception:
         return None
+
+
+def _qty(mba) -> int:
+    if isinstance(mba, FlowGraph):
+        return int(mba.num_blocks)
+    return int(mba.qty)
+
+
+def _blk_type(blk) -> int:
+    return int(getattr(blk, "type", getattr(blk, "block_type", 0)))
+
+
+def _nsucc(blk) -> int:
+    probe = getattr(blk, "nsucc", None)
+    if callable(probe):
+        return int(probe())
+    if probe is not None:
+        return int(probe)
+    return len(_succ_list(blk))
+
+
+def _tail_opcode(blk) -> int:
+    tail = getattr(blk, "tail", None)
+    if tail is not None and hasattr(tail, "opcode"):
+        try:
+            return int(tail.opcode)
+        except Exception:
+            pass
+    tail_opcode = getattr(blk, "tail_opcode", None)
+    if tail_opcode is not None:
+        return int(tail_opcode)
+    insn_snapshots = getattr(blk, "insn_snapshots", ())
+    if insn_snapshots:
+        return int(insn_snapshots[-1].opcode)
+    return int(getattr(ida_hexrays, "m_nop", 0))
+
+
+def _is_snapshot_block(blk) -> bool:
+    return isinstance(blk, BlockSnapshot)
 
 
 def _violation(
@@ -373,7 +423,7 @@ def pred_succ_symmetry(
     """Check bidirectional edge consistency between succset/predset."""
     violations: list[InvariantViolation] = []
     serials = _serials_for_scope(mba, focus_serials)
-    qty = int(mba.qty)
+    qty = _qty(mba)
 
     for serial in serials:
         blk = _safe_get_block(mba, int(serial))
@@ -475,20 +525,20 @@ def block_type_vs_tail(
     """Check block type coherence with tail opcode and successor vector size."""
     violations: list[InvariantViolation] = []
     serials = _serials_for_scope(mba, focus_serials)
-    qty = int(mba.qty)
+    qty = _qty(mba)
 
     for serial in serials:
         blk = _safe_get_block(mba, int(serial))
         if blk is None:
             continue
 
-        blk_type = int(getattr(blk, "type"))
+        blk_type = _blk_type(blk)
         if blk_type == int(getattr(ida_hexrays, "BLT_NONE", -1)):
             continue
 
-        nsucc = int(blk.nsucc())
+        nsucc = _nsucc(blk)
         tail = getattr(blk, "tail", None)
-        tail_opcode = int(getattr(tail, "opcode", int(getattr(ida_hexrays, "m_nop", 0))))
+        tail_opcode = _tail_opcode(blk)
         succs = _succ_list(blk)
 
         expected_nsucc = _expected_successor_count(blk_type, nsucc)
@@ -549,7 +599,11 @@ def block_type_vs_tail(
                 )
             )
 
-        if blk_type == int(getattr(ida_hexrays, "BLT_1WAY", -1)) and _is_call_block(blk):
+        if (
+            not _is_snapshot_block(blk)
+            and blk_type == int(getattr(ida_hexrays, "BLT_1WAY", -1))
+            and _is_call_block(blk)
+        ):
             if _tail_is_noret_call(tail):
                 violations.append(
                     _violation(
@@ -595,47 +649,60 @@ def successor_set_matches_tail_semantics(
         if blk is None:
             continue
 
-        blk_type = int(getattr(blk, "type"))
+        blk_type = _blk_type(blk)
         if blk_type == int(getattr(ida_hexrays, "BLT_NONE", -1)):
             continue
 
         tail = getattr(blk, "tail", None)
-        tail_opcode = int(getattr(tail, "opcode", int(getattr(ida_hexrays, "m_nop", 0))))
+        tail_opcode = _tail_opcode(blk)
         succs = _succ_list(blk)
-        nsucc = int(blk.nsucc())
+        nsucc = _nsucc(blk)
         expected_nsucc = _expected_successor_count(blk_type, nsucc)
         if expected_nsucc is None:
             continue
 
         outs: list[int] = []
         if tail_opcode == int(getattr(ida_hexrays, "m_jtbl", -1)):
-            targets, err = _jtbl_targets(tail)
-            if err is not None:
-                violations.append(
-                    _violation(
-                        code="CFG_50859_JTBL_CASELIST_INVALID",
-                        phase=phase,
-                        message=f"Block {serial}: {err}",
-                        block_serial=int(serial),
-                        insn_ea=_insn_ea(tail),
-                        verify_code=50859,
-                    )
-                )
+            if _is_snapshot_block(blk):
+                outs = list(succs)
             else:
-                outs = list(targets or [])
+                targets, err = _jtbl_targets(tail)
+                if err is not None:
+                    violations.append(
+                        _violation(
+                            code="CFG_50859_JTBL_CASELIST_INVALID",
+                            phase=phase,
+                            message=f"Block {serial}: {err}",
+                            block_serial=int(serial),
+                            insn_ea=_insn_ea(tail),
+                            verify_code=50859,
+                        )
+                    )
+                else:
+                    outs = list(targets or [])
         elif tail_opcode == int(getattr(ida_hexrays, "m_goto", -1)):
-            left = getattr(tail, "l", None)
-            if _mop_is_mblock(left):
-                outs.append(int(getattr(left, "b")))
+            if _is_snapshot_block(blk):
+                if succs:
+                    outs.append(int(succs[0]))
+            else:
+                left = getattr(tail, "l", None)
+                if _mop_is_mblock(left):
+                    outs.append(int(getattr(left, "b")))
         elif _is_conditional_jump_opcode(tail_opcode):
             outs.append(int(serial) + 1)
             target = None
-            dest = getattr(tail, "d", None)
-            if dest is not None and hasattr(dest, "b"):
-                try:
-                    target = int(dest.b)
-                except Exception:
-                    target = None
+            if _is_snapshot_block(blk):
+                for succ in succs:
+                    if succ != int(serial) + 1:
+                        target = int(succ)
+                        break
+            else:
+                dest = getattr(tail, "d", None)
+                if dest is not None and hasattr(dest, "b"):
+                    try:
+                        target = int(dest.b)
+                    except Exception:
+                        target = None
             if target is not None and target not in outs:
                 outs.append(target)
         elif tail_opcode in {
@@ -755,7 +822,7 @@ def block_serial_range(
     """Check block.serial < mba.qty for every block (verify.cpp 50851)."""
     violations: list[InvariantViolation] = []
     serials = _serials_for_scope(mba, focus_serials)
-    qty = int(mba.qty)
+    qty = _qty(mba)
 
     for serial in serials:
         blk = _safe_get_block(mba, int(serial))
