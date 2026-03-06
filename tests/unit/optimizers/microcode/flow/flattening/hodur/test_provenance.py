@@ -163,6 +163,74 @@ def test_provenance_to_dicts_serializable():
     assert '"handler_count": 5' in serialized
 
 
+def test_decision_input_summary_to_dict():
+    """DecisionInputSummary.to_dict() returns all fields."""
+    s = DecisionInputSummary(
+        handler_transitions_available=True,
+        return_frontier_available=False,
+        terminal_return_audit_available=True,
+        terminal_return_audit_summary="4/46 terminal",
+        policy_overrides={"force": True},
+    )
+    d = s.to_dict()
+    assert d["handler_transitions_available"] is True
+    assert d["return_frontier_available"] is False
+    assert d["terminal_return_audit_available"] is True
+    assert d["terminal_return_audit_summary"] == "4/46 terminal"
+    assert d["policy_overrides"] == {"force": True}
+    serialized = json.dumps(d)
+    assert '"handler_transitions_available": true' in serialized
+
+
+def test_provenance_to_dict_includes_input_summary():
+    """to_dict() includes input_summary, rows, and phase_summary."""
+    summary = DecisionInputSummary(
+        handler_transitions_available=True,
+        return_frontier_available=False,
+    )
+    rows = (
+        DecisionRecord(
+            "A",
+            "primary",
+            DecisionPhase.APPLIED,
+            DecisionReasonCode.ACCEPTED,
+            "ok",
+            handler_count=5,
+        ),
+    )
+    prov = PipelineProvenance(rows=rows, input_summary=summary)
+    d = prov.to_dict()
+    assert d["input_summary"] is not None
+    assert d["input_summary"]["handler_transitions_available"] is True
+    assert d["input_summary"]["return_frontier_available"] is False
+    assert len(d["rows"]) == 1
+    assert d["rows"][0]["phase"] == "applied"
+    assert "phase_summary" in d
+    assert "1 APPLIED" in d["phase_summary"]
+    # JSON-serializable
+    serialized = json.dumps(d)
+    assert '"input_summary"' in serialized
+
+
+def test_provenance_to_dict_none_input_summary():
+    """to_dict() with no input_summary sets it to None."""
+    rows = (
+        DecisionRecord(
+            "A",
+            "primary",
+            DecisionPhase.APPLIED,
+            DecisionReasonCode.ACCEPTED,
+            "ok",
+        ),
+    )
+    prov = PipelineProvenance(rows=rows)
+    d = prov.to_dict()
+    assert d["input_summary"] is None
+    # Still JSON-serializable
+    serialized = json.dumps(d)
+    assert '"input_summary": null' in serialized
+
+
 def test_selected_phase_exists():
     row = DecisionRecord(
         strategy_name="A",

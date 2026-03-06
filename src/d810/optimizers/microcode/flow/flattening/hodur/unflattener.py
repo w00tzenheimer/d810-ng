@@ -377,7 +377,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             import json
             unflat_logger.debug(
                 "Provenance detail: %s",
-                json.dumps(provenance.to_dicts(), indent=2),
+                json.dumps(provenance.to_dict(), indent=2),
             )
 
         # Adaptive convergence: extend max_passes when making progress

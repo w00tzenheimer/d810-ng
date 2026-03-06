@@ -126,6 +126,16 @@ class DecisionInputSummary:
     terminal_return_audit_summary: str = ""
     policy_overrides: dict = field(default_factory=dict)
 
+    def to_dict(self) -> dict:
+        """Serialize to a plain dict for JSON reporting."""
+        return {
+            "handler_transitions_available": self.handler_transitions_available,
+            "return_frontier_available": self.return_frontier_available,
+            "terminal_return_audit_available": self.terminal_return_audit_available,
+            "terminal_return_audit_summary": self.terminal_return_audit_summary,
+            "policy_overrides": dict(self.policy_overrides),
+        }
+
 
 @dataclass(frozen=True)
 class PlannerInputs:
@@ -285,7 +295,24 @@ class PipelineProvenance:
         return ", ".join(parts) if parts else "(empty)"
 
     def to_dicts(self) -> list[dict]:
-        """Serialize rows to list of dicts for on-disk reporting."""
+        """Serialize rows to list of dicts for on-disk reporting.
+
+        .. deprecated::
+            Prefer :meth:`to_dict` which includes the top-level
+            ``input_summary`` and ``phase_summary``.
+        """
+        return self._rows_to_dicts()
+
+    def to_dict(self) -> dict:
+        """Full provenance serialization including input_summary and phase_summary."""
+        return {
+            "input_summary": self.input_summary.to_dict() if self.input_summary else None,
+            "rows": self._rows_to_dicts(),
+            "phase_summary": self.phase_summary(),
+        }
+
+    def _rows_to_dicts(self) -> list[dict]:
+        """Serialize rows to list of dicts (internal helper)."""
         result: list[dict] = []
         for r in self.rows:
             d: dict = {
@@ -303,13 +330,7 @@ class PipelineProvenance:
                 "prerequisites": sorted(r.prerequisites),
             }
             if r.input_summary is not None:
-                d["input_summary"] = {
-                    "handler_transitions_available": r.input_summary.handler_transitions_available,
-                    "return_frontier_available": r.input_summary.return_frontier_available,
-                    "terminal_return_audit_available": r.input_summary.terminal_return_audit_available,
-                    "terminal_return_audit_summary": r.input_summary.terminal_return_audit_summary,
-                    "policy_overrides": r.input_summary.policy_overrides,
-                }
+                d["input_summary"] = r.input_summary.to_dict()
             if r.gate_accounting is not None:
                 d["gate_accounting"] = [
                     {

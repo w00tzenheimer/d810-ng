@@ -317,7 +317,7 @@ class TransactionalExecutor:
             result.rollback_needed = True
             result.success = False
             result.error = "semantic gate failed"
-            result.failure_phase = "post_apply_contract"
+            result.failure_phase = "semantic_gate"
             executor_logger.warning(
                 "Stage %s failed semantic gate: terminal_cycles=%d, conflict_count=%d",
                 fragment.strategy_name,
