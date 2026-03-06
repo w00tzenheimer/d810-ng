@@ -30,13 +30,58 @@ from d810.cfg.plan import PatchPlan
 from d810.cfg.contracts.report import InvariantViolation
 
 ContractScope = Literal["focused", "full"]
+ContractPhase = Literal["pre", "post", "rollback"]
 
 # Native oracle violation code prefix — distinguishes oracle results from Python checks
 _NATIVE_PREFIX = "CFG_NATIVE_"
 
 
+def _summarize_violations(
+    violations: Iterable[InvariantViolation],
+    *,
+    limit: int = 3,
+) -> str:
+    summaries: list[str] = []
+    all_violations = tuple(violations)
+    for violation in all_violations[:limit]:
+        location = (
+            f"blk[{violation.block_serial}]"
+            if violation.block_serial is not None
+            else "global"
+        )
+        summaries.append(f"{violation.code}@{location}")
+    if len(all_violations) > limit:
+        summaries.append(f"+{len(all_violations) - limit} more")
+    return ", ".join(summaries)
+
+
+class CfgContractViolationError(RuntimeError):
+    """Raised when a CFG contract check finds violations."""
+
+    def __init__(
+        self,
+        *,
+        phase: ContractPhase,
+        violations: Iterable[InvariantViolation],
+    ) -> None:
+        self.phase = phase
+        self.violations = tuple(violations)
+        self.summary = _summarize_violations(self.violations)
+        super().__init__(
+            f"cfg contract {phase}-check failed: {self.summary or 'unknown violation'}"
+        )
+
+
 class IDACfgContract:
     """Verifier-inspired contract checks for pre/post transaction validation."""
+
+    @staticmethod
+    def summarize_violations(
+        violations: Iterable[InvariantViolation],
+        *,
+        limit: int = 3,
+    ) -> str:
+        return _summarize_violations(violations, limit=limit)
 
     @staticmethod
     def _maybe_add_serial(serials: set[int], value) -> None:
@@ -137,6 +182,32 @@ class IDACfgContract:
     ) -> list[InvariantViolation]:
         focus = None if scope == "full" else (self._focus_serials(plan) or None)
         return self._check(mba, phase="rollback", focus_serials=focus, include_insn_checks=include_insn_checks)
+
+    def verify(
+        self,
+        mba,
+        plan: PatchPlan | None = None,
+        *,
+        phase: ContractPhase = "post",
+        scope: ContractScope = "focused",
+        include_insn_checks: bool = False,
+    ) -> tuple[InvariantViolation, ...]:
+        if phase not in ("pre", "post", "rollback"):
+            raise ValueError(f"Unknown cfg contract phase: {phase}")
+        focus = None
+        if plan is not None and scope != "full":
+            focus = self._focus_serials(plan) or None
+        violations = tuple(
+            self._check(
+                mba,
+                phase=phase,
+                focus_serials=focus,
+                include_insn_checks=include_insn_checks,
+            )
+        )
+        if violations:
+            raise CfgContractViolationError(phase=phase, violations=violations)
+        return violations
 
     def _check(
         self,

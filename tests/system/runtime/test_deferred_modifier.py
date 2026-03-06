@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
+from d810.cfg.contracts.ida_contract import CfgContractViolationError
+from d810.cfg.contracts.report import InvariantViolation
 from d810.cfg.flowgraph import InsnSnapshot
 from d810.hexrays.mutation import deferred_modifier as dm
 
@@ -524,6 +526,97 @@ def test_apply_marks_verify_failed_on_post_apply_hook_exception(monkeypatch):
 
     assert applied == 1
     assert modifier.verify_failed is True
+
+
+def test_apply_skips_post_native_verify_after_contract_failure(monkeypatch):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+    ]
+
+    verify_calls = {"count": 0}
+
+    monkeypatch.setattr(modifier, "_apply_single", lambda _m: True)
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "capture_failure_artifact", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        dm,
+        "safe_verify",
+        lambda *_a, **_k: verify_calls.__setitem__("count", verify_calls["count"] + 1),
+    )
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+
+    def _hook():
+        raise CfgContractViolationError(
+            phase="post",
+            violations=(
+                InvariantViolation(
+                    code="CFG_BAD",
+                    message="bad succset",
+                    phase="post",
+                    block_serial=0,
+                ),
+            ),
+        )
+
+    applied = modifier.apply(
+        run_optimize_local=False,
+        run_deep_cleaning=False,
+        post_apply_hook=_hook,
+    )
+
+    assert applied == 1
+    assert modifier.verify_failed is True
+    assert verify_calls["count"] == 1
+
+
+def test_apply_rolls_back_snapshot_after_contract_failure(monkeypatch):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+    ]
+
+    verify_calls = {"count": 0}
+    restored = {"count": 0}
+
+    monkeypatch.setattr(modifier, "_apply_single", lambda _m: True)
+    monkeypatch.setattr(modifier, "_restore_from_snapshot", lambda _snap: restored.__setitem__("count", restored["count"] + 1) or True)
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "capture_failure_artifact", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "lift", lambda _mba: SimpleNamespace(num_blocks=1, entry_serial=0))
+    monkeypatch.setattr(
+        dm,
+        "safe_verify",
+        lambda *_a, **_k: verify_calls.__setitem__("count", verify_calls["count"] + 1),
+    )
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+
+    def _hook():
+        raise CfgContractViolationError(
+            phase="post",
+            violations=(
+                InvariantViolation(
+                    code="CFG_BAD",
+                    message="bad succset",
+                    phase="post",
+                    block_serial=0,
+                ),
+            ),
+        )
+
+    applied = modifier.apply(
+        run_optimize_local=False,
+        run_deep_cleaning=False,
+        enable_snapshot_rollback=True,
+        post_apply_hook=_hook,
+    )
+
+    assert applied == 0
+    assert modifier.verify_failed is False
+    assert restored["count"] == 1
+    assert verify_calls["count"] == 1
 
 
 def test_apply_rolls_back_failed_mod_and_continues(monkeypatch):

@@ -2032,17 +2032,42 @@ class DeferredGraphModifier:
                     post_apply_hook()
                 except Exception as e:
                     self.verify_failed = True
-                    logger.error("post_apply_hook raised: %s", e, exc_info=True)
+                    contract_violations = getattr(e, "violations", None)
+                    contract_summary = getattr(e, "summary", None)
+                    if contract_violations:
+                        logger.error(
+                            "post_apply_hook raised cfg contract failure: %s",
+                            contract_summary or e,
+                            exc_info=True,
+                        )
+                    else:
+                        logger.error("post_apply_hook raised: %s", e, exc_info=True)
                     capture_failure_artifact(
                         self.mba,
                         "exception during deferred post-apply hook",
                         e,
                         logger_func=logger.error,
                         capture_metadata={
-                            "phase": "post_apply_hook_exception",
+                            "phase": (
+                                "post_apply_contract_failure"
+                                if contract_violations
+                                else "post_apply_hook_exception"
+                            ),
                             "applied_modifications": successful,
                             "queued_modifications": len(sorted_mods),
                             "recent_modifications": list(recent_modifications),
+                            "contract_violations": (
+                                [
+                                    {
+                                        "code": getattr(v, "code", None),
+                                        "block_serial": getattr(v, "block_serial", None),
+                                        "message": getattr(v, "message", None),
+                                    }
+                                    for v in contract_violations
+                                ]
+                                if contract_violations
+                                else None
+                            ),
                         },
                     )
 
