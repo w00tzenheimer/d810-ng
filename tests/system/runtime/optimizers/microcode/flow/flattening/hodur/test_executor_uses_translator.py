@@ -278,11 +278,17 @@ def test_executor_runs_cfg_contract_pre_and_post(monkeypatch: pytest.MonkeyPatch
         entry_serial=0,
         func_ea=0,
     )
-    translator = _FakeTranslator(pre_cfg=cfg)
 
     class _Contract:
         def __init__(self) -> None:
             self.calls: list[str] = []
+
+        def verify_projected(
+            self,
+            pre_cfg: FlowGraph,  # noqa: ARG002
+            plan: PatchPlan,  # noqa: ARG002
+        ) -> None:
+            self.calls.append("projected")
 
         def verify(
             self,
@@ -311,15 +317,19 @@ def test_executor_runs_cfg_contract_pre_and_post(monkeypatch: pytest.MonkeyPatch
     result = executor.execute_stage(fragment, total_handlers=1)
 
     assert result.success
-    assert contract.calls == ["pre", "post"]
+    assert contract.calls == ["projected", "pre", "post"]
     assert len(translator.lower_calls) == 1
 
 
 def test_executor_rejects_cfg_contract_pre_failures(monkeypatch: pytest.MonkeyPatch):
+    """Engine's live_pre_check phase rejects before lowering; rollback_needed=False (pre-mutation)."""
     monkeypatch.setattr(
         _executor_mod, "should_apply_cfg_modifications",
         lambda *args, **kwargs: True,
     )
+
+    from d810.cfg.contracts.ida_contract import CfgContractViolationError
+    from d810.cfg.contracts.report import InvariantViolation
 
     cfg = FlowGraph(
         blocks={
@@ -333,8 +343,19 @@ def test_executor_rejects_cfg_contract_pre_failures(monkeypatch: pytest.MonkeyPa
     translator = _FakeTranslator(pre_cfg=cfg)
 
     class _Contract:
-        def check_pre(self, mba: object, plan: PatchPlan) -> list:  # noqa: ARG002
-            return [types.SimpleNamespace(code="CFG_BAD", block_serial=1)]
+        def verify_projected(self, pre_cfg, plan):  # noqa: ARG002
+            pass  # projected passes
+
+        def verify(self, mba, plan, *, phase):  # noqa: ARG002
+            if phase == "pre":
+                raise CfgContractViolationError(
+                    phase="pre",
+                    violations=[
+                        InvariantViolation(
+                            code="CFG_BAD", message="bad", phase="pre", block_serial=1,
+                        ),
+                    ],
+                )
 
     fragment = PlanFragment(
         modifications=[RedirectGoto(from_serial=1, old_target=2, new_target=2)],
@@ -350,16 +371,21 @@ def test_executor_rejects_cfg_contract_pre_failures(monkeypatch: pytest.MonkeyPa
     result = executor.execute_stage(fragment, total_handlers=1)
 
     assert not result.success
-    assert result.rollback_needed
-    assert result.error == "cfg contract pre-check failed: CFG_BAD@blk[1]"
+    # Pre-mutation failure: rollback_needed is False (fixed behavior via transaction_policy)
+    assert not result.rollback_needed
+    assert "CFG_BAD" in result.error
     assert not translator.lower_calls
 
 
 def test_executor_rejects_projected_cfg_contract_failures(monkeypatch: pytest.MonkeyPatch):
+    """Engine's projected_contract phase rejects before live checks; rollback_needed=False."""
     monkeypatch.setattr(
         _executor_mod, "should_apply_cfg_modifications",
         lambda *args, **kwargs: True,
     )
+
+    from d810.cfg.contracts.ida_contract import CfgContractViolationError
+    from d810.cfg.contracts.report import InvariantViolation
 
     cfg = FlowGraph(
         blocks={
@@ -373,10 +399,20 @@ def test_executor_rejects_projected_cfg_contract_failures(monkeypatch: pytest.Mo
     translator = _FakeTranslator(pre_cfg=cfg)
 
     class _Contract:
-        def check_projected(self, pre_cfg: FlowGraph, plan: PatchPlan) -> list:  # noqa: ARG002
-            return [types.SimpleNamespace(code="CFG_50858_SUCC_PRED_MISMATCH", block_serial=1)]
+        def verify_projected(self, pre_cfg, plan):  # noqa: ARG002
+            raise CfgContractViolationError(
+                phase="projected",
+                violations=[
+                    InvariantViolation(
+                        code="CFG_50858_SUCC_PRED_MISMATCH",
+                        message="mismatch",
+                        phase="projected",
+                        block_serial=1,
+                    ),
+                ],
+            )
 
-        def check_pre(self, mba: object, plan: PatchPlan) -> list:  # noqa: ARG002
+        def verify(self, mba, plan, *, phase):  # noqa: ARG002
             raise AssertionError("projected contract failures should reject before live pre-check")
 
     fragment = PlanFragment(
@@ -393,9 +429,99 @@ def test_executor_rejects_projected_cfg_contract_failures(monkeypatch: pytest.Mo
     result = executor.execute_stage(fragment, total_handlers=1)
 
     assert not result.success
-    assert result.rollback_needed
-    assert (
-        result.error
-        == "cfg contract projected check failed: CFG_50858_SUCC_PRED_MISMATCH@blk[1]"
+    # Pre-mutation failure: rollback_needed is False (fixed behavior via transaction_policy)
+    assert not result.rollback_needed
+    assert "CFG_50858_SUCC_PRED_MISMATCH" in result.error
+    assert not translator.lower_calls
+
+
+def test_executor_routes_through_transaction_engine(monkeypatch: pytest.MonkeyPatch):
+    """Verify execute_stage() creates a CfgTransactionEngine and calls apply()."""
+    monkeypatch.setattr(
+        _executor_mod, "should_apply_cfg_modifications",
+        lambda *args, **kwargs: True,
     )
+
+    from d810.cfg.contracts.transaction_engine import CfgTransactionEngine, TransactionResult
+
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (1,), ()),
+            1: _block(1, (2,), (0,)),
+            2: _block(2, (), (1,)),
+        },
+        entry_serial=0,
+        func_ea=0,
+    )
+    translator = _FakeTranslator(pre_cfg=cfg)
+
+    # Track whether CfgTransactionEngine.apply was called
+    engine_apply_calls: list[dict] = []
+    original_apply = CfgTransactionEngine.apply
+
+    def _tracking_apply(self, plan, *, pre_cfg, mba, post_apply_hook=None):
+        engine_apply_calls.append({"plan": plan, "pre_cfg": pre_cfg})
+        return TransactionResult.ok(3)
+
+    monkeypatch.setattr(CfgTransactionEngine, "apply", _tracking_apply)
+
+    fragment = PlanFragment(
+        modifications=[
+            RedirectGoto(from_serial=0, old_target=1, new_target=1),
+            RedirectGoto(from_serial=1, old_target=2, new_target=2),
+            RedirectGoto(from_serial=0, old_target=1, new_target=2),
+        ],
+        **_base_fragment(),
+    )
+
+    executor = TransactionalExecutor(mba=object(), translator=translator)
+    result = executor.execute_stage(fragment, total_handlers=1)
+
+    assert result.success
+    assert result.edits_applied == 3
+    assert len(engine_apply_calls) == 1
+    assert engine_apply_calls[0]["pre_cfg"] is cfg
+
+
+def test_executor_premutation_failure_no_rollback(monkeypatch: pytest.MonkeyPatch):
+    """Pre-mutation engine failure (projected_contract) yields rollback_needed=False."""
+    monkeypatch.setattr(
+        _executor_mod, "should_apply_cfg_modifications",
+        lambda *args, **kwargs: True,
+    )
+
+    from d810.cfg.contracts.transaction_engine import CfgTransactionEngine, TransactionResult
+
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (1,), ()),
+            1: _block(1, (2,), (0,)),
+            2: _block(2, (), (1,)),
+        },
+        entry_serial=0,
+        func_ea=0,
+    )
+    translator = _FakeTranslator(pre_cfg=cfg)
+
+    def _failing_apply(self, plan, *, pre_cfg, mba, post_apply_hook=None):
+        return TransactionResult.failed(
+            "projected_contract",
+            RuntimeError("pred/succ mismatch on block 5"),
+        )
+
+    monkeypatch.setattr(CfgTransactionEngine, "apply", _failing_apply)
+
+    fragment = PlanFragment(
+        modifications=[RedirectGoto(from_serial=1, old_target=2, new_target=2)],
+        **_base_fragment(),
+    )
+
+    executor = TransactionalExecutor(mba=object(), translator=translator)
+    result = executor.execute_stage(fragment, total_handlers=1)
+
+    assert not result.success
+    # projected_contract is a pre-mutation phase: no rollback needed
+    assert not result.rollback_needed
+    assert not result.quarantine
+    assert "pred/succ mismatch" in result.error
     assert not translator.lower_calls

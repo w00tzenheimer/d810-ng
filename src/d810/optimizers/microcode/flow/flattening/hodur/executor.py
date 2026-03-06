@@ -18,7 +18,8 @@ from d810.cfg.flow.graph_checks import (
     prove_terminal_sink,
 )
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.contracts import CfgContractViolationError, IDACfgContract
+from d810.cfg.contracts import IDACfgContract
+from d810.cfg.contracts.transaction_engine import CfgTransactionEngine
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
@@ -161,39 +162,6 @@ class TransactionalExecutor:
         if not modifications:
             return StageResult(strategy_name=fragment.strategy_name)
 
-        projected_contract_violations = self._run_projected_cfg_contract_check(
-            pre_cfg,
-            patch_plan,
-        )
-        if projected_contract_violations:
-            detail = self._format_contract_violations(projected_contract_violations)
-            executor_logger.warning(
-                "CFG contract projected pre-check rejected stage %s: %s",
-                fragment.strategy_name,
-                detail,
-            )
-            return StageResult(
-                strategy_name=fragment.strategy_name,
-                success=False,
-                rollback_needed=True,
-                error=f"cfg contract projected check failed: {detail}",
-            )
-
-        pre_contract_violations = self._run_cfg_contract_check("pre", patch_plan)
-        if pre_contract_violations:
-            detail = self._format_contract_violations(pre_contract_violations)
-            executor_logger.warning(
-                "CFG contract pre-check rejected stage %s: %s",
-                fragment.strategy_name,
-                detail,
-            )
-            return StageResult(
-                strategy_name=fragment.strategy_name,
-                success=False,
-                rollback_needed=True,
-                error=f"cfg contract pre-check failed: {detail}",
-            )
-
         executor_logger.info(
             "Stage %s compiled PatchPlan: concrete=%d symbolic_blocks=%d legacy_block_steps=%d",
             fragment.strategy_name,
@@ -202,24 +170,30 @@ class TransactionalExecutor:
             len(patch_plan.legacy_block_operations),
         )
 
-        # Ensure translator has the resolved contract (may have been None at construction)
-        self.translator.contract = self._get_cfg_contract()
+        # Wire CfgTransactionEngine for projected -> pre -> lower/apply sequence
+        contract = self._get_cfg_contract()
+        self.translator.contract = contract  # ensure translator has it for post-apply hook
+        engine = CfgTransactionEngine(translator=self.translator, contract=contract)
 
-        try:
-            changes = self.translator.lower(patch_plan, self.mba)
-        except CfgContractViolationError as exc:
+        tx_result = engine.apply(patch_plan, pre_cfg=pre_cfg, mba=self.mba)
+
+        if not tx_result.success:
+            classification = tx_result.classification
             executor_logger.warning(
-                "CFG contract post-check rejected stage %s: %s",
+                "CfgTransactionEngine rejected stage %s at phase %s: %s",
                 fragment.strategy_name,
-                exc.summary,
+                tx_result.failure_phase,
+                tx_result.error,
             )
             return StageResult(
                 strategy_name=fragment.strategy_name,
-                edits_applied=0,
                 success=False,
-                rollback_needed=True,
-                error=f"cfg contract post-check failed: {exc.summary}",
+                rollback_needed=classification.rollback_needed if classification else False,
+                quarantine=classification.quarantine if classification else False,
+                error=str(tx_result.error) if tx_result.error else tx_result.failure_phase,
             )
+
+        changes = tx_result.applied_count
         self._total_changes += changes
 
         post_cfg = self.translator.lift(self.mba)
@@ -299,44 +273,6 @@ class TransactionalExecutor:
             self.cfg_contract = IDACfgContract()
             return self.cfg_contract
         return None
-
-    def _run_projected_cfg_contract_check(
-        self,
-        pre_cfg: FlowGraph,
-        patch_plan: PatchPlan,
-    ) -> list:
-        contract = self._get_cfg_contract()
-        if contract is None:
-            return []
-        checker = getattr(contract, "check_projected", None)
-        if callable(checker):
-            return checker(pre_cfg, patch_plan)
-        return []
-
-    def _run_cfg_contract_check(
-        self,
-        phase: str,
-        patch_plan: PatchPlan,
-    ) -> list:
-        contract = self._get_cfg_contract()
-        if contract is None:
-            return []
-        verify = getattr(contract, "verify", None)
-        if callable(verify):
-            try:
-                verify(self.mba, patch_plan, phase=phase)
-            except CfgContractViolationError as exc:
-                return list(exc.violations)
-            return []
-        if phase == "pre":
-            return contract.check_pre(self.mba, patch_plan)
-        if phase == "post":
-            return contract.check_post(self.mba, patch_plan)
-        raise ValueError(f"Unknown cfg contract phase: {phase}")
-
-    @staticmethod
-    def _format_contract_violations(violations: list) -> str:
-        return IDACfgContract.summarize_violations(violations)
 
     def _filter_backend_unsupported_modifications(
         self,
