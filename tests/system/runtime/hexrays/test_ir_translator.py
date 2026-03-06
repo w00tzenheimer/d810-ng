@@ -13,9 +13,36 @@ import pytest
 
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
-from d810.cfg.graph_modification import EdgeRedirectViaPredSplit, RedirectGoto
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.cfg.graph_modification import EdgeRedirectViaPredSplit, InsertBlock, RedirectGoto
 from d810.cfg.plan import PatchPlan, PatchRedirectGoto, compile_patch_plan
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+
+
+def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
+    return BlockSnapshot(
+        serial=serial,
+        block_type=1 if succs else 0,
+        succs=succs,
+        preds=preds,
+        flags=0,
+        start_ea=0,
+        insn_snapshots=(),
+    )
+
+
+def _cfg() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            2: _block(2, (), (45,)),
+            44: _block(44, (45,), ()),
+            122: _block(122, (45,), ()),
+            45: _block(45, (2,), (44, 122)),
+            199: _block(199, (), ()),
+        },
+        entry_serial=44,
+        func_ea=0,
+    )
 
 
 class TestIDAIRTranslatorBasics:
@@ -71,6 +98,28 @@ class _FakeDeferredGraphModifier:
             ("edge_redirect", src_block, old_target, new_target, via_pred, rule_priority, description)
         )
 
+    def queue_edge_split_trampoline(
+        self,
+        *,
+        source_block: int,
+        via_pred: int,
+        old_target: int,
+        new_target: int,
+        expected_serial: int,
+        description: str = "",
+    ) -> None:
+        self.calls.append(
+            (
+                "edge_split_trampoline",
+                source_block,
+                via_pred,
+                old_target,
+                new_target,
+                expected_serial,
+                description,
+            )
+        )
+
     def queue_create_conditional_redirect(
         self,
         *,
@@ -93,6 +142,19 @@ class _FakeDeferredGraphModifier:
 
     def queue_insn_nop(self, serial: int, ea: int, description: str = "") -> None:
         self.calls.append(("nop", serial, ea, description))
+
+    def _check_edge_split_trampoline_preconditions(
+        self,
+        *,
+        source_block_serial: int | None,
+        via_pred: int | None,
+        old_target: int | None,
+        new_target: int | None,
+    ) -> bool:
+        return all(
+            value is not None
+            for value in (source_block_serial, via_pred, old_target, new_target)
+        )
 
     def apply(self, **kwargs) -> int:  # noqa: ANN003
         self.calls.append(("apply", kwargs))
@@ -152,6 +214,48 @@ class TestIDAIntegration:
         assert created[0].calls[0][0] == "goto"
         assert created[0].calls[0][1:3] == (7, 9)
 
+    def test_lower_applies_edge_split_trampoline_patch_plan(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                EdgeRedirectViaPredSplit(
+                    src_block=45,
+                    old_target=2,
+                    new_target=2,
+                    via_pred=122,
+                    rule_priority=550,
+                )
+            ],
+            _cfg(),
+        )
+
+        count = backend.lower(patch_plan, object())
+
+        assert count == 1
+        assert len(created) == 2
+        assert created[0].calls == []
+        assert created[1].calls[0][0] == "edge_split_trampoline"
+        assert created[1].calls[0][1:6] == (45, 122, 2, 2, 199)
+
     def test_lower_rejects_legacy_block_creation_when_disabled(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -175,12 +279,10 @@ class TestIDAIntegration:
         backend = IDAIRTranslator(allow_legacy_block_creation=False)
         patch_plan = compile_patch_plan(
             [
-                EdgeRedirectViaPredSplit(
-                    src_block=45,
-                    old_target=2,
-                    new_target=180,
-                    via_pred=122,
-                    rule_priority=550,
+                InsertBlock(
+                    pred_serial=45,
+                    succ_serial=2,
+                    instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=()),),
                 )
             ]
         )
@@ -188,4 +290,5 @@ class TestIDAIntegration:
         count = backend.lower(patch_plan, object())
 
         assert count == 0
-        assert not created
+        assert len(created) == 1
+        assert created[0].calls == []

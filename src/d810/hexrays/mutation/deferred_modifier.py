@@ -341,6 +341,7 @@ class ModificationType(Enum):
     BLOCK_CREATE_WITH_REDIRECT = auto()  # Create intermediate block and redirect
     BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT = auto()  # Create conditional 2-way block with redirect
     EDGE_REDIRECT_VIA_PRED_SPLIT = auto()  # Clone src block; redirect one predecessor to clone
+    EDGE_SPLIT_TRAMPOLINE = auto()  # Materialize standalone trampoline and redirect one predecessor
 
 
 class TargetRefKind(Enum):
@@ -382,6 +383,8 @@ class GraphModification:
     via_pred: int | None = None
     # For EDGE_REDIRECT_VIA_PRED_SPLIT: future corridor cloning endpoint (unused, stub)
     clone_until: int | None = None
+    # For EDGE_SPLIT_TRAMPOLINE: expected final serial assigned by PatchPlan compilation
+    expected_serial: int | None = None
     # How to resolve new_target at apply-time
     target_ref_kind: TargetRefKind = TargetRefKind.ABSOLUTE
 
@@ -869,6 +872,49 @@ class DeferredGraphModifier:
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
 
+    def queue_edge_split_trampoline(
+        self,
+        *,
+        source_block: int,
+        via_pred: int,
+        old_target: int,
+        new_target: int,
+        expected_serial: int,
+        description: str = "",
+        rule_priority: int = 0,
+    ) -> None:
+        """Queue a finalized edge-split trampoline materialization.
+
+        This is the backend form produced by PatchPlan compilation:
+        create one standalone 1-way trampoline block targeting ``new_target``,
+        then redirect ``via_pred`` from ``source_block`` to that new block.
+        """
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.EDGE_SPLIT_TRAMPOLINE,
+            block_serial=via_pred,
+            new_target=new_target,
+            priority=5,
+            description=description or (
+                f"edge split trampoline: pred={via_pred} src={source_block} "
+                f"{old_target}->{new_target} serial={expected_serial}"
+            ),
+            rule_priority=rule_priority,
+            src_block=source_block,
+            old_target=old_target,
+            via_pred=via_pred,
+            expected_serial=expected_serial,
+        ))
+        logger.debug(
+            "Queued edge_split_trampoline: pred=%d src=%d old=%d new=%d serial=%d",
+            via_pred,
+            source_block,
+            old_target,
+            new_target,
+            expected_serial,
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
     def has_modifications(self) -> bool:
         """Check if there are any queued modifications."""
         return len(self.modifications) > 0
@@ -991,7 +1037,10 @@ class DeferredGraphModifier:
             elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT:
                 key = (mod.mod_type, mod.block_serial, mod.new_target,
                        mod.conditional_target, mod.fallthrough_target, mod.target_ref_kind)
-            elif mod.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
+            elif mod.mod_type in (
+                ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
+                ModificationType.EDGE_SPLIT_TRAMPOLINE,
+            ):
                 key = (mod.mod_type, mod.src_block, mod.old_target, mod.via_pred, mod.new_target)
             else:
                 key = (mod.mod_type, mod.block_serial, mod.new_target, mod.target_ref_kind)
@@ -1020,7 +1069,10 @@ class DeferredGraphModifier:
 
                 # Same type, different targets = conflict - resolve by rule_priority
                 for mod_type in unique_types:
-                    if mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
+                    if mod_type in (
+                        ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
+                        ModificationType.EDGE_SPLIT_TRAMPOLINE,
+                    ):
                         continue  # Handled by edge-specific conflict pass below
                     same_type_mods = [m for m in mods if m.mod_type == mod_type]
                     if len(same_type_mods) > 1:
@@ -1060,6 +1112,7 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_CONVERT_TO_GOTO,
             ModificationType.BLOCK_CREATE_WITH_REDIRECT,
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT,
+            ModificationType.EDGE_SPLIT_TRAMPOLINE,
         }
         terminal_type_rank = {
             ModificationType.BLOCK_GOTO_CHANGE: 1,
@@ -1067,6 +1120,7 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_CONVERT_TO_GOTO: 3,
             ModificationType.BLOCK_CREATE_WITH_REDIRECT: 4,
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: 5,
+            ModificationType.EDGE_SPLIT_TRAMPOLINE: 6,
             # EDGE_REDIRECT_VIA_PRED_SPLIT is intentionally absent: it is not
             # in terminal_mod_types (it executes via a separate code path in
             # apply_modifications) so ranking it here would cause it to be
@@ -1077,9 +1131,13 @@ class DeferredGraphModifier:
         # group by (src_block, old_target, via_pred) and keep highest rule_priority.
         # This must run BEFORE the general terminal-type pass below so that survivors
         # are correctly evaluated in the mixed-type pass.
-        edge_type = ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT
-        edge_mods = [m for m in unique_modifications if m.mod_type == edge_type]
-        if edge_mods:
+        for edge_type in (
+            ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
+            ModificationType.EDGE_SPLIT_TRAMPOLINE,
+        ):
+            edge_mods = [m for m in unique_modifications if m.mod_type == edge_type]
+            if not edge_mods:
+                continue
             edge_groups: dict[tuple, list[GraphModification]] = {}
             for em in edge_mods:
                 group_key = (em.src_block, em.old_target, em.via_pred)
@@ -1094,8 +1152,9 @@ class DeferredGraphModifier:
                 winner = max(group_mods, key=lambda m: m.rule_priority)
                 losers = [m for m in group_mods if m != winner]
                 logger.warning(
-                    "EDGE CONFLICT RESOLVED: src=%d old=%d via_pred=%d - keeping "
+                    "EDGE CONFLICT RESOLVED: type=%s src=%d old=%d via_pred=%d - keeping "
                     "new_target=%d (rule_priority=%d), discarding %s",
+                    edge_type.name,
                     group_key[0], group_key[1], group_key[2],
                     winner.new_target, winner.rule_priority,
                     [(m.rule_priority, m.new_target) for m in losers],
@@ -1566,12 +1625,15 @@ class DeferredGraphModifier:
                     )
                 sorted_mods = filtered_mods
 
-        logger.info("Applying %d queued graph modifications", len(sorted_mods))
+        sorted_mods, pre_rejected = self._pre_reject_edge_split_trampolines(sorted_mods)
+        total_mod_count = len(sorted_mods) + pre_rejected
+
+        logger.info("Applying %d queued graph modifications", total_mod_count)
 
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_APPLY_STARTED, {
                 **self._base_payload(),
-                "modification_count": len(sorted_mods),
+                "modification_count": total_mod_count,
             })
 
         # Log all queued modifications before applying
@@ -1589,7 +1651,7 @@ class DeferredGraphModifier:
                 logger.info("      TARGET: %s", _format_block_info(target_blk))
 
         successful = 0
-        failed = 0
+        failed = pre_rejected
         rolled_back = 0
         recent_modifications: list[dict] = []
 
@@ -1834,7 +1896,7 @@ class DeferredGraphModifier:
 
         logger.info(
             "Applied %d/%d modifications (%d failed, %d rolled back)",
-            successful, len(sorted_mods), failed, rolled_back
+            successful, total_mod_count, failed, rolled_back
         )
 
         # Mark chains dirty and run optimizations
@@ -2058,6 +2120,35 @@ class DeferredGraphModifier:
                 _rollback_edge_redirect,
             )
 
+        if mod.mod_type == ModificationType.EDGE_SPLIT_TRAMPOLINE:
+            src_block = mod.src_block
+            via_pred = mod.via_pred
+            if src_block is None or via_pred is None:
+                return None
+
+            def _rollback_edge_split_trampoline() -> bool:
+                pred_blk = self.mba.get_mblock(via_pred)
+                src_blk = self.mba.get_mblock(src_block)
+                if pred_blk is None or src_blk is None:
+                    return False
+                logger.warning(
+                    "edge_split_trampoline rollback: rewiring pred=%d back to src=%d",
+                    via_pred, src_block,
+                )
+                if not change_1way_block_successor(pred_blk, src_block, verify=False):
+                    logger.error(
+                        "edge_split_trampoline rollback failed: could not rewire pred=%d -> src=%d",
+                        via_pred, src_block,
+                    )
+                    return False
+                self.mba.mark_chains_dirty()
+                return True
+
+            return (
+                f"rollback edge_split_trampoline pred={via_pred} -> src={src_block}",
+                _rollback_edge_split_trampoline,
+            )
+
         return None
 
     def _apply_single(self, mod: GraphModification) -> bool:
@@ -2095,6 +2186,15 @@ class DeferredGraphModifier:
         elif mod.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
             return self._apply_edge_redirect_via_pred_split(
                 blk, mod.old_target, mod.new_target, mod.via_pred, mod.clone_until
+            )
+
+        elif mod.mod_type == ModificationType.EDGE_SPLIT_TRAMPOLINE:
+            return self._apply_edge_split_trampoline(
+                source_block_serial=mod.src_block,
+                via_pred=mod.via_pred,
+                old_target=mod.old_target,
+                new_target=mod.new_target,
+                expected_serial=mod.expected_serial,
             )
 
         else:
@@ -2397,6 +2497,224 @@ class DeferredGraphModifier:
             import traceback
             logger.error("Traceback: %s", traceback.format_exc())
             return False
+
+    def _apply_edge_split_trampoline(
+        self,
+        source_block_serial: int | None,
+        via_pred: int | None,
+        old_target: int | None,
+        new_target: int | None,
+        expected_serial: int | None,
+    ) -> bool:
+        """Materialize a standalone trampoline and redirect one predecessor to it."""
+        if not self._check_edge_split_trampoline_preconditions(
+            source_block_serial=source_block_serial,
+            via_pred=via_pred,
+            old_target=old_target,
+            new_target=new_target,
+        ):
+            return False
+
+        try:
+            mba = self.mba
+            if mba is None:
+                return False
+            src_blk = mba.get_mblock(source_block_serial)
+            via_pred_blk = mba.get_mblock(via_pred)
+            if src_blk is None or via_pred_blk is None:
+                return False
+            old_stop_serial = mba.qty - 1
+            old_stop_pred_serials = [
+                serial
+                for serial in range(mba.qty)
+                if (blk := mba.get_mblock(serial)) is not None
+                and blk.nsucc() == 1
+                and blk.succ(0) == old_stop_serial
+            ]
+            new_blk = create_standalone_block(
+                src_blk,
+                [],
+                target_serial=new_target,
+                is_0_way=False,
+                verify=False,
+            )
+            if new_blk.serial != expected_serial:
+                logger.warning(
+                    "edge_split_trampoline: created blk[%d], expected blk[%d]",
+                    new_blk.serial,
+                    expected_serial,
+                )
+                return False
+            new_stop_serial = mba.qty - 1
+            for pred_serial in old_stop_pred_serials:
+                pred_blk = mba.get_mblock(pred_serial)
+                if pred_blk is None or pred_blk.serial == new_blk.serial:
+                    continue
+                if pred_blk.nsucc() != 1 or pred_blk.succ(0) != new_blk.serial:
+                    continue
+                if not change_1way_block_successor(pred_blk, new_stop_serial, verify=False):
+                    logger.warning(
+                        "edge_split_trampoline: failed to relocate stop predecessor blk[%d] -> blk[%d]",
+                        pred_blk.serial,
+                        new_stop_serial,
+                    )
+                    return False
+
+            if not change_1way_block_successor(via_pred_blk, new_blk.serial, verify=False):
+                logger.warning(
+                    "edge_split_trampoline: failed to redirect pred=%d to blk[%d]",
+                    via_pred_blk.serial,
+                    new_blk.serial,
+                )
+                return False
+
+            mba.mark_chains_dirty()
+            logger.debug(
+                "edge_split_trampoline: pred=%d -> %d -> %d (src=%d preserved)",
+                via_pred_blk.serial,
+                new_blk.serial,
+                new_target,
+                src_blk.serial,
+            )
+            return True
+
+        except Exception as e:
+            logger.error(
+                "Exception in edge_split_trampoline for src=%d via_pred=%d: %s",
+                source_block_serial,
+                via_pred,
+                e,
+            )
+            import traceback
+            logger.error("Traceback: %s", traceback.format_exc())
+            return False
+
+    def _pre_reject_edge_split_trampolines(
+        self,
+        sorted_mods: list[GraphModification],
+    ) -> tuple[list[GraphModification], int]:
+        """Reject trampoline edits with illegal live preconditions before mutation."""
+        filtered_mods: list[GraphModification] = []
+        pre_rejected = 0
+
+        for mod in sorted_mods:
+            if mod.mod_type != ModificationType.EDGE_SPLIT_TRAMPOLINE:
+                filtered_mods.append(mod)
+                continue
+            if self._check_edge_split_trampoline_preconditions(
+                source_block_serial=mod.src_block,
+                via_pred=mod.via_pred,
+                old_target=mod.old_target,
+                new_target=mod.new_target,
+            ):
+                filtered_mods.append(mod)
+                continue
+
+            pre_rejected += 1
+            logger.warning(
+                "Pre-rejecting edge_split_trampoline before live apply: %s",
+                mod.description,
+            )
+
+        if pre_rejected:
+            logger.warning(
+                "Pre-rejected %d edge_split_trampoline modification(s) before live apply",
+                pre_rejected,
+            )
+
+        return filtered_mods, pre_rejected
+
+    def _check_edge_split_trampoline_preconditions(
+        self,
+        *,
+        source_block_serial: int | None,
+        via_pred: int | None,
+        old_target: int | None,
+        new_target: int | None,
+    ) -> bool:
+        """Validate live topology for a trampoline without mutating the MBA."""
+        if (
+            self.mba is None
+            or source_block_serial is None
+            or via_pred is None
+            or old_target is None
+            or new_target is None
+        ):
+            logger.warning(
+                "edge_split_trampoline: incomplete parameters src=%s pred=%s old=%s new=%s",
+                source_block_serial,
+                via_pred,
+                old_target,
+                new_target,
+            )
+            return False
+
+        mba = self.mba
+        src_blk = mba.get_mblock(source_block_serial)
+        via_pred_blk = mba.get_mblock(via_pred)
+        target_blk = mba.get_mblock(new_target)
+
+        if src_blk is None or via_pred_blk is None or target_blk is None:
+            logger.warning(
+                "edge_split_trampoline: missing block src=%s pred=%s target=%s",
+                source_block_serial,
+                via_pred,
+                new_target,
+            )
+            return False
+
+        if src_blk.tail is None or src_blk.tail.opcode != ida_hexrays.m_goto:
+            logger.warning(
+                "EDGE_SPLIT_ILLEGAL_PRECOND: src blk[%d] tail is not m_goto "
+                "(old_target=%d, new_target=%d)",
+                src_blk.serial,
+                old_target,
+                new_target,
+            )
+            return False
+        if via_pred_blk.tail is None or via_pred_blk.tail.opcode != ida_hexrays.m_goto:
+            logger.warning(
+                "EDGE_SPLIT_ILLEGAL_PRECOND: via_pred blk[%d] tail is not m_goto "
+                "(opcode=%s, src=%d, old_target=%d, new_target=%d)",
+                via_pred_blk.serial,
+                via_pred_blk.tail.opcode if via_pred_blk.tail is not None else "none",
+                src_blk.serial,
+                old_target,
+                new_target,
+            )
+            return False
+
+        if src_blk.nsucc() != 1:
+            logger.warning(
+                "edge_split_trampoline: src block %d has nsucc=%d, expected 1",
+                src_blk.serial,
+                src_blk.nsucc(),
+            )
+            return False
+        if via_pred_blk.nsucc() != 1:
+            logger.warning(
+                "edge_split_trampoline: via_pred block %d has nsucc=%d, expected 1",
+                via_pred_blk.serial,
+                via_pred_blk.nsucc(),
+            )
+            return False
+        if via_pred_blk.succ(0) != src_blk.serial:
+            logger.warning(
+                "edge_split_trampoline: via_pred block %d does not target src %d",
+                via_pred_blk.serial,
+                src_blk.serial,
+            )
+            return False
+        if src_blk.succ(0) != old_target:
+            logger.warning(
+                "edge_split_trampoline: src block %d targets %d, expected old_target=%d",
+                src_blk.serial,
+                src_blk.succ(0),
+                old_target,
+            )
+            return False
+
+        return True
 
     def _apply_edge_redirect_via_pred_split(
         self,

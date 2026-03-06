@@ -12,6 +12,14 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
+from d810.cfg.plan import (
+    LegacyBlockOperation,
+    PatchConvertToGoto,
+    PatchEdgeSplitTrampoline,
+    PatchPlan,
+    PatchRedirectBranch,
+    PatchRedirectGoto,
+)
 
 
 @dataclass
@@ -46,6 +54,7 @@ class SimulatedEdit:
     new_target: int
     via_pred: int | None = None  # only for edge_split_redirect
     fallthrough_target: int | None = None  # only for create_conditional_redirect
+    created_serial: int | None = None  # finalized serial for symbolic block creation
 
 
 def graph_modifications_to_simulated_edits(
@@ -125,6 +134,69 @@ def graph_modifications_to_simulated_edits(
     return simulated
 
 
+def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
+    """Project PatchPlan steps to simulator-friendly edit ops."""
+    simulated: list[SimulatedEdit] = []
+
+    for step in patch_plan.steps:
+        match step:
+            case PatchRedirectGoto(from_serial=src, old_target=old, new_target=new):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="goto_redirect",
+                        source=src,
+                        old_target=old,
+                        new_target=new,
+                    )
+                )
+
+            case PatchRedirectBranch(from_serial=src, old_target=old, new_target=new):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="conditional_redirect",
+                        source=src,
+                        old_target=old,
+                        new_target=new,
+                    )
+                )
+
+            case PatchConvertToGoto(block_serial=src, goto_target=new):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="convert_to_goto",
+                        source=src,
+                        old_target=-1,
+                        new_target=new,
+                    )
+                )
+
+            case PatchEdgeSplitTrampoline(
+                source_serial=src,
+                old_target=old,
+                new_target=new,
+                via_pred=pred,
+                assigned_serial=assigned,
+            ):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="edge_split_redirect",
+                        source=src,
+                        old_target=old,
+                        new_target=new,
+                        via_pred=pred,
+                        created_serial=assigned,
+                    )
+                )
+
+            case LegacyBlockOperation(modification=mod):
+                simulated.extend(graph_modifications_to_simulated_edits([mod]))
+
+            case _:
+                continue
+
+    return simulated
+
+
 def simulate_edits(
     adj: dict[int, list[int]],
     edits: list[SimulatedEdit],
@@ -170,7 +242,9 @@ def simulate_edits(
             if edit.via_pred is not None:
                 # Model IDA's edge-split: clone source block, rewire via_pred.
                 # 1. Create virtual clone node with [new_target] as successor.
-                clone_serial = max(result.keys(), default=-1) + 1
+                clone_serial = edit.created_serial
+                if clone_serial is None:
+                    clone_serial = max(result.keys(), default=-1) + 1
                 result[clone_serial] = [edit.new_target]
                 created_clones.add(clone_serial)
                 clone_origins[clone_serial] = edit

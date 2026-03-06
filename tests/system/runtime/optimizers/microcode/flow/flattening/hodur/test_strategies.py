@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.graph_modification import DuplicateBlock
+from d810.cfg.graph_modification import EdgeRedirectViaPredSplit, RedirectBranch
+from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
+    ModificationBuilder,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
@@ -224,26 +227,21 @@ class TestEdgeSplitConstructor:
         s = EdgeSplitConflictResolutionStrategy(conflict_blocks={5, 10})
         assert s.is_applicable(_empty_snapshot())
 
-    def test_plan_produces_block_duplicate_edits(self):
+    def test_plan_returns_none_while_duplicate_materialization_is_disabled(self):
         s = EdgeSplitConflictResolutionStrategy(conflict_blocks={5, 10})
         fragment = s.plan(_empty_snapshot())
-        assert fragment is not None
-        assert not fragment.is_empty()
-        for modification in fragment.modifications:
-            assert isinstance(modification, DuplicateBlock)
+        assert fragment is None
 
     def test_plan_ownership_contains_conflict_blocks(self):
         s = EdgeSplitConflictResolutionStrategy(conflict_blocks={7, 13})
         fragment = s.plan(_empty_snapshot())
-        assert fragment is not None
-        assert 7 in fragment.ownership.blocks
-        assert 13 in fragment.ownership.blocks
+        assert fragment is None
 
     def test_plan_strategy_name_in_fragment(self):
         s = EdgeSplitConflictResolutionStrategy(conflict_blocks={1})
         fragment = s.plan(_empty_snapshot())
-        assert fragment is not None
-        assert fragment.strategy_name == "edge_split_conflict_resolution"
+        assert fragment is None
+        assert s.name == "edge_split_conflict_resolution"
 
 
 # ---------------------------------------------------------------------------
@@ -280,8 +278,8 @@ class TestPrerequisites:
     def test_edge_split_no_prereqs_by_design(self):
         s = EdgeSplitConflictResolutionStrategy(conflict_blocks={1})
         frag = s.plan(_empty_snapshot())
-        assert frag is not None
-        assert frag.prerequisites == []
+        assert frag is None
+        assert s.name == "edge_split_conflict_resolution"
 
     def test_pred_patch_prereq_declared(self):
         # Verify the prereq list is declared on the strategy even when
@@ -294,6 +292,49 @@ class TestPrerequisites:
         assert hasattr(s, "plan")
         # Also verify via a fragment that DOES get produced (needs real SM).
         # For now, trust the protocol test above covers prerequisite wiring.
+
+
+class TestModificationBuilder:
+    """Pure-Python checks for branch-aware GraphModification emission."""
+
+    def test_edge_redirect_preserves_branch_kind_for_two_way_blocks(self):
+        builder = ModificationBuilder(
+            block_nsucc_map={10: 2},
+            block_succ_map={10: (20, 21)},
+        )
+
+        modification = builder.edge_redirect(
+            source_block=10,
+            target_block=30,
+            old_target=20,
+        )
+
+        assert modification == RedirectBranch(
+            from_serial=10,
+            old_target=20,
+            new_target=30,
+        )
+
+    def test_edge_redirect_with_via_pred_still_emits_pred_split(self):
+        builder = ModificationBuilder(
+            block_nsucc_map={10: 1},
+            block_succ_map={10: (20,)},
+        )
+
+        modification = builder.edge_redirect(
+            source_block=10,
+            target_block=30,
+            old_target=20,
+            via_pred=5,
+        )
+
+        assert modification == EdgeRedirectViaPredSplit(
+            src_block=10,
+            old_target=20,
+            new_target=30,
+            via_pred=5,
+            rule_priority=550,
+        )
 
 
 # ---------------------------------------------------------------------------

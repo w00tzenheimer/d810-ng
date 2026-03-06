@@ -159,6 +159,7 @@ class PatchEdgeSplitTrampoline:
     source_serial: int
     via_pred: int
     old_target: int
+    apply_old_target: int
     new_target: int
     template_block: int
 
@@ -456,7 +457,8 @@ def _finalize_step(
                 assigned_serial=assigned_serial,
                 source_serial=src,
                 via_pred=pred,
-                old_target=relocation_map.rewrite_serial(old),
+                old_target=old,
+                apply_old_target=relocation_map.rewrite_serial(old),
                 new_target=relocation_map.rewrite_serial(new),
                 template_block=src,
             )

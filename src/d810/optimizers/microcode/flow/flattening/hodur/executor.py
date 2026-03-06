@@ -64,6 +64,20 @@ def _preflight_priority(mod: GraphModification) -> int:
             return 1000
 
 
+def _preflight_simulated_priority(edit: SimulatedEdit) -> int:
+    match edit.kind:
+        case "create_conditional_redirect":
+            return 5
+        case "edge_split_redirect":
+            return 8
+        case "goto_redirect" | "conditional_redirect":
+            return 10
+        case "convert_to_goto":
+            return 20
+        case _:
+            return 1000
+
+
 class TransactionalExecutor:
     """Applies plan fragments through GraphModification lowering with gates."""
 
@@ -118,6 +132,11 @@ class TransactionalExecutor:
 
         # Check block-creation policy early — no point running preflight if policy rejects
         patch_plan_preview = compile_patch_plan(modifications, pre_cfg)
+        if hasattr(self.translator, "prepare_patch_plan"):
+            patch_plan_preview = self.translator.prepare_patch_plan(patch_plan_preview, self.mba)
+            modifications = patch_plan_preview.as_graph_modifications()
+            if not modifications:
+                return StageResult(strategy_name=fragment.strategy_name)
         if patch_plan_preview.legacy_block_operations and not self.allow_legacy_block_creation:
             return StageResult(
                 strategy_name=fragment.strategy_name,
@@ -225,7 +244,10 @@ class TransactionalExecutor:
         modifications: list[GraphModification],
         patch_plan: PatchPlan,
     ) -> tuple[list[GraphModification], PatchPlan, StageResult | None]:
-        simulated_edits = patch_plan_to_simulated_edits(patch_plan)
+        simulated_edits = sorted(
+            patch_plan_to_simulated_edits(patch_plan),
+            key=_preflight_simulated_priority,
+        )
         if not simulated_edits:
             return modifications, patch_plan, None
 
@@ -297,7 +319,10 @@ class TransactionalExecutor:
         if filtered_modifications != modifications:
             modifications = filtered_modifications
             patch_plan = compile_patch_plan(modifications, pre_cfg)
-            simulated_edits = patch_plan_to_simulated_edits(patch_plan)
+            simulated_edits = sorted(
+                patch_plan_to_simulated_edits(patch_plan),
+                key=_preflight_simulated_priority,
+            )
             sim_result = simulate_edits(pre_adj, simulated_edits)
             sim_adj = sim_result.adj
             terminal_targets = self._derive_terminal_targets(simulated_edits, terminal_exits)

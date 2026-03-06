@@ -10,6 +10,7 @@ from d810.cfg.graph_modification import (
     EdgeRedirectViaPredSplit,
     GraphModification,
     NopInstructions,
+    RedirectBranch,
     RedirectGoto,
 )
 
@@ -138,6 +139,12 @@ class ModificationBuilder:
             old_target=old_target,
         )
         if via_pred is None:
+            if self.block_nsucc_map.get(source_block, 1) == 2:
+                return RedirectBranch(
+                    from_serial=source_block,
+                    old_target=inferred_old_target if inferred_old_target is not None else 0,
+                    new_target=target_block,
+                )
             return RedirectGoto(
                 from_serial=source_block,
                 old_target=inferred_old_target if inferred_old_target is not None else 0,
