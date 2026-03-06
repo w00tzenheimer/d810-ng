@@ -16,7 +16,11 @@ from types import MappingProxyType
 from d810.core.logging import getLogger
 from d810.core.typing import Any
 
-from d810.cfg.flow.return_frontier import ReturnFrontierAudit, ReturnSite
+from d810.cfg.flow.return_frontier import (
+    ReturnFrontierAudit,
+    ReturnSite,
+    ReturnSiteStatus,
+)
 from d810.recon.models import CandidateFlag, ReconResult
 from d810.recon.phase import ALL_MATURITIES
 
@@ -43,6 +47,56 @@ class ReturnFrontierCollector:
     def __init__(self) -> None:
         self._audit: ReturnFrontierAudit | None = None
         self._artifact_dir = Path(".tmp/recon")
+
+    @classmethod
+    def build_result_from_audit(
+        cls,
+        audit: ReturnFrontierAudit,
+        *,
+        func_ea: int,
+        maturity: int,
+        timestamp: float | None = None,
+        stage_results: tuple[ReturnSiteStatus, ...] | None = None,
+    ) -> ReconResult:
+        """Persist the latest audit state as a recon result."""
+        latest_results = stage_results
+        if latest_results is None and audit._stage_results:
+            latest_results = tuple(next(reversed(audit._stage_results.values())))
+        elif latest_results is None:
+            latest_results = ()
+
+        candidates: list[CandidateFlag] = []
+        for status in latest_results:
+            if status.break_classification != "intact":
+                candidates.append(
+                    CandidateFlag(
+                        kind=f"return_break_{status.break_classification}",
+                        block_serial=status.site.origin_block,
+                        confidence=0.9,
+                        detail=(
+                            f"site={status.site.site_id} "
+                            f"stage={status.stage} "
+                            f"reachable={status.reachable_from_entry} "
+                            f"postdom={status.postdominated_by_exit}"
+                        ),
+                    )
+                )
+
+        report = audit.report()
+        return ReconResult(
+            collector_name=cls.name,
+            func_ea=func_ea,
+            maturity=maturity,
+            timestamp=time.time() if timestamp is None else timestamp,
+            metrics=MappingProxyType({
+                "total_sites": report["total_sites"],
+                "intact_count": report["intact_count"],
+                "broken_count": report["broken_count"],
+                "stages_audited": len(report["stages_audited"]),
+                "audit_report": report,
+            }),
+            candidates=tuple(candidates),
+        )
 
     def collect(
         self, target: Any, func_ea: int, maturity: int
@@ -89,38 +143,12 @@ class ReturnFrontierCollector:
             exits=exits,
         )
 
-        # Build candidates from broken sites
-        candidates: list[CandidateFlag] = []
-        for status in results:
-            if status.break_classification != "intact":
-                candidates.append(
-                    CandidateFlag(
-                        kind=f"return_break_{status.break_classification}",
-                        block_serial=status.site.origin_block,
-                        confidence=0.9,
-                        detail=(
-                            f"site={status.site.site_id} "
-                            f"stage={stage_name} "
-                            f"reachable={status.reachable_from_entry} "
-                            f"postdom={status.postdominated_by_exit}"
-                        ),
-                    )
-                )
-
-        report = self._audit.report()
-
-        return ReconResult(
-            collector_name=self.name,
+        return self.build_result_from_audit(
+            self._audit,
             func_ea=func_ea,
             maturity=maturity,
             timestamp=time.time(),
-            metrics=MappingProxyType({
-                "total_sites": report["total_sites"],
-                "intact_count": report["intact_count"],
-                "broken_count": report["broken_count"],
-                "stages_audited": len(report["stages_audited"]),
-            }),
-            candidates=tuple(candidates),
+            stage_results=tuple(results),
         )
 
     def write_artifact(self, func_ea: int) -> Path | None:

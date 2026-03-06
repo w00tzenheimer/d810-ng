@@ -73,6 +73,7 @@ class TestReturnFrontierCollector:
         assert result.maturity == 5
         assert result.metrics["total_sites"] == 1
         assert result.metrics["stages_audited"] == 1
+        assert result.metrics["audit_report"]["total_sites"] == 1
 
     def test_collect_empty_metadata(self):
         """No return_sites in metadata — returns empty ReconResult."""

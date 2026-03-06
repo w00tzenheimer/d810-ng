@@ -72,8 +72,19 @@ class _FakeTranslator:
         self.lift_calls += 1
         return self.pre_cfg if self.lift_calls == 1 else self.post_cfg
 
-    def lower(self, patch_plan: PatchPlan, mba: object) -> int:  # noqa: ARG002
+    def prepare_patch_plan(self, patch_plan: PatchPlan, mba: object) -> PatchPlan:  # noqa: ARG002
+        raise AssertionError("executor should not call translator.prepare_patch_plan()")
+
+    def lower(
+        self,
+        patch_plan: PatchPlan,
+        mba: object,  # noqa: ARG002
+        *,
+        post_apply_hook=None,
+    ) -> int:
         self.lower_calls.append(patch_plan)
+        if post_apply_hook is not None:
+            post_apply_hook()
         return len(patch_plan.as_graph_modifications())
 
 
@@ -241,3 +252,91 @@ def test_cycle_filter_preserves_non_redirect_modifications():
     )
 
     assert filtered == [nop_mod]
+
+
+def test_executor_runs_cfg_contract_pre_and_post(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        _executor_mod, "should_apply_cfg_modifications",
+        lambda *args, **kwargs: True,
+    )
+
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (1,), ()),
+            1: _block(1, (2,), (0,)),
+            2: _block(2, (), (1,)),
+        },
+        entry_serial=0,
+        func_ea=0,
+    )
+    translator = _FakeTranslator(pre_cfg=cfg)
+
+    class _Contract:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def check_pre(self, mba: object, plan: PatchPlan) -> list:  # noqa: ARG002
+            self.calls.append("pre")
+            return []
+
+        def check_post(self, mba: object, plan: PatchPlan) -> list:  # noqa: ARG002
+            self.calls.append("post")
+            return []
+
+    fragment = PlanFragment(
+        modifications=[RedirectGoto(from_serial=1, old_target=2, new_target=2)],
+        **_base_fragment(),
+    )
+    live_mba = types.SimpleNamespace(qty=0, get_mblock=lambda _i: None)
+    contract = _Contract()
+
+    executor = TransactionalExecutor(
+        mba=live_mba,
+        translator=translator,
+        cfg_contract=contract,
+    )
+    result = executor.execute_stage(fragment, total_handlers=1)
+
+    assert result.success
+    assert contract.calls == ["pre", "post"]
+    assert len(translator.lower_calls) == 1
+
+
+def test_executor_rejects_cfg_contract_pre_failures(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        _executor_mod, "should_apply_cfg_modifications",
+        lambda *args, **kwargs: True,
+    )
+
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (1,), ()),
+            1: _block(1, (2,), (0,)),
+            2: _block(2, (), (1,)),
+        },
+        entry_serial=0,
+        func_ea=0,
+    )
+    translator = _FakeTranslator(pre_cfg=cfg)
+
+    class _Contract:
+        def check_pre(self, mba: object, plan: PatchPlan) -> list:  # noqa: ARG002
+            return [types.SimpleNamespace(code="CFG_BAD", block_serial=1)]
+
+    fragment = PlanFragment(
+        modifications=[RedirectGoto(from_serial=1, old_target=2, new_target=2)],
+        **_base_fragment(),
+    )
+    live_mba = types.SimpleNamespace(qty=0, get_mblock=lambda _i: None)
+
+    executor = TransactionalExecutor(
+        mba=live_mba,
+        translator=translator,
+        cfg_contract=_Contract(),
+    )
+    result = executor.execute_stage(fragment, total_handlers=1)
+
+    assert not result.success
+    assert result.rollback_needed
+    assert result.error == "cfg contract pre-check failed: CFG_BAD@blk[1]"
+    assert not translator.lower_calls

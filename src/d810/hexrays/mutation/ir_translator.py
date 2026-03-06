@@ -24,7 +24,6 @@ from d810.cfg.graph_modification import (
 )
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from d810.cfg.plan import (
-    compile_patch_plan,
     LegacyBlockOperation,
     PatchConditionalRedirect,
     PatchConvertToGoto,
@@ -190,7 +189,13 @@ class IDAIRTranslator:
         """
         return lift(mba)
 
-    def lower(self, patch_plan: PatchPlan, mba: "ida_hexrays.mba_t") -> int:
+    def lower(
+        self,
+        patch_plan: PatchPlan,
+        mba: "ida_hexrays.mba_t",
+        *,
+        post_apply_hook=None,
+    ) -> int:
         """Apply a PatchPlan to mba via DeferredGraphModifier.
 
         ``PatchPlan`` concrete operations are lowered directly. Supported
@@ -222,7 +227,6 @@ class IDAIRTranslator:
                 "IDAIRTranslator.lower() now requires PatchPlan; "
                 "compile GraphModification lists before lowering"
             )
-        patch_plan = self.prepare_patch_plan(patch_plan, mba)
         if patch_plan.legacy_block_operations and not self.allow_legacy_block_creation:
             logger.warning(
                 "PatchPlan contains %d legacy block-creating steps but legacy block creation is disabled",
@@ -259,6 +263,7 @@ class IDAIRTranslator:
             rollback_on_verify_failure=verify_each_mod,
             continue_on_verify_failure=verify_each_mod,
             enable_snapshot_rollback=True,
+            post_apply_hook=post_apply_hook,
         )
 
         # If verify failed (even after rollback attempt), signal the pipeline
@@ -272,57 +277,6 @@ class IDAIRTranslator:
             return 0
 
         return result_count
-
-    def prepare_patch_plan(
-        self,
-        patch_plan: PatchPlan,
-        mba: "ida_hexrays.mba_t",
-    ) -> PatchPlan:
-        """Reject live-unsupported trampoline edits and rebuild serial assignments."""
-        trampoline_steps = tuple(
-            step
-            for step in patch_plan.concrete_operations
-            if isinstance(step, PatchEdgeSplitTrampoline)
-        )
-        if not patch_plan.planner_modifications or not trampoline_steps:
-            return patch_plan
-
-        from d810.hexrays.mutation import deferred_modifier
-
-        modifier = deferred_modifier.DeferredGraphModifier(mba)
-        rejected_edges: set[tuple[int, int, int, int]] = set()
-
-        for step in trampoline_steps:
-            if modifier._check_edge_split_trampoline_preconditions(
-                source_block_serial=step.source_serial,
-                via_pred=step.via_pred,
-                old_target=step.old_target,
-                new_target=step.new_target,
-            ):
-                continue
-            rejected_edges.add(
-                (step.source_serial, step.old_target, step.via_pred, step.new_target)
-            )
-
-        if not rejected_edges:
-            return patch_plan
-
-        filtered_modifications: list[GraphModification] = []
-        for mod in patch_plan.planner_modifications:
-            if isinstance(mod, EdgeRedirectViaPredSplit) and (
-                mod.src_block,
-                mod.old_target,
-                mod.via_pred,
-                mod.new_target,
-            ) in rejected_edges:
-                continue
-            filtered_modifications.append(mod)
-
-        logger.warning(
-            "Recompiling PatchPlan after rejecting %d unsupported edge-split trampoline(s)",
-            len(rejected_edges),
-        )
-        return compile_patch_plan(filtered_modifications, self.lift(mba))
 
     def _unsupported_patch_plan_reasons(self, patch_plan: PatchPlan) -> list[str]:
         reasons: list[str] = []
