@@ -8,7 +8,9 @@ Wraps existing IDA infrastructure:
 from __future__ import annotations
 
 from d810.core.logging import getLogger
-from d810.core.typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING, Callable
+
+from d810.cfg.contracts.ida_contract import CfgContractViolationError, IDACfgContract
 
 from d810.cfg.graph_modification import (
     GraphModification,
@@ -170,8 +172,14 @@ class IDAIRTranslator:
         True
     """
 
-    def __init__(self, *, allow_legacy_block_creation: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        allow_legacy_block_creation: bool = True,
+        contract: IDACfgContract | None = None,
+    ) -> None:
         self.allow_legacy_block_creation = allow_legacy_block_creation
+        self.contract = contract
 
     @property
     def name(self) -> str:
@@ -243,6 +251,18 @@ class IDAIRTranslator:
 
         modifier = deferred_modifier.DeferredGraphModifier(mba)
 
+        # Build effective post-apply hook: caller hook + contract check
+        effective_hook: Callable[[], None] | None = None
+        if self.contract is not None or post_apply_hook is not None:
+
+            def _combined_post_apply_hook() -> None:
+                if post_apply_hook is not None:
+                    post_apply_hook()
+                if self.contract is not None:
+                    self.contract.verify(mba, plan=patch_plan, phase="post")
+
+            effective_hook = _combined_post_apply_hook
+
         if patch_plan.contains_block_creation:
             logger.info(
                 "Lowering PatchPlan with %d concrete ops and %d legacy block-creating steps",
@@ -263,7 +283,7 @@ class IDAIRTranslator:
             rollback_on_verify_failure=verify_each_mod,
             continue_on_verify_failure=verify_each_mod,
             enable_snapshot_rollback=True,
-            post_apply_hook=post_apply_hook,
+            post_apply_hook=effective_hook,
         )
 
         # If verify failed (even after rollback attempt), signal the pipeline
