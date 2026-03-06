@@ -28,6 +28,7 @@ from d810.cfg.plan import (
     LegacyBlockOperation,
     PatchConditionalRedirect,
     PatchConvertToGoto,
+    PatchDuplicateBlock,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
     PatchNopInstructions,
@@ -119,6 +120,38 @@ def _unsupported_insert_block_reason(step: PatchInsertBlock) -> str | None:
             f"PatchInsertBlock({step.pred_serial}->{step.succ_serial}) "
             f"cannot rebuild instructions: {reason}"
         )
+    return None
+
+
+def _unsupported_duplicate_block_reason(step: PatchDuplicateBlock) -> str | None:
+    if step.pred_serial is None:
+        return f"PatchDuplicateBlock(source={step.source_serial}) missing predecessor"
+    if step.pred_redirect_kind not in {"one_way", "conditional"}:
+        return (
+            f"PatchDuplicateBlock(source={step.source_serial}, pred={step.pred_serial}) "
+            f"unsupported predecessor edge kind: {step.pred_redirect_kind}"
+        )
+    if len(step.source_successors) > 2:
+        return (
+            f"PatchDuplicateBlock(source={step.source_serial}) "
+            f"unsupported successor count: {len(step.source_successors)}"
+        )
+    if len(step.source_successors) == 2:
+        if step.fallthrough_serial is None:
+            return (
+                f"PatchDuplicateBlock(source={step.source_serial}) "
+                "missing duplicated fallthrough serial"
+            )
+        if step.fallthrough_target is None:
+            return (
+                f"PatchDuplicateBlock(source={step.source_serial}) "
+                "missing duplicated fallthrough target"
+            )
+        if step.target_serial is None and step.conditional_target is None:
+            return (
+                f"PatchDuplicateBlock(source={step.source_serial}) "
+                "missing duplicated conditional target"
+            )
     return None
 
 
@@ -303,6 +336,10 @@ class IDAIRTranslator:
                     reason = _unsupported_insert_block_reason(insert_step)
                     if reason is not None:
                         reasons.append(reason)
+                case PatchDuplicateBlock() as duplicate_step:
+                    reason = _unsupported_duplicate_block_reason(duplicate_step)
+                    if reason is not None:
+                        reasons.append(reason)
                 case PatchRemoveEdge(from_serial=src, to_serial=dst):
                     reasons.append(f"PatchRemoveEdge({src}->{dst})")
                 case LegacyBlockOperation(modification=CreateConditionalRedirect()):
@@ -428,6 +465,25 @@ class IDAIRTranslator:
                     description=(
                         f"insert block {pred}->{assigned}->{succ} "
                         f"with {len(instructions)} instructions"
+                    ),
+                )
+
+            case PatchDuplicateBlock(
+                source_serial=src,
+                pred_serial=pred,
+                target_serial=target,
+                assigned_serial=assigned,
+                fallthrough_serial=fallthrough_serial,
+            ):
+                modifier.queue_duplicate_block(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    target_serial=target,
+                    expected_serial=assigned,
+                    expected_secondary_serial=fallthrough_serial,
+                    description=(
+                        f"duplicate block src={src} pred={pred} "
+                        f"target={target} via {assigned}"
                     ),
                 )
 

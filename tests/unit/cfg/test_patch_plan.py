@@ -1,12 +1,15 @@
 """Tests for the Phase B PatchPlan execution layer."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
+    DuplicateBlock,
     EdgeRedirectViaPredSplit,
     InsertBlock,
     NopInstructions,
@@ -17,6 +20,7 @@ from d810.cfg.plan import (
     PatchBlockSpec,
     PatchConditionalRedirect,
     PatchConvertToGoto,
+    PatchDuplicateBlock,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
     PatchNopInstructions,
@@ -28,7 +32,18 @@ from d810.cfg.plan import (
 )
 
 
-def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
+@dataclass(frozen=True)
+class _BlockRef:
+    block_num: int
+
+
+def _block(
+    serial: int,
+    succs: tuple[int, ...],
+    preds: tuple[int, ...],
+    *,
+    insn_snapshots: tuple[InsnSnapshot, ...] = (),
+) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
         block_type=1 if succs else 0,
@@ -36,7 +51,7 @@ def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> Block
         preds=preds,
         flags=0,
         start_ea=0,
-        insn_snapshots=(),
+        insn_snapshots=insn_snapshots,
     )
 
 
@@ -56,7 +71,19 @@ def _conditional_cfg() -> FlowGraph:
     return FlowGraph(
         blocks={
             9: _block(9, (10,), ()),
-            10: _block(10, (11, 14), (9,)),
+            10: _block(
+                10,
+                (11, 14),
+                (9,),
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0x70,
+                        ea=0x1010,
+                        operands=(_BlockRef(14),),
+                        operand_slots=(("d", _BlockRef(14)),),
+                    ),
+                ),
+            ),
             11: _block(11, (), (10,)),
             14: _block(14, (), (10,)),
         },
@@ -199,6 +226,66 @@ def test_compile_patch_plan_finalizes_insert_block():
     assert patch_plan.relocation_map.stop_serial_before == 11
     assert patch_plan.relocation_map.stop_serial_after == 12
     assert patch_plan.legacy_block_operations == ()
+
+
+def test_compile_patch_plan_finalizes_duplicate_block():
+    patch_plan = compile_patch_plan(
+        [
+            DuplicateBlock(
+                source_block=10,
+                target_block=11,
+                pred_serial=9,
+            )
+        ],
+        _cfg(),
+    )
+
+    assert patch_plan.contains_block_creation
+    assert patch_plan.steps == (
+        PatchDuplicateBlock(
+            block_id=VirtualBlockId(namespace="duplicate_block", ordinal=0),
+            assigned_serial=11,
+            source_serial=10,
+            pred_serial=9,
+            pred_redirect_kind="one_way",
+            source_successors=(12,),
+            target_serial=12,
+            conditional_target=None,
+            fallthrough_target=None,
+            fallthrough_block_id=None,
+            fallthrough_serial=None,
+        ),
+    )
+    assert [spec.kind for spec in patch_plan.new_blocks] == ["duplicate_block_clone"]
+    assert patch_plan.legacy_block_operations == ()
+
+
+def test_compile_patch_plan_keeps_unsupported_duplicate_block_legacy():
+    cfg = FlowGraph(
+        blocks={
+            44: _block(44, (99, 45), ()),
+            45: _block(45, (2,), (44,)),
+            2: _block(2, (), (45,)),
+            99: _block(99, (), (44,)),
+        },
+        entry_serial=44,
+        func_ea=0,
+    )
+
+    patch_plan = compile_patch_plan(
+        [
+            DuplicateBlock(
+                source_block=45,
+                target_block=2,
+                pred_serial=44,
+            )
+        ],
+        cfg,
+    )
+
+    assert len(patch_plan.legacy_block_operations) == 1
+    assert isinstance(patch_plan.legacy_block_operations[0], LegacyBlockOperation)
+    assert patch_plan.new_blocks[0].kind == "duplicate_block"
 
 
 def test_compile_patch_plan_records_symbolic_block_specs_for_remaining_legacy_block_creation():

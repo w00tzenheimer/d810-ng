@@ -66,7 +66,7 @@ def _preflight_priority(mod: GraphModification) -> int:
 
 def _preflight_simulated_priority(edit: SimulatedEdit) -> int:
     match edit.kind:
-        case "create_conditional_redirect":
+        case "create_conditional_redirect" | "duplicate_block":
             return 5
         case "edge_split_redirect":
             return 8
@@ -494,6 +494,9 @@ class TransactionalExecutor:
             elif edit.kind == "create_conditional_redirect":
                 if edit.source in terminal_exits:
                     seeds.add(clone_serial)
+            elif edit.kind == "duplicate_block":
+                if edit.source in terminal_exits or edit.via_pred in terminal_exits:
+                    seeds.add(clone_serial)
         return seeds
 
     def _derive_terminal_targets(
@@ -512,6 +515,14 @@ class TransactionalExecutor:
             elif edit.kind == "create_conditional_redirect":
                 if edit.source in terminal_exits:
                     targets.add(edit.new_target)
+                    if edit.fallthrough_target is not None:
+                        targets.add(edit.fallthrough_target)
+            elif edit.kind == "duplicate_block":
+                if edit.source in terminal_exits or edit.via_pred in terminal_exits:
+                    if edit.duplicate_target is not None:
+                        targets.add(edit.duplicate_target)
+                    elif edit.source_successors:
+                        targets.update(edit.source_successors)
                     if edit.fallthrough_target is not None:
                         targets.add(edit.fallthrough_target)
         return targets

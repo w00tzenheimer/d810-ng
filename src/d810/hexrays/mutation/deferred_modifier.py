@@ -202,6 +202,8 @@ from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter
 from d810.hexrays.mutation.cfg_verify import (
     capture_failure_artifact)
 from d810.hexrays.mutation.cfg_mutations import (
+    change_0way_block_successor)
+from d810.hexrays.mutation.cfg_mutations import (
     change_1way_block_successor)
 from d810.hexrays.mutation.cfg_mutations import (
     change_2way_block_conditional_successor)
@@ -343,6 +345,7 @@ class ModificationType(Enum):
     INSN_NOP = auto()                 # NOP a specific instruction
     BLOCK_CREATE_WITH_REDIRECT = auto()  # Create intermediate block and redirect
     BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT = auto()  # Create conditional 2-way block with redirect
+    BLOCK_DUPLICATE_AND_REDIRECT = auto()  # Duplicate source block and redirect one predecessor
     EDGE_REDIRECT_VIA_PRED_SPLIT = auto()  # Clone src block; redirect one predecessor to clone
     EDGE_SPLIT_TRAMPOLINE = auto()  # Materialize standalone trampoline and redirect one predecessor
 
@@ -391,6 +394,8 @@ class GraphModification:
     clone_until: int | None = None
     # For EDGE_SPLIT_TRAMPOLINE: expected final serial assigned by PatchPlan compilation
     expected_serial: int | None = None
+    # For block-creation operations that materialize multiple blocks
+    expected_secondary_serial: int | None = None
     # How to resolve new_target at apply-time
     target_ref_kind: TargetRefKind = TargetRefKind.ABSOLUTE
 
@@ -845,6 +850,46 @@ class DeferredGraphModifier:
             self._debug_dump_block_neighborhood(source_blk_serial, "enqueue source")
             self._debug_dump_block_neighborhood(ref_blk_serial, "enqueue ref-target")
 
+    def queue_duplicate_block(
+        self,
+        *,
+        source_block_serial: int,
+        pred_serial: int | None,
+        target_serial: int | None = None,
+        expected_serial: int | None = None,
+        expected_secondary_serial: int | None = None,
+        description: str = "",
+        rule_priority: int = 0,
+    ) -> None:
+        """Queue duplication of ``source_block_serial`` and redirect ``pred_serial`` to the clone."""
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.BLOCK_DUPLICATE_AND_REDIRECT,
+            block_serial=source_block_serial,
+            new_target=target_serial,
+            via_pred=pred_serial,
+            expected_serial=expected_serial,
+            expected_secondary_serial=expected_secondary_serial,
+            priority=5,
+            rule_priority=rule_priority,
+            description=description or (
+                f"duplicate block src={source_block_serial} pred={pred_serial} "
+                f"target={target_serial}"
+            ),
+        ))
+        logger.debug(
+            "Queued duplicate_block: src=%d pred=%s target=%s expected=%s secondary=%s",
+            source_block_serial,
+            pred_serial,
+            target_serial,
+            expected_serial,
+            expected_secondary_serial,
+        )
+        if self.event_emitter is not None:
+            self._emit(
+                DeferredEvent.DEFERRED_QUEUE_ADDED,
+                self._mod_payload(self.modifications[-1]),
+            )
+
     def queue_edge_redirect(
         self,
         src_block: int,
@@ -1072,6 +1117,15 @@ class DeferredGraphModifier:
             elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT:
                 key = (mod.mod_type, mod.block_serial, mod.new_target,
                        mod.conditional_target, mod.fallthrough_target, mod.target_ref_kind)
+            elif mod.mod_type == ModificationType.BLOCK_DUPLICATE_AND_REDIRECT:
+                key = (
+                    mod.mod_type,
+                    mod.block_serial,
+                    mod.via_pred,
+                    mod.new_target,
+                    mod.expected_serial,
+                    mod.expected_secondary_serial,
+                )
             elif mod.mod_type in (
                 ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
                 ModificationType.EDGE_SPLIT_TRAMPOLINE,
@@ -1147,6 +1201,7 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_CONVERT_TO_GOTO,
             ModificationType.BLOCK_CREATE_WITH_REDIRECT,
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT,
+            ModificationType.BLOCK_DUPLICATE_AND_REDIRECT,
             ModificationType.EDGE_SPLIT_TRAMPOLINE,
         }
         terminal_type_rank = {
@@ -1155,7 +1210,8 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_CONVERT_TO_GOTO: 3,
             ModificationType.BLOCK_CREATE_WITH_REDIRECT: 4,
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: 5,
-            ModificationType.EDGE_SPLIT_TRAMPOLINE: 6,
+            ModificationType.BLOCK_DUPLICATE_AND_REDIRECT: 6,
+            ModificationType.EDGE_SPLIT_TRAMPOLINE: 7,
             # EDGE_REDIRECT_VIA_PRED_SPLIT is intentionally absent: it is not
             # in terminal_mod_types (it executes via a separate code path in
             # apply_modifications) so ranking it here would cause it to be
@@ -1661,10 +1717,15 @@ class DeferredGraphModifier:
                 sorted_mods = filtered_mods
 
         sorted_mods, pre_rejected_create = self._pre_reject_create_and_redirects(sorted_mods)
+        sorted_mods, pre_rejected_duplicate = self._pre_reject_duplicate_blocks(sorted_mods)
         sorted_mods, pre_rejected_trampolines = self._pre_reject_edge_split_trampolines(
             sorted_mods
         )
-        pre_rejected = pre_rejected_create + pre_rejected_trampolines
+        pre_rejected = (
+            pre_rejected_create
+            + pre_rejected_duplicate
+            + pre_rejected_trampolines
+        )
         total_mod_count = len(sorted_mods) + pre_rejected
 
         logger.info("Applying %d queued graph modifications", total_mod_count)
@@ -2231,6 +2292,15 @@ class DeferredGraphModifier:
                 expected_fallthrough_serial=mod.expected_fallthrough_serial,
             )
 
+        elif mod.mod_type == ModificationType.BLOCK_DUPLICATE_AND_REDIRECT:
+            return self._apply_duplicate_block_and_redirect(
+                source_blk=blk,
+                pred_serial=mod.via_pred,
+                target_serial=mod.new_target,
+                expected_serial=mod.expected_serial,
+                expected_secondary_serial=mod.expected_secondary_serial,
+            )
+
         elif mod.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
             return self._apply_edge_redirect_via_pred_split(
                 blk, mod.old_target, mod.new_target, mod.via_pred, mod.clone_until
@@ -2605,6 +2675,163 @@ class DeferredGraphModifier:
             logger.error("Traceback: %s", traceback.format_exc())
             return False
 
+    def _apply_duplicate_block_and_redirect(
+        self,
+        *,
+        source_blk: ida_hexrays.mblock_t,
+        pred_serial: int | None,
+        target_serial: int | None,
+        expected_serial: int | None,
+        expected_secondary_serial: int | None,
+    ) -> bool:
+        """Duplicate ``source_blk`` and redirect ``pred_serial`` to the clone."""
+        if not self._check_duplicate_block_preconditions(
+            source_block_serial=source_blk.serial,
+            pred_serial=pred_serial,
+            target_serial=target_serial,
+        ):
+            return False
+
+        if pred_serial is None:
+            return False
+
+        pred_blk = self.mba.get_mblock(pred_serial)
+        if pred_blk is None:
+            logger.warning(
+                "duplicate_block: predecessor blk[%d] missing at apply-time",
+                pred_serial,
+            )
+            return False
+
+        try:
+            final_target = target_serial
+            if final_target is None and source_blk.nsucc() == 1:
+                final_target = source_blk.succ(0)
+
+            old_stop_serial = self.mba.qty - 1
+            old_stop_pred_serials = [
+                serial
+                for serial in range(self.mba.qty)
+                if (blk := self.mba.get_mblock(serial)) is not None
+                and blk.nsucc() == 1
+                and blk.succ(0) == old_stop_serial
+            ]
+
+            instructions_to_copy = []
+            cur_ins = source_blk.head
+            while cur_ins is not None:
+                if (
+                    source_blk.nsucc() == 1
+                    and source_blk.tail is not None
+                    and source_blk.tail.opcode == ida_hexrays.m_goto
+                    and cur_ins.next is None
+                ):
+                    break
+                cloned_ins = ida_hexrays.minsn_t(cur_ins)
+                cloned_ins.setaddr(self.mba.entry_ea)
+                instructions_to_copy.append(cloned_ins)
+                cur_ins = cur_ins.next
+
+            duplicated_blk = create_standalone_block(
+                source_blk,
+                instructions_to_copy,
+                target_serial=final_target,
+                is_0_way=final_target is None,
+                verify=False,
+            )
+            duplicated_default = None
+            new_stop_serial = self.mba.qty - 1
+            for stop_pred_serial in old_stop_pred_serials:
+                stop_pred_blk = self.mba.get_mblock(stop_pred_serial)
+                if stop_pred_blk is None or stop_pred_blk.serial == duplicated_blk.serial:
+                    continue
+                if stop_pred_blk.nsucc() != 1 or stop_pred_blk.succ(0) != duplicated_blk.serial:
+                    continue
+                if not change_1way_block_successor(
+                    stop_pred_blk,
+                    new_stop_serial,
+                    verify=False,
+                ):
+                    logger.warning(
+                        "duplicate_block: failed to relocate stop predecessor blk[%d] -> blk[%d]",
+                        stop_pred_blk.serial,
+                        new_stop_serial,
+                    )
+                    return False
+
+            if expected_serial is not None and duplicated_blk.serial != expected_serial:
+                logger.warning(
+                    "duplicate_block: created clone blk[%d], expected blk[%d]",
+                    duplicated_blk.serial,
+                    expected_serial,
+                )
+                return False
+            if expected_secondary_serial is not None:
+                if duplicated_default is None:
+                    logger.warning(
+                        "duplicate_block: missing duplicated fallthrough blk for blk[%d], expected blk[%d]",
+                        source_blk.serial,
+                        expected_secondary_serial,
+                    )
+                    return False
+                if duplicated_default.serial != expected_secondary_serial:
+                    logger.warning(
+                        "duplicate_block: created fallthrough blk[%d], expected blk[%d]",
+                        duplicated_default.serial,
+                        expected_secondary_serial,
+                    )
+                    return False
+
+            if pred_blk.nsucc() == 1:
+                if not change_1way_block_successor(
+                    pred_blk,
+                    duplicated_blk.serial,
+                    verify=False,
+                ):
+                    return False
+            elif (
+                pred_blk.nsucc() == 2
+                and pred_blk.tail is not None
+                and ida_hexrays.is_mcode_jcond(pred_blk.tail.opcode)
+                and pred_blk.tail.d.t == ida_hexrays.mop_b
+                and pred_blk.tail.d.b == source_blk.serial
+            ):
+                if not change_2way_block_conditional_successor(
+                    pred_blk,
+                    duplicated_blk.serial,
+                    verify=False,
+                ):
+                    return False
+            else:
+                logger.warning(
+                    "duplicate_block: predecessor blk[%d] cannot redirect to clone blk[%d]",
+                    pred_blk.serial,
+                    duplicated_blk.serial,
+                )
+                return False
+
+            logger.debug(
+                "duplicate_block: pred=%d -> clone=%d (source=%d target=%s secondary=%s)",
+                pred_blk.serial,
+                duplicated_blk.serial,
+                source_blk.serial,
+                target_serial,
+                duplicated_default.serial if duplicated_default is not None else None,
+            )
+            return True
+
+        except Exception as exc:
+            logger.error(
+                "Exception in duplicate_block for src=%d pred=%s target=%s: %s",
+                source_blk.serial,
+                pred_serial,
+                target_serial,
+                exc,
+            )
+            import traceback
+            logger.error("Traceback: %s", traceback.format_exc())
+            return False
+
     def _apply_edge_split_trampoline(
         self,
         source_block_serial: int | None,
@@ -2764,6 +2991,40 @@ class DeferredGraphModifier:
 
         return filtered_mods, pre_rejected
 
+    def _pre_reject_duplicate_blocks(
+        self,
+        sorted_mods: list[GraphModification],
+    ) -> tuple[list[GraphModification], int]:
+        """Reject unsupported duplicate-block edits before live mutation."""
+        filtered_mods: list[GraphModification] = []
+        pre_rejected = 0
+
+        for mod in sorted_mods:
+            if mod.mod_type != ModificationType.BLOCK_DUPLICATE_AND_REDIRECT:
+                filtered_mods.append(mod)
+                continue
+            if self._check_duplicate_block_preconditions(
+                source_block_serial=mod.block_serial,
+                pred_serial=mod.via_pred,
+                target_serial=mod.new_target,
+            ):
+                filtered_mods.append(mod)
+                continue
+
+            pre_rejected += 1
+            logger.warning(
+                "Pre-rejecting duplicate_block before live apply: %s",
+                mod.description,
+            )
+
+        if pre_rejected:
+            logger.warning(
+                "Pre-rejected %d duplicate_block modification(s) before live apply",
+                pre_rejected,
+            )
+
+        return filtered_mods, pre_rejected
+
     def _check_create_and_redirect_preconditions(
         self,
         *,
@@ -2805,6 +3066,92 @@ class DeferredGraphModifier:
             return False
 
         return True
+
+    def _check_duplicate_block_preconditions(
+        self,
+        *,
+        source_block_serial: int | None,
+        pred_serial: int | None,
+        target_serial: int | None,
+    ) -> bool:
+        """Validate duplicate-and-redirect topology without mutating the MBA."""
+        if (
+            self.mba is None
+            or source_block_serial is None
+            or pred_serial is None
+        ):
+            logger.warning(
+                "duplicate_block: incomplete parameters src=%s pred=%s target=%s",
+                source_block_serial,
+                pred_serial,
+                target_serial,
+            )
+            return False
+
+        source_blk = self.mba.get_mblock(source_block_serial)
+        pred_blk = self.mba.get_mblock(pred_serial)
+        target_blk = self.mba.get_mblock(target_serial) if target_serial is not None else None
+
+        if source_blk is None or pred_blk is None:
+            logger.warning(
+                "duplicate_block: missing block src=%s pred=%s",
+                source_block_serial,
+                pred_serial,
+            )
+            return False
+        if target_serial is not None and target_blk is None:
+            logger.warning(
+                "duplicate_block: missing target blk[%s]",
+                target_serial,
+            )
+            return False
+
+        if source_blk.nsucc() > 1:
+            logger.warning(
+                "duplicate_block: src blk[%d] has unsupported nsucc=%d",
+                source_blk.serial,
+                source_blk.nsucc(),
+            )
+            return False
+
+        if pred_blk.nsucc() == 1:
+            if pred_blk.succ(0) != source_blk.serial:
+                logger.warning(
+                    "duplicate_block: pred blk[%d] does not target src blk[%d]",
+                    pred_blk.serial,
+                    source_blk.serial,
+                )
+                return False
+            return True
+
+        if pred_blk.nsucc() == 2:
+            if pred_blk.tail is None or not ida_hexrays.is_mcode_jcond(pred_blk.tail.opcode):
+                logger.warning(
+                    "duplicate_block: pred blk[%d] has nsucc=2 but non-conditional tail",
+                    pred_blk.serial,
+                )
+                return False
+            if pred_blk.tail.d.t != ida_hexrays.mop_b:
+                logger.warning(
+                    "duplicate_block: pred blk[%d] conditional tail lacks blkref operand",
+                    pred_blk.serial,
+                )
+                return False
+            if pred_blk.tail.d.b != source_blk.serial:
+                logger.warning(
+                    "duplicate_block: pred blk[%d] reaches src blk[%d] via fallthrough; unsupported",
+                    pred_blk.serial,
+                    source_blk.serial,
+                )
+                return False
+            return True
+
+        logger.warning(
+            "duplicate_block: pred blk[%d] has unsupported nsucc=%d",
+            pred_blk.serial,
+            pred_blk.nsucc(),
+        )
+        return False
 
     def _check_edge_split_trampoline_preconditions(
         self,
