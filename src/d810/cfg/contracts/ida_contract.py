@@ -183,6 +183,23 @@ class IDACfgContract:
         focus = None if scope == "full" else (self._focus_serials(plan) or None)
         return self._check(mba, phase="rollback", focus_serials=focus, include_insn_checks=include_insn_checks)
 
+    def check_projected(
+        self,
+        pre_cfg,
+        plan: PatchPlan,
+        *,
+        scope: ContractScope = "focused",
+    ) -> list[InvariantViolation]:
+        from d810.cfg.flow.edit_simulator import project_post_state
+
+        projected_cfg = project_post_state(pre_cfg, plan)
+        focus = None if scope == "full" else (self._focus_serials(plan) or None)
+        return self._check_projected(
+            projected_cfg,
+            phase="projected",
+            focus_serials=focus,
+        )
+
     def verify(
         self,
         mba,
@@ -263,4 +280,37 @@ class IDACfgContract:
                         block_serial=block_serial,
                     )
                 )
+        return violations
+
+    def _check_projected(
+        self,
+        projected_cfg,
+        *,
+        phase: str,
+        focus_serials: Iterable[int] | None,
+    ) -> list[InvariantViolation]:
+        violations: list[InvariantViolation] = []
+        violations.extend(
+            pred_succ_symmetry(projected_cfg, phase=phase, focus_serials=focus_serials)
+        )
+        violations.extend(
+            successor_set_matches_tail_semantics(
+                projected_cfg,
+                phase=phase,
+                focus_serials=focus_serials,
+            )
+        )
+        violations.extend(
+            block_type_vs_tail(projected_cfg, phase=phase, focus_serials=focus_serials)
+        )
+        violations.extend(
+            predecessor_uniqueness(
+                projected_cfg,
+                phase=phase,
+                focus_serials=focus_serials,
+            )
+        )
+        violations.extend(
+            block_serial_range(projected_cfg, phase=phase, focus_serials=focus_serials)
+        )
         return violations

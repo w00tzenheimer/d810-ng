@@ -353,3 +353,49 @@ def test_executor_rejects_cfg_contract_pre_failures(monkeypatch: pytest.MonkeyPa
     assert result.rollback_needed
     assert result.error == "cfg contract pre-check failed: CFG_BAD@blk[1]"
     assert not translator.lower_calls
+
+
+def test_executor_rejects_projected_cfg_contract_failures(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        _executor_mod, "should_apply_cfg_modifications",
+        lambda *args, **kwargs: True,
+    )
+
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (1,), ()),
+            1: _block(1, (2,), (0,)),
+            2: _block(2, (), (1,)),
+        },
+        entry_serial=0,
+        func_ea=0,
+    )
+    translator = _FakeTranslator(pre_cfg=cfg)
+
+    class _Contract:
+        def check_projected(self, pre_cfg: FlowGraph, plan: PatchPlan) -> list:  # noqa: ARG002
+            return [types.SimpleNamespace(code="CFG_50858_SUCC_PRED_MISMATCH", block_serial=1)]
+
+        def check_pre(self, mba: object, plan: PatchPlan) -> list:  # noqa: ARG002
+            raise AssertionError("projected contract failures should reject before live pre-check")
+
+    fragment = PlanFragment(
+        modifications=[RedirectGoto(from_serial=1, old_target=2, new_target=2)],
+        **_base_fragment(),
+    )
+    live_mba = types.SimpleNamespace(qty=0, get_mblock=lambda _i: None)
+
+    executor = TransactionalExecutor(
+        mba=live_mba,
+        translator=translator,
+        cfg_contract=_Contract(),
+    )
+    result = executor.execute_stage(fragment, total_handlers=1)
+
+    assert not result.success
+    assert result.rollback_needed
+    assert (
+        result.error
+        == "cfg contract projected check failed: CFG_50858_SUCC_PRED_MISMATCH@blk[1]"
+    )
+    assert not translator.lower_calls

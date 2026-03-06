@@ -161,6 +161,24 @@ class TransactionalExecutor:
         if not modifications:
             return StageResult(strategy_name=fragment.strategy_name)
 
+        projected_contract_violations = self._run_projected_cfg_contract_check(
+            pre_cfg,
+            patch_plan,
+        )
+        if projected_contract_violations:
+            detail = self._format_contract_violations(projected_contract_violations)
+            executor_logger.warning(
+                "CFG contract projected pre-check rejected stage %s: %s",
+                fragment.strategy_name,
+                detail,
+            )
+            return StageResult(
+                strategy_name=fragment.strategy_name,
+                success=False,
+                rollback_needed=True,
+                error=f"cfg contract projected check failed: {detail}",
+            )
+
         pre_contract_violations = self._run_cfg_contract_check("pre", patch_plan)
         if pre_contract_violations:
             detail = self._format_contract_violations(pre_contract_violations)
@@ -278,6 +296,19 @@ class TransactionalExecutor:
             self.cfg_contract = IDACfgContract()
             return self.cfg_contract
         return None
+
+    def _run_projected_cfg_contract_check(
+        self,
+        pre_cfg: FlowGraph,
+        patch_plan: PatchPlan,
+    ) -> list:
+        contract = self._get_cfg_contract()
+        if contract is None:
+            return []
+        checker = getattr(contract, "check_projected", None)
+        if callable(checker):
+            return checker(pre_cfg, patch_plan)
+        return []
 
     def _run_cfg_contract_check(
         self,
