@@ -1,0 +1,53 @@
+# Read-only proof layers may inspect live Hex-Rays state, but must not mutate it.
+#
+# This guards the evaluator/recon proof modules that are intended to stay side-effect
+# free while proving topology or value-flow properties.
+
+id: no-hexrays-mutation-in-readonly-proof
+language: python
+severity: error
+
+files:
+  - "src/d810/recon/flow/**/*.py"
+  - "src/d810/evaluator/hexrays_microcode/forward_dataflow.py"
+  - "src/d810/evaluator/hexrays_microcode/chains.py"
+  - "src/d810/evaluator/hexrays_microcode/terminal_return_proof.py"
+  - "src/d810/evaluator/hexrays_microcode/domains/**/*.py"
+
+message: |
+  Read-only proof modules must not mutate Hex-Rays microcode or invalidate chains.
+
+  Allowed in these modules:
+  - mba.build_graph()
+  - mba.get_graph()
+  - mblock.make_lists_ready()
+  - mblock.build_use_list(...)
+  - mblock.build_def_list(...)
+  - get_ud()/get_du()
+  - dominator/postdominator queries
+  - optional mba.verify(True) as a debug/assertion
+
+  Forbidden here:
+  - build_lists(...)
+  - mark_chains_dirty()
+  - block/CFG rewrites
+  - instruction insertion/removal/NOP transforms
+
+rule:
+  any:
+    - pattern: $OBJ.build_lists($$$)
+    - pattern: $OBJ.mark_chains_dirty()
+    - pattern: $OBJ.insert_block($$$)
+    - pattern: $OBJ.copy_block($$$)
+    - pattern: $OBJ.insert_into_block($$$)
+    - pattern: $OBJ.remove_from_block($$$)
+    - pattern: $OBJ.make_nop($$$)
+    - pattern: $OBJ.optimize_block($$$)
+    - pattern: $OBJ.replace_by($$$)
+    - pattern: change_1way_block_successor($$$)
+    - pattern: change_2way_block_conditional_successor($$$)
+    - pattern: change_2way_block_fallthrough_successor($$$)
+
+note: |
+  If a proof needs to mutate live microcode, it does not belong in a read-only
+  proof module. Move that logic to translator/backend/mutation code instead.
