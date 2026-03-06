@@ -49,6 +49,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     DecisionPhase,
     DecisionReasonCode,
     DecisionRecord,
+    GateAccounting,
     PipelineProvenance,
 )
 from d810.cfg.flow.graph_checks import SemanticGate
@@ -341,11 +342,13 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         # 5b. Update provenance phases from executor outcomes
         for frag, result in zip(pipeline, results):
+            acct: GateAccounting | None = result.metadata.get("gate_accounting")
             if result.success:
                 provenance = provenance.update_phase(
                     frag.strategy_name,
                     DecisionPhase.APPLIED,
                     reason_code=DecisionReasonCode.ACCEPTED,
+                    gate_accounting=acct,
                 )
             elif result.error and "preflight" in result.error.lower():
                 provenance = provenance.update_phase(
@@ -353,6 +356,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     DecisionPhase.PREFLIGHT_REJECTED,
                     reason_code=DecisionReasonCode.REJECTED_PREFLIGHT,
                     reason_detail=result.error,
+                    gate_accounting=acct,
                 )
             elif result.error and "gate" in result.error.lower():
                 provenance = provenance.update_phase(
@@ -360,6 +364,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     DecisionPhase.GATE_FAILED,
                     reason_code=DecisionReasonCode.REJECTED_GATE,
                     reason_detail=result.error,
+                    gate_accounting=acct,
                 )
             elif not result.success:
                 provenance = provenance.update_phase(
@@ -367,6 +372,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     DecisionPhase.GATE_FAILED,
                     reason_code=DecisionReasonCode.REJECTED_TRANSACTION,
                     reason_detail=result.error or "execution failed",
+                    gate_accounting=acct,
                 )
         self._last_provenance = provenance
 
