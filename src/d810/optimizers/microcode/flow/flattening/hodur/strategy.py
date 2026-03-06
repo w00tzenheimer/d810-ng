@@ -244,6 +244,7 @@ class StageResult:
     rollback_needed: bool = False
     quarantine: bool = False
     error: str | None = None
+    failure_phase: str | None = None
     metadata: dict = field(default_factory=dict)  # type: ignore[type-arg]
     """Arbitrary diagnostic metadata (e.g. terminal return audit/proof results)."""
 

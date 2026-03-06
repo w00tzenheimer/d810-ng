@@ -329,7 +329,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     reason_code=DecisionReasonCode.ACCEPTED,
                     gate_accounting=acct,
                 )
-            elif result.error and "preflight" in result.error.lower():
+            elif result.failure_phase == "preflight":
                 provenance = provenance.update_phase(
                     frag.strategy_name,
                     DecisionPhase.PREFLIGHT_REJECTED,
@@ -337,7 +337,10 @@ class HodurUnflattener(GenericUnflatteningRule):
                     reason_detail=result.error,
                     gate_accounting=acct,
                 )
-            elif result.error and "gate" in result.error.lower():
+            elif result.failure_phase in (
+                "safeguard",
+                "post_apply_contract",
+            ):
                 provenance = provenance.update_phase(
                     frag.strategy_name,
                     DecisionPhase.GATE_FAILED,
@@ -353,6 +356,14 @@ class HodurUnflattener(GenericUnflatteningRule):
                     reason_detail=result.error or "execution failed",
                     gate_accounting=acct,
                 )
+        # Mark unexecuted pipeline tail (fragments after early abort) as BYPASSED
+        for frag in pipeline[len(results):]:
+            provenance = provenance.update_phase(
+                frag.strategy_name,
+                DecisionPhase.BYPASSED,
+                reason_code=DecisionReasonCode.BYPASSED_PIPELINE_ABORT,
+                reason_detail="pipeline aborted before this fragment was executed",
+            )
         self._last_provenance = provenance
 
         # Return frontier audit: post_apply stage

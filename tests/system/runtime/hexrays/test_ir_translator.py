@@ -588,10 +588,9 @@ class TestIDAIntegration:
         count = backend.lower(patch_plan, object())
 
         assert count == 1
-        assert len(created) == 2
-        assert created[0].calls == []
-        assert created[1].calls[0][0] == "edge_split_trampoline"
-        assert created[1].calls[0][1:6] == (45, 122, 2, 2, 199)
+        assert len(created) == 1
+        assert created[0].calls[0][0] == "edge_split_trampoline"
+        assert created[0].calls[0][1:6] == (45, 122, 2, 2, 199)
 
     def test_lower_rejects_legacy_block_creation_when_disabled(
         self,

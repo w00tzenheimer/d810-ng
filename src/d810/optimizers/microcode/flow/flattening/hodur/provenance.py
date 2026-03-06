@@ -47,6 +47,7 @@ class DecisionReasonCode(str, enum.Enum):
     BYPASSED = "bypassed"
     BYPASSED_SAFEGUARD = "bypassed_safeguard"
     BYPASSED_STRICT_MODE_DISABLED = "bypassed_strict_mode_disabled"
+    BYPASSED_PIPELINE_ABORT = "bypassed_pipeline_abort"
     BLOCKED = "blocked"
 
 
@@ -285,8 +286,9 @@ class PipelineProvenance:
 
     def to_dicts(self) -> list[dict]:
         """Serialize rows to list of dicts for on-disk reporting."""
-        return [
-            {
+        result: list[dict] = []
+        for r in self.rows:
+            d: dict = {
                 "strategy_name": r.strategy_name,
                 "family": r.family,
                 "phase": r.phase.value,
@@ -297,6 +299,28 @@ class PipelineProvenance:
                 "handler_count": r.handler_count,
                 "transition_count": r.transition_count,
                 "notes": r.notes,
+                "ownership_blocks": sorted(r.ownership_blocks),
+                "prerequisites": sorted(r.prerequisites),
             }
-            for r in self.rows
-        ]
+            if r.input_summary is not None:
+                d["input_summary"] = {
+                    "handler_transitions_available": r.input_summary.handler_transitions_available,
+                    "return_frontier_available": r.input_summary.return_frontier_available,
+                    "terminal_return_audit_available": r.input_summary.terminal_return_audit_available,
+                    "terminal_return_audit_summary": r.input_summary.terminal_return_audit_summary,
+                    "policy_overrides": r.input_summary.policy_overrides,
+                }
+            if r.gate_accounting is not None:
+                d["gate_accounting"] = [
+                    {
+                        "gate_name": gd.gate_name,
+                        "verdict": gd.verdict.value,
+                        "reason": gd.reason,
+                        "strict_mode": gd.strict_mode,
+                    }
+                    for gd in r.gate_accounting.decisions
+                ]
+            if r.terminal_return_summary:
+                d["terminal_return_summary"] = r.terminal_return_summary
+            result.append(d)
+        return result

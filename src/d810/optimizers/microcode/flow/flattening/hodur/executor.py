@@ -152,6 +152,7 @@ class TransactionalExecutor:
                 strategy_name=fragment.strategy_name,
                 success=False,
                 error="safeguard rejected modifications",
+                failure_phase="safeguard",
             )
             result.metadata["gate_accounting"] = gate_accounting
             executor_logger.info("Gate accounting: %s", gate_accounting.summary())
@@ -171,6 +172,7 @@ class TransactionalExecutor:
                 strategy_name=fragment.strategy_name,
                 success=False,
                 error="block-creating edits disabled by policy",
+                failure_phase="preflight",
             )
 
         modifications, patch_plan, preflight_error = self._run_preflight(
@@ -222,6 +224,7 @@ class TransactionalExecutor:
                 rollback_needed=classification.rollback_needed if classification else False,
                 quarantine=classification.quarantine if classification else False,
                 error=str(tx_result.error) if tx_result.error else tx_result.failure_phase,
+                failure_phase=tx_result.failure_phase or "lowering",
             )
             result.metadata["gate_accounting"] = gate_accounting
             executor_logger.info("Gate accounting: %s", gate_accounting.summary())
@@ -314,6 +317,7 @@ class TransactionalExecutor:
             result.rollback_needed = True
             result.success = False
             result.error = "semantic gate failed"
+            result.failure_phase = "post_apply_contract"
             executor_logger.warning(
                 "Stage %s failed semantic gate: terminal_cycles=%d, conflict_count=%d",
                 fragment.strategy_name,
@@ -416,6 +420,7 @@ class TransactionalExecutor:
                 strategy_name=fragment.strategy_name,
                 success=False,
                 error=f"structural preflight: {structural.reason}",
+                failure_phase="preflight",
             )
 
         sim_result = simulate_edits(pre_adj, simulated_edits)
@@ -450,6 +455,7 @@ class TransactionalExecutor:
                     strategy_name=fragment.strategy_name,
                     success=False,
                     error=f"semantic preflight: {sink_result.reason}",
+                    failure_phase="preflight",
                 )
 
         filtered_modifications = self._filter_cycle_modifications(
@@ -468,6 +474,7 @@ class TransactionalExecutor:
                 strategy_name=fragment.strategy_name,
                 success=False,
                 error="semantic preflight: terminal cycles detected",
+                failure_phase="preflight",
             )
         if filtered_modifications != modifications:
             modifications = filtered_modifications
@@ -501,6 +508,7 @@ class TransactionalExecutor:
                 strategy_name=fragment.strategy_name,
                 success=False,
                 error="semantic preflight: terminal cycles detected",
+                failure_phase="preflight",
             )
 
         return modifications, patch_plan, None

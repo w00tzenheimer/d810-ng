@@ -131,7 +131,7 @@ class _SequenceTranslator:
         assert self._lifts, "unexpected extra lift() call"
         return self._lifts.pop(0)
 
-    def lower(self, patch_plan: PatchPlan, mba: object) -> int:  # noqa: ARG002
+    def lower(self, patch_plan: PatchPlan, mba: object, **kwargs) -> int:  # noqa: ARG002
         self.lower_calls.append(patch_plan)
         return len(patch_plan.as_graph_modifications())
 
