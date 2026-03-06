@@ -1,7 +1,7 @@
 """Tests for Hex-Rays dominator compatibility shims."""
 from __future__ import annotations
 
-from d810.hexrays.ir.dominator import compute_dominators, dominates
+from d810.cfg.dominator import compute_dominators, dominates
 
 
 class MockBlock:
