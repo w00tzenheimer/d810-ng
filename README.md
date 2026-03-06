@@ -171,6 +171,78 @@ class MyNewRule(VerifiableRule):
 
 Omit `maturities` entirely to inherit the default (`MMAT_LOCOPT`, `MMAT_CALLS`, `MMAT_GLBOPT1`), which is safe for most rules.
 
+## Architecture
+
+### Analysis and Mutation Boundaries
+
+D-810 has three distinct layers for microcode work. Keeping these boundaries sharp matters more than convenience because the same codebase needs:
+
+* portable, testable analysis
+* live Hex-Rays value-flow proof
+* verifier-safe CFG and instruction mutation
+
+#### `d810.recon`
+
+`recon` is the **read-only pre-analysis** layer. Its job is to collect and summarize facts about the current function before optimizers mutate the microcode.
+
+Use `recon` for:
+
+* portable CFG/topology summaries (`FlowGraph`, block snapshots, frontier reports)
+* collector outputs that can be serialized or stored
+* backend-agnostic analysis in `recon/flow`
+
+Do **not** put live `mba_t` proof logic directly into portable `recon/flow` modules such as `terminal_return_audit.py`.
+
+#### `d810.evaluator.hexrays_microcode`
+
+`evaluator.hexrays_microcode` is the **live proof** layer. This is where code may depend on Hex-Rays runtime objects such as `mba_t`, `mblock_t`, `minsn_t`, chains, trackers, or emulators.
+
+Use evaluator for:
+
+* path-sensitive value reasoning
+* use/def and chain-backed proof
+* tracker/emulator-assisted proof of runtime value flow
+
+This is why `tracker.py` stays in evaluator and should **not** move to `recon`: it operates on live Hex-Rays state and is not a portable artifact layer. If part of a tracker becomes purely read-only and generally useful, extract that helper and let `recon` consume the summarized result rather than moving the whole module.
+
+#### Translator / Backend / Mutation
+
+Mutation belongs in the translator/backend layer (`cfg_mutations`, deferred modifier, PatchPlan lowering, transaction engine). This layer owns:
+
+* CFG rewrites
+* instruction insertion/removal/NOP transforms
+* chain invalidation and rebuild boundaries
+* verification and rollback behavior
+
+Analysis modules should not quietly cross into this layer.
+
+### Read-Only Hex-Rays Safety Policy
+
+Read-only proof modules may inspect live Hex-Rays state, but they must not mutate it.
+
+Allowed in evaluator or collector-style read-only proof:
+
+* `mba.build_graph()`
+* `mba.get_graph()`
+* `mblock_t.make_lists_ready()`
+* `mblock_t.build_use_list(...)`
+* `mblock_t.build_def_list(...)`
+* `get_ud()/get_du()`
+* dominator/postdominator queries
+* optional `mba.verify(True)` as a debug/assertion aid
+
+Not allowed in read-only proof layers:
+
+* `mblock_t.build_lists(kill_deads=True)` if it can prune or rewrite
+* `mba.mark_chains_dirty()`
+* CFG or instruction mutation of any kind
+
+The practical rule is:
+
+* if it must be portable or serializable, it belongs near `recon`
+* if it needs live Hex-Rays value proof, it belongs in `evaluator`
+* if it changes CFG or instructions, it belongs in mutation/backend code
+
 ## Installation
 
 **Only IDA v9 or later is supported with Python 3.10 and higher** (since we need the microcode Python API)
