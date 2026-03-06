@@ -19,6 +19,7 @@ from d810.cfg.plan import (
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchEdgeSplitTrampoline,
+    PatchInsertBlock,
     PatchPlan,
     PatchRemoveEdge,
     PatchRedirectBranch,
@@ -246,6 +247,23 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                         fallthrough_target=fallthrough,
                         created_serial=assigned,
                         secondary_created_serial=fallthrough_serial,
+                        stop_serial_before=stop_serial_before,
+                        stop_serial_after=stop_serial_after,
+                    )
+                )
+
+            case PatchInsertBlock(
+                pred_serial=pred,
+                succ_serial=succ,
+                assigned_serial=assigned,
+            ):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="insert_block",
+                        source=pred,
+                        old_target=succ,
+                        new_target=succ,
+                        created_serial=assigned,
                         stop_serial_before=stop_serial_before,
                         stop_serial_after=stop_serial_after,
                     )

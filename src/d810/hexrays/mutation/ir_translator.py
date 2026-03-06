@@ -29,6 +29,7 @@ from d810.cfg.plan import (
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchEdgeSplitTrampoline,
+    PatchInsertBlock,
     PatchNopInstructions,
     PatchPlan,
     PatchRedirectBranch,
@@ -38,6 +39,7 @@ from d810.cfg.plan import (
 )
 from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
+from d810.hexrays.mutation.insn_snapshot_materializer import validate_insn_snapshots
 
 if TYPE_CHECKING:
     import ida_hexrays
@@ -108,6 +110,16 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
         func_ea=mba.entry_ea,
         metadata={"maturity": mba.maturity},
     )
+
+
+def _unsupported_insert_block_reason(step: PatchInsertBlock) -> str | None:
+    reason = validate_insn_snapshots(step.instructions)
+    if reason is not None:
+        return (
+            f"PatchInsertBlock({step.pred_serial}->{step.succ_serial}) "
+            f"cannot rebuild instructions: {reason}"
+        )
+    return None
 
 
 
@@ -287,6 +299,10 @@ class IDAIRTranslator:
                     continue
                 case PatchNopInstructions() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect():
                     continue
+                case PatchInsertBlock() as insert_step:
+                    reason = _unsupported_insert_block_reason(insert_step)
+                    if reason is not None:
+                        reasons.append(reason)
                 case PatchRemoveEdge(from_serial=src, to_serial=dst):
                     reasons.append(f"PatchRemoveEdge({src}->{dst})")
                 case LegacyBlockOperation(modification=CreateConditionalRedirect()):
@@ -394,6 +410,24 @@ class IDAIRTranslator:
                         f"conditional redirect src={src} ref={ref} "
                         f"cond={conditional_target} ft={fallthrough_target} "
                         f"via {assigned}/{fallthrough_serial}"
+                    ),
+                )
+
+            case PatchInsertBlock(
+                pred_serial=pred,
+                succ_serial=succ,
+                assigned_serial=assigned,
+                instructions=instructions,
+            ):
+                modifier.queue_create_and_redirect(
+                    source_block_serial=pred,
+                    final_target_serial=succ,
+                    instructions_to_copy=list(instructions),
+                    is_0_way=False,
+                    expected_serial=assigned,
+                    description=(
+                        f"insert block {pred}->{assigned}->{succ} "
+                        f"with {len(instructions)} instructions"
                     ),
                 )
 

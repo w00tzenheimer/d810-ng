@@ -186,6 +186,24 @@ class PatchConditionalRedirect:
         )
 
 
+@dataclass(frozen=True)
+class PatchInsertBlock:
+    """Finalized materialization of an inserted standalone block."""
+
+    block_id: VirtualBlockId
+    assigned_serial: int
+    pred_serial: int
+    succ_serial: int
+    instructions: tuple[InsnSnapshot, ...]
+
+    def to_graph_modification(self) -> InsertBlock:
+        return InsertBlock(
+            pred_serial=self.pred_serial,
+            succ_serial=self.succ_serial,
+            instructions=self.instructions,
+        )
+
+
 BlockCreatingGraphModification = Union[
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
@@ -219,6 +237,7 @@ PatchOperation = Union[
     PatchNopInstructions,
     PatchEdgeSplitTrampoline,
     PatchConditionalRedirect,
+    PatchInsertBlock,
 ]
 
 PatchStep = Union[PatchOperation, LegacyBlockOperation]
@@ -290,6 +309,12 @@ class _PendingConditionalRedirect:
     fallthrough_block_id: VirtualBlockId
 
 
+@dataclass(frozen=True)
+class _PendingInsertBlock:
+    modification: InsertBlock
+    block_id: VirtualBlockId
+
+
 def is_block_creating_modification(modification: GraphModification) -> bool:
     """Return True when the modification requires a new block."""
     return isinstance(
@@ -330,7 +355,59 @@ def _rewrite_symbolic_spec(
         spec,
         incoming_edge=incoming_edge,
         outgoing_edges=outgoing_edges,
+        instructions=_rewrite_instruction_snapshots(spec.instructions, relocation_map),
     )
+
+
+def _rewrite_instruction_operand(
+    operand: object,
+    relocation_map: PatchRelocationMap,
+) -> object:
+    block_num = getattr(operand, "block_num", None)
+    if not isinstance(block_num, int):
+        return operand
+
+    rewritten_block_num = relocation_map.rewrite_serial(block_num)
+    if rewritten_block_num == block_num:
+        return operand
+
+    replace_kwargs = {"block_num": rewritten_block_num}
+    if hasattr(operand, "owned_mop"):
+        replace_kwargs["owned_mop"] = None
+    try:
+        return replace(operand, **replace_kwargs)
+    except Exception:
+        return operand
+
+
+def _rewrite_instruction_snapshots(
+    instructions: tuple[InsnSnapshot, ...],
+    relocation_map: PatchRelocationMap,
+) -> tuple[InsnSnapshot, ...]:
+    rewritten_instructions: list[InsnSnapshot] = []
+    for instruction in instructions:
+        if instruction.operand_slots:
+            rewritten_operand_slots = tuple(
+                (slot_name, _rewrite_instruction_operand(operand, relocation_map))
+                for slot_name, operand in instruction.operand_slots
+            )
+            rewritten_operands = tuple(
+                operand for _, operand in rewritten_operand_slots
+            )
+        else:
+            rewritten_operands = tuple(
+                _rewrite_instruction_operand(operand, relocation_map)
+                for operand in instruction.operands
+            )
+            rewritten_operand_slots = instruction.operand_slots
+        rewritten_instructions.append(
+            replace(
+                instruction,
+                operands=rewritten_operands,
+                operand_slots=rewritten_operand_slots,
+            )
+        )
+    return tuple(rewritten_instructions)
 
 
 def _build_relocation_map(
@@ -501,6 +578,21 @@ def _finalize_step(
                 fallthrough_target=relocation_map.rewrite_serial(fallthrough),
             )
 
+        case _PendingInsertBlock(
+            modification=InsertBlock(pred_serial=pred, succ_serial=succ, instructions=insns),
+            block_id=block_id,
+        ):
+            assigned_serial = relocation_map.assigned_serial_for(block_id)
+            if assigned_serial is None:
+                raise ValueError(f"Missing assigned serial for {block_id}")
+            return PatchInsertBlock(
+                block_id=block_id,
+                assigned_serial=assigned_serial,
+                pred_serial=pred,
+                succ_serial=relocation_map.rewrite_serial(succ),
+                instructions=_rewrite_instruction_snapshots(insns, relocation_map),
+            )
+
         case LegacyBlockOperation():
             return step
 
@@ -636,7 +728,27 @@ def compile_patch_plan(
                         )
                     )
 
-            case DuplicateBlock() | InsertBlock():
+            case InsertBlock(pred_serial=pred, succ_serial=succ, instructions=insns):
+                if cfg is None:
+                    legacy_step, spec = _compile_legacy_block_step(modification, allocator)
+                    raw_steps.append(legacy_step)
+                    new_blocks.append(spec)
+                else:
+                    block_id = allocator.alloc("insert_block")
+                    new_blocks.append(
+                        PatchBlockSpec(
+                            block_id=block_id,
+                            kind="insert_block",
+                            incoming_edge=PatchEdgeRef(source=pred, target=succ),
+                            outgoing_edges=(PatchEdgeRef(source=block_id, target=succ),),
+                            instructions=insns,
+                        )
+                    )
+                    raw_steps.append(
+                        _PendingInsertBlock(modification=modification, block_id=block_id)
+                    )
+
+            case DuplicateBlock():
                 legacy_step, spec = _compile_legacy_block_step(modification, allocator)
                 raw_steps.append(legacy_step)
                 new_blocks.append(spec)
@@ -677,6 +789,7 @@ __all__ = [
     "PatchNopInstructions",
     "PatchEdgeSplitTrampoline",
     "PatchConditionalRedirect",
+    "PatchInsertBlock",
     "LegacyBlockOperation",
     "PatchOperation",
     "PatchStep",

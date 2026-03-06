@@ -18,6 +18,7 @@ from d810.cfg.plan import (
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchEdgeSplitTrampoline,
+    PatchInsertBlock,
     PatchNopInstructions,
     PatchPlan,
     PatchRedirectGoto,
@@ -171,6 +172,35 @@ def test_compile_patch_plan_finalizes_conditional_redirect():
     assert patch_plan.legacy_block_operations == ()
 
 
+def test_compile_patch_plan_finalizes_insert_block():
+    instructions = (InsnSnapshot(opcode=0x77, ea=0x2000, operands=()),)
+    patch_plan = compile_patch_plan(
+        [
+            InsertBlock(
+                pred_serial=10,
+                succ_serial=11,
+                instructions=instructions,
+            )
+        ],
+        _cfg(),
+    )
+
+    assert patch_plan.contains_block_creation
+    assert patch_plan.steps == (
+        PatchInsertBlock(
+            block_id=VirtualBlockId(namespace="insert_block", ordinal=0),
+            assigned_serial=11,
+            pred_serial=10,
+            succ_serial=12,
+            instructions=instructions,
+        ),
+    )
+    assert [spec.kind for spec in patch_plan.new_blocks] == ["insert_block"]
+    assert patch_plan.relocation_map.stop_serial_before == 11
+    assert patch_plan.relocation_map.stop_serial_after == 12
+    assert patch_plan.legacy_block_operations == ()
+
+
 def test_compile_patch_plan_records_symbolic_block_specs_for_remaining_legacy_block_creation():
     instructions = (InsnSnapshot(opcode=0x77, ea=0x2000, operands=()),)
     modifications = [
@@ -203,7 +233,8 @@ def test_compile_patch_plan_records_symbolic_block_specs_for_remaining_legacy_bl
     ]
     assert isinstance(patch_plan.steps[0], PatchEdgeSplitTrampoline)
     assert isinstance(patch_plan.steps[1], PatchConditionalRedirect)
-    assert len(patch_plan.legacy_block_operations) == 1
+    assert isinstance(patch_plan.steps[2], PatchInsertBlock)
+    assert len(patch_plan.legacy_block_operations) == 0
     assert all(isinstance(step, LegacyBlockOperation) for step in patch_plan.legacy_block_operations)
     assert patch_plan.as_graph_modifications() == modifications
 

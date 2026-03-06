@@ -225,7 +225,10 @@ from d810.hexrays.mutation.cfg_verify import (
     snapshot_block_for_capture)
 from d810.hexrays.mutation.cfg_mutations import (
     _rewire_edge)
-from d810.cfg.flowgraph import FlowGraph
+from d810.cfg.flowgraph import FlowGraph, InsnSnapshot
+from d810.hexrays.mutation.insn_snapshot_materializer import (
+    materialize_insn_snapshots,
+)
 from d810.hexrays.mutation.ir_translator import lift
 
 if TYPE_CHECKING:
@@ -390,6 +393,27 @@ class GraphModification:
     expected_serial: int | None = None
     # How to resolve new_target at apply-time
     target_ref_kind: TargetRefKind = TargetRefKind.ABSOLUTE
+
+
+def _prepare_block_creation_instructions(
+    mba: "ida_hexrays.mba_t",
+    instructions_to_copy: list | tuple | None,
+) -> list:
+    if instructions_to_copy is None:
+        return []
+
+    instructions = list(instructions_to_copy)
+    if not instructions:
+        return []
+
+    has_symbolic = any(isinstance(insn, InsnSnapshot) for insn in instructions)
+    if not has_symbolic:
+        return instructions
+    if not all(isinstance(insn, InsnSnapshot) for insn in instructions):
+        raise TypeError("Mixed symbolic/live instructions_to_copy payload is unsupported")
+
+    snapshots = tuple(instructions)
+    return materialize_insn_snapshots(snapshots, safe_ea=mba.entry_ea)
 
 
 @dataclass
@@ -717,7 +741,7 @@ class DeferredGraphModifier:
         self,
         source_block_serial: int,
         final_target_serial: int,
-        instructions_to_copy: list,
+        instructions_to_copy: list | tuple,
         is_0_way: bool = False,
         expected_serial: int | None = None,
         description: str = "",
@@ -732,7 +756,7 @@ class DeferredGraphModifier:
         Args:
             source_block_serial: Block whose successor will be changed to new block
             final_target_serial: Final target block after the intermediate block
-            instructions_to_copy: List of minsn_t to copy to the new block
+            instructions_to_copy: List of minsn_t or InsnSnapshot to copy to the new block
             is_0_way: If True, new block will be 0-way (no successor)
             description: Optional description for logging
         """
@@ -1636,7 +1660,11 @@ class DeferredGraphModifier:
                     )
                 sorted_mods = filtered_mods
 
-        sorted_mods, pre_rejected = self._pre_reject_edge_split_trampolines(sorted_mods)
+        sorted_mods, pre_rejected_create = self._pre_reject_create_and_redirects(sorted_mods)
+        sorted_mods, pre_rejected_trampolines = self._pre_reject_edge_split_trampolines(
+            sorted_mods
+        )
+        pre_rejected = pre_rejected_create + pre_rejected_trampolines
         total_mod_count = len(sorted_mods) + pre_rejected
 
         logger.info("Applying %d queued graph modifications", total_mod_count)
@@ -2292,7 +2320,7 @@ class DeferredGraphModifier:
         self,
         source_blk: ida_hexrays.mblock_t,
         final_target: int,
-        instructions_to_copy: list,
+        instructions_to_copy: list | tuple | None,
         is_0_way: bool,
         expected_serial: int | None,
     ) -> bool:
@@ -2304,12 +2332,12 @@ class DeferredGraphModifier:
         Uses :func:`create_standalone_block` instead of :func:`create_block`
         to avoid corrupting ``ref_block``'s CFG edges (INTERR 50856/50858).
         """
-        if not instructions_to_copy:
-            logger.warning(
-                "No instructions to copy for create_and_redirect on block %d",
-                source_blk.serial
-            )
-            return False
+        if instructions_to_copy is None:
+            instructions_to_copy = []
+        instructions_to_copy = _prepare_block_creation_instructions(
+            self.mba,
+            instructions_to_copy,
+        )
 
         # Precondition: this helper rewires a single outgoing edge. If the
         # source is not 1-way, creating the new block first can leave orphans
@@ -2319,6 +2347,12 @@ class DeferredGraphModifier:
                 "create_and_redirect requires 1-way source block; block %d has nsucc=%d",
                 source_blk.serial,
                 source_blk.nsucc(),
+            )
+            return False
+        if source_blk.serial == 0:
+            logger.warning(
+                "create_and_redirect requires non-entry source block; block %d is entry",
+                source_blk.serial,
             )
             return False
 
@@ -2662,6 +2696,39 @@ class DeferredGraphModifier:
             logger.error("Traceback: %s", traceback.format_exc())
             return False
 
+    def _pre_reject_create_and_redirects(
+        self,
+        sorted_mods: list[GraphModification],
+    ) -> tuple[list[GraphModification], int]:
+        """Reject unsupported standalone block creation before live mutation."""
+        filtered_mods: list[GraphModification] = []
+        pre_rejected = 0
+
+        for mod in sorted_mods:
+            if mod.mod_type != ModificationType.BLOCK_CREATE_WITH_REDIRECT:
+                filtered_mods.append(mod)
+                continue
+            if self._check_create_and_redirect_preconditions(
+                source_block_serial=mod.block_serial,
+                final_target_serial=mod.final_target,
+            ):
+                filtered_mods.append(mod)
+                continue
+
+            pre_rejected += 1
+            logger.warning(
+                "Pre-rejecting create_and_redirect before live apply: %s",
+                mod.description,
+            )
+
+        if pre_rejected:
+            logger.warning(
+                "Pre-rejected %d create_and_redirect modification(s) before live apply",
+                pre_rejected,
+            )
+
+        return filtered_mods, pre_rejected
+
     def _pre_reject_edge_split_trampolines(
         self,
         sorted_mods: list[GraphModification],
@@ -2696,6 +2763,48 @@ class DeferredGraphModifier:
             )
 
         return filtered_mods, pre_rejected
+
+    def _check_create_and_redirect_preconditions(
+        self,
+        *,
+        source_block_serial: int | None,
+        final_target_serial: int | None,
+    ) -> bool:
+        """Validate live topology for create-and-redirect without mutating the MBA."""
+        if self.mba is None or source_block_serial is None or final_target_serial is None:
+            logger.warning(
+                "create_and_redirect: incomplete parameters src=%s target=%s",
+                source_block_serial,
+                final_target_serial,
+            )
+            return False
+
+        source_blk = self.mba.get_mblock(source_block_serial)
+        target_blk = self.mba.get_mblock(final_target_serial)
+        if source_blk is None or target_blk is None:
+            logger.warning(
+                "create_and_redirect: missing block src=%s target=%s",
+                source_block_serial,
+                final_target_serial,
+            )
+            return False
+
+        if source_blk.serial == 0:
+            logger.warning(
+                "create_and_redirect: src blk[%d] is entry block and cannot be rewired safely",
+                source_blk.serial,
+            )
+            return False
+
+        if source_blk.nsucc() != 1:
+            logger.warning(
+                "create_and_redirect: src blk[%d] must be 1-way, got nsucc=%d",
+                source_blk.serial,
+                source_blk.nsucc(),
+            )
+            return False
+
+        return True
 
     def _check_edge_split_trampoline_preconditions(
         self,
@@ -3087,7 +3196,7 @@ class ImmediateGraphModifier:
         self,
         source_block_serial: int,
         final_target_serial: int,
-        instructions_to_copy: list,
+        instructions_to_copy: list | tuple,
         is_0_way: bool = False,
         expected_serial: int | None = None,
         description: str = "",
@@ -3236,7 +3345,7 @@ class ImmediateGraphModifier:
         self,
         source_blk: ida_hexrays.mblock_t,
         final_target: int,
-        instructions_to_copy: list,
+        instructions_to_copy: list | tuple | None,
         is_0_way: bool,
         expected_serial: int | None,
     ) -> bool:
@@ -3248,10 +3357,16 @@ class ImmediateGraphModifier:
         Uses :func:`create_standalone_block` instead of :func:`create_block`
         to avoid corrupting ``ref_block``'s CFG edges (INTERR 50856/50858).
         """
-        if not instructions_to_copy:
+        if instructions_to_copy is None:
+            instructions_to_copy = []
+        instructions_to_copy = _prepare_block_creation_instructions(
+            self.mba,
+            instructions_to_copy,
+        )
+        if source_blk.serial == 0:
             logger.warning(
-                "No instructions to copy for create_and_redirect on block %d",
-                source_blk.serial
+                "create_and_redirect requires non-entry source block; block %d is entry",
+                source_blk.serial,
             )
             return False
 

@@ -8,6 +8,8 @@ Runs in IDA environment (system/runtime); skips gracefully without IDA.
 from __future__ import annotations
 
 import importlib
+import platform
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,8 +23,11 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     RemoveEdge,
 )
-from d810.cfg.plan import PatchPlan, PatchRedirectGoto, compile_patch_plan
+from d810.cfg.plan import PatchInsertBlock, PatchPlan, PatchRedirectGoto, compile_patch_plan
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+
+
+_DEFAULT_TEST_BINARY = "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
 
 
 def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
@@ -49,6 +54,61 @@ def _cfg() -> FlowGraph:
         entry_serial=44,
         func_ea=0,
     )
+
+
+def _get_real_mba():
+    import idaapi
+    import idc
+
+    test_functions = (
+        "abc_xor_dispatch",
+        "abc_or_dispatch",
+        "nested_simple",
+        "test_cst_simplification",
+        "test_xor",
+        "test_mba_guessing",
+        "test_chained_add",
+    )
+
+    for func_name in test_functions:
+        func_ea = idc.get_name_ea_simple(func_name)
+        if func_ea == idaapi.BADADDR:
+            func_ea = idc.get_name_ea_simple("_" + func_name)
+        if func_ea == idaapi.BADADDR:
+            continue
+
+        func = idaapi.get_func(func_ea)
+        if func is None:
+            continue
+
+        mbr = ida_hexrays.mba_ranges_t(func)
+        hf = ida_hexrays.hexrays_failure_t()
+        mba = ida_hexrays.gen_microcode(
+            mbr,
+            hf,
+            None,
+            ida_hexrays.DECOMP_NO_WAIT,
+            ida_hexrays.MMAT_CALLS,
+        )
+        if mba is not None:
+            return mba
+
+    pytest.skip("No runtime mba_t available for InsertBlock lowering test")
+
+
+def _find_insertable_edge(mba) -> tuple[int, int] | None:
+    for i in range(mba.qty):
+        blk = mba.get_mblock(i)
+        if blk is None:
+            continue
+        if blk.serial == 0:
+            continue
+        if blk.type in (ida_hexrays.BLT_XTRN, ida_hexrays.BLT_STOP):
+            continue
+        if blk.nsucc() != 1:
+            continue
+        return blk.serial, blk.succ(0)
+    return None
 
 
 class TestIDAIRTranslatorBasics:
@@ -199,6 +259,8 @@ class TestIDAIntegration:
     These tests verify that the backend can interact with real IDA types.
     """
 
+    binary_name = _DEFAULT_TEST_BINARY
+
     def test_lift_returns_flowgraph(self):
         """Test lift() returns a FlowGraph flowgraph for a real mba_t."""
         backend = IDAIRTranslator()
@@ -216,6 +278,43 @@ class TestIDAIntegration:
         backend = IDAIRTranslator()
         assert hasattr(backend, "verify")
         assert callable(backend.verify)
+
+    def test_lower_applies_insert_block_patch_plan_to_real_mba(self, libobfuscated_setup):
+        mba = _get_real_mba()
+        edge = _find_insertable_edge(mba)
+        if edge is None:
+            pytest.skip("No 1-way edge available for InsertBlock runtime test")
+
+        pred_serial, succ_serial = edge
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                InsertBlock(
+                    pred_serial=pred_serial,
+                    succ_serial=succ_serial,
+                    instructions=(InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),),
+                )
+            ],
+            backend.lift(mba),
+        )
+        insert_step = next(
+            step for step in patch_plan.steps if isinstance(step, PatchInsertBlock)
+        )
+
+        count = backend.lower(patch_plan, mba)
+
+        assert count == 1
+        mba.verify(True)
+
+        pred_blk = mba.get_mblock(pred_serial)
+        assert pred_blk is not None
+        assert pred_blk.nsucc() == 1
+        assert pred_blk.succ(0) == insert_step.assigned_serial
+
+        inserted_blk = mba.get_mblock(insert_step.assigned_serial)
+        assert inserted_blk is not None
+        assert inserted_blk.nsucc() == 1
+        assert inserted_blk.succ(0) == insert_step.succ_serial
 
     def test_lower_applies_concrete_patch_plan(self, monkeypatch: pytest.MonkeyPatch):
         created: list[_FakeDeferredGraphModifier] = []
@@ -364,6 +463,45 @@ class TestIDAIntegration:
         assert created[0].calls[0][0] == "create_conditional"
         assert created[0].calls[0][1:7] == (44, 45, 201, 2, 199, 200)
 
+    def test_lower_applies_insert_block_patch_plan(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                InsertBlock(
+                    pred_serial=45,
+                    succ_serial=199,
+                    instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=()),),
+                )
+            ],
+            _cfg(),
+        )
+
+        count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000))
+
+        assert count == 1
+        assert len(created) == 1
+        assert created[0].calls[0][0] == "create_and_redirect"
+        assert created[0].calls[0][1:6] == (45, 200, 1, False, 199)
+
     def test_lower_rejects_unsupported_legacy_insert_block_when_enabled(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -396,6 +534,43 @@ class TestIDAIntegration:
         )
 
         count = backend.lower(patch_plan, object())
+
+        assert count == 0
+        assert created == []
+
+    def test_lower_rejects_unreconstructable_patch_insert_block_before_modifier_creation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                InsertBlock(
+                    pred_serial=45,
+                    succ_serial=199,
+                    instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=(object(),)),),
+                )
+            ],
+            _cfg(),
+        )
+
+        count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000))
 
         assert count == 0
         assert created == []
