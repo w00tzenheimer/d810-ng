@@ -150,6 +150,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._pass0_redirect_ledger: list[Pass0RedirectRecord] = []
         self._pass0_handler_entries: set[int] = set()
         self._last_redirect_meta: dict | None = None
+        self._last_provenance: PipelineProvenance | None = None
 
         # Strategy pipeline components — disable fallback strategies until
         # rollback infrastructure is reliable (see semantic-gate-replacement plan).
@@ -321,6 +322,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                 rows=tuple(pre_planner_records) + provenance.rows,
                 input_summary=provenance.input_summary,
             )
+        self._last_provenance = provenance
         unflat_logger.info("Planner provenance: %s", provenance.summary())
 
         # Return frontier audit: post_plan stage (mods queued but not applied)
@@ -337,12 +339,50 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         nb_changes = executor.total_changes
 
+        # 5b. Update provenance phases from executor outcomes
+        for frag, result in zip(pipeline, results):
+            if result.success:
+                provenance = provenance.update_phase(
+                    frag.strategy_name,
+                    DecisionPhase.APPLIED,
+                    reason_code=DecisionReasonCode.ACCEPTED,
+                )
+            elif result.error and "preflight" in result.error.lower():
+                provenance = provenance.update_phase(
+                    frag.strategy_name,
+                    DecisionPhase.PREFLIGHT_REJECTED,
+                    reason_code=DecisionReasonCode.REJECTED_PREFLIGHT,
+                    reason_detail=result.error,
+                )
+            elif result.error and "gate" in result.error.lower():
+                provenance = provenance.update_phase(
+                    frag.strategy_name,
+                    DecisionPhase.GATE_FAILED,
+                    reason_code=DecisionReasonCode.REJECTED_GATE,
+                    reason_detail=result.error,
+                )
+            elif not result.success:
+                provenance = provenance.update_phase(
+                    frag.strategy_name,
+                    DecisionPhase.GATE_FAILED,
+                    reason_code=DecisionReasonCode.REJECTED_TRANSACTION,
+                    reason_detail=result.error or "execution failed",
+                )
+        self._last_provenance = provenance
+
         # Return frontier audit: post_apply stage
         if self.RETURN_FRONTIER_AUDIT_ENABLED and self._audit_return_sites:
             self._record_audit_stage("post_apply")
 
         # 6. Log summary
         self._log_pipeline_results(results, nb_changes)
+        unflat_logger.info("Provenance: %s", provenance.phase_summary())
+        if unflat_logger.debug_on:
+            import json
+            unflat_logger.debug(
+                "Provenance detail: %s",
+                json.dumps(provenance.to_dicts(), indent=2),
+            )
 
         # Adaptive convergence: extend max_passes when making progress
         if nb_changes > 0 and self.max_passes < self.HARD_MAX_PASSES:

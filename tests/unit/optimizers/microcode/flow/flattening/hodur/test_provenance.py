@@ -432,3 +432,118 @@ def test_pre_planner_records_prepended_to_provenance():
     assert merged.rows[0].phase == DecisionPhase.INAPPLICABLE
     assert merged.rows[1].phase == DecisionPhase.SELECTED
     assert len(merged.rows) == 2
+
+
+# ---------------------------------------------------------------------------
+# K1.4: Canonical provenance storage + phase updates
+# ---------------------------------------------------------------------------
+
+
+class TestUpdatePhase:
+    """PipelineProvenance.update_phase returns a new frozen instance."""
+
+    def test_updates_existing_record(self) -> None:
+        rows = (
+            DecisionRecord(
+                "A", FAMILY_DIRECT, DecisionPhase.SELECTED,
+                DecisionReasonCode.ACCEPTED, "selected into pipeline",
+            ),
+            DecisionRecord(
+                "B", FAMILY_DIRECT, DecisionPhase.SELECTED,
+                DecisionReasonCode.ACCEPTED, "selected into pipeline",
+            ),
+        )
+        prov = PipelineProvenance(rows=rows)
+        updated = prov.update_phase("A", DecisionPhase.APPLIED)
+        # Original unchanged (frozen)
+        assert prov.rows[0].phase == DecisionPhase.SELECTED
+        # Updated instance has new phase
+        assert updated.rows[0].phase == DecisionPhase.APPLIED
+        # B untouched
+        assert updated.rows[1].phase == DecisionPhase.SELECTED
+
+    def test_updates_reason_code_and_detail(self) -> None:
+        rows = (
+            DecisionRecord(
+                "A", FAMILY_DIRECT, DecisionPhase.SELECTED,
+                DecisionReasonCode.ACCEPTED, "selected",
+            ),
+        )
+        prov = PipelineProvenance(rows=rows)
+        updated = prov.update_phase(
+            "A",
+            DecisionPhase.GATE_FAILED,
+            reason_code=DecisionReasonCode.REJECTED_GATE,
+            reason_detail="semantic gate failed",
+        )
+        assert updated.rows[0].phase == DecisionPhase.GATE_FAILED
+        assert updated.rows[0].reason_code == DecisionReasonCode.REJECTED_GATE
+        assert updated.rows[0].reason == "semantic gate failed"
+
+    def test_unknown_fragment_id_returns_unchanged(self) -> None:
+        rows = (
+            DecisionRecord(
+                "A", FAMILY_DIRECT, DecisionPhase.SELECTED,
+                DecisionReasonCode.ACCEPTED, "selected",
+            ),
+        )
+        prov = PipelineProvenance(rows=rows)
+        result = prov.update_phase("NONEXISTENT", DecisionPhase.APPLIED)
+        # Should return the same instance unchanged, no crash
+        assert result is prov
+        assert result.rows[0].phase == DecisionPhase.SELECTED
+
+    def test_preserves_input_summary(self) -> None:
+        summary = DecisionInputSummary(handler_transitions_available=True)
+        rows = (
+            DecisionRecord(
+                "A", FAMILY_DIRECT, DecisionPhase.SELECTED,
+                DecisionReasonCode.ACCEPTED, "selected",
+            ),
+        )
+        prov = PipelineProvenance(rows=rows, input_summary=summary)
+        updated = prov.update_phase("A", DecisionPhase.APPLIED)
+        assert updated.input_summary is summary
+
+
+class TestPhaseSummary:
+    """PipelineProvenance.phase_summary one-liner."""
+
+    def test_mixed_phases(self) -> None:
+        rows = (
+            DecisionRecord(
+                "A", FAMILY_DIRECT, DecisionPhase.APPLIED,
+                DecisionReasonCode.ACCEPTED, "ok",
+            ),
+            DecisionRecord(
+                "B", FAMILY_DIRECT, DecisionPhase.APPLIED,
+                DecisionReasonCode.ACCEPTED, "ok",
+            ),
+            DecisionRecord(
+                "C", FAMILY_DIRECT, DecisionPhase.GATE_FAILED,
+                DecisionReasonCode.REJECTED_GATE, "failed",
+            ),
+            DecisionRecord(
+                "D", FAMILY_DIRECT, DecisionPhase.INAPPLICABLE,
+                DecisionReasonCode.REJECTED_INAPPLICABLE, "n/a",
+            ),
+        )
+        prov = PipelineProvenance(rows=rows)
+        summary = prov.phase_summary()
+        assert "2 APPLIED" in summary
+        assert "1 GATE_FAILED" in summary
+        assert "1 INAPPLICABLE" in summary
+
+    def test_empty_provenance(self) -> None:
+        prov = PipelineProvenance()
+        assert prov.phase_summary() == "(empty)"
+
+    def test_single_phase(self) -> None:
+        rows = (
+            DecisionRecord(
+                "A", FAMILY_DIRECT, DecisionPhase.APPLIED,
+                DecisionReasonCode.ACCEPTED, "ok",
+            ),
+        )
+        prov = PipelineProvenance(rows=rows)
+        assert "1 APPLIED" in prov.phase_summary()
