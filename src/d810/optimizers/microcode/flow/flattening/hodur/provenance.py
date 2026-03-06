@@ -17,6 +17,7 @@ class DecisionPhase(str, enum.Enum):
     INAPPLICABLE = "inapplicable"
     CRASHED = "crashed"
     PLANNED = "planned"
+    SELECTED = "selected"  # planner accepted into pipeline (pre-execution)
     POLICY_FILTERED = "policy_filtered"
     CONFLICT_DROPPED = "conflict_dropped"
     PREFLIGHT_REJECTED = "preflight_rejected"
@@ -39,6 +40,8 @@ class DecisionReasonCode(str, enum.Enum):
     REJECTED_GATE = "rejected_gate"
     REJECTED_TRANSACTION = "rejected_transaction"
     BYPASSED = "bypassed"
+    BYPASSED_SAFEGUARD = "bypassed_safeguard"
+    BYPASSED_STRICT_MODE_DISABLED = "bypassed_strict_mode_disabled"
     BLOCKED = "blocked"
 
 
@@ -58,7 +61,7 @@ class DecisionRecord:
     """One row in the planner's decision ledger."""
 
     strategy_name: str
-    family: str
+    family: str  # FAMILY_DIRECT, FAMILY_FALLBACK, or FAMILY_CLEANUP (from strategy.py)
     phase: DecisionPhase
     reason_code: DecisionReasonCode
     reason: str
