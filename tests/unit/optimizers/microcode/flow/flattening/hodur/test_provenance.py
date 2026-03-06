@@ -18,6 +18,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     GateDecision,
     GateVerdict,
     PipelineProvenance,
+    PlannerInputs,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
@@ -725,3 +726,124 @@ class TestDecisionRecordWithGateAccounting:
         assert updated.rows[0].gate_accounting.any_failed()
         # Original unchanged
         assert prov.rows[0].gate_accounting is None
+
+
+# ---------------------------------------------------------------------------
+# K2: Hint-to-Decision Integration (PlannerInputs)
+# ---------------------------------------------------------------------------
+
+
+class TestPlannerInputs:
+    """K2.1: PlannerInputs envelope creation and properties."""
+
+    def test_creation_with_defaults(self) -> None:
+        inputs = PlannerInputs(total_handlers=10)
+        assert inputs.total_handlers == 10
+        assert inputs.handler_transitions is None
+        assert inputs.return_frontier is None
+        assert inputs.terminal_return_audit is None
+        assert inputs.has_handler_transitions is False
+        assert inputs.has_return_frontier is False
+
+    def test_creation_with_recon_data(self) -> None:
+        transitions = object()  # stand-in for real recon type
+        frontier = object()
+        inputs = PlannerInputs(
+            total_handlers=10,
+            handler_transitions=transitions,
+            return_frontier=frontier,
+            terminal_return_audit=None,
+            policy_overrides={"force_fallback": True},
+        )
+        assert inputs.has_handler_transitions is True
+        assert inputs.has_return_frontier is True
+        assert inputs.terminal_return_audit is None
+        assert inputs.policy_overrides == {"force_fallback": True}
+
+    def test_to_input_summary_no_data(self) -> None:
+        inputs = PlannerInputs(total_handlers=10)
+        summary = inputs.to_input_summary()
+        assert isinstance(summary, DecisionInputSummary)
+        assert summary.handler_transitions_available is False
+        assert summary.return_frontier_available is False
+        assert summary.terminal_return_audit_available is False
+        assert summary.terminal_return_audit_summary == ""
+
+    def test_to_input_summary_with_data(self) -> None:
+        inputs = PlannerInputs(
+            total_handlers=10,
+            handler_transitions=object(),
+        )
+        summary = inputs.to_input_summary()
+        assert summary.handler_transitions_available is True
+        assert summary.return_frontier_available is False
+
+    def test_to_input_summary_with_audit(self) -> None:
+        class MockAudit:
+            def summary(self) -> str:
+                return "4/46 terminal: 4 shared, 0 direct"
+
+        inputs = PlannerInputs(
+            total_handlers=10,
+            terminal_return_audit=MockAudit(),
+        )
+        summary = inputs.to_input_summary()
+        assert summary.terminal_return_audit_available is True
+        assert summary.terminal_return_audit_summary == "4/46 terminal: 4 shared, 0 direct"
+
+    def test_to_input_summary_audit_without_summary_method(self) -> None:
+        """Audit object without summary() method should produce empty string."""
+        inputs = PlannerInputs(
+            total_handlers=10,
+            terminal_return_audit=object(),  # no summary() method
+        )
+        summary = inputs.to_input_summary()
+        assert summary.terminal_return_audit_available is True
+        assert summary.terminal_return_audit_summary == ""
+
+
+class TestComposePipelineWithPlannerInputs:
+    """K2.2: compose_pipeline accepts PlannerInputs."""
+
+    def test_accepts_planner_inputs(self) -> None:
+        planner = UnflatteningPlanner()
+        inputs = PlannerInputs(total_handlers=10)
+        frags = [_fragment("A")]
+        pipeline, provenance = planner.compose_pipeline(frags, inputs=inputs)
+        assert isinstance(provenance, PipelineProvenance)
+        assert provenance.input_summary is not None
+        assert provenance.input_summary.handler_transitions_available is False
+
+    def test_input_summary_populated_from_planner_inputs(self) -> None:
+        planner = UnflatteningPlanner()
+        inputs = PlannerInputs(
+            total_handlers=10,
+            handler_transitions=object(),
+        )
+        frags = [_fragment("A")]
+        pipeline, provenance = planner.compose_pipeline(frags, inputs=inputs)
+        assert provenance.input_summary is not None
+        assert provenance.input_summary.handler_transitions_available is True
+        assert provenance.input_summary.return_frontier_available is False
+
+    def test_legacy_total_handlers_still_works(self) -> None:
+        """Backward compatibility: total_handlers positional arg still works."""
+        planner = UnflatteningPlanner()
+        frags = [_fragment("A")]
+        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        assert isinstance(provenance, PipelineProvenance)
+        # No input_summary when using legacy path
+        assert provenance.input_summary is None
+
+    def test_planner_inputs_total_handlers_used_for_policy(self) -> None:
+        """PlannerInputs.total_handlers drives the policy gate."""
+        planner = UnflatteningPlanner()
+        inputs = PlannerInputs(total_handlers=10)
+        frags = [
+            _fragment("primary1", family=FAMILY_DIRECT, handlers=9),
+            _fragment("fallback1", family=FAMILY_FALLBACK, handlers=2),
+        ]
+        # 9/10 = 90% >= 80% threshold => fallback dropped
+        pipeline, provenance = planner.compose_pipeline(frags, inputs=inputs)
+        phases = {r.strategy_name: r.phase for r in provenance.rows}
+        assert phases["fallback1"] == DecisionPhase.POLICY_FILTERED
