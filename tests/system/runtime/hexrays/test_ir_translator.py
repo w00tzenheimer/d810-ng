@@ -14,7 +14,12 @@ import pytest
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
-from d810.cfg.graph_modification import EdgeRedirectViaPredSplit, InsertBlock, RedirectGoto
+from d810.cfg.graph_modification import (
+    EdgeRedirectViaPredSplit,
+    InsertBlock,
+    RedirectGoto,
+    RemoveEdge,
+)
 from d810.cfg.plan import PatchPlan, PatchRedirectGoto, compile_patch_plan
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 
@@ -136,6 +141,28 @@ class _FakeDeferredGraphModifier:
                 ref_blk_serial,
                 conditional_target_serial,
                 fallthrough_target_serial,
+                description,
+            )
+        )
+
+    def queue_create_and_redirect(
+        self,
+        *,
+        source_block_serial: int,
+        final_target_serial: int,
+        instructions_to_copy: list[object],
+        is_0_way: bool = False,
+        expected_serial: int | None = None,
+        description: str = "",
+    ) -> None:
+        self.calls.append(
+            (
+                "create_and_redirect",
+                source_block_serial,
+                final_target_serial,
+                len(instructions_to_copy),
+                is_0_way,
+                expected_serial,
                 description,
             )
         )
@@ -290,5 +317,68 @@ class TestIDAIntegration:
         count = backend.lower(patch_plan, object())
 
         assert count == 0
-        assert len(created) == 1
-        assert created[0].calls == []
+        assert created == []
+
+    def test_lower_rejects_unsupported_legacy_insert_block_when_enabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                InsertBlock(
+                    pred_serial=45,
+                    succ_serial=2,
+                    instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=()),),
+                )
+            ]
+        )
+
+        count = backend.lower(patch_plan, object())
+
+        assert count == 0
+        assert created == []
+
+    def test_lower_rejects_unsupported_remove_edge_before_modifier_creation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan([RemoveEdge(from_serial=45, to_serial=2)])
+
+        count = backend.lower(patch_plan, object())
+
+        assert count == 0
+        assert created == []

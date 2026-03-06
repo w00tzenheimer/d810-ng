@@ -16,6 +16,8 @@ from d810.recon.store import ReconStore
 
 logger = getLogger("D810.recon.phase")
 
+ALL_MATURITIES: frozenset[int] | None = None
+
 
 @runtime_checkable
 class ReconCollector(Protocol):
@@ -30,7 +32,7 @@ class ReconCollector(Protocol):
         level: ``"microcode"`` or ``"ctree"``.
     """
     name: str
-    maturities: frozenset[int]
+    maturities: frozenset[int] | None
     level: str
 
     def collect(self, target: Any, func_ea: int, maturity: int) -> ReconResult:
@@ -78,6 +80,14 @@ class ReconPhase:
         self._collectors.append(collector)
         logger.debug("Registered recon collector: %s", collector.name)
 
+    @staticmethod
+    def _collector_runs_at_maturity(
+        collector: ReconCollector,
+        maturity: int,
+    ) -> bool:
+        """Return True when *collector* should fire at *maturity*."""
+        return collector.maturities is ALL_MATURITIES or maturity in collector.maturities
+
     def reset(self, *, func_ea: int) -> None:
         """Clear the maturity guard for a function (call on new decompilation)."""
         self._fired.pop(func_ea, None)
@@ -107,7 +117,7 @@ class ReconPhase:
         for collector in self._collectors:
             if collector.level != "microcode":
                 continue
-            if maturity not in collector.maturities:
+            if not self._collector_runs_at_maturity(collector, maturity):
                 continue
             try:
                 result = collector.collect(target, func_ea, maturity)
@@ -139,7 +149,7 @@ class ReconPhase:
         for collector in self._collectors:
             if collector.level != "ctree":
                 continue
-            if maturity not in collector.maturities:
+            if not self._collector_runs_at_maturity(collector, maturity):
                 continue
             try:
                 result = collector.collect(target, func_ea, maturity)

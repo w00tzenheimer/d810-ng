@@ -134,6 +134,46 @@ class ReconStore:
             for row in rows
         ]
 
+    def load_latest_recon_result(
+        self,
+        *,
+        func_ea: int,
+        collector_name: str,
+        maturity: int | None = None,
+    ) -> ReconResult | None:
+        """Load the latest result for one collector.
+
+        When *maturity* is provided, constrain the query to that maturity.
+        Otherwise return the latest row across all maturities, ordered by
+        maturity descending then timestamp descending.
+        """
+        if maturity is None:
+            cursor = self._conn.execute(
+                """
+                SELECT maturity, collector_name, timestamp, metrics_json, candidates_json
+                FROM recon_results
+                WHERE func_ea = ? AND collector_name = ?
+                ORDER BY maturity DESC, timestamp DESC
+                LIMIT 1
+                """,
+                (int(func_ea), str(collector_name)),
+            )
+        else:
+            cursor = self._conn.execute(
+                """
+                SELECT maturity, collector_name, timestamp, metrics_json, candidates_json
+                FROM recon_results
+                WHERE func_ea = ? AND collector_name = ? AND maturity = ?
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                (int(func_ea), str(collector_name), int(maturity)),
+            )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return self._row_to_result(row, func_ea=func_ea, maturity=int(row["maturity"]))
+
     @staticmethod
     def _row_to_result(
         row: sqlite3.Row, *, func_ea: int, maturity: int

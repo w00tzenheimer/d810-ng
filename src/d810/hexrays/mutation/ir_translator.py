@@ -63,13 +63,25 @@ def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
         opcode = insn.opcode
         ea = insn.ea
 
-        operands = tuple(
-            MopSnapshot.from_mop(mop)
-            for mop in (insn.l, insn.r, insn.d)
+        operand_slots = tuple(
+            (slot_name, MopSnapshot.from_mop(mop))
+            for slot_name, mop in (
+                ("l", insn.l),
+                ("r", insn.r),
+                ("d", insn.d),
+            )
             if mop.t != ida_hexrays.mop_z  # type: ignore[attr-defined]
         )
+        operands = tuple(operand for _, operand in operand_slots)
 
-        insn_snapshots.append(InsnSnapshot(opcode=opcode, ea=ea, operands=operands))
+        insn_snapshots.append(
+            InsnSnapshot(
+                opcode=opcode,
+                ea=ea,
+                operands=operands,
+                operand_slots=operand_slots,
+            )
+        )
         insn = insn.next
 
     return BlockSnapshot(
@@ -171,6 +183,13 @@ class IDAIRTranslator:
                 len(patch_plan.legacy_block_operations),
             )
             return 0
+        unsupported_reasons = self._unsupported_patch_plan_reasons(patch_plan)
+        if unsupported_reasons:
+            logger.warning(
+                "PatchPlan contains unsupported lowering step(s): %s",
+                ", ".join(unsupported_reasons),
+            )
+            return 0
 
         modifier = deferred_modifier.DeferredGraphModifier(mba)
 
@@ -214,7 +233,12 @@ class IDAIRTranslator:
         mba: "ida_hexrays.mba_t",
     ) -> PatchPlan:
         """Reject live-unsupported trampoline edits and rebuild serial assignments."""
-        if not patch_plan.planner_modifications:
+        trampoline_steps = tuple(
+            step
+            for step in patch_plan.concrete_operations
+            if isinstance(step, PatchEdgeSplitTrampoline)
+        )
+        if not patch_plan.planner_modifications or not trampoline_steps:
             return patch_plan
 
         from d810.hexrays.mutation import deferred_modifier
@@ -222,9 +246,7 @@ class IDAIRTranslator:
         modifier = deferred_modifier.DeferredGraphModifier(mba)
         rejected_edges: set[tuple[int, int, int, int]] = set()
 
-        for step in patch_plan.concrete_operations:
-            if not isinstance(step, PatchEdgeSplitTrampoline):
-                continue
+        for step in trampoline_steps:
             if modifier._check_edge_split_trampoline_preconditions(
                 source_block_serial=step.source_serial,
                 via_pred=step.via_pred,
@@ -255,6 +277,40 @@ class IDAIRTranslator:
             len(rejected_edges),
         )
         return compile_patch_plan(filtered_modifications, self.lift(mba))
+
+    def _unsupported_patch_plan_reasons(self, patch_plan: PatchPlan) -> list[str]:
+        reasons: list[str] = []
+        for step in patch_plan.steps:
+            match step:
+                case PatchRedirectGoto() | PatchRedirectBranch() | PatchConvertToGoto():
+                    continue
+                case PatchNopInstructions() | PatchEdgeSplitTrampoline():
+                    continue
+                case PatchRemoveEdge(from_serial=src, to_serial=dst):
+                    reasons.append(f"PatchRemoveEdge({src}->{dst})")
+                case LegacyBlockOperation(modification=CreateConditionalRedirect()):
+                    continue
+                case LegacyBlockOperation(modification=EdgeRedirectViaPredSplit()):
+                    continue
+                case LegacyBlockOperation(
+                    modification=InsertBlock(pred_serial=pred, succ_serial=succ)
+                ):
+                    reasons.append(f"InsertBlock({pred}->{succ})")
+                case LegacyBlockOperation(
+                    modification=DuplicateBlock(
+                        source_block=src,
+                        target_block=target,
+                        pred_serial=pred,
+                    )
+                ):
+                    reasons.append(
+                        f"DuplicateBlock(source={src}, target={target}, pred={pred})"
+                    )
+                case LegacyBlockOperation(modification=mod):
+                    reasons.append(type(mod).__name__)
+                case _:
+                    reasons.append(type(step).__name__)
+        return reasons
 
 
     def _queue_patch_step(

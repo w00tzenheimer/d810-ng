@@ -2,8 +2,8 @@ from __future__ import annotations
 import time
 from types import MappingProxyType
 import pytest
-from d810.recon.models import CandidateFlag, ReconResult
-from d810.recon.phase import ReconPhase, ReconCollector
+from d810.recon.models import ReconResult
+from d810.recon.phase import ALL_MATURITIES, ReconPhase
 
 
 class FakeCollector:
@@ -26,6 +26,11 @@ class FakeCollector:
             metrics=MappingProxyType(self._metrics),
             candidates=(),
         )
+
+
+class AllMaturityCollector(FakeCollector):
+    name = "AllMaturityCollector"
+    maturities = ALL_MATURITIES
 
 
 @pytest.fixture
@@ -74,6 +79,15 @@ class TestReconPhaseRunIfNeeded:
         phase.run_microcode_collectors(None, func_ea=0x401000, maturity=99)
 
         assert len(collector.call_log) == 0
+
+    def test_all_maturities_collector_fires_on_arbitrary_maturity(self, store):
+        phase = ReconPhase(store=store)
+        collector = AllMaturityCollector()
+        phase.register(collector)
+
+        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=99)
+
+        assert collector.call_log == [(0x401000, 99)]
 
     def test_results_persisted_to_store(self, store):
         phase = ReconPhase(store=store)

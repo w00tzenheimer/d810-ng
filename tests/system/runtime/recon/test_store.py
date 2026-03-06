@@ -101,6 +101,65 @@ class TestReconStoreSaveLoad:
         maturities = {r.maturity for r in all_results}
         assert maturities == {5, 10, 15}
 
+    def test_load_latest_recon_result_prefers_highest_maturity(self, store):
+        older = ReconResult(
+            collector_name="handler_transitions",
+            func_ea=0x401000,
+            maturity=5,
+            timestamp=1.0,
+            metrics=MappingProxyType({"handlers_total": 1}),
+            candidates=(),
+        )
+        newer = ReconResult(
+            collector_name="handler_transitions",
+            func_ea=0x401000,
+            maturity=10,
+            timestamp=0.5,
+            metrics=MappingProxyType({"handlers_total": 2}),
+            candidates=(),
+        )
+        store.save_recon_result(older)
+        store.save_recon_result(newer)
+
+        loaded = store.load_latest_recon_result(
+            func_ea=0x401000,
+            collector_name="handler_transitions",
+        )
+
+        assert loaded is not None
+        assert loaded.maturity == 10
+        assert loaded.metrics["handlers_total"] == 2
+
+    def test_load_latest_recon_result_can_filter_exact_maturity(self, store):
+        first = ReconResult(
+            collector_name="handler_transitions",
+            func_ea=0x401000,
+            maturity=5,
+            timestamp=1.0,
+            metrics=MappingProxyType({"handlers_total": 1}),
+            candidates=(),
+        )
+        second = ReconResult(
+            collector_name="handler_transitions",
+            func_ea=0x401000,
+            maturity=5,
+            timestamp=2.0,
+            metrics=MappingProxyType({"handlers_total": 3}),
+            candidates=(),
+        )
+        store.save_recon_result(first)
+        store.save_recon_result(second)
+
+        loaded = store.load_latest_recon_result(
+            func_ea=0x401000,
+            collector_name="handler_transitions",
+            maturity=5,
+        )
+
+        assert loaded is not None
+        assert loaded.maturity == 5
+        assert loaded.metrics["handlers_total"] == 3
+
 
 class TestReconStoreHints:
     def test_save_and_load_hints(self, store, sample_hints):

@@ -1,9 +1,7 @@
-"""Unit tests for d810.cfg.dominator."""
+"""Tests for Hex-Rays dominator compatibility shims."""
 from __future__ import annotations
 
-import pytest
-
-from d810.cfg.dominator import compute_dominators, dominates
+from d810.hexrays.ir.dominator import compute_dominators, dominates
 
 
 class MockBlock:
@@ -34,7 +32,6 @@ class TestComputeDominators:
         assert dom == []
 
     def test_linear_chain(self) -> None:
-        # 0 -> 1 -> 2 -> 3
         mba = MockMba([[], [0], [1], [2]])
         dom = compute_dominators(mba)
         assert dom[0] == {0}
@@ -43,17 +40,14 @@ class TestComputeDominators:
         assert dom[3] == {0, 1, 2, 3}
 
     def test_diamond_cfg(self) -> None:
-        # 0 -> 1, 0 -> 2, 1 -> 3, 2 -> 3
         mba = MockMba([[], [0], [0], [1, 2]])
         dom = compute_dominators(mba)
         assert dom[0] == {0}
         assert dom[1] == {0, 1}
         assert dom[2] == {0, 2}
-        # block 3 is dominated only by 0 and itself (1 and 2 don't both dominate)
         assert dom[3] == {0, 3}
 
     def test_diamond_dominates_entry_dominates_all(self) -> None:
-        # 0 -> 1, 0 -> 2, 1 -> 3, 2 -> 3
         mba = MockMba([[], [0], [0], [1, 2]])
         dom = compute_dominators(mba)
         assert dominates(dom, 0, 0)
@@ -62,7 +56,6 @@ class TestComputeDominators:
         assert dominates(dom, 0, 3)
 
     def test_diamond_branch_does_not_dominate_exit(self) -> None:
-        # 0 -> 1, 0 -> 2, 1 -> 3, 2 -> 3
         mba = MockMba([[], [0], [0], [1, 2]])
         dom = compute_dominators(mba)
         assert not dominates(dom, 1, 3)

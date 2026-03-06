@@ -1,20 +1,18 @@
-"""Canonical dispatcher transition report model and builder.
-
-This module is the single source of truth for BST handler transition
-classification used by both recon collectors and debug dump rendering.
-"""
+"""Canonical dispatcher transition report model and rendering helpers."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from d810.core.typing import Any, Mapping, Optional, Tuple
 
-from d810.recon.flow.bst_analysis import (
-    _detect_state_var_stkoff,
-    _dump_dispatcher_node,
-    _find_pre_header_state,
-    _walk_handler_chain,
+from d810.cfg.flowgraph import FlowGraph
+from d810.core.typing import Any, Mapping, Optional, Tuple
+from d810.recon.flow.transition_analysis import (
+    DispatcherTransitionAnalysis,
+    HandlerTransitionObservation,
+    build_transition_analysis_from_graph,
 )
+from d810.recon.flow.transition_bst_adapter import analyze_bst_dispatcher
+from d810.recon.flow.transition_builder import TransitionResult
 
 
 class TransitionKind(Enum):
@@ -85,6 +83,108 @@ class DispatcherTransitionReport:
     diagnostics: Tuple[str, ...]
 
 
+def _state_label(observation: HandlerTransitionObservation) -> str:
+    if observation.state_const is not None:
+        return f"State 0x{observation.state_const:08x}"
+    if (
+        observation.state_range_lo is not None
+        and observation.state_range_hi is not None
+    ):
+        return (
+            f"State range [0x{observation.state_range_lo:x}.."
+            f"0x{observation.state_range_hi:x}]"
+        )
+    return "State <unknown>"
+
+
+def _classify_observation(
+    observation: HandlerTransitionObservation,
+) -> tuple[TransitionKind, str]:
+    if observation.classified_exit:
+        return TransitionKind.EXIT, "RETURN (exit)"
+    if observation.back_edge and observation.next_state is not None:
+        return (
+            TransitionKind.TRANSITION,
+            f"next=0x{observation.next_state:08x} (back-edge)",
+        )
+    if observation.conditional_states:
+        cond_hex = ", ".join(f"0x{s:08x}" for s in observation.conditional_states)
+        return (
+            TransitionKind.CONDITIONAL,
+            f"conditional transition -> {{{cond_hex}}}",
+        )
+    if observation.back_edge:
+        return TransitionKind.UNKNOWN, "back-edge (next state unknown)"
+    if observation.next_state is not None:
+        return TransitionKind.TRANSITION, f"next=0x{observation.next_state:08x}"
+    return TransitionKind.UNKNOWN, "unknown"
+
+
+def _summary_from_rows(rows: tuple[TransitionRow, ...]) -> TransitionSummary:
+    known_count = sum(1 for row in rows if row.kind == TransitionKind.TRANSITION)
+    conditional_count = sum(1 for row in rows if row.kind == TransitionKind.CONDITIONAL)
+    exit_count = sum(1 for row in rows if row.kind == TransitionKind.EXIT)
+    unknown_count = sum(1 for row in rows if row.kind == TransitionKind.UNKNOWN)
+    return TransitionSummary(
+        handlers_total=len(rows),
+        known_count=known_count,
+        conditional_count=conditional_count,
+        exit_count=exit_count,
+        unknown_count=unknown_count,
+    )
+
+
+def render_dispatcher_transition_report(
+    analysis: DispatcherTransitionAnalysis,
+    *,
+    chain_preview_len: int = 4,
+) -> DispatcherTransitionReport:
+    """Render a canonical report from portable analysis data."""
+    rows: list[TransitionRow] = []
+    for observation in analysis.observations:
+        kind, transition_label = _classify_observation(observation)
+        path = TransitionPath(
+            handler_serial=observation.handler_serial,
+            chain=observation.chain,
+            next_state=observation.next_state,
+            conditional_states=observation.conditional_states,
+            back_edge=observation.back_edge,
+            reaches_exit_block=observation.reaches_exit_block,
+            classified_exit=observation.classified_exit,
+            unresolved=observation.unresolved or kind == TransitionKind.UNKNOWN,
+        )
+        rows.append(
+            TransitionRow(
+                state_const=observation.state_const,
+                state_range_lo=observation.state_range_lo,
+                state_range_hi=observation.state_range_hi,
+                handler_serial=observation.handler_serial,
+                kind=kind,
+                next_state=observation.next_state,
+                conditional_states=observation.conditional_states,
+                state_label=_state_label(observation),
+                transition_label=transition_label,
+                chain_preview=observation.chain[:chain_preview_len],
+                path=path,
+            )
+        )
+
+    rows_tuple = tuple(rows)
+    return DispatcherTransitionReport(
+        dispatcher_entry_serial=analysis.dispatcher_entry_serial,
+        state_var_stkoff=analysis.state_var_stkoff,
+        state_var_lvar_idx=analysis.state_var_lvar_idx,
+        pre_header_serial=analysis.pre_header_serial,
+        initial_state=analysis.initial_state,
+        handler_state_map=dict(analysis.handler_state_map),
+        handler_range_map=dict(analysis.handler_range_map),
+        bst_node_blocks=tuple(analysis.bst_node_blocks),
+        rows=rows_tuple,
+        summary=_summary_from_rows(rows_tuple),
+        diagnostics=tuple(analysis.diagnostics),
+    )
+
+
 def build_dispatcher_transition_report(
     mba: Any,
     dispatcher_entry_serial: int,
@@ -99,182 +199,215 @@ def build_dispatcher_transition_report(
     chain_preview_len: int = 4,
 ) -> DispatcherTransitionReport:
     """Build a canonical transition report for a BST dispatcher."""
-    diagnostics: list[str] = [] if capture_diagnostics else []
-
-    if state_var_stkoff is None:
-        if capture_diagnostics:
-            (detected, detected_lvar_idx), detect_diag = _detect_state_var_stkoff(
-                mba, dispatcher_entry_serial, diag=True
-            )
-            diagnostics.extend(detect_diag)
-        else:
-            detected, detected_lvar_idx = _detect_state_var_stkoff(
-                mba, dispatcher_entry_serial, diag=False
-            )
-        if detected is not None:
-            state_var_stkoff = detected
-            if state_var_lvar_idx is None:
-                state_var_lvar_idx = detected_lvar_idx
-
-    pre_header_serial, initial_state = _find_pre_header_state(
+    analysis = analyze_bst_dispatcher(
         mba,
         dispatcher_entry_serial,
-        state_var_stkoff,
-        diag_lines=diagnostics if capture_diagnostics else None,
+        state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
+        max_bst_depth=max_bst_depth,
+        max_chain_depth=max_chain_depth,
+        transitions_hint_by_handler=transitions_hint_by_handler,
+        capture_diagnostics=capture_diagnostics,
+        max_diag_handlers=max_diag_handlers,
+    )
+    return render_dispatcher_transition_report(
+        analysis,
+        chain_preview_len=chain_preview_len,
     )
 
-    handler_state_map: dict[int, int] = {}
-    handler_serials: set[int] = set()
-    handler_range_map: dict[int, tuple[Optional[int], Optional[int]]] = {}
-    bst_node_blocks: set[int] = set()
-    _dump_dispatcher_node(
-        mba,
-        dispatcher_entry_serial,
-        indent=0,
-        visited=set(),
-        lines=[],
-        depth=0,
-        max_depth=max_bst_depth,
-        value_lo=0,
-        value_hi=0xFFFFFFFF,
-        handler_state_map=handler_state_map,
-        handler_serials=handler_serials,
-        handler_range_map=handler_range_map,
-        bst_node_blocks=bst_node_blocks,
-    )
 
-    rows_raw: list[tuple[Optional[int], int, dict[str, Any]]] = []
-    diag_handlers = 0
-    for h_serial in sorted(handler_serials):
-        handler_diag: list[str] | None = None
-        if capture_diagnostics and diag_handlers < max_diag_handlers:
-            handler_diag = []
-            diagnostics.append(
-                f"Handler blk[{h_serial}] (state="
-                f"{hex(handler_state_map.get(h_serial)) if handler_state_map.get(h_serial) is not None else '?'}):"
-            )
-            diag_handlers += 1
-
-        if state_var_stkoff is not None:
-            walk = _walk_handler_chain(
-                mba,
-                h_serial,
-                dispatcher_entry_serial,
-                state_var_stkoff,
-                chain_visited=set(),
-                max_chain_depth=max_chain_depth,
-                diag_lines=handler_diag,
-                state_var_lvar_idx=state_var_lvar_idx,
-            )
-        else:
-            walk = {"next_state": None, "back_edge": False, "exit": False, "chain": []}
-
-        if handler_diag is not None:
-            diagnostics.extend(handler_diag)
-
-        rows_raw.append((handler_state_map.get(h_serial), h_serial, walk))
-
-    rows_raw.sort(key=lambda e: (e[0] is None, e[0] if e[0] is not None else 0))
-
-    known_count = 0
-    conditional_count = 0
-    exit_count = 0
-    unknown_count = 0
-    rows: list[TransitionRow] = []
-
-    for state_const, h_serial, walk in rows_raw:
-        rng = handler_range_map.get(h_serial)
-        range_lo = rng[0] if rng else None
-        range_hi = rng[1] if rng else None
-        if state_const is not None:
-            state_label = f"State 0x{state_const:08x}"
-        elif range_lo is not None and range_hi is not None:
-            state_label = f"State range [0x{range_lo:x}..0x{range_hi:x}]"
-        else:
-            state_label = "State <unknown>"
-
-        next_state = walk.get("next_state")
-        if transitions_hint_by_handler is not None and next_state is None:
-            hinted = transitions_hint_by_handler.get(h_serial)
-            if hinted is not None:
-                next_state = hinted
-
-        conditional_states = tuple(sorted(walk.get("conditional_states", set())))
-        is_exit = bool(walk.get("exit"))
-
-        if is_exit:
-            kind = TransitionKind.EXIT
-            transition_label = "RETURN (exit)"
-            exit_count += 1
-        elif bool(walk.get("back_edge")) and next_state is not None:
-            kind = TransitionKind.TRANSITION
-            transition_label = f"next=0x{next_state:08x} (back-edge)"
-            known_count += 1
-        elif conditional_states:
-            kind = TransitionKind.CONDITIONAL
-            cond_hex = ", ".join(f"0x{s:08x}" for s in conditional_states)
-            transition_label = f"conditional transition -> {{{cond_hex}}}"
-            conditional_count += 1
-        elif bool(walk.get("back_edge")):
-            kind = TransitionKind.UNKNOWN
-            transition_label = "back-edge (next state unknown)"
-            unknown_count += 1
-        elif next_state is not None:
-            kind = TransitionKind.TRANSITION
-            transition_label = f"next=0x{next_state:08x}"
-            known_count += 1
-        else:
-            kind = TransitionKind.UNKNOWN
-            transition_label = "unknown"
-            unknown_count += 1
-
-        chain = tuple(walk.get("chain", ()))
-        path = TransitionPath(
-            handler_serial=h_serial,
-            chain=chain,
-            next_state=next_state,
-            conditional_states=conditional_states,
-            back_edge=bool(walk.get("back_edge")),
-            reaches_exit_block=bool(walk.get("exit")),
-            classified_exit=is_exit,
-            unresolved=(kind == TransitionKind.UNKNOWN),
-        )
-        rows.append(
-            TransitionRow(
-                state_const=state_const,
-                state_range_lo=range_lo,
-                state_range_hi=range_hi,
-                handler_serial=h_serial,
-                kind=kind,
-                next_state=next_state,
-                conditional_states=conditional_states,
-                state_label=state_label,
-                transition_label=transition_label,
-                chain_preview=chain[:chain_preview_len],
-                path=path,
-            )
-        )
-
-    summary = TransitionSummary(
-        handlers_total=len(handler_serials),
-        known_count=known_count,
-        conditional_count=conditional_count,
-        exit_count=exit_count,
-        unknown_count=unknown_count,
-    )
-
-    return DispatcherTransitionReport(
+def build_dispatcher_transition_report_from_graph(
+    flow_graph: FlowGraph,
+    transition_result: TransitionResult,
+    *,
+    dispatcher_entry_serial: int,
+    state_var_stkoff: Optional[int] = None,
+    state_var_lvar_idx: Optional[int] = None,
+    pre_header_serial: Optional[int] = None,
+    initial_state: Optional[int] = None,
+    handler_range_map: Mapping[int, tuple[Optional[int], Optional[int]]] | None = None,
+    bst_node_blocks: tuple[int, ...] = (),
+    diagnostics: tuple[str, ...] = (),
+    chain_preview_len: int = 4,
+) -> DispatcherTransitionReport:
+    """Build a canonical report from graph-portable analysis inputs."""
+    analysis = build_transition_analysis_from_graph(
+        flow_graph,
+        transition_result,
         dispatcher_entry_serial=dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
         pre_header_serial=pre_header_serial,
         initial_state=initial_state,
-        handler_state_map=handler_state_map,
         handler_range_map=handler_range_map,
-        bst_node_blocks=tuple(sorted(bst_node_blocks)),
-        rows=tuple(rows),
-        summary=summary,
-        diagnostics=tuple(diagnostics),
+        bst_node_blocks=bst_node_blocks,
+        diagnostics=diagnostics,
+    )
+    return render_dispatcher_transition_report(
+        analysis,
+        chain_preview_len=chain_preview_len,
     )
 
+
+def transition_report_to_dict(
+    report: DispatcherTransitionReport,
+) -> dict[str, object]:
+    """Serialize a report to a JSON-friendly dict."""
+    return {
+        "dispatcher_entry_serial": report.dispatcher_entry_serial,
+        "state_var_stkoff": report.state_var_stkoff,
+        "state_var_lvar_idx": report.state_var_lvar_idx,
+        "pre_header_serial": report.pre_header_serial,
+        "initial_state": report.initial_state,
+        "handler_state_map": {
+            str(serial): state for serial, state in report.handler_state_map.items()
+        },
+        "handler_range_map": {
+            str(serial): [range_lo, range_hi]
+            for serial, (range_lo, range_hi) in report.handler_range_map.items()
+        },
+        "bst_node_blocks": list(report.bst_node_blocks),
+        "rows": [
+            {
+                "state_const": row.state_const,
+                "state_range_lo": row.state_range_lo,
+                "state_range_hi": row.state_range_hi,
+                "handler_serial": row.handler_serial,
+                "kind": row.kind.name,
+                "next_state": row.next_state,
+                "conditional_states": list(row.conditional_states),
+                "state_label": row.state_label,
+                "transition_label": row.transition_label,
+                "chain_preview": list(row.chain_preview),
+                "path": {
+                    "handler_serial": row.path.handler_serial,
+                    "chain": list(row.path.chain),
+                    "next_state": row.path.next_state,
+                    "conditional_states": list(row.path.conditional_states),
+                    "back_edge": row.path.back_edge,
+                    "reaches_exit_block": row.path.reaches_exit_block,
+                    "classified_exit": row.path.classified_exit,
+                    "unresolved": row.path.unresolved,
+                },
+            }
+            for row in report.rows
+        ],
+        "summary": {
+            "handlers_total": report.summary.handlers_total,
+            "known_count": report.summary.known_count,
+            "conditional_count": report.summary.conditional_count,
+            "exit_count": report.summary.exit_count,
+            "unknown_count": report.summary.unknown_count,
+        },
+        "diagnostics": list(report.diagnostics),
+    }
+
+
+def transition_report_from_dict(
+    payload: Mapping[str, object],
+) -> DispatcherTransitionReport:
+    """Deserialize a report from ``transition_report_to_dict`` payload."""
+    rows: list[TransitionRow] = []
+    for row_payload in payload.get("rows", []):
+        row_map = dict(row_payload)
+        path_payload = dict(row_map["path"])
+        path = TransitionPath(
+            handler_serial=int(path_payload["handler_serial"]),
+            chain=tuple(int(v) for v in path_payload.get("chain", [])),
+            next_state=(
+                None if path_payload.get("next_state") is None
+                else int(path_payload["next_state"])
+            ),
+            conditional_states=tuple(
+                int(v) for v in path_payload.get("conditional_states", [])
+            ),
+            back_edge=bool(path_payload["back_edge"]),
+            reaches_exit_block=bool(path_payload["reaches_exit_block"]),
+            classified_exit=bool(path_payload["classified_exit"]),
+            unresolved=bool(path_payload["unresolved"]),
+        )
+        rows.append(
+            TransitionRow(
+                state_const=(
+                    None if row_map.get("state_const") is None
+                    else int(row_map["state_const"])
+                ),
+                state_range_lo=(
+                    None if row_map.get("state_range_lo") is None
+                    else int(row_map["state_range_lo"])
+                ),
+                state_range_hi=(
+                    None if row_map.get("state_range_hi") is None
+                    else int(row_map["state_range_hi"])
+                ),
+                handler_serial=int(row_map["handler_serial"]),
+                kind=TransitionKind[str(row_map["kind"])],
+                next_state=(
+                    None if row_map.get("next_state") is None
+                    else int(row_map["next_state"])
+                ),
+                conditional_states=tuple(
+                    int(v) for v in row_map.get("conditional_states", [])
+                ),
+                state_label=str(row_map["state_label"]),
+                transition_label=str(row_map["transition_label"]),
+                chain_preview=tuple(int(v) for v in row_map.get("chain_preview", [])),
+                path=path,
+            )
+        )
+
+    summary_payload = dict(payload["summary"])
+    return DispatcherTransitionReport(
+        dispatcher_entry_serial=int(payload["dispatcher_entry_serial"]),
+        state_var_stkoff=(
+            None if payload.get("state_var_stkoff") is None
+            else int(payload["state_var_stkoff"])
+        ),
+        state_var_lvar_idx=(
+            None if payload.get("state_var_lvar_idx") is None
+            else int(payload["state_var_lvar_idx"])
+        ),
+        pre_header_serial=(
+            None if payload.get("pre_header_serial") is None
+            else int(payload["pre_header_serial"])
+        ),
+        initial_state=(
+            None if payload.get("initial_state") is None
+            else int(payload["initial_state"])
+        ),
+        handler_state_map={
+            int(serial): int(state)
+            for serial, state in dict(payload.get("handler_state_map", {})).items()
+        },
+        handler_range_map={
+            int(serial): (
+                None if values[0] is None else int(values[0]),
+                None if values[1] is None else int(values[1]),
+            )
+            for serial, values in dict(payload.get("handler_range_map", {})).items()
+        },
+        bst_node_blocks=tuple(int(v) for v in payload.get("bst_node_blocks", [])),
+        rows=tuple(rows),
+        summary=TransitionSummary(
+            handlers_total=int(summary_payload["handlers_total"]),
+            known_count=int(summary_payload["known_count"]),
+            conditional_count=int(summary_payload["conditional_count"]),
+            exit_count=int(summary_payload["exit_count"]),
+            unknown_count=int(summary_payload["unknown_count"]),
+        ),
+        diagnostics=tuple(str(v) for v in payload.get("diagnostics", [])),
+    )
+
+
+__all__ = [
+    "TransitionKind",
+    "TransitionPath",
+    "TransitionRow",
+    "TransitionSummary",
+    "DispatcherTransitionReport",
+    "render_dispatcher_transition_report",
+    "build_dispatcher_transition_report",
+    "build_dispatcher_transition_report_from_graph",
+    "transition_report_to_dict",
+    "transition_report_from_dict",
+]

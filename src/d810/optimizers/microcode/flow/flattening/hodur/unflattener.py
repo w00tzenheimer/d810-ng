@@ -57,6 +57,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.executor import (
 from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
     HodurReturnSiteProvider,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
+    load_transition_report_from_store,
+    save_transition_report_to_store,
+)
 from d810.recon.collectors.return_frontier import ReturnFrontierCollector
 
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
@@ -413,14 +417,28 @@ class HodurUnflattener(GenericUnflatteningRule):
             handler_paths: Optional mapping of handler_serial -> evaluated paths
                 (retained for signature compatibility; no longer the primary source).
         """
-        from d810.cfg.flow.return_frontier import ReturnSite
         from d810.recon.flow.transition_report import build_dispatcher_transition_report
 
         # Build return_sites once per maturity level
         if not self._audit_return_sites:
-            report = None
-            # Attempt to build transition report using BST dispatcher serial + stkoff
-            if snapshot.bst_dispatcher_serial >= 0:
+            report = load_transition_report_from_store(
+                func_ea=self.mba.entry_ea,
+                maturity=self.cur_maturity,
+                log_dir=self.log_dir,
+            )
+            used_report = False
+            if report is not None and report.rows:
+                self._audit_return_sites = self._return_site_provider.collect_return_sites(
+                    report
+                )
+                used_report = True
+                unflat_logger.info(
+                    "RETURN_FRONTIER_AUDIT: using recon-store transition report "
+                    "(%d rows -> %d sites)",
+                    len(report.rows),
+                    len(self._audit_return_sites),
+                )
+            elif snapshot.bst_dispatcher_serial >= 0:
                 try:
                     stkoff = self._get_effective_state_var_stkoff(snapshot.state_machine)
                     report = build_dispatcher_transition_report(
@@ -428,12 +446,20 @@ class HodurUnflattener(GenericUnflatteningRule):
                         snapshot.bst_dispatcher_serial,
                         state_var_stkoff=stkoff,
                     )
+                    save_transition_report_to_store(
+                        func_ea=self.mba.entry_ea,
+                        maturity=self.cur_maturity,
+                        report=report,
+                        log_dir=self.log_dir,
+                    )
                 except Exception as exc:
+                    report = None
                     unflat_logger.info(
-                        "RETURN_FRONTIER_AUDIT: transition report failed (diagnostic only): %s", exc
+                        "RETURN_FRONTIER_AUDIT: transition report failed (diagnostic only): %s",
+                        exc,
                     )
 
-            if report is not None and report.rows:
+            if report is not None and report.rows and not used_report:
                 self._audit_return_sites = self._return_site_provider.collect_return_sites(
                     report
                 )
@@ -442,7 +468,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     len(report.rows),
                     len(self._audit_return_sites),
                 )
-            elif handler_paths:
+            if not self._audit_return_sites and handler_paths:
                 # Fallback: use handler_paths from DirectLinearization fragment
                 self._audit_return_sites = self._return_site_provider.collect_return_sites_legacy(
                     snapshot, handler_paths
@@ -452,8 +478,10 @@ class HodurUnflattener(GenericUnflatteningRule):
                     len(handler_paths),
                     len(self._audit_return_sites),
                 )
-            else:
+            if not self._audit_return_sites:
                 # Last resort: derive return sites from MBA exit blocks (nsucc==0)
+                from d810.cfg.flow.return_frontier import ReturnSite
+
                 exits = self._find_exit_blocks()
                 sites: list[ReturnSite] = []
                 for blk_serial in sorted(exits):

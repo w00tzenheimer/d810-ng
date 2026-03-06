@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 import ida_hexrays
 
-from d810.cfg.dominator import compute_dominators, dominates
+from d810.cfg.dominator import compute_dom_tree
 from d810.core import logging
 from d810.core.bits import unsigned_to_signed
 from d810.evaluator.evaluators import evaluate_concrete
@@ -1102,10 +1102,14 @@ class HodurStateMachineDetector:
         check_map = {const: blk_serial for blk_serial, _, const in state_check_blocks}
 
         try:
-            dom = compute_dominators(self.mba)
+            successors = {
+                blk_serial: [int(succ) for succ in self.mba.get_mblock(blk_serial).succset]
+                for blk_serial in range(self.mba.qty)
+            }
+            dom_tree = compute_dom_tree(successors, entry=0)
         except Exception:
             unflat_logger.warning("Dominator computation failed, using unbounded BFS")
-            dom = None
+            dom_tree = None
 
         for state_val, handler in self.state_machine.handlers.items():
             check_blk = self.mba.get_mblock(handler.check_block)
@@ -1163,9 +1167,9 @@ class HodurStateMachineDetector:
                     if succ_serial in check_map.values():
                         continue
                     if (
-                        dom is not None
+                        dom_tree is not None
                         and handler_entry_serial is not None
-                        and not dominates(dom, handler_entry_serial, succ_serial)
+                        and not dom_tree.dominates(handler_entry_serial, succ_serial)
                     ):
                         continue
                     to_visit.append(succ_serial)

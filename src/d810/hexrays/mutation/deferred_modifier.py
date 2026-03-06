@@ -716,6 +716,7 @@ class DeferredGraphModifier:
         final_target_serial: int,
         instructions_to_copy: list,
         is_0_way: bool = False,
+        expected_serial: int | None = None,
         description: str = "",
     ) -> None:
         """
@@ -739,6 +740,7 @@ class DeferredGraphModifier:
             final_target=final_target_serial,
             instructions_to_copy=instructions_to_copy,
             is_0_way=is_0_way,
+            expected_serial=expected_serial,
             priority=5,  # Very high priority - create blocks before other changes
             description=description or f"create block after {source_block_serial} -> {final_target_serial}",
         ))
@@ -2175,7 +2177,11 @@ class DeferredGraphModifier:
 
         elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_REDIRECT:
             return self._apply_create_and_redirect(
-                blk, mod.final_target, mod.instructions_to_copy, mod.is_0_way
+                blk,
+                mod.final_target,
+                mod.instructions_to_copy,
+                mod.is_0_way,
+                expected_serial=mod.expected_serial,
             )
 
         elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT:
@@ -2274,6 +2280,7 @@ class DeferredGraphModifier:
         final_target: int,
         instructions_to_copy: list,
         is_0_way: bool,
+        expected_serial: int | None,
     ) -> bool:
         """
         Create a standalone intermediate block and redirect source through it.
@@ -2315,6 +2322,14 @@ class DeferredGraphModifier:
         actual_is_0_way = is_0_way or (target_blk and target_blk.type == ida_hexrays.BLT_0WAY)
 
         try:
+            old_stop_serial = mba.qty - 1
+            old_stop_pred_serials = [
+                serial
+                for serial in range(mba.qty)
+                if (blk := mba.get_mblock(serial)) is not None
+                and blk.nsucc() == 1
+                and blk.succ(0) == old_stop_serial
+            ]
             # Create a standalone block -- ref_block's CFG edges are NOT modified.
             new_block = create_standalone_block(
                 ref_block,
@@ -2323,6 +2338,27 @@ class DeferredGraphModifier:
                 is_0_way=actual_is_0_way,
                 verify=False,
             )
+            if expected_serial is not None and new_block.serial != expected_serial:
+                logger.warning(
+                    "create_and_redirect: created blk[%d], expected blk[%d]",
+                    new_block.serial,
+                    expected_serial,
+                )
+                return False
+            new_stop_serial = mba.qty - 1
+            for pred_serial in old_stop_pred_serials:
+                pred_blk = mba.get_mblock(pred_serial)
+                if pred_blk is None or pred_blk.serial == new_block.serial:
+                    continue
+                if pred_blk.nsucc() != 1 or pred_blk.succ(0) != new_block.serial:
+                    continue
+                if not change_1way_block_successor(pred_blk, new_stop_serial, verify=False):
+                    logger.warning(
+                        "create_and_redirect: failed to relocate stop predecessor blk[%d] -> blk[%d]",
+                        pred_blk.serial,
+                        new_stop_serial,
+                    )
+                    return False
 
             # Ensure all instructions in the new block have safe EAs within
             # the function range to prevent INTERR 50863.
@@ -3016,6 +3052,7 @@ class ImmediateGraphModifier:
         final_target_serial: int,
         instructions_to_copy: list,
         is_0_way: bool = False,
+        expected_serial: int | None = None,
         description: str = "",
     ) -> None:
         """Create an intermediate block and redirect immediately."""
@@ -3029,7 +3066,11 @@ class ImmediateGraphModifier:
             source_block_serial, final_target_serial, len(instructions_to_copy)
         )
         if self._apply_create_and_redirect(
-            blk, final_target_serial, instructions_to_copy, is_0_way
+            blk,
+            final_target_serial,
+            instructions_to_copy,
+            is_0_way,
+            expected_serial=expected_serial,
         ):
             self.modifications_applied += 1
 
@@ -3160,6 +3201,7 @@ class ImmediateGraphModifier:
         final_target: int,
         instructions_to_copy: list,
         is_0_way: bool,
+        expected_serial: int | None,
     ) -> bool:
         """
         Create a standalone intermediate block and redirect source through it.
@@ -3190,6 +3232,14 @@ class ImmediateGraphModifier:
         actual_is_0_way = is_0_way or (target_blk and target_blk.type == ida_hexrays.BLT_0WAY)
 
         try:
+            old_stop_serial = mba.qty - 1
+            old_stop_pred_serials = [
+                serial
+                for serial in range(mba.qty)
+                if (blk := mba.get_mblock(serial)) is not None
+                and blk.nsucc() == 1
+                and blk.succ(0) == old_stop_serial
+            ]
             # Create a standalone block -- ref_block's CFG edges are NOT modified.
             new_block = create_standalone_block(
                 ref_block,
@@ -3198,6 +3248,27 @@ class ImmediateGraphModifier:
                 is_0_way=actual_is_0_way,
                 verify=False,
             )
+            if expected_serial is not None and new_block.serial != expected_serial:
+                logger.warning(
+                    "create_and_redirect: created blk[%d], expected blk[%d]",
+                    new_block.serial,
+                    expected_serial,
+                )
+                return False
+            new_stop_serial = mba.qty - 1
+            for pred_serial in old_stop_pred_serials:
+                pred_blk = mba.get_mblock(pred_serial)
+                if pred_blk is None or pred_blk.serial == new_block.serial:
+                    continue
+                if pred_blk.nsucc() != 1 or pred_blk.succ(0) != new_block.serial:
+                    continue
+                if not change_1way_block_successor(pred_blk, new_stop_serial, verify=False):
+                    logger.warning(
+                        "create_and_redirect: failed to relocate stop predecessor blk[%d] -> blk[%d]",
+                        pred_blk.serial,
+                        new_stop_serial,
+                    )
+                    return False
 
             # Ensure all instructions in the new block have safe EAs within
             # the function range to prevent INTERR 50863.
