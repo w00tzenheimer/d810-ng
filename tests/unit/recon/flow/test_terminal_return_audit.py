@@ -451,6 +451,91 @@ class TestRaxWriteDetection:
         assert site.has_rax_write is None
 
 
+class TestMultiExitTerminalHandler:
+    """A handler with multiple terminal paths emits multiple audit rows."""
+
+    def test_multi_exit_emits_multiple_sites(self) -> None:
+        """Handler 10 has TWO terminal paths exiting at blocks 20 and 30.
+
+        Both exits lead to different BLT_STOP blocks.  The audit should
+        produce TWO TerminalReturnSiteAudit entries for handler 10, and
+        terminal_handlers count should be 1 (one unique handler).
+        """
+        # Handler 10 -> exit 20 -> BLT_STOP (block 21)
+        #            -> exit 30 -> BLT_STOP (block 31)
+        blocks = [
+            _make_block(0, succs=(10,)),
+            _make_block(10, succs=(20, 30), preds=(0,)),
+            _make_block(20, succs=(21,), preds=(10,)),
+            _make_block(21, block_type=_BLT_STOP, preds=(20,)),
+            _make_block(30, succs=(31,), preds=(10,)),
+            _make_block(31, block_type=_BLT_STOP, preds=(30,)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: [20, 30]},  # multi-exit list form
+            total_handlers=3,
+        )
+
+        assert report.terminal_handlers == 1
+        assert report.total_handlers == 3
+        assert len(report.sites) == 2
+
+        sites_by_exit = {s.exit_serial: s for s in report.sites}
+        assert 20 in sites_by_exit
+        assert 30 in sites_by_exit
+        assert sites_by_exit[20].handler_serial == 10
+        assert sites_by_exit[30].handler_serial == 10
+        assert sites_by_exit[20].source_kind == TerminalReturnSourceKind.EPILOGUE_CORRIDOR
+        assert sites_by_exit[20].return_block_serial == 21
+        assert sites_by_exit[30].source_kind == TerminalReturnSourceKind.EPILOGUE_CORRIDOR
+        assert sites_by_exit[30].return_block_serial == 31
+
+    def test_multi_exit_mixed_reachability(self) -> None:
+        """One terminal path reaches BLT_STOP, another is unreachable."""
+        blocks = [
+            _make_block(0, succs=(10,)),
+            _make_block(10, succs=(20,), preds=(0,)),
+            _make_block(20, block_type=_BLT_STOP, preds=(10,)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: [20, 99]},  # 99 not in CFG -> UNREACHABLE
+            total_handlers=2,
+        )
+
+        assert len(report.sites) == 2
+        sites_by_exit = {s.exit_serial: s for s in report.sites}
+        assert sites_by_exit[20].source_kind == TerminalReturnSourceKind.DIRECT_RETURN
+        assert sites_by_exit[99].source_kind == TerminalReturnSourceKind.UNREACHABLE
+
+    def test_legacy_scalar_exit_map_still_works(self) -> None:
+        """Legacy dict[int, int | None] form still produces correct results."""
+        blocks = [
+            _make_block(0, succs=(10,)),
+            _make_block(10, succs=(20,), preds=(0,)),
+            _make_block(20, block_type=_BLT_STOP, preds=(10,)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: 20},  # legacy scalar form
+            total_handlers=1,
+        )
+
+        assert len(report.sites) == 1
+        assert report.sites[0].exit_serial == 20
+        assert report.sites[0].source_kind == TerminalReturnSourceKind.DIRECT_RETURN
+
+
 class TestMultipleTerminalHandlers:
     """Multiple terminal handlers with mixed classifications."""
 
