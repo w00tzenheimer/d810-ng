@@ -113,6 +113,7 @@ def test_create_and_redirect_rejects_non_1way_source(monkeypatch):
         final_target=0,
         instructions_to_copy=[SimpleNamespace()],
         is_0_way=False,
+        expected_serial=None,
     )
     assert ok is False
     assert called["create"] == 0

@@ -50,7 +50,9 @@ from d810.optimizers.microcode.instructions.handler import (
 from d810.recon.collectors.cfg_shape import CFGShapeCollector
 from d810.recon.collectors.ctree_structure import CtreeStructureCollector
 from d810.recon.collectors.dispatch_pattern import DispatchPatternCollector
+from d810.recon.collectors.handler_transitions import HandlerTransitionsCollector
 from d810.recon.collectors.opcode_distribution import OpcodeDistributionCollector
+from d810.recon.collectors.return_frontier import ReturnFrontierCollector
 from d810.recon.microcode_dump import mba_to_dict
 from d810.recon.phase import ReconPhase
 from d810.recon.store import ReconStore
@@ -697,7 +699,7 @@ class D810Manager:
         return pipeline
 
     def _build_recon_phase(self) -> "ReconPhase | None":
-        """Construct a ReconPhase with all 4 collectors.
+        """Construct a ReconPhase with all flow-recovery collectors.
 
         Only called when config["enable_recon_pipeline"] is True (the default).
         Imports are guarded at module level - if the recon package is unavailable
@@ -715,6 +717,8 @@ class D810Manager:
             phase.register(CFGShapeCollector())
             phase.register(OpcodeDistributionCollector())
             phase.register(DispatchPatternCollector())
+            phase.register(HandlerTransitionsCollector())
+            phase.register(ReturnFrontierCollector())
             phase.register(CtreeStructureCollector())
             logger.info(
                 "ReconPhase enabled: %d collectors, db=%s",

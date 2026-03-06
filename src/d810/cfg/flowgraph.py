@@ -17,6 +17,7 @@ class InsnSnapshot:
     opcode: int
     ea: int
     operands: tuple[object, ...]
+    operand_slots: tuple[tuple[str, object], ...] = ()
 
     def __post_init__(self) -> None:
         if self.opcode < 0:
@@ -25,6 +26,15 @@ class InsnSnapshot:
             raise ValueError(f"InsnSnapshot: ea must be non-negative, got {self.ea}")
         if not isinstance(self.operands, tuple):
             raise TypeError(f"InsnSnapshot: operands must be tuple, got {type(self.operands)}")
+        if not isinstance(self.operand_slots, tuple):
+            raise TypeError(
+                f"InsnSnapshot: operand_slots must be tuple, got {type(self.operand_slots)}"
+            )
+        for slot_name, _operand in self.operand_slots:
+            if slot_name not in ("l", "r", "d"):
+                raise ValueError(
+                    f"InsnSnapshot: operand_slots contains invalid slot {slot_name!r}"
+                )
 
     def __repr__(self) -> str:
         return f"InsnSnapshot(op=0x{self.opcode:x}, ea=0x{self.ea:x}, nops={len(self.operands)})"

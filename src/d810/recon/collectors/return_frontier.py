@@ -10,16 +10,17 @@ unflattener-specific code (no hodur imports).
 from __future__ import annotations
 
 import json
-import logging
 import time
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from d810.core.logging import getLogger
+from d810.core.typing import Any
 
 from d810.cfg.flow.return_frontier import ReturnFrontierAudit, ReturnSite
 from d810.recon.models import CandidateFlag, ReconResult
+from d810.recon.phase import ALL_MATURITIES
 
-logger = logging.getLogger(__name__)
+logger = getLogger(__name__)
 
 
 class ReturnFrontierCollector:
@@ -36,7 +37,7 @@ class ReturnFrontierCollector:
     """
 
     name: str = "return_frontier"
-    maturities: frozenset[int] = frozenset()  # All maturities
+    maturities: frozenset[int] | None = ALL_MATURITIES
     level: str = "microcode"
 
     def __init__(self) -> None:

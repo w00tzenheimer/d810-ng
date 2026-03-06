@@ -2,7 +2,10 @@
 
 CFGBackend defines the interface between backend-agnostic transform (operating
 on FlowGraph) and concrete backend implementations (IDA mba_t, in-memory
-graphs, etc.).
+graphs, etc.). Core ``d810.cfg`` analyses stay graph-only; live backend objects
+such as ``mba_t`` are allowed only at translation/lowering boundaries like
+``d810.cfg.protocol`` callers and Hex-Rays compatibility modules under
+``d810.hexrays``.
 
 Example:
     >>> backend = HexRaysBackend()

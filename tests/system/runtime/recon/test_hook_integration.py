@@ -8,7 +8,6 @@ from __future__ import annotations
 import ast
 import inspect
 import pathlib
-import pytest
 
 def _find_src_root() -> pathlib.Path:
     p = pathlib.Path(__file__).resolve()
@@ -38,6 +37,7 @@ _CTREE_HOOKS = _resolve_hook_file(
     "hexrays/hooks/ctree_hooks.py",
     "hexrays/ctree_hooks.py",
 )
+_MANAGER = _SRC / "manager.py"
 
 
 def _get_class_source(filepath: pathlib.Path, class_name: str) -> str:
@@ -128,3 +128,15 @@ class TestCtreeOptimizerManagerHasReconPhase:
                hasattr(CtreeOptimizerManager, "_recon_phase"), (
             "CtreeOptimizerManager must expose recon_phase"
         )
+
+
+class TestManagerBuildsFullReconPhase:
+    """D810Manager must register the flow-recovery collectors we rely on."""
+
+    def test_build_recon_phase_registers_handler_transitions(self):
+        src = _MANAGER.read_text(encoding="utf-8")
+        assert "phase.register(HandlerTransitionsCollector())" in src
+
+    def test_build_recon_phase_registers_return_frontier(self):
+        src = _MANAGER.read_text(encoding="utf-8")
+        assert "phase.register(ReturnFrontierCollector())" in src
