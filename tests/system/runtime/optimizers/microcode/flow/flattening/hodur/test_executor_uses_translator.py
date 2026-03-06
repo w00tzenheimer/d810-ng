@@ -12,8 +12,8 @@ if "ida_hexrays" not in sys.modules:
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
+    DuplicateBlock,
     EdgeRedirectViaPredSplit,
-    InsertBlock,
     NopInstructions,
     RedirectGoto,
 )
@@ -160,7 +160,7 @@ def test_executor_preflight_uses_backend_order(monkeypatch: pytest.MonkeyPatch):
     assert not translator.lower_calls[0].legacy_block_operations
 
 
-def test_executor_rejects_block_creation_when_policy_disabled(monkeypatch: pytest.MonkeyPatch):
+def test_executor_rejects_legacy_block_creation_when_policy_disabled(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         _executor_mod, "should_apply_cfg_modifications",
         lambda *args, **kwargs: True,
@@ -183,10 +183,10 @@ def test_executor_rejects_block_creation_when_policy_disabled(monkeypatch: pytes
 
     fragment = PlanFragment(
         modifications=[
-            InsertBlock(
-                pred_serial=45,
-                succ_serial=2,
-                instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=()),),
+            DuplicateBlock(
+                source_block=45,
+                target_block=2,
+                pred_serial=44,
             ),
         ],
         **{**_base_fragment(), "metadata": {"handler_entry_serials": {180}, "dispatcher_serial": 44}},

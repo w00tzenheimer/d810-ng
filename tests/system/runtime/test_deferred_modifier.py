@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
+from d810.cfg.flowgraph import InsnSnapshot
 from d810.hexrays.mutation import deferred_modifier as dm
 
 
@@ -53,6 +54,7 @@ class _FakeMBA:
         self.cleaned = 0
         self.marked_dirty = 0
         self.qty = len(self.blocks)
+        self.entry_ea = 0x180000000
 
     def get_mblock(self, serial: int):
         return self.blocks.get(serial)
@@ -117,6 +119,78 @@ def test_create_and_redirect_rejects_non_1way_source(monkeypatch):
     )
     assert ok is False
     assert called["create"] == 0
+
+
+def test_create_and_redirect_materializes_symbolic_snapshots_before_block_creation(monkeypatch):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    src = _FakeBlock(5)
+
+    captured: dict[str, object] = {}
+    rebuilt_instructions = [SimpleNamespace(opcode=ida_hexrays.m_nop, ea=0x1234)]
+
+    monkeypatch.setattr(
+        dm,
+        "materialize_insn_snapshots",
+        lambda instructions, *, safe_ea: (
+            captured.update({"instructions": instructions, "safe_ea": safe_ea})
+            or rebuilt_instructions
+        ),
+    )
+    monkeypatch.setattr(
+        dm,
+        "create_standalone_block",
+        lambda *_a, **_k: (
+            captured.update({"blk_ins": _a[1]})
+            or SimpleNamespace(serial=1, head=None)
+        ),
+    )
+    monkeypatch.setattr(dm, "change_1way_block_successor", lambda *_a, **_k: True)
+
+    ok = modifier._apply_create_and_redirect(
+        source_blk=src,
+        final_target=0,
+        instructions_to_copy=[InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0x1234, operands=())],
+        is_0_way=False,
+        expected_serial=None,
+    )
+
+    assert ok is True
+    assert captured["instructions"] == (
+        InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0x1234, operands=()),
+    )
+    assert captured["safe_ea"] == mba.entry_ea
+    assert captured["blk_ins"] is rebuilt_instructions
+
+
+def test_apply_pre_rejects_create_and_redirect_from_entry_block(monkeypatch):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_CREATE_WITH_REDIRECT,
+            block_serial=0,
+            new_target=0,
+            final_target=0,
+            instructions_to_copy=[],
+            description="entry insert should pre-reject",
+        )
+    ]
+
+    called = {"apply_single": 0}
+    monkeypatch.setattr(modifier, "_apply_single", lambda _m: called.__setitem__("apply_single", 1))
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        dm,
+        "mba_deep_cleaning",
+        lambda *_a, **_k: setattr(mba, "cleaned", mba.cleaned + 1),
+    )
+
+    applied = modifier.apply(run_optimize_local=False, run_deep_cleaning=False)
+
+    assert applied == 0
+    assert called["apply_single"] == 0
 
 
 def test_coalesce_resolves_mixed_terminal_conflicts():
