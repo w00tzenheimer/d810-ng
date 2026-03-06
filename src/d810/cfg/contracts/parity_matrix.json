@@ -1,0 +1,430 @@
+{
+  "sdk_version": "9.3",
+  "sdk_source": "ida-sdk/src/verifier/verify.cpp",
+  "scope": "mblock_t::verify",
+  "codes": [
+    {
+      "code": 50840,
+      "category": "block_list_integrity",
+      "meaning": "nextb->prevb mismatch",
+      "python_accessible": false,
+      "disposition": "mapped",
+      "owner": "block_list_consistency",
+      "notes": "Emits CFG_50840_BLOCK_LIST_NEXT_PREV. Uses linked-list traversal workaround."
+    },
+    {
+      "code": 50841,
+      "category": "block_list_integrity",
+      "meaning": "prevb->nextb mismatch",
+      "python_accessible": false,
+      "disposition": "mapped",
+      "owner": "block_list_consistency",
+      "notes": "Emits CFG_50841_BLOCK_LIST_PREV_NEXT."
+    },
+    {
+      "code": 50842,
+      "category": "block_list_integrity",
+      "meaning": "wrong end-of-list boundary",
+      "python_accessible": false,
+      "disposition": "mapped",
+      "owner": "block_list_consistency",
+      "notes": "Emits CFG_50842_BLOCK_LIST_END_BOUNDARY."
+    },
+    {
+      "code": 50843,
+      "category": "block_list_integrity",
+      "meaning": "wrong begin-of-list boundary",
+      "python_accessible": false,
+      "disposition": "mapped",
+      "owner": "block_list_consistency",
+      "notes": "Emits CFG_50843_BLOCK_LIST_BEGIN_BOUNDARY."
+    },
+    {
+      "code": 50844,
+      "category": "block_type_vs_tail",
+      "meaning": "Unknown bits in block flags",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "block_unknown_flags",
+      "notes": "Emits CFG_50844_UNKNOWN_BLOCK_FLAGS. Best-effort: known mask derived from IDA SDK MBL_* constants."
+    },
+    {
+      "code": 50845,
+      "category": "block_type_vs_tail",
+      "meaning": "Use-def lists dirty when propagation not needed",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_usedef_dirty",
+      "notes": "Implemented in Cython oracle: checks (flags & MBL_LIST)==0 without MBL_PROP or MBL_INCONST set."
+    },
+    {
+      "code": 50846,
+      "category": "block_data_integrity",
+      "meaning": "mustbuse not subset of maybuse",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_usedef_subset",
+      "notes": "Implemented in Cython oracle: checks maybuse.includes(mustbuse) via direct C++ field access."
+    },
+    {
+      "code": 50847,
+      "category": "block_data_integrity",
+      "meaning": "mustbdef not subset of maybdef",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_usedef_subset",
+      "notes": "Implemented in Cython oracle: checks maybdef.includes(mustbdef) via direct C++ field access."
+    },
+    {
+      "code": 50848,
+      "category": "block_data_integrity",
+      "meaning": "Entry/exit/extern has must-use/must-def",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_special_block_usedef",
+      "notes": "Implemented in Cython oracle: checks mustbuse.empty() and mustbdef.empty() for entry/exit/extern blocks."
+    },
+    {
+      "code": 50849,
+      "category": "block_data_integrity",
+      "meaning": "Entry block has may-use",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_special_block_usedef",
+      "notes": "Implemented in Cython oracle: checks maybuse.empty() for entry block (serial==0)."
+    },
+    {
+      "code": 50850,
+      "category": "block_data_integrity",
+      "meaning": "Exit/extern has may-def",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_special_block_usedef",
+      "notes": "Implemented in Cython oracle: checks maybdef.empty() for exit/extern blocks."
+    },
+    {
+      "code": 50851,
+      "category": "block_data_integrity",
+      "meaning": "Serial >= mba->qty",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "block_serial_range",
+      "notes": "Emits CFG_50851_SERIAL_OUT_OF_RANGE. Checks blk.serial >= mba.qty via Python-accessible fields."
+    },
+    {
+      "code": 50852,
+      "category": "block_data_integrity",
+      "meaning": "natural[serial] != this",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_natural_array",
+      "notes": "Implemented in Cython oracle: directly compares mba->natural[blk.serial] pointer to blk pointer."
+    },
+    {
+      "code": 50853,
+      "category": "block_data_integrity",
+      "meaning": "mba->minstkref > minbstkref",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_minstkref",
+      "notes": "Implemented in Cython oracle: directly reads mba.minstkref and blk.minbstkref C++ fields."
+    },
+    {
+      "code": 50854,
+      "category": "block_type_vs_tail",
+      "meaning": "1-way call block successor != serial+1",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "block_type_vs_tail",
+      "notes": "Emits CFG_50854_CALL_BLOCK_FLOW_MISMATCH."
+    },
+    {
+      "code": 50855,
+      "category": "block_type_vs_tail",
+      "meaning": "BLT_NWAY without jtbl or vice versa",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "block_type_vs_tail",
+      "notes": "Emits CFG_50855_NWAY_JTBL_MISMATCH."
+    },
+    {
+      "code": 50856,
+      "category": "block_type_vs_tail",
+      "meaning": "Successor count mismatches block type",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "block_type_vs_tail",
+      "notes": "Emits CFG_50856_BAD_NSUCC."
+    },
+    {
+      "code": 50857,
+      "category": "pred_succ_symmetry",
+      "meaning": "Successor block number out of range",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "pred_succ_symmetry",
+      "notes": "Emits CFG_50857_SUCC_OUT_OF_RANGE."
+    },
+    {
+      "code": 50858,
+      "category": "pred_succ_symmetry",
+      "meaning": "Successor's predset missing this block",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "pred_succ_symmetry",
+      "notes": "Emits CFG_50858_SUCC_PRED_MISMATCH."
+    },
+    {
+      "code": 50859,
+      "category": "block_type_vs_tail",
+      "meaning": "jtbl caselist invalid",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "successor_set_matches_tail_semantics",
+      "notes": "Emits CFG_50859_JTBL_CASELIST_INVALID. Appears in both block_type_vs_tail and pred_succ context."
+    },
+    {
+      "code": 50860,
+      "category": "block_type_vs_tail",
+      "meaning": "Successor set doesn't match tail semantics",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "successor_set_matches_tail_semantics",
+      "notes": "Emits CFG_50860_SUCC_MISMATCH."
+    },
+    {
+      "code": 50861,
+      "category": "pred_succ_symmetry",
+      "meaning": "Predecessor's succset missing this block",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "pred_succ_symmetry",
+      "notes": "Emits CFG_50861_PRED_SUCC_MISMATCH."
+    },
+    {
+      "code": 50862,
+      "category": "pred_succ_symmetry",
+      "meaning": "Duplicate predecessor entries",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "predecessor_uniqueness",
+      "notes": "Emits CFG_50862_DUPLICATE_PRED."
+    },
+    {
+      "code": 50864,
+      "category": "block_type_vs_tail",
+      "meaning": "Block-closing opcode not at tail",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "block_closing_opcode_at_tail",
+      "notes": "Emits CFG_50864_CLOSING_OPCODE_NOT_AT_TAIL. Iterates instruction chain checking closing opcodes at non-tail positions."
+    },
+    {
+      "code": 50865,
+      "category": "block_type_vs_tail",
+      "meaning": "push/pop after conversion phase",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "block_closing_opcode_at_tail",
+      "notes": "Emits CFG_50865_PUSH_POP_AFTER_CONVERSION. Checked within same function as 50864; fires when maturity >= MMAT_CALLS."
+    },
+    {
+      "code": 50866,
+      "category": "block_data_integrity",
+      "meaning": "Non-empty block, tail not found in list",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_insn_list_integrity",
+      "notes": "Implemented in Cython oracle: walks head->next chain to verify tail is reachable."
+    },
+    {
+      "code": 50867,
+      "category": "block_data_integrity",
+      "meaning": "head->prev != nullptr",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_insn_list_integrity",
+      "notes": "Implemented in Cython oracle: directly reads blk->head->prev C++ pointer field."
+    },
+    {
+      "code": 50868,
+      "category": "block_data_integrity",
+      "meaning": "tail->next != nullptr",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_insn_list_integrity",
+      "notes": "Implemented in Cython oracle: directly reads blk->tail->next C++ pointer field."
+    },
+    {
+      "code": 50869,
+      "category": "address_range",
+      "meaning": "start >= end for non-fake block",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "block_address_range",
+      "notes": "Emits CFG_50869_START_GE_END. Skips MBL_FAKE blocks; checks blk.start >= blk.end."
+    },
+    {
+      "code": 50870,
+      "category": "address_range",
+      "meaning": "Block outside function boundaries",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "block_address_range",
+      "notes": "Emits CFG_50870_BLOCK_OUTSIDE_FUNC. Compares blk.start/end against mba.entry_ea and last block's end."
+    },
+    {
+      "code": 50871,
+      "category": "block_data_integrity",
+      "meaning": "Empty block with non-null head",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_empty_block_ptrs",
+      "notes": "Implemented in Cython oracle: checks asymmetric null head/tail pointers indicating corrupt empty block."
+    },
+    {
+      "code": 50872,
+      "category": "block_data_integrity",
+      "meaning": "Empty block with non-null tail",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_empty_block_ptrs",
+      "notes": "Implemented in Cython oracle: checks asymmetric null head/tail pointers indicating corrupt empty block."
+    },
+    {
+      "code": 50873,
+      "category": "use_def_lists",
+      "meaning": "Recomputed maybuse != stored",
+      "python_accessible": false,
+      "disposition": "native_oracle_limited",
+      "owner": null,
+      "notes": "Requires calling build_use_list() which is non-const and mutating; cannot be called in a read-only oracle pass."
+    },
+    {
+      "code": 50874,
+      "category": "use_def_lists",
+      "meaning": "Recomputed maybdef != stored",
+      "python_accessible": false,
+      "disposition": "native_oracle_limited",
+      "owner": null,
+      "notes": "Requires calling build_def_list() which is non-const and mutating; cannot be called in a read-only oracle pass."
+    },
+    {
+      "code": 50875,
+      "category": "use_def_lists",
+      "meaning": "Recomputed mustbuse != stored",
+      "python_accessible": false,
+      "disposition": "native_oracle_limited",
+      "owner": null,
+      "notes": "Requires calling build_use_list() which is non-const and mutating; cannot be called in a read-only oracle pass."
+    },
+    {
+      "code": 50876,
+      "category": "use_def_lists",
+      "meaning": "Recomputed mustbdef != stored",
+      "python_accessible": false,
+      "disposition": "native_oracle_limited",
+      "owner": null,
+      "notes": "Requires calling build_def_list() which is non-const and mutating; cannot be called in a read-only oracle pass."
+    },
+    {
+      "code": 50877,
+      "category": "use_def_lists",
+      "meaning": "Recomputed dnu != stored",
+      "python_accessible": false,
+      "disposition": "native_oracle_limited",
+      "owner": null,
+      "notes": "Requires recomputing dnu via build_def_list() which is non-const and mutating; cannot be called in a read-only oracle pass."
+    },
+    {
+      "code": 50878,
+      "category": "block_list_integrity",
+      "meaning": "natural[cnt] != b array vs list mismatch",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_natural_vs_linked",
+      "notes": "Implemented in Cython oracle: walks linked list and compares each block against mba->natural[i]."
+    },
+    {
+      "code": 50920,
+      "category": "use_def_lists",
+      "meaning": "Temp registers cross block boundaries",
+      "python_accessible": false,
+      "disposition": "native_oracle_deferred",
+      "owner": null,
+      "notes": "Requires deep temp register liveness analysis across block boundaries; deferred for future oracle extension."
+    },
+    {
+      "code": 51328,
+      "category": "subframe",
+      "meaning": "Exit block with dirty use-def lists",
+      "python_accessible": false,
+      "disposition": "native_oracle",
+      "owner": "_cblock_oracle._check_usedef_dirty",
+      "notes": "Implemented in Cython oracle: checks MBL_LIST flag for exit block (serial == qty-1)."
+    },
+    {
+      "code": 51774,
+      "category": "block_type_vs_tail",
+      "meaning": "noret call block not BLT_0WAY",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "block_type_vs_tail",
+      "notes": "Emits CFG_51774_NORET_CALL_BLOCK_NOT_0WAY."
+    },
+    {
+      "code": 51814,
+      "category": "block_type_vs_tail",
+      "meaning": "Entry/exit/extern blocks not empty",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "block_closing_opcode_at_tail",
+      "notes": "Emits CFG_51814_SPECIAL_BLOCK_NOT_EMPTY. Checked within block_closing_opcode_at_tail; fires when serial==0, serial==qty-1, or type==BLT_XTRN and block has instructions."
+    },
+    {
+      "code": 51815,
+      "category": "block_type_vs_tail",
+      "meaning": "Invalid block type value",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "block_type_vs_tail",
+      "notes": "Emits CFG_51815_WRONG_BLOCK_TYPE."
+    },
+    {
+      "code": 52729,
+      "category": "subframe",
+      "meaning": "Main chunk with subframe flag",
+      "python_accessible": false,
+      "disposition": "native_oracle_deferred",
+      "owner": null,
+      "notes": "Subframe flag internals require complex subframe analysis; deferred for future oracle extension."
+    },
+    {
+      "code": 52730,
+      "category": "subframe",
+      "meaning": "Wrong subframe index",
+      "python_accessible": false,
+      "disposition": "native_oracle_deferred",
+      "owner": null,
+      "notes": "Subframe index validation requires subframe enumeration; deferred for future oracle extension."
+    },
+    {
+      "code": 52731,
+      "category": "subframe",
+      "meaning": "Wrong local_minstkref for subframe",
+      "python_accessible": false,
+      "disposition": "native_oracle_deferred",
+      "owner": null,
+      "notes": "local_minstkref validation requires subframe-level analysis; deferred for future oracle extension."
+    },
+    {
+      "code": 52732,
+      "category": "subframe",
+      "meaning": "local_minstkref < subframe minstkref",
+      "python_accessible": false,
+      "disposition": "native_oracle_deferred",
+      "owner": null,
+      "notes": "local_minstkref vs subframe minstkref comparison requires subframe enumeration; deferred for future oracle extension."
+    }
+  ]
+}
