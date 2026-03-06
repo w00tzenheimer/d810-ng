@@ -525,3 +525,49 @@ def test_executor_premutation_failure_no_rollback(monkeypatch: pytest.MonkeyPatc
     assert not result.quarantine
     assert "pred/succ mismatch" in result.error
     assert not translator.lower_calls
+
+
+def test_execute_pipeline_stops_on_quarantine(monkeypatch: pytest.MonkeyPatch):
+    """Pipeline stops after a quarantine result even when rollback_needed=False."""
+    from d810.optimizers.microcode.flow.flattening.hodur.strategy import StageResult
+
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (1,), ()),
+            1: _block(1, (2,), (0,)),
+            2: _block(2, (), (1,)),
+        },
+        entry_serial=0,
+        func_ea=0,
+    )
+    translator = _FakeTranslator(pre_cfg=cfg)
+
+    frag1 = PlanFragment(
+        modifications=[RedirectGoto(from_serial=0, old_target=1, new_target=1)],
+        **{**_base_fragment(), "strategy_name": "s1"},
+    )
+    frag2 = PlanFragment(
+        modifications=[RedirectGoto(from_serial=1, old_target=2, new_target=2)],
+        **{**_base_fragment(), "strategy_name": "s2"},
+    )
+
+    execute_stage_calls: list[str] = []
+
+    def _mock_execute_stage(fragment: PlanFragment, total_handlers: int) -> StageResult:  # noqa: ARG001
+        execute_stage_calls.append(fragment.strategy_name)
+        return StageResult(
+            strategy_name=fragment.strategy_name,
+            success=False,
+            quarantine=True,
+            rollback_needed=False,
+        )
+
+    executor = TransactionalExecutor(mba=object(), translator=translator)
+    monkeypatch.setattr(executor, "execute_stage", _mock_execute_stage)
+
+    results = executor.execute_pipeline([frag1, frag2], total_handlers=1)
+
+    assert len(results) == 1, f"expected pipeline to stop after 1 stage, got {len(results)}"
+    assert results[0].quarantine is True
+    assert results[0].rollback_needed is False
+    assert execute_stage_calls == ["s1"]
