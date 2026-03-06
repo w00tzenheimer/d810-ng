@@ -8,7 +8,12 @@ K4 (gate accounting), and K5 (planner ownership).
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass, field, replace
+
+from d810.core import logging
+
+_logger = logging.getLogger(__name__)
 
 
 class DecisionPhase(str, enum.Enum):
@@ -111,6 +116,62 @@ class PipelineProvenance:
             f"{self.accepted_count} accepted, {self.rejected_count} rejected "
             f"({len(self.rows)} total)"
         )
+
+    def update_phase(
+        self,
+        fragment_id: str,
+        new_phase: DecisionPhase,
+        reason_code: DecisionReasonCode | None = None,
+        reason_detail: str | None = None,
+    ) -> PipelineProvenance:
+        """Return a new PipelineProvenance with the named record's phase updated.
+
+        Since DecisionRecord is frozen, this creates a replacement row via
+        ``dataclasses.replace``.  If *fragment_id* is not found among
+        ``self.rows``, a warning is logged and the original instance is
+        returned unchanged.
+
+        Args:
+            fragment_id: The ``strategy_name`` of the record to update.
+            new_phase: New lifecycle phase to set.
+            reason_code: Optional new reason code (kept unchanged if None).
+            reason_detail: Optional new reason string (kept unchanged if None).
+
+        Returns:
+            A new ``PipelineProvenance`` with the updated row.
+        """
+        found = False
+        new_rows: list[DecisionRecord] = []
+        for row in self.rows:
+            if row.strategy_name == fragment_id and not found:
+                kwargs: dict = {"phase": new_phase}
+                if reason_code is not None:
+                    kwargs["reason_code"] = reason_code
+                if reason_detail is not None:
+                    kwargs["reason"] = reason_detail
+                new_rows.append(replace(row, **kwargs))
+                found = True
+            else:
+                new_rows.append(row)
+        if not found:
+            _logger.warning(
+                "update_phase: fragment_id %r not found in provenance rows",
+                fragment_id,
+            )
+            return self
+        return PipelineProvenance(
+            rows=tuple(new_rows),
+            input_summary=self.input_summary,
+        )
+
+    def phase_summary(self) -> str:
+        """One-line summary grouped by phase, e.g. '3 APPLIED, 1 GATE_FAILED'."""
+        counts = Counter(r.phase for r in self.rows)
+        parts = [
+            f"{count} {phase.value.upper()}"
+            for phase, count in sorted(counts.items(), key=lambda x: x[0].value)
+        ]
+        return ", ".join(parts) if parts else "(empty)"
 
     def to_dicts(self) -> list[dict]:
         """Serialize rows to list of dicts for on-disk reporting."""
