@@ -10,7 +10,7 @@ by unit tests without an IDA environment.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from d810.cfg.flowgraph import FlowGraph
