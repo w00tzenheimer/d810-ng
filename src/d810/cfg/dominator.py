@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.logging import getLogger
-from d810.core.typing import Mapping, Sequence
+from d810.core.typing import Any, Mapping, Sequence
 
 logger = getLogger(__name__)
 
@@ -135,8 +135,56 @@ def dominates(dom: list[set[int]] | DominatorTree, a: int, b: int) -> bool:
     return a in dom[b]
 
 
+def _successors_from_mba(mba: Any) -> dict[int, list[int]]:
+    """Extract successor map from an MBA-like object via duck-typing."""
+    num_blocks = int(getattr(mba, "qty", 0) or 0)
+    successors: dict[int, list[int]] = {i: [] for i in range(num_blocks)}
+
+    direct_successors_available = True
+    for i in range(num_blocks):
+        blk = mba.get_mblock(i)
+        if hasattr(blk, "nsucc") and hasattr(blk, "succ"):
+            nsucc = int(blk.nsucc())
+            successors[i] = [int(blk.succ(j)) for j in range(nsucc)]
+        elif hasattr(blk, "succset"):
+            successors[i] = [int(s) for s in blk.succset]
+        else:
+            direct_successors_available = False
+            break
+
+    if direct_successors_available:
+        return successors
+
+    successors = {i: [] for i in range(num_blocks)}
+    for i in range(num_blocks):
+        blk = mba.get_mblock(i)
+        for pred in getattr(blk, "predset", ()):
+            pred_int = int(pred)
+            if 0 <= pred_int < num_blocks:
+                successors[pred_int].append(i)
+    return successors
+
+
+def compute_dominators(mba: Any) -> list[set[int]]:
+    """Compute dominator sets for each block in an MBA-like object.
+
+    Returns a list where ``result[i]`` is the set of block serials
+    that dominate block ``i``.
+    """
+    num_blocks = int(getattr(mba, "qty", 0) or 0)
+    if num_blocks == 0:
+        return []
+
+    tree = compute_dom_tree(_successors_from_mba(mba), entry=0)
+    doms: list[set[int]] = []
+    for node in range(num_blocks):
+        doms.append(set(tree.dominators_of(node)))
+    return doms
+
+
 __all__ = [
     "DominatorTree",
     "compute_dom_tree",
+    "compute_dominators",
     "dominates",
 ]
