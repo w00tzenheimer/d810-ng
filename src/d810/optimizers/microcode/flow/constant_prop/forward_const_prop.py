@@ -18,6 +18,12 @@ import ida_segment
 import idaapi
 
 from d810.core import CythonMode, getLogger, typing
+from d810.evaluator.hexrays_microcode.domains.constant_env import (
+    build_constant_entry_state,
+)
+from d810.evaluator.hexrays_microcode.forward_dataflow import (
+    run_forward_fixpoint_on_mba,
+)
 from d810.hexrays.ir.mop_utils import (
     _VALID_MOP_SIZES)
 from d810.hexrays.ir.mop_utils import (
@@ -446,48 +452,20 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             self._slow_transfer_single(mba, ins, env)
 
     def _slow_dataflow(self, mba: ida_hexrays.mba_t):
-        nb = mba.qty
-        block_serials = list(range(nb))
-        IN: dict[int, ConstMap] = {i: {} for i in block_serials}
-        OUT: dict[int, ConstMap] = {i: {} for i in block_serials}
+        entry_state = build_constant_entry_state(mba)
 
-        # Collect universe: all variable names written anywhere in the function
-        universe = self._collect_universe(mba)
+        def transfer(serial: int, in_state: ConstMap) -> ConstMap:
+            blk = mba.get_mblock(serial)
+            return self._transfer_block(blk, in_state)
 
-        # Entry block IN: all TOP (unknown initial values at function entry)
-        # All other blocks: empty (missing = BOTTOM = identity for meet)
-        entry_serial = 0  # IDA entry block is always serial 0
-        IN[entry_serial] = {var: TOP for var in universe}
-
-        # Start worklist from entry only — unreachable blocks stay BOTTOM
-        worklist: list[int] = [entry_serial]
-
-        preds: dict[int, list[int]] = {
-            i: list(mba.get_mblock(i).predset) for i in block_serials
-        }
-        iteration = 0
-        while worklist:
-            iteration += 1
-            idx = worklist.pop()
-            inm = self._meet([OUT[p] for p in preds[idx]]) if preds[idx] else IN[idx]
-            if logger.debug_on:
-                total_vars = sum(len(v) for v in IN.values())
-                logger.debug(
-                    "[FCP] dataflow iteration %d: worklist=%d blk=%d %d vars in constant map",
-                    iteration,
-                    len(worklist),
-                    idx,
-                    total_vars,
-                )
-            if inm != IN[idx]:
-                IN[idx] = inm
-            out_new = self._transfer_block(mba.get_mblock(idx), inm)
-            if out_new != OUT[idx]:
-                OUT[idx] = out_new
-                for succ in mba.get_mblock(idx).succset:
-                    if succ not in worklist:
-                        worklist.append(succ)
-        return IN, OUT
+        result = run_forward_fixpoint_on_mba(
+            mba,
+            entry_state=entry_state,
+            bottom={},
+            meet=self._meet_strategy.meet,
+            transfer=transfer,
+        )
+        return result.in_states, result.out_states
 
     # meet delegates to the injected MeetStrategy
     def _meet(self, pred_outs: list[ConstMap]) -> ConstMap:
