@@ -123,7 +123,7 @@ def test_executor_preflight_uses_backend_order(monkeypatch: pytest.MonkeyPatch):
 
     cfg = FlowGraph(
         blocks={
-            44: _block(44, (45,), ()),
+            44: _block(44, (99, 45), ()),
             122: _block(122, (45,), ()),
             45: _block(45, (2,), (44, 122)),
             2: _block(2, (99,), (45,)),
@@ -168,7 +168,7 @@ def test_executor_rejects_legacy_block_creation_when_policy_disabled(monkeypatch
 
     cfg = FlowGraph(
         blocks={
-            44: _block(44, (45,), ()),
+            44: _block(44, (99, 45), ()),
             122: _block(122, (45,), ()),
             45: _block(45, (2,), (44, 122)),
             2: _block(2, (99,), (45,)),

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 
 from d810.core.typing import Union
 
-from d810.cfg.flowgraph import FlowGraph, InsnSnapshot
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
@@ -204,6 +204,30 @@ class PatchInsertBlock:
         )
 
 
+@dataclass(frozen=True)
+class PatchDuplicateBlock:
+    """Finalized materialization of a duplicated block plus predecessor redirect."""
+
+    block_id: VirtualBlockId
+    assigned_serial: int
+    source_serial: int
+    pred_serial: int | None
+    pred_redirect_kind: str
+    source_successors: tuple[int, ...]
+    target_serial: int | None = None
+    conditional_target: int | None = None
+    fallthrough_target: int | None = None
+    fallthrough_block_id: VirtualBlockId | None = None
+    fallthrough_serial: int | None = None
+
+    def to_graph_modification(self) -> DuplicateBlock:
+        return DuplicateBlock(
+            source_block=self.source_serial,
+            target_block=self.target_serial,
+            pred_serial=self.pred_serial,
+        )
+
+
 BlockCreatingGraphModification = Union[
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
@@ -238,6 +262,7 @@ PatchOperation = Union[
     PatchEdgeSplitTrampoline,
     PatchConditionalRedirect,
     PatchInsertBlock,
+    PatchDuplicateBlock,
 ]
 
 PatchStep = Union[PatchOperation, LegacyBlockOperation]
@@ -313,6 +338,17 @@ class _PendingConditionalRedirect:
 class _PendingInsertBlock:
     modification: InsertBlock
     block_id: VirtualBlockId
+
+
+@dataclass(frozen=True)
+class _PendingDuplicateBlock:
+    modification: DuplicateBlock
+    block_id: VirtualBlockId
+    pred_redirect_kind: str
+    source_successors: tuple[int, ...]
+    conditional_target: int | None = None
+    fallthrough_target: int | None = None
+    fallthrough_block_id: VirtualBlockId | None = None
 
 
 def is_block_creating_modification(modification: GraphModification) -> bool:
@@ -457,6 +493,53 @@ def _build_relocation_map(
     )
 
 
+def _infer_conditional_target(block: BlockSnapshot) -> int | None:
+    if block.nsucc != 2 or not block.insn_snapshots:
+        return None
+
+    tail = block.insn_snapshots[-1]
+    for slot_name, operand in tail.operand_slots:
+        if slot_name != "d":
+            continue
+        block_num = getattr(operand, "block_num", None)
+        if isinstance(block_num, int):
+            return block_num
+
+    for operand in tail.operands:
+        block_num = getattr(operand, "block_num", None)
+        if isinstance(block_num, int):
+            return block_num
+
+    return None
+
+
+def _classify_duplicate_pred_redirect(
+    cfg: FlowGraph,
+    *,
+    pred_serial: int | None,
+    source_serial: int,
+) -> str:
+    if pred_serial is None:
+        return "missing"
+
+    pred_block = cfg.get_block(pred_serial)
+    if pred_block is None or source_serial not in pred_block.succs:
+        return "missing"
+
+    if pred_block.nsucc == 1:
+        return "one_way"
+
+    if pred_block.nsucc == 2:
+        conditional_target = _infer_conditional_target(pred_block)
+        if conditional_target is None:
+            return "unknown"
+        if conditional_target == source_serial:
+            return "conditional"
+        return "fallthrough"
+
+    return "unsupported"
+
+
 def _compile_legacy_block_step(
     modification: BlockCreatingGraphModification,
     allocator: _VirtualIdAllocator,
@@ -494,8 +577,71 @@ def _compile_legacy_block_step(
             raise TypeError(f"Unsupported block-creating modification: {type(modification).__name__}")
 
 
+def _compile_duplicate_block_step(
+    modification: DuplicateBlock,
+    cfg: FlowGraph,
+    allocator: _VirtualIdAllocator,
+) -> tuple[_PendingDuplicateBlock, tuple[PatchBlockSpec, ...]] | None:
+    source_block = cfg.get_block(modification.source_block)
+    if source_block is None:
+        return None
+
+    pred_redirect_kind = _classify_duplicate_pred_redirect(
+        cfg,
+        pred_serial=modification.pred_serial,
+        source_serial=modification.source_block,
+    )
+    if pred_redirect_kind not in {"one_way", "conditional"}:
+        return None
+
+    if source_block.nsucc > 1:
+        return None
+
+    block_id = allocator.alloc("duplicate_block")
+    incoming_edge = PatchEdgeRef(
+        source=modification.pred_serial,
+        target=modification.source_block,
+    )
+    clone_outgoing_edges: list[PatchEdgeRef] = []
+    specs: list[PatchBlockSpec] = []
+
+    if source_block.nsucc == 0:
+        if modification.target_block is not None:
+            clone_outgoing_edges.append(
+                PatchEdgeRef(source=block_id, target=modification.target_block)
+            )
+
+    elif source_block.nsucc == 1:
+        clone_target = (
+            modification.target_block
+            if modification.target_block is not None
+            else source_block.succs[0]
+        )
+        clone_outgoing_edges.append(PatchEdgeRef(source=block_id, target=clone_target))
+
+    specs.insert(
+        0,
+        PatchBlockSpec(
+            block_id=block_id,
+            kind="duplicate_block_clone",
+            template_block=modification.source_block,
+            incoming_edge=incoming_edge,
+            outgoing_edges=tuple(clone_outgoing_edges),
+        ),
+    )
+    return (
+        _PendingDuplicateBlock(
+            modification=modification,
+            block_id=block_id,
+            pred_redirect_kind=pred_redirect_kind,
+            source_successors=source_block.succs,
+        ),
+        tuple(specs),
+    )
+
+
 def _finalize_step(
-    step: PatchStep | _PendingEdgeSplitTrampoline,
+    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock,
     relocation_map: PatchRelocationMap,
 ) -> PatchStep:
     match step:
@@ -591,6 +737,55 @@ def _finalize_step(
                 pred_serial=pred,
                 succ_serial=relocation_map.rewrite_serial(succ),
                 instructions=_rewrite_instruction_snapshots(insns, relocation_map),
+            )
+
+        case _PendingDuplicateBlock(
+            modification=DuplicateBlock(
+                source_block=src,
+                target_block=target,
+                pred_serial=pred,
+            ),
+            block_id=block_id,
+            pred_redirect_kind=pred_redirect_kind,
+            source_successors=source_successors,
+            conditional_target=conditional_target,
+            fallthrough_target=fallthrough_target,
+            fallthrough_block_id=fallthrough_block_id,
+        ):
+            assigned_serial = relocation_map.assigned_serial_for(block_id)
+            if assigned_serial is None:
+                raise ValueError(f"Missing assigned serial for {block_id}")
+            fallthrough_serial = None
+            if fallthrough_block_id is not None:
+                fallthrough_serial = relocation_map.assigned_serial_for(fallthrough_block_id)
+                if fallthrough_serial is None:
+                    raise ValueError(f"Missing assigned serial for {fallthrough_block_id}")
+            return PatchDuplicateBlock(
+                block_id=block_id,
+                assigned_serial=assigned_serial,
+                source_serial=src,
+                pred_serial=pred,
+                pred_redirect_kind=pred_redirect_kind,
+                source_successors=tuple(
+                    relocation_map.rewrite_serial(serial) for serial in source_successors
+                ),
+                target_serial=(
+                    relocation_map.rewrite_serial(target)
+                    if target is not None
+                    else None
+                ),
+                conditional_target=(
+                    relocation_map.rewrite_serial(conditional_target)
+                    if conditional_target is not None
+                    else None
+                ),
+                fallthrough_target=(
+                    relocation_map.rewrite_serial(fallthrough_target)
+                    if fallthrough_target is not None
+                    else None
+                ),
+                fallthrough_block_id=fallthrough_block_id,
+                fallthrough_serial=fallthrough_serial,
             )
 
         case LegacyBlockOperation():
@@ -749,9 +944,24 @@ def compile_patch_plan(
                     )
 
             case DuplicateBlock():
-                legacy_step, spec = _compile_legacy_block_step(modification, allocator)
-                raw_steps.append(legacy_step)
-                new_blocks.append(spec)
+                if cfg is None:
+                    legacy_step, spec = _compile_legacy_block_step(modification, allocator)
+                    raw_steps.append(legacy_step)
+                    new_blocks.append(spec)
+                else:
+                    compiled_duplicate = _compile_duplicate_block_step(
+                        modification,
+                        cfg,
+                        allocator,
+                    )
+                    if compiled_duplicate is None:
+                        legacy_step, spec = _compile_legacy_block_step(modification, allocator)
+                        raw_steps.append(legacy_step)
+                        new_blocks.append(spec)
+                    else:
+                        pending_step, duplicate_specs = compiled_duplicate
+                        raw_steps.append(pending_step)
+                        new_blocks.extend(duplicate_specs)
 
             case _:
                 raise TypeError(f"Unsupported GraphModification: {type(modification).__name__}")
@@ -790,6 +1000,7 @@ __all__ = [
     "PatchEdgeSplitTrampoline",
     "PatchConditionalRedirect",
     "PatchInsertBlock",
+    "PatchDuplicateBlock",
     "LegacyBlockOperation",
     "PatchOperation",
     "PatchStep",

@@ -411,6 +411,95 @@ def test_create_conditional_redirect_rejects_unexpected_serial(monkeypatch):
     assert src_calls["count"] == 0
 
 
+def test_apply_pre_rejects_duplicate_block_with_fallthrough_predecessor(monkeypatch):
+    mba = _FakeMBA()
+    source = _FakeBlock(5)
+    pred = _FakeBlock(6)
+    target = _FakeBlock(7)
+    pred.nsucc = lambda: 2  # type: ignore[assignment]
+    pred.tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jnz,
+        ea=0x1000,
+        l=None,
+        r=None,
+        d=SimpleNamespace(t=ida_hexrays.mop_b, b=99),
+    )
+    source.nsucc = lambda: 1  # type: ignore[assignment]
+    mba.blocks.update({5: source, 6: pred, 7: target})
+    mba.qty = len(mba.blocks)
+
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_DUPLICATE_AND_REDIRECT,
+            block_serial=5,
+            via_pred=6,
+            new_target=7,
+            description="duplicate fallthrough edge should pre-reject",
+        )
+    ]
+
+    called = {"apply_single": 0}
+    monkeypatch.setattr(
+        modifier,
+        "_apply_single",
+        lambda _m: called.__setitem__("apply_single", called["apply_single"] + 1) or True,
+    )
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        dm,
+        "mba_deep_cleaning",
+        lambda *_a, **_k: setattr(mba, "cleaned", mba.cleaned + 1),
+    )
+
+    applied = modifier.apply(run_optimize_local=False, run_deep_cleaning=False)
+
+    assert applied == 0
+    assert called["apply_single"] == 0
+
+
+def test_duplicate_block_rejects_unexpected_secondary_serial(monkeypatch):
+    mba = _FakeMBA()
+    source = _FakeBlock(5)
+    pred = _FakeBlock(6)
+    pred.succ = lambda _idx: 5  # type: ignore[assignment]
+    source.nsucc = lambda: 2  # type: ignore[assignment]
+    mba.blocks.update({5: source, 6: pred})
+    mba.qty = len(mba.blocks)
+
+    modifier = dm.DeferredGraphModifier(mba)
+
+    monkeypatch.setattr(
+        dm,
+        "duplicate_block",
+        lambda *_a, **_k: (_FakeBlock(7), _FakeBlock(8)),
+    )
+
+    calls = {"pred": 0, "clone": 0}
+    monkeypatch.setattr(
+        dm,
+        "change_1way_block_successor",
+        lambda blk, *_a, **_k: (
+            calls.__setitem__("pred", calls["pred"] + 1)
+            if blk.serial == 6
+            else calls.__setitem__("clone", calls["clone"] + 1)
+        ) or True,
+    )
+
+    ok = modifier._apply_duplicate_block_and_redirect(
+        source_blk=source,
+        pred_serial=6,
+        target_serial=None,
+        expected_serial=7,
+        expected_secondary_serial=9,
+    )
+
+    assert ok is False
+    assert calls["pred"] == 0
+    assert calls["clone"] == 0
+
+
 def test_apply_marks_verify_failed_on_post_apply_hook_exception(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)

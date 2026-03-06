@@ -13,6 +13,7 @@ from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
+    DuplicateBlock,
     EdgeRedirectViaPredSplit,
     InsertBlock,
     RedirectGoto,
@@ -207,6 +208,67 @@ class TestSimulateEdits:
         assert sim.adj[0] == [clone]
         assert sim.adj[clone] == [10, nop_blk]
         assert sim.adj[nop_blk] == [11]
+
+    def test_duplicate_block_creates_clone_and_redirects_predecessor(self):
+        cfg = FlowGraph(
+            blocks={
+                9: _block(9, (10,), ()),
+                10: _block(10, (11,), (9,)),
+                11: _block(11, (), (10,)),
+            },
+            entry_serial=9,
+            func_ea=0,
+        )
+
+        patch_plan = compile_patch_plan(
+            [
+                DuplicateBlock(
+                    source_block=10,
+                    target_block=11,
+                    pred_serial=9,
+                )
+            ],
+            cfg,
+        )
+
+        sim = simulate_edits(
+            cfg.as_adjacency_dict(),
+            patch_plan_to_simulated_edits(patch_plan),
+        )
+
+        assert sim.adj[9] == [11]
+        assert sim.adj[10] == [12]
+        assert sim.adj[11] == [12]
+        assert sim.adj[12] == []
+
+    def test_duplicate_block_preserves_conditional_shape(self):
+        edits = [
+            SimulatedEdit(
+                kind="duplicate_block",
+                source=10,
+                old_target=-1,
+                new_target=None,
+                via_pred=9,
+                source_successors=(12, 11),
+                conditional_target=12,
+                fallthrough_target=11,
+                created_serial=14,
+                secondary_created_serial=15,
+                stop_serial_before=14,
+                stop_serial_after=16,
+            )
+        ]
+
+        sim = simulate_edits(
+            {9: [10], 10: [11, 12], 11: [], 12: [], 14: []},
+            edits,
+        )
+
+        assert sim.adj[9] == [14]
+        assert sim.adj[10] == [11, 12]
+        assert sim.adj[14] == [12, 15]
+        assert sim.adj[15] == [11]
+        assert sim.adj[16] == []
 
 
 class TestModificationProjection:
