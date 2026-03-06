@@ -6,9 +6,9 @@ diagnosis of structural quality regressions.
 """
 from __future__ import annotations
 
-import logging
+from d810.core import logging
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional, Sequence
+from d810.core.typing import Any, Mapping, Optional, Sequence
 
 from d810.cfg.postdominator import compute_postdom_tree
 

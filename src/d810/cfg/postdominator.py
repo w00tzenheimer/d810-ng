@@ -1,9 +1,9 @@
 """Postdominator tree computation for control-flow graphs."""
 from __future__ import annotations
 
-import logging
+from d810.core import logging
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from d810.core.typing import Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 

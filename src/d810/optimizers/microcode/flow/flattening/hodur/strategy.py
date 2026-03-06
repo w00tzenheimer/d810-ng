@@ -6,7 +6,7 @@ fully exercised by unit tests without an IDA environment.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from d810.core.typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from d810.cfg.graph_modification import GraphModification

@@ -1,7 +1,7 @@
 """Utility metrics functions for the Hodur unflattening pipeline."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.strategy import StageResult

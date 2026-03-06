@@ -7,8 +7,8 @@ them in the generic ReturnSite format for frontier audit.
 from __future__ import annotations
 
 import hashlib
-import logging
-from typing import TYPE_CHECKING
+from d810.core import logging
+from d810.core.typing import TYPE_CHECKING
 
 from d810.cfg.flow.return_frontier import ReturnSite
 
