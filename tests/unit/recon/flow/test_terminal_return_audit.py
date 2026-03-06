@@ -306,6 +306,126 @@ class TestEmptyTerminalHandlers:
         assert "0/5" in report.summary()
 
 
+class TestSharedMergeAtExitBlock:
+    """P1-2: Exit block with multiple preds should be SHARED_EPILOGUE, not EPILOGUE_CORRIDOR."""
+
+    def test_shared_merge_at_exit_block_classified_correctly(self) -> None:
+        """Exit block has 2+ preds, downstream is single-pred -> SHARED_EPILOGUE."""
+        # Handler 10 exits at block 20 (which has 2 preds: 10 and 15).
+        # Block 20 -> Block 21 (single-pred) -> Block 22 (BLT_STOP, single-pred).
+        # Even though 21 and 22 are single-pred, block 20 itself is multi-pred,
+        # so this is SHARED_EPILOGUE, not EPILOGUE_CORRIDOR.
+        blocks = [
+            _make_block(0, succs=(10, 15)),
+            _make_block(10, succs=(20,), preds=(0,)),
+            _make_block(15, succs=(20,), preds=(0,)),
+            _make_block(20, succs=(21,), preds=(10, 15)),
+            _make_block(21, succs=(22,), preds=(20,)),
+            _make_block(22, block_type=_BLT_STOP, preds=(21,)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: 20},
+            total_handlers=2,
+        )
+
+        assert len(report.sites) == 1
+        site = report.sites[0]
+        assert site.source_kind == TerminalReturnSourceKind.SHARED_EPILOGUE
+        assert site.return_block_serial == 22
+        assert site.corridor_length == 2
+
+
+class TestRaxWriteDetection:
+    """P1-1: has_rax_write should reflect rax_write_serials intersection with path."""
+
+    def test_rax_write_detected_on_corridor_path(self) -> None:
+        """Pass rax_write_serials containing a corridor block -> has_rax_write=True."""
+        # Handler 10 -> exit 10 -> 11 (single-pred) -> 12 (BLT_STOP, single-pred)
+        blocks = [
+            _make_block(0, succs=(10,)),
+            _make_block(10, succs=(11,), preds=(0,)),
+            _make_block(11, succs=(12,), preds=(10,)),
+            _make_block(12, block_type=_BLT_STOP, preds=(11,)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: 10},
+            total_handlers=1,
+            rax_write_serials={11},
+        )
+
+        assert len(report.sites) == 1
+        site = report.sites[0]
+        assert site.has_rax_write is True
+
+    def test_rax_write_not_found_on_path(self) -> None:
+        """Pass rax_write_serials not containing any path block -> has_rax_write=False."""
+        # Same corridor as above, but rax_write_serials contains block 99 (not on path)
+        blocks = [
+            _make_block(0, succs=(10,)),
+            _make_block(10, succs=(11,), preds=(0,)),
+            _make_block(11, succs=(12,), preds=(10,)),
+            _make_block(12, block_type=_BLT_STOP, preds=(11,)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: 10},
+            total_handlers=1,
+            rax_write_serials={99},
+        )
+
+        assert len(report.sites) == 1
+        site = report.sites[0]
+        assert site.has_rax_write is False
+
+    def test_rax_write_none_when_not_provided(self) -> None:
+        """Omit rax_write_serials -> has_rax_write=None (existing behavior)."""
+        blocks = [
+            _make_block(0, succs=(10,)),
+            _make_block(10, succs=(11,), preds=(0,)),
+            _make_block(11, block_type=_BLT_STOP, preds=(10,)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: 10},
+            total_handlers=1,
+        )
+
+        assert len(report.sites) == 1
+        site = report.sites[0]
+        assert site.has_rax_write is None
+
+    def test_rax_write_none_for_unreachable(self) -> None:
+        """Even with rax_write_serials provided, UNREACHABLE -> has_rax_write=None."""
+        blocks = [_make_block(0)]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: None},
+            total_handlers=1,
+            rax_write_serials={0, 10},
+        )
+
+        assert len(report.sites) == 1
+        site = report.sites[0]
+        assert site.has_rax_write is None
+
+
 class TestMultipleTerminalHandlers:
     """Multiple terminal handlers with mixed classifications."""
 

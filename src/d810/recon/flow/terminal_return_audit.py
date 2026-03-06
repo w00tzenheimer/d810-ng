@@ -103,7 +103,7 @@ def _classify_exit(
     cfg: FlowGraph,
     exit_serial: int | None,
     max_depth: int = 50,
-) -> tuple[TerminalReturnSourceKind, int | None, int]:
+) -> tuple[TerminalReturnSourceKind, int | None, int, tuple[int, ...]]:
     """Walk forward from *exit_serial* to classify the return path.
 
     Args:
@@ -112,31 +112,35 @@ def _classify_exit(
         max_depth: Maximum BFS depth to prevent runaway walks.
 
     Returns:
-        A tuple of (source_kind, return_block_serial, corridor_length).
+        A tuple of (source_kind, return_block_serial, corridor_length, path_serials).
+        *path_serials* contains the block serials visited on the path from
+        exit_serial to the return block (inclusive of both endpoints).
     """
     if exit_serial is None:
-        return TerminalReturnSourceKind.UNREACHABLE, None, 0
+        return TerminalReturnSourceKind.UNREACHABLE, None, 0, ()
 
     blk = cfg.get_block(exit_serial)
     if blk is None:
-        return TerminalReturnSourceKind.UNREACHABLE, None, 0
+        return TerminalReturnSourceKind.UNREACHABLE, None, 0, ()
 
     # Case 1: exit block itself is BLT_STOP.
     if blk.block_type == _BLT_STOP:
-        return TerminalReturnSourceKind.DIRECT_RETURN, exit_serial, 0
+        return TerminalReturnSourceKind.DIRECT_RETURN, exit_serial, 0, (exit_serial,)
 
     # BFS forward from exit to find BLT_STOP, tracking the path shape.
     visited: set[int] = {exit_serial}
-    # Queue entries: (serial, corridor_length_so_far, all_single_pred)
-    queue: deque[tuple[int, int, bool]] = deque()
+    # Queue entries: (serial, corridor_length_so_far, all_single_pred, path_so_far)
+    queue: deque[tuple[int, int, bool, tuple[int, ...]]] = deque()
 
+    # P1-2 fix: check exit block's own predecessor count when seeding BFS.
+    exit_is_single_pred = len(blk.preds) <= 1
     for succ in blk.succs:
         if succ not in visited:
-            queue.append((succ, 1, True))
+            queue.append((succ, 1, exit_is_single_pred, (exit_serial,)))
             visited.add(succ)
 
     while queue:
-        serial, corridor_len, all_single_pred = queue.popleft()
+        serial, corridor_len, all_single_pred, path_so_far = queue.popleft()
 
         if corridor_len > max_depth:
             continue
@@ -146,6 +150,7 @@ def _classify_exit(
             continue
 
         is_single_pred = len(next_blk.preds) == 1
+        current_path = path_so_far + (serial,)
 
         if next_blk.block_type == _BLT_STOP:
             # Found a return block. Classify based on path shape.
@@ -154,21 +159,23 @@ def _classify_exit(
                     TerminalReturnSourceKind.EPILOGUE_CORRIDOR,
                     serial,
                     corridor_len,
+                    current_path,
                 )
             else:
                 return (
                     TerminalReturnSourceKind.SHARED_EPILOGUE,
                     serial,
                     corridor_len,
+                    current_path,
                 )
 
         current_single = all_single_pred and is_single_pred
         for succ in next_blk.succs:
             if succ not in visited:
                 visited.add(succ)
-                queue.append((succ, corridor_len + 1, current_single))
+                queue.append((succ, corridor_len + 1, current_single, current_path))
 
-    return TerminalReturnSourceKind.UNREACHABLE, None, 0
+    return TerminalReturnSourceKind.UNREACHABLE, None, 0, (exit_serial,)
 
 
 def build_terminal_return_audit(
@@ -176,6 +183,7 @@ def build_terminal_return_audit(
     terminal_handler_serials: set[int],
     exit_map: dict[int, int | None],
     total_handlers: int | None = None,
+    rax_write_serials: set[int] | None = None,
 ) -> TerminalReturnAuditReport:
     """Build a terminal return audit report for the given CFG and terminal handlers.
 
@@ -184,6 +192,10 @@ def build_terminal_return_audit(
         terminal_handler_serials: Set of handler entry block serials marked terminal.
         exit_map: Maps handler_serial to exit_block_serial (from linearization).
         total_handlers: Total handler count (defaults to len(exit_map) if not given).
+        rax_write_serials: Optional set of block serials known to contain return-carrier
+            (rax.8) writes. When provided, each audit row's ``has_rax_write`` is set by
+            checking whether any block on the path intersects this set. When ``None``,
+            ``has_rax_write`` remains ``None`` (not analyzed).
 
     Returns:
         A :class:`TerminalReturnAuditReport` with per-handler audit results.
@@ -195,13 +207,23 @@ def build_terminal_return_audit(
 
     for handler_serial in sorted(terminal_handler_serials):
         exit_serial = exit_map.get(handler_serial)
-        source_kind, return_serial, corridor_len = _classify_exit(cfg, exit_serial)
+        source_kind, return_serial, corridor_len, path_serials = _classify_exit(
+            cfg, exit_serial
+        )
 
         notes_parts: list[str] = []
         if source_kind == TerminalReturnSourceKind.UNREACHABLE:
             notes_parts.append("no path to BLT_STOP from exit")
         if exit_serial is not None and exit_serial not in cfg.blocks:
             notes_parts.append(f"exit block {exit_serial} not in CFG")
+
+        # Determine has_rax_write from path intersection.
+        has_rax_write: bool | None = None
+        if (
+            rax_write_serials is not None
+            and source_kind != TerminalReturnSourceKind.UNREACHABLE
+        ):
+            has_rax_write = bool(set(path_serials) & rax_write_serials)
 
         sites.append(
             TerminalReturnSiteAudit(
@@ -210,7 +232,7 @@ def build_terminal_return_audit(
                 source_kind=source_kind,
                 return_block_serial=return_serial,
                 corridor_length=corridor_len,
-                has_rax_write=None,
+                has_rax_write=has_rax_write,
                 notes="; ".join(notes_parts),
             )
         )
