@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import ida_hexrays
 from pathlib import Path
-from types import SimpleNamespace
 
 from d810.core import logging
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
@@ -58,10 +57,12 @@ from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
     HodurReturnSiteProvider,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
+    load_return_frontier_audit_from_store,
     load_transition_report_from_store,
+    record_return_frontier_stage,
     save_transition_report_to_store,
+    write_return_frontier_artifact_from_store,
 )
-from d810.recon.collectors.return_frontier import ReturnFrontierCollector
 
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
 
@@ -166,7 +167,6 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         # Return frontier audit components
         self._return_site_provider = HodurReturnSiteProvider()
-        self._return_frontier_collector = ReturnFrontierCollector()
         self._audit_return_sites: tuple = ()  # Populated at pre_plan, reused across stages
 
     def configure(self, kwargs: dict) -> None:
@@ -201,7 +201,6 @@ class HodurUnflattener(GenericUnflatteningRule):
             self._last_redirect_meta = None
             # Reset audit for new maturity
             if self.RETURN_FRONTIER_AUDIT_ENABLED:
-                self._return_frontier_collector.reset()
                 self._audit_return_sites = ()
 
         # Gate on actual Hodur runs, not block callback count
@@ -295,7 +294,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         )
 
         # Return frontier audit: post_plan stage (mods queued but not applied)
-        if self.RETURN_FRONTIER_AUDIT_ENABLED and self._return_frontier_collector._audit:
+        if self.RETURN_FRONTIER_AUDIT_ENABLED and self._audit_return_sites:
             self._record_audit_stage("post_plan")
 
         # 5. Executor applies transactional stages
@@ -309,7 +308,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         nb_changes = executor.total_changes
 
         # Return frontier audit: post_apply stage
-        if self.RETURN_FRONTIER_AUDIT_ENABLED and self._return_frontier_collector._audit:
+        if self.RETURN_FRONTIER_AUDIT_ENABLED and self._audit_return_sites:
             self._record_audit_stage("post_apply")
 
         # 6. Log summary
@@ -344,13 +343,21 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._actual_pass_count += 1
 
         # Return frontier audit: post_pipeline stage + artifact write
-        if self.RETURN_FRONTIER_AUDIT_ENABLED and self._return_frontier_collector._audit:
+        if self.RETURN_FRONTIER_AUDIT_ENABLED and self._audit_return_sites:
             self._record_audit_stage("post_pipeline")
-            self._return_frontier_collector._artifact_dir = Path(
-                f".tmp/recon/{self.cur_maturity}"
+            write_return_frontier_artifact_from_store(
+                func_ea=self.mba.entry_ea,
+                maturity=self.cur_maturity,
+                log_dir=self.log_dir,
+                artifact_dir=Path(f".tmp/recon/{self.cur_maturity}"),
             )
-            self._return_frontier_collector.write_artifact(self.mba.entry_ea)
-            self._return_frontier_collector._audit.summary_log()
+            audit = load_return_frontier_audit_from_store(
+                func_ea=self.mba.entry_ea,
+                maturity=self.cur_maturity,
+                log_dir=self.log_dir,
+            )
+            if audit is not None:
+                audit.summary_log()
 
         return nb_changes
 
@@ -501,17 +508,15 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         succs = self._build_successor_map()
         exits = self._find_exit_blocks()
-        target = SimpleNamespace(metadata={
-            "return_sites": self._audit_return_sites,
-            "cfg_successors": succs,
-            "cfg_entry": 0,
-            "cfg_exits": exits,
-            "stage_name": "pre_plan",
-        })
-        result = self._return_frontier_collector.collect(
-            target=target,
+        result = record_return_frontier_stage(
             func_ea=self.mba.entry_ea,
             maturity=self.cur_maturity,
+            log_dir=self.log_dir,
+            return_sites=tuple(self._audit_return_sites),
+            successors=succs,
+            entry=0,
+            exits=exits,
+            stage_name="pre_plan",
         )
         unflat_logger.info(
             "RETURN_FRONTIER_AUDIT[pre_plan]: sites=%d broken=%d (diagnostic only, not gated)",
@@ -523,22 +528,15 @@ class HodurUnflattener(GenericUnflatteningRule):
         """Record a return frontier audit stage from current MBA state."""
         succs = self._build_successor_map()
         exits = self._find_exit_blocks()
-        return_sites = (
-            self._return_frontier_collector._audit.return_sites
-            if self._return_frontier_collector._audit is not None
-            else self._audit_return_sites
-        )
-        target = SimpleNamespace(metadata={
-            "return_sites": return_sites,
-            "cfg_successors": succs,
-            "cfg_entry": 0,
-            "cfg_exits": exits,
-            "stage_name": stage_name,
-        })
-        result = self._return_frontier_collector.collect(
-            target=target,
+        result = record_return_frontier_stage(
             func_ea=self.mba.entry_ea,
             maturity=self.cur_maturity,
+            log_dir=self.log_dir,
+            return_sites=tuple(self._audit_return_sites),
+            successors=succs,
+            entry=0,
+            exits=exits,
+            stage_name=stage_name,
         )
         unflat_logger.info(
             "RETURN_FRONTIER_AUDIT[%s]: sites=%d broken=%d (diagnostic only, not gated)",

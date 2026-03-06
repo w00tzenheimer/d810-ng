@@ -18,6 +18,7 @@ from d810.cfg.flow.graph_checks import (
     prove_terminal_sink,
 )
 from d810.cfg.flowgraph import FlowGraph
+from d810.cfg.contracts import IDACfgContract
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
@@ -26,7 +27,7 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
-from d810.cfg.plan import PatchPlan, compile_patch_plan
+from d810.cfg.plan import PatchEdgeSplitTrampoline, PatchPlan, compile_patch_plan
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
@@ -87,10 +88,12 @@ class TransactionalExecutor:
         gate: VerificationGate | SemanticGate | None = None,
         translator: IDAIRTranslator | None = None,
         allow_legacy_block_creation: bool = True,
+        cfg_contract: IDACfgContract | None = None,
     ):
         self.mba = mba
         self.gate = gate or SemanticGate()
         self.allow_legacy_block_creation = allow_legacy_block_creation
+        self.cfg_contract = cfg_contract
         self.translator = translator or IDAIRTranslator(
             allow_legacy_block_creation=allow_legacy_block_creation
         )
@@ -130,13 +133,15 @@ class TransactionalExecutor:
                 error="safeguard rejected modifications",
             )
 
-        # Check block-creation policy early — no point running preflight if policy rejects
         patch_plan_preview = compile_patch_plan(modifications, pre_cfg)
-        if hasattr(self.translator, "prepare_patch_plan"):
-            patch_plan_preview = self.translator.prepare_patch_plan(patch_plan_preview, self.mba)
-            modifications = patch_plan_preview.as_graph_modifications()
-            if not modifications:
-                return StageResult(strategy_name=fragment.strategy_name)
+        modifications, patch_plan_preview = self._filter_backend_unsupported_modifications(
+            pre_cfg,
+            modifications,
+            patch_plan_preview,
+        )
+        if not modifications:
+            return StageResult(strategy_name=fragment.strategy_name)
+
         if patch_plan_preview.legacy_block_operations and not self.allow_legacy_block_creation:
             return StageResult(
                 strategy_name=fragment.strategy_name,
@@ -155,6 +160,21 @@ class TransactionalExecutor:
         if not modifications:
             return StageResult(strategy_name=fragment.strategy_name)
 
+        pre_contract_violations = self._run_cfg_contract_check("pre", patch_plan)
+        if pre_contract_violations:
+            detail = self._format_contract_violations(pre_contract_violations)
+            executor_logger.warning(
+                "CFG contract pre-check rejected stage %s: %s",
+                fragment.strategy_name,
+                detail,
+            )
+            return StageResult(
+                strategy_name=fragment.strategy_name,
+                success=False,
+                rollback_needed=True,
+                error=f"cfg contract pre-check failed: {detail}",
+            )
+
         executor_logger.info(
             "Stage %s compiled PatchPlan: concrete=%d symbolic_blocks=%d legacy_block_steps=%d",
             fragment.strategy_name,
@@ -163,7 +183,34 @@ class TransactionalExecutor:
             len(patch_plan.legacy_block_operations),
         )
 
-        changes = self.translator.lower(patch_plan, self.mba)
+        contract_post_error: str | None = None
+
+        def _post_apply_contract_check() -> None:
+            nonlocal contract_post_error
+            violations = self._run_cfg_contract_check("post", patch_plan)
+            if not violations:
+                return
+            contract_post_error = self._format_contract_violations(violations)
+            raise RuntimeError(contract_post_error)
+
+        changes = self.translator.lower(
+            patch_plan,
+            self.mba,
+            post_apply_hook=_post_apply_contract_check,
+        )
+        if contract_post_error is not None:
+            executor_logger.warning(
+                "CFG contract post-check rejected stage %s: %s",
+                fragment.strategy_name,
+                contract_post_error,
+            )
+            return StageResult(
+                strategy_name=fragment.strategy_name,
+                edits_applied=changes,
+                success=False,
+                rollback_needed=True,
+                error=f"cfg contract post-check failed: {contract_post_error}",
+            )
         self._total_changes += changes
 
         post_cfg = self.translator.lift(self.mba)
@@ -232,6 +279,97 @@ class TransactionalExecutor:
             )
 
         return result
+
+    def _supports_live_mba(self) -> bool:
+        return hasattr(self.mba, "get_mblock") and hasattr(self.mba, "qty")
+
+    def _get_cfg_contract(self) -> IDACfgContract | None:
+        if self.cfg_contract is not None:
+            return self.cfg_contract
+        if self._supports_live_mba():
+            self.cfg_contract = IDACfgContract()
+            return self.cfg_contract
+        return None
+
+    def _run_cfg_contract_check(
+        self,
+        phase: str,
+        patch_plan: PatchPlan,
+    ) -> list:
+        contract = self._get_cfg_contract()
+        if contract is None:
+            return []
+        if phase == "pre":
+            return contract.check_pre(self.mba, patch_plan)
+        if phase == "post":
+            return contract.check_post(self.mba, patch_plan)
+        raise ValueError(f"Unknown cfg contract phase: {phase}")
+
+    @staticmethod
+    def _format_contract_violations(violations: list) -> str:
+        summaries: list[str] = []
+        for violation in violations[:3]:
+            location = (
+                f"blk[{violation.block_serial}]"
+                if getattr(violation, "block_serial", None) is not None
+                else "global"
+            )
+            summaries.append(f"{violation.code}@{location}")
+        if len(violations) > 3:
+            summaries.append(f"+{len(violations) - 3} more")
+        return ", ".join(summaries)
+
+    def _filter_backend_unsupported_modifications(
+        self,
+        pre_cfg: FlowGraph,
+        modifications: list[GraphModification],
+        patch_plan: PatchPlan,
+    ) -> tuple[list[GraphModification], PatchPlan]:
+        if not self._supports_live_mba():
+            return modifications, patch_plan
+        trampoline_steps = tuple(
+            step
+            for step in patch_plan.concrete_operations
+            if isinstance(step, PatchEdgeSplitTrampoline)
+        )
+        if not patch_plan.planner_modifications or not trampoline_steps:
+            return modifications, patch_plan
+
+        from d810.hexrays.mutation import deferred_modifier
+
+        modifier = deferred_modifier.DeferredGraphModifier(self.mba)
+        rejected_edges: set[tuple[int, int, int, int]] = set()
+        for step in trampoline_steps:
+            if modifier._check_edge_split_trampoline_preconditions(
+                source_block_serial=step.source_serial,
+                via_pred=step.via_pred,
+                old_target=step.old_target,
+                new_target=step.new_target,
+            ):
+                continue
+            rejected_edges.add(
+                (step.source_serial, step.old_target, step.via_pred, step.new_target)
+            )
+
+        if not rejected_edges:
+            return modifications, patch_plan
+
+        filtered_modifications: list[GraphModification] = []
+        for mod in patch_plan.planner_modifications:
+            if isinstance(mod, EdgeRedirectViaPredSplit) and (
+                mod.src_block,
+                mod.old_target,
+                mod.via_pred,
+                mod.new_target,
+            ) in rejected_edges:
+                continue
+            filtered_modifications.append(mod)
+
+        executor_logger.warning(
+            "Preflight: filtered %d unsupported edge-split trampoline(s) before lowering",
+            len(rejected_edges),
+        )
+        return filtered_modifications, compile_patch_plan(filtered_modifications, pre_cfg)
 
     @property
     def total_changes(self) -> int:

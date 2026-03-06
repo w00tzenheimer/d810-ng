@@ -51,6 +51,7 @@ class BlockSnapshot:
     flags: int
     start_ea: int
     insn_snapshots: tuple[InsnSnapshot, ...]
+    tail_opcode: int | None = None
 
     def __post_init__(self) -> None:
         if self.serial < 0:
@@ -67,6 +68,8 @@ class BlockSnapshot:
             raise TypeError(
                 f"BlockSnapshot: insn_snapshots must be tuple, got {type(self.insn_snapshots)}"
             )
+        if self.tail_opcode is None and self.insn_snapshots:
+            object.__setattr__(self, "tail_opcode", int(self.insn_snapshots[-1].opcode))
 
     @property
     def nsucc(self) -> int:

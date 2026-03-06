@@ -101,6 +101,24 @@ class TestBlockSnapshot:
         assert blk.flags == 0
         assert blk.start_ea == 0x1000
         assert blk.insn_snapshots == ()
+        assert blk.tail_opcode is None
+
+    def test_tail_opcode_defaults_from_last_instruction(self) -> None:
+        """BlockSnapshot derives tail_opcode when instruction snapshots exist."""
+        blk = BlockSnapshot(
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(
+                InsnSnapshot(opcode=0x10, ea=0x1000, operands=()),
+                InsnSnapshot(opcode=0x77, ea=0x1004, operands=()),
+            ),
+        )
+
+        assert blk.tail_opcode == 0x77
 
     def test_properties(self) -> None:
         """Test nsucc and npred computed properties."""

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from d810.cfg.postdominator import compute_postdom_tree
 
@@ -19,6 +19,9 @@ __all__ = [
     "ReturnSiteStatus",
     "BreakKind",
     "ReturnFrontierAudit",
+    "return_site_to_dict",
+    "return_site_from_dict",
+    "return_frontier_audit_from_dict",
 ]
 
 
@@ -152,7 +155,9 @@ class ReturnFrontierAudit:
                 "site_id": site.site_id,
                 "origin_block": site.origin_block,
                 "expected_terminal_kind": site.expected_terminal_kind,
+                "guard_hash": site.guard_hash,
                 "provenance": site.provenance,
+                "metadata": dict(site.metadata),
                 "first_break_stage": self.first_break_stage(site.site_id),
                 "stages": {},
             }
@@ -265,3 +270,83 @@ class ReturnFrontierAudit:
                 f"blk[{site.origin_block}] not postdominated by any exit at {stage}"
             )
         return ""
+
+
+def return_site_to_dict(site: ReturnSite) -> dict[str, Any]:
+    """Serialize a ReturnSite into a JSON-friendly mapping."""
+    return {
+        "site_id": site.site_id,
+        "origin_block": site.origin_block,
+        "expected_terminal_kind": site.expected_terminal_kind,
+        "guard_hash": site.guard_hash,
+        "provenance": site.provenance,
+        "metadata": dict(site.metadata),
+    }
+
+
+def return_site_from_dict(payload: Mapping[str, Any]) -> ReturnSite:
+    """Deserialize a ReturnSite from a JSON-friendly mapping."""
+    metadata = payload.get("metadata", {})
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    return ReturnSite(
+        site_id=str(payload["site_id"]),
+        origin_block=int(payload["origin_block"]),
+        expected_terminal_kind=str(payload["expected_terminal_kind"]),
+        guard_hash=str(payload.get("guard_hash", "")),
+        provenance=str(payload.get("provenance", "")),
+        metadata=dict(metadata),
+    )
+
+
+def return_frontier_audit_from_dict(
+    payload: Mapping[str, Any],
+) -> ReturnFrontierAudit:
+    """Rebuild a ReturnFrontierAudit from ``ReturnFrontierAudit.report()`` output."""
+    raw_sites = payload.get("sites", ())
+    if not isinstance(raw_sites, Sequence):
+        raw_sites = ()
+    sites = tuple(
+        return_site_from_dict(site_payload)
+        for site_payload in raw_sites
+        if isinstance(site_payload, Mapping)
+    )
+    audit = ReturnFrontierAudit(return_sites=sites)
+    site_by_id = {site.site_id: site for site in sites}
+
+    raw_stage_names = payload.get("stages_audited", ())
+    if not isinstance(raw_stage_names, Sequence):
+        raw_stage_names = ()
+
+    for raw_stage_name in raw_stage_names:
+        stage_name = str(raw_stage_name)
+        stage_results: list[ReturnSiteStatus] = []
+        for site_payload in raw_sites:
+            if not isinstance(site_payload, Mapping):
+                continue
+            site_id = str(site_payload.get("site_id", ""))
+            site = site_by_id.get(site_id)
+            if site is None:
+                continue
+            raw_stages = site_payload.get("stages", {})
+            if not isinstance(raw_stages, Mapping):
+                continue
+            stage_payload = raw_stages.get(stage_name)
+            if not isinstance(stage_payload, Mapping):
+                continue
+            stage_results.append(
+                ReturnSiteStatus(
+                    site=site,
+                    stage=stage_name,
+                    reachable_from_entry=bool(stage_payload.get("reachable", False)),
+                    postdominated_by_exit=bool(
+                        stage_payload.get("postdominated", False)
+                    ),
+                    break_classification=str(
+                        stage_payload.get("classification", BreakKind.UNKNOWN)
+                    ),
+                    detail=str(stage_payload.get("detail", "")),
+                )
+            )
+        audit._stage_results[stage_name] = stage_results
+    return audit
