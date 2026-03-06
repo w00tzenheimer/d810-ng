@@ -18,20 +18,13 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
+from d810.cfg.flow.terminal_return import (
+    TerminalReturnAuditReport,
+    TerminalReturnSiteAudit,
+    TerminalReturnSourceKind,
+)
 from d810.core.logging import getLogger
-from d810.core.typing import TYPE_CHECKING, NamedTuple, Optional
-
-if TYPE_CHECKING:
-    from d810.recon.flow.terminal_return_audit import (
-        TerminalReturnAuditReport,
-        TerminalReturnSiteAudit,
-        TerminalReturnSourceKind,
-    )
-
-# String constants matching TerminalReturnSourceKind values for runtime comparison
-# without importing from recon at runtime (layering: evaluator must not import recon).
-_DIRECT_RETURN = "direct_return"
-_EPILOGUE_CORRIDOR = "epilogue_corridor"
+from d810.core.typing import NamedTuple, Optional
 
 logger = getLogger(__name__)
 
@@ -448,14 +441,14 @@ def _prove_single_site(
     try:
         if (
             site.has_rax_write is True
-            and site.source_kind == _DIRECT_RETURN
+            and site.source_kind == TerminalReturnSourceKind.DIRECT_RETURN
         ):
             return TerminalReturnValueProof(
                 handler_serial=site.handler_serial,
                 carrier_kind=carrier_kind,
                 def_sites=(),
                 ambiguous=False,
-                topology_kind=str(site.source_kind),
+                topology_kind=site.source_kind.value,
                 proof_layer_used=ProofLayer.TOPOLOGY,
                 notes="topology: direct return with rax write confirmed by audit",
             )
@@ -476,7 +469,7 @@ def _prove_single_site(
                     carrier_kind=carrier_kind,
                     def_sites=(def_site,),
                     ambiguous=False,
-                    topology_kind=str(site.source_kind),
+                    topology_kind=site.source_kind.value,
                     proof_layer_used=ProofLayer.SINGLE_PRED_WALK,
                     notes=f"single-pred walk found def at blk {def_site.block_serial}",
                 )
@@ -499,7 +492,7 @@ def _prove_single_site(
                     carrier_kind=carrier_kind,
                     def_sites=chain_sites,
                     ambiguous=chain_ambiguous,
-                    topology_kind=str(site.source_kind),
+                    topology_kind=site.source_kind.value,
                     proof_layer_used=ProofLayer.CHAIN_BACKED,
                     notes=f"chain-backed: {len(chain_sites)} def(s)",
                 )
@@ -530,7 +523,7 @@ def _prove_single_site(
                     carrier_kind=carrier_kind,
                     def_sites=rd_sites,
                     ambiguous=rd_ambiguous,
-                    topology_kind=str(site.source_kind),
+                    topology_kind=site.source_kind.value,
                     proof_layer_used=ProofLayer.REACHING_DEF,
                     notes=f"reaching-def: {len(rd_sites)} def(s)",
                 )
