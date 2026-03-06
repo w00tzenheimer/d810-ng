@@ -30,7 +30,7 @@ from d810.cfg.plan import PatchPlan
 from d810.cfg.contracts.report import InvariantViolation
 
 ContractScope = Literal["focused", "full"]
-ContractPhase = Literal["pre", "post", "rollback"]
+ContractPhase = Literal["pre", "post", "rollback", "projected"]
 
 # Native oracle violation code prefix — distinguishes oracle results from Python checks
 _NATIVE_PREFIX = "CFG_NATIVE_"
@@ -199,6 +199,29 @@ class IDACfgContract:
             phase="projected",
             focus_serials=focus,
         )
+
+    def verify_projected(
+        self,
+        pre_cfg,
+        plan: PatchPlan,
+        *,
+        scope: ContractScope = "focused",
+    ) -> tuple[InvariantViolation, ...]:
+        """Convenience wrapper: project + check + raise on violations.
+
+        Mirrors :meth:`verify` behaviour for the ``"projected"`` phase:
+        returns an empty tuple on success, raises
+        :class:`CfgContractViolationError` with ``phase="projected"``
+        when any invariant is violated.
+
+        Projected-state construction is delegated to
+        :func:`d810.cfg.flow.edit_simulator.project_post_state` (called
+        internally by :meth:`check_projected`).
+        """
+        violations = tuple(self.check_projected(pre_cfg, plan, scope=scope))
+        if violations:
+            raise CfgContractViolationError(phase="projected", violations=violations)
+        return violations
 
     def verify(
         self,

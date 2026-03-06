@@ -36,18 +36,30 @@ def __getattr__(name: str):
     }:
         module = import_module("d810.cfg.contracts.invariants")
         return getattr(module, name)
+    if name in {
+        "TRANSACTION_PHASES",
+        "TransactionPhase",
+        "FailureClassification",
+        "classify_failure",
+    }:
+        module = import_module("d810.cfg.contracts.transaction_policy")
+        return getattr(module, name)
     raise AttributeError(name)
 
 
 __all__ = [
     "CfgContractViolationError",
+    "FailureClassification",
     "IDACfgContract",
     "NATIVE_ORACLE_AVAILABLE",
+    "TRANSACTION_PHASES",
+    "TransactionPhase",
     "block_list_consistency",
     "block_type_vs_tail",
     "check_all_insn_invariants",
     "check_block_native",
     "check_mba_native",
+    "classify_failure",
     "insn_checks_enabled",
     "oracle_available",
     "pred_succ_symmetry",
