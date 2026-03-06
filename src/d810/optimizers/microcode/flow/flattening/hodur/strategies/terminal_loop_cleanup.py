@@ -118,6 +118,7 @@ class TerminalLoopCleanupStrategy:
             ida_hexrays=ida_hexrays,
             edits=modifications,
             owned_blocks=owned_blocks,
+            builder=builder,
         )
 
         # --- _queue_legacy_terminal_backedge_fix ---
@@ -130,6 +131,7 @@ class TerminalLoopCleanupStrategy:
             ida_hexrays=ida_hexrays,
             edits=modifications,
             owned_blocks=owned_blocks,
+            builder=builder,
         )
 
         # --- _fix_degenerate_terminal_loops ---
@@ -141,6 +143,7 @@ class TerminalLoopCleanupStrategy:
             ida_hexrays=ida_hexrays,
             edits=modifications,
             owned_blocks=owned_blocks,
+            builder=builder,
         )
 
         if not modifications:
@@ -332,6 +335,7 @@ class TerminalLoopCleanupStrategy:
         ida_hexrays: object,
         edits: list,
         owned_blocks: set[int],
+        builder: ModificationBuilder | None = None,
     ) -> None:
         """Find and fix the terminal back-edge that creates the while(1) wrapper.
 
@@ -349,8 +353,9 @@ class TerminalLoopCleanupStrategy:
             first_check_block=first_check_block,
             find_terminal_exit_target=find_terminal_exit_target,
             ida_hexrays=ida_hexrays,
-            edits=modifications,
+            edits=edits,
             owned_blocks=owned_blocks,
+            builder=builder,
         ):
             return
 
@@ -407,7 +412,7 @@ class TerminalLoopCleanupStrategy:
                 success_target,
             )
             if blk.nsucc() == 1:
-                modifications.append(
+                edits.append(
                     builder.goto_redirect(
                         source_block=blk_serial,
                         target_block=success_target,
@@ -415,7 +420,7 @@ class TerminalLoopCleanupStrategy:
                 )
                 owned_blocks.add(blk_serial)
             elif blk.nsucc() == 2:
-                modifications.append(
+                edits.append(
                     builder.convert_to_goto(
                         source_block=blk_serial,
                         target_block=success_target,
@@ -433,6 +438,7 @@ class TerminalLoopCleanupStrategy:
         ida_hexrays: object,
         edits: list,
         owned_blocks: set[int],
+        builder: ModificationBuilder | None = None,
     ) -> bool:
         """Legacy Hodur cleanup: rewrite direct goto back-edges to first check for jnz wrappers.
 
@@ -482,7 +488,7 @@ class TerminalLoopCleanupStrategy:
             if blk.tail.l.t != ida_hexrays.mop_b or blk.tail.l.b != first_check_block:
                 continue
 
-            modifications.append(
+            edits.append(
                 builder.goto_redirect(
                     source_block=blk_serial,
                     target_block=success_target,
@@ -502,6 +508,7 @@ class TerminalLoopCleanupStrategy:
         ida_hexrays: object,
         edits: list,
         owned_blocks: set[int],
+        builder: ModificationBuilder | None = None,
     ) -> None:
         """Redirect trivial terminal loops that can remain after unflattening.
 
@@ -532,7 +539,7 @@ class TerminalLoopCleanupStrategy:
 
             succ = next(iter(blk.succset))
             if succ == blk.serial and blk.serial != exit_target:
-                modifications.append(
+                edits.append(
                     builder.goto_redirect(
                         source_block=blk.serial,
                         target_block=exit_target,
@@ -557,7 +564,7 @@ class TerminalLoopCleanupStrategy:
                 and blk.serial != exit_target
                 and succ != exit_target
             ):
-                modifications.append(
+                edits.append(
                     builder.goto_redirect(
                         source_block=blk.serial,
                         target_block=exit_target,
