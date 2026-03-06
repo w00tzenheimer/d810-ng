@@ -439,7 +439,18 @@ class TransactionalExecutor:
                     total_removed,
                     round_idx + 1,
                 )
-                return kept_redirect_modifications
+                final_kept_counts = Counter(kept_redirect_modifications)
+                filtered_modifications: list[GraphModification] = []
+                for mod in original_modifications:
+                    if mod not in redirect_modifications:
+                        filtered_modifications.append(mod)
+                        continue
+                    if final_kept_counts[mod] == 0:
+                        continue
+                    filtered_modifications.append(mod)
+                    final_kept_counts[mod] -= 1
+
+                return filtered_modifications
 
             cycle_nodes: set[int] = set()
             for cyc in cycle_result.cycles:
