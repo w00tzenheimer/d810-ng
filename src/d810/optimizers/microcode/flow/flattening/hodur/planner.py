@@ -94,6 +94,14 @@ class UnflatteningPlanner:
                 continue
             if fragment is not None:
                 fragments.append(fragment)
+            else:
+                pre_planner_records.append(DecisionRecord(
+                    strategy_name=strategy.name,
+                    family=strategy.family,
+                    phase=DecisionPhase.INAPPLICABLE,
+                    reason_code=DecisionReasonCode.REJECTED_EMPTY,
+                    reason="applicable but produced no fragment",
+                ))
 
         # Compose pipeline from collected fragments
         pipeline, provenance = self.compose_pipeline(
