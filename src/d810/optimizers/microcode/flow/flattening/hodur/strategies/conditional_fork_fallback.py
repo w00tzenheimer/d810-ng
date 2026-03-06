@@ -360,6 +360,11 @@ class ConditionalForkFallbackStrategy:
         if not self.is_applicable(snapshot):
             return None
 
+        # K3: mba required — all methods use instruction-chain walks
+        # (_find_conditional_predecessor, _resolve_conditional_chain_target,
+        # _collect_ladder_use_before_def, _emulate_chain_exit) and
+        # MicroCodeInterpreter/MopTracker which need live mblock_t.
+        # No topology-only loops to migrate to flow_graph.
         mba = snapshot.mba
         sm = snapshot.state_machine
         if mba is None or sm is None:
