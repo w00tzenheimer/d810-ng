@@ -162,6 +162,9 @@ class PredPatchFallbackStrategy:
         if not self.is_applicable(snapshot):
             return None
 
+        # K3: mba required — all block access involves instruction-chain walks
+        # (blk.tail, blk.head, insn.opcode, MopTracker.search_backward) and
+        # _resolve_conditional_chain_target.  No topology-only loops to migrate.
         mba = snapshot.mba
         sm = snapshot.state_machine
         if mba is None or sm is None:

@@ -93,6 +93,11 @@ class TerminalLoopCleanupStrategy:
         if not self.is_applicable(snapshot):
             return None
 
+        # K3: live mba_t still required — instruction-chain walks in
+        # _is_lightweight_terminal_transition_block, _is_degenerate_loop_block,
+        # _queue_legacy_terminal_backedge_fix, and helper find_terminal_exit_target
+        # all operate on live mblock_t objects.  Only _collect_nearby_blocks
+        # (pure topology BFS) is migrated to flow_graph.
         mba = snapshot.mba
         sm = snapshot.state_machine
         handlers = getattr(sm, "handlers", {}) or {}
@@ -144,6 +149,7 @@ class TerminalLoopCleanupStrategy:
             edits=modifications,
             owned_blocks=owned_blocks,
             builder=builder,
+            flow_graph=snapshot.flow_graph,
         )
 
         if not modifications:
@@ -280,23 +286,35 @@ class TerminalLoopCleanupStrategy:
         mba: object,
         seed_blocks: set[int],
         depth: int = 2,
+        flow_graph: object | None = None,
     ) -> set[int]:
         """BFS expansion around seed_blocks up to given depth.
 
         Faithful port of HodurUnflattener._collect_nearby_blocks.
+        Uses flow_graph snapshot for topology when available.
         """
         nearby = set(seed_blocks)
         frontier = set(seed_blocks)
         for _ in range(max(depth, 0)):
             next_frontier: set[int] = set()
             for blk_serial in frontier:
-                blk = mba.get_mblock(blk_serial)
-                if blk is None:
-                    continue
-                for succ in blk.succset:
+                if flow_graph is not None:
+                    blk_snap = flow_graph.get_block(blk_serial)
+                    if blk_snap is None:
+                        continue
+                    succs = blk_snap.succs
+                    preds = blk_snap.preds
+                else:
+                    # K3: mba required — flow_graph not available
+                    blk = mba.get_mblock(blk_serial)
+                    if blk is None:
+                        continue
+                    succs = blk.succset
+                    preds = blk.predset
+                for succ in succs:
                     if succ not in nearby:
                         next_frontier.add(succ)
-                for pred in blk.predset:
+                for pred in preds:
                     if pred not in nearby:
                         next_frontier.add(pred)
             if not next_frontier:
@@ -509,6 +527,7 @@ class TerminalLoopCleanupStrategy:
         edits: list,
         owned_blocks: set[int],
         builder: ModificationBuilder | None = None,
+        flow_graph: object | None = None,
     ) -> None:
         """Redirect trivial terminal loops that can remain after unflattening.
 
@@ -518,6 +537,7 @@ class TerminalLoopCleanupStrategy:
             return
 
         first_check_block = list(handlers.values())[0].check_block
+        # K3: mba required — find_terminal_exit_target uses instruction chains
         exit_target = find_terminal_exit_target(
             mba, first_check_block, state_machine_blocks
         )
@@ -525,7 +545,7 @@ class TerminalLoopCleanupStrategy:
             return
 
         candidate_blocks = self._collect_nearby_blocks(
-            mba, state_machine_blocks, depth=4
+            mba, state_machine_blocks, depth=4, flow_graph=flow_graph,
         )
 
         for blk_serial in sorted(candidate_blocks):

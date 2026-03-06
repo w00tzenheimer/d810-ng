@@ -106,6 +106,11 @@ class DirectHandlerLinearizationStrategy:
         if not self.is_applicable(snapshot):
             return None
 
+        # K3: live mba_t still required — helper functions (evaluate_handler_paths,
+        # find_terminal_exit_target, resolve_exit_via_bst_default, find_bst_default_block,
+        # _mop_matches_stkoff) and instruction-chain walks (blk.head/tail/insn.next)
+        # all operate on live mblock_t objects.  Only topology-only loops (exit_blocks,
+        # adjacency) are migrated to flow_graph above.
         mba = snapshot.mba
         bst_result = snapshot.bst_result
         dispatcher_serial: int = snapshot.bst_dispatcher_serial
@@ -175,21 +180,27 @@ class DirectHandlerLinearizationStrategy:
         if pre_header_serial is not None:
             forbidden_blocks.add(pre_header_serial)
         # exit_blocks: blocks with 0 successors
+        # _preflight_adj: adjacency for prove_terminal_sink validation
+        # Use flow_graph snapshot when available to avoid live mba topology walk.
         exit_blocks: set[int] = set()
-        for i in range(mba.qty):
-            blk_i = mba.get_mblock(i)
-            if blk_i is not None and blk_i.nsucc() == 0:
-                exit_blocks.add(i)
-
-        # Build adjacency for prove_terminal_sink validation
         _preflight_adj: dict[int, list[int]] = {}
-        for i in range(mba.qty):
-            blk_i = mba.get_mblock(i)
-            succs = []
-            if blk_i is not None:
-                for j in range(blk_i.nsucc()):
-                    succs.append(blk_i.succ(j))
-            _preflight_adj[i] = succs
+        fg = snapshot.flow_graph
+        if fg is not None:
+            for serial, blk_snap in fg.blocks.items():
+                if blk_snap.nsucc == 0:
+                    exit_blocks.add(serial)
+                _preflight_adj[serial] = list(blk_snap.succs)
+        else:
+            # K3: mba required — flow_graph not available in this snapshot
+            for i in range(mba.qty):
+                blk_i = mba.get_mblock(i)
+                succs = []
+                if blk_i is not None:
+                    if blk_i.nsucc() == 0:
+                        exit_blocks.add(i)
+                    for j in range(blk_i.nsucc()):
+                        succs.append(blk_i.succ(j))
+                _preflight_adj[i] = succs
 
         def _queue_redirect(
             path: object,

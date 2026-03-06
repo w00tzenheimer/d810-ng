@@ -124,6 +124,11 @@ class FlowGraph:
     def num_blocks(self) -> int:
         return len(self.blocks)
 
+    @property
+    def block_count(self) -> int:
+        """Alias for :attr:`num_blocks` (K3 compatibility with mba.qty)."""
+        return len(self.blocks)
+
     def get_block(self, serial: int) -> BlockSnapshot | None:
         return self.blocks.get(serial)
 

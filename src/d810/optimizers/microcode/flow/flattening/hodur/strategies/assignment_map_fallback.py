@@ -101,6 +101,11 @@ class AssignmentMapFallbackStrategy:
             find_terminal_exit_target,
         )
 
+        # K3: mba required — instruction-chain walks in _queue_state_assignment_removals
+        # (blk.head, insn.next, insn.opcode), _resolve_remaining_via_assignment_map
+        # (blk.predset, blk.succset, instruction inspection), _resolve_handler_entry
+        # (blk.tail chain walk), and helper find_terminal_exit_target.
+        # No topology-only loops to migrate to flow_graph.
         mba = snapshot.mba
         sm = snapshot.state_machine
         handlers = getattr(sm, "handlers", {}) or {}
