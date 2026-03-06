@@ -143,8 +143,8 @@ def test_decision_input_summary():
     assert s.terminal_return_audit_summary == "4/46 terminal: 4 shared, 0 direct"
 
 
-def test_provenance_to_dicts_serializable():
-    """Verify to_dicts() output is JSON-serializable."""
+def test_provenance_to_dict_serializable():
+    """Verify to_dict() output is JSON-serializable."""
     rows = (
         DecisionRecord(
             "A",
@@ -157,10 +157,12 @@ def test_provenance_to_dicts_serializable():
         ),
     )
     prov = PipelineProvenance(rows=rows)
-    dicts = prov.to_dicts()
-    serialized = json.dumps(dicts)
+    d = prov.to_dict()
+    serialized = json.dumps(d)
     assert '"phase": "applied"' in serialized
     assert '"handler_count": 5' in serialized
+    assert "rows" in d
+    assert "phase_summary" in d
 
 
 def test_decision_input_summary_to_dict():
