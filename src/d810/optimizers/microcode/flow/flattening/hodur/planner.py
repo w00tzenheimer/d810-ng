@@ -3,11 +3,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from d810.core.logging import getLogger
+from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
+    DecisionPhase,
+    DecisionReasonCode,
+    DecisionRecord,
+    PipelineProvenance,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_FALLBACK,
     OwnershipScope,
     PlanFragment,
 )
+
+logger = getLogger(__name__)
 
 
 @dataclass
@@ -27,15 +36,71 @@ class UnflatteningPlanner:
 
     def compose_pipeline(
         self, fragments: list[PlanFragment], total_handlers: int
-    ) -> list[PlanFragment]:
-        """Full pipeline: filter -> policy -> resolve conflicts -> order."""
-        filtered = [f for f in fragments if not f.is_empty()]
-        filtered = [f for f in filtered if f.risk_score <= self.policy.max_risk_score]
-        accepted = self.apply_policy(filtered, total_handlers)
+    ) -> tuple[list[PlanFragment], PipelineProvenance]:
+        """Full pipeline: filter -> policy -> resolve conflicts -> order.
+
+        Returns:
+            A tuple of (ordered pipeline, provenance ledger).
+        """
+        rows: list[DecisionRecord] = []
+
+        # --- Gate 1: Empty filter (fragments with no actions) ---
+        filtered: list[PlanFragment] = []
+        for f in fragments:
+            if f.is_empty():
+                rows.append(self._record(
+                    f,
+                    phase=DecisionPhase.INAPPLICABLE,
+                    reason_code=DecisionReasonCode.REJECTED_EMPTY,
+                    reason="fragment has no modifications",
+                ))
+            else:
+                filtered.append(f)
+
+        # --- Gate 2: Risk filter (risk_score > threshold) ---
+        risk_passed: list[PlanFragment] = []
+        for f in filtered:
+            if f.risk_score > self.policy.max_risk_score:
+                rows.append(self._record(
+                    f,
+                    phase=DecisionPhase.POLICY_FILTERED,
+                    reason_code=DecisionReasonCode.REJECTED_RISK,
+                    reason=(
+                        f"risk_score={f.risk_score:.2f} > "
+                        f"threshold={self.policy.max_risk_score:.2f}"
+                    ),
+                ))
+            else:
+                risk_passed.append(f)
+
+        # --- Gate 3: Policy gate (coverage threshold drops fallbacks) ---
+        accepted = self._apply_policy_with_provenance(
+            risk_passed, total_handlers, rows
+        )
+
+        # --- Gate 4: Conflict resolution (greedy independent set) ---
         conflicts = self.find_conflicts(accepted)
         if conflicts:
-            accepted = self._resolve_conflicts(accepted, conflicts)
-        return self.order_fragments(accepted)
+            accepted = self._resolve_conflicts_with_provenance(
+                accepted, conflicts, rows
+            )
+
+        # --- Gate 5: Selection (surviving fragments) ---
+        ordered = self.order_fragments(accepted)
+        for f in ordered:
+            rows.append(self._record(
+                f,
+                phase=DecisionPhase.SELECTED,
+                reason_code=DecisionReasonCode.ACCEPTED,
+                reason=(
+                    f"composite_score={f.expected_benefit.composite_score():.1f}, "
+                    f"selected into pipeline"
+                ),
+            ))
+
+        provenance = PipelineProvenance(rows=tuple(rows))
+        logger.info("Pipeline provenance: %s", provenance.summary())
+        return ordered, provenance
 
     def order_fragments(self, fragments: list[PlanFragment]) -> list[PlanFragment]:
         """Order by prerequisites first, then by descending composite score."""
@@ -86,6 +151,87 @@ class UnflatteningPlanner:
                 return [f for f in fragments if f.family != FAMILY_FALLBACK]
         return fragments
 
+    def _apply_policy_with_provenance(
+        self,
+        fragments: list[PlanFragment],
+        total_handlers: int,
+        rows: list[DecisionRecord],
+    ) -> list[PlanFragment]:
+        """Apply policy gate and record provenance for dropped fallbacks."""
+        if not self.policy.allow_fallback_families:
+            accepted: list[PlanFragment] = []
+            for f in fragments:
+                if f.family == FAMILY_FALLBACK:
+                    rows.append(self._record(
+                        f,
+                        phase=DecisionPhase.POLICY_FILTERED,
+                        reason_code=DecisionReasonCode.REJECTED_POLICY,
+                        reason="fallback families disallowed by policy",
+                    ))
+                else:
+                    accepted.append(f)
+            return accepted
+
+        direct_handlers = sum(
+            f.expected_benefit.handlers_resolved
+            for f in fragments
+            if f.family != FAMILY_FALLBACK
+        )
+        if total_handlers > 0:
+            coverage = direct_handlers / total_handlers
+            if coverage >= self.policy.direct_coverage_threshold:
+                accepted = []
+                for f in fragments:
+                    if f.family == FAMILY_FALLBACK:
+                        rows.append(self._record(
+                            f,
+                            phase=DecisionPhase.POLICY_FILTERED,
+                            reason_code=DecisionReasonCode.REJECTED_POLICY,
+                            reason=(
+                                f"direct coverage {coverage:.0%} >= "
+                                f"{self.policy.direct_coverage_threshold:.0%} threshold"
+                            ),
+                        ))
+                    else:
+                        accepted.append(f)
+                return accepted
+        return fragments
+
+    def _resolve_conflicts_with_provenance(
+        self,
+        fragments: list[PlanFragment],
+        conflicts: list[tuple[str, str, frozenset[int]]],
+        rows: list[DecisionRecord],
+    ) -> list[PlanFragment]:
+        """Greedy independent set with provenance for dropped fragments."""
+        scored = sorted(
+            fragments,
+            key=lambda f: f.expected_benefit.composite_score(),
+            reverse=True,
+        )
+        accepted: list[PlanFragment] = []
+        claimed = OwnershipScope(
+            blocks=frozenset(),
+            edges=frozenset(),
+            transitions=frozenset(),
+        )
+        for frag in scored:
+            if frag.ownership.is_disjoint(claimed):
+                accepted.append(frag)
+                claimed = claimed.union(frag.ownership)
+            else:
+                overlap_blocks = frag.ownership.blocks & claimed.blocks
+                rows.append(self._record(
+                    frag,
+                    phase=DecisionPhase.CONFLICT_DROPPED,
+                    reason_code=DecisionReasonCode.REJECTED_CONFLICT,
+                    reason=(
+                        f"ownership conflict: {len(overlap_blocks)} shared blocks"
+                    ),
+                    ownership_blocks=frozenset(frag.ownership.blocks),
+                ))
+        return accepted
+
     def _resolve_conflicts(
         self,
         fragments: list[PlanFragment],
@@ -115,3 +261,27 @@ class UnflatteningPlanner:
                 accepted.append(frag)
                 claimed = claimed.union(frag.ownership)
         return accepted
+
+    @staticmethod
+    def _record(
+        frag: PlanFragment,
+        *,
+        phase: DecisionPhase,
+        reason_code: DecisionReasonCode,
+        reason: str,
+        ownership_blocks: frozenset[int] | None = None,
+    ) -> DecisionRecord:
+        """Build a DecisionRecord from a PlanFragment."""
+        return DecisionRecord(
+            strategy_name=frag.strategy_name,
+            family=frag.family,
+            phase=phase,
+            reason_code=reason_code,
+            reason=reason,
+            composite_score=frag.expected_benefit.composite_score(),
+            risk_score=frag.risk_score,
+            handler_count=frag.expected_benefit.handlers_resolved,
+            transition_count=frag.expected_benefit.transitions_resolved,
+            ownership_blocks=ownership_blocks or frozenset(frag.ownership.blocks),
+            prerequisites=frozenset(frag.prerequisites),
+        )

@@ -288,10 +288,11 @@ class HodurUnflattener(GenericUnflatteningRule):
             return 0
 
         # 4. Planner composes pipeline
-        pipeline = self._planner.compose_pipeline(
+        pipeline, provenance = self._planner.compose_pipeline(
             fragments,
             total_handlers=snapshot.handler_count,
         )
+        unflat_logger.info("Planner provenance: %s", provenance.summary())
 
         # Return frontier audit: post_plan stage (mods queued but not applied)
         if self.RETURN_FRONTIER_AUDIT_ENABLED and self._audit_return_sites:

@@ -1,14 +1,26 @@
-"""Tests for Hodur decision provenance types (K1.1)."""
+"""Tests for Hodur decision provenance types (K1.1) and planner instrumentation (K1.2)."""
 from __future__ import annotations
 
 import json
 
+from d810.cfg.graph_modification import RedirectGoto
+from d810.optimizers.microcode.flow.flattening.hodur.planner import (
+    PipelinePolicy,
+    UnflatteningPlanner,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     DecisionInputSummary,
     DecisionPhase,
     DecisionReasonCode,
     DecisionRecord,
     PipelineProvenance,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+    BenefitMetrics,
+    FAMILY_DIRECT,
+    FAMILY_FALLBACK,
+    OwnershipScope,
+    PlanFragment,
 )
 
 
@@ -192,3 +204,171 @@ def test_provenance_summary_format():
     assert "1 accepted" in summary
     assert "1 rejected" in summary
     assert "2 total" in summary
+
+
+# ---------------------------------------------------------------------------
+# K1.2: compose_pipeline provenance tests
+# ---------------------------------------------------------------------------
+
+_DUMMY_MOD = RedirectGoto(from_serial=0, old_target=1, new_target=2)
+
+
+def _fragment(
+    name: str,
+    family: str = FAMILY_DIRECT,
+    risk: float = 0.3,
+    handlers: int = 5,
+    transitions: int = 0,
+    blocks_freed: int = 0,
+    ownership: OwnershipScope | None = None,
+    empty: bool = False,
+) -> PlanFragment:
+    """Build a minimal PlanFragment for planner tests."""
+    return PlanFragment(
+        strategy_name=name,
+        family=family,
+        ownership=ownership or OwnershipScope(
+            blocks=frozenset(), edges=frozenset(), transitions=frozenset(),
+        ),
+        prerequisites=[],
+        expected_benefit=BenefitMetrics(
+            handlers_resolved=handlers,
+            transitions_resolved=transitions,
+            blocks_freed=blocks_freed,
+            conflict_density=0.0,
+        ),
+        risk_score=risk,
+        metadata={},
+        modifications=[] if empty else [_DUMMY_MOD],
+    )
+
+
+class TestComposePipelineProvenance:
+    """K1.2: compose_pipeline returns (pipeline, PipelineProvenance)."""
+
+    def test_returns_provenance(self) -> None:
+        planner = UnflatteningPlanner()
+        frags = [_fragment("A"), _fragment("B", risk=0.9)]
+        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        assert isinstance(provenance, PipelineProvenance)
+        assert provenance.accepted_count >= 1
+        verdicts = {r.strategy_name: r.reason_code for r in provenance.rows}
+        assert verdicts["B"] == DecisionReasonCode.REJECTED_RISK
+
+    def test_empty_filter_provenance(self) -> None:
+        """Fragments with no modifications get INAPPLICABLE / REJECTED_EMPTY."""
+        planner = UnflatteningPlanner()
+        frags = [_fragment("empty_one", empty=True), _fragment("real_one")]
+        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        assert len(pipeline) == 1
+        assert pipeline[0].strategy_name == "real_one"
+        verdicts = {r.strategy_name: r for r in provenance.rows}
+        assert verdicts["empty_one"].phase == DecisionPhase.INAPPLICABLE
+        assert verdicts["empty_one"].reason_code == DecisionReasonCode.REJECTED_EMPTY
+
+    def test_risk_filter_provenance(self) -> None:
+        """Fragments exceeding risk threshold get POLICY_FILTERED / REJECTED_RISK."""
+        planner = UnflatteningPlanner(PipelinePolicy(max_risk_score=0.5))
+        frags = [_fragment("safe", risk=0.3), _fragment("risky", risk=0.8)]
+        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        assert len(pipeline) == 1
+        verdicts = {r.strategy_name: r for r in provenance.rows}
+        assert verdicts["risky"].phase == DecisionPhase.POLICY_FILTERED
+        assert verdicts["risky"].reason_code == DecisionReasonCode.REJECTED_RISK
+        assert verdicts["risky"].risk_score == 0.8
+
+    def test_policy_gate_provenance(self) -> None:
+        """Fallbacks dropped when direct coverage >= threshold."""
+        planner = UnflatteningPlanner()
+        frags = [
+            _fragment("primary1", family=FAMILY_DIRECT, handlers=9),
+            _fragment("fallback1", family=FAMILY_FALLBACK, handlers=2),
+        ]
+        # 9/10 = 90% >= 80% threshold => fallback dropped
+        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        phases = {r.strategy_name: r.phase for r in provenance.rows}
+        assert phases["fallback1"] == DecisionPhase.POLICY_FILTERED
+        reason_codes = {r.strategy_name: r.reason_code for r in provenance.rows}
+        assert reason_codes["fallback1"] == DecisionReasonCode.REJECTED_POLICY
+
+    def test_conflict_resolution_provenance(self) -> None:
+        """Lower-scoring fragment dropped by conflict gets CONFLICT_DROPPED."""
+        shared = frozenset({1, 2, 3})
+        frags = [
+            _fragment(
+                "A",
+                handlers=8,
+                ownership=OwnershipScope(
+                    blocks=shared, edges=frozenset(), transitions=frozenset(),
+                ),
+            ),
+            _fragment(
+                "B",
+                handlers=3,
+                ownership=OwnershipScope(
+                    blocks=shared, edges=frozenset(), transitions=frozenset(),
+                ),
+            ),
+        ]
+        planner = UnflatteningPlanner()
+        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        phases = {r.strategy_name: r.phase for r in provenance.rows}
+        assert phases["B"] == DecisionPhase.CONFLICT_DROPPED
+        reason_codes = {r.strategy_name: r.reason_code for r in provenance.rows}
+        assert reason_codes["B"] == DecisionReasonCode.REJECTED_CONFLICT
+        # A should be SELECTED
+        assert phases["A"] == DecisionPhase.SELECTED
+
+    def test_selected_fragments_are_accepted(self) -> None:
+        """Surviving fragments get SELECTED / ACCEPTED."""
+        planner = UnflatteningPlanner()
+        frags = [_fragment("A"), _fragment("B")]
+        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        assert len(pipeline) == 2
+        for row in provenance.rows:
+            if row.phase == DecisionPhase.SELECTED:
+                assert row.reason_code == DecisionReasonCode.ACCEPTED
+
+    def test_provenance_handler_and_transition_counts(self) -> None:
+        """DecisionRecord carries handler_count and transition_count from benefit."""
+        planner = UnflatteningPlanner()
+        frags = [_fragment("A", handlers=7, transitions=12)]
+        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        selected = [r for r in provenance.rows if r.phase == DecisionPhase.SELECTED]
+        assert len(selected) == 1
+        assert selected[0].handler_count == 7
+        assert selected[0].transition_count == 12
+
+    def test_provenance_covers_all_input_fragments(self) -> None:
+        """Every input fragment appears exactly once in provenance rows."""
+        planner = UnflatteningPlanner()
+        frags = [
+            _fragment("A"),
+            _fragment("B", risk=0.9),
+            _fragment("C", empty=True),
+        ]
+        _pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        names = [r.strategy_name for r in provenance.rows]
+        assert sorted(names) == ["A", "B", "C"]
+
+    def test_policy_disallow_fallback_provenance(self) -> None:
+        """When allow_fallback_families=False, fallbacks get POLICY_FILTERED."""
+        policy = PipelinePolicy(allow_fallback_families=False)
+        planner = UnflatteningPlanner(policy)
+        frags = [
+            _fragment("direct1", family=FAMILY_DIRECT),
+            _fragment("fb1", family=FAMILY_FALLBACK),
+        ]
+        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        assert len(pipeline) == 1
+        verdicts = {r.strategy_name: r for r in provenance.rows}
+        assert verdicts["fb1"].phase == DecisionPhase.POLICY_FILTERED
+        assert verdicts["fb1"].reason_code == DecisionReasonCode.REJECTED_POLICY
+
+    def test_no_fragments_returns_empty_provenance(self) -> None:
+        """Empty input produces empty pipeline and provenance."""
+        planner = UnflatteningPlanner()
+        pipeline, provenance = planner.compose_pipeline([], total_handlers=10)
+        assert pipeline == []
+        assert provenance.accepted_count == 0
+        assert provenance.rejected_count == 0
