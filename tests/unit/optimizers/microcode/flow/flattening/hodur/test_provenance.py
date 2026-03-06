@@ -847,3 +847,181 @@ class TestComposePipelineWithPlannerInputs:
         pipeline, provenance = planner.compose_pipeline(frags, inputs=inputs)
         phases = {r.strategy_name: r.phase for r in provenance.rows}
         assert phases["fallback1"] == DecisionPhase.POLICY_FILTERED
+
+
+# ---------------------------------------------------------------------------
+# K5: Planner Ownership Inversion
+# ---------------------------------------------------------------------------
+
+
+class _MockStrategy:
+    """Minimal strategy implementing UnflatteningStrategy protocol for tests."""
+
+    def __init__(
+        self,
+        name: str,
+        family: str = FAMILY_DIRECT,
+        applicable: bool = True,
+        fragment: PlanFragment | None = None,
+        crash: Exception | None = None,
+    ) -> None:
+        self._name = name
+        self._family = family
+        self._applicable = applicable
+        self._fragment = fragment
+        self._crash = crash
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def family(self) -> str:
+        return self._family
+
+    def is_applicable(self, snapshot: object) -> bool:
+        return self._applicable
+
+    def plan(self, snapshot: object) -> PlanFragment | None:
+        if self._crash is not None:
+            raise self._crash
+        return self._fragment
+
+
+class _FakeSnapshot:
+    """Minimal stand-in for AnalysisSnapshot (no optimizer imports needed)."""
+
+    def __init__(self, handler_count: int = 10) -> None:
+        self._handler_count = handler_count
+
+    @property
+    def handler_count(self) -> int:
+        return self._handler_count
+
+
+def _make_snapshot(handler_count: int = 10) -> object:
+    """Build a minimal stand-in for AnalysisSnapshot (no IDA dependency)."""
+    return _FakeSnapshot(handler_count=handler_count)
+
+
+class TestPlannerPlan:
+    """K5.1: planner.plan() owns strategy polling + compose_pipeline."""
+
+    def test_plan_calls_strategies_and_composes(self) -> None:
+        """plan() polls strategies and returns pipeline + provenance."""
+        planner = UnflatteningPlanner()
+        frag_a = _fragment("A", handlers=5)
+        strategies = [
+            _MockStrategy("A", fragment=frag_a),
+        ]
+        snapshot = _make_snapshot(handler_count=10)
+        inputs = PlannerInputs(total_handlers=10)
+        pipeline, provenance = planner.plan(snapshot, strategies, inputs=inputs)
+        assert len(pipeline) == 1
+        assert pipeline[0].strategy_name == "A"
+        assert isinstance(provenance, PipelineProvenance)
+        assert provenance.accepted_count >= 1
+
+    def test_inapplicable_recorded_in_provenance(self) -> None:
+        """Strategies returning is_applicable=False appear as INAPPLICABLE."""
+        planner = UnflatteningPlanner()
+        strategies = [
+            _MockStrategy("Skipped", applicable=False),
+            _MockStrategy("Active", fragment=_fragment("Active", handlers=5)),
+        ]
+        snapshot = _make_snapshot(handler_count=10)
+        pipeline, provenance = planner.plan(snapshot, strategies)
+        phases = {r.strategy_name: r.phase for r in provenance.rows}
+        assert phases["Skipped"] == DecisionPhase.INAPPLICABLE
+        reason_codes = {r.strategy_name: r.reason_code for r in provenance.rows}
+        assert reason_codes["Skipped"] == DecisionReasonCode.REJECTED_INAPPLICABLE
+
+    def test_crashed_recorded_in_provenance(self) -> None:
+        """Strategies that raise during plan() appear as CRASHED."""
+        planner = UnflatteningPlanner()
+        strategies = [
+            _MockStrategy("Broken", crash=ValueError("test crash")),
+            _MockStrategy("OK", fragment=_fragment("OK", handlers=5)),
+        ]
+        snapshot = _make_snapshot(handler_count=10)
+        pipeline, provenance = planner.plan(snapshot, strategies)
+        phases = {r.strategy_name: r.phase for r in provenance.rows}
+        assert phases["Broken"] == DecisionPhase.CRASHED
+        reason_codes = {r.strategy_name: r.reason_code for r in provenance.rows}
+        assert reason_codes["Broken"] == DecisionReasonCode.REJECTED_CRASHED
+        # Notes should contain the exception message
+        notes = {r.strategy_name: r.notes for r in provenance.rows}
+        assert "test crash" in notes["Broken"]
+
+    def test_pre_planner_records_prepended(self) -> None:
+        """INAPPLICABLE/CRASHED records appear before planner composition rows."""
+        planner = UnflatteningPlanner()
+        strategies = [
+            _MockStrategy("Skip1", applicable=False),
+            _MockStrategy("Active", fragment=_fragment("Active", handlers=5)),
+        ]
+        snapshot = _make_snapshot(handler_count=10)
+        pipeline, provenance = planner.plan(snapshot, strategies)
+        # INAPPLICABLE should come first in rows
+        assert provenance.rows[0].phase == DecisionPhase.INAPPLICABLE
+        assert provenance.rows[0].strategy_name == "Skip1"
+
+    def test_empty_strategies_returns_empty_pipeline(self) -> None:
+        """No applicable strategies => empty pipeline, only INAPPLICABLE rows."""
+        planner = UnflatteningPlanner()
+        strategies = [
+            _MockStrategy("S1", applicable=False),
+            _MockStrategy("S2", applicable=False),
+        ]
+        snapshot = _make_snapshot(handler_count=10)
+        pipeline, provenance = planner.plan(snapshot, strategies)
+        assert pipeline == []
+        assert provenance.accepted_count == 0
+        inapplicable = [r for r in provenance.rows if r.phase == DecisionPhase.INAPPLICABLE]
+        assert len(inapplicable) == 2
+
+    def test_compose_pipeline_still_accessible(self) -> None:
+        """compose_pipeline remains callable as an internal method."""
+        planner = UnflatteningPlanner()
+        frags = [_fragment("X", handlers=5)]
+        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        assert len(pipeline) == 1
+        assert isinstance(provenance, PipelineProvenance)
+
+    def test_plan_with_planner_inputs(self) -> None:
+        """plan() passes PlannerInputs through to compose_pipeline."""
+        planner = UnflatteningPlanner()
+        strategies = [
+            _MockStrategy("A", fragment=_fragment("A", handlers=5)),
+        ]
+        snapshot = _make_snapshot(handler_count=10)
+        inputs = PlannerInputs(
+            total_handlers=10,
+            handler_transitions=object(),
+        )
+        pipeline, provenance = planner.plan(snapshot, strategies, inputs=inputs)
+        assert provenance.input_summary is not None
+        assert provenance.input_summary.handler_transitions_available is True
+
+    def test_plan_without_inputs(self) -> None:
+        """plan() works without PlannerInputs (defaults to None)."""
+        planner = UnflatteningPlanner()
+        strategies = [
+            _MockStrategy("A", fragment=_fragment("A", handlers=5)),
+        ]
+        snapshot = _make_snapshot(handler_count=10)
+        pipeline, provenance = planner.plan(snapshot, strategies)
+        assert len(pipeline) == 1
+        assert provenance.input_summary is None
+
+    def test_plan_filters_none_fragments(self) -> None:
+        """Strategies returning None from plan() are silently skipped."""
+        planner = UnflatteningPlanner()
+        strategies = [
+            _MockStrategy("Returns_None", applicable=True, fragment=None),
+            _MockStrategy("Real", fragment=_fragment("Real", handlers=5)),
+        ]
+        snapshot = _make_snapshot(handler_count=10)
+        pipeline, provenance = planner.plan(snapshot, strategies)
+        assert len(pipeline) == 1
+        assert pipeline[0].strategy_name == "Real"
