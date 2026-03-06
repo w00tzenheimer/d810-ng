@@ -16,6 +16,7 @@ from d810.cfg.transform._base import FlowGraphTransform
 from d810.cfg.graph_modification import ConvertToGoto, GraphModification, RedirectGoto
 from d810.cfg.pipeline import FlowGraphTransformPipeline
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.cfg.plan import LoweringInput
 from tests.unit.hexrays.conftest import InMemoryBackend
 
 
@@ -37,11 +38,11 @@ class ZeroLowerBackend(InMemoryBackend):
 
     def lower(
         self,
-        modifications: list[GraphModification],
+        lowering_input: LoweringInput,
         state: dict[int, BlockSnapshot] | None = None
     ) -> int:
         """Record modifications but return 0 to simulate no-op lowering."""
-        self.applied_modifications.extend(modifications)
+        super().lower(lowering_input, state)
         return 0
 
 
@@ -54,11 +55,11 @@ class MutatingBackend(InMemoryBackend):
 
     def lower(
         self,
-        modifications: list[GraphModification],
+        lowering_input: LoweringInput,
         state: dict[int, BlockSnapshot] | None = None
     ) -> int:
         """Mutate backend state and return count."""
-        count = super().lower(modifications, state)
+        count = super().lower(lowering_input, state)
         if count > 0:
             # Add a new block to simulate state mutation
             self.mutation_count += 1
@@ -173,6 +174,8 @@ class TestPassPipeline:
 
         assert total == 1
         assert len(backend.applied_modifications) == 1
+        assert len(backend.applied_patch_plans) == 1
+        assert not backend.applied_patch_plans[0].contains_block_creation
         assert isinstance(backend.applied_modifications[0], ConvertToGoto)
 
     def test_multiple_passes_accumulate(self):

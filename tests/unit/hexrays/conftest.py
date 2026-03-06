@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from d810.cfg.graph_modification import GraphModification
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.cfg.plan import LoweringInput, PatchPlan, ensure_patch_plan
 
 
 class InMemoryBackend:
@@ -24,6 +25,7 @@ class InMemoryBackend:
         """
         self.blocks = blocks or {}
         self.applied_modifications: list[GraphModification] = []
+        self.applied_patch_plans: list[PatchPlan] = []
         self.lift_count = 0
 
     @property
@@ -55,18 +57,21 @@ class InMemoryBackend:
 
     def lower(
         self,
-        modifications: list[GraphModification],
+        lowering_input: LoweringInput,
         state: dict[int, BlockSnapshot] | None = None
     ) -> int:
         """Record modifications and return count.
 
         Args:
-            modifications: List of modification intents.
+            lowering_input: PatchPlan or modification intents.
             state: Optional state (ignored, uses self.applied_modifications).
 
         Returns:
-            Number of modifications (always len(modifications)).
+            Number of graph modifications represented by the plan.
         """
+        patch_plan = ensure_patch_plan(lowering_input)
+        self.applied_patch_plans.append(patch_plan)
+        modifications = patch_plan.as_graph_modifications()
         self.applied_modifications.extend(modifications)
         return len(modifications)
 

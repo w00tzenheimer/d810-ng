@@ -115,6 +115,12 @@ class HodurUnflattener(GenericUnflatteningRule):
             DEFAULT_MAX_PASSES,
             "Maximum unflattening passes",
         ),
+        ConfigParam(
+            "allow_legacy_block_creation",
+            bool,
+            True,
+            "Allow legacy live block-creating edits until symbolic PatchPlan materialization lands",
+        ),
     )
 
     def __init__(self) -> None:
@@ -124,6 +130,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         self.min_state_constant = MIN_STATE_CONSTANT
         self.min_state_constants = MIN_STATE_CONSTANTS
         self.max_state_constants = MAX_STATE_CONSTANTS_HODUR
+        self.allow_legacy_block_creation = True
         self._actual_pass_count: int = 0
         self._current_tracked_maturity: int = ida_hexrays.MMAT_ZERO
         self._resolved_transitions: set[tuple[int, int]] = set()
@@ -168,6 +175,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             self.max_state_constants = int(self.config["max_state_constants"])
         if "max_passes" in self.config:
             self.max_passes = int(self.config["max_passes"])
+        if "allow_legacy_block_creation" in self.config:
+            self.allow_legacy_block_creation = bool(
+                self.config["allow_legacy_block_creation"]
+            )
 
     def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:
         """Check if this rule should be applied."""
@@ -284,7 +295,11 @@ class HodurUnflattener(GenericUnflatteningRule):
             self._record_audit_stage("post_plan")
 
         # 5. Executor applies transactional stages
-        executor = TransactionalExecutor(self.mba, gate=self._gate)
+        executor = TransactionalExecutor(
+            self.mba,
+            gate=self._gate,
+            allow_legacy_block_creation=self.allow_legacy_block_creation,
+        )
         results = executor.execute_pipeline(pipeline, total_handlers=snapshot.handler_count)
 
         nb_changes = executor.total_changes

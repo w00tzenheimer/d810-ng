@@ -18,6 +18,7 @@ from d810.core.typing import Any, Protocol, runtime_checkable
 
 from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.graph_modification import GraphModification
+from d810.cfg.plan import LoweringInput
 
 
 @runtime_checkable
@@ -27,7 +28,7 @@ class IRTranslator(Protocol):
 
     An IRTranslator provides three core operations:
         - lift: Convert ir-specific state to FlowGraph
-        - lower: Apply GraphModifications to ir state
+        - lower: Apply a PatchPlan (or compatibility GraphModifications) to ir state
         - verify: Check ir state consistency after modifications
 
     IRTranslators are responsible for:
@@ -70,14 +71,18 @@ class IRTranslator(Protocol):
         """
         ...
 
-    def lower(self, modifications: list[GraphModification], state: Any) -> int:
-        """Apply GraphModifications to backend state.
+    def lower(self, lowering_input: LoweringInput, state: Any) -> int:
+        """Apply a finalized PatchPlan to backend state.
 
-        Mutates the backend state according to the modification intents.
+        New callers should pass :class:`~d810.cfg.plan.PatchPlan`.
+        ``GraphModification`` lists remain accepted temporarily as a migration
+        compatibility input and should be compiled by callers whenever possible.
+
+        Mutates the backend state according to the execution plan.
         Returns the count of successfully applied modifications.
 
         Args:
-            modifications: List of modification intents to apply.
+            lowering_input: PatchPlan or compatibility GraphModification list.
             state: Backend-specific mutable state to modify.
 
         Returns:

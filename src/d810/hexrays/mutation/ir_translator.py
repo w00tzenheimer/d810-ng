@@ -2,7 +2,7 @@
 
 Wraps existing IDA infrastructure:
 - lift() -> flowgraph snapshot lift(mba)
-- lower() -> translates GraphModification -> DeferredGraphModifier queue calls
+- lower() -> materializes PatchPlan -> DeferredGraphModifier queue calls
 - verify() -> calls safe_verify(mba)
 """
 from __future__ import annotations
@@ -23,6 +23,16 @@ from d810.cfg.graph_modification import (
     NopInstructions,
 )
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
+from d810.cfg.plan import (
+    LegacyBlockOperation,
+    PatchConvertToGoto,
+    PatchNopInstructions,
+    PatchPlan,
+    PatchRedirectBranch,
+    PatchRedirectGoto,
+    PatchRemoveEdge,
+    PatchStep,
+)
 from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
@@ -101,6 +111,9 @@ class IDAIRTranslator:
         True
     """
 
+    def __init__(self, *, allow_legacy_block_creation: bool = True) -> None:
+        self.allow_legacy_block_creation = allow_legacy_block_creation
+
     @property
     def name(self) -> str:
         """Unique identifier for the backend."""
@@ -117,124 +130,55 @@ class IDAIRTranslator:
         """
         return lift(mba)
 
-    def lower(self, modifications: list[GraphModification], mba: "ida_hexrays.mba_t") -> int:
-        """Apply GraphModifications to mba via DeferredGraphModifier.
+    def lower(self, patch_plan: PatchPlan, mba: "ida_hexrays.mba_t") -> int:
+        """Apply a PatchPlan to mba via DeferredGraphModifier.
 
-        Maps each GraphModification type to the corresponding DeferredGraphModifier
-        queue method:
-        - RedirectGoto   -> queue_goto_change (1-way blocks)
-        - RedirectBranch -> queue_conditional_target_change (2-way conditional blocks)
-        - ConvertToGoto  -> queue_convert_to_goto
-        - EdgeRedirectViaPredSplit -> queue_edge_redirect(via_pred=...)
-        - CreateConditionalRedirect -> queue_create_conditional_redirect
-        - DuplicateBlock -> (not yet implemented, logs warning and skips)
-        - InsertBlock    -> queue_create_and_redirect
-        - RemoveEdge     -> (not yet implemented, logs warning and skips)
-        - NopInstructions -> queue_insn_nop
+        ``PatchPlan`` concrete operations are lowered directly. Block-creating
+        edits remain explicit legacy fallback steps until symbolic block
+        materialization is implemented. Those steps can be rejected before any
+        live mutation when ``allow_legacy_block_creation`` is disabled.
 
         Args:
-            modifications: List of modification intents to apply.
+            patch_plan: Finalized backend execution plan.
             mba: IDA microcode block array to modify.
 
         Returns:
             Count of successfully applied modifications.
 
         Example:
-            >>> mods = [
-            ...     RedirectGoto(from_serial=10, old_target=20, new_target=30),
-            ...     ConvertToGoto(block_serial=15, goto_target=25),
-            ... ]
-            >>> count = backend.lower(mods, mba)
+            >>> patch_plan = PatchPlan(
+            ...     steps=(PatchRedirectGoto(from_serial=10, old_target=20, new_target=30),)
+            ... )
+            >>> count = backend.lower(patch_plan, mba)
             >>> count
-            2
+            1
         """
         # Import here to make it patchable in tests
         from d810.hexrays.mutation import deferred_modifier
 
+        if not isinstance(patch_plan, PatchPlan):
+            raise TypeError(
+                "IDAIRTranslator.lower() now requires PatchPlan; "
+                "compile GraphModification lists before lowering"
+            )
+        if patch_plan.contains_block_creation and not self.allow_legacy_block_creation:
+            logger.warning(
+                "PatchPlan contains %d block-creating steps but legacy block creation is disabled",
+                len(patch_plan.legacy_block_operations),
+            )
+            return 0
+
         modifier = deferred_modifier.DeferredGraphModifier(mba)
 
-        for mod in modifications:
-            match mod:
-                case RedirectGoto(from_serial=src, old_target=old, new_target=new):
-                    # Map to BLOCK_GOTO_CHANGE - redirect edge in a 1-way block
-                    modifier.queue_goto_change(src, new, description=f"redirect goto {src}: {old}->{new}")
+        if patch_plan.contains_block_creation:
+            logger.info(
+                "Lowering PatchPlan with %d concrete ops and %d legacy block-creating steps",
+                len(patch_plan.concrete_operations),
+                len(patch_plan.legacy_block_operations),
+            )
 
-                case RedirectBranch(from_serial=src, old_target=old, new_target=new):
-                    # Map to BLOCK_TARGET_CHANGE - redirect one branch of a 2-way block
-                    modifier.queue_conditional_target_change(src, new, description=f"redirect branch {src}: {old}->{new}")
-
-                case ConvertToGoto(block_serial=serial, goto_target=target):
-                    # Map to BLOCK_CONVERT_TO_GOTO
-                    modifier.queue_convert_to_goto(serial, target, description=f"convert {serial} to goto {target}")
-
-                case EdgeRedirectViaPredSplit(
-                    src_block=src,
-                    old_target=old,
-                    new_target=new,
-                    via_pred=pred,
-                    rule_priority=priority,
-                ):
-                    modifier.queue_edge_redirect(
-                        src_block=src,
-                        old_target=old,
-                        new_target=new,
-                        via_pred=pred,
-                        rule_priority=priority,
-                        description=f"edge redirect via pred split: pred={pred} src={src} {old}->{new}",
-                    )
-
-                case CreateConditionalRedirect(
-                    source_block=src,
-                    ref_block=ref,
-                    conditional_target=cond_target,
-                    fallthrough_target=fallthrough_target,
-                ):
-                    modifier.queue_create_conditional_redirect(
-                        source_blk_serial=src,
-                        ref_blk_serial=ref,
-                        conditional_target_serial=cond_target,
-                        fallthrough_target_serial=fallthrough_target,
-                        description=(
-                            f"create conditional redirect src={src} ref={ref} "
-                            f"cond={cond_target} fallthrough={fallthrough_target}"
-                        ),
-                    )
-
-                case DuplicateBlock(source_block=src, target_block=target, pred_serial=pred):
-                    logger.warning(
-                        "DuplicateBlock(source=%d, target=%s, pred=%s) not implemented, skipping",
-                        src, target, pred,
-                    )
-                    continue
-
-                case InsertBlock(pred_serial=pred, succ_serial=succ, instructions=insns):
-                    # Map to BLOCK_CREATE_WITH_REDIRECT
-                    # Note: DeferredGraphModifier expects a list of minsn_t, but InsertBlock
-                    # has InsnSnapshot tuples. We need to convert them.
-                    # For now, we log a warning and skip this modification type.
-                    # TODO: Implement InsnSnapshot -> minsn_t conversion
-                    logger.warning(
-                        "InsertBlock(%d->%d) requires InsnSnapshot->minsn_t conversion (not yet implemented), skipping",
-                        pred, succ,
-                    )
-                    continue
-
-                case RemoveEdge(from_serial=src, to_serial=dst):
-                    # RemoveEdge not yet in DeferredGraphModifier
-                    logger.warning(
-                        "RemoveEdge(%d->%d) not implemented in DeferredGraphModifier, skipping",
-                        src, dst,
-                    )
-                    continue
-
-                case NopInstructions(block_serial=serial, insn_eas=eas):
-                    # Map to INSN_NOP - queue_insn_nop processes one EA at a time
-                    for ea in eas:
-                        modifier.queue_insn_nop(serial, ea, description=f"nop {hex(ea)} in block {serial}")
-
-                case _:
-                    logger.warning("Unknown GraphModification type: %s", type(mod).__name__)
-                    continue
+        for step in patch_plan.steps:
+            self._queue_patch_step(modifier, step)
 
         # Apply all queued modifications with snapshot rollback enabled
         result_count = modifier.apply(
@@ -257,6 +201,111 @@ class IDAIRTranslator:
             return 0
 
         return result_count
+
+    def _queue_patch_step(
+        self,
+        modifier: "DeferredGraphModifierType",
+        step: PatchStep,
+    ) -> None:
+        match step:
+            case PatchRedirectGoto(from_serial=src, old_target=old, new_target=new):
+                modifier.queue_goto_change(
+                    src,
+                    new,
+                    description=f"redirect goto {src}: {old}->{new}",
+                )
+
+            case PatchRedirectBranch(from_serial=src, old_target=old, new_target=new):
+                modifier.queue_conditional_target_change(
+                    src,
+                    new,
+                    description=f"redirect branch {src}: {old}->{new}",
+                )
+
+            case PatchConvertToGoto(block_serial=serial, goto_target=target):
+                modifier.queue_convert_to_goto(
+                    serial,
+                    target,
+                    description=f"convert {serial} to goto {target}",
+                )
+
+            case PatchRemoveEdge(from_serial=src, to_serial=dst):
+                logger.warning(
+                    "PatchRemoveEdge(%d->%d) not implemented in DeferredGraphModifier, skipping",
+                    src,
+                    dst,
+                )
+
+            case PatchNopInstructions(block_serial=serial, insn_eas=eas):
+                for ea in eas:
+                    modifier.queue_insn_nop(
+                        serial,
+                        ea,
+                        description=f"nop {hex(ea)} in block {serial}",
+                    )
+
+            case LegacyBlockOperation(modification=mod):
+                self._queue_legacy_block_operation(modifier, mod)
+
+            case _:
+                logger.warning("Unknown PatchPlan step type: %s", type(step).__name__)
+
+    def _queue_legacy_block_operation(
+        self,
+        modifier: "DeferredGraphModifierType",
+        modification: GraphModification,
+    ) -> None:
+        match modification:
+            case EdgeRedirectViaPredSplit(
+                src_block=src,
+                old_target=old,
+                new_target=new,
+                via_pred=pred,
+                rule_priority=priority,
+            ):
+                modifier.queue_edge_redirect(
+                    src_block=src,
+                    old_target=old,
+                    new_target=new,
+                    via_pred=pred,
+                    rule_priority=priority,
+                    description=f"edge redirect via pred split: pred={pred} src={src} {old}->{new}",
+                )
+
+            case CreateConditionalRedirect(
+                source_block=src,
+                ref_block=ref,
+                conditional_target=cond_target,
+                fallthrough_target=fallthrough_target,
+            ):
+                modifier.queue_create_conditional_redirect(
+                    source_blk_serial=src,
+                    ref_blk_serial=ref,
+                    conditional_target_serial=cond_target,
+                    fallthrough_target_serial=fallthrough_target,
+                    description=(
+                        f"create conditional redirect src={src} ref={ref} "
+                        f"cond={cond_target} fallthrough={fallthrough_target}"
+                    ),
+                )
+
+            case DuplicateBlock(source_block=src, target_block=target, pred_serial=pred):
+                logger.warning(
+                    "DuplicateBlock(source=%d, target=%s, pred=%s) not implemented, skipping",
+                    src,
+                    target,
+                    pred,
+                )
+
+            case InsertBlock(pred_serial=pred, succ_serial=succ, instructions=insns):
+                logger.warning(
+                    "InsertBlock(%d->%d) requires InsnSnapshot->minsn_t conversion (not yet implemented), skipping",
+                    pred,
+                    succ,
+                )
+
+            case _:
+                logger.warning("Unsupported legacy block operation: %s", type(modification).__name__)
 
     def verify(self, mba: "ida_hexrays.mba_t") -> bool:
         """Verify mba consistency after modifications.

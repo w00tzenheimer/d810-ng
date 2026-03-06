@@ -1,13 +1,15 @@
 """PassPipeline orchestrator for running FlowGraphTransform transforms through a CFGBackend.
 
 The pipeline lifts backend state to FlowGraph, runs each pass's transform,
-lowers the resulting modifications, verifies, and re-lifts if changes occurred.
+compiles the resulting modifications to PatchPlan, lowers that plan, verifies,
+and re-lifts if changes occurred.
 """
 from __future__ import annotations
 
 from d810.core.logging import getLogger
 from d810.core.typing import Any
 
+from d810.cfg.plan import compile_patch_plan
 from d810.cfg.transform._base import FlowGraphTransform
 from d810.cfg.protocol import IRTranslator
 from d810.cfg.flowgraph import FlowGraph
@@ -45,7 +47,8 @@ class FlowGraphTransformPipeline:
                 logger.debug("Pass %s produced no modifications", pass_.name)
                 continue
 
-            count = self.backend.lower(mods, backend_state)
+            patch_plan = compile_patch_plan(mods, cfg)
+            count = self.backend.lower(patch_plan, backend_state)
             if count <= 0:
                 logger.debug("Pass %s: lower returned %d, skipping verify", pass_.name, count)
                 continue
