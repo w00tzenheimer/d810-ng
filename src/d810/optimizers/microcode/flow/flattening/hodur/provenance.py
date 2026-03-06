@@ -294,15 +294,6 @@ class PipelineProvenance:
         ]
         return ", ".join(parts) if parts else "(empty)"
 
-    def to_dicts(self) -> list[dict]:
-        """Serialize rows to list of dicts for on-disk reporting.
-
-        .. deprecated::
-            Prefer :meth:`to_dict` which includes the top-level
-            ``input_summary`` and ``phase_summary``.
-        """
-        return self._rows_to_dicts()
-
     def to_dict(self) -> dict:
         """Full provenance serialization including input_summary and phase_summary."""
         return {
