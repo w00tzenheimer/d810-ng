@@ -146,6 +146,29 @@ def test_provenance_to_dicts_serializable():
     assert '"handler_count": 5' in serialized
 
 
+def test_selected_phase_exists():
+    row = DecisionRecord(
+        strategy_name="A",
+        family="direct",
+        phase=DecisionPhase.SELECTED,
+        reason_code=DecisionReasonCode.ACCEPTED,
+        reason="selected by planner",
+    )
+    assert row.is_accepted
+    assert row.phase == DecisionPhase.SELECTED
+
+
+def test_bypassed_reason_codes():
+    row = DecisionRecord(
+        strategy_name="A",
+        family="direct",
+        phase=DecisionPhase.BYPASSED,
+        reason_code=DecisionReasonCode.BYPASSED_SAFEGUARD,
+        reason="safeguard disabled",
+    )
+    assert not row.is_accepted
+
+
 def test_provenance_summary_format():
     """Verify summary string contains 'accepted' and 'rejected'."""
     rows = (
