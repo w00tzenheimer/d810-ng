@@ -1,0 +1,934 @@
+{
+  "sdk_version": "9.3",
+  "sdk_source": "ida-sdk/src/verifier/verify.cpp",
+  "scope": "minsn_t::verify+mop_t::verify",
+  "codes": [
+    {
+      "code": 50754,
+      "category": "operand_type_validity",
+      "meaning": "Meaningless size on mop_z/b/c",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50754_MOP_ZBC_NONZERO_SIZE. mop_z, mop_b, mop_c must have size 0."
+    },
+    {
+      "code": 50755,
+      "category": "operand_type_validity",
+      "meaning": "String constant not ADDRSIZE",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50755_STR_NOT_ADDRSIZE. mop_str must be ADDRSIZE."
+    },
+    {
+      "code": 50756,
+      "category": "operand_type_validity",
+      "meaning": "Unknown operand size forbidden",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50756_UNKNOWN_SIZE_FORBIDDEN. Best-effort: unknown size is context-dependent."
+    },
+    {
+      "code": 50757,
+      "category": "operand_type_validity",
+      "meaning": "Bad operand size",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50757_BAD_OPERAND_SIZE. Operand size must be a valid power-of-two byte count."
+    },
+    {
+      "code": 50758,
+      "category": "operand_type_validity",
+      "meaning": "Missing constant info (nnn==nullptr)",
+      "python_accessible": false,
+      "disposition": "blocked_by_api",
+      "owner": null,
+      "notes": "Internal C++ pointer check; not accessible from Python."
+    },
+    {
+      "code": 50759,
+      "category": "operand_type_validity",
+      "meaning": "Bad constant definition address",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50759_BAD_CONST_DEF_ADDR. Constant operand definition address must be valid."
+    },
+    {
+      "code": 50760,
+      "category": "operand_type_validity",
+      "meaning": "Bad constant opnum",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50760_BAD_CONST_OPNUM. Constant operand opnum must not exceed UA_MAXOP."
+    },
+    {
+      "code": 50761,
+      "category": "operand_type_validity",
+      "meaning": "Illegal bits in constant value",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50761_CONST_ILLEGAL_BITS. Constant value must not have bits set beyond its size mask."
+    },
+    {
+      "code": 50762,
+      "category": "operand_type_validity",
+      "meaning": "Foreign stack variable",
+      "python_accessible": false,
+      "disposition": "blocked_by_api",
+      "owner": null,
+      "notes": "Requires cross-function lvar identity check; not accessible from Python."
+    },
+    {
+      "code": 50763,
+      "category": "operand_type_validity",
+      "meaning": "Negative stack variable offset",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50763_NEGATIVE_STKVAR_OFF. Stack variable offset must be >= 0."
+    },
+    {
+      "code": 50764,
+      "category": "operand_type_validity",
+      "meaning": "Negative register number",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50764_NEGATIVE_REG_NUM. Register operand number must be >= 0."
+    },
+    {
+      "code": 50765,
+      "category": "operand_type_validity",
+      "meaning": "Bit register size != 1",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50765_BIT_REG_SIZE_NOT_1. Bit (flag) registers must have size 1."
+    },
+    {
+      "code": 50766,
+      "category": "operand_type_validity",
+      "meaning": "Bad register size",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50766_BAD_REG_SIZE. Register size must be positive."
+    },
+    {
+      "code": 50767,
+      "category": "operand_type_validity",
+      "meaning": "Missing sub-instruction (d==nullptr)",
+      "python_accessible": false,
+      "disposition": "blocked_by_api",
+      "owner": null,
+      "notes": "Internal C++ null pointer check; not accessible from Python."
+    },
+    {
+      "code": 50768,
+      "category": "operand_size_consistency",
+      "meaning": "Sub-instruction size mismatch",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_sizes",
+      "notes": "Implemented as MINSN_50768_SUBINSN_SIZE_MISMATCH. Sub-instruction operand size must match parent declaration."
+    },
+    {
+      "code": 50770,
+      "category": "operand_type_validity",
+      "meaning": "Bad block number in mop_b",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50770_BAD_BLOCK_NUM. Block operand serial must be in range [0, mba.qty)."
+    },
+    {
+      "code": 50771,
+      "category": "operand_type_validity",
+      "meaning": "Missing argument list",
+      "python_accessible": false,
+      "disposition": "blocked_by_api",
+      "owner": null,
+      "notes": "Internal C++ null pointer check on arglist; not accessible from Python."
+    },
+    {
+      "code": 50772,
+      "category": "operand_type_validity",
+      "meaning": "Arglist not as d operand",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_call_validity",
+      "notes": "Implemented as MINSN_50772_ARGLIST_NOT_D_OPERAND. Argument list operand must be in d position."
+    },
+    {
+      "code": 50773,
+      "category": "call_validity",
+      "meaning": "Arglist on non-call insn",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_call_validity",
+      "notes": "Implemented as MINSN_50773_ARGLIST_ON_NONCALL. mop_f (arglist) operand only valid on call instructions."
+    },
+    {
+      "code": 50774,
+      "category": "operand_type_validity",
+      "meaning": "Local variable check (lvar 1)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50774_BAD_LVAR. Best-effort lvar operand validity check."
+    },
+    {
+      "code": 50775,
+      "category": "operand_type_validity",
+      "meaning": "Local variable check (lvar 2)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50775_BAD_LVAR_2. Best-effort lvar operand validity check."
+    },
+    {
+      "code": 50776,
+      "category": "operand_type_validity",
+      "meaning": "Local variable check (lvar 3)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50776_BAD_LVAR_3. Best-effort lvar operand validity check."
+    },
+    {
+      "code": 50777,
+      "category": "operand_type_validity",
+      "meaning": "Local variable check (lvar 4)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50777_BAD_LVAR_4. Best-effort lvar operand validity check."
+    },
+    {
+      "code": 50778,
+      "category": "operand_type_validity",
+      "meaning": "Local variable check (lvar 5)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50778_BAD_LVAR_5. Best-effort lvar operand validity check."
+    },
+    {
+      "code": 50779,
+      "category": "operand_type_validity",
+      "meaning": "Local variable check (lvar 6)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50779_BAD_LVAR_6. Best-effort lvar operand validity check."
+    },
+    {
+      "code": 50780,
+      "category": "call_validity",
+      "meaning": "Register address outside helper",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_call_validity",
+      "notes": "Implemented as MINSN_50780_REG_ADDR_OUTSIDE_HELPER. mop_a (register address) is only valid for helper calls."
+    },
+    {
+      "code": 50781,
+      "category": "operand_type_validity",
+      "meaning": "Wrong operand address size",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50781_BAD_ADDR_SIZE. Address-mode operand size must not exceed addrsize."
+    },
+    {
+      "code": 50782,
+      "category": "call_validity",
+      "meaning": "Wrong helper name",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_call_validity",
+      "notes": "Implemented as MINSN_50782_BAD_HELPER_NAME. Helper (mop_h) operand must have a non-empty name."
+    },
+    {
+      "code": 50784,
+      "category": "call_validity",
+      "meaning": "Helper on non-call insn",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_call_validity",
+      "notes": "Implemented as MINSN_50784_HELPER_ON_NONCALL. mop_h (helper) operand only valid on call instructions."
+    },
+    {
+      "code": 50785,
+      "category": "operand_type_validity",
+      "meaning": "Missing string constant",
+      "python_accessible": false,
+      "disposition": "blocked_by_api",
+      "owner": null,
+      "notes": "Internal C++ null string pointer; not accessible from Python."
+    },
+    {
+      "code": 50786,
+      "category": "operand_type_validity",
+      "meaning": "Missing cases",
+      "python_accessible": false,
+      "disposition": "blocked_by_api",
+      "owner": null,
+      "notes": "Internal C++ null cases pointer; not accessible from Python."
+    },
+    {
+      "code": 50787,
+      "category": "operand_type_validity",
+      "meaning": "Missing FP constant",
+      "python_accessible": false,
+      "disposition": "blocked_by_api",
+      "owner": null,
+      "notes": "Internal C++ null FP pointer; not accessible from Python."
+    },
+    {
+      "code": 50788,
+      "category": "operand_type_validity",
+      "meaning": "FP constant too big",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50788_FP_CONST_TOO_BIG. Floating-point constant nbytes must be <= 16."
+    },
+    {
+      "code": 50789,
+      "category": "operand_type_validity",
+      "meaning": "Pair operand check 1",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50789_PAIR_CHECK_1. Pair operand must have pair info present."
+    },
+    {
+      "code": 50790,
+      "category": "operand_type_validity",
+      "meaning": "Pair operand check 2",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50790_PAIR_CHECK_2. Pair operand lop.size must equal hop.size."
+    },
+    {
+      "code": 50791,
+      "category": "operand_type_validity",
+      "meaning": "Pair operand check 3",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50791_PAIR_CHECK_3. Pair operand size must equal lop.size + hop.size."
+    },
+    {
+      "code": 50792,
+      "category": "operand_type_validity",
+      "meaning": "Pair operand check 4",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50792_PAIR_CHECK_4. Pair operand lop type must be a valid pair part."
+    },
+    {
+      "code": 50793,
+      "category": "operand_type_validity",
+      "meaning": "Pair operand check 5",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50793_PAIR_CHECK_5. Pair operand hop type must be a valid pair part."
+    },
+    {
+      "code": 50794,
+      "category": "operand_type_validity",
+      "meaning": "Wrong operand type",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_50794_WRONG_OPERAND_TYPE. Operand type must be a known mop_t value."
+    },
+    {
+      "code": 50795,
+      "category": "basic_validity",
+      "meaning": "ea == BADADDR",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_50795_BADADDR. Every instruction must have a valid ea (not BADADDR)."
+    },
+    {
+      "code": 50797,
+      "category": "basic_validity",
+      "meaning": "next->prev != this",
+      "python_accessible": false,
+      "disposition": "blocked_by_api",
+      "owner": null,
+      "notes": "Internal C++ linked-list pointer check; not accessible from Python."
+    },
+    {
+      "code": 50798,
+      "category": "basic_validity",
+      "meaning": "prev->next != this",
+      "python_accessible": false,
+      "disposition": "blocked_by_api",
+      "owner": null,
+      "notes": "Internal C++ linked-list pointer check; not accessible from Python."
+    },
+    {
+      "code": 50799,
+      "category": "basic_validity",
+      "meaning": "Subinsn in instruction list",
+      "python_accessible": false,
+      "disposition": "blocked_by_api",
+      "owner": null,
+      "notes": "Internal list membership check; not accessible from Python."
+    },
+    {
+      "code": 50800,
+      "category": "basic_validity",
+      "meaning": "Non-propagatable opcode as subinsn",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_50800_NONPROP_SUBINSN. Sub-instructions must use only propagatable opcodes."
+    },
+    {
+      "code": 50801,
+      "category": "basic_validity",
+      "meaning": "Wrong FPINSN mark",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_50801_WRONG_FPINSN. Best-effort: FPINSN flag must match opcode category."
+    },
+    {
+      "code": 50802,
+      "category": "basic_validity",
+      "meaning": "Non-propagatable opcode as subinsn (dup)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_50802_NONPROP_SUBINSN_2. Duplicate check for non-propagatable subinsn."
+    },
+    {
+      "code": 50803,
+      "category": "basic_validity",
+      "meaning": "Subinsn has d / top-level lacks d",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_50803_SUBINSN_D_MISMATCH. Sub-instruction must not have a d operand."
+    },
+    {
+      "code": 50804,
+      "category": "basic_validity",
+      "meaning": "Invalid opcode",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_50804_INVALID_OPCODE. Opcode must be within the valid m_* range."
+    },
+    {
+      "code": 50806,
+      "category": "basic_validity",
+      "meaning": "nop/ret with operands",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_50806_NOP_RET_WITH_OPERANDS. m_nop and m_ret must not have l/r/d operands."
+    },
+    {
+      "code": 50807,
+      "category": "operand_presence",
+      "meaning": "Wrong m_ext l operand",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_50807_EXT_BAD_L. m_ext l operand must not be mop_b or mop_f."
+    },
+    {
+      "code": 50808,
+      "category": "operand_presence",
+      "meaning": "Wrong m_ext r operand",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_50808_EXT_BAD_R. m_ext r operand must not be mop_b or mop_f."
+    },
+    {
+      "code": 50809,
+      "category": "operand_presence",
+      "meaning": "Wrong m_ext d operand",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_50809_EXT_BAD_D. m_ext d operand must not be mop_b or mop_f."
+    },
+    {
+      "code": 50811,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (1)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 1)."
+    },
+    {
+      "code": 50812,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (2)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 2)."
+    },
+    {
+      "code": 50813,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (3)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 3)."
+    },
+    {
+      "code": 50814,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (4)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 4)."
+    },
+    {
+      "code": 50815,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (5)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 5)."
+    },
+    {
+      "code": 50816,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (6)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 6)."
+    },
+    {
+      "code": 50817,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (7)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 7)."
+    },
+    {
+      "code": 50818,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (8)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 8)."
+    },
+    {
+      "code": 50819,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (9)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 9)."
+    },
+    {
+      "code": 50820,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (10)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 10)."
+    },
+    {
+      "code": 50821,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (11)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 11)."
+    },
+    {
+      "code": 50822,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (12)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 12)."
+    },
+    {
+      "code": 50823,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (13)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 13)."
+    },
+    {
+      "code": 50824,
+      "category": "operand_presence",
+      "meaning": "Wrong operand presence for opcode (14)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_presence",
+      "notes": "Implemented as MINSN_5081x_OPERAND_PRESENCE. Opcode-specific operand structure check (group 14)."
+    },
+    {
+      "code": 50826,
+      "category": "operand_size_consistency",
+      "meaning": "Wrong seg size in ldx/stx",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_sizes",
+      "notes": "Implemented as MINSN_50826_LDX_STX_SEG_SIZE. ldx/stx segment operand must have size 2."
+    },
+    {
+      "code": 50827,
+      "category": "operand_size_consistency",
+      "meaning": "Wrong off size in ldx/stx",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_sizes",
+      "notes": "Implemented as MINSN_50827_LDX_STX_OFF_SIZE. ldx/stx offset operand must have correct size (addrsize)."
+    },
+    {
+      "code": 50830,
+      "category": "operand_size_consistency",
+      "meaning": "Operand size mismatch (1)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_sizes",
+      "notes": "Implemented as MINSN_5083x_SIZE_MISMATCH. Operand sizes must match expected relationships for this opcode."
+    },
+    {
+      "code": 50831,
+      "category": "operand_size_consistency",
+      "meaning": "Operand size mismatch (2)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_sizes",
+      "notes": "Implemented as MINSN_5083x_SIZE_MISMATCH. Operand sizes must match expected relationships for this opcode."
+    },
+    {
+      "code": 50832,
+      "category": "operand_size_consistency",
+      "meaning": "Operand size mismatch (3)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_sizes",
+      "notes": "Implemented as MINSN_5083x_SIZE_MISMATCH. Operand sizes must match expected relationships for this opcode."
+    },
+    {
+      "code": 50833,
+      "category": "operand_size_consistency",
+      "meaning": "Operand size mismatch (4)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_sizes",
+      "notes": "Implemented as MINSN_5083x_SIZE_MISMATCH. Operand sizes must match expected relationships for this opcode."
+    },
+    {
+      "code": 50834,
+      "category": "operand_size_consistency",
+      "meaning": "Operand size mismatch (5)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_sizes",
+      "notes": "Implemented as MINSN_5083x_SIZE_MISMATCH. Operand sizes must match expected relationships for this opcode."
+    },
+    {
+      "code": 50835,
+      "category": "operand_size_consistency",
+      "meaning": "Operand size mismatch (6)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_sizes",
+      "notes": "Implemented as MINSN_5083x_SIZE_MISMATCH. Operand sizes must match expected relationships for this opcode."
+    },
+    {
+      "code": 50836,
+      "category": "operand_size_consistency",
+      "meaning": "Operand size mismatch (7)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_sizes",
+      "notes": "Implemented as MINSN_5083x_SIZE_MISMATCH. Operand sizes must match expected relationships for this opcode."
+    },
+    {
+      "code": 50837,
+      "category": "operand_size_consistency",
+      "meaning": "Operand size mismatch (8)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_sizes",
+      "notes": "Implemented as MINSN_5083x_SIZE_MISMATCH. Operand sizes must match expected relationships for this opcode."
+    },
+    {
+      "code": 50838,
+      "category": "operand_size_consistency",
+      "meaning": "Operand size mismatch (9)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_sizes",
+      "notes": "Implemented as MINSN_5083x_SIZE_MISMATCH. Operand sizes must match expected relationships for this opcode."
+    },
+    {
+      "code": 50839,
+      "category": "basic_validity",
+      "meaning": "Destination is sub-instruction",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_50839_DST_IS_SUBINSN. Top-level instruction d operand must not be a sub-instruction type."
+    },
+    {
+      "code": 50859,
+      "category": "basic_validity",
+      "meaning": "jtbl without case list",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_50859_JTBL_NO_CASELIST. m_jtbl must have a valid case-list (mop_c) right operand."
+    },
+    {
+      "code": 50863,
+      "category": "basic_validity",
+      "meaning": "ea outside function range",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_50863_EA_OUTSIDE_FUNC. Instruction ea must fall within the function address range."
+    },
+    {
+      "code": 51066,
+      "category": "call_validity",
+      "meaning": "Argument at non-existent address",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_call_validity",
+      "notes": "Implemented as MINSN_51066_ARG_BAD_ADDR. Call argument operand addresses must exist."
+    },
+    {
+      "code": 51067,
+      "category": "call_validity",
+      "meaning": "Missing operand in mop_a",
+      "python_accessible": false,
+      "disposition": "blocked_by_api",
+      "owner": null,
+      "notes": "Internal C++ null pointer for address-mode operand; not accessible from Python."
+    },
+    {
+      "code": 51135,
+      "category": "operand_type_validity",
+      "meaning": "Scattered operand check 1",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_51135_SCATTERED_CHECK_1. Scattered operand must have a scattered location."
+    },
+    {
+      "code": 51136,
+      "category": "operand_type_validity",
+      "meaning": "Scattered operand check 2",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_51136_SCATTERED_CHECK_2. Scattered parts must be in ascending offset order."
+    },
+    {
+      "code": 51137,
+      "category": "operand_type_validity",
+      "meaning": "Scattered operand check 3",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_51137_SCATTERED_CHECK_3. Scattered part off+size must not overflow."
+    },
+    {
+      "code": 51138,
+      "category": "operand_type_validity",
+      "meaning": "Scattered operand check 4",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_51138_SCATTERED_CHECK_4. Scattered parts must be simple reg/stack locations."
+    },
+    {
+      "code": 51264,
+      "category": "call_validity",
+      "meaning": "Duplicate call addresses",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_call_validity",
+      "notes": "Implemented as MINSN_51264_DUPLICATE_CALL_ADDRS. A function must not have duplicate call site addresses."
+    },
+    {
+      "code": 51275,
+      "category": "operand_type_validity",
+      "meaning": "Bad floating operand size",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_51275_BAD_FP_SIZE. Floating-point operand must have a size of 4, 8, or 10."
+    },
+    {
+      "code": 51586,
+      "category": "operand_type_validity",
+      "meaning": "Bad constant size (1)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_51586_BAD_CONST_SIZE_1. Constant operand size must be in (0, 8]."
+    },
+    {
+      "code": 51587,
+      "category": "operand_type_validity",
+      "meaning": "Bad constant size (2)",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_51587_BAD_CONST_SIZE_2. Constant operand size must be a power of two."
+    },
+    {
+      "code": 51650,
+      "category": "operand_type_validity",
+      "meaning": "Block number forbidden here",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_51650_BLOCK_NUM_FORBIDDEN. mop_b forbidden in certain operand positions."
+    },
+    {
+      "code": 51651,
+      "category": "operand_type_validity",
+      "meaning": "Case number forbidden here",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_51651_CASE_NUM_FORBIDDEN. mop_c forbidden in non-r operand positions."
+    },
+    {
+      "code": 51652,
+      "category": "basic_validity",
+      "meaning": "Wrong destination type",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_51652_WRONG_DST_TYPE. Destination operand must not be forbidden type (mop_a/n/fn/str/h)."
+    },
+    {
+      "code": 52045,
+      "category": "operand_type_validity",
+      "meaning": "Pair parts depend on each other",
+      "python_accessible": false,
+      "disposition": "blocked_by_api",
+      "owner": null,
+      "notes": "Internal C++ identity/ownership check; not accessible from Python."
+    },
+    {
+      "code": 52064,
+      "category": "operand_type_validity",
+      "meaning": "Bad possibly-floating operand size",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_52064_BAD_POSSIBLY_FP_SIZE. Possibly-floating operand must have size 4, 8, or 10."
+    },
+    {
+      "code": 52118,
+      "category": "basic_validity",
+      "meaning": "Shift value exceeds mask",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_52118_SHIFT_EXCEEDS_MASK. Shift amount must not exceed operand bit-width mask."
+    },
+    {
+      "code": 52123,
+      "category": "basic_validity",
+      "meaning": "Assert on non-mov insn",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_52123_ASSERT_ON_NONMOV. Assert-style mark only valid on mov instructions."
+    },
+    {
+      "code": 52338,
+      "category": "basic_validity",
+      "meaning": "lnot operand size != 1",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_52338_LNOT_SIZE_NOT_1. m_lnot source and dest must both be size 1."
+    },
+    {
+      "code": 52673,
+      "category": "operand_type_validity",
+      "meaning": "Address doesn't fit address space",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_52673_ADDR_OVERFLOW. Global variable address must fit within the target address space."
+    },
+    {
+      "code": 52679,
+      "category": "operand_type_validity",
+      "meaning": "Stack variable offset overflow",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_52679_STKVAR_OVERFLOW. Stack variable offset must not overflow the valid range."
+    },
+    {
+      "code": 52723,
+      "category": "basic_validity",
+      "meaning": "EXTSTX on non-ext insn",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_basic_validity",
+      "notes": "Implemented as MINSN_52723_EXTSTX_ON_NONEXT. Best-effort: EXTSTX flag should only appear on m_ext instructions."
+    },
+    {
+      "code": 52816,
+      "category": "operand_size_consistency",
+      "meaning": "Wrong operand size for segoff",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_sizes",
+      "notes": "Implemented as MINSN_52816_SEGOFF_SIZE. Segment+offset data operand must have positive size."
+    },
+    {
+      "code": 52863,
+      "category": "operand_type_validity",
+      "meaning": "Invalid scattered address operand",
+      "python_accessible": true,
+      "disposition": "mapped",
+      "owner": "insn_operand_types",
+      "notes": "Implemented as MINSN_52863_BAD_SCATTERED_ADDR. Best-effort: mop_a inner operand must be a valid address target."
+    }
+  ]
+}
