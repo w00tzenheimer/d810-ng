@@ -9,6 +9,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     DecisionReasonCode,
     DecisionRecord,
     PipelineProvenance,
+    PlannerInputs,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_FALLBACK,
@@ -35,13 +36,33 @@ class UnflatteningPlanner:
         self.policy = policy or PipelinePolicy()
 
     def compose_pipeline(
-        self, fragments: list[PlanFragment], total_handlers: int
+        self,
+        fragments: list[PlanFragment],
+        total_handlers: int | None = None,
+        *,
+        inputs: PlannerInputs | None = None,
     ) -> tuple[list[PlanFragment], PipelineProvenance]:
         """Full pipeline: filter -> policy -> resolve conflicts -> order.
+
+        Args:
+            fragments: Candidate plan fragments from strategies.
+            total_handlers: Handler count (deprecated, prefer inputs.total_handlers).
+            inputs: Structured envelope with recon artifacts and handler count.
 
         Returns:
             A tuple of (ordered pipeline, provenance ledger).
         """
+        # Resolve total_handlers from inputs envelope or legacy parameter
+        if inputs is not None:
+            effective_total_handlers = inputs.total_handlers
+            input_summary = inputs.to_input_summary()
+        elif total_handlers is not None:
+            effective_total_handlers = total_handlers
+            input_summary = None
+        else:
+            effective_total_handlers = 0
+            input_summary = None
+
         rows: list[DecisionRecord] = []
 
         # --- Gate 1: Empty filter (fragments with no actions) ---
@@ -75,7 +96,7 @@ class UnflatteningPlanner:
 
         # --- Gate 3: Policy gate (coverage threshold drops fallbacks) ---
         accepted = self._apply_policy_with_provenance(
-            risk_passed, total_handlers, rows
+            risk_passed, effective_total_handlers, rows
         )
 
         # --- Gate 4: Conflict resolution (greedy independent set) ---
@@ -98,7 +119,10 @@ class UnflatteningPlanner:
                 ),
             ))
 
-        provenance = PipelineProvenance(rows=tuple(rows))
+        provenance = PipelineProvenance(
+            rows=tuple(rows),
+            input_summary=input_summary,
+        )
         logger.info("Pipeline provenance: %s", provenance.summary())
         return ordered, provenance
 

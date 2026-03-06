@@ -127,6 +127,46 @@ class DecisionInputSummary:
 
 
 @dataclass(frozen=True)
+class PlannerInputs:
+    """Envelope carrying all planner inputs for one compose_pipeline call.
+
+    Wires recon artifacts into fragment selection so that planning
+    decisions are auditable and explainable from inputs + policy.
+    """
+
+    total_handlers: int = 0
+    handler_transitions: object | None = None
+    return_frontier: object | None = None
+    terminal_return_audit: object | None = None
+    policy_overrides: dict = field(default_factory=dict)
+
+    @property
+    def has_handler_transitions(self) -> bool:
+        """True if handler transition data was available at plan time."""
+        return self.handler_transitions is not None
+
+    @property
+    def has_return_frontier(self) -> bool:
+        """True if return frontier data was available at plan time."""
+        return self.return_frontier is not None
+
+    def to_input_summary(self) -> DecisionInputSummary:
+        """Convert to a DecisionInputSummary for provenance records."""
+        audit_summary = ""
+        if self.terminal_return_audit is not None:
+            summary_fn = getattr(self.terminal_return_audit, "summary", None)
+            if callable(summary_fn):
+                audit_summary = summary_fn()
+        return DecisionInputSummary(
+            handler_transitions_available=self.has_handler_transitions,
+            return_frontier_available=self.has_return_frontier,
+            terminal_return_audit_available=self.terminal_return_audit is not None,
+            terminal_return_audit_summary=audit_summary,
+            policy_overrides=dict(self.policy_overrides),
+        )
+
+
+@dataclass(frozen=True)
 class DecisionRecord:
     """One row in the planner's decision ledger."""
 

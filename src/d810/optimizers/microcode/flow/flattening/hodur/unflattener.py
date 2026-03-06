@@ -51,6 +51,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     DecisionRecord,
     GateAccounting,
     PipelineProvenance,
+    PlannerInputs,
 )
 from d810.cfg.flow.graph_checks import SemanticGate
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
@@ -312,10 +313,26 @@ class HodurUnflattener(GenericUnflatteningRule):
             self._actual_pass_count += 1
             return 0
 
-        # 4. Planner composes pipeline
+        # 4. Planner composes pipeline — build PlannerInputs from recon artifacts
+        transition_report = load_transition_report_from_store(
+            func_ea=self.mba.entry_ea,
+            maturity=self.cur_maturity,
+            log_dir=self.log_dir,
+        )
+        return_frontier_audit = load_return_frontier_audit_from_store(
+            func_ea=self.mba.entry_ea,
+            maturity=self.cur_maturity,
+            log_dir=self.log_dir,
+        )
+        planner_inputs = PlannerInputs(
+            total_handlers=snapshot.handler_count,
+            handler_transitions=transition_report,
+            return_frontier=None,  # return frontier sites not yet a planner input
+            terminal_return_audit=return_frontier_audit,
+        )
         pipeline, provenance = self._planner.compose_pipeline(
             fragments,
-            total_handlers=snapshot.handler_count,
+            inputs=planner_inputs,
         )
         # Prepend strategy-level INAPPLICABLE/CRASHED records to planner provenance
         if pre_planner_records:
