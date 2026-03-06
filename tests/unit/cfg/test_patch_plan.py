@@ -1,7 +1,11 @@
 """Tests for the Phase B PatchPlan execution layer."""
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +18,7 @@ from d810.cfg.graph_modification import (
     InsertBlock,
     NopInstructions,
     RedirectGoto,
+    RemoveEdge,
 )
 from d810.cfg.plan import (
     LegacyBlockOperation,
@@ -26,6 +31,7 @@ from d810.cfg.plan import (
     PatchNopInstructions,
     PatchPlan,
     PatchRedirectGoto,
+    PatchRemoveEdge,
     VirtualBlockId,
     compile_patch_plan,
     ensure_patch_plan,
@@ -396,3 +402,88 @@ def test_ensure_patch_plan_is_idempotent():
     ])
 
     assert ensure_patch_plan(patch_plan) is patch_plan
+
+
+# ---------------------------------------------------------------------------
+# RemoveEdge invariant tests
+# ---------------------------------------------------------------------------
+
+
+def test_patch_remove_edge_exists_but_unused_in_strategies():
+    """Document that PatchRemoveEdge/RemoveEdge exist but no Hodur strategy emits them.
+
+    Scans every .py file under hodur/strategies/ for any reference to RemoveEdge.
+    This is a meta-test: if it breaks, a strategy started using RemoveEdge and the
+    executor / edit-simulator must be audited for correctness.
+    """
+    strategies_dir = (
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "d810"
+        / "optimizers"
+        / "microcode"
+        / "flow"
+        / "flattening"
+        / "hodur"
+        / "strategies"
+    )
+    assert strategies_dir.is_dir(), f"strategies dir not found: {strategies_dir}"
+
+    violations: list[str] = []
+    for py_file in sorted(strategies_dir.glob("*.py")):
+        source = py_file.read_text()
+        if "RemoveEdge" in source:
+            violations.append(py_file.name)
+
+    assert violations == [], (
+        f"Hodur strategies referencing RemoveEdge: {violations}. "
+        "No active strategy should emit RemoveEdge; audit executor if this changes."
+    )
+
+
+def test_modification_builder_has_no_remove_edge_method():
+    """The ModificationBuilder -- sole factory for strategy modifications -- must
+    not expose a ``remove_edge`` helper.  If one is added, this test forces a
+    conscious review of executor/edit-simulator support.
+
+    Uses source inspection to avoid cross-layer import from hodur into cfg tests.
+    """
+    from pathlib import Path
+
+    bridge_path = (
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "d810"
+        / "optimizers"
+        / "microcode"
+        / "flow"
+        / "flattening"
+        / "hodur"
+        / "_modification_bridge.py"
+    )
+    assert bridge_path.exists(), f"ModificationBuilder source not found at {bridge_path}"
+    source = bridge_path.read_text()
+    assert "def remove_edge" not in source, (
+        "ModificationBuilder gained a remove_edge method. "
+        "Audit executor + edit-simulator before enabling."
+    )
+
+
+def test_compile_patch_plan_compiles_remove_edge():
+    """compile_patch_plan has a code path for RemoveEdge.
+
+    This test proves the compiler handles the type correctly (round-trips
+    through PatchRemoveEdge), even though no active strategy emits it today.
+    """
+    modifications = [RemoveEdge(from_serial=5, to_serial=10)]
+    patch_plan = compile_patch_plan(modifications)
+
+    assert len(patch_plan.steps) == 1
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchRemoveEdge)
+    assert step.from_serial == 5
+    assert step.to_serial == 10
+
+    # Round-trip back to GraphModification
+    roundtripped = step.to_graph_modification()
+    assert roundtripped == RemoveEdge(from_serial=5, to_serial=10)
