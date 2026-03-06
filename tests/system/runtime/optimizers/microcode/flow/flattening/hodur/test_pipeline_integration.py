@@ -166,7 +166,7 @@ def test_fragments_planned_from_same_snapshot_execute_stably(monkeypatch):
     assert second.snapshot_adjs == [pre_cfg.as_adjacency_dict()]
 
     planner = UnflatteningPlanner(PipelinePolicy())
-    pipeline = planner.compose_pipeline(planned_fragments, total_handlers=2)
+    pipeline, _provenance = planner.compose_pipeline(planned_fragments, total_handlers=2)
     assert [fragment.strategy_name for fragment in pipeline] == ["first", "second"]
 
     translator = _SequenceTranslator([pre_cfg, mid_cfg, mid_cfg, post_cfg])
