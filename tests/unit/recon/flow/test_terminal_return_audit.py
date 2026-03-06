@@ -1,0 +1,342 @@
+"""Unit tests for terminal_return_audit -- pure analysis, no IDA dependency."""
+from __future__ import annotations
+
+import pytest
+
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.recon.flow.terminal_return_audit import (
+    TerminalReturnAuditReport,
+    TerminalReturnSiteAudit,
+    TerminalReturnSourceKind,
+    build_terminal_return_audit,
+    from_dict,
+    to_dict,
+)
+
+# BLT_STOP = 1, BLT_1WAY = 2 (normal fall-through)
+_BLT_STOP = 1
+_BLT_1WAY = 2
+
+
+def _make_block(
+    serial: int,
+    block_type: int = _BLT_1WAY,
+    succs: tuple[int, ...] = (),
+    preds: tuple[int, ...] = (),
+) -> BlockSnapshot:
+    """Helper to create a minimal BlockSnapshot for testing."""
+    return BlockSnapshot(
+        serial=serial,
+        block_type=block_type,
+        succs=succs,
+        preds=preds,
+        flags=0,
+        start_ea=0x1000 + serial * 0x10,
+        insn_snapshots=(),
+    )
+
+
+def _make_cfg(blocks: list[BlockSnapshot], entry: int = 0) -> FlowGraph:
+    """Helper to build a FlowGraph from a list of BlockSnapshots."""
+    block_map = {b.serial: b for b in blocks}
+    return FlowGraph(
+        blocks=block_map,
+        entry_serial=entry,
+        func_ea=0x400000,
+    )
+
+
+class TestDirectReturnClassification:
+    """Handler exit IS the BLT_STOP block -> DIRECT_RETURN, corridor_length=0."""
+
+    def test_direct_return_classification(self) -> None:
+        # Block 0 (entry) -> Block 10 (handler) -> Block 20 (exit = BLT_STOP)
+        blocks = [
+            _make_block(0, succs=(10,)),
+            _make_block(10, succs=(20,), preds=(0,)),
+            _make_block(20, block_type=_BLT_STOP, preds=(10,)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: 20},
+            total_handlers=1,
+        )
+
+        assert len(report.sites) == 1
+        site = report.sites[0]
+        assert site.handler_serial == 10
+        assert site.exit_serial == 20
+        assert site.source_kind == TerminalReturnSourceKind.DIRECT_RETURN
+        assert site.return_block_serial == 20
+        assert site.corridor_length == 0
+
+
+class TestEpilogueCorridorClassification:
+    """Handler exit -> single-pred chain -> BLT_STOP -> EPILOGUE_CORRIDOR."""
+
+    def test_epilogue_corridor_classification(self) -> None:
+        # Block 0 (entry) -> Block 10 (handler exit) -> Block 11 (single pred) -> Block 12 (BLT_STOP, single pred)
+        blocks = [
+            _make_block(0, succs=(10,)),
+            _make_block(10, succs=(11,), preds=(0,)),
+            _make_block(11, succs=(12,), preds=(10,)),
+            _make_block(12, block_type=_BLT_STOP, preds=(11,)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: 10},
+            total_handlers=1,
+        )
+
+        assert len(report.sites) == 1
+        site = report.sites[0]
+        assert site.source_kind == TerminalReturnSourceKind.EPILOGUE_CORRIDOR
+        assert site.return_block_serial == 12
+        assert site.corridor_length == 2  # 10 -> 11 -> 12 = 2 hops
+
+
+class TestSharedEpilogueClassification:
+    """Handler exit -> block with multiple preds -> SHARED_EPILOGUE."""
+
+    def test_shared_epilogue_classification(self) -> None:
+        # Block 0 (entry) -> Block 10 (handler A exit)
+        #                  -> Block 20 (handler B exit)
+        # Both -> Block 30 (shared epilogue, BLT_STOP, 2 preds)
+        blocks = [
+            _make_block(0, succs=(10, 20)),
+            _make_block(10, succs=(30,), preds=(0,)),
+            _make_block(20, succs=(30,), preds=(0,)),
+            _make_block(30, block_type=_BLT_STOP, preds=(10, 20)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: 10},
+            total_handlers=2,
+        )
+
+        assert len(report.sites) == 1
+        site = report.sites[0]
+        assert site.source_kind == TerminalReturnSourceKind.SHARED_EPILOGUE
+        assert site.return_block_serial == 30
+        assert site.corridor_length == 1
+
+
+class TestUnreachableClassification:
+    """Handler exit has no path to BLT_STOP -> UNREACHABLE."""
+
+    def test_unreachable_classification(self) -> None:
+        # Block 0 (entry) -> Block 10 (handler exit) -> Block 11 (dead end, no succs, not BLT_STOP)
+        blocks = [
+            _make_block(0, succs=(10,)),
+            _make_block(10, succs=(11,), preds=(0,)),
+            _make_block(11, block_type=_BLT_1WAY, succs=(), preds=(10,)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: 10},
+            total_handlers=1,
+        )
+
+        assert len(report.sites) == 1
+        site = report.sites[0]
+        assert site.source_kind == TerminalReturnSourceKind.UNREACHABLE
+        assert site.return_block_serial is None
+        assert site.corridor_length == 0
+
+    def test_unreachable_none_exit(self) -> None:
+        """Exit serial is None -> UNREACHABLE."""
+        blocks = [_make_block(0)]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: None},
+            total_handlers=1,
+        )
+
+        assert len(report.sites) == 1
+        assert report.sites[0].source_kind == TerminalReturnSourceKind.UNREACHABLE
+
+    def test_unreachable_missing_exit_block(self) -> None:
+        """Exit serial references a block not in CFG -> UNREACHABLE."""
+        blocks = [_make_block(0)]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: 99},
+            total_handlers=1,
+        )
+
+        assert len(report.sites) == 1
+        assert report.sites[0].source_kind == TerminalReturnSourceKind.UNREACHABLE
+
+
+class TestSummaryFormat:
+    """Verify summary() output format."""
+
+    def test_summary_format(self) -> None:
+        report = TerminalReturnAuditReport(
+            function_ea=0x400000,
+            total_handlers=10,
+            terminal_handlers=4,
+            sites=(
+                TerminalReturnSiteAudit(
+                    handler_serial=1, exit_serial=2,
+                    source_kind=TerminalReturnSourceKind.DIRECT_RETURN,
+                    return_block_serial=2,
+                ),
+                TerminalReturnSiteAudit(
+                    handler_serial=3, exit_serial=4,
+                    source_kind=TerminalReturnSourceKind.EPILOGUE_CORRIDOR,
+                    return_block_serial=5, corridor_length=2,
+                ),
+                TerminalReturnSiteAudit(
+                    handler_serial=6, exit_serial=7,
+                    source_kind=TerminalReturnSourceKind.SHARED_EPILOGUE,
+                    return_block_serial=8, corridor_length=1,
+                ),
+                TerminalReturnSiteAudit(
+                    handler_serial=9, exit_serial=None,
+                    source_kind=TerminalReturnSourceKind.UNREACHABLE,
+                ),
+            ),
+        )
+        summary = report.summary()
+        assert summary == "4/10 terminal handlers: 1 direct, 1 corridor, 1 shared, 1 unreachable"
+
+    def test_summary_zero_handlers(self) -> None:
+        report = TerminalReturnAuditReport(
+            function_ea=0x400000,
+            total_handlers=5,
+            terminal_handlers=0,
+            sites=(),
+        )
+        assert "0/5 terminal handlers" in report.summary()
+
+
+class TestRoundtripSerialization:
+    """to_dict -> from_dict preserves all fields."""
+
+    def test_roundtrip_serialization(self) -> None:
+        original = TerminalReturnAuditReport(
+            function_ea=0x400000,
+            total_handlers=8,
+            terminal_handlers=3,
+            sites=(
+                TerminalReturnSiteAudit(
+                    handler_serial=1, exit_serial=2,
+                    source_kind=TerminalReturnSourceKind.DIRECT_RETURN,
+                    return_block_serial=2, corridor_length=0,
+                    has_rax_write=True, notes="clean return",
+                ),
+                TerminalReturnSiteAudit(
+                    handler_serial=3, exit_serial=4,
+                    source_kind=TerminalReturnSourceKind.EPILOGUE_CORRIDOR,
+                    return_block_serial=5, corridor_length=3,
+                    has_rax_write=False, notes="",
+                ),
+                TerminalReturnSiteAudit(
+                    handler_serial=6, exit_serial=None,
+                    source_kind=TerminalReturnSourceKind.UNREACHABLE,
+                    return_block_serial=None, corridor_length=0,
+                    has_rax_write=None, notes="no path to BLT_STOP from exit",
+                ),
+            ),
+        )
+
+        data = to_dict(original)
+        restored = from_dict(data)
+
+        assert restored.function_ea == original.function_ea
+        assert restored.total_handlers == original.total_handlers
+        assert restored.terminal_handlers == original.terminal_handlers
+        assert len(restored.sites) == len(original.sites)
+
+        for orig_site, rest_site in zip(original.sites, restored.sites):
+            assert rest_site.handler_serial == orig_site.handler_serial
+            assert rest_site.exit_serial == orig_site.exit_serial
+            assert rest_site.source_kind == orig_site.source_kind
+            assert rest_site.return_block_serial == orig_site.return_block_serial
+            assert rest_site.corridor_length == orig_site.corridor_length
+            assert rest_site.has_rax_write == orig_site.has_rax_write
+            assert rest_site.notes == orig_site.notes
+
+    def test_roundtrip_empty_sites(self) -> None:
+        original = TerminalReturnAuditReport(
+            function_ea=0x100, total_handlers=0, terminal_handlers=0, sites=(),
+        )
+        assert from_dict(to_dict(original)) == original
+
+
+class TestEmptyTerminalHandlers:
+    """0 terminal handlers -> report with empty sites."""
+
+    def test_empty_terminal_handlers(self) -> None:
+        blocks = [
+            _make_block(0, succs=(1,)),
+            _make_block(1, block_type=_BLT_STOP, preds=(0,)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials=set(),
+            exit_map={},
+            total_handlers=5,
+        )
+
+        assert report.terminal_handlers == 0
+        assert report.total_handlers == 5
+        assert report.sites == ()
+        assert "0/5" in report.summary()
+
+
+class TestMultipleTerminalHandlers:
+    """Multiple terminal handlers with mixed classifications."""
+
+    def test_mixed_classifications(self) -> None:
+        # Handler 10: exit 20 is BLT_STOP -> DIRECT_RETURN
+        # Handler 30: exit 40 -> 50 (single pred) -> 60 BLT_STOP (single pred) -> EPILOGUE_CORRIDOR
+        # Handler 70: exit None -> UNREACHABLE
+        blocks = [
+            _make_block(0, succs=(10, 30)),
+            _make_block(10, succs=(20,), preds=(0,)),
+            _make_block(20, block_type=_BLT_STOP, preds=(10,)),
+            _make_block(30, succs=(40,), preds=(0,)),
+            _make_block(40, succs=(50,), preds=(30,)),
+            _make_block(50, succs=(60,), preds=(40,)),
+            _make_block(60, block_type=_BLT_STOP, preds=(50,)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10, 30, 70},
+            exit_map={10: 20, 30: 40, 70: None},
+            total_handlers=5,
+        )
+
+        assert len(report.sites) == 3
+        assert report.terminal_handlers == 3
+        assert report.total_handlers == 5
+
+        site_by_handler = {s.handler_serial: s for s in report.sites}
+        assert site_by_handler[10].source_kind == TerminalReturnSourceKind.DIRECT_RETURN
+        assert site_by_handler[30].source_kind == TerminalReturnSourceKind.EPILOGUE_CORRIDOR
+        assert site_by_handler[30].corridor_length == 2  # 40 -> 50 -> 60
+        assert site_by_handler[70].source_kind == TerminalReturnSourceKind.UNREACHABLE
