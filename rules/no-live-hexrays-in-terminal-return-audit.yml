@@ -1,0 +1,53 @@
+# Keep terminal_return_audit.py as a pure FlowGraph/topology analysis.
+#
+# This module must remain:
+# - portable
+# - unit-testable without IDA
+# - free of live mba_t / chain / use-def plumbing
+#
+# Live Hex-Rays proofs belong in evaluator modules (for example
+# d810.evaluator.hexrays_microcode.*), not in recon/flow/terminal_return_audit.py.
+
+id: no-live-hexrays-in-terminal-return-audit
+language: python
+severity: error
+
+files:
+  - "src/d810/recon/flow/terminal_return_audit.py"
+
+message: |
+  terminal_return_audit.py must stay a pure FlowGraph-based topology audit.
+
+  Do not add live Hex-Rays / mba_t analysis here. If you need:
+  - build_graph()/get_graph()
+  - use/def lists
+  - UD/DU chains
+  - live register/stack proof
+  put that logic in d810.evaluator.hexrays_microcode and consume only summarized results here.
+
+rule:
+  any:
+    - pattern: import ida_$MOD
+    - pattern: from ida_$MOD import $$$
+    - pattern: $OBJ.build_graph()
+    - pattern: $OBJ.get_graph()
+    - pattern: $OBJ.make_lists_ready()
+    - pattern: $OBJ.build_use_list($$$)
+    - pattern: $OBJ.build_def_list($$$)
+    - pattern: $OBJ.get_ud($$$)
+    - pattern: $OBJ.get_du($$$)
+    - pattern: $OBJ.verify($$$)
+    - pattern: $OBJ.build_lists($$$)
+    - pattern: $OBJ.mark_chains_dirty()
+
+note: |
+  Allowed here:
+  - FlowGraph / BlockSnapshot topology analysis
+  - portable classification and serialization
+  - metadata assembly from caller-provided summaries
+
+  Not allowed here:
+  - live mba_t analysis
+  - IDA imports
+  - chain/list plumbing
+  - CFG or instruction mutation
