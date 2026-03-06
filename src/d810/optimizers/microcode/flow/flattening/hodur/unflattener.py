@@ -45,6 +45,12 @@ from d810.optimizers.microcode.flow.flattening.hodur.planner import (
     PipelinePolicy,
     UnflatteningPlanner,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
+    DecisionPhase,
+    DecisionReasonCode,
+    DecisionRecord,
+    PipelineProvenance,
+)
 from d810.cfg.flow.graph_checks import SemanticGate
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     StageResult,
@@ -264,17 +270,34 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         # 3. Collect plan fragments from all applicable strategies
         fragments = []
+        pre_planner_records: list[DecisionRecord] = []
         for strategy in self._strategies:
-            if strategy.is_applicable(snapshot):
-                try:
-                    fragment = strategy.plan(snapshot)
-                except Exception as e:
-                    unflat_logger.warning(
-                        "Strategy %s crashed: %s", strategy.name, e
-                    )
-                    continue
-                if fragment is not None:
-                    fragments.append(fragment)
+            if not strategy.is_applicable(snapshot):
+                pre_planner_records.append(DecisionRecord(
+                    strategy_name=strategy.name,
+                    family=strategy.family,
+                    phase=DecisionPhase.INAPPLICABLE,
+                    reason_code=DecisionReasonCode.REJECTED_INAPPLICABLE,
+                    reason="is_applicable returned False",
+                ))
+                continue
+            try:
+                fragment = strategy.plan(snapshot)
+            except Exception as e:
+                unflat_logger.warning(
+                    "Strategy %s crashed: %s", strategy.name, e
+                )
+                pre_planner_records.append(DecisionRecord(
+                    strategy_name=strategy.name,
+                    family=strategy.family,
+                    phase=DecisionPhase.CRASHED,
+                    reason_code=DecisionReasonCode.REJECTED_CRASHED,
+                    reason=f"plan() raised: {e}",
+                    notes=str(e),
+                ))
+                continue
+            if fragment is not None:
+                fragments.append(fragment)
 
         # Return frontier audit: pre_plan stage (after fragment collection so
         # handler_paths from DirectLinearization strategy are available)
@@ -292,6 +315,12 @@ class HodurUnflattener(GenericUnflatteningRule):
             fragments,
             total_handlers=snapshot.handler_count,
         )
+        # Prepend strategy-level INAPPLICABLE/CRASHED records to planner provenance
+        if pre_planner_records:
+            provenance = PipelineProvenance(
+                rows=tuple(pre_planner_records) + provenance.rows,
+                input_summary=provenance.input_summary,
+            )
         unflat_logger.info("Planner provenance: %s", provenance.summary())
 
         # Return frontier audit: post_plan stage (mods queued but not applied)
