@@ -215,6 +215,8 @@ from d810.hexrays.mutation.cfg_mutations import (
     duplicate_block)
 from d810.hexrays.mutation.cfg_mutations import (
     insert_nop_blk)
+from d810.hexrays.mutation.cfg_mutations import (
+    insert_goto_instruction)
 from d810.hexrays.mutation.cfg_verify import (
     log_block_info)
 from d810.hexrays.mutation.cfg_mutations import (
@@ -2704,10 +2706,6 @@ class DeferredGraphModifier:
             return False
 
         try:
-            final_target = target_serial
-            if final_target is None and source_blk.nsucc() == 1:
-                final_target = source_blk.succ(0)
-
             old_stop_serial = self.mba.qty - 1
             old_stop_pred_serials = [
                 serial
@@ -2717,35 +2715,121 @@ class DeferredGraphModifier:
                 and blk.succ(0) == old_stop_serial
             ]
 
-            instructions_to_copy = []
-            cur_ins = source_blk.head
-            while cur_ins is not None:
-                if (
-                    source_blk.nsucc() == 1
-                    and source_blk.tail is not None
-                    and source_blk.tail.opcode == ida_hexrays.m_goto
-                    and cur_ins.next is None
-                ):
-                    break
-                cloned_ins = ida_hexrays.minsn_t(cur_ins)
-                cloned_ins.setaddr(self.mba.entry_ea)
-                instructions_to_copy.append(cloned_ins)
-                cur_ins = cur_ins.next
+            if source_blk.nsucc() == 2:
+                conditional_target = source_blk.tail.d.b
+                fallthrough_target = next(
+                    (source_blk.succ(i) for i in range(source_blk.nsucc()) if source_blk.succ(i) != conditional_target),
+                    None,
+                )
+                if fallthrough_target is None:
+                    logger.warning(
+                        "duplicate_block: src blk[%d] missing fallthrough successor",
+                        source_blk.serial,
+                    )
+                    return False
 
-            duplicated_blk = create_standalone_block(
-                source_blk,
-                instructions_to_copy,
-                target_serial=final_target,
-                is_0_way=final_target is None,
-                verify=False,
-            )
-            duplicated_default = None
+                duplicated_blk = self.mba.copy_block(source_blk, self.mba.qty - 1)
+
+                prev_pred_serials = [x for x in duplicated_blk.predset]
+                for prev_serial in prev_pred_serials:
+                    duplicated_blk.predset._del(prev_serial)
+
+                prev_blk = duplicated_blk.prevb
+                if prev_blk is not None and prev_blk.serial != source_blk.serial:
+                    tail = prev_blk.tail
+                    has_explicit_target = (
+                        tail is not None
+                        and (
+                            tail.opcode == ida_hexrays.m_goto
+                            or ida_hexrays.is_mcode_jcond(tail.opcode)
+                            or tail.opcode == ida_hexrays.m_ijmp
+                        )
+                    )
+                    if not has_explicit_target and prev_blk.nsucc() == 1:
+                        if tail is not None and tail.opcode == ida_hexrays.m_ret:
+                            logger.debug(
+                                "duplicate_block: skipping m_ret fall-through fix for blk[%d]",
+                                prev_blk.serial,
+                            )
+                        else:
+                            original_target = prev_blk.succset[0]
+                            exit_serial = self.mba.qty - 1
+                            if original_target == duplicated_blk.serial:
+                                original_target = exit_serial
+                            insert_goto_instruction(
+                                prev_blk,
+                                original_target,
+                                nop_previous_instruction=False,
+                            )
+                            prev_blk.succset._del(duplicated_blk.serial)
+                            if original_target not in [
+                                prev_blk.succset[i] for i in range(prev_blk.succset.size())
+                            ]:
+                                prev_blk.succset.push_back(original_target)
+                            prev_blk.type = ida_hexrays.BLT_1WAY
+                            prev_blk.flags |= ida_hexrays.MBL_GOTO
+                            prev_blk.mark_lists_dirty()
+
+                duplicated_default = create_standalone_block(
+                    source_blk,
+                    [],
+                    target_serial=fallthrough_target,
+                    is_0_way=False,
+                    verify=False,
+                )
+                duplicated_blk.flags &= ~ida_hexrays.MBL_GOTO
+                if not _rewire_edge(
+                    duplicated_blk,
+                    [x for x in duplicated_blk.succset],
+                    [duplicated_default.serial, conditional_target],
+                    new_block_type=ida_hexrays.BLT_2WAY,
+                    verify=False,
+                ):
+                    return False
+                duplicated_blk.tail.d = ida_hexrays.mop_t()
+                duplicated_blk.tail.d.make_blkref(conditional_target)
+                duplicated_blk.mark_lists_dirty()
+                self.mba.mark_chains_dirty()
+            else:
+                final_target = target_serial
+                if final_target is None and source_blk.nsucc() == 1:
+                    final_target = source_blk.succ(0)
+
+                instructions_to_copy = []
+                cur_ins = source_blk.head
+                while cur_ins is not None:
+                    if (
+                        source_blk.nsucc() == 1
+                        and source_blk.tail is not None
+                        and source_blk.tail.opcode == ida_hexrays.m_goto
+                        and cur_ins.next is None
+                    ):
+                        break
+                    cloned_ins = ida_hexrays.minsn_t(cur_ins)
+                    cloned_ins.setaddr(self.mba.entry_ea)
+                    instructions_to_copy.append(cloned_ins)
+                    cur_ins = cur_ins.next
+
+                duplicated_blk = create_standalone_block(
+                    source_blk,
+                    instructions_to_copy,
+                    target_serial=final_target,
+                    is_0_way=final_target is None,
+                    verify=False,
+                )
+                duplicated_default = None
             new_stop_serial = self.mba.qty - 1
+            transient_stop_targets = {duplicated_blk.serial}
+            if duplicated_default is not None:
+                transient_stop_targets.add(duplicated_default.serial)
             for stop_pred_serial in old_stop_pred_serials:
                 stop_pred_blk = self.mba.get_mblock(stop_pred_serial)
                 if stop_pred_blk is None or stop_pred_blk.serial == duplicated_blk.serial:
                     continue
-                if stop_pred_blk.nsucc() != 1 or stop_pred_blk.succ(0) != duplicated_blk.serial:
+                if (
+                    stop_pred_blk.nsucc() != 1
+                    or stop_pred_blk.succ(0) not in transient_stop_targets
+                ):
                     continue
                 if not change_1way_block_successor(
                     stop_pred_blk,
@@ -3106,13 +3190,32 @@ class DeferredGraphModifier:
             )
             return False
 
-        if source_blk.nsucc() > 1:
-            logger.warning(
-                "duplicate_block: src blk[%d] has unsupported nsucc=%d",
-                source_blk.serial,
-                source_blk.nsucc(),
+            if source_blk.nsucc() > 2:
+                logger.warning(
+                    "duplicate_block: src blk[%d] has unsupported nsucc=%d",
+                    source_blk.serial,
+                    source_blk.nsucc(),
             )
             return False
+        if source_blk.nsucc() == 2:
+            if target_serial is not None:
+                logger.warning(
+                    "duplicate_block: src blk[%d] conditional duplicate does not support target override",
+                    source_blk.serial,
+                )
+                return False
+            if source_blk.tail is None or not ida_hexrays.is_mcode_jcond(source_blk.tail.opcode):
+                logger.warning(
+                    "duplicate_block: src blk[%d] has nsucc=2 but non-conditional tail",
+                    source_blk.serial,
+                )
+                return False
+            if source_blk.tail.d.t != ida_hexrays.mop_b:
+                logger.warning(
+                    "duplicate_block: src blk[%d] conditional tail lacks blkref operand",
+                    source_blk.serial,
+                )
+                return False
 
         if pred_blk.nsucc() == 1:
             if pred_blk.succ(0) != source_blk.serial:
