@@ -1,4 +1,5 @@
-"""Tests for Hodur decision provenance types (K1.1) and planner instrumentation (K1.2)."""
+"""Tests for Hodur decision provenance types (K1.1), planner instrumentation (K1.2),
+and gate/bypass accounting (K4)."""
 from __future__ import annotations
 
 import json
@@ -13,6 +14,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     DecisionPhase,
     DecisionReasonCode,
     DecisionRecord,
+    GateAccounting,
+    GateDecision,
+    GateVerdict,
     PipelineProvenance,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
@@ -547,3 +551,177 @@ class TestPhaseSummary:
         )
         prov = PipelineProvenance(rows=rows)
         assert "1 APPLIED" in prov.phase_summary()
+
+
+# ---------------------------------------------------------------------------
+# K4: Gate/Bypass Accounting
+# ---------------------------------------------------------------------------
+
+
+class TestGateVerdict:
+    """K4.1: GateVerdict enum values."""
+
+    def test_verdict_values(self) -> None:
+        assert GateVerdict.PASSED.value == "passed"
+        assert GateVerdict.FAILED.value == "failed"
+        assert GateVerdict.BYPASSED.value == "bypassed"
+        assert GateVerdict.SKIPPED.value == "skipped"
+
+
+class TestGateDecision:
+    """K4.1: GateDecision dataclass."""
+
+    def test_creation(self) -> None:
+        d = GateDecision(
+            gate_name="semantic_gate",
+            verdict=GateVerdict.PASSED,
+            reason="all checks ok",
+        )
+        assert d.verdict == GateVerdict.PASSED
+        assert d.gate_name == "semantic_gate"
+        assert d.strict_mode is True  # default
+        assert d.elapsed_ms is None  # default
+
+    def test_with_strict_mode_disabled(self) -> None:
+        d = GateDecision(
+            gate_name="safeguard",
+            verdict=GateVerdict.BYPASSED,
+            reason="strict mode disabled",
+            strict_mode=False,
+        )
+        assert d.strict_mode is False
+        assert d.verdict == GateVerdict.BYPASSED
+
+    def test_with_elapsed(self) -> None:
+        d = GateDecision(
+            gate_name="transaction_engine",
+            verdict=GateVerdict.PASSED,
+            reason="ok",
+            elapsed_ms=12.5,
+        )
+        assert d.elapsed_ms == 12.5
+
+
+class TestGateAccounting:
+    """K4.1: GateAccounting aggregation."""
+
+    def test_empty_accounting(self) -> None:
+        acct = GateAccounting()
+        assert acct.passed_count == 0
+        assert acct.failed_count == 0
+        assert acct.bypassed_count == 0
+        assert acct.all_passed is True  # vacuously true
+        assert not acct.any_failed()
+
+    def test_add_returns_new_instance(self) -> None:
+        acct = GateAccounting()
+        d = GateDecision("safeguard", GateVerdict.PASSED, "ok")
+        acct2 = acct.add(d)
+        assert len(acct.decisions) == 0  # original unchanged
+        assert len(acct2.decisions) == 1
+
+    def test_mixed_verdicts(self) -> None:
+        decisions = (
+            GateDecision("safeguard", GateVerdict.PASSED, "ok"),
+            GateDecision("semantic_gate", GateVerdict.FAILED, "reachability=0.5<0.7"),
+            GateDecision("contract", GateVerdict.BYPASSED, "projected check skipped"),
+        )
+        acct = GateAccounting(decisions=decisions)
+        assert acct.passed_count == 1
+        assert acct.failed_count == 1
+        assert acct.bypassed_count == 1
+        assert not acct.all_passed
+        assert acct.any_failed()
+
+    def test_all_passed(self) -> None:
+        decisions = (
+            GateDecision("safeguard", GateVerdict.PASSED, "ok"),
+            GateDecision("semantic_gate", GateVerdict.PASSED, "ok"),
+        )
+        acct = GateAccounting(decisions=decisions)
+        assert acct.all_passed
+        assert not acct.any_failed()
+
+    def test_any_failed_with_no_failures(self) -> None:
+        decisions = (
+            GateDecision("safeguard", GateVerdict.PASSED, "ok"),
+            GateDecision("contract", GateVerdict.BYPASSED, "skipped"),
+        )
+        acct = GateAccounting(decisions=decisions)
+        assert not acct.any_failed()
+
+    def test_summary_format(self) -> None:
+        decisions = (
+            GateDecision("safeguard", GateVerdict.PASSED, "ok"),
+            GateDecision("semantic_gate", GateVerdict.FAILED, "bad"),
+            GateDecision("contract", GateVerdict.BYPASSED, "skipped"),
+        )
+        acct = GateAccounting(decisions=decisions)
+        summary = acct.summary()
+        assert "1 passed" in summary
+        assert "1 failed" in summary
+        assert "1 bypassed" in summary
+
+    def test_serializable(self) -> None:
+        acct = GateAccounting(decisions=(
+            GateDecision("safeguard", GateVerdict.PASSED, "ok"),
+        ))
+        data = [
+            {
+                "gate": d.gate_name,
+                "verdict": d.verdict.value,
+                "reason": d.reason,
+            }
+            for d in acct.decisions
+        ]
+        serialized = json.dumps(data)
+        assert '"verdict": "passed"' in serialized
+
+
+class TestDecisionRecordWithGateAccounting:
+    """K4.3: DecisionRecord carries gate_accounting."""
+
+    def test_default_none(self) -> None:
+        row = DecisionRecord(
+            "A", FAMILY_DIRECT, DecisionPhase.APPLIED,
+            DecisionReasonCode.ACCEPTED, "ok",
+        )
+        assert row.gate_accounting is None
+
+    def test_with_accounting(self) -> None:
+        acct = GateAccounting(decisions=(
+            GateDecision("safeguard", GateVerdict.PASSED, "ok"),
+            GateDecision("semantic_gate", GateVerdict.PASSED, "ok"),
+        ))
+        row = DecisionRecord(
+            "A", FAMILY_DIRECT, DecisionPhase.APPLIED,
+            DecisionReasonCode.ACCEPTED, "ok",
+            gate_accounting=acct,
+        )
+        assert row.gate_accounting is not None
+        assert row.gate_accounting.all_passed
+
+    def test_update_phase_with_gate_accounting(self) -> None:
+        """update_phase passes gate_accounting through to the new record."""
+        rows = (
+            DecisionRecord(
+                "A", FAMILY_DIRECT, DecisionPhase.SELECTED,
+                DecisionReasonCode.ACCEPTED, "selected",
+            ),
+        )
+        prov = PipelineProvenance(rows=rows)
+        acct = GateAccounting(decisions=(
+            GateDecision("safeguard", GateVerdict.PASSED, "ok"),
+            GateDecision("semantic_gate", GateVerdict.FAILED, "reachability low"),
+        ))
+        updated = prov.update_phase(
+            "A",
+            DecisionPhase.GATE_FAILED,
+            reason_code=DecisionReasonCode.REJECTED_GATE,
+            reason_detail="semantic gate failed",
+            gate_accounting=acct,
+        )
+        assert updated.rows[0].gate_accounting is acct
+        assert updated.rows[0].gate_accounting.any_failed()
+        # Original unchanged
+        assert prov.rows[0].gate_accounting is None

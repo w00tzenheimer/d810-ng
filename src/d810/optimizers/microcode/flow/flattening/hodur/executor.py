@@ -30,6 +30,11 @@ from d810.cfg.graph_modification import (
 )
 from d810.cfg.plan import PatchEdgeSplitTrampoline, PatchPlan, compile_patch_plan
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
+    GateAccounting,
+    GateDecision,
+    GateVerdict,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
     StageResult,
@@ -128,14 +133,29 @@ class TransactionalExecutor:
         if not modifications:
             return StageResult(strategy_name=fragment.strategy_name)
 
+        gate_accounting = GateAccounting()
+
         pre_cfg = self.translator.lift(self.mba)
         num_modifications = len(modifications)
-        if not should_apply_cfg_modifications(num_modifications, total_handlers, "hodur"):
-            return StageResult(
+        safeguard_ok = should_apply_cfg_modifications(num_modifications, total_handlers, "hodur")
+        gate_accounting = gate_accounting.add(GateDecision(
+            gate_name="safeguard",
+            verdict=GateVerdict.PASSED if safeguard_ok else GateVerdict.FAILED,
+            reason=(
+                f"modifications={num_modifications}, handlers={total_handlers}"
+                if safeguard_ok
+                else f"insufficient modifications ({num_modifications}) for {total_handlers} handlers"
+            ),
+        ))
+        if not safeguard_ok:
+            result = StageResult(
                 strategy_name=fragment.strategy_name,
                 success=False,
                 error="safeguard rejected modifications",
             )
+            result.metadata["gate_accounting"] = gate_accounting
+            executor_logger.info("Gate accounting: %s", gate_accounting.summary())
+            return result
 
         patch_plan_preview = compile_patch_plan(modifications, pre_cfg)
         modifications, patch_plan_preview = self._filter_backend_unsupported_modifications(
@@ -179,6 +199,15 @@ class TransactionalExecutor:
 
         tx_result = engine.apply(patch_plan, pre_cfg=pre_cfg, mba=self.mba)
 
+        gate_accounting = gate_accounting.add(GateDecision(
+            gate_name="transaction_engine",
+            verdict=GateVerdict.PASSED if tx_result.success else GateVerdict.FAILED,
+            reason=(
+                f"applied={tx_result.applied_count}"
+                if tx_result.success
+                else f"rejected at {tx_result.failure_phase}: {tx_result.error}"
+            ),
+        ))
         if not tx_result.success:
             classification = tx_result.classification
             executor_logger.warning(
@@ -187,13 +216,16 @@ class TransactionalExecutor:
                 tx_result.failure_phase,
                 tx_result.error,
             )
-            return StageResult(
+            result = StageResult(
                 strategy_name=fragment.strategy_name,
                 success=False,
                 rollback_needed=classification.rollback_needed if classification else False,
                 quarantine=classification.quarantine if classification else False,
                 error=str(tx_result.error) if tx_result.error else tx_result.failure_phase,
             )
+            result.metadata["gate_accounting"] = gate_accounting
+            executor_logger.info("Gate accounting: %s", gate_accounting.summary())
+            return result
 
         changes = tx_result.applied_count
         self._total_changes += changes
@@ -248,12 +280,35 @@ class TransactionalExecutor:
         self._run_terminal_return_audit(fragment, pre_cfg, result)
 
         gate_ok = self.gate.check(result)
+        gate_accounting = gate_accounting.add(GateDecision(
+            gate_name="semantic_gate",
+            verdict=GateVerdict.PASSED if gate_ok else GateVerdict.FAILED,
+            reason=(
+                f"reachability={result.reachability_after:.2f}, "
+                f"handler_reachability={result.handler_reachability:.2f}, "
+                f"conflicts={result.conflict_count_after}"
+            ),
+        ))
+
         if isinstance(self.gate, VerificationGate):
-            gate_ok = self.gate.check_flow_graph(
+            flow_ok = self.gate.check_flow_graph(
                 post_cfg,
                 handler_entry_serials=handler_entry_serials,
                 conflict_count_after=result.conflict_count_after,
             )
+            gate_accounting = gate_accounting.add(GateDecision(
+                gate_name="verification_flow_graph",
+                verdict=GateVerdict.PASSED if flow_ok else GateVerdict.FAILED,
+                reason=(
+                    f"flow_graph reachability check "
+                    f"({'passed' if flow_ok else 'failed'})"
+                ),
+            ))
+            # Combine both results: both must pass (fixes overwrite bug)
+            gate_ok = gate_ok and flow_ok
+
+        result.metadata["gate_accounting"] = gate_accounting
+        executor_logger.info("Gate accounting: %s", gate_accounting.summary())
 
         if not gate_ok:
             result.rollback_needed = True

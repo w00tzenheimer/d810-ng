@@ -50,6 +50,71 @@ class DecisionReasonCode(str, enum.Enum):
     BLOCKED = "blocked"
 
 
+class GateVerdict(str, enum.Enum):
+    """Outcome of a single gate check."""
+
+    PASSED = "passed"
+    FAILED = "failed"
+    BYPASSED = "bypassed"
+    SKIPPED = "skipped"
+
+
+@dataclass(frozen=True)
+class GateDecision:
+    """Record of a single gate checkpoint evaluation."""
+
+    gate_name: str
+    verdict: GateVerdict
+    reason: str
+    strict_mode: bool = True
+    elapsed_ms: float | None = None
+
+
+@dataclass(frozen=True)
+class GateAccounting:
+    """Aggregated gate decisions for one stage execution."""
+
+    decisions: tuple[GateDecision, ...] = ()
+
+    def add(self, decision: GateDecision) -> GateAccounting:
+        """Return a new GateAccounting with the decision appended.
+
+        Since this dataclass is frozen, returns a new instance.
+        """
+        return GateAccounting(decisions=self.decisions + (decision,))
+
+    @property
+    def passed_count(self) -> int:
+        """Count of PASSED verdicts."""
+        return sum(1 for d in self.decisions if d.verdict == GateVerdict.PASSED)
+
+    @property
+    def failed_count(self) -> int:
+        """Count of FAILED verdicts."""
+        return sum(1 for d in self.decisions if d.verdict == GateVerdict.FAILED)
+
+    @property
+    def bypassed_count(self) -> int:
+        """Count of BYPASSED verdicts."""
+        return sum(1 for d in self.decisions if d.verdict == GateVerdict.BYPASSED)
+
+    @property
+    def all_passed(self) -> bool:
+        """True when every decision passed (no FAILED/BYPASSED/SKIPPED)."""
+        return all(d.verdict == GateVerdict.PASSED for d in self.decisions)
+
+    def any_failed(self) -> bool:
+        """Return True if any gate decision has FAILED verdict."""
+        return any(d.verdict == GateVerdict.FAILED for d in self.decisions)
+
+    def summary(self) -> str:
+        """One-line summary like '2 passed, 1 failed, 0 bypassed'."""
+        return (
+            f"{self.passed_count} passed, {self.failed_count} failed, "
+            f"{self.bypassed_count} bypassed"
+        )
+
+
 @dataclass(frozen=True)
 class DecisionInputSummary:
     """Summary of recon artifacts available at decision time."""
@@ -79,6 +144,7 @@ class DecisionRecord:
     input_summary: DecisionInputSummary | None = None
     terminal_return_summary: str = ""
     notes: str = ""
+    gate_accounting: GateAccounting | None = None
 
     @property
     def is_accepted(self) -> bool:
@@ -123,6 +189,7 @@ class PipelineProvenance:
         new_phase: DecisionPhase,
         reason_code: DecisionReasonCode | None = None,
         reason_detail: str | None = None,
+        gate_accounting: GateAccounting | None = None,
     ) -> PipelineProvenance:
         """Return a new PipelineProvenance with the named record's phase updated.
 
@@ -136,6 +203,7 @@ class PipelineProvenance:
             new_phase: New lifecycle phase to set.
             reason_code: Optional new reason code (kept unchanged if None).
             reason_detail: Optional new reason string (kept unchanged if None).
+            gate_accounting: Optional gate accounting to attach to the record.
 
         Returns:
             A new ``PipelineProvenance`` with the updated row.
@@ -149,6 +217,8 @@ class PipelineProvenance:
                     kwargs["reason_code"] = reason_code
                 if reason_detail is not None:
                     kwargs["reason"] = reason_detail
+                if gate_accounting is not None:
+                    kwargs["gate_accounting"] = gate_accounting
                 new_rows.append(replace(row, **kwargs))
                 found = True
             else:
