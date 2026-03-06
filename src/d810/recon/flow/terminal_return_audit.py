@@ -218,12 +218,19 @@ def build_terminal_return_audit(
             notes_parts.append(f"exit block {exit_serial} not in CFG")
 
         # Determine has_rax_write from path intersection.
+        # Include handler_serial and exit_serial in checked set -- the rax
+        # write typically lives in the handler body, not just on the
+        # exit-to-return corridor that _classify_exit returns.
         has_rax_write: bool | None = None
         if (
             rax_write_serials is not None
             and source_kind != TerminalReturnSourceKind.UNREACHABLE
         ):
-            has_rax_write = bool(set(path_serials) & rax_write_serials)
+            checked_blocks = {handler_serial}
+            if exit_serial is not None:
+                checked_blocks.add(exit_serial)
+            checked_blocks.update(path_serials)
+            has_rax_write = bool(rax_write_serials & checked_blocks)
 
         sites.append(
             TerminalReturnSiteAudit(

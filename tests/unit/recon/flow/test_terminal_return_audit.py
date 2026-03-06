@@ -408,6 +408,31 @@ class TestRaxWriteDetection:
         site = report.sites[0]
         assert site.has_rax_write is None
 
+    def test_rax_write_in_handler_body_detected_for_direct_return(self) -> None:
+        """Handler block writes rax, successor is BLT_STOP -> has_rax_write=True."""
+        # Handler 10 writes rax in its own body; its successor (20) is BLT_STOP.
+        # _classify_exit returns path_serials=(20,) which does NOT contain 10,
+        # but the fix includes handler_serial in the checked set.
+        blocks = [
+            _make_block(0, succs=(10,)),
+            _make_block(10, succs=(20,), preds=(0,)),
+            _make_block(20, block_type=_BLT_STOP, preds=(10,)),
+        ]
+        cfg = _make_cfg(blocks)
+
+        report = build_terminal_return_audit(
+            cfg=cfg,
+            terminal_handler_serials={10},
+            exit_map={10: 20},
+            total_handlers=1,
+            rax_write_serials={10},
+        )
+
+        assert len(report.sites) == 1
+        site = report.sites[0]
+        assert site.source_kind == TerminalReturnSourceKind.DIRECT_RETURN
+        assert site.has_rax_write is True
+
     def test_rax_write_none_for_unreachable(self) -> None:
         """Even with rax_write_serials provided, UNREACHABLE -> has_rax_write=None."""
         blocks = [_make_block(0)]
