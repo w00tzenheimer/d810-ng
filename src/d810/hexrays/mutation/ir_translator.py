@@ -179,7 +179,21 @@ class IDAIRTranslator:
         contract: IDACfgContract | None = None,
     ) -> None:
         self.allow_legacy_block_creation = allow_legacy_block_creation
-        self.contract = contract
+        self._contract = contract
+        self._last_lowering_phase: str | None = None
+
+    @property
+    def contract(self) -> IDACfgContract | None:
+        return self._contract
+
+    @contract.setter
+    def contract(self, value: IDACfgContract | None) -> None:
+        self._contract = value
+
+    @property
+    def last_lowering_phase(self) -> str | None:
+        """Phase of last failure from lower(), or None if lower() succeeded."""
+        return self._last_lowering_phase
 
     @property
     def name(self) -> str:
@@ -230,6 +244,8 @@ class IDAIRTranslator:
         # Import here to make it patchable in tests
         from d810.hexrays.mutation import deferred_modifier
 
+        self._last_lowering_phase = None
+
         if not isinstance(patch_plan, PatchPlan):
             raise TypeError(
                 "IDAIRTranslator.lower() now requires PatchPlan; "
@@ -240,6 +256,7 @@ class IDAIRTranslator:
                 "PatchPlan contains %d legacy block-creating steps but legacy block creation is disabled",
                 len(patch_plan.legacy_block_operations),
             )
+            self._last_lowering_phase = "lowering"
             return 0
         unsupported_reasons = self._unsupported_patch_plan_reasons(patch_plan)
         if unsupported_reasons:
@@ -247,6 +264,7 @@ class IDAIRTranslator:
                 "PatchPlan contains unsupported lowering step(s): %s",
                 ", ".join(unsupported_reasons),
             )
+            self._last_lowering_phase = "lowering"
             return 0
 
         modifier = deferred_modifier.DeferredGraphModifier(mba)
@@ -294,6 +312,7 @@ class IDAIRTranslator:
                 "DeferredGraphModifier.verify_failed is set after apply; "
                 "returning 0 to prevent pipeline from treating changes as successful"
             )
+            self._last_lowering_phase = "native_verify"
             return 0
 
         return result_count

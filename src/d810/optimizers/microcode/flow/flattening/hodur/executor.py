@@ -108,7 +108,7 @@ class TransactionalExecutor:
         for fragment in pipeline:
             result = self.execute_stage(fragment, total_handlers)
             results.append(result)
-            if result.rollback_needed:
+            if result.rollback_needed or result.quarantine:
                 executor_logger.warning(
                     "Stage %s failed gate check - skipping remaining pipeline",
                     fragment.strategy_name,
@@ -201,6 +201,9 @@ class TransactionalExecutor:
             len(patch_plan.new_blocks),
             len(patch_plan.legacy_block_operations),
         )
+
+        # Ensure translator has the resolved contract (may have been None at construction)
+        self.translator.contract = self._get_cfg_contract()
 
         try:
             changes = self.translator.lower(patch_plan, self.mba)

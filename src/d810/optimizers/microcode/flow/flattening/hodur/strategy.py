@@ -242,6 +242,7 @@ class StageResult:
     terminal_cycles: list = field(default_factory=list)  # gate-critical
     success: bool = True
     rollback_needed: bool = False
+    quarantine: bool = False
     error: str | None = None
 
 
