@@ -5,14 +5,32 @@ from d810.cfg.flow.edit_simulator import (
     SimulatedEdit,
     SimulationResult,
     graph_modifications_to_simulated_edits,
+    patch_plan_to_simulated_edits,
     simulate_edits,
 )
+from d810.cfg.flow.graph_checks import prove_terminal_sink
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
     EdgeRedirectViaPredSplit,
+    InsertBlock,
     RedirectGoto,
+    RemoveEdge,
 )
+from d810.cfg.plan import compile_patch_plan
+
+
+def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
+    return BlockSnapshot(
+        serial=serial,
+        block_type=1 if succs else 0,
+        succs=succs,
+        preds=preds,
+        flags=0,
+        start_ea=0,
+        insn_snapshots=(),
+    )
 
 
 class TestSimulateEdits:
@@ -194,6 +212,12 @@ class TestModificationProjection:
             RedirectGoto(from_serial=1, old_target=2, new_target=3),
             ConvertToGoto(block_serial=4, goto_target=5),
             EdgeRedirectViaPredSplit(src_block=6, old_target=7, new_target=8, via_pred=9),
+            InsertBlock(
+                pred_serial=14,
+                succ_serial=15,
+                instructions=(InsnSnapshot(opcode=0x90, ea=0x1000, operands=()),),
+            ),
+            RemoveEdge(from_serial=16, to_serial=17),
             CreateConditionalRedirect(
                 source_block=10,
                 ref_block=11,
@@ -206,5 +230,79 @@ class TestModificationProjection:
             "goto_redirect",
             "convert_to_goto",
             "edge_split_redirect",
+            "insert_block",
+            "remove_edge",
             "create_conditional_redirect",
         ]
+
+    def test_patch_plan_edge_split_relocates_stop(self):
+        cfg = FlowGraph(
+            blocks={
+                122: _block(122, (45,), ()),
+                45: _block(45, (2,), (122,)),
+                2: _block(2, (219,), (45,)),
+                180: _block(180, (), ()),
+                219: _block(219, (), (2,)),
+            },
+            entry_serial=122,
+            func_ea=0,
+        )
+
+        patch_plan = compile_patch_plan(
+            [
+                EdgeRedirectViaPredSplit(
+                    src_block=45,
+                    old_target=2,
+                    new_target=180,
+                    via_pred=122,
+                    rule_priority=550,
+                )
+            ],
+            cfg,
+        )
+
+        sim = simulate_edits(cfg.as_adjacency_dict(), patch_plan_to_simulated_edits(patch_plan))
+
+        assert sim.adj[122] == [219]
+        assert sim.adj[45] == [2]
+        assert sim.adj[2] == [220]
+        assert sim.adj[219] == [180]
+        assert sim.adj[220] == []
+
+    def test_patch_plan_insert_block_updates_sink_reasoning(self):
+        cfg = FlowGraph(
+            blocks={
+                1: _block(1, (2,), ()),
+                2: _block(2, (), (1,)),
+            },
+            entry_serial=1,
+            func_ea=0,
+        )
+
+        patch_plan = compile_patch_plan(
+            [
+                InsertBlock(
+                    pred_serial=1,
+                    succ_serial=2,
+                    instructions=(InsnSnapshot(opcode=0x90, ea=0x1000, operands=()),),
+                )
+            ],
+            cfg,
+        )
+
+        sim = simulate_edits(cfg.as_adjacency_dict(), patch_plan_to_simulated_edits(patch_plan))
+
+        assert sim.adj[1] == [2]
+        assert sim.adj[2] == [3]
+        assert sim.adj[3] == []
+        assert prove_terminal_sink(2, sim.adj, exits={3}, forbidden=set()).ok
+
+    def test_remove_edge_is_simulated(self):
+        sim = simulate_edits(
+            {1: [2, 3], 2: [], 3: []},
+            graph_modifications_to_simulated_edits(
+                [RemoveEdge(from_serial=1, to_serial=3)]
+            ),
+        )
+
+        assert sim.adj[1] == [2]

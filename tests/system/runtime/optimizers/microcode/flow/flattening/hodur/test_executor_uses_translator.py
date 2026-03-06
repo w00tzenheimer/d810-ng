@@ -11,7 +11,12 @@ if "ida_hexrays" not in sys.modules:
     sys.modules["ida_hexrays"] = ida_hexrays_stub
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
-from d810.cfg.graph_modification import EdgeRedirectViaPredSplit, InsertBlock, RedirectGoto
+from d810.cfg.graph_modification import (
+    EdgeRedirectViaPredSplit,
+    InsertBlock,
+    NopInstructions,
+    RedirectGoto,
+)
 from d810.cfg.plan import PatchPlan
 from d810.optimizers.microcode.flow.flattening.hodur import executor as _executor_mod
 from d810.optimizers.microcode.flow.flattening.hodur.executor import TransactionalExecutor
@@ -197,3 +202,42 @@ def test_executor_rejects_block_creation_when_policy_disabled(monkeypatch: pytes
     assert not result.success
     assert result.error == "block-creating edits disabled by policy"
     assert not translator.lower_calls
+
+
+def test_cycle_filter_preserves_non_redirect_modifications():
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (1,), ()),
+            1: _block(1, (2,), (0,)),
+            2: _block(2, (3,), (1,)),
+            3: _block(3, (), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0,
+    )
+
+    fragment = PlanFragment(
+        modifications=[],
+        **_base_fragment(),
+    )
+    executor = TransactionalExecutor(mba=object(), translator=_FakeTranslator(pre_cfg=cfg))
+
+    cycle_mod = EdgeRedirectViaPredSplit(
+        src_block=2,
+        old_target=3,
+        new_target=1,
+        via_pred=1,
+        rule_priority=550,
+    )
+    nop_mod = NopInstructions(block_serial=2, insn_eas=(0x1234,))
+
+    filtered = executor._filter_cycle_modifications(
+        fragment=fragment,
+        pre_adj=cfg.as_adjacency_dict(),
+        terminal_exits={3},
+        handler_entries={1},
+        dispatcher=0,
+        original_modifications=[nop_mod, cycle_mod],
+    )
+
+    assert filtered == [nop_mod]

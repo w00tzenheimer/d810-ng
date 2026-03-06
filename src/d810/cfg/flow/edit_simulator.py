@@ -9,14 +9,17 @@ from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     EdgeRedirectViaPredSplit,
     GraphModification,
+    InsertBlock,
     RedirectBranch,
     RedirectGoto,
+    RemoveEdge,
 )
 from d810.cfg.plan import (
     LegacyBlockOperation,
     PatchConvertToGoto,
     PatchEdgeSplitTrampoline,
     PatchPlan,
+    PatchRemoveEdge,
     PatchRedirectBranch,
     PatchRedirectGoto,
 )
@@ -55,6 +58,8 @@ class SimulatedEdit:
     via_pred: int | None = None  # only for edge_split_redirect
     fallthrough_target: int | None = None  # only for create_conditional_redirect
     created_serial: int | None = None  # finalized serial for symbolic block creation
+    stop_serial_before: int | None = None
+    stop_serial_after: int | None = None
 
 
 def graph_modifications_to_simulated_edits(
@@ -127,8 +132,28 @@ def graph_modifications_to_simulated_edits(
                     )
                 )
 
+            case InsertBlock(pred_serial=pred, succ_serial=succ):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="insert_block",
+                        source=pred,
+                        old_target=succ,
+                        new_target=succ,
+                    )
+                )
+
+            case RemoveEdge(from_serial=src, to_serial=dst):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="remove_edge",
+                        source=src,
+                        old_target=dst,
+                        new_target=dst,
+                    )
+                )
+
             case _:
-                # Nop/Insert/Remove/Duplicate have no topology effect in preflight.
+                # Nop/Duplicate have no topology effect in preflight.
                 continue
 
     return simulated
@@ -137,6 +162,8 @@ def graph_modifications_to_simulated_edits(
 def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
     """Project PatchPlan steps to simulator-friendly edit ops."""
     simulated: list[SimulatedEdit] = []
+    stop_serial_before = patch_plan.relocation_map.stop_serial_before
+    stop_serial_after = patch_plan.relocation_map.stop_serial_after
 
     for step in patch_plan.steps:
         match step:
@@ -170,6 +197,16 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                     )
                 )
 
+            case PatchRemoveEdge(from_serial=src, to_serial=dst):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="remove_edge",
+                        source=src,
+                        old_target=dst,
+                        new_target=dst,
+                    )
+                )
+
             case PatchEdgeSplitTrampoline(
                 source_serial=src,
                 old_target=old,
@@ -185,6 +222,51 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                         new_target=new,
                         via_pred=pred,
                         created_serial=assigned,
+                        stop_serial_before=stop_serial_before,
+                        stop_serial_after=stop_serial_after,
+                    )
+                )
+
+            case LegacyBlockOperation(
+                modification=CreateConditionalRedirect(
+                    source_block=src,
+                    ref_block=ref,
+                    conditional_target=conditional,
+                    fallthrough_target=fallthrough,
+                ),
+                block_id=block_id,
+            ):
+                assigned = patch_plan.relocation_map.assigned_serial_for(block_id)
+                simulated.append(
+                    SimulatedEdit(
+                        kind="create_conditional_redirect",
+                        source=src,
+                        old_target=patch_plan.relocation_map.rewrite_serial(ref),
+                        new_target=patch_plan.relocation_map.rewrite_serial(conditional),
+                        fallthrough_target=patch_plan.relocation_map.rewrite_serial(
+                            fallthrough
+                        ),
+                        created_serial=assigned,
+                        stop_serial_before=stop_serial_before,
+                        stop_serial_after=stop_serial_after,
+                    )
+                )
+
+            case LegacyBlockOperation(
+                modification=InsertBlock(pred_serial=pred, succ_serial=succ),
+                block_id=block_id,
+            ):
+                assigned = patch_plan.relocation_map.assigned_serial_for(block_id)
+                relocated_succ = patch_plan.relocation_map.rewrite_serial(succ)
+                simulated.append(
+                    SimulatedEdit(
+                        kind="insert_block",
+                        source=pred,
+                        old_target=relocated_succ,
+                        new_target=relocated_succ,
+                        created_serial=assigned,
+                        stop_serial_before=stop_serial_before,
+                        stop_serial_after=stop_serial_after,
                     )
                 )
 
@@ -195,6 +277,25 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                 continue
 
     return simulated
+
+
+def _apply_stop_relocation_once(
+    result: dict[int, list[int]],
+    *,
+    stop_serial_before: int | None,
+    stop_serial_after: int | None,
+) -> None:
+    if stop_serial_before is None or stop_serial_after is None:
+        return
+    if stop_serial_before not in result:
+        return
+
+    old_stop_succs = list(result.get(stop_serial_before, ()))
+    for serial, succs in list(result.items()):
+        result[serial] = [
+            stop_serial_after if succ == stop_serial_before else succ for succ in succs
+        ]
+    result[stop_serial_after] = old_stop_succs
 
 
 def simulate_edits(
@@ -219,8 +320,23 @@ def simulate_edits(
     result: dict[int, list[int]] = copy.deepcopy(adj)
     created_clones: set[int] = set()
     clone_origins: dict[int, SimulatedEdit] = {}
+    relocated_stop: tuple[int, int] | None = None
 
     for edit in edits:
+        if edit.created_serial is not None:
+            relocation = (edit.stop_serial_before, edit.stop_serial_after)
+            if (
+                edit.stop_serial_before is not None
+                and edit.stop_serial_after is not None
+                and relocated_stop != relocation
+            ):
+                _apply_stop_relocation_once(
+                    result,
+                    stop_serial_before=edit.stop_serial_before,
+                    stop_serial_after=edit.stop_serial_after,
+                )
+                relocated_stop = relocation
+
         succs = result.get(edit.source, [])
 
         if edit.kind in ("goto_redirect", "conditional_redirect"):
@@ -262,9 +378,28 @@ def simulate_edits(
                     new_succs.append(edit.new_target)
                 result[edit.source] = new_succs
 
+        elif edit.kind == "insert_block":
+            inserted_serial = edit.created_serial
+            if inserted_serial is None:
+                inserted_serial = max(result.keys(), default=-1) + 1
+            result[inserted_serial] = [edit.new_target]
+
+            new_succs = list(succs)
+            try:
+                idx = new_succs.index(edit.old_target)
+                new_succs[idx] = inserted_serial
+            except ValueError:
+                new_succs.append(inserted_serial)
+            result[edit.source] = new_succs
+
+        elif edit.kind == "remove_edge":
+            result[edit.source] = [succ for succ in succs if succ != edit.old_target]
+
         elif edit.kind == "create_conditional_redirect":
             # Model as creating a virtual conditional clone that source points to.
-            clone_serial = max(result.keys(), default=-1) + 1
+            clone_serial = edit.created_serial
+            if clone_serial is None:
+                clone_serial = max(result.keys(), default=-1) + 1
             clone_succs = [edit.new_target]
             if (
                 edit.fallthrough_target is not None
