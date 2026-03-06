@@ -8,6 +8,7 @@ from d810.core import logging
 from d810.cfg.flow.edit_simulator import (
     SimulatedEdit,
     graph_modifications_to_simulated_edits,
+    patch_plan_to_simulated_edits,
     simulate_edits,
 )
 from d810.cfg.flow.graph_checks import (
@@ -25,6 +26,7 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
+from d810.cfg.plan import PatchPlan, compile_patch_plan
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
@@ -70,10 +72,14 @@ class TransactionalExecutor:
         mba: object,
         gate: VerificationGate | SemanticGate | None = None,
         translator: IDAIRTranslator | None = None,
+        allow_legacy_block_creation: bool = True,
     ):
         self.mba = mba
         self.gate = gate or SemanticGate()
-        self.translator = translator or IDAIRTranslator()
+        self.allow_legacy_block_creation = allow_legacy_block_creation
+        self.translator = translator or IDAIRTranslator(
+            allow_legacy_block_creation=allow_legacy_block_creation
+        )
         self._total_changes = 0
 
     def execute_pipeline(
@@ -110,13 +116,35 @@ class TransactionalExecutor:
                 error="safeguard rejected modifications",
             )
 
-        modifications, preflight_error = self._run_preflight(fragment, pre_cfg, modifications)
+        # Check block-creation policy early — no point running preflight if policy rejects
+        patch_plan_preview = compile_patch_plan(modifications, pre_cfg)
+        if patch_plan_preview.legacy_block_operations and not self.allow_legacy_block_creation:
+            return StageResult(
+                strategy_name=fragment.strategy_name,
+                success=False,
+                error="block-creating edits disabled by policy",
+            )
+
+        modifications, patch_plan, preflight_error = self._run_preflight(
+            fragment,
+            pre_cfg,
+            modifications,
+            patch_plan_preview,
+        )
         if preflight_error is not None:
             return preflight_error
         if not modifications:
             return StageResult(strategy_name=fragment.strategy_name)
 
-        changes = self.translator.lower(modifications, self.mba)
+        executor_logger.info(
+            "Stage %s compiled PatchPlan: concrete=%d symbolic_blocks=%d legacy_block_steps=%d",
+            fragment.strategy_name,
+            len(patch_plan.concrete_operations),
+            len(patch_plan.new_blocks),
+            len(patch_plan.legacy_block_operations),
+        )
+
+        changes = self.translator.lower(patch_plan, self.mba)
         self._total_changes += changes
 
         post_cfg = self.translator.lift(self.mba)
@@ -141,7 +169,7 @@ class TransactionalExecutor:
         adj = post_cfg.as_adjacency_dict()
         terminal_exits: set[int] = set(fragment.metadata.get("terminal_exit_blocks", set()))
         terminal_exits |= self._derive_terminal_targets(
-            graph_modifications_to_simulated_edits(modifications),
+            patch_plan_to_simulated_edits(patch_plan),
             terminal_exits,
         )
         dispatcher_serial: int = int(fragment.metadata.get("dispatcher_serial", -1))
@@ -195,11 +223,11 @@ class TransactionalExecutor:
         fragment: PlanFragment,
         pre_cfg: FlowGraph,
         modifications: list[GraphModification],
-    ) -> tuple[list[GraphModification], StageResult | None]:
-        ordered_modifications = sorted(modifications, key=_preflight_priority)
-        simulated_edits = graph_modifications_to_simulated_edits(ordered_modifications)
+        patch_plan: PatchPlan,
+    ) -> tuple[list[GraphModification], PatchPlan, StageResult | None]:
+        simulated_edits = patch_plan_to_simulated_edits(patch_plan)
         if not simulated_edits:
-            return modifications, None
+            return modifications, patch_plan, None
 
         pre_adj = pre_cfg.as_adjacency_dict()
         structural = check_edge_split_structural_legality(pre_adj, simulated_edits)
@@ -209,7 +237,7 @@ class TransactionalExecutor:
                 structural.reason,
                 structural.diagnostics,
             )
-            return modifications, StageResult(
+            return modifications, patch_plan, StageResult(
                 strategy_name=fragment.strategy_name,
                 success=False,
                 error=f"structural preflight: {structural.reason}",
@@ -243,7 +271,7 @@ class TransactionalExecutor:
                     sink_result.reason,
                     sink_result.witness_path,
                 )
-                return modifications, StageResult(
+                return modifications, patch_plan, StageResult(
                     strategy_name=fragment.strategy_name,
                     success=False,
                     error=f"semantic preflight: {sink_result.reason}",
@@ -261,15 +289,15 @@ class TransactionalExecutor:
             executor_logger.warning(
                 "Preflight REJECT: terminal cycles persist after filtering"
             )
-            return modifications, StageResult(
+            return modifications, patch_plan, StageResult(
                 strategy_name=fragment.strategy_name,
                 success=False,
                 error="semantic preflight: terminal cycles detected",
             )
         if filtered_modifications != modifications:
             modifications = filtered_modifications
-            ordered_modifications = sorted(modifications, key=_preflight_priority)
-            simulated_edits = graph_modifications_to_simulated_edits(ordered_modifications)
+            patch_plan = compile_patch_plan(modifications, pre_cfg)
+            simulated_edits = patch_plan_to_simulated_edits(patch_plan)
             sim_result = simulate_edits(pre_adj, simulated_edits)
             sim_adj = sim_result.adj
             terminal_targets = self._derive_terminal_targets(simulated_edits, terminal_exits)
@@ -291,13 +319,13 @@ class TransactionalExecutor:
                 "Preflight REJECT: terminal cycles detected (%d cycles)",
                 len(cycle_result.cycles),
             )
-            return modifications, StageResult(
+            return modifications, patch_plan, StageResult(
                 strategy_name=fragment.strategy_name,
                 success=False,
                 error="semantic preflight: terminal cycles detected",
             )
 
-        return modifications, None
+        return modifications, patch_plan, None
 
     def _filter_cycle_modifications(
         self,
