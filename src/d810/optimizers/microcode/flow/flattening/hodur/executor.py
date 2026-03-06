@@ -662,13 +662,14 @@ class TransactionalExecutor:
             return
 
         terminal_handler_serials: set[int] = set()
-        exit_map: dict[int, int | None] = {}
+        exit_map: dict[int, list[int | None]] = {}
         for handler_serial, paths in handler_paths.items():
             for path in paths:
                 if path.final_state is None:
                     terminal_handler_serials.add(handler_serial)
-            if paths:
-                exit_map[handler_serial] = getattr(paths[0], "exit_block", None)
+                    exit_map.setdefault(handler_serial, []).append(
+                        getattr(path, "exit_block", None)
+                    )
 
         if not terminal_handler_serials:
             return

@@ -107,7 +107,7 @@ def _classify_exit(
 def build_terminal_return_audit(
     cfg: FlowGraph,
     terminal_handler_serials: set[int],
-    exit_map: dict[int, int | None],
+    exit_map: dict[int, int | None] | dict[int, list[int | None]],
     total_handlers: int | None = None,
     rax_write_serials: set[int] | None = None,
 ) -> TerminalReturnAuditReport:
@@ -116,7 +116,10 @@ def build_terminal_return_audit(
     Args:
         cfg: The pre-linearization FlowGraph snapshot.
         terminal_handler_serials: Set of handler entry block serials marked terminal.
-        exit_map: Maps handler_serial to exit_block_serial (from linearization).
+        exit_map: Maps handler_serial to exit_block_serial(s) from linearization.
+            Accepts either ``dict[int, int | None]`` (legacy, one exit per handler)
+            or ``dict[int, list[int | None]]`` (multi-exit, one entry per terminal
+            path).  The legacy form is normalized to a single-element list internally.
         total_handlers: Total handler count (defaults to len(exit_map) if not given).
         rax_write_serials: Optional set of block serials known to contain return-carrier
             (rax.8) writes. When provided, each audit row's ``has_rax_write`` is set by
@@ -125,6 +128,8 @@ def build_terminal_return_audit(
 
     Returns:
         A :class:`TerminalReturnAuditReport` with per-handler audit results.
+        One :class:`TerminalReturnSiteAudit` is emitted per (handler, exit) pair,
+        so a handler with multiple terminal exits produces multiple rows.
     """
     if total_handlers is None:
         total_handlers = len(exit_map)
@@ -132,43 +137,52 @@ def build_terminal_return_audit(
     sites: list[TerminalReturnSiteAudit] = []
 
     for handler_serial in sorted(terminal_handler_serials):
-        exit_serial = exit_map.get(handler_serial)
-        source_kind, return_serial, corridor_len, path_serials = _classify_exit(
-            cfg, exit_serial
-        )
+        raw = exit_map.get(handler_serial)
+        # Normalize: accept both legacy scalar and multi-exit list forms.
+        if isinstance(raw, list):
+            exit_serials = raw
+        elif raw is not None:
+            exit_serials = [raw]
+        else:
+            exit_serials = [None]
 
-        notes_parts: list[str] = []
-        if source_kind == TerminalReturnSourceKind.UNREACHABLE:
-            notes_parts.append("no path to BLT_STOP from exit")
-        if exit_serial is not None and exit_serial not in cfg.blocks:
-            notes_parts.append(f"exit block {exit_serial} not in CFG")
-
-        # Determine has_rax_write from path intersection.
-        # Include handler_serial and exit_serial in checked set -- the rax
-        # write typically lives in the handler body, not just on the
-        # exit-to-return corridor that _classify_exit returns.
-        has_rax_write: bool | None = None
-        if (
-            rax_write_serials is not None
-            and source_kind != TerminalReturnSourceKind.UNREACHABLE
-        ):
-            checked_blocks = {handler_serial}
-            if exit_serial is not None:
-                checked_blocks.add(exit_serial)
-            checked_blocks.update(path_serials)
-            has_rax_write = bool(rax_write_serials & checked_blocks)
-
-        sites.append(
-            TerminalReturnSiteAudit(
-                handler_serial=handler_serial,
-                exit_serial=exit_serial,
-                source_kind=source_kind,
-                return_block_serial=return_serial,
-                corridor_length=corridor_len,
-                has_rax_write=has_rax_write,
-                notes="; ".join(notes_parts),
+        for exit_serial in exit_serials:
+            source_kind, return_serial, corridor_len, path_serials = _classify_exit(
+                cfg, exit_serial
             )
-        )
+
+            notes_parts: list[str] = []
+            if source_kind == TerminalReturnSourceKind.UNREACHABLE:
+                notes_parts.append("no path to BLT_STOP from exit")
+            if exit_serial is not None and exit_serial not in cfg.blocks:
+                notes_parts.append(f"exit block {exit_serial} not in CFG")
+
+            # Determine has_rax_write from path intersection.
+            # Include handler_serial and exit_serial in checked set -- the rax
+            # write typically lives in the handler body, not just on the
+            # exit-to-return corridor that _classify_exit returns.
+            has_rax_write: bool | None = None
+            if (
+                rax_write_serials is not None
+                and source_kind != TerminalReturnSourceKind.UNREACHABLE
+            ):
+                checked_blocks = {handler_serial}
+                if exit_serial is not None:
+                    checked_blocks.add(exit_serial)
+                checked_blocks.update(path_serials)
+                has_rax_write = bool(rax_write_serials & checked_blocks)
+
+            sites.append(
+                TerminalReturnSiteAudit(
+                    handler_serial=handler_serial,
+                    exit_serial=exit_serial,
+                    source_kind=source_kind,
+                    return_block_serial=return_serial,
+                    corridor_length=corridor_len,
+                    has_rax_write=has_rax_write,
+                    notes="; ".join(notes_parts),
+                )
+            )
 
     report = TerminalReturnAuditReport(
         function_ea=cfg.func_ea,
