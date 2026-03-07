@@ -565,6 +565,17 @@ class GenericDispatcherCollector(ida_hexrays.minsn_visitor_t):
 
 
 class GenericUnflatteningRule(FlowOptimizationRule):
+    """Base class for O-LLVM-style dispatcher unflattening rules.
+
+    Gate operation mode: ``GATE_ONLY``
+    -----------------------------------
+    Uses :meth:`FlowMaturityContext.evaluate_unflattening_gate` in
+    :meth:`check_if_rule_should_be_used`.  Gate is enforced (rule skipped
+    when ``allowed=False``), but results do not feed into planner/strategy
+    selection.
+
+    See :class:`~d810.core.gate_modes.GateOperationMode`.
+    """
 
     CATEGORY = "OLLVM Unflattening"
     PRIORITY = FlowRulePriority.UNFLATTEN

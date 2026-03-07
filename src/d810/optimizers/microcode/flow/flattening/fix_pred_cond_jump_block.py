@@ -168,6 +168,14 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
 
     Works for O-LLVM style control flow flattening.
 
+    Gate operation mode: ``GATE_ONLY``
+    -----------------------------------
+    Uses :meth:`FlowMaturityContext.evaluate_fix_predecessor_gate` in
+    :meth:`check_if_rule_should_be_used`.  Gate is always enforced (rule
+    skipped when ``allowed=False``), with no planner/strategy influence.
+
+    See :class:`~d810.core.gate_modes.GateOperationMode`.
+
     Architecture:
     Uses deferred modification pattern:
     1. analyze_blk() queues all needed modifications (stores only serials)

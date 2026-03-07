@@ -10,6 +10,9 @@ logic lives in the hodur sub-package; this class is a thin coordinator that:
 4. Composes the pipeline via :class:`UnflatteningPlanner`.
 5. Applies it via :class:`TransactionalExecutor`.
 
+Gate operation mode: ``GATE_SELECT`` — full recon + gate enforcement + planner
+hint influence.  See :class:`~d810.core.gate_modes.GateOperationMode`.
+
 # ORCHESTRATOR_BOUNDARY: This module is a thin coordinator.  It does NOT
 # perform strategy selection, conflict resolution, or pipeline reordering.
 # Those are owned exclusively by the UnflatteningPlanner (see planner.py).
