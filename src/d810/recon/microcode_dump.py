@@ -19,6 +19,7 @@ Usage (from IDA Python or via headless script):
 from __future__ import annotations
 
 import json
+import re
 from d810.core.logging import getLogger
 from dataclasses import dataclass, field, asdict
 from enum import IntEnum
@@ -521,6 +522,318 @@ def dump_microcode_json(
         logger.info(f"Microcode dumped to {output_path}")
 
     return json_str
+
+
+def _fix_block_refs(s: str) -> str:
+    """Fix _print() block references to IDA native format.
+
+    ``_print()`` renders block targets as ``@ ) (ADDR16serial )`` where
+    ``ADDR16`` is a 16-hex-char block address and ``serial`` is the decimal
+    block number appended directly after it.  Replace every such pattern with
+    ``@serial``, then collapse the spurious ``@ @`` artifact left in goto
+    lines.
+
+    Examples::
+
+        '@ ) (00000000000000102 )' -> '@2'
+        '0 =>  ) (00000000000000183 )' -> '0 => @3'
+    """
+    # Pattern: ') (' + exactly 16 hex chars + decimal digits + ' )'
+    # Capture group 1: the trailing decimal serial
+    s = re.sub(r'\) \([0-9A-Fa-f]{16}(\d+) \)', r'@\1', s)
+    # goto lines end up with '@ @N' after the above substitution
+    s = s.replace('@ @', '@')
+    return s
+
+
+def _fix_var_names(s: str, frsize: int) -> str:
+    """Replace ``%var_XX.N`` placeholders with ``sp+0xOFF.N`` notation.
+
+    IDA's ``minsn_t._print()`` emits stack variables as ``%var_HEX.size``
+    where *HEX* is the frame-relative offset in hex.  IDA's native C++ dump
+    shows them as ``sp+0xOFF.size`` where ``OFF = frsize - frame_hex``.
+
+    Only converts names matching the ``%var_[0-9A-Fa-f]+`` pattern; register
+    variables and other ``%``-prefixed names are left untouched.
+    """
+    if not frsize:
+        return s
+
+    def _repl(m: re.Match) -> str:
+        frame_off = int(m.group(1), 16)
+        size = m.group(2)
+        sp_off = frsize - frame_off
+        return f"sp+0x{sp_off:X}.{size}"
+
+    return re.sub(r'%var_([0-9A-Fa-f]+)\.(\d+)', _repl, s)
+
+
+def print_mba_human_readable(
+    mba: "idaapi.mbl_array_t",
+    func_name: str = "",
+) -> None:
+    """Print an mbl_array_t in IDA's native human-readable microcode format.
+
+    Produces output similar to IDA's own microcode listing, including:
+    - Block headers with type, predecessor/successor sets, EA range
+    - USE/DEF/DNU liveness sets per block
+    - VALRANGES per block (via :func:`d810.recon.flow.valranges.collect_block_valranges`)
+    - Instructions via ``minsn_t._print()`` with per-instruction u=/d= annotations
+
+    Args:
+        mba: The microcode block array to print.
+        func_name: Optional function name shown in the header.
+    """
+    from d810.recon.flow.valranges import collect_block_valranges
+
+    _init_constants()
+
+    entry_ea = getattr(mba, "entry_ea", 0)
+    maturity = getattr(mba, "maturity", 0)
+
+    # frsize is needed to convert %var_XX.N -> sp+0xOFF.N
+    _frsize: int = (
+        getattr(mba, "stacksize", 0)
+        or getattr(mba, "frsize", 0)
+        or 0
+    )
+    maturity_name = MATURITY_NAMES.get(maturity, f"MMAT_UNKNOWN_{maturity}")
+    num_blocks = mba.qty
+
+    # Block type enum: try runtime constants first, fall back to hard-coded
+    try:
+        import ida_hexrays as _ihr
+        _BLT_NAMES = {
+            _ihr.BLT_NONE: "BLT_NONE",
+            _ihr.BLT_STOP: "BLT_STOP",
+            _ihr.BLT_1WAY: "BLT_1WAY",
+            _ihr.BLT_2WAY: "BLT_2WAY",
+            _ihr.BLT_NWAY: "BLT_NWAY",
+            _ihr.BLT_XTRN: "BLT_XTRN",
+        }
+    except Exception:
+        _BLT_NAMES = {
+            0: "BLT_NONE",
+            1: "BLT_STOP",
+            2: "BLT_1WAY",
+            3: "BLT_2WAY",
+            4: "BLT_NWAY",
+            5: "BLT_XTRN",
+        }
+
+    # Flag constants
+    try:
+        import ida_hexrays as _ihr2
+        MBL_FAKE = getattr(_ihr2, "MBL_FAKE", 0x200)
+        MBL_INBOUNDS = getattr(_ihr2, "MBL_INBOUNDS", 0x0040)
+        SHINS_NUMADDR = getattr(_ihr2, "SHINS_NUMADDR", 0x01)
+        SHINS_VALNUM = getattr(_ihr2, "SHINS_VALNUM", 0x02)
+        SHINS_SHORT = getattr(_ihr2, "SHINS_SHORT", 0x04)
+    except Exception:
+        MBL_FAKE = 0x200
+        MBL_INBOUNDS = 0x0040
+        SHINS_NUMADDR = 0x01
+        SHINS_VALNUM = 0x02
+        SHINS_SHORT = 0x04
+
+    _PRINT_FLAGS = SHINS_SHORT | SHINS_VALNUM | SHINS_NUMADDR
+
+    def _mlist_dstr(ml) -> str:
+        if ml is None:
+            return ""
+        try:
+            s = ml.dstr()
+            return s if s else ""
+        except Exception:
+            return ""
+
+    def _collect_bitset(bs) -> list:
+        try:
+            return list(bs)
+        except Exception:
+            try:
+                return [bs[j] for j in range(bs.size())]
+            except Exception:
+                return []
+
+    def _clean_insn_str(raw) -> str:
+        if raw is None:
+            return "<none>"
+        return "".join(
+            c if c == "\t" or 0x20 <= ord(c) <= 0x7E else " "
+            for c in str(raw)
+        ).rstrip()
+
+    header = func_name or f"sub_{entry_ea:x}"
+    print(f"; ===== Microcode: {header} @ 0x{entry_ea:x}  maturity={maturity_name}  blocks={num_blocks} =====")
+
+    for i in range(num_blocks):
+        blk = mba.get_mblock(i)
+        if blk is None:
+            continue
+
+        serial = blk.serial
+        start_ea = getattr(blk, "start", 0)
+        end_ea = getattr(blk, "end", 0)
+        block_type = getattr(blk, "type", 0)
+        type_name = _BLT_NAMES.get(block_type, f"BLT_UNKNOWN_{block_type}")
+
+        preds = _collect_bitset(blk.predset)
+        succs = _collect_bitset(blk.succset)
+
+        preds_str = ", ".join(str(p) for p in sorted(preds)) if preds else ""
+        succs_str = ", ".join(str(s) for s in sorted(succs)) if succs else ""
+
+        flags = getattr(blk, "flags", 0)
+        is_inbounds = bool(flags & MBL_INBOUNDS)
+
+        # Block header line
+        inbounds_tag = " (INBOUNDS)" if is_inbounds else ""
+        print(f"\nblock {serial}{inbounds_tag}: ; preds: {preds_str}; succs: {succs_str}")
+
+        # Stack frame info on block 0
+        if serial == 0:
+            _stkd_parts = []
+            for _attr in ("stacksize", "frsize", "argsize", "tmpstk_size"):
+                _val = getattr(mba, _attr, None)
+                if _val is not None:
+                    _stkd_parts.append(f"{_attr}={_val}")
+            _minargref = getattr(mba, "minargref", None)
+            _minstkref = getattr(mba, "minstkref", None)
+            _shadow_args = getattr(mba, "shadow_args", None)
+            _pfn_flags = getattr(mba, "pfn_flags", None)
+            _stkd_extra = []
+            if _minargref is not None:
+                _stkd_extra.append(f"MINARGREF={_minargref:#x}")
+            if _minstkref is not None:
+                _stkd_extra.append(f"MINSTKREF={_minstkref:#x}")
+            if _shadow_args is not None:
+                _stkd_extra.append(f"SHADOW={_shadow_args:#x}")
+            if _pfn_flags is not None:
+                _stkd_extra.append(f"FLAGS={_pfn_flags:#x}")
+            _stkd_str = " ".join(_stkd_parts + _stkd_extra)
+            if _stkd_str:
+                print(f"; STKD: {_stkd_str}")
+
+        # MAXBSP
+        try:
+            maxbsp = blk.maxbsp
+            print(f"; MAXBSP: 0x{maxbsp:X}")
+        except AttributeError:
+            pass
+
+        # USE / DEF / DNU liveness sets
+        def_must = _mlist_dstr(getattr(blk, "mustbdef", None))
+        dnu = _mlist_dstr(getattr(blk, "dnu", None))
+        use_must = _mlist_dstr(getattr(blk, "mustbuse", None))
+        use_may = _mlist_dstr(getattr(blk, "maybuse", None))
+        def_may = _mlist_dstr(getattr(blk, "maybdef", None))
+
+        def _paren_if_multi(s: str) -> str:
+            return f"({s})" if "," in s else s
+
+        use_parts = []
+        if use_must:
+            use_parts.append(use_must)
+        if use_may and use_may != use_must:
+            use_parts.append(f"(may:{use_may})")
+        use_str = ", ".join(use_parts)
+
+        def_parts = [def_must] if def_must else []
+        if def_may and def_may != def_must:
+            def_parts.append(f"(may:{def_may})")
+        def_str = ", ".join(def_parts)
+
+        print(f"; USE: {_paren_if_multi(use_str)} ; DEF: {_paren_if_multi(def_str)} ; DNU: {_paren_if_multi(dnu)}")
+
+        # VALRANGES
+        try:
+            vr_parts = collect_block_valranges(blk)
+            if vr_parts:
+                print(f"; VALRANGES: {', '.join(vr_parts)}")
+        except Exception:
+            pass
+
+        # Collect instructions
+        insns = []
+        ins = blk.head
+        while ins is not None:
+            insns.append(ins)
+            ins = ins.next
+
+        # Per-instruction use/def lists
+        try:
+            import ida_hexrays as _ihr_ins
+            _mlist_t = _ihr_ins.mlist_t
+            _MUST_ACCESS = _ihr_ins.MUST_ACCESS
+            _MAY_ACCESS = _ihr_ins.MAY_ACCESS
+            _has_mlist = True
+        except Exception:
+            _has_mlist = False
+
+        for insn_idx, ins in enumerate(insns, start=1):
+            ea = getattr(ins, "ea", 0)
+            try:
+                insn_str = _clean_insn_str(ins._print(_PRINT_FLAGS))
+            except Exception:
+                try:
+                    insn_str = _clean_insn_str(ins._print())
+                except Exception as exc:
+                    insn_str = f"<error: {exc}>"
+
+            insn_str = _fix_block_refs(insn_str)
+            insn_str = _fix_var_names(insn_str, _frsize)
+
+            ins_use = ""
+            ins_def = ""
+            if _has_mlist:
+                try:
+                    must_use_ml = _mlist_t()
+                    blk.build_use_list(must_use_ml, ins, _MUST_ACCESS)
+                    ins_use = must_use_ml.dstr() if not must_use_ml.empty() else ""
+                except Exception:
+                    try:
+                        ul = ins.build_use_list(0)
+                        ins_use = ul.dstr() if ul is not None else ""
+                    except Exception:
+                        pass
+                try:
+                    must_def_ml = _mlist_t()
+                    blk.build_def_list(must_def_ml, ins, _MUST_ACCESS)
+                    ins_def = must_def_ml.dstr() if not must_def_ml.empty() else ""
+                except Exception:
+                    try:
+                        dl = ins.build_def_list(0)
+                        ins_def = dl.dstr() if dl is not None else ""
+                    except Exception:
+                        try:
+                            ins_def = ins.d.dstr()
+                        except Exception:
+                            pass
+            else:
+                try:
+                    ul = ins.build_use_list(0)
+                    ins_use = ul.dstr() if ul is not None else ""
+                except Exception:
+                    pass
+                try:
+                    dl = ins.build_def_list(0)
+                    ins_def = dl.dstr() if dl is not None else ""
+                except Exception:
+                    try:
+                        ins_def = ins.d.dstr()
+                    except Exception:
+                        pass
+
+            ins_use = _fix_var_names(ins_use, _frsize)
+            ins_def = _fix_var_names(ins_def, _frsize)
+
+            ea_str = f"{ea:016X}"
+            suffix = f" ; {ea_str} u={ins_use} d={ins_def}"
+
+            print(f"  {serial}.{insn_idx - 1:<4} {insn_str:<50}{suffix}")
+
+    print(f"\n; ===== End microcode: {header} =====")
 
 
 def dump_mba_json(
