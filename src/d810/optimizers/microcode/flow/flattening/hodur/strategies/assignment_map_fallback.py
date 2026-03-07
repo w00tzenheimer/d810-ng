@@ -15,7 +15,7 @@ import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
-from d810.cfg.flowgraph import BlockSnapshot
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     HODUR_STATE_CHECK_OPCODES,
     HodurStateMachineDetector,
@@ -99,16 +99,10 @@ class AssignmentMapFallbackStrategy:
 
         from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
             collect_state_machine_blocks,
-            find_terminal_exit_target,
             find_terminal_exit_target_snapshot,
         )
 
-        # K3: mba required -- instruction-chain walks in _queue_state_assignment_removals
-        # (blk.head, insn.next, insn.opcode), _resolve_handler_entry (blk.tail chain
-        # walk), and helper find_terminal_exit_target.  Topology-only refs in
-        # _resolve_remaining_via_assignment_map (predset, succset, nsucc, npred,
-        # backward walk) migrated to flow_graph (K3.2).
-        mba = snapshot.mba
+        # K3: fully migrated to FlowGraph — no mba/get_mblock refs remain.
         fg = snapshot.flow_graph
         sm = snapshot.state_machine
         handlers = getattr(sm, "handlers", {}) or {}
@@ -128,7 +122,6 @@ class AssignmentMapFallbackStrategy:
 
         # --- Part 1: NOP dead state variable assignments ---
         self._queue_state_assignment_removals(
-            mba=mba,
             sm=sm,
             handlers=handlers,
             state_constants=state_constants,
@@ -142,18 +135,17 @@ class AssignmentMapFallbackStrategy:
 
         # --- Part 2: resolve remaining back-edges via assignment_map ---
         self._resolve_remaining_via_assignment_map(
-            mba=mba,
             sm=sm,
             handlers=handlers,
             assignment_map=assignment_map,
             state_var=state_var,
             state_machine_blocks=state_machine_blocks,
-            find_terminal_exit_target=find_terminal_exit_target,
             find_terminal_exit_target_snapshot=find_terminal_exit_target_snapshot,
             detector=detector,
             ida_hexrays=ida_hexrays,
             edits=modifications,
             owned_blocks=owned_blocks,
+            builder=builder,
             flow_graph=fg,
         )
 
@@ -297,7 +289,6 @@ class AssignmentMapFallbackStrategy:
 
     def _queue_state_assignment_removals(
         self,
-        mba: object,
         sm: object,
         handlers: dict,
         state_constants: set,
@@ -306,7 +297,7 @@ class AssignmentMapFallbackStrategy:
         edits: list,
         owned_blocks: set[int],
         builder: ModificationBuilder | None = None,
-        flow_graph: object | None = None,
+        flow_graph: FlowGraph | None = None,
     ) -> None:
         """NOP dead state variable writes in handler blocks.
 
@@ -314,8 +305,8 @@ class AssignmentMapFallbackStrategy:
         (the NOP-state-assignment inner loop only -- the terminal back-edge fix
         is handled by TerminalLoopCleanupStrategy in the refactored pipeline).
 
-        When *flow_graph* is provided, uses ``BlockSnapshot.iter_insns()``
-        instead of walking the live ``mblock_t`` instruction chain (K3.6).
+        K3: fully migrated to FlowGraph — uses ``BlockSnapshot.iter_insns()``
+        exclusively.
         """
         if sm is None or state_var is None:
             return
@@ -332,81 +323,47 @@ class AssignmentMapFallbackStrategy:
         # NOP state variable assignments in handler body blocks.
         for handler in handlers.values():
             for blk_serial in handler.handler_blocks:
-                if blk_serial >= mba.qty:  # K3: shared with insn_chain
-                    continue
-
-                # K3.6: prefer BlockSnapshot when flow_graph is available.
                 block_snap = flow_graph.get_block(blk_serial) if flow_graph is not None else None
-                if block_snap is not None:
-                    hits = self._find_state_write_in_snapshot(
-                        block_snap,
-                        state_var_t=state_var_t,
-                        state_var_size=state_var_size,
-                        state_constants=state_constants,
-                        m_mov=m_mov,
-                        mop_n=mop_n,
-                    )
-                    for hit_serial, hit_ea in hits:
-                        logger.info(
-                            "NOPed state assignment in block %d (ea=0x%x)",
-                            hit_serial,
-                            hit_ea,
-                        )
-                        if builder is not None:
-                            edits.append(
-                                builder.nop_instruction(
-                                    source_block=hit_serial,
-                                    instruction_ea=hit_ea,
-                                )
-                            )
-                        owned_blocks.add(hit_serial)
+                if block_snap is None:
                     continue
 
-                # Fallback: live mba_t instruction chain.
-                blk = mba.get_mblock(blk_serial)
-                if blk is None:
-                    continue
-                insn = blk.head
-                while insn:
-                    if (
-                        insn.opcode == m_mov
-                        and insn.l is not None
-                        and insn.l.t == mop_n
-                        and insn.l.nnn.value in state_constants
-                        and insn.d is not None
-                        and insn.d.t == state_var_t
-                        and insn.d.size == state_var_size
-                    ):
-                        logger.info(
-                            "NOPed state assignment in block %d (ea=0x%x)",
-                            blk_serial,
-                            insn.ea,
-                        )
-                        if builder is not None:
-                            edits.append(
-                                builder.nop_instruction(
-                                    source_block=blk_serial,
-                                    instruction_ea=insn.ea,
-                                )
+                hits = self._find_state_write_in_snapshot(
+                    block_snap,
+                    state_var_t=state_var_t,
+                    state_var_size=state_var_size,
+                    state_constants=state_constants,
+                    m_mov=m_mov,
+                    mop_n=mop_n,
+                )
+                for hit_serial, hit_ea in hits:
+                    logger.info(
+                        "NOPed state assignment in block %d (ea=0x%x)",
+                        hit_serial,
+                        hit_ea,
+                    )
+                    if builder is not None:
+                        edits.append(
+                            builder.nop_instruction(
+                                source_block=hit_serial,
+                                instruction_ea=hit_ea,
                             )
-                        owned_blocks.add(blk_serial)
-                    insn = insn.next
+                        )
+                    owned_blocks.add(hit_serial)
 
     def _resolve_remaining_via_assignment_map(
         self,
-        mba: object,
         sm: object,
         handlers: dict,
         assignment_map: dict,
         state_var: object,
         state_machine_blocks: set[int],
-        find_terminal_exit_target: object,
-        find_terminal_exit_target_snapshot: object | None = None,
+        find_terminal_exit_target_snapshot: object,
         detector: object = None,
         ida_hexrays: object = None,
         edits: list | None = None,
         owned_blocks: set[int] | None = None,
-        flow_graph: object | None = None,
+        builder: ModificationBuilder | None = None,
+        flow_graph: FlowGraph | None = None,
     ) -> None:
         """Resolve remaining dispatcher back-edges using assignment_map lookup.
 
@@ -415,6 +372,9 @@ class AssignmentMapFallbackStrategy:
         For unresolved handler exits that still target dispatcher check blocks,
         use assignment_map to directly resolve and redirect them, bypassing
         MopTracker backward tracing which fails on modified CFG.
+
+        K3: fully migrated to FlowGraph — all topology and instruction access
+        uses BlockSnapshot/InsnSnapshot exclusively.
 
         Note: 2-way exit blocks outside the state-machine region are lowered to
         direct ``ConvertToGoto`` edits here. True block duplication remains
@@ -425,86 +385,47 @@ class AssignmentMapFallbackStrategy:
 
         check_blocks = {h.check_block for h in handlers.values()}
 
-        # Collect predecessors of ALL check blocks.
-        # K3: TOPOLOGY_ONLY -- use flow_graph for predecessor lookup
+        # Collect predecessors of ALL check blocks via FlowGraph.
         preds_to_check: set[tuple[int, int]] = set()
         for cb_serial in check_blocks:
-            if flow_graph is not None:
-                cb_snap = flow_graph.get_block(cb_serial)
-                if cb_snap is None:
-                    continue
-                for pred_serial in cb_snap.preds:
-                    if pred_serial not in check_blocks:
-                        preds_to_check.add((pred_serial, cb_serial))
-            else:
-                cb_blk = mba.get_mblock(cb_serial)
-                if cb_blk is None:
-                    continue
-                for pred_serial in cb_blk.predset:
-                    if pred_serial not in check_blocks:
-                        preds_to_check.add((pred_serial, cb_serial))
+            cb_snap = flow_graph.get_block(cb_serial) if flow_graph is not None else None
+            if cb_snap is None:
+                continue
+            for pred_serial in cb_snap.preds:
+                if pred_serial not in check_blocks:
+                    preds_to_check.add((pred_serial, cb_serial))
 
         for pred_serial, dispatcher_target in preds_to_check:
-            # K3: TOPOLOGY_ONLY -- use flow_graph for nsucc/succset checks
             pred_snap = flow_graph.get_block(pred_serial) if flow_graph is not None else None
-            if pred_snap is not None:
-                # Handle 2-way exit blocks ONLY outside the state machine region.
-                if pred_snap.nsucc == 2:
-                    if pred_serial not in state_machine_blocks:
-                        forward_succs = [
-                            s for s in pred_snap.succs if s not in check_blocks
-                        ]
-                        if forward_succs:
-                            forward_target = forward_succs[0]
-                            modifications.append(
-                                builder.convert_to_goto(
-                                    source_block=pred_serial,
-                                    target_block=forward_target,
-                                )
-                            )
-                            owned_blocks.add(pred_serial)
-                            logger.info(
-                                "Assignment-map resolver: converted 2-way exit blk[%d] "
-                                "to direct goto blk[%d]",
-                                pred_serial,
-                                forward_target,
-                            )
-                    continue
+            if pred_snap is None:
+                continue
 
-                # Only handle 1-way blocks (goto blocks).
-                if pred_snap.nsucc != 1:
-                    continue
-            else:
-                pred_blk = mba.get_mblock(pred_serial)
-                if pred_blk is None:
-                    continue
-
-                # Handle 2-way exit blocks ONLY outside the state machine region.
-                if pred_blk.nsucc() == 2:
-                    if pred_serial not in state_machine_blocks:
-                        forward_succs = [
-                            s for s in pred_blk.succset if s not in check_blocks
-                        ]
-                        if forward_succs:
-                            forward_target = forward_succs[0]
-                            modifications.append(
-                                builder.convert_to_goto(
-                                    source_block=pred_serial,
-                                    target_block=forward_target,
-                                )
+            # Handle 2-way exit blocks ONLY outside the state machine region.
+            if pred_snap.nsucc == 2:
+                if pred_serial not in state_machine_blocks:
+                    forward_succs = [
+                        s for s in pred_snap.succs if s not in check_blocks
+                    ]
+                    if forward_succs:
+                        forward_target = forward_succs[0]
+                        edits.append(
+                            builder.convert_to_goto(
+                                source_block=pred_serial,
+                                target_block=forward_target,
                             )
-                            owned_blocks.add(pred_serial)
-                            logger.info(
-                                "Assignment-map resolver: converted 2-way exit blk[%d] "
-                                "to direct goto blk[%d]",
-                                pred_serial,
-                                forward_target,
-                            )
-                    continue
+                        )
+                        owned_blocks.add(pred_serial)
+                        logger.info(
+                            "Assignment-map resolver: converted 2-way exit blk[%d] "
+                            "to direct goto blk[%d]",
+                            pred_serial,
+                            forward_target,
+                        )
+                continue
 
-                # Only handle 1-way blocks (goto blocks).
-                if pred_blk.nsucc() != 1:
-                    continue
+            # Only handle 1-way blocks (goto blocks).
+            if pred_snap.nsucc != 1:
+                continue
 
             # Try to find state assignment in this block via assignment_map.
             target_state = self._extract_assigned_state_from_block(
@@ -512,20 +433,13 @@ class AssignmentMapFallbackStrategy:
             )
 
             # If not found directly, walk backward along single-pred chains.
-            # K3: TOPOLOGY_ONLY -- use flow_graph for npred/predset navigation
             if target_state is None:
                 walk_serial = pred_serial
                 for _ in range(5):  # max backward walk depth
-                    if flow_graph is not None:
-                        walk_snap = flow_graph.get_block(walk_serial)
-                        if walk_snap is None or walk_snap.npred != 1:
-                            break
-                        walk_serial = walk_snap.preds[0]
-                    else:
-                        walk_blk = mba.get_mblock(walk_serial)
-                        if walk_blk is None or walk_blk.npred() != 1:
-                            break
-                        walk_serial = list(walk_blk.predset)[0]
+                    walk_snap = flow_graph.get_block(walk_serial) if flow_graph is not None else None
+                    if walk_snap is None or walk_snap.npred != 1:
+                        break
+                    walk_serial = walk_snap.preds[0]
                     target_state = self._extract_assigned_state_from_block(
                         walk_serial, assignment_map, state_var
                     )
@@ -547,19 +461,14 @@ class AssignmentMapFallbackStrategy:
             # Terminal states (no handler) should exit the state machine.
             if target_state not in sm.handlers:
                 first_ck = min(check_blocks) if check_blocks else None
-                # K3.5: prefer snapshot path when flow_graph is available
-                if first_ck is not None and flow_graph is not None and find_terminal_exit_target_snapshot is not None:
+                if first_ck is not None and find_terminal_exit_target_snapshot is not None:
                     exit_tgt = find_terminal_exit_target_snapshot(
                         flow_graph, first_ck, state_machine_blocks
-                    )
-                elif first_ck is not None:
-                    exit_tgt = find_terminal_exit_target(
-                        mba, first_ck, state_machine_blocks
                     )
                 else:
                     exit_tgt = None
                 if exit_tgt is not None:
-                    modifications.append(
+                    edits.append(
                         builder.goto_redirect(
                             source_block=pred_serial,
                             target_block=exit_tgt,
@@ -577,12 +486,12 @@ class AssignmentMapFallbackStrategy:
 
             # Find the handler entry for the target state.
             handler_entry = self._resolve_handler_entry(
-                dispatcher_target, target_state, handlers, mba
+                dispatcher_target, target_state, handlers, flow_graph
             )
             if handler_entry is None:
                 continue
 
-            modifications.append(
+            edits.append(
                 builder.goto_redirect(
                     source_block=pred_serial,
                     target_block=handler_entry,
@@ -598,12 +507,86 @@ class AssignmentMapFallbackStrategy:
                 dispatcher_target,
             )
 
+    @staticmethod
+    def _extract_check_constant_and_opcode_snapshot(
+        insn_snap: InsnSnapshot,
+    ) -> tuple[int, int, int] | None:
+        """Snapshot equivalent of ``HodurStateMachineDetector._extract_check_constant_and_opcode``.
+
+        Extracts the comparison constant and normalized opcode from a check
+        instruction snapshot.  Mirrors the live-object version but reads from
+        ``InsnSnapshot.l`` / ``InsnSnapshot.r`` (MopSnapshot) instead of live
+        ``minsn_t`` operands.
+
+        Returns:
+            (normalized_opcode, constant_value, constant_size) or None.
+        """
+        mop_n: int = ida_hexrays.mop_n
+
+        # Find the numeric operand (l or r), mirroring extract_num_mop logic.
+        num_mop = None
+        if insn_snap.l is not None and insn_snap.l.t == mop_n:
+            num_mop = insn_snap.l
+        elif insn_snap.r is not None and insn_snap.r.t == mop_n:
+            num_mop = insn_snap.r
+
+        if num_mop is None or num_mop.value is None:
+            return None
+
+        normalized_opcode = insn_snap.opcode
+        if insn_snap.l is not None and insn_snap.l.t == mop_n:
+            normalized_opcode = (
+                HodurStateMachineDetector._swap_jump_opcode_for_reversed_operands(
+                    insn_snap.opcode
+                )
+            )
+
+        return (normalized_opcode, int(num_mop.value), num_mop.size)
+
+    @staticmethod
+    def _get_jump_and_fallthrough_targets_snapshot(
+        block_snap: BlockSnapshot,
+    ) -> tuple[int | None, int | None]:
+        """Snapshot equivalent of ``HodurStateMachineDetector._get_jump_and_fallthrough_targets``.
+
+        Returns jump-target and fall-through successor for a conditional block,
+        reading from ``BlockSnapshot`` topology instead of live ``mblock_t``.
+
+        Returns:
+            (jump_target, fallthrough) or (None, None) if not resolvable.
+        """
+        mop_b: int = ida_hexrays.mop_b
+
+        tail = block_snap.tail
+        if tail is None or tail.d is None or tail.d.t != mop_b:
+            return None, None
+
+        jump_target = tail.d.block_ref
+        if jump_target is None:
+            return None, None
+
+        fallthrough = None
+        for succ in block_snap.succs:
+            if succ != jump_target:
+                fallthrough = succ
+                break
+
+        if fallthrough is None:
+            # Try serial+1 as fallthrough (common convention).
+            candidate = block_snap.serial + 1
+            # We don't have flow_graph here, but if serial+1 is not in succs
+            # and not the jump target, this fallback mirrors the original logic
+            # which checked blk.serial + 1 < blk.mba.qty.
+            fallthrough = candidate
+
+        return jump_target, fallthrough
+
     def _resolve_handler_entry(
         self,
         dispatcher_target: int,
         target_state: int,
         handlers: dict,
-        mba: object,
+        flow_graph: FlowGraph,
     ) -> int | None:
         """Find the handler entry block for the given target state.
 
@@ -613,13 +596,17 @@ class AssignmentMapFallbackStrategy:
         leaf block that is not a state-check node.  That leaf is the handler
         entry block.
 
+        K3: fully migrated to FlowGraph — uses BlockSnapshot/InsnSnapshot
+        exclusively via ``_extract_check_constant_and_opcode_snapshot`` and
+        ``_get_jump_and_fallthrough_targets_snapshot``.
+
         Args:
             dispatcher_target: Check block serial that the predecessor currently
                 targets (start of BST walk).
             target_state: Concrete state value to resolve.
             handlers: Mapping of state value -> handler object (unused here,
                 kept for context).
-            mba: Live mba_t needed to fetch mblock_t objects.
+            flow_graph: FlowGraph snapshot for block lookups.
 
         Returns:
             Handler entry block serial (leaf after BST traversal), or None if
@@ -628,26 +615,28 @@ class AssignmentMapFallbackStrategy:
         visited: set[int] = set()
         current = dispatcher_target
 
-        for _ in range(mba.qty):  # K3: shared with insn_chain
+        for _ in range(flow_graph.block_count):
             if current in visited:
                 return None
             visited.add(current)
 
-            blk = mba.get_mblock(current)
-            if blk is None:
+            blk_snap = flow_graph.get_block(current)
+            if blk_snap is None:
                 return None
-            if blk.tail is None or blk.tail.opcode not in HODUR_STATE_CHECK_OPCODES:
+            if blk_snap.tail_opcode is None or blk_snap.tail_opcode not in HODUR_STATE_CHECK_OPCODES:
                 return current
 
-            check_info = HodurStateMachineDetector._extract_check_constant_and_opcode(
-                blk.tail
-            )
+            tail_insn = blk_snap.tail
+            if tail_insn is None:
+                return current
+
+            check_info = self._extract_check_constant_and_opcode_snapshot(tail_insn)
             if check_info is None:
                 return current
 
             check_opcode, check_const, check_size = check_info
             jump_target, fallthrough = (
-                HodurStateMachineDetector._get_jump_and_fallthrough_targets(blk)
+                self._get_jump_and_fallthrough_targets_snapshot(blk_snap)
             )
             if jump_target is None or fallthrough is None:
                 return None

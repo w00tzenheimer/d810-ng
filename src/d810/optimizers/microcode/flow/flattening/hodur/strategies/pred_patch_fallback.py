@@ -15,6 +15,7 @@ import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
+from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, MopSnapshot
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     HODUR_STATE_CHECK_OPCODES,
     HodurStateMachineDetector,
@@ -32,6 +33,7 @@ from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import
 )
 
 if TYPE_CHECKING:
+    from d810.cfg.flowgraph import FlowGraph
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
         AnalysisSnapshot,
     )
@@ -87,9 +89,70 @@ class PredPatchFallbackStrategy:
     # Private helper: resolve chain target (ported from HodurUnflattener)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _extract_check_constant_from_snapshot(
+        insn: InsnSnapshot,
+    ) -> tuple[int, int, int] | None:
+        """Snapshot-based equivalent of ``_extract_check_constant_and_opcode``.
+
+        Reads ``MopSnapshot.t``, ``.value``, and ``.size`` instead of live
+        ``mop_t.nnn.value``.  Returns ``(normalized_opcode, constant, size)``
+        or ``None``.
+        """
+        # Identify which operand is the numeric constant (mop_n = 2)
+        num_snap: MopSnapshot | None = None
+        is_left_num = False
+        if insn.l is not None and insn.l.t == ida_hexrays.mop_n:
+            num_snap = insn.l
+            is_left_num = True
+        elif insn.r is not None and insn.r.t == ida_hexrays.mop_n:
+            num_snap = insn.r
+
+        if num_snap is None or num_snap.value is None:
+            return None
+
+        normalized_opcode = insn.opcode
+        if is_left_num:
+            normalized_opcode = (
+                HodurStateMachineDetector._swap_jump_opcode_for_reversed_operands(
+                    insn.opcode
+                )
+            )
+
+        return (normalized_opcode, int(num_snap.value), num_snap.size)
+
+    @staticmethod
+    def _get_jump_and_fallthrough_from_snapshot(
+        blk_snap: BlockSnapshot,
+    ) -> tuple[int | None, int | None]:
+        """Snapshot-based equivalent of ``_get_jump_and_fallthrough_targets``.
+
+        Reads ``BlockSnapshot.tail.d.block_ref`` and ``BlockSnapshot.succs``
+        instead of live ``mblock_t.tail.d.b`` and ``mblock_t.succset``.
+        """
+        tail = blk_snap.tail
+        if tail is None or tail.d is None or tail.d.t != ida_hexrays.mop_b:
+            return None, None
+
+        jump_target = tail.d.block_ref
+        if jump_target is None:
+            return None, None
+
+        fallthrough = None
+        for succ in blk_snap.succs:
+            if succ != jump_target:
+                fallthrough = succ
+                break
+
+        if fallthrough is None:
+            # Fall through to next serial (same heuristic as the live version)
+            fallthrough = blk_snap.serial + 1
+
+        return jump_target, fallthrough
+
     def _resolve_conditional_chain_target(
         self,
-        mba: object,
+        flow_graph: FlowGraph,
         start_block: int,
         state_value: int,
         hodur_state_check_opcodes: list,
@@ -98,26 +161,30 @@ class PredPatchFallbackStrategy:
         """Follow conditional-chain comparisons for a concrete state until a leaf block.
 
         Port of HodurUnflattener._resolve_conditional_chain_target.
+        Uses ``FlowGraph`` snapshots instead of live ``mba`` / ``mblock_t``.
         """
         visited: set[int] = set()
         current = start_block
 
-        for _ in range(mba.qty):  # K3: shared with insn_chain
+        for _ in range(flow_graph.block_count):
             if current in visited:
                 return None
             visited.add(current)
 
-            blk = mba.get_mblock(current)
-            if blk.tail is None or blk.tail.opcode not in hodur_state_check_opcodes:
+            blk_snap = flow_graph.get_block(current)
+            if blk_snap is None:
+                return None
+            if blk_snap.tail_opcode is None or blk_snap.tail_opcode not in hodur_state_check_opcodes:
                 return current
-            check_info = detector_cls._extract_check_constant_and_opcode(blk.tail)
+            tail_insn = blk_snap.tail
+            if tail_insn is None:
+                return current
+            check_info = self._extract_check_constant_from_snapshot(tail_insn)
             if check_info is None:
                 return current
             check_opcode, check_const, check_size = check_info
 
-            jump_target, fallthrough = (
-                detector_cls._get_jump_and_fallthrough_targets(blk)
-            )
+            jump_target, fallthrough = self._get_jump_and_fallthrough_from_snapshot(blk_snap)
             if jump_target is None or fallthrough is None:
                 return None
 
@@ -162,12 +229,12 @@ class PredPatchFallbackStrategy:
         if not self.is_applicable(snapshot):
             return None
 
-        # K3: mba required — all block access involves instruction-chain walks
-        # (blk.tail, blk.head, insn.opcode, MopTracker.search_backward) and
-        # _resolve_conditional_chain_target.  No topology-only loops to migrate.
+        # K3: mba still required for DEEP_IDA MopTracker backward tracing.
+        # Topology and check-block inspection migrated to flow_graph snapshots.
         mba = snapshot.mba
         sm = snapshot.state_machine
-        if mba is None or sm is None:
+        flow_graph = snapshot.flow_graph
+        if mba is None or sm is None or flow_graph is None:
             return None
 
         handlers = getattr(sm, "handlers", {}) or {}
@@ -190,8 +257,8 @@ class PredPatchFallbackStrategy:
         queued_duplicate_forks: set[tuple[int, int]] = set()
         # For each state check block
         for state_val, handler in handlers.items():
-            check_blk = mba.get_mblock(handler.check_block)
-            if check_blk is None:
+            check_blk_snap = flow_graph.get_block(handler.check_block)
+            if check_blk_snap is None:
                 continue
 
             logger.debug(
@@ -201,8 +268,9 @@ class PredPatchFallbackStrategy:
             )
 
             # For each predecessor of the check block
-            pred_list = list(check_blk.predset)  # K3: shared with insn_chain
+            pred_list = list(check_blk_snap.preds)
             for pred_serial in pred_list:
+                # K3: DEEP_IDA — MopTracker requires live mblock_t
                 pred_blk = mba.get_mblock(pred_serial)
                 if pred_blk is None:
                     continue
@@ -215,6 +283,7 @@ class PredPatchFallbackStrategy:
                 )
                 tracker.reset()
 
+                # K3: DEEP_IDA — MopTracker requires live mblock_t
                 histories = tracker.search_backward(pred_blk, pred_blk.tail)
                 values = get_all_possibles_values(histories, [state_var])
                 flat_values = [v[0] for v in values if v[0] is not None]
@@ -242,7 +311,7 @@ class PredPatchFallbackStrategy:
                         val_list = list(unique_values)
                         handler_targets = [
                             self._resolve_conditional_chain_target(
-                                mba,
+                                flow_graph,
                                 handler.check_block,
                                 v,
                                 HODUR_STATE_CHECK_OPCODES,
@@ -251,21 +320,25 @@ class PredPatchFallbackStrategy:
                             for v in val_list
                         ]
 
-                        if None not in handler_targets and pred_blk.nsucc() == 2:  # K3: shared with insn_chain
+                        pred_blk_snap = flow_graph.get_block(pred_serial)
+                        pred_nsucc = pred_blk_snap.nsucc if pred_blk_snap is not None else 0
+                        if None not in handler_targets and pred_nsucc == 2:
+                            check_tail = check_blk_snap.tail
                             check_opcode = (
-                                check_blk.tail.opcode if check_blk.tail else None
+                                check_tail.opcode if check_tail is not None else None
                             )
                             if (
-                                check_blk.tail is not None
+                                check_tail is not None
                                 and check_opcode in HODUR_STATE_CHECK_OPCODES
                             ):
+                                check_r_size = check_tail.r.size if check_tail.r is not None else 0
                                 all_resolved = True
                                 for idx, v in enumerate(val_list):
                                     jt_for_v = HodurStateMachineDetector._is_jump_taken_for_state(
                                         check_opcode,
                                         int(v),
                                         int(state_val),
-                                        check_blk.tail.r.size,
+                                        check_r_size,
                                     )
                                     if jt_for_v is None:
                                         all_resolved = False
@@ -291,26 +364,26 @@ class PredPatchFallbackStrategy:
                     "  Pred %d: state value is %s", pred_serial, hex(pred_state)
                 )
 
-                check_opcode = check_blk.tail.opcode if check_blk.tail else None
+                check_tail = check_blk_snap.tail
+                check_opcode = check_tail.opcode if check_tail is not None else None
                 if (
-                    check_blk.tail is None
+                    check_tail is None
                     or check_opcode not in HODUR_STATE_CHECK_OPCODES
                 ):
                     continue
 
                 jump_target, fall_through = (
-                    HodurStateMachineDetector._get_jump_and_fallthrough_targets(
-                        check_blk
-                    )
+                    self._get_jump_and_fallthrough_from_snapshot(check_blk_snap)
                 )
                 if jump_target is None or fall_through is None:
                     continue
 
+                check_r_size = check_tail.r.size if check_tail.r is not None else 0
                 jump_taken = HodurStateMachineDetector._is_jump_taken_for_state(
                     check_opcode,
                     int(pred_state),
                     int(state_val),
-                    check_blk.tail.r.size,
+                    check_r_size,
                 )
                 if jump_taken is None:
                     continue
