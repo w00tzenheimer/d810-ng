@@ -28,7 +28,11 @@ import ida_hexrays
 import idaapi
 import idc
 
-from d810.recon.microcode_dump import dump_dispatcher_tree, dump_function_microcode
+from d810.recon.microcode_dump import (
+    dump_dispatcher_tree,
+    dump_function_microcode,
+    print_mba_human_readable,
+)
 from d810.testing.runner import _resolve_test_project_index
 from d810.testing.skip_controls import unskip_cases_enabled
 
@@ -383,6 +387,7 @@ class TestDumpFunctionPseudocode:
             m.strip() for entry in _maturity_raw for m in entry.split(",") if m.strip()
         ]
         dump_d810 = request.config.getoption("--dump-microcode-d810")
+        dump_human = request.config.getoption("--dump-microcode-human-readable")
         dump_d810_maturity = request.config.getoption(
             "--dump-microcode-d810-maturity", default=None
         )
@@ -463,6 +468,9 @@ class TestDumpFunctionPseudocode:
                                 if insn.get("r"):
                                     parts.append(f"{insn['r']}")
                             print(" ".join(parts))
+                    if dump_human:
+                        print("\n--- HUMAN MICROCODE (with d810) ---")
+                        print_mba_human_readable(mba, func_name=function_name)
                     print("=" * 88)
         if dump_d810_maturity:
             # Post-D810 mid-pipeline capture: run decompile with D810 active,
@@ -610,4 +618,17 @@ class TestDumpFunctionPseudocode:
                                 if insn.get("r"):
                                     parts.append(f"{insn['r']}")
                             print(" ".join(parts))
+                    if dump_human:
+                        func = idaapi.get_func(func_ea)
+                        mbr = idaapi.mba_ranges_t()
+                        mbr.ranges.push_back(idaapi.range_t(func.start_ea, func.end_ea))
+                        hf = idaapi.hexrays_failure_t()
+                        mba = idaapi.gen_microcode(
+                            mbr, hf, None, idaapi.DECOMP_NO_WAIT, maturity
+                        )
+                        if mba is not None:
+                            print(
+                                f"\n--- HUMAN MICROCODE ({maturity_name}) ---"
+                            )
+                            print_mba_human_readable(mba, func_name=function_name)
                     print("=" * 88)
