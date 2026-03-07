@@ -1,4 +1,4 @@
-"""Edge-count safeguard for deflattening CFG modifications."""
+"""Bulk CFG reconstruction safeguard for dispatcher-elimination rewrites."""
 from __future__ import annotations
 
 from d810.core import getLogger
@@ -15,10 +15,14 @@ def should_apply_bulk_cfg_modifications(
     context: str = "",
     min_required_override: int | None = None,
 ) -> bool:
-    """Check if enough edges were redirected to justify CFG modification.
+    """Bulk CFG reconstruction safeguard.
 
-    Prevents destructive partial CFG rewrites by requiring a minimum
-    number of resolved transitions before applying modifications.
+    Gates bulk dispatcher-elimination rewrites (Hodur, GenericDispatcher,
+    UnflattenerCF) by requiring a minimum number of resolved transitions
+    before applying modifications. Prevents destructive partial rewrites.
+
+    NOT for targeted per-block rules (FixPredecessor, FakeJump) — those
+    use structural preconditions, not edge-count thresholds.
 
     Args:
         num_redirected_edges: Number of edges successfully resolved.
