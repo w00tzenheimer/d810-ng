@@ -101,7 +101,7 @@ from d810.recon.flow.loop_prover import (
     SingleIterationLoopTracker,
     prove_single_iteration,
 )
-from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
+from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_bulk_cfg_modifications
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRulePriority
 
@@ -2904,7 +2904,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 if int(self.min_cfg_edges_required) > 0
                 else None
             )
-            safeguard_ok = should_apply_cfg_modifications(
+            safeguard_ok = should_apply_bulk_cfg_modifications(
                 num_redirected,
                 total_exit_blocks,
                 "generic",

@@ -16,7 +16,7 @@ from d810.core.logging import getLogger
 from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 from d810.hexrays.utils.hexrays_helpers import MicrocodeHelper, MicroInstruction, MicroOperand
-from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
+from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_bulk_cfg_modifications
 from d810.cfg.dominator import compute_dominators
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
@@ -2036,7 +2036,7 @@ class cf_unflattener_t:
 
         num_redirected = len(dgm.edges)
         total_case_blocks = len(self.cfi.key_to_block)
-        if not should_apply_cfg_modifications(num_redirected, total_case_blocks, "cf"):
+        if not should_apply_bulk_cfg_modifications(num_redirected, total_case_blocks, "cf"):
             dgm.clear()
             changed = 0
         else:

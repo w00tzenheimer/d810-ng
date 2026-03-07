@@ -41,7 +41,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     VerificationGate,
 )
 from d810.optimizers.microcode.flow.flattening.safeguards import (
-    should_apply_cfg_modifications,
+    should_apply_bulk_cfg_modifications,
 )
 from d810.recon.flow.terminal_return_audit import build_terminal_return_audit
 from d810.evaluator.hexrays_microcode.terminal_return_proof import prove_terminal_returns
@@ -121,7 +121,7 @@ class TransactionalExecutor:
             # Pre-execution safeguard gate: check before execute_stage()
             modifications = list(fragment.modifications)
             num_modifications = len(modifications)
-            safeguard_ok = should_apply_cfg_modifications(
+            safeguard_ok = should_apply_bulk_cfg_modifications(
                 num_modifications, total_handlers, "hodur"
             )
             if not safeguard_ok:
