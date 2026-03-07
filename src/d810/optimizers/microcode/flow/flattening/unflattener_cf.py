@@ -2077,7 +2077,7 @@ class UnflattenControlFlowRule(FlowOptimizationRule):
     ``GenericUnflatteningRule``) and is architecturally separate from the
     main Hodur/OLLVM unflattening pipeline. ``FlowMaturityContext`` is not
     wired — doing so would be a large cross-cutting change out of scope.
-    The rule uses its own safeguard via ``should_apply_cfg_modifications()``
+    The rule uses its own safeguard via ``should_apply_bulk_cfg_modifications()``
     at the apply phase.
 
     Gate operation mode: ``COLLECT_ONLY`` equivalent.

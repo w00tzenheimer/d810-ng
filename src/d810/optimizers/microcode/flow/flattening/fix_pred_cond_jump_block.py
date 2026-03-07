@@ -184,7 +184,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
 
     Gate policy — AUDIT_ONLY (targeted rule, no bulk safeguard):
     This is a per-block targeted rule, NOT a bulk CFG reconstruction pass.
-    The ``should_apply_cfg_modifications`` bulk safeguard is intentionally
+    The ``should_apply_bulk_cfg_modifications`` bulk safeguard is intentionally
     absent — it is designed for batch dispatcher rewrites and would be too
     aggressive for small, targeted predecessor patches. This rule uses its
     own structural gate via ``flow_context.evaluate_fix_predecessor_gate()``.
