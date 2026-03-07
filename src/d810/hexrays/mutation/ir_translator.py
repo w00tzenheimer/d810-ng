@@ -25,6 +25,7 @@ from d810.cfg.graph_modification import (
     NopInstructions,
 )
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
+from d810.cfg.flowgraph import MopSnapshot as CfgMopSnapshot
 from d810.cfg.plan import (
     LegacyBlockOperation,
     PatchConditionalRedirect,
@@ -53,6 +54,59 @@ logger = getLogger(__name__)
 import ida_hexrays
 
 
+def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
+    """Capture a lightweight ``CfgMopSnapshot`` from a live ``mop_t``.
+
+    Returns ``None`` for empty (``mop_z``) operands.
+    """
+    if mop is None or mop.t == 0:  # mop_z = empty
+        return None
+    t = mop.t
+    size = mop.size
+    if t == 2:  # mop_n
+        nnn = mop.nnn
+        return CfgMopSnapshot(t=t, size=size, value=int(nnn.value) if nnn is not None else 0)
+    if t == 3:  # mop_S / mop_str (stack var)
+        s = mop.s
+        return CfgMopSnapshot(t=t, size=size, stkoff=s.off if s is not None else None)
+    if t == 1:  # mop_r (register)
+        return CfgMopSnapshot(t=t, size=size, reg=mop.r)
+    if t == 7:  # mop_b (block ref)
+        return CfgMopSnapshot(t=t, size=size, block_ref=mop.b)
+    return CfgMopSnapshot(t=t, size=size)
+
+
+def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
+    """Capture a rich ``InsnSnapshot`` from a live ``minsn_t``.
+
+    Populates both the legacy ``operands``/``operand_slots`` fields and the
+    new typed ``l``/``r``/``d`` fields.
+    """
+    opcode = insn.opcode
+    ea = insn.ea
+
+    operand_slots = tuple(
+        (slot_name, MopSnapshot.from_mop(mop))
+        for slot_name, mop in (
+            ("l", insn.l),
+            ("r", insn.r),
+            ("d", insn.d),
+        )
+        if mop.t != ida_hexrays.mop_z  # type: ignore[attr-defined]
+    )
+    operands = tuple(operand for _, operand in operand_slots)
+
+    return InsnSnapshot(
+        opcode=opcode,
+        ea=ea,
+        operands=operands,
+        operand_slots=operand_slots,
+        l=capture_mop_snapshot(insn.l),
+        r=capture_mop_snapshot(insn.r),
+        d=capture_mop_snapshot(insn.d),
+    )
+
+
 def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
     serial = blk.serial
     block_type = blk.type
@@ -62,31 +116,10 @@ def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
     succs = get_succ_serials(blk)
     preds = get_pred_serials(blk)
 
-    insn_snapshots = []
+    insn_snapshots: list[InsnSnapshot] = []
     insn = blk.head
     while insn:
-        opcode = insn.opcode
-        ea = insn.ea
-
-        operand_slots = tuple(
-            (slot_name, MopSnapshot.from_mop(mop))
-            for slot_name, mop in (
-                ("l", insn.l),
-                ("r", insn.r),
-                ("d", insn.d),
-            )
-            if mop.t != ida_hexrays.mop_z  # type: ignore[attr-defined]
-        )
-        operands = tuple(operand for _, operand in operand_slots)
-
-        insn_snapshots.append(
-            InsnSnapshot(
-                opcode=opcode,
-                ea=ea,
-                operands=operands,
-                operand_slots=operand_slots,
-            )
-        )
+        insn_snapshots.append(capture_insn_snapshot(insn))
         insn = insn.next
 
     return BlockSnapshot(
@@ -565,4 +598,10 @@ class IDAIRTranslator:
             return False
 
 
-__all__ = ["IDAIRTranslator", "lift", "lift_block"]
+__all__ = [
+    "IDAIRTranslator",
+    "capture_insn_snapshot",
+    "capture_mop_snapshot",
+    "lift",
+    "lift_block",
+]
