@@ -32,6 +32,9 @@ ignore_imports =
     tests.unit.optimizers.microcode.flow.flattening.hodur.test_provenance -> d810.optimizers.microcode.flow.flattening.hodur.provenance
     tests.unit.optimizers.microcode.flow.flattening.hodur.test_provenance -> d810.optimizers.microcode.flow.flattening.hodur.planner
     tests.unit.optimizers.microcode.flow.flattening.hodur.test_provenance -> d810.optimizers.microcode.flow.flattening.hodur.strategy
+    tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner_hints -> d810.optimizers.microcode.flow.flattening.hodur.planner
+    tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner_hints -> d810.optimizers.microcode.flow.flattening.hodur.provenance
+    tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner_hints -> d810.optimizers.microcode.flow.flattening.hodur.strategy
 [importlinter:contract:layered-architecture]
 name = Layered architecture prevents upward imports
 type = layers

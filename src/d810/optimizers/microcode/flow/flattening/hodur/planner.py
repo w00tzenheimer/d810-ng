@@ -13,6 +13,8 @@ from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     PlannerInputs,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+    FAMILY_CLEANUP,
+    FAMILY_DIRECT,
     FAMILY_FALLBACK,
     OwnershipScope,
     PlanFragment,
@@ -25,6 +27,97 @@ if TYPE_CHECKING:
     )
 
 logger = getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Hint signals: normalized recon data for scoring adjustments
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PlannerHintSignals:
+    """Normalized signals derived from raw recon artifacts.
+
+    Each field is a 0.0-1.0 float indicating confidence or risk level
+    for a specific recon dimension. Used by :func:`compute_hint_adjustment`
+    to bias fragment scoring before conflict resolution and ordering.
+    """
+
+    transition_confidence: float = 0.0
+    return_frontier_risk: float = 0.0
+    terminal_return_risk: float = 0.0
+
+
+def derive_hint_signals(inputs: PlannerInputs | None) -> PlannerHintSignals:
+    """Map raw recon artifacts to normalized hint signals.
+
+    Uses simple presence-based heuristics; values can be refined later
+    as recon fidelity improves.
+
+    Args:
+        inputs: Structured envelope with recon artifacts, or None.
+
+    Returns:
+        A :class:`PlannerHintSignals` with all fields populated.
+    """
+    if inputs is None:
+        return PlannerHintSignals()
+    return PlannerHintSignals(
+        transition_confidence=0.8 if inputs.has_handler_transitions else 0.0,
+        return_frontier_risk=0.5 if inputs.has_return_frontier else 0.0,
+        terminal_return_risk=0.5 if inputs.terminal_return_audit is not None else 0.0,
+    )
+
+
+@dataclass(frozen=True)
+class HintAdjustment:
+    """Score adjustment produced by recon hint analysis.
+
+    Attributes:
+        score_delta: Additive adjustment to the fragment's composite score.
+        reasons: Human-readable reasons for the adjustment.
+    """
+
+    score_delta: float = 0.0
+    reasons: tuple[str, ...] = ()
+
+
+def compute_hint_adjustment(
+    fragment: PlanFragment, signals: PlannerHintSignals
+) -> HintAdjustment:
+    """Compute a score adjustment for *fragment* based on recon *signals*.
+
+    This is a pure function with no side effects.
+
+    Args:
+        fragment: The plan fragment to evaluate.
+        signals: Normalized recon signals.
+
+    Returns:
+        A :class:`HintAdjustment` with the cumulative score delta and reasons.
+    """
+    delta = 0.0
+    reasons: list[str] = []
+
+    # Boost direct-family fragments when transition data is confident
+    if fragment.family == FAMILY_DIRECT and signals.transition_confidence > 0.5:
+        bonus = 2.0 * signals.transition_confidence
+        delta += bonus
+        reasons.append("transition_report_boost")
+
+    # Penalize all fragments when return frontier risk is elevated
+    if signals.return_frontier_risk > 0.3:
+        penalty = -1.5 * signals.return_frontier_risk
+        delta += penalty
+        reasons.append("return_frontier_penalty")
+
+    # Penalize cleanup-family fragments when terminal return risk is elevated
+    if fragment.family == FAMILY_CLEANUP and signals.terminal_return_risk > 0.3:
+        penalty = -1.0 * signals.terminal_return_risk
+        delta += penalty
+        reasons.append("terminal_return_penalty")
+
+    return HintAdjustment(score_delta=delta, reasons=tuple(reasons))
 
 
 @dataclass
@@ -177,6 +270,17 @@ class UnflatteningPlanner:
             else:
                 risk_passed.append(f)
 
+        # --- Hint signal scoring (between Gate 2 and Gate 3) ---
+        signals = derive_hint_signals(inputs)
+        hint_adjustments: dict[str, HintAdjustment] = {}
+        effective_scores: dict[str, float] = {}
+        for f in risk_passed:
+            adj = compute_hint_adjustment(f, signals)
+            hint_adjustments[f.strategy_name] = adj
+            effective_scores[f.strategy_name] = (
+                f.expected_benefit.composite_score() + adj.score_delta
+            )
+
         # --- Gate 3: Policy gate (coverage threshold drops fallbacks) ---
         accepted = self._apply_policy_with_provenance(
             risk_passed, effective_total_handlers, rows
@@ -186,12 +290,19 @@ class UnflatteningPlanner:
         conflicts = self.find_conflicts(accepted)
         if conflicts:
             accepted = self._resolve_conflicts_with_provenance(
-                accepted, conflicts, rows
+                accepted, conflicts, rows,
+                effective_scores=effective_scores,
             )
 
         # --- Gate 5: Selection (surviving fragments) ---
-        ordered = self.order_fragments(accepted)
+        ordered = self.order_fragments(
+            accepted, effective_scores=effective_scores,
+        )
         for f in ordered:
+            adj = hint_adjustments.get(f.strategy_name, HintAdjustment())
+            eff = effective_scores.get(
+                f.strategy_name, f.expected_benefit.composite_score(),
+            )
             rows.append(self._record(
                 f,
                 phase=DecisionPhase.SELECTED,
@@ -200,6 +311,10 @@ class UnflatteningPlanner:
                     f"composite_score={f.expected_benefit.composite_score():.1f}, "
                     f"selected into pipeline"
                 ),
+                base_score=f.expected_benefit.composite_score(),
+                hint_score_delta=adj.score_delta,
+                effective_score=eff,
+                hint_reasons=adj.reasons,
             ))
 
         provenance = PipelineProvenance(
@@ -209,18 +324,35 @@ class UnflatteningPlanner:
         logger.info("Pipeline provenance: %s", provenance.summary())
         return ordered, provenance
 
-    def order_fragments(self, fragments: list[PlanFragment]) -> list[PlanFragment]:
-        """Order by prerequisites first, then by descending composite score."""
+    def order_fragments(
+        self,
+        fragments: list[PlanFragment],
+        *,
+        effective_scores: dict[str, float] | None = None,
+    ) -> list[PlanFragment]:
+        """Order by prerequisites first, then by descending effective score.
+
+        Args:
+            fragments: Fragments to order.
+            effective_scores: Optional mapping of strategy_name to effective score
+                (composite + hint delta). Falls back to composite_score() when absent.
+        """
         ordered: list[PlanFragment] = []
         remaining = list(fragments)
         resolved_names: set[str] = set()
+
+        def _score(f: PlanFragment) -> float:
+            if effective_scores is not None and f.strategy_name in effective_scores:
+                return effective_scores[f.strategy_name]
+            return f.expected_benefit.composite_score()
+
         while remaining:
             ready = [
                 f for f in remaining if all(p in resolved_names for p in f.prerequisites)
             ]
             if not ready:
                 ready = remaining  # cycle or unmet prereqs — add by score
-            ready.sort(key=lambda f: f.expected_benefit.composite_score(), reverse=True)
+            ready.sort(key=_score, reverse=True)
             chosen = ready[0]
             ordered.append(chosen)
             resolved_names.add(chosen.strategy_name)
@@ -309,11 +441,19 @@ class UnflatteningPlanner:
         fragments: list[PlanFragment],
         conflicts: list[tuple[str, str, frozenset[int]]],
         rows: list[DecisionRecord],
+        *,
+        effective_scores: dict[str, float] | None = None,
     ) -> list[PlanFragment]:
         """Greedy independent set with provenance for dropped fragments."""
+
+        def _score(f: PlanFragment) -> float:
+            if effective_scores is not None and f.strategy_name in effective_scores:
+                return effective_scores[f.strategy_name]
+            return f.expected_benefit.composite_score()
+
         scored = sorted(
             fragments,
-            key=lambda f: f.expected_benefit.composite_score(),
+            key=_score,
             reverse=True,
         )
         accepted: list[PlanFragment] = []
@@ -377,6 +517,10 @@ class UnflatteningPlanner:
         reason_code: DecisionReasonCode,
         reason: str,
         ownership_blocks: frozenset[int] | None = None,
+        base_score: float = 0.0,
+        hint_score_delta: float = 0.0,
+        effective_score: float = 0.0,
+        hint_reasons: tuple[str, ...] = (),
     ) -> DecisionRecord:
         """Build a DecisionRecord from a PlanFragment."""
         return DecisionRecord(
@@ -391,4 +535,8 @@ class UnflatteningPlanner:
             transition_count=frag.expected_benefit.transitions_resolved,
             ownership_blocks=ownership_blocks or frozenset(frag.ownership.blocks),
             prerequisites=frozenset(frag.prerequisites),
+            base_score=base_score,
+            hint_score_delta=hint_score_delta,
+            effective_score=effective_score,
+            hint_reasons=hint_reasons,
         )

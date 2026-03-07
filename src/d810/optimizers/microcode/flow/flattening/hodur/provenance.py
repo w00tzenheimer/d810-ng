@@ -196,6 +196,10 @@ class DecisionRecord:
     terminal_return_summary: str = ""
     notes: str = ""
     gate_accounting: GateAccounting | None = None
+    base_score: float = 0.0
+    hint_score_delta: float = 0.0
+    effective_score: float = 0.0
+    hint_reasons: tuple[str, ...] = ()
 
     @property
     def is_accepted(self) -> bool:
@@ -320,6 +324,11 @@ class PipelineProvenance:
                 "ownership_blocks": sorted(r.ownership_blocks),
                 "prerequisites": sorted(r.prerequisites),
             }
+            if r.base_score or r.hint_score_delta or r.effective_score or r.hint_reasons:
+                d["base_score"] = r.base_score
+                d["hint_score_delta"] = r.hint_score_delta
+                d["effective_score"] = r.effective_score
+                d["hint_reasons"] = list(r.hint_reasons)
             if r.input_summary is not None:
                 d["input_summary"] = r.input_summary.to_dict()
             if r.gate_accounting is not None:
