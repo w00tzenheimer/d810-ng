@@ -194,8 +194,9 @@ class InsertBlock:
 class RemoveEdge:
     """Remove an edge between two blocks.
 
-    Future use - not yet implemented in DeferredGraphModifier.
-    Reserved for explicit edge removal without replacement (e.g., dead code elimination).
+    Implemented via DeferredGraphModifier.queue_remove_edge().
+    Used for explicit edge removal without replacement (e.g., dead code elimination).
+    A 2-way block losing one edge becomes 1-way; a 1-way block becomes 0-way.
 
     Attributes:
         from_serial: Source block serial.

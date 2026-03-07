@@ -360,6 +360,9 @@ class _FakeDeferredGraphModifier:
     def queue_insn_nop(self, serial: int, ea: int, description: str = "") -> None:
         self.calls.append(("nop", serial, ea, description))
 
+    def queue_remove_edge(self, from_serial: int, to_serial: int, description: str = "") -> None:
+        self.calls.append(("remove_edge", from_serial, to_serial, description))
+
     def _check_edge_split_trampoline_preconditions(
         self,
         *,
@@ -858,7 +861,7 @@ class TestIDAIntegration:
         assert count == 0
         assert created == []
 
-    def test_lower_rejects_unsupported_remove_edge_before_modifier_creation(
+    def test_lower_queues_remove_edge(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ):
@@ -883,5 +886,10 @@ class TestIDAIntegration:
 
         count = backend.lower(patch_plan, object())
 
-        assert count == 0
-        assert created == []
+        assert len(created) == 1
+        modifier = created[0]
+        # Should have queued remove_edge + apply
+        remove_calls = [c for c in modifier.calls if c[0] == "remove_edge"]
+        assert len(remove_calls) == 1
+        assert remove_calls[0] == ("remove_edge", 45, 2, "remove edge 45->2")
+        assert count > 0

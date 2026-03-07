@@ -333,8 +333,8 @@ class IDAIRTranslator:
                     reason = _unsupported_duplicate_block_reason(duplicate_step)
                     if reason is not None:
                         reasons.append(reason)
-                case PatchRemoveEdge(from_serial=src, to_serial=dst):
-                    reasons.append(f"PatchRemoveEdge({src}->{dst})")
+                case PatchRemoveEdge():
+                    continue
                 case LegacyBlockOperation(modification=CreateConditionalRedirect()):
                     continue
                 case LegacyBlockOperation(modification=EdgeRedirectViaPredSplit()):
@@ -388,10 +388,10 @@ class IDAIRTranslator:
                 )
 
             case PatchRemoveEdge(from_serial=src, to_serial=dst):
-                logger.warning(
-                    "PatchRemoveEdge(%d->%d) not implemented in DeferredGraphModifier, skipping",
+                modifier.queue_remove_edge(
                     src,
                     dst,
+                    description=f"remove edge {src}->{dst}",
                 )
 
             case PatchNopInstructions(block_serial=serial, insn_eas=eas):
