@@ -37,13 +37,6 @@ from d810.recon.flow.dispatcher_detection import (
     DispatcherType,
 )
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
-from d810.optimizers.microcode.flow.flattening.safeguards import (
-    should_apply_cfg_modifications,
-)
-from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
-    GateDecision,
-    GateVerdict,
-)
 from d810.optimizers.microcode.flow.handler import FlowRulePriority
 from d810.evaluator.hexrays_microcode.tracker import get_all_possibles_values
 
@@ -794,35 +787,18 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         if nb_queued == 0:
             return 0
 
-        # Phase 1.5: Safeguard gate - verify enough edges to justify CFG mods
-        analysis = self._get_dispatcher_analysis(blk)
-        total_case_blocks = len(analysis.dispatchers.get(blk.serial, []))
-        safeguard_passed = should_apply_cfg_modifications(
-            num_redirected_edges=nb_queued,
-            total_case_blocks=total_case_blocks,
-            context=f"FixPredecessor blk={blk.serial}",
-            min_required_override=1,
+        # NOTE: No bulk-CFG safeguard here. FixPredecessor makes targeted
+        # per-block edge redirects (not bulk CFG rewrites like Hodur).
+        # It already has two safety gates:
+        #   1. flow_context.evaluate_fix_predecessor_gate() in check_if_rule_should_be_used
+        #   2. Per-block structural checks (tail opcode, maturity, max passes)
+        # should_apply_cfg_modifications is too aggressive for small dispatchers
+        # like abc_xor_dispatch where resolving 1-2 predecessors IS the solution.
+        # G2: audit trail via structured logging only.
+        unflat_logger.info(
+            "fix_pred gate: applying %d modifications for block %d",
+            nb_queued, blk.serial,
         )
-        gate_decision = GateDecision(
-            gate_name="fix_pred_safeguard",
-            verdict=GateVerdict.PASSED if safeguard_passed else GateVerdict.FAILED,
-            reason=f"edges={nb_queued} case_blocks={total_case_blocks}",
-        )
-        if unflat_logger.debug_on:
-            unflat_logger.debug(
-                "fix_pred gate: safeguard=%s verdict=%s reason=%s",
-                safeguard_passed,
-                gate_decision.verdict.value,
-                gate_decision.reason,
-            )
-        if not safeguard_passed:
-            unflat_logger.info(
-                "fix_pred gate: safeguard blocked modifications for block %d "
-                "(queued=%d, case_blocks=%d)",
-                blk.serial, nb_queued, total_case_blocks,
-            )
-            self._pending_modifications.clear()
-            return 0
 
         # Phase 2: Apply - execute all modifications
         self.last_pass_nb_patch_done = self._apply_queued_modifications()
