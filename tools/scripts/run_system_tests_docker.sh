@@ -19,6 +19,7 @@
 # Options (system/shell/exec):
 #   -w, --worktree REL      Use worktree at REPO_ROOT/WORKTREE_ROOT/REL as /work (default worktree root: .worktrees)
 #   -l, --logs              Mount work dir .tmp/logs at /root/.idapro/logs
+#   -o, --out FILE          (system only) Redirect stdout+stderr to .tmp/FILE
 #   --                      Remaining args passed to pytest (system only) or used as command separator (exec)
 #
 # Options (dump only):
@@ -208,7 +209,15 @@ run_bash_exec() {
 if [ "$CMD" = "system" ]; then
   SYSTEM_ARGS=()
   [ ${#EXTRA_PYTEST[@]} -gt 0 ] && SYSTEM_ARGS+=("${EXTRA_PYTEST[@]}")
-  run_bash "$SETUP_CMD && $ENV_TEST $IDA_VENV_PYTHON -m pytest tests/system -v ${SYSTEM_ARGS[*]}"
+  SYS_REDIR=""
+  SYS_TRUNCATE=""
+  if [ -n "$DUMP_OUT" ]; then
+    mkdir -p "${WORK_DIR}/.tmp"
+    SYS_LOG="/work/.tmp/${DUMP_OUT}"
+    SYS_TRUNCATE=": > \"$SYS_LOG\"; "
+    SYS_REDIR="> \"$SYS_LOG\" 2>&1"
+  fi
+  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest tests/system -v ${SYSTEM_ARGS[*]} $SYS_REDIR"
   exit 0
 fi
 
