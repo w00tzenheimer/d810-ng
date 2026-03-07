@@ -1,13 +1,34 @@
 """Backend-agnostic IR for CFG snapshots (pure model layer)."""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from d810.core.logging import getLogger
 
 logger = getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class MopSnapshot:
+    """Frozen, backend-agnostic snapshot of an operand (pure model layer).
+
+    This is a lightweight value type that lives in ``d810.cfg`` and carries
+    no IDA imports.  The richer ``d810.hexrays.ir.mop_snapshot.MopSnapshot``
+    (which owns an IDA mop_t clone) is a *superset* and satisfies the same
+    structural interface.
+
+    Capture helpers that bridge live IDA objects to this type live in
+    ``d810.hexrays.mutation.ir_translator``.
+    """
+
+    t: int                        # mop type enum (mop_z=0, mop_r=1, mop_n=2, mop_S/mop_str=3, ...)
+    size: int = 0
+    value: int | None = None      # mop_n: nnn.value
+    stkoff: int | None = None     # mop_S/mop_str: s.off
+    reg: int | None = None        # mop_r: r
+    block_ref: int | None = None  # mop_b: b
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +39,10 @@ class InsnSnapshot:
     ea: int
     operands: tuple[object, ...]
     operand_slots: tuple[tuple[str, object], ...] = ()
+    # Rich typed operand fields (populated by capture_insn_snapshot).
+    l: MopSnapshot | None = None   # left operand
+    r: MopSnapshot | None = None   # right operand
+    d: MopSnapshot | None = None   # dest operand
 
     def __post_init__(self) -> None:
         if self.opcode < 0:
@@ -78,6 +103,20 @@ class BlockSnapshot:
     @property
     def npred(self) -> int:
         return len(self.preds)
+
+    def iter_insns(self) -> Iterator[InsnSnapshot]:
+        """Iterate over instruction snapshots in this block."""
+        return iter(self.insn_snapshots)
+
+    @property
+    def head(self) -> InsnSnapshot | None:
+        """First instruction snapshot, or ``None`` if the block is empty."""
+        return self.insn_snapshots[0] if self.insn_snapshots else None
+
+    @property
+    def tail(self) -> InsnSnapshot | None:
+        """Last instruction snapshot, or ``None`` if the block is empty."""
+        return self.insn_snapshots[-1] if self.insn_snapshots else None
 
     def __repr__(self) -> str:
         return (
@@ -150,4 +189,4 @@ class FlowGraph:
         )
 
 
-__all__ = ["InsnSnapshot", "BlockSnapshot", "FlowGraph"]
+__all__ = ["MopSnapshot", "InsnSnapshot", "BlockSnapshot", "FlowGraph"]
