@@ -151,6 +151,64 @@ def _collect_valrange_records_for_operands(
     return results
 
 
+def collect_block_valrange_record_for_location(
+    blk,
+    location: ValrangeLocation,
+) -> Optional[ValrangeRecord]:
+    """Collect a single block-start value-range record for *location* in *blk*.
+
+    Args:
+        blk: ``ida_hexrays.mblock_t`` block to query.
+        location: Structured register/stack location to query.
+
+    Returns:
+        A :class:`ValrangeRecord` if IDA reports a non-trivial range for the
+        location at block start, otherwise ``None``.
+    """
+    ida_hexrays = _ida_hexrays()
+    vivl = ida_hexrays.vivl_t()
+    if location.kind == ValrangeLocationKind.REGISTER:
+        vivl.set_reg(location.identifier, location.width)
+    elif location.kind == ValrangeLocationKind.STACK:
+        vivl.set_stkoff(location.identifier, location.width)
+    else:
+        return None
+    records = _collect_valrange_records_for_operands(
+        blk, (_ValrangeOperand(vivl=vivl, location=location),)
+    )
+    return records[0] if records else None
+
+
+def collect_instruction_valrange_record_for_location(
+    blk,
+    ins,
+    location: ValrangeLocation,
+) -> Optional[ValrangeRecord]:
+    """Collect a single instruction-anchored value-range record for *location*.
+
+    Args:
+        blk: ``ida_hexrays.mblock_t`` containing *ins*.
+        ins: Instruction anchor passed to ``mblock_t.get_valranges(..., ins, ...)``.
+        location: Structured register/stack location to query.
+
+    Returns:
+        A :class:`ValrangeRecord` if IDA reports a non-trivial range at the
+        instruction point, otherwise ``None``.
+    """
+    ida_hexrays = _ida_hexrays()
+    vivl = ida_hexrays.vivl_t()
+    if location.kind == ValrangeLocationKind.REGISTER:
+        vivl.set_reg(location.identifier, location.width)
+    elif location.kind == ValrangeLocationKind.STACK:
+        vivl.set_stkoff(location.identifier, location.width)
+    else:
+        return None
+    records = _collect_valrange_records_for_operands(
+        blk, (_ValrangeOperand(vivl=vivl, location=location),), ins=ins
+    )
+    return records[0] if records else None
+
+
 def collect_instruction_valrange_records(blk, ins) -> List[ValrangeRecord]:
     """Collect non-trivial value-range records at a specific instruction in *blk*."""
     return _collect_valrange_records_for_operands(
@@ -206,7 +264,9 @@ __all__ = [
     "ValrangeLocation",
     "ValrangeRecord",
     "collect_block_valrange_records",
+    "collect_block_valrange_record_for_location",
     "collect_instruction_valrange_records",
+    "collect_instruction_valrange_record_for_location",
     "collect_mba_valrange_records",
     "collect_block_valranges",
     "collect_instruction_valranges",

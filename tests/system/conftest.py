@@ -1237,6 +1237,16 @@ def pytest_addoption(parser):
         ),
     )
     parser.addoption(
+        "--dump-terminal-return-valranges",
+        action="store_true",
+        default=False,
+        help=(
+            "Also print a grouped terminal-return valrange comparison report. "
+            "Requires a D810-active dump path so terminal-return audit artifacts "
+            "exist in recon store. Useful for shared-epilogue debugging."
+        ),
+    )
+    parser.addoption(
         "--dump-force-rettype",
         action="store",
         default=None,

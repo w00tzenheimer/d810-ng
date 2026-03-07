@@ -33,6 +33,9 @@ from d810.recon.microcode_dump import (
     dump_function_microcode,
     print_mba_human_readable,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.diagnostics import (
+    build_terminal_return_valrange_report_from_store,
+)
 from d810.testing.runner import _resolve_test_project_index
 from d810.testing.skip_controls import unskip_cases_enabled
 
@@ -108,6 +111,21 @@ def _format_stats_block(function_name: str, before: dict, after: dict) -> str:
         f'DELTA:  {_delta(before, after)}',
     ]
     return '\n'.join(lines)
+
+
+def _print_terminal_return_valranges(mba, func_ea: int) -> None:
+    """Print grouped terminal-return valrange diagnostics if recon artifacts exist."""
+    print("\n--- TERMINAL RETURN VALRANGES ---")
+    report = build_terminal_return_valrange_report_from_store(
+        mba=mba,
+        func_ea=func_ea,
+        log_dir=None,
+        maturity=None,
+    )
+    if report is None:
+        print("[no terminal return audit available in recon store]")
+        return
+    print(report.format())
 
 
 def _get_default_binary() -> str:
@@ -388,6 +406,9 @@ class TestDumpFunctionPseudocode:
         ]
         dump_d810 = request.config.getoption("--dump-microcode-d810")
         dump_human = request.config.getoption("--dump-microcode-human-readable")
+        dump_terminal_valranges = request.config.getoption(
+            "--dump-terminal-return-valranges"
+        )
         dump_d810_maturity = request.config.getoption(
             "--dump-microcode-d810-maturity", default=None
         )
@@ -471,6 +492,8 @@ class TestDumpFunctionPseudocode:
                     if dump_human:
                         print("\n--- HUMAN MICROCODE (with d810) ---")
                         print_mba_human_readable(mba, func_name=function_name)
+                    if dump_terminal_valranges:
+                        _print_terminal_return_valranges(mba, func_ea)
                     print("=" * 88)
         if dump_d810_maturity:
             # Post-D810 mid-pipeline capture: run decompile with D810 active,
@@ -631,4 +654,6 @@ class TestDumpFunctionPseudocode:
                                 f"\n--- HUMAN MICROCODE ({maturity_name}) ---"
                             )
                             print_mba_human_readable(mba, func_name=function_name)
+                            if dump_terminal_valranges:
+                                _print_terminal_return_valranges(mba, func_ea)
                     print("=" * 88)
