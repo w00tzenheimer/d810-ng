@@ -422,44 +422,48 @@ class UnflatteningPlanner:
                 f.expected_benefit.composite_score() + adj.score_delta
             )
 
+        # --- Wrap surviving fragments in PlannerCandidates ---
+        candidates = [
+            PlannerCandidate(
+                fragment=f,
+                base_score=f.expected_benefit.composite_score(),
+                hint_adjustment=hint_adjustments.get(
+                    f.strategy_name, HintAdjustment(),
+                ),
+                effective_score=effective_scores.get(
+                    f.strategy_name, f.expected_benefit.composite_score(),
+                ),
+            )
+            for f in risk_passed
+        ]
+
         # --- Gate 3: Policy gate (coverage threshold drops fallbacks) ---
-        accepted = self._apply_policy_with_provenance(
-            risk_passed, effective_total_handlers, rows,
-            hint_adjustments=hint_adjustments,
-            effective_scores=effective_scores,
+        accepted_candidates = self._apply_policy_with_provenance_candidates(
+            candidates, effective_total_handlers, rows,
         )
 
         # --- Gate 4: Conflict resolution (greedy independent set) ---
-        conflicts = self.find_conflicts(accepted)
+        accepted_fragments = [c.fragment for c in accepted_candidates]
+        conflicts = self.find_conflicts(accepted_fragments)
         if conflicts:
-            accepted = self._resolve_conflicts_with_provenance(
-                accepted, conflicts, rows,
-                effective_scores=effective_scores,
-                hint_adjustments=hint_adjustments,
+            accepted_candidates = self._resolve_conflicts_candidates(
+                accepted_candidates, conflicts, rows,
             )
 
-        # --- Gate 5: Selection (surviving fragments) ---
-        ordered = self.order_fragments(
-            accepted, effective_scores=effective_scores,
-        )
-        for f in ordered:
-            adj = hint_adjustments.get(f.strategy_name, HintAdjustment())
-            eff = effective_scores.get(
-                f.strategy_name, f.expected_benefit.composite_score(),
-            )
-            rows.append(self._record(
-                f,
-                phase=DecisionPhase.SELECTED,
-                reason_code=DecisionReasonCode.ACCEPTED,
-                reason=(
-                    f"composite_score={f.expected_benefit.composite_score():.1f}, "
+        # --- Gate 5: Selection (surviving candidates) ---
+        ordered_candidates = self._order_candidates(accepted_candidates)
+        for c in ordered_candidates:
+            decision = PlannerDecision(
+                candidate=c,
+                reason=PlannerDecisionReason.ACCEPTED,
+                detail=(
+                    f"composite_score={c.base_score:.1f}, "
                     f"selected into pipeline"
                 ),
-                base_score=f.expected_benefit.composite_score(),
-                hint_score_delta=adj.score_delta,
-                effective_score=eff,
-                hint_reasons=adj.reasons,
-            ))
+            )
+            rows.append(decision.to_decision_record())
+
+        ordered = [c.fragment for c in ordered_candidates]
 
         provenance = PipelineProvenance(
             rows=tuple(rows),
@@ -647,6 +651,109 @@ class UnflatteningPlanner:
                     hint_reasons=adj.reasons,
                 ))
         return accepted
+
+    def _apply_policy_with_provenance_candidates(
+        self,
+        candidates: list[PlannerCandidate],
+        total_handlers: int,
+        rows: list[DecisionRecord],
+    ) -> list[PlannerCandidate]:
+        """Apply policy gate on candidates and record provenance for dropped fallbacks."""
+        if not self.policy.allow_fallback_families:
+            accepted: list[PlannerCandidate] = []
+            for c in candidates:
+                if c.family == FAMILY_FALLBACK:
+                    decision = PlannerDecision(
+                        candidate=c,
+                        reason=PlannerDecisionReason.REJECTED_POLICY,
+                        detail="fallback families disallowed by policy",
+                    )
+                    rows.append(decision.to_decision_record())
+                else:
+                    accepted.append(c)
+            return accepted
+
+        direct_handlers = sum(
+            c.fragment.expected_benefit.handlers_resolved
+            for c in candidates
+            if c.family != FAMILY_FALLBACK
+        )
+        if total_handlers > 0:
+            coverage = direct_handlers / total_handlers
+            if coverage >= self.policy.direct_coverage_threshold:
+                accepted = []
+                for c in candidates:
+                    if c.family == FAMILY_FALLBACK:
+                        decision = PlannerDecision(
+                            candidate=c,
+                            reason=PlannerDecisionReason.REJECTED_POLICY,
+                            detail=(
+                                f"direct coverage {coverage:.0%} >= "
+                                f"{self.policy.direct_coverage_threshold:.0%} threshold"
+                            ),
+                        )
+                        rows.append(decision.to_decision_record())
+                    else:
+                        accepted.append(c)
+                return accepted
+        return candidates
+
+    def _resolve_conflicts_candidates(
+        self,
+        candidates: list[PlannerCandidate],
+        conflicts: list[tuple[str, str, frozenset[int]]],
+        rows: list[DecisionRecord],
+    ) -> list[PlannerCandidate]:
+        """Greedy independent set on candidates with provenance for dropped ones."""
+        scored = sorted(
+            candidates,
+            key=lambda c: c.effective_score,
+            reverse=True,
+        )
+        accepted: list[PlannerCandidate] = []
+        claimed = OwnershipScope(
+            blocks=frozenset(),
+            edges=frozenset(),
+            transitions=frozenset(),
+        )
+        for c in scored:
+            if c.ownership.is_disjoint(claimed):
+                accepted.append(c)
+                claimed = claimed.union(c.ownership)
+            else:
+                overlap_blocks = c.ownership.blocks & claimed.blocks
+                decision = PlannerDecision(
+                    candidate=c,
+                    reason=PlannerDecisionReason.REJECTED_CONFLICT,
+                    detail=(
+                        f"ownership conflict: {len(overlap_blocks)} shared blocks"
+                    ),
+                )
+                rows.append(decision.to_decision_record())
+        return accepted
+
+    def _order_candidates(
+        self,
+        candidates: list[PlannerCandidate],
+    ) -> list[PlannerCandidate]:
+        """Order candidates by prerequisites first, then by descending effective score."""
+        ordered: list[PlannerCandidate] = []
+        remaining = list(candidates)
+        resolved_names: set[str] = set()
+
+        while remaining:
+            ready = [
+                c for c in remaining
+                if all(p in resolved_names for p in c.prerequisites)
+            ]
+            if not ready:
+                ready = remaining  # cycle or unmet prereqs — add by score
+            ready.sort(key=lambda c: c.effective_score, reverse=True)
+            chosen = ready[0]
+            ordered.append(chosen)
+            resolved_names.add(chosen.strategy_name)
+            remaining.remove(chosen)
+        return ordered
 
     def _resolve_conflicts(
         self,
