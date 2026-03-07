@@ -32,6 +32,11 @@ from d810.evaluator.hexrays_microcode.chains import (
     is_passthru_chain,
     is_phi_like_merge,
 )
+from d810.evaluator.hexrays_microcode.valranges import (
+    collect_block_valranges,
+    collect_instruction_valranges,
+    collect_mba_valranges,
+)
 __all__ = [
     "BlockInfo",
     "InstructionDefUseCollector",
@@ -54,4 +59,7 @@ __all__ = [
     "get_ud_du_chains",
     "is_passthru_chain",
     "is_phi_like_merge",
+    "collect_block_valranges",
+    "collect_instruction_valranges",
+    "collect_mba_valranges",
 ]

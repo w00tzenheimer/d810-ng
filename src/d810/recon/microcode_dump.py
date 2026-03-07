@@ -578,13 +578,18 @@ def print_mba_human_readable(
     - Block headers with type, predecessor/successor sets, EA range
     - USE/DEF/DNU liveness sets per block
     - VALRANGES per block (via :func:`d810.recon.flow.valranges.collect_block_valranges`)
+    - Instruction-level VALRANGES via
+      :func:`d810.recon.flow.valranges.collect_instruction_valranges`
     - Instructions via ``minsn_t._print()`` with per-instruction u=/d= annotations
 
     Args:
         mba: The microcode block array to print.
         func_name: Optional function name shown in the header.
     """
-    from d810.recon.flow.valranges import collect_block_valranges
+    from d810.recon.flow.valranges import (
+        collect_block_valranges,
+        collect_instruction_valranges,
+    )
 
     _init_constants()
 
@@ -828,8 +833,16 @@ def print_mba_human_readable(
             ins_use = _fix_var_names(ins_use, _frsize)
             ins_def = _fix_var_names(ins_def, _frsize)
 
+            ins_vr = ""
+            try:
+                ins_vr_parts = collect_instruction_valranges(blk, ins)
+                if ins_vr_parts:
+                    ins_vr = f" vr={{{', '.join(ins_vr_parts)}}}"
+            except Exception:
+                pass
+
             ea_str = f"{ea:016X}"
-            suffix = f" ; {ea_str} u={ins_use} d={ins_def}"
+            suffix = f" ; {ea_str} u={ins_use} d={ins_def}{ins_vr}"
 
             print(f"  {serial}.{insn_idx - 1:<4} {insn_str:<50}{suffix}")
 
