@@ -62,6 +62,7 @@ __all__ = [
     "DirectHandlerLinearizationStrategy",
     "ForwardFrontierEntry",
     "SharedCorridorInfo",
+    "SuffixGroupDecision",
 ]
 
 # Minimum number of unique normalized anchors (handler body exits redirected
@@ -167,6 +168,98 @@ class SharedCorridorInfo:
     clonable: bool
     recommendation: CorridorRecommendation
     notes: str
+
+
+@dataclass(frozen=True)
+class SuffixGroupDecision:
+    """Per-suffix-group PTS applicability decision."""
+
+    shared_entry: int
+    return_block: int
+    suffix_serials: tuple[int, ...]
+    handler_entries: tuple[int, ...]
+    handler_count: int
+    carrier_source_kinds: tuple[str, ...]  # distinct CarrierSourceKind values
+    has_state_const_carrier: bool
+    proof_resolved_count: int
+    proof_unresolved_count: int
+    corridor_length: int
+    clonable: bool
+    should_emit: bool
+    rejection_reasons: tuple[str, ...]  # why should_emit=False, empty if True
+
+
+def _compute_suffix_group_decision(
+    forward_entries: list[ForwardFrontierEntry],
+    corridor_info: SharedCorridorInfo,
+    semantic_action: TerminalLoweringAction,
+) -> SuffixGroupDecision:
+    """Compute PTS applicability decision for a suffix group.
+
+    Aggregates per-handler-entry forward frontier data and corridor info
+    to produce a single decision record.  This is DIAGNOSTIC ONLY -- no
+    mutations are performed.
+
+    Args:
+        forward_entries: Forward frontier entries from per-handler analysis.
+        corridor_info: Shared corridor diagnostic info.
+        semantic_action: The semantic lowering action for this group.
+
+    Returns:
+        A :class:`SuffixGroupDecision` with the aggregated decision.
+    """
+    # Collect handler entries.
+    handler_entries = tuple(sorted({e.handler_entry for e in forward_entries}))
+    handler_count = len(handler_entries)
+
+    # Collect distinct carrier source kinds.
+    carrier_kinds = tuple(sorted({e.carrier_source_kind.value for e in forward_entries}))
+    has_state_const = any(
+        e.carrier_source_kind == CarrierSourceKind.STATE_CONST
+        for e in forward_entries
+    )
+
+    # Count proof statuses.
+    proof_resolved = sum(1 for e in forward_entries if e.proof_status == "resolved")
+    proof_unresolved = sum(1 for e in forward_entries if e.proof_status == "unresolved")
+
+    # Determine should_emit by checking all conditions.
+    rejection_reasons: list[str] = []
+
+    if semantic_action != TerminalLoweringAction.PRIVATE_TERMINAL_SUFFIX:
+        rejection_reasons.append(
+            "semantic_action=%s (need PRIVATE_TERMINAL_SUFFIX)" % semantic_action.value
+        )
+    if not corridor_info.clonable:
+        rejection_reasons.append("corridor not clonable")
+    if handler_count < 2:
+        rejection_reasons.append("handler_count=%d < 2" % handler_count)
+    if has_state_const:
+        rejection_reasons.append("has state_const carriers")
+    if proof_unresolved == 0:
+        rejection_reasons.append("no unresolved proofs (nothing to fix)")
+    if proof_resolved > 0:
+        rejection_reasons.append(
+            "proof_resolved=%d > 0 (some already resolved)" % proof_resolved
+        )
+
+    should_emit = len(rejection_reasons) == 0
+
+    return SuffixGroupDecision(
+        shared_entry=corridor_info.shared_entry,
+        return_block=corridor_info.return_block,
+        suffix_serials=corridor_info.suffix_serials,
+        handler_entries=handler_entries,
+        handler_count=handler_count,
+        carrier_source_kinds=carrier_kinds,
+        has_state_const_carrier=has_state_const,
+        proof_resolved_count=proof_resolved,
+        proof_unresolved_count=proof_unresolved,
+        corridor_length=corridor_info.corridor_length,
+        clonable=corridor_info.clonable,
+        should_emit=should_emit,
+        rejection_reasons=tuple(rejection_reasons),
+    )
 
 
 def _discover_shared_corridor(
@@ -1387,6 +1480,7 @@ class DirectHandlerLinearizationStrategy:
         cfg_frontier: TerminalCfgSuffixFrontier | None = None
         forward_frontier_entries: list[ForwardFrontierEntry] = []
         corridor_infos: list[SharedCorridorInfo] = []
+        suffix_group_decisions: list[SuffixGroupDecision] = []
 
         if terminal_handler_terminal_paths:
             terminal_target_for_suffix = find_terminal_exit_target_snapshot(
@@ -1567,6 +1661,7 @@ class DirectHandlerLinearizationStrategy:
 
                 # --- Shared corridor diagnostic ---
                 corridor_infos: list[SharedCorridorInfo] = []
+                suffix_group_decisions: list[SuffixGroupDecision] = []
                 if cfg_frontier is not None and forward_frontier_entries:
                     corridor_info = _discover_shared_corridor(
                         fg=fg,
@@ -1604,6 +1699,32 @@ class DirectHandlerLinearizationStrategy:
                         corridor_info.handler_count,
                         corridor_info.clonable,
                         corridor_info.recommendation.value,
+                    )
+
+                    # --- Suffix group decision table ---
+                    decision = _compute_suffix_group_decision(
+                        forward_entries=forward_frontier_entries,
+                        corridor_info=corridor_info,
+                        semantic_action=semantic_frontier.action
+                        if semantic_frontier
+                        else TerminalLoweringAction.NO_ACTION,
+                    )
+                    suffix_group_decisions.append(decision)
+
+                    logger.info(
+                        "[decision-table] shared_entry=blk[%d] handlers=%d "
+                        "carriers=%s state_const=%s "
+                        "resolved=%d unresolved=%d "
+                        "clonable=%s should_emit=%s reasons=%s",
+                        decision.shared_entry,
+                        decision.handler_count,
+                        decision.carrier_source_kinds,
+                        decision.has_state_const_carrier,
+                        decision.proof_resolved_count,
+                        decision.proof_unresolved_count,
+                        decision.clonable,
+                        decision.should_emit,
+                        decision.rejection_reasons,
                     )
 
                 # EMISSION DISABLED — PTS modifications poison PlanFragment contract checker.
@@ -1651,5 +1772,6 @@ class DirectHandlerLinearizationStrategy:
                 "private_terminal_suffix_count": private_suffix_count,
                 "forward_frontier_entries": forward_frontier_entries,
                 "corridor_infos": corridor_infos,
+                "suffix_group_decisions": suffix_group_decisions,
             },
         )
