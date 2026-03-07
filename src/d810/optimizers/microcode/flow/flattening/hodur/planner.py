@@ -447,7 +447,6 @@ class UnflatteningPlanner:
     def compose_pipeline(
         self,
         fragments: list[PlanFragment],
-        total_handlers: int | None = None,
         *,
         inputs: PlannerInputs | None = None,
     ) -> tuple[list[PlanFragment], PipelineProvenance]:
@@ -455,19 +454,28 @@ class UnflatteningPlanner:
 
         Args:
             fragments: Candidate plan fragments from strategies.
-            total_handlers: Handler count (deprecated, prefer inputs.total_handlers).
             inputs: Structured envelope with recon artifacts and handler count.
 
         Returns:
             A tuple of (ordered pipeline, provenance ledger).
         """
-        # Resolve total_handlers from inputs envelope or legacy parameter
         if inputs is not None:
             effective_total_handlers = inputs.total_handlers
             input_summary = inputs.to_input_summary()
-        elif total_handlers is not None:
-            effective_total_handlers = total_handlers
-            input_summary = None
+            # Apply policy overrides from inputs envelope
+            if inputs.policy_overrides:
+                if "coverage_threshold" in inputs.policy_overrides:
+                    self.policy.direct_coverage_threshold = float(
+                        inputs.policy_overrides["coverage_threshold"],
+                    )
+                if "max_risk_score" in inputs.policy_overrides:
+                    self.policy.max_risk_score = float(
+                        inputs.policy_overrides["max_risk_score"],
+                    )
+                if "allow_fallback_families" in inputs.policy_overrides:
+                    self.policy.allow_fallback_families = bool(
+                        inputs.policy_overrides["allow_fallback_families"],
+                    )
         else:
             effective_total_handlers = 0
             input_summary = None

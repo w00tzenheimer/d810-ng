@@ -21,7 +21,6 @@ class DecisionPhase(str, enum.Enum):
 
     INAPPLICABLE = "inapplicable"
     CRASHED = "crashed"
-    PLANNED = "planned"
     SELECTED = "selected"  # planner accepted into pipeline (pre-execution)
     POLICY_FILTERED = "policy_filtered"
     CONFLICT_DROPPED = "conflict_dropped"
@@ -43,6 +42,8 @@ class DecisionReasonCode(str, enum.Enum):
     REJECTED_CRASHED = "rejected_crashed"
     REJECTED_PREFLIGHT = "rejected_preflight"
     REJECTED_GATE = "rejected_gate"
+    REJECTED_GATE_SAFEGUARD = "rejected_gate_safeguard"
+    REJECTED_GATE_SEMANTIC = "rejected_gate_semantic"
     REJECTED_TRANSACTION = "rejected_transaction"
     BYPASSED = "bypassed"
     BYPASSED_SAFEGUARD = "bypassed_safeguard"

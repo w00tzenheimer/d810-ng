@@ -271,7 +271,7 @@ class TestHintChangesConflictWinner:
         # Without hints, A wins (12.0 > 9.0)
         planner = UnflatteningPlanner()
         pipeline_no_hints, _ = planner.compose_pipeline(
-            [frag_a, frag_b], total_handlers=10,
+            [frag_a, frag_b], inputs=PlannerInputs(total_handlers=10),
         )
         assert len(pipeline_no_hints) == 1
         assert pipeline_no_hints[0].strategy_name == "A"
@@ -298,7 +298,7 @@ class TestHintChangesConflictWinner:
 
         # Without hints: A=12.0, B=11.0 => A wins
         pipeline_no, _ = planner.compose_pipeline(
-            [frag_a2, frag_b2], total_handlers=10,
+            [frag_a2, frag_b2], inputs=PlannerInputs(total_handlers=10),
         )
         assert len(pipeline_no) == 1
         assert pipeline_no[0].strategy_name == "A"
@@ -341,7 +341,7 @@ class TestHintChangesOrdering:
 
         # Without hints: A(12.0) > B(11.0)
         pipeline_no, _ = planner.compose_pipeline(
-            [frag_a, frag_b], total_handlers=10,
+            [frag_a, frag_b], inputs=PlannerInputs(total_handlers=10),
         )
         assert pipeline_no[0].strategy_name == "A"
         assert pipeline_no[1].strategy_name == "B"
@@ -397,7 +397,7 @@ class TestProvenanceRecordsHintFields:
         planner = UnflatteningPlanner()
         frag = _fragment("A", family=FAMILY_DIRECT, handlers=5)
         # composite = 5*3 = 15.0
-        pipeline, provenance = planner.compose_pipeline([frag], total_handlers=10)
+        pipeline, provenance = planner.compose_pipeline([frag], inputs=PlannerInputs(total_handlers=10))
         selected = [r for r in provenance.rows if r.phase == DecisionPhase.SELECTED]
         assert len(selected) == 1
         row = selected[0]

@@ -85,7 +85,7 @@ def test_pipeline_provenance_counts():
         DecisionRecord(
             "C",
             "fallback",
-            DecisionPhase.PLANNED,
+            DecisionPhase.POLICY_FILTERED,
             DecisionReasonCode.REJECTED_RISK,
             "risk=0.8>0.7",
             composite_score=3.0,
@@ -324,7 +324,7 @@ class TestComposePipelineProvenance:
     def test_returns_provenance(self) -> None:
         planner = UnflatteningPlanner()
         frags = [_fragment("A"), _fragment("B", risk=0.9)]
-        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        pipeline, provenance = planner.compose_pipeline(frags, inputs=PlannerInputs(total_handlers=10))
         assert isinstance(provenance, PipelineProvenance)
         assert provenance.accepted_count >= 1
         verdicts = {r.strategy_name: r.reason_code for r in provenance.rows}
@@ -334,7 +334,7 @@ class TestComposePipelineProvenance:
         """Fragments with no modifications get INAPPLICABLE / REJECTED_EMPTY."""
         planner = UnflatteningPlanner()
         frags = [_fragment("empty_one", empty=True), _fragment("real_one")]
-        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        pipeline, provenance = planner.compose_pipeline(frags, inputs=PlannerInputs(total_handlers=10))
         assert len(pipeline) == 1
         assert pipeline[0].strategy_name == "real_one"
         verdicts = {r.strategy_name: r for r in provenance.rows}
@@ -345,7 +345,7 @@ class TestComposePipelineProvenance:
         """Fragments exceeding risk threshold get POLICY_FILTERED / REJECTED_RISK."""
         planner = UnflatteningPlanner(PipelinePolicy(max_risk_score=0.5))
         frags = [_fragment("safe", risk=0.3), _fragment("risky", risk=0.8)]
-        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        pipeline, provenance = planner.compose_pipeline(frags, inputs=PlannerInputs(total_handlers=10))
         assert len(pipeline) == 1
         verdicts = {r.strategy_name: r for r in provenance.rows}
         assert verdicts["risky"].phase == DecisionPhase.POLICY_FILTERED
@@ -360,7 +360,7 @@ class TestComposePipelineProvenance:
             _fragment("fallback1", family=FAMILY_FALLBACK, handlers=2),
         ]
         # 9/10 = 90% >= 80% threshold => fallback dropped
-        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        pipeline, provenance = planner.compose_pipeline(frags, inputs=PlannerInputs(total_handlers=10))
         phases = {r.strategy_name: r.phase for r in provenance.rows}
         assert phases["fallback1"] == DecisionPhase.POLICY_FILTERED
         reason_codes = {r.strategy_name: r.reason_code for r in provenance.rows}
@@ -386,7 +386,7 @@ class TestComposePipelineProvenance:
             ),
         ]
         planner = UnflatteningPlanner()
-        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        pipeline, provenance = planner.compose_pipeline(frags, inputs=PlannerInputs(total_handlers=10))
         phases = {r.strategy_name: r.phase for r in provenance.rows}
         assert phases["B"] == DecisionPhase.CONFLICT_DROPPED
         reason_codes = {r.strategy_name: r.reason_code for r in provenance.rows}
@@ -398,7 +398,7 @@ class TestComposePipelineProvenance:
         """Surviving fragments get SELECTED / ACCEPTED."""
         planner = UnflatteningPlanner()
         frags = [_fragment("A"), _fragment("B")]
-        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        pipeline, provenance = planner.compose_pipeline(frags, inputs=PlannerInputs(total_handlers=10))
         assert len(pipeline) == 2
         for row in provenance.rows:
             if row.phase == DecisionPhase.SELECTED:
@@ -408,7 +408,7 @@ class TestComposePipelineProvenance:
         """DecisionRecord carries handler_count and transition_count from benefit."""
         planner = UnflatteningPlanner()
         frags = [_fragment("A", handlers=7, transitions=12)]
-        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        pipeline, provenance = planner.compose_pipeline(frags, inputs=PlannerInputs(total_handlers=10))
         selected = [r for r in provenance.rows if r.phase == DecisionPhase.SELECTED]
         assert len(selected) == 1
         assert selected[0].handler_count == 7
@@ -422,7 +422,7 @@ class TestComposePipelineProvenance:
             _fragment("B", risk=0.9),
             _fragment("C", empty=True),
         ]
-        _pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        _pipeline, provenance = planner.compose_pipeline(frags, inputs=PlannerInputs(total_handlers=10))
         names = [r.strategy_name for r in provenance.rows]
         assert sorted(names) == ["A", "B", "C"]
 
@@ -434,7 +434,7 @@ class TestComposePipelineProvenance:
             _fragment("direct1", family=FAMILY_DIRECT),
             _fragment("fb1", family=FAMILY_FALLBACK),
         ]
-        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        pipeline, provenance = planner.compose_pipeline(frags, inputs=PlannerInputs(total_handlers=10))
         assert len(pipeline) == 1
         verdicts = {r.strategy_name: r for r in provenance.rows}
         assert verdicts["fb1"].phase == DecisionPhase.POLICY_FILTERED
@@ -443,7 +443,7 @@ class TestComposePipelineProvenance:
     def test_no_fragments_returns_empty_provenance(self) -> None:
         """Empty input produces empty pipeline and provenance."""
         planner = UnflatteningPlanner()
-        pipeline, provenance = planner.compose_pipeline([], total_handlers=10)
+        pipeline, provenance = planner.compose_pipeline([], inputs=PlannerInputs(total_handlers=10))
         assert pipeline == []
         assert provenance.accepted_count == 0
         assert provenance.rejected_count == 0
@@ -896,13 +896,13 @@ class TestComposePipelineWithPlannerInputs:
         assert provenance.input_summary.handler_transitions_available is True
         assert provenance.input_summary.return_frontier_available is False
 
-    def test_legacy_total_handlers_still_works(self) -> None:
-        """Backward compatibility: total_handlers positional arg still works."""
+    def test_no_inputs_defaults_to_zero_handlers(self) -> None:
+        """Without inputs, effective_total_handlers defaults to 0."""
         planner = UnflatteningPlanner()
         frags = [_fragment("A")]
-        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        pipeline, provenance = planner.compose_pipeline(frags)
         assert isinstance(provenance, PipelineProvenance)
-        # No input_summary when using legacy path
+        # No input_summary when inputs is None
         assert provenance.input_summary is None
 
     def test_planner_inputs_total_handlers_used_for_policy(self) -> None:
@@ -1054,7 +1054,7 @@ class TestPlannerPlan:
         """compose_pipeline remains callable as an internal method."""
         planner = UnflatteningPlanner()
         frags = [_fragment("X", handlers=5)]
-        pipeline, provenance = planner.compose_pipeline(frags, total_handlers=10)
+        pipeline, provenance = planner.compose_pipeline(frags, inputs=PlannerInputs(total_handlers=10))
         assert len(pipeline) == 1
         assert isinstance(provenance, PipelineProvenance)
 

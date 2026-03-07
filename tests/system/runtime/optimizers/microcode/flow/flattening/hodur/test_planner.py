@@ -11,6 +11,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.planner import (
     PipelinePolicy,
     UnflatteningPlanner,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
+    PlannerInputs,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_DIRECT,
     FAMILY_FALLBACK,
@@ -121,7 +124,7 @@ class TestApplyPolicy:
         direct = _make_fragment("direct", family=FAMILY_DIRECT, handlers=9)
         fallback = _make_fragment("fallback_x", family=FAMILY_FALLBACK, handlers=1)
         pipeline, _prov = planner.compose_pipeline(
-            [direct, fallback], total_handlers=10,
+            [direct, fallback], inputs=PlannerInputs(total_handlers=10),
         )
         names = [f.strategy_name for f in pipeline]
         assert "direct" in names
@@ -132,7 +135,7 @@ class TestApplyPolicy:
         direct = _make_fragment("direct", family=FAMILY_DIRECT, handlers=5)
         fallback = _make_fragment("fallback_x", family=FAMILY_FALLBACK, handlers=2)
         pipeline, _prov = planner.compose_pipeline(
-            [direct, fallback], total_handlers=10,
+            [direct, fallback], inputs=PlannerInputs(total_handlers=10),
         )
         names = [f.strategy_name for f in pipeline]
         assert "direct" in names
@@ -142,7 +145,7 @@ class TestApplyPolicy:
         planner = UnflatteningPlanner(PipelinePolicy(direct_coverage_threshold=0.8))
         pipeline, _prov = planner.compose_pipeline(
             [_make_fragment("fallback_x", family=FAMILY_FALLBACK, handlers=0)],
-            total_handlers=0,
+            inputs=PlannerInputs(total_handlers=0),
         )
         assert len(pipeline) == 1
 
