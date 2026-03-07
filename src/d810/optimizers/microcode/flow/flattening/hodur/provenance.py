@@ -77,13 +77,23 @@ class GateAccounting:
     """Aggregated gate decisions for one stage execution."""
 
     decisions: tuple[GateDecision, ...] = ()
+    cycle_filter_removed: int = 0
+    backend_filter_removed: int = 0
 
     def add(self, decision: GateDecision) -> GateAccounting:
         """Return a new GateAccounting with the decision appended.
 
         Since this dataclass is frozen, returns a new instance.
         """
-        return GateAccounting(decisions=self.decisions + (decision,))
+        return replace(self, decisions=self.decisions + (decision,))
+
+    def with_cycle_filter(self, removed: int) -> GateAccounting:
+        """Return a new GateAccounting with cycle filter count set."""
+        return replace(self, cycle_filter_removed=removed)
+
+    def with_backend_filter(self, removed: int) -> GateAccounting:
+        """Return a new GateAccounting with backend filter count set."""
+        return replace(self, backend_filter_removed=removed)
 
     @property
     def passed_count(self) -> int:
@@ -111,10 +121,16 @@ class GateAccounting:
 
     def summary(self) -> str:
         """One-line summary like '2 passed, 1 failed, 0 bypassed'."""
-        return (
-            f"{self.passed_count} passed, {self.failed_count} failed, "
-            f"{self.bypassed_count} bypassed"
-        )
+        parts = [
+            f"{self.passed_count} passed",
+            f"{self.failed_count} failed",
+            f"{self.bypassed_count} bypassed",
+        ]
+        if self.cycle_filter_removed:
+            parts.append(f"cycle_filter_removed={self.cycle_filter_removed}")
+        if self.backend_filter_removed:
+            parts.append(f"backend_filter_removed={self.backend_filter_removed}")
+        return ", ".join(parts)
 
 
 @dataclass(frozen=True)

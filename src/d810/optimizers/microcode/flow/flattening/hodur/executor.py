@@ -111,9 +111,43 @@ class TransactionalExecutor:
     def execute_pipeline(
         self, pipeline: list[PlanFragment], total_handlers: int
     ) -> list[StageResult]:
-        """Execute ordered pipeline of plan fragments."""
+        """Execute ordered pipeline of plan fragments.
+
+        The safeguard gate is checked here, before calling execute_stage(),
+        so that the executor never sees rejected stages.
+        """
         results: list[StageResult] = []
         for fragment in pipeline:
+            # Pre-execution safeguard gate: check before execute_stage()
+            modifications = list(fragment.modifications)
+            num_modifications = len(modifications)
+            safeguard_ok = should_apply_cfg_modifications(
+                num_modifications, total_handlers, "hodur"
+            )
+            if not safeguard_ok:
+                gate_accounting = GateAccounting().add(GateDecision(
+                    gate_name="safeguard",
+                    verdict=GateVerdict.FAILED,
+                    reason=(
+                        f"insufficient modifications ({num_modifications}) "
+                        f"for {total_handlers} handlers"
+                    ),
+                ))
+                result = StageResult(
+                    strategy_name=fragment.strategy_name,
+                    success=False,
+                    error="safeguard rejected modifications",
+                    failure_phase="safeguard",
+                )
+                result.metadata["gate_accounting"] = gate_accounting
+                executor_logger.info(
+                    "Safeguard gate rejected stage %s: %s",
+                    fragment.strategy_name,
+                    gate_accounting.summary(),
+                )
+                results.append(result)
+                continue
+
             result = self.execute_stage(fragment, total_handlers)
             results.append(result)
             if result.rollback_needed or result.quarantine:
@@ -136,36 +170,26 @@ class TransactionalExecutor:
         gate_accounting = GateAccounting()
 
         pre_cfg = self.translator.lift(self.mba)
-        num_modifications = len(modifications)
-        safeguard_ok = should_apply_cfg_modifications(num_modifications, total_handlers, "hodur")
-        gate_accounting = gate_accounting.add(GateDecision(
-            gate_name="safeguard",
-            verdict=GateVerdict.PASSED if safeguard_ok else GateVerdict.FAILED,
-            reason=(
-                f"modifications={num_modifications}, handlers={total_handlers}"
-                if safeguard_ok
-                else f"insufficient modifications ({num_modifications}) for {total_handlers} handlers"
-            ),
-        ))
-        if not safeguard_ok:
-            result = StageResult(
-                strategy_name=fragment.strategy_name,
-                success=False,
-                error="safeguard rejected modifications",
-                failure_phase="safeguard",
-            )
-            result.metadata["gate_accounting"] = gate_accounting
-            executor_logger.info("Gate accounting: %s", gate_accounting.summary())
-            return result
 
         patch_plan_preview = compile_patch_plan(modifications, pre_cfg)
-        modifications, patch_plan_preview = self._filter_backend_unsupported_modifications(
+        modifications, patch_plan_preview, backend_removed = self._filter_backend_unsupported_modifications(
             pre_cfg,
             modifications,
             patch_plan_preview,
         )
+        if backend_removed:
+            gate_accounting = gate_accounting.with_backend_filter(backend_removed)
         if not modifications:
-            return StageResult(strategy_name=fragment.strategy_name)
+            gate_accounting = gate_accounting.with_backend_filter(backend_removed)
+            result = StageResult(
+                strategy_name=fragment.strategy_name,
+                success=False,
+                error="all modifications removed by execution filters",
+                failure_phase="execution_filter",
+            )
+            result.metadata["backend_filter"] = backend_removed
+            result.metadata["gate_accounting"] = gate_accounting
+            return result
 
         if patch_plan_preview.legacy_block_operations and not self.allow_legacy_block_creation:
             return StageResult(
@@ -175,15 +199,33 @@ class TransactionalExecutor:
                 failure_phase="preflight",
             )
 
-        modifications, patch_plan, preflight_error = self._run_preflight(
+        modifications, patch_plan, preflight_error, cycle_removed = self._run_preflight(
             fragment,
             pre_cfg,
             modifications,
             patch_plan_preview,
         )
+        if cycle_removed:
+            gate_accounting = gate_accounting.with_cycle_filter(cycle_removed)
         if preflight_error is not None:
+            preflight_error.metadata.setdefault("cycle_filter", cycle_removed)
+            preflight_error.metadata.setdefault("backend_filter", backend_removed)
+            preflight_error.metadata["gate_accounting"] = gate_accounting
             return preflight_error
         if not modifications:
+            # All modifications removed by cycle + backend filtering
+            total_filtered = backend_removed + cycle_removed
+            if total_filtered > 0:
+                result = StageResult(
+                    strategy_name=fragment.strategy_name,
+                    success=False,
+                    error="all modifications removed by execution filters",
+                    failure_phase="execution_filter",
+                )
+                result.metadata["cycle_filter"] = cycle_removed
+                result.metadata["backend_filter"] = backend_removed
+                result.metadata["gate_accounting"] = gate_accounting
+                return result
             return StageResult(strategy_name=fragment.strategy_name)
 
         executor_logger.info(
@@ -278,6 +320,10 @@ class TransactionalExecutor:
             handler_reachability=handler_reachability,
             terminal_cycles=cycle_result.cycles,
         )
+        if cycle_removed:
+            result.metadata["cycle_filter"] = cycle_removed
+        if backend_removed:
+            result.metadata["backend_filter"] = backend_removed
 
         # --- Terminal return audit (diagnostic, never gates success) ---
         self._run_terminal_return_audit(fragment, pre_cfg, result)
@@ -343,16 +389,22 @@ class TransactionalExecutor:
         pre_cfg: FlowGraph,
         modifications: list[GraphModification],
         patch_plan: PatchPlan,
-    ) -> tuple[list[GraphModification], PatchPlan]:
+        gate_accounting: GateAccounting | None = None,
+    ) -> tuple[list[GraphModification], PatchPlan, int]:
+        """Filter edge-split modifications that fail backend preconditions.
+
+        Returns:
+            Tuple of (filtered_modifications, recompiled_patch_plan, removed_count).
+        """
         if not self._supports_live_mba():
-            return modifications, patch_plan
+            return modifications, patch_plan, 0
         trampoline_steps = tuple(
             step
             for step in patch_plan.concrete_operations
             if isinstance(step, PatchEdgeSplitTrampoline)
         )
         if not patch_plan.planner_modifications or not trampoline_steps:
-            return modifications, patch_plan
+            return modifications, patch_plan, 0
 
         from d810.hexrays.mutation import deferred_modifier
 
@@ -371,7 +423,7 @@ class TransactionalExecutor:
             )
 
         if not rejected_edges:
-            return modifications, patch_plan
+            return modifications, patch_plan, 0
 
         filtered_modifications: list[GraphModification] = []
         for mod in patch_plan.planner_modifications:
@@ -384,11 +436,14 @@ class TransactionalExecutor:
                 continue
             filtered_modifications.append(mod)
 
-        executor_logger.warning(
-            "Preflight: filtered %d unsupported edge-split trampoline(s) before lowering",
-            len(rejected_edges),
+        removed_count = len(rejected_edges)
+        remaining_count = len(filtered_modifications)
+        executor_logger.info(
+            "executor filter: backend_removed=%d, remaining=%d",
+            removed_count,
+            remaining_count,
         )
-        return filtered_modifications, compile_patch_plan(filtered_modifications, pre_cfg)
+        return filtered_modifications, compile_patch_plan(filtered_modifications, pre_cfg), removed_count
 
     @property
     def total_changes(self) -> int:
@@ -400,13 +455,19 @@ class TransactionalExecutor:
         pre_cfg: FlowGraph,
         modifications: list[GraphModification],
         patch_plan: PatchPlan,
-    ) -> tuple[list[GraphModification], PatchPlan, StageResult | None]:
+    ) -> tuple[list[GraphModification], PatchPlan, StageResult | None, int]:
+        """Run preflight checks and cycle filtering.
+
+        Returns:
+            4-tuple of (modifications, patch_plan, error_result_or_None,
+            cycle_filter_removed_count).
+        """
         simulated_edits = sorted(
             patch_plan_to_simulated_edits(patch_plan),
             key=_preflight_simulated_priority,
         )
         if not simulated_edits:
-            return modifications, patch_plan, None
+            return modifications, patch_plan, None, 0
 
         pre_adj = pre_cfg.as_adjacency_dict()
         structural = check_edge_split_structural_legality(pre_adj, simulated_edits)
@@ -421,7 +482,7 @@ class TransactionalExecutor:
                 success=False,
                 error=f"structural preflight: {structural.reason}",
                 failure_phase="preflight",
-            )
+            ), 0
 
         sim_result = simulate_edits(pre_adj, simulated_edits)
         sim_adj = sim_result.adj
@@ -456,9 +517,9 @@ class TransactionalExecutor:
                     success=False,
                     error=f"semantic preflight: {sink_result.reason}",
                     failure_phase="preflight",
-                )
+                ), 0
 
-        filtered_modifications = self._filter_cycle_modifications(
+        filtered_modifications, cycle_removed = self._filter_cycle_modifications(
             fragment,
             pre_adj,
             terminal_exits,
@@ -475,7 +536,7 @@ class TransactionalExecutor:
                 success=False,
                 error="semantic preflight: terminal cycles detected",
                 failure_phase="preflight",
-            )
+            ), cycle_removed
         if filtered_modifications != modifications:
             modifications = filtered_modifications
             patch_plan = compile_patch_plan(modifications, pre_cfg)
@@ -509,9 +570,9 @@ class TransactionalExecutor:
                 success=False,
                 error="semantic preflight: terminal cycles detected",
                 failure_phase="preflight",
-            )
+            ), cycle_removed
 
-        return modifications, patch_plan, None
+        return modifications, patch_plan, None, cycle_removed
 
     def _filter_cycle_modifications(
         self,
@@ -522,8 +583,13 @@ class TransactionalExecutor:
         dispatcher: int,
         original_modifications: list[GraphModification],
         max_rounds: int = 3,
-    ) -> list[GraphModification] | None:
-        """Port baseline cycle filtering using redirect-only modifications."""
+    ) -> tuple[list[GraphModification] | None, int]:
+        """Port baseline cycle filtering using redirect-only modifications.
+
+        Returns:
+            Tuple of (filtered_modifications_or_None, removed_count).
+            None means cycles persist after filtering and the stage should fail.
+        """
         pre_header_serial = fragment.metadata.get("pre_header_serial")
         redirect_modifications: list[GraphModification] = []
         for mod in original_modifications:
@@ -546,7 +612,7 @@ class TransactionalExecutor:
                     redirect_modifications.append(mod)
 
         if not redirect_modifications:
-            return original_modifications
+            return original_modifications, 0
 
         sorted_redirect_modifications = sorted(
             redirect_modifications,
@@ -556,7 +622,7 @@ class TransactionalExecutor:
             sorted_redirect_modifications
         )
         if not redirect_simulated:
-            return original_modifications
+            return original_modifications, 0
 
         current_pairs = list(zip(sorted_redirect_modifications, redirect_simulated))
         terminal_redirects = [
@@ -583,7 +649,7 @@ class TransactionalExecutor:
             )
             if cycle_result.passed:
                 if total_removed == 0:
-                    return original_modifications
+                    return original_modifications, 0
 
                 kept_counts = Counter(mod for mod, _ in current_pairs)
                 kept_redirect_modifications: list[GraphModification] = []
@@ -593,12 +659,11 @@ class TransactionalExecutor:
                     kept_redirect_modifications.append(mod)
                     kept_counts[mod] -= 1
 
-                executor_logger.warning(
-                    "Preflight: filtered %d/%d redirect modifications (removed %d cycle-causing edge-splits in %d rounds)",
-                    len(kept_redirect_modifications),
-                    len(redirect_modifications),
+                remaining_count = len(kept_redirect_modifications)
+                executor_logger.info(
+                    "executor filter: cycle_removed=%d, remaining=%d",
                     total_removed,
-                    round_idx + 1,
+                    remaining_count,
                 )
                 final_kept_counts = Counter(kept_redirect_modifications)
                 filtered_modifications: list[GraphModification] = []
@@ -611,7 +676,7 @@ class TransactionalExecutor:
                     filtered_modifications.append(mod)
                     final_kept_counts[mod] -= 1
 
-                return filtered_modifications
+                return filtered_modifications, total_removed
 
             cycle_nodes: set[int] = set()
             for cyc in cycle_result.cycles:
@@ -627,7 +692,7 @@ class TransactionalExecutor:
                     edits_to_remove.add(idx)
 
             if not edits_to_remove:
-                return None
+                return None, total_removed
 
             total_removed += len(edits_to_remove)
             current_pairs = [
@@ -640,7 +705,7 @@ class TransactionalExecutor:
                 len(current_pairs),
             )
 
-        return None
+        return None, total_removed
 
     def _derive_terminal_clone_seeds(
         self,
