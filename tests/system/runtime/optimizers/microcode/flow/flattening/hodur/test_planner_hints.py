@@ -1,6 +1,13 @@
 """Tests for K6: Planner hint signals (recon-driven scoring)."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from d810.cfg.flow.terminal_return import (
+    TerminalReturnAuditReport,
+    TerminalReturnSiteAudit,
+    TerminalReturnSourceKind,
+)
 from d810.cfg.graph_modification import RedirectGoto
 from d810.optimizers.microcode.flow.flattening.hodur.planner import (
     HintAdjustment,
@@ -57,6 +64,46 @@ def _fragment(
     )
 
 
+def _transition_report(
+    *,
+    handlers_total: int,
+    known_count: int,
+    conditional_count: int = 0,
+    exit_count: int = 0,
+    unknown_count: int = 0,
+) -> object:
+    """Build a minimal transition report stub with summary fields."""
+    return SimpleNamespace(
+        summary=SimpleNamespace(
+            handlers_total=handlers_total,
+            known_count=known_count,
+            conditional_count=conditional_count,
+            exit_count=exit_count,
+            unknown_count=unknown_count,
+        )
+    )
+
+
+def _return_frontier_audit(*, total_sites: int, broken_count: int) -> object:
+    """Build a minimal return-frontier audit stub with report()."""
+    return SimpleNamespace(
+        report=lambda: {
+            "total_sites": total_sites,
+            "broken_count": broken_count,
+        }
+    )
+
+
+def _terminal_return_audit(*sites: TerminalReturnSiteAudit) -> TerminalReturnAuditReport:
+    """Build a minimal terminal return audit report."""
+    return TerminalReturnAuditReport(
+        function_ea=0x180000000,
+        total_handlers=10,
+        terminal_handlers=len(sites),
+        sites=sites,
+    )
+
+
 # ---------------------------------------------------------------------------
 # derive_hint_signals
 # ---------------------------------------------------------------------------
@@ -75,7 +122,10 @@ class TestDeriveHintSignals:
     def test_with_transitions(self) -> None:
         inputs = PlannerInputs(
             total_handlers=10,
-            handler_transitions=object(),
+            handler_transitions=_transition_report(
+                handlers_total=10,
+                known_count=8,
+            ),
         )
         signals = derive_hint_signals(inputs)
         assert signals.transition_confidence == 0.8
@@ -83,7 +133,7 @@ class TestDeriveHintSignals:
     def test_with_return_frontier(self) -> None:
         inputs = PlannerInputs(
             total_handlers=10,
-            return_frontier=object(),
+            return_frontier=_return_frontier_audit(total_sites=4, broken_count=2),
         )
         signals = derive_hint_signals(inputs)
         assert signals.return_frontier_risk == 0.5
@@ -91,10 +141,23 @@ class TestDeriveHintSignals:
     def test_with_terminal_return_audit(self) -> None:
         inputs = PlannerInputs(
             total_handlers=10,
-            terminal_return_audit=object(),
+            terminal_return_audit=_terminal_return_audit(
+                TerminalReturnSiteAudit(
+                    handler_serial=26,
+                    exit_serial=219,
+                    source_kind=TerminalReturnSourceKind.SHARED_EPILOGUE,
+                    has_rax_write=False,
+                ),
+                TerminalReturnSiteAudit(
+                    handler_serial=93,
+                    exit_serial=219,
+                    source_kind=TerminalReturnSourceKind.EPILOGUE_CORRIDOR,
+                    has_rax_write=True,
+                ),
+            ),
         )
         signals = derive_hint_signals(inputs)
-        assert signals.terminal_return_risk == 0.5
+        assert signals.terminal_return_risk == 0.75
 
     def test_empty_inputs_means_zero_signals(self) -> None:
         """PlannerInputs with no recon data gives all-zero signals."""
@@ -243,7 +306,10 @@ class TestHintChangesConflictWinner:
         # With hints (transition boost on B only): B=11.0+1.6=12.6, A=12.0 => B wins
         inputs = PlannerInputs(
             total_handlers=10,
-            handler_transitions=object(),
+            handler_transitions=_transition_report(
+                handlers_total=10,
+                known_count=8,
+            ),
         )
         pipeline_hints, _ = planner.compose_pipeline(
             [frag_a2, frag_b2], inputs=inputs,
@@ -283,7 +349,10 @@ class TestHintChangesOrdering:
         # With hints: B gets +1.6 => 12.6 > A=12.0
         inputs = PlannerInputs(
             total_handlers=10,
-            handler_transitions=object(),
+            handler_transitions=_transition_report(
+                handlers_total=10,
+                known_count=8,
+            ),
         )
         pipeline_hints, _ = planner.compose_pipeline(
             [frag_a, frag_b], inputs=inputs,
@@ -307,7 +376,10 @@ class TestProvenanceRecordsHintFields:
         # composite = 5*3 = 15.0
         inputs = PlannerInputs(
             total_handlers=10,
-            handler_transitions=object(),
+            handler_transitions=_transition_report(
+                handlers_total=10,
+                known_count=8,
+            ),
         )
         pipeline, provenance = planner.compose_pipeline([frag], inputs=inputs)
         assert len(pipeline) == 1
@@ -340,7 +412,10 @@ class TestProvenanceRecordsHintFields:
         frag = _fragment("A", family=FAMILY_DIRECT, handlers=5)
         inputs = PlannerInputs(
             total_handlers=10,
-            handler_transitions=object(),
+            handler_transitions=_transition_report(
+                handlers_total=10,
+                known_count=8,
+            ),
         )
         _, provenance = planner.compose_pipeline([frag], inputs=inputs)
         d = provenance.to_dict()
