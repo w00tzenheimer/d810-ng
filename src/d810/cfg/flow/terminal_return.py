@@ -7,6 +7,7 @@ so both layers can import them without violating the layered architecture.
 from __future__ import annotations
 
 import enum
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -87,8 +88,114 @@ class TerminalReturnAuditReport:
         )
 
 
+class TerminalLoweringAction(str, enum.Enum):
+    """Recommended lowering shape for a terminal return merge."""
+
+    NO_ACTION = "no_action"
+    PRIVATE_RETURN_BLOCK = "private_return_block"
+    PRIVATE_TERMINAL_SUFFIX = "private_terminal_suffix"
+    DIRECT_TERMINAL_LOWERING = "direct_terminal_lowering"
+    UNRESOLVED = "unresolved"
+
+
+@dataclass(frozen=True)
+class TerminalCfgSuffixFrontier:
+    """Minimal shared CFG suffix that must be privatized to break a merge.
+
+    Attributes:
+        shared_entry_serial: First block in the shared suffix.
+        return_block_serial: Terminal stop/return block.
+        suffix_serials: Shared suffix blocks from entry through return block.
+        unique_anchor_serials: Immediate predecessors of the shared suffix entry
+            that are not part of the shared suffix.
+    """
+
+    shared_entry_serial: int
+    return_block_serial: int
+    suffix_serials: tuple[int, ...]
+    unique_anchor_serials: tuple[int, ...]
+
+    def summary(self) -> str:
+        suffix = "->".join(str(x) for x in self.suffix_serials)
+        anchors = ",".join(str(x) for x in self.unique_anchor_serials) or "<none>"
+        return (
+            f"shared_entry=blk[{self.shared_entry_serial}] "
+            f"return=blk[{self.return_block_serial}] "
+            f"suffix={suffix} anchors=[{anchors}]"
+        )
+
+
+@dataclass(frozen=True)
+class TerminalSemanticLoweringFrontier:
+    """Best current semantic lowering point for a terminal merge.
+
+    Attributes:
+        action: Recommended lowering action.
+        lowering_start_serial: First block that should be privatized or lowered.
+            ``None`` when no action is recommended.
+        unique_anchor_serials: Path-unique CFG anchors feeding the lowering point.
+        notes: Diagnostic rationale.
+    """
+
+    action: TerminalLoweringAction
+    lowering_start_serial: int | None
+    unique_anchor_serials: tuple[int, ...]
+    notes: str = ""
+
+    def summary(self) -> str:
+        anchors = ",".join(str(x) for x in self.unique_anchor_serials) or "<none>"
+        start = f"blk[{self.lowering_start_serial}]" if self.lowering_start_serial is not None else "<none>"
+        return f"action={self.action.value} start={start} anchors=[{anchors}] notes={self.notes}"
+
+
+def compute_terminal_cfg_suffix_frontier(
+    return_block_serial: int,
+    *,
+    predecessors_of: Callable[[int], tuple[int, ...] | list[int]],
+) -> TerminalCfgSuffixFrontier:
+    """Compute the minimal shared terminal CFG suffix for a return merge.
+
+    The algorithm walks backward from the terminal stop/return block while the
+    current block has exactly one predecessor. The first block whose fan-in is
+    not one becomes the shared suffix entry. Its non-suffix predecessors are
+    the unique anchors that distinguish the terminal paths.
+    """
+
+    suffix_rev = [int(return_block_serial)]
+    visited = {int(return_block_serial)}
+    current = int(return_block_serial)
+
+    while True:
+        preds = tuple(int(p) for p in predecessors_of(current))
+        if len(preds) != 1:
+            break
+        pred = preds[0]
+        if pred in visited:
+            break
+        visited.add(pred)
+        suffix_rev.append(pred)
+        current = pred
+
+    suffix_serials = tuple(reversed(suffix_rev))
+    shared_entry_serial = suffix_serials[0]
+    suffix_set = set(suffix_serials)
+    unique_anchor_serials = tuple(
+        sorted(int(p) for p in predecessors_of(shared_entry_serial) if int(p) not in suffix_set)
+    )
+    return TerminalCfgSuffixFrontier(
+        shared_entry_serial=shared_entry_serial,
+        return_block_serial=int(return_block_serial),
+        suffix_serials=suffix_serials,
+        unique_anchor_serials=unique_anchor_serials,
+    )
+
+
 __all__ = [
     "TerminalReturnAuditReport",
     "TerminalReturnSiteAudit",
     "TerminalReturnSourceKind",
+    "TerminalLoweringAction",
+    "TerminalCfgSuffixFrontier",
+    "TerminalSemanticLoweringFrontier",
+    "compute_terminal_cfg_suffix_frontier",
 ]

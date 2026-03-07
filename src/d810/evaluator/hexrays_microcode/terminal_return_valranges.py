@@ -13,8 +13,12 @@ from dataclasses import dataclass
 from enum import Enum
 
 from d810.cfg.flow.terminal_return import (
+    TerminalCfgSuffixFrontier,
+    TerminalLoweringAction,
+    TerminalSemanticLoweringFrontier,
     TerminalReturnAuditReport,
     TerminalReturnSourceKind,
+    compute_terminal_cfg_suffix_frontier,
 )
 from d810.core.typing import Iterable, Optional
 from d810.evaluator.hexrays_microcode.valranges import (
@@ -62,8 +66,11 @@ class TerminalReturnValrangeGroup:
     handler_serials: tuple[int, ...]
     terminal_predecessor_serials: tuple[int, ...]
     current_paths: tuple[tuple[int, ...], ...]
+    cfg_frontier: TerminalCfgSuffixFrontier
+    semantic_frontier: TerminalSemanticLoweringFrontier
     merge_kind: TerminalValrangeMergeKind
     notes: str
+    suffix_snapshots: tuple[TerminalValrangeSnapshot, ...]
     merge_snapshot: TerminalValrangeSnapshot
     return_snapshot: TerminalValrangeSnapshot
     predecessor_snapshots: tuple[TerminalValrangeSnapshot, ...]
@@ -81,6 +88,16 @@ class TerminalReturnValrangeGroup:
         lines = [self.summary()]
         if self.notes:
             lines.append(f"  note: {self.notes}")
+        lines.append(f"  cfg frontier: {self.cfg_frontier.summary()}")
+        lines.append(f"  semantic frontier: {self.semantic_frontier.summary()}")
+        if self.suffix_snapshots:
+            lines.append(
+                "  suffix snapshots: "
+                + " | ".join(
+                    f"blk[{snap.block_serial}] { _format_snapshot(snap) }"
+                    for snap in self.suffix_snapshots
+                )
+            )
         lines.append(
             f"  merge start: { _format_snapshot(self.merge_snapshot) }"
         )
@@ -332,6 +349,82 @@ def _format_snapshot(snapshot: TerminalValrangeSnapshot) -> str:
     return "; ".join(pieces) if pieces else "<no ranges>"
 
 
+def _snapshot_has_carrier_activity(snapshot: TerminalValrangeSnapshot) -> bool:
+    return any(
+        x is not None
+        for x in (snapshot.rax_start, snapshot.rax_tail, snapshot.state_start, snapshot.state_tail)
+    ) or bool(snapshot.stack_start) or bool(snapshot.stack_tail) or bool(snapshot.use_text) or bool(snapshot.def_text)
+
+
+def _choose_semantic_frontier(
+    cfg_frontier: TerminalCfgSuffixFrontier,
+    *,
+    suffix_snapshots: tuple[TerminalValrangeSnapshot, ...],
+    merge_kind: TerminalValrangeMergeKind,
+) -> TerminalSemanticLoweringFrontier:
+    """Choose the best current semantic lowering point for a terminal group.
+
+    The minimal CFG suffix tells us what must be privatized to break the merge.
+    The semantic frontier tries to move the lowering point back only as far as
+    needed to include the first shared return-carrier materialization.
+    """
+    if merge_kind == TerminalValrangeMergeKind.NOT_AMBIGUOUS:
+        return TerminalSemanticLoweringFrontier(
+            action=TerminalLoweringAction.NO_ACTION,
+            lowering_start_serial=None,
+            unique_anchor_serials=cfg_frontier.unique_anchor_serials,
+            notes="carrier remains precise across the shared suffix",
+        )
+
+    first_active_serial = next(
+        (snap.block_serial for snap in suffix_snapshots if _snapshot_has_carrier_activity(snap)),
+        None,
+    )
+
+    if merge_kind == TerminalValrangeMergeKind.ONLY_AT_SHARED_STOP:
+        return TerminalSemanticLoweringFrontier(
+            action=TerminalLoweringAction.PRIVATE_RETURN_BLOCK,
+            lowering_start_serial=cfg_frontier.return_block_serial,
+            unique_anchor_serials=cfg_frontier.unique_anchor_serials,
+            notes="ambiguity appears only at the terminal stop",
+        )
+
+    if merge_kind in {TerminalValrangeMergeKind.AT_SHARED_ENTRY, TerminalValrangeMergeKind.UNKNOWN}:
+        if first_active_serial is not None:
+            action = (
+                TerminalLoweringAction.PRIVATE_RETURN_BLOCK
+                if first_active_serial == cfg_frontier.return_block_serial
+                else TerminalLoweringAction.PRIVATE_TERMINAL_SUFFIX
+            )
+            return TerminalSemanticLoweringFrontier(
+                action=action,
+                lowering_start_serial=first_active_serial,
+                unique_anchor_serials=cfg_frontier.unique_anchor_serials,
+                notes="shared suffix contains return-carrier materialization before the stop",
+            )
+        return TerminalSemanticLoweringFrontier(
+            action=TerminalLoweringAction.UNRESOLVED,
+            lowering_start_serial=None,
+            unique_anchor_serials=cfg_frontier.unique_anchor_serials,
+            notes="shared suffix has no targeted carrier evidence",
+        )
+
+    if merge_kind == TerminalValrangeMergeKind.BEFORE_SHARED_ENTRY:
+        return TerminalSemanticLoweringFrontier(
+            action=TerminalLoweringAction.DIRECT_TERMINAL_LOWERING,
+            lowering_start_serial=cfg_frontier.unique_anchor_serials[0] if cfg_frontier.unique_anchor_serials else None,
+            unique_anchor_serials=cfg_frontier.unique_anchor_serials,
+            notes="carrier diverges before the shared suffix; lower at per-path anchors",
+        )
+
+    return TerminalSemanticLoweringFrontier(
+        action=TerminalLoweringAction.UNRESOLVED,
+        lowering_start_serial=None,
+        unique_anchor_serials=cfg_frontier.unique_anchor_serials,
+        notes="no semantic lowering action could be chosen",
+    )
+
+
 def build_terminal_return_valrange_report(
     mba: object,
     audit_report: TerminalReturnAuditReport,
@@ -418,6 +511,14 @@ def _build_group(
         except Exception:
             terminal_preds = []
 
+    cfg_frontier = compute_terminal_cfg_suffix_frontier(
+        return_block,
+        predecessors_of=lambda serial: tuple(
+            int(p)
+            for p in getattr(mba.get_mblock(serial), "predset", [])  # type: ignore[attr-defined]
+        ),
+    )
+
     pred_snapshots = tuple(
         _build_snapshot(
             mba,
@@ -445,15 +546,34 @@ def _build_group(
         carrier_mreg=carrier_mreg,
         carrier_size=carrier_size,
     )
+    suffix_snapshots = tuple(
+        _build_snapshot(
+            mba,
+            suffix_serial,
+            state_var_stkoff=state_var_stkoff,
+            state_var_size=state_var_size,
+            carrier_mreg=carrier_mreg,
+            carrier_size=carrier_size,
+        )
+        for suffix_serial in cfg_frontier.suffix_serials
+    )
     merge_kind, notes = _infer_merge_kind(pred_snapshots, merge_snapshot, return_snapshot)
+    semantic_frontier = _choose_semantic_frontier(
+        cfg_frontier,
+        suffix_snapshots=suffix_snapshots,
+        merge_kind=merge_kind,
+    )
     return TerminalReturnValrangeGroup(
         shared_entry_serial=shared_entry,
         return_block_serial=return_block,
         handler_serials=tuple(sorted(int(getattr(site, "handler_serial", -1)) for site, _, _ in entries if getattr(site, "handler_serial", None) is not None and int(getattr(site, "handler_serial", -1)) >= 0)),
         terminal_predecessor_serials=tuple(terminal_preds),
         current_paths=tuple(path for _, path, _ in entries if path),
+        cfg_frontier=cfg_frontier,
+        semantic_frontier=semantic_frontier,
         merge_kind=merge_kind,
         notes=notes,
+        suffix_snapshots=suffix_snapshots,
         merge_snapshot=merge_snapshot,
         return_snapshot=return_snapshot,
         predecessor_snapshots=pred_snapshots,
