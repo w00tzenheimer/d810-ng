@@ -7,7 +7,6 @@ from d810.hexrays.utils.hexrays_formatters import dump_microcode_for_debug, form
 from d810.evaluator.hexrays_microcode.tracker import MopTracker
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
 from d810.evaluator.hexrays_microcode.tracker import get_all_possibles_values
-from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
 
 unflat_logger = getLogger("D810.unflat")
 
@@ -215,17 +214,13 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
             return 0
         self.last_pass_nb_patch_done = self.analyze_blk(blk)
         if self.last_pass_nb_patch_done > 0:
-            total_preds = len([x for x in blk.predset])
-            safeguard_ok = should_apply_cfg_modifications(
-                self.last_pass_nb_patch_done, total_preds, "fake_jump"
-            )
+            # G2: audit trail only — no safeguard gate. FakeJump makes targeted
+            # per-predecessor edge redirects (not bulk CFG rewrites).
+            # analyze_blk already applied modifications before returning count.
             unflat_logger.info(
-                "fake_jump gate: safeguard=%s, modifications=%d",
-                safeguard_ok,
+                "fake_jump gate: applied=%d modifications",
                 self.last_pass_nb_patch_done,
             )
-            if not safeguard_ok:
-                return 0
             self.mba.mark_chains_dirty()
             self.mba.optimize_local(0)
             try:
