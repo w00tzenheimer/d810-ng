@@ -14,6 +14,7 @@ from d810.recon.flow.dispatcher_detection import (
     DispatcherCache,
     DispatcherType,
 )
+from d810.core.gate_modes import GateOperationMode
 
 if TYPE_CHECKING:
     from d810.recon.flow.dispatcher_detection import (
@@ -37,10 +38,17 @@ class FlowMaturityContext:
 
     MIN_FIXPRED_DISPATCHER_PREDS = 3
 
-    def __init__(self, mba: ida_hexrays.mba_t, func_ea: int, maturity: int):
+    def __init__(
+        self,
+        mba: ida_hexrays.mba_t,
+        func_ea: int,
+        maturity: int,
+        gate_mode: GateOperationMode = GateOperationMode.GATE_SELECT,
+    ):
         self.mba = mba
         self.func_ea = int(func_ea)
         self.maturity = int(maturity)
+        self.gate_mode = gate_mode
         self.phase_priority: int | None = None
         self.phase_index: int = 0
         self._dispatcher_analysis: DispatcherAnalysis | None = None
@@ -134,6 +142,25 @@ class FlowMaturityContext:
         return max_preds
 
     def evaluate_unflattening_gate(self) -> FlowGateDecision:
+        """Evaluate whether unflattening should proceed.
+
+        Gate operation mode
+        -------------------
+        - ``COLLECT_ONLY``: analysis still runs (for recon), but the gate
+          always returns ``allowed=True``.
+        - ``GATE_ONLY`` / ``GATE_SELECT``: analysis runs and the result
+          is enforced (fail-closed).
+        """
+        decision = self._evaluate_unflattening_gate_inner()
+        if not decision.allowed and not self.gate_mode.enforces_gate:
+            return FlowGateDecision(
+                True,
+                f"collect-only bypass (underlying: {decision.reason})",
+            )
+        return decision
+
+    def _evaluate_unflattening_gate_inner(self) -> FlowGateDecision:
+        """Core unflattening gate logic (mode-independent)."""
         analysis = self.ensure_dispatcher_analysis()
         if analysis is None:
             return FlowGateDecision(False, "dispatcher analysis unavailable")
@@ -172,6 +199,25 @@ class FlowMaturityContext:
         return FlowGateDecision(False, f"dispatcher_type={analysis.dispatcher_type.name}")
 
     def evaluate_fix_predecessor_gate(self) -> FlowGateDecision:
+        """Evaluate whether fix-predecessor optimization should proceed.
+
+        Gate operation mode
+        -------------------
+        - ``COLLECT_ONLY``: analysis still runs (for recon), but the gate
+          always returns ``allowed=True``.
+        - ``GATE_ONLY`` / ``GATE_SELECT``: analysis runs and the result
+          is enforced (fail-closed).
+        """
+        decision = self._evaluate_fix_predecessor_gate_inner()
+        if not decision.allowed and not self.gate_mode.enforces_gate:
+            return FlowGateDecision(
+                True,
+                f"collect-only bypass (underlying: {decision.reason})",
+            )
+        return decision
+
+    def _evaluate_fix_predecessor_gate_inner(self) -> FlowGateDecision:
+        """Core fix-predecessor gate logic (mode-independent)."""
         analysis = self.ensure_dispatcher_analysis()
         if analysis is None:
             return FlowGateDecision(False, "dispatcher analysis unavailable")

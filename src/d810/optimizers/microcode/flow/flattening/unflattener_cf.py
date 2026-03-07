@@ -2068,8 +2068,8 @@ class cf_unflattener_t:
 
 
 class UnflattenControlFlowRule(FlowOptimizationRule):
-    """
-    Removes opaque dispatcher-based control-flow flattening.
+    """Removes opaque dispatcher-based control-flow flattening.
+
     Ported from pyhrdeobv2 (Eidolon).
 
     Gate policy — AUDIT_ONLY (cf unflattener, no flow context gate):
@@ -2079,6 +2079,9 @@ class UnflattenControlFlowRule(FlowOptimizationRule):
     wired — doing so would be a large cross-cutting change out of scope.
     The rule uses its own safeguard via ``should_apply_cfg_modifications()``
     at the apply phase.
+
+    Gate operation mode: ``COLLECT_ONLY`` equivalent.
+    See :class:`~d810.core.gate_modes.GateOperationMode`.
     """
 
     CATEGORY = "OLLVM Unflattening"

@@ -49,7 +49,17 @@ class _RunKey:
 
 
 class MbaStatePreconditioner(FlowOptimizationRule):
-    """Bounded function-level preconditioning pass for MBA-heavy dispatchers."""
+    """Bounded function-level preconditioning pass for MBA-heavy dispatchers.
+
+    Gate operation mode mapping
+    ---------------------------
+    - ``require_unflattening_gate=True``  -> effectively ``GATE_ONLY``
+      (evaluate_unflattening_gate enforced; no planner influence).
+    - ``require_unflattening_gate=False`` -> effectively ``COLLECT_ONLY``
+      (gate skipped entirely; rule always runs if maturity matches).
+
+    See :class:`~d810.core.gate_modes.GateOperationMode`.
+    """
 
     CATEGORY = "Flow Preconditioning"
     DESCRIPTION = (
