@@ -2904,12 +2904,21 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 if int(self.min_cfg_edges_required) > 0
                 else None
             )
-            if not should_apply_cfg_modifications(
+            safeguard_ok = should_apply_cfg_modifications(
                 num_redirected,
                 total_exit_blocks,
                 "generic",
                 min_required_override=min_cfg_edges_required,
-            ):
+            )
+            unflat_logger.info(
+                "dispatcher_rule gate: safeguard=%s, rule=%s, "
+                "redirected=%d, exit_blocks=%d",
+                safeguard_ok,
+                self.__class__.__name__,
+                num_redirected,
+                total_exit_blocks,
+            )
+            if not safeguard_ok:
                 deferred_modifier.reset()
             else:
                 # Second pass: catch any BLT_NWAY blocks created by
