@@ -9,6 +9,17 @@ logic lives in the hodur sub-package; this class is a thin coordinator that:
 3. Collects :class:`PlanFragment` objects from each registered strategy.
 4. Composes the pipeline via :class:`UnflatteningPlanner`.
 5. Applies it via :class:`TransactionalExecutor`.
+
+# ORCHESTRATOR_BOUNDARY: This module is a thin coordinator.  It does NOT
+# perform strategy selection, conflict resolution, or pipeline reordering.
+# Those are owned exclusively by the UnflatteningPlanner (see planner.py).
+#
+# After planner.plan() returns:
+#   - The pipeline is passed to executor.execute_pipeline() WITHOUT
+#     modification (no filtering, reordering, insertion, or dropping).
+#   - Executor results are mapped to provenance lifecycle phases
+#     (APPLIED, GATE_FAILED, PREFLIGHT_REJECTED, BYPASSED) -- this is
+#     lifecycle bookkeeping, not re-arbitration.
 """
 from __future__ import annotations
 
@@ -272,7 +283,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         # 2. Build immutable snapshot (includes BST analysis, reachability, etc.)
         snapshot = self._build_snapshot(self.mba, state_machine, detector)
 
-        # 3-4. Planner owns strategy polling + pipeline composition
+        # 3-4. PLANNER_AUTHORITY: planner owns strategy polling + pipeline composition
         transition_report = load_transition_report_from_store(
             func_ea=self.mba.entry_ea,
             maturity=self.cur_maturity,
@@ -316,7 +327,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         if self.RETURN_FRONTIER_AUDIT_ENABLED and self._audit_return_sites:
             self._record_audit_stage("post_plan")
 
-        # 5. Executor applies transactional stages
+        # 5. EXECUTOR_BOUNDARY: executor consumes pipeline in-order, no reordering
         executor = TransactionalExecutor(
             self.mba,
             gate=self._gate,
@@ -326,7 +337,8 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         nb_changes = executor.total_changes
 
-        # 5b. Update provenance phases from executor outcomes
+        # 5b. ORCHESTRATOR_BOUNDARY: update provenance phases from executor outcomes
+        # (lifecycle bookkeeping only -- no re-selection or pipeline mutation)
         for frag, result in zip(pipeline, results):
             acct: GateAccounting | None = result.metadata.get("gate_accounting")
             if result.success:

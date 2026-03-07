@@ -1,4 +1,21 @@
-"""Transactional executor for Hodur unflattening pipeline."""
+"""Transactional executor for Hodur unflattening pipeline.
+
+# EXECUTOR_BOUNDARY: The executor only enforces gates and updates lifecycle.
+# It does NOT perform strategy selection, conflict resolution, pipeline
+# reordering, or fragment insertion.  All such decisions are made upstream
+# by the UnflatteningPlanner.
+#
+# The executor may SKIP a fragment only via:
+#   - Safeguard gate failure (insufficient modifications for handler count)
+#   - Backend precondition filter (individual edge-split failures)
+#   - Preflight rejection (structural legality, terminal cycles)
+#   - Transaction engine failure (lowering/apply errors)
+#   - Semantic gate failure (reachability, handler reachability, conflicts)
+#
+# None of these constitute re-arbitration: they are runtime safety checks
+# that the planner cannot predict at planning time (they depend on live
+# MBA state and IDA backend preconditions).
+"""
 from __future__ import annotations
 
 from collections import Counter

@@ -1,4 +1,20 @@
-"""Central planner for Hodur unflattening pipeline."""
+"""Central planner for Hodur unflattening pipeline.
+
+# PLANNER_AUTHORITY: The UnflatteningPlanner is the sole authority for
+# pipeline membership, ordering, and conflict resolution.  No downstream
+# component (executor, unflattener orchestrator) may re-select, reorder,
+# insert, or drop fragments based on strategy-level criteria.
+#
+# Ownership boundaries:
+#   - Planner OWNS: strategy polling, fragment scoring, policy filtering,
+#     conflict resolution (greedy independent set), prerequisite ordering.
+#   - Planner PRODUCES: an ordered list[PlanFragment] (the pipeline) and
+#     a PipelineProvenance ledger.
+#   - Executor CONSUMES: the pipeline in-order; may only SKIP via gate
+#     enforcement (safeguard, preflight, transaction, semantic gate).
+#   - Unflattener orchestrator CONSUMES: pipeline + results; only updates
+#     provenance lifecycle phases (APPLIED, GATE_FAILED, BYPASSED).
+"""
 from __future__ import annotations
 
 import enum
