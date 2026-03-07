@@ -5,6 +5,7 @@ import enum
 from dataclasses import dataclass, field
 from d810.core.typing import TYPE_CHECKING
 
+from d810.cfg.flow.terminal_return import TerminalReturnSourceKind
 from d810.core.logging import getLogger
 from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     DecisionPhase,
@@ -52,8 +53,7 @@ class PlannerHintSignals:
 def derive_hint_signals(inputs: PlannerInputs | None) -> PlannerHintSignals:
     """Map raw recon artifacts to normalized hint signals.
 
-    Uses simple presence-based heuristics; values can be refined later
-    as recon fidelity improves.
+    Signals are derived from artifact content, not just artifact presence.
 
     Args:
         inputs: Structured envelope with recon artifacts, or None.
@@ -64,10 +64,102 @@ def derive_hint_signals(inputs: PlannerInputs | None) -> PlannerHintSignals:
     if inputs is None:
         return PlannerHintSignals()
     return PlannerHintSignals(
-        transition_confidence=0.8 if inputs.has_handler_transitions else 0.0,
-        return_frontier_risk=0.5 if inputs.has_return_frontier else 0.0,
-        terminal_return_risk=0.5 if inputs.terminal_return_audit is not None else 0.0,
+        transition_confidence=_derive_transition_confidence(
+            inputs.handler_transitions,
+        ),
+        return_frontier_risk=_derive_return_frontier_risk(inputs.return_frontier),
+        terminal_return_risk=_derive_terminal_return_risk(
+            inputs.terminal_return_audit,
+        ),
     )
+
+
+def _clamp01(value: float) -> float:
+    """Clamp *value* into the inclusive [0.0, 1.0] range."""
+    return max(0.0, min(1.0, value))
+
+
+def _summary_attr(summary: object, name: str) -> float:
+    """Read a numeric summary attribute, defaulting to 0.0."""
+    value = getattr(summary, name, 0)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return 0.0
+
+
+def _derive_transition_confidence(report: object | None) -> float:
+    """Derive transition confidence from transition report summary content."""
+    summary = getattr(report, "summary", None)
+    if summary is None:
+        return 0.0
+
+    handlers_total = _summary_attr(summary, "handlers_total")
+    if handlers_total <= 0.0:
+        return 0.0
+
+    known_count = _summary_attr(summary, "known_count")
+    conditional_count = _summary_attr(summary, "conditional_count")
+    exit_count = _summary_attr(summary, "exit_count")
+
+    weighted_confidence = (
+        known_count + (0.5 * conditional_count) + (0.75 * exit_count)
+    ) / handlers_total
+    return _clamp01(weighted_confidence)
+
+
+def _derive_return_frontier_risk(audit: object | None) -> float:
+    """Derive frontier risk from broken-site ratio in the audit report."""
+    report_fn = getattr(audit, "report", None)
+    if not callable(report_fn):
+        return 0.0
+
+    report = report_fn()
+    if not isinstance(report, dict):
+        return 0.0
+
+    total_sites = report.get("total_sites", 0)
+    broken_count = report.get("broken_count", 0)
+    if not isinstance(total_sites, (int, float)) or total_sites <= 0:
+        return 0.0
+    if not isinstance(broken_count, (int, float)):
+        return 0.0
+    return _clamp01(float(broken_count) / float(total_sites))
+
+
+def _terminal_source_value(source_kind: object) -> str:
+    """Normalize enum-or-string source kinds to a lowercase string value."""
+    value = getattr(source_kind, "value", source_kind)
+    if isinstance(value, str):
+        return value.lower()
+    return str(value).lower()
+
+
+def _derive_terminal_return_risk(audit: object | None) -> float:
+    """Derive terminal return risk from terminal audit site content."""
+    sites = getattr(audit, "sites", None)
+    if not isinstance(sites, tuple):
+        return 0.0
+    if not sites:
+        return 0.0
+
+    kind_weights = {
+        TerminalReturnSourceKind.DIRECT_RETURN.value: 0.0,
+        TerminalReturnSourceKind.EPILOGUE_CORRIDOR.value: 0.5,
+        TerminalReturnSourceKind.SHARED_EPILOGUE.value: 1.0,
+        TerminalReturnSourceKind.UNREACHABLE.value: 1.0,
+        TerminalReturnSourceKind.UNKNOWN.value: 0.75,
+    }
+
+    total_risk = 0.0
+    for site in sites:
+        source_value = _terminal_source_value(getattr(site, "source_kind", ""))
+        site_risk = kind_weights.get(source_value, 0.75)
+        has_rax_write = getattr(site, "has_rax_write", None)
+        if has_rax_write is False:
+            site_risk += 0.25
+        total_risk += min(site_risk, 1.0)
+
+    return _clamp01(total_risk / float(len(sites)))
 
 
 @dataclass(frozen=True)
