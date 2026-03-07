@@ -792,6 +792,14 @@ class GenericUnflatteningRule(FlowOptimizationRule):
             self.cur_maturity = self.mba.maturity
             self.cur_maturity_pass = 0
         if self.cur_maturity not in self.maturities:
+            # Gate: maturity filter — normal operation, not a bypass.
+            if unflat_logger.debug_on:
+                unflat_logger.debug(
+                    "Gate skipped [maturity_filter]: %s at maturity %d not in %s",
+                    self.__class__.__name__,
+                    self.cur_maturity,
+                    self.maturities,
+                )
             return False
         # Rules with their own dispatcher collector (i.e. GenericDispatcherUnflatteningRule
         # subclasses) perform their own structural detection and must not be pre-screened
@@ -1016,10 +1024,25 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         if not super().check_if_rule_should_be_used(blk):
             return False
         if (self.cur_maturity_pass >= 1) and (self.last_pass_nb_patch_done == 0):
+            # Gate: convergence — no patches in previous pass.
+            if unflat_logger.debug_on:
+                unflat_logger.debug(
+                    "Gate skipped [convergence]: %s pass %d produced 0 patches",
+                    self.__class__.__name__,
+                    self.cur_maturity_pass - 1,
+                )
             return False
         if (self.max_passes is not None) and (
             self.cur_maturity_pass >= self.max_passes
         ):
+            # Gate: max passes reached.
+            if unflat_logger.debug_on:
+                unflat_logger.debug(
+                    "Gate skipped [max_passes]: %s pass %d >= %d",
+                    self.__class__.__name__,
+                    self.cur_maturity_pass,
+                    self.max_passes,
+                )
             return False
         return True
 

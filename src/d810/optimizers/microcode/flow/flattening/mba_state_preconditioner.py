@@ -129,6 +129,17 @@ class MbaStatePreconditioner(FlowOptimizationRule):
                         gate.reason,
                     )
                 return False
+        elif not self.require_unflattening_gate:
+            # Gate: BYPASSED_CONFIG_DISABLED — require_unflattening_gate=False
+            # disables the structural gate via project configuration.
+            if logger.debug_on:
+                logger.debug(
+                    "Gate bypassed [config_disabled]: %s require_unflattening_gate=False "
+                    "for 0x%x at %s",
+                    self.__class__.__name__,
+                    int(mba.entry_ea or 0),
+                    maturity_to_string(self.current_maturity),
+                )
         return True
 
     @typing.override
