@@ -193,15 +193,18 @@ def _nsucc(blk) -> int:
 
 
 def _tail_opcode(blk) -> int:
+    # Check explicit tail_opcode field first — may be updated by projection
+    # without updating instruction snapshots.
+    tail_opcode = getattr(blk, "tail_opcode", None)
+    if tail_opcode is not None:
+        return int(tail_opcode)
+    # Fall back to .tail.opcode (live blocks or snapshots without tail_opcode).
     tail = getattr(blk, "tail", None)
     if tail is not None and hasattr(tail, "opcode"):
         try:
             return int(tail.opcode)
         except Exception:
             pass
-    tail_opcode = getattr(blk, "tail_opcode", None)
-    if tail_opcode is not None:
-        return int(tail_opcode)
     insn_snapshots = getattr(blk, "insn_snapshots", ())
     if insn_snapshots:
         return int(insn_snapshots[-1].opcode)
