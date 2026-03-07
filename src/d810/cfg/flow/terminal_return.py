@@ -190,6 +190,63 @@ def compute_terminal_cfg_suffix_frontier(
     )
 
 
+def classify_cfg_suffix_action(
+    cfg_frontier: TerminalCfgSuffixFrontier,
+) -> TerminalSemanticLoweringFrontier:
+    """Classify a CFG suffix frontier into a semantic lowering recommendation.
+
+    This is a **CFG-only heuristic** that does not use valrange analysis.
+    It recommends ``PRIVATE_TERMINAL_SUFFIX`` only when the suffix has a
+    non-trivial corridor (>= 2 blocks separating entry from return) AND
+    multiple unique anchors feed the shared entry.
+
+    When full valrange data is available, the evaluator's
+    ``_choose_semantic_frontier`` should be preferred.
+
+    Args:
+        cfg_frontier: The CFG suffix frontier computed by
+            :func:`compute_terminal_cfg_suffix_frontier`.
+
+    Returns:
+        A semantic frontier with the recommended action.
+    """
+    shared_entry = cfg_frontier.shared_entry_serial
+    return_block = cfg_frontier.return_block_serial
+    anchors = cfg_frontier.unique_anchor_serials
+    suffix_len = len(cfg_frontier.suffix_serials)
+
+    if shared_entry == return_block:
+        return TerminalSemanticLoweringFrontier(
+            action=TerminalLoweringAction.NO_ACTION,
+            lowering_start_serial=None,
+            unique_anchor_serials=anchors,
+            notes="suffix is trivial (entry == return)",
+        )
+
+    if suffix_len < 2:
+        return TerminalSemanticLoweringFrontier(
+            action=TerminalLoweringAction.NO_ACTION,
+            lowering_start_serial=None,
+            unique_anchor_serials=anchors,
+            notes=f"suffix too short ({suffix_len} block)",
+        )
+
+    if len(anchors) < 2:
+        return TerminalSemanticLoweringFrontier(
+            action=TerminalLoweringAction.NO_ACTION,
+            lowering_start_serial=None,
+            unique_anchor_serials=anchors,
+            notes=f"insufficient anchors ({len(anchors)})",
+        )
+
+    return TerminalSemanticLoweringFrontier(
+        action=TerminalLoweringAction.PRIVATE_TERMINAL_SUFFIX,
+        lowering_start_serial=shared_entry,
+        unique_anchor_serials=anchors,
+        notes=f"corridor of {suffix_len} blocks with {len(anchors)} anchors",
+    )
+
+
 __all__ = [
     "TerminalReturnAuditReport",
     "TerminalReturnSiteAudit",
@@ -197,5 +254,6 @@ __all__ = [
     "TerminalLoweringAction",
     "TerminalCfgSuffixFrontier",
     "TerminalSemanticLoweringFrontier",
+    "classify_cfg_suffix_action",
     "compute_terminal_cfg_suffix_frontier",
 ]

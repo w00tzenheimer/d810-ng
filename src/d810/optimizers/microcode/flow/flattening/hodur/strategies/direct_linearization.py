@@ -41,6 +41,7 @@ from d810.cfg.flow.terminal_return import (
     TerminalCfgSuffixFrontier,
     TerminalSemanticLoweringFrontier,
     TerminalLoweringAction,
+    classify_cfg_suffix_action,
     compute_terminal_cfg_suffix_frontier,
 )
 
@@ -53,6 +54,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger("D810.hodur.strategy.direct_linearization")
 
 __all__ = ["DirectHandlerLinearizationStrategy"]
+
+# Minimum number of unique normalized anchors (handler body exits redirected
+# to the shared epilogue entry) required before Phase 2 suffix privatization
+# is emitted.  hodur_func has 3 anchors (benign convergence — IDA structures
+# fine), sub_7FFD has 10 (severe fan-in that needs privatization).
+_MIN_TERMINAL_ANCHORS_FOR_PRIVATIZATION = 4
 
 
 def _compute_linear_suffix_chain(
@@ -85,6 +92,22 @@ def _compute_linear_suffix_chain(
     if len(chain) < 2:
         return None  # degenerate, no shared corridor to privatize
     return chain
+
+
+def _recover_handler_body_exit(
+    ordered_path: list[int],
+    infrastructure_blocks: frozenset[int],
+) -> int | None:
+    """Walk backward through DFS ordered_path, skip infrastructure blocks.
+
+    Returns the serial of the last handler-owned block before the path
+    enters dispatcher/BST/suffix infrastructure. Returns None if no
+    valid body exit is found.
+    """
+    for serial in reversed(ordered_path):
+        if serial not in infrastructure_blocks:
+            return serial
+    return None
 
 
 def _mop_matches_stkoff_snapshot(mop_snap: object | None, stkoff: int) -> bool:
@@ -224,6 +247,14 @@ class DirectHandlerLinearizationStrategy:
 
         # Track anchors (exit blocks) that get redirected to the shared terminal target
         terminal_redirect_anchors: set[int] = set()
+
+        # Collect terminal handler paths for Phase 1+2 (body exit normalization + suffix privatization).
+        # Deduped by body exit serial — the same handler body exit can appear many
+        # times if the handler has multiple conditional DFS paths that all terminate
+        # at the return block.  Using a dict keyed by body_exit serial eliminates
+        # the O(N^2) explosion (e.g. 368 privatizations for 3 real anchors).
+        terminal_body_exit_candidates: dict[int, HandlerPathResult] = {}
+        _terminal_paths_total = 0  # diagnostic: total paths before dedup
 
         handler_entry_set: set[int] = set(all_handlers.keys())
         pre_header_serial: int | None = getattr(bst_result, "pre_header_serial", None)
@@ -484,6 +515,14 @@ class DirectHandlerLinearizationStrategy:
                             incoming_state,
                             path.exit_block,
                         )
+                        # Early dedup by body exit using partial infrastructure
+                        _partial_infra = frozenset(bst_node_blocks | {dispatcher_serial})
+                        _body_exit = _recover_handler_body_exit(
+                            path.ordered_path, _partial_infra,
+                        )
+                        _terminal_paths_total += 1
+                        if _body_exit is not None and _body_exit not in terminal_body_exit_candidates:
+                            terminal_body_exit_candidates[_body_exit] = path
                         resolved_count += 1
                         continue
 
@@ -841,6 +880,14 @@ class DirectHandlerLinearizationStrategy:
                     _h_exit_snap = fg.get_block(path.exit_block)
                     _h_exit_nsucc = _h_exit_snap.nsucc if _h_exit_snap is not None else None
                     if _h_exit_nsucc is not None and _h_exit_nsucc == 0:
+                        # Early dedup by body exit using partial infrastructure
+                        _partial_infra_h = frozenset(bst_node_blocks | {dispatcher_serial})
+                        _body_exit_h = _recover_handler_body_exit(
+                            path.ordered_path, _partial_infra_h,
+                        )
+                        _terminal_paths_total += 1
+                        if _body_exit_h is not None and _body_exit_h not in terminal_body_exit_candidates:
+                            terminal_body_exit_candidates[_body_exit_h] = path
                         resolved_count += 1
                         continue  # True terminal, nothing to do.
                     # K3.5: use flow_graph snapshot
@@ -1012,33 +1059,199 @@ class DirectHandlerLinearizationStrategy:
             len(all_handlers),
         )
 
-        # --- PrivateTerminalSuffix diagnostic (emission disabled) ---
-        # NOTE: Actual emission is disabled. The anchors from
-        # compute_terminal_cfg_suffix_frontier are pre-linearization BST
-        # branch nodes — not 1-way blocks. The backend P1-2 precondition
-        # (anchor.succ(0) == shared_entry) fails because BST nodes have
-        # 2 successors. Enabling emission requires a two-phase approach:
-        # Phase 1: redirect terminal handler body exits → shared_entry
-        # Phase 2: emit PrivateTerminalSuffix per handler body exit
+        # --- Phase 1+2: Terminal exit normalization + suffix privatization ---
+        # NOTE: Emission is DISABLED (diagnostic-only). The backward walk in
+        # _recover_handler_body_exit does not encode ownership — it collapsed
+        # 11 terminal paths to 1 body exit for sub_7FFD and caused 31 gotos
+        # regression on hodur_func.  Infrastructure is preserved for future
+        # forward-ownership approach.
         private_suffix_count = 0
-        terminal_target_for_suffix = find_terminal_exit_target_snapshot(
-            fg, dispatcher_serial, sm_blocks
-        )
-        if terminal_target_for_suffix is not None:
-            cfg_frontier = compute_terminal_cfg_suffix_frontier(
-                return_block_serial=terminal_target_for_suffix,
-                predecessors_of=fg.predecessors,
+        cfg_frontier: TerminalCfgSuffixFrontier | None = None
+        if terminal_body_exit_candidates:
+            terminal_target_for_suffix = find_terminal_exit_target_snapshot(
+                fg, dispatcher_serial, sm_blocks
             )
-
-            if (
-                len(cfg_frontier.suffix_serials) >= 2
-                and len(cfg_frontier.unique_anchor_serials) >= 2
-            ):
-                logger.info(
-                    "PrivateTerminalSuffix diagnostic: %s "
-                    "(emission disabled — anchors are pre-linearization BST nodes)",
-                    cfg_frontier.summary(),
+            if terminal_target_for_suffix is not None:
+                cfg_frontier = compute_terminal_cfg_suffix_frontier(
+                    return_block_serial=terminal_target_for_suffix,
+                    predecessors_of=fg.predecessors,
                 )
+                shared_entry = cfg_frontier.shared_entry_serial
+                return_block = cfg_frontier.return_block_serial
+                suffix_serials = cfg_frontier.suffix_serials
+
+                # Full infrastructure blocks (including suffix) for re-validation
+                infrastructure = frozenset(
+                    bst_node_blocks | {dispatcher_serial} | set(suffix_serials)
+                )
+
+                # Phase 1: Re-validate body exits with full infrastructure (DIAGNOSTIC ONLY — no emission)
+                normalized_anchors: set[int] = set()
+                for body_exit_candidate, path in terminal_body_exit_candidates.items():
+                    # Re-recover with full infrastructure (includes suffix_serials)
+                    body_exit = _recover_handler_body_exit(
+                        path.ordered_path, infrastructure
+                    )
+                    if body_exit is None:
+                        logger.info(
+                            "DIAGNOSTIC: PTS: no body exit for terminal path ending at blk[%d]",
+                            path.exit_block,
+                        )
+                        continue
+
+                    # Validate: body_exit must be a 1-succ block pointing into infrastructure
+                    body_exit_snap = fg.get_block(body_exit)
+                    if body_exit_snap is None or body_exit_snap.nsucc != 1:
+                        logger.info(
+                            "DIAGNOSTIC: PTS: body exit blk[%d] has nsucc=%d, skipping",
+                            body_exit,
+                            body_exit_snap.nsucc if body_exit_snap is not None else -1,
+                        )
+                        continue
+
+                    current_succ = body_exit_snap.succs[0]
+                    if current_succ not in infrastructure:
+                        logger.info(
+                            "DIAGNOSTIC: PTS: body exit blk[%d] succ blk[%d] not in infrastructure, skipping",
+                            body_exit,
+                            current_succ,
+                        )
+                        continue
+
+                    if body_exit in normalized_anchors:
+                        continue  # already processed (safety net)
+
+                    # EMISSION DISABLED — would have been:
+                    # modifications.append(builder.goto_redirect(source_block=body_exit, target_block=shared_entry))
+                    normalized_anchors.add(body_exit)
+                    # EMISSION DISABLED — do NOT modify owned_blocks or owned_edges
+
+                    # EMISSION DISABLED — would have NOP'd state writes:
+                    # for write_blk, write_ea in path.state_writes:
+                    #     _append_nop(source_block=write_blk, instruction_ea=write_ea)
+
+                    logger.info(
+                        "DIAGNOSTIC: PTS Phase 1: would normalize blk[%d] -> blk[%d] (shared_entry)",
+                        body_exit,
+                        shared_entry,
+                    )
+
+                # Diagnostic summary before Phase 2 gate
+                logger.info(
+                    "DIAGNOSTIC: PTS summary: %d terminal paths seen, %d unique body exits, "
+                    "%d normalized anchors, suffix=blk[%d]->blk[%d] (%d blocks)",
+                    _terminal_paths_total,
+                    len(terminal_body_exit_candidates),
+                    len(normalized_anchors),
+                    shared_entry,
+                    return_block,
+                    len(suffix_serials),
+                )
+
+                # Phase 2: Classify but do NOT emit PTS (DIAGNOSTIC ONLY)
+                semantic_frontier = classify_cfg_suffix_action(cfg_frontier)
+                if semantic_frontier.action != TerminalLoweringAction.PRIVATE_TERMINAL_SUFFIX:
+                    logger.info(
+                        "DIAGNOSTIC: PTS: semantic action guard rejected emission: %s",
+                        semantic_frontier.summary(),
+                    )
+                elif len(normalized_anchors) < _MIN_TERMINAL_ANCHORS_FOR_PRIVATIZATION:
+                    logger.info(
+                        "DIAGNOSTIC: PTS: anchor count guard suppressed emission: "
+                        "%d anchors < %d minimum",
+                        len(normalized_anchors),
+                        _MIN_TERMINAL_ANCHORS_FOR_PRIVATIZATION,
+                    )
+                elif (
+                    len(suffix_serials) >= 2
+                    and cfg_frontier.shared_entry_serial != cfg_frontier.return_block_serial
+                ):
+                    # EMISSION DISABLED — would have emitted:
+                    # for anchor in sorted(normalized_anchors):
+                    #     modifications.append(builder.private_terminal_suffix(...))
+                    # private_suffix_count = len(normalized_anchors)
+                    logger.info(
+                        "DIAGNOSTIC: PTS Phase 2: would emit %d privatizations for suffix blk[%d]->blk[%d] (semantic: %s)",
+                        len(normalized_anchors),
+                        shared_entry,
+                        return_block,
+                        semantic_frontier.summary(),
+                    )
+                else:
+                    logger.info(
+                        "DIAGNOSTIC: PTS: guards not met -- %d anchors, %d suffix blocks",
+                        len(normalized_anchors),
+                        len(suffix_serials),
+                    )
+
+        # --- Forward ownership-frontier diagnostic ---
+        # Uses forward walk through ordered_path to find the last non-infra block
+        # before the first infrastructure block — a more principled body exit
+        # candidate than the backward walk in _recover_handler_body_exit.
+        if terminal_body_exit_candidates and cfg_frontier is not None:
+            suffix_set = set(cfg_frontier.suffix_serials)
+            full_infra = frozenset(
+                bst_node_blocks | {dispatcher_serial} | suffix_set
+            )
+            if pre_header_serial is not None:
+                full_infra = full_infra | {pre_header_serial}
+
+            # Count candidate frequency across all terminal paths
+            candidate_frequency: dict[int, int] = {}
+            forward_candidates: list[tuple[int | None, int | None, int | None]] = []
+
+            for _body_exit_key, path in terminal_body_exit_candidates.items():
+                handler_entry = path.ordered_path[0] if path.ordered_path else None
+
+                # Forward walk: find first infra block, previous block is candidate
+                candidate: int | None = None
+                candidate_succ: int | None = None
+                prev_block: int | None = None
+                for blk_serial in path.ordered_path:
+                    if blk_serial in full_infra:
+                        candidate = prev_block
+                        candidate_succ = blk_serial
+                        break
+                    prev_block = blk_serial
+
+                forward_candidates.append((handler_entry, candidate, candidate_succ))
+                if candidate is not None:
+                    candidate_frequency[candidate] = candidate_frequency.get(candidate, 0) + 1
+
+            # Log the diagnostic
+            for handler_entry, candidate, candidate_succ in forward_candidates:
+                freq = candidate_frequency.get(candidate, 0) if candidate is not None else 0
+                cand_snap = fg.get_block(candidate) if candidate is not None else None
+                cand_nsucc = cand_snap.nsucc if cand_snap is not None else -1
+                cand_succs = list(cand_snap.succs) if cand_snap is not None else []
+
+                is_valid = (
+                    candidate is not None
+                    and candidate not in full_infra
+                    and cand_nsucc == 1
+                    and (cand_succs[0] in full_infra if cand_succs else False)
+                    and freq == 1  # not shared across handlers
+                )
+
+                logger.info(
+                    "PTS forward-frontier DIAGNOSTIC: handler=blk[%s] candidate=blk[%s] "
+                    "succ=blk[%s] nsucc=%d freq=%d valid=%s",
+                    handler_entry, candidate, candidate_succ, cand_nsucc, freq, is_valid,
+                )
+
+            # Summary
+            valid_count = sum(
+                1 for _, c, _ in forward_candidates
+                if c is not None and candidate_frequency.get(c, 0) == 1
+            )
+            logger.info(
+                "PTS forward-frontier summary: %d terminal paths, %d unique candidates, "
+                "%d valid (freq==1, 1-succ, succ-in-infra), suffix=%s",
+                len(forward_candidates),
+                len(candidate_frequency),
+                valid_count,
+                "blk[%d]->blk[%d]" % (cfg_frontier.shared_entry_serial, cfg_frontier.return_block_serial),
+            )
 
         if not modifications:
             return None
