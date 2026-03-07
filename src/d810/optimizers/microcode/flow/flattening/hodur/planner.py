@@ -1,6 +1,7 @@
 """Central planner for Hodur unflattening pipeline."""
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass, field
 from d810.core.typing import TYPE_CHECKING
 
@@ -118,6 +119,138 @@ def compute_hint_adjustment(
         reasons.append("terminal_return_penalty")
 
     return HintAdjustment(score_delta=delta, reasons=tuple(reasons))
+
+
+# ---------------------------------------------------------------------------
+# Planner-owned candidate model (H1)
+# ---------------------------------------------------------------------------
+
+
+class PlannerDecisionReason(str, enum.Enum):
+    """Planner-internal reason for accepting or rejecting a candidate.
+
+    These are the planner's own vocabulary, distinct from the provenance-layer
+    :class:`DecisionReasonCode` which covers the full lifecycle including
+    executor phases. The planner maps these to ``DecisionReasonCode`` when
+    producing :class:`DecisionRecord` via :meth:`PlannerDecision.to_decision_record`.
+    """
+
+    ACCEPTED = "accepted"
+    REJECTED_EMPTY = "rejected_empty"
+    REJECTED_RISK = "rejected_risk"
+    REJECTED_POLICY = "rejected_policy"
+    REJECTED_CONFLICT = "rejected_conflict"
+    REJECTED_PREREQUISITE = "rejected_prerequisite"
+
+
+# Mapping from planner-internal reasons to provenance reason codes.
+_REASON_TO_CODE: dict[PlannerDecisionReason, DecisionReasonCode] = {
+    PlannerDecisionReason.ACCEPTED: DecisionReasonCode.ACCEPTED,
+    PlannerDecisionReason.REJECTED_EMPTY: DecisionReasonCode.REJECTED_EMPTY,
+    PlannerDecisionReason.REJECTED_RISK: DecisionReasonCode.REJECTED_RISK,
+    PlannerDecisionReason.REJECTED_POLICY: DecisionReasonCode.REJECTED_POLICY,
+    PlannerDecisionReason.REJECTED_CONFLICT: DecisionReasonCode.REJECTED_CONFLICT,
+    PlannerDecisionReason.REJECTED_PREREQUISITE: DecisionReasonCode.BLOCKED,
+}
+
+# Mapping from planner-internal reasons to provenance phases.
+_REASON_TO_PHASE: dict[PlannerDecisionReason, DecisionPhase] = {
+    PlannerDecisionReason.ACCEPTED: DecisionPhase.SELECTED,
+    PlannerDecisionReason.REJECTED_EMPTY: DecisionPhase.INAPPLICABLE,
+    PlannerDecisionReason.REJECTED_RISK: DecisionPhase.POLICY_FILTERED,
+    PlannerDecisionReason.REJECTED_POLICY: DecisionPhase.POLICY_FILTERED,
+    PlannerDecisionReason.REJECTED_CONFLICT: DecisionPhase.CONFLICT_DROPPED,
+    PlannerDecisionReason.REJECTED_PREREQUISITE: DecisionPhase.POLICY_FILTERED,
+}
+
+
+@dataclass(frozen=True)
+class PlannerCandidate:
+    """A strategy fragment wrapped with planner-computed scoring metadata.
+
+    Created by the planner after receiving a :class:`PlanFragment` from a
+    strategy. The candidate adds hint-adjusted scoring so that conflict
+    resolution and ordering operate on effective scores.
+
+    Attributes:
+        fragment: The underlying strategy output.
+        base_score: From ``fragment.expected_benefit.composite_score()``.
+        hint_adjustment: From :func:`compute_hint_adjustment`.
+        effective_score: ``base_score + hint_adjustment.score_delta``.
+        strategy_name: Shortcut for ``fragment.strategy_name``.
+        family: Shortcut for ``fragment.family``.
+    """
+
+    fragment: PlanFragment
+    base_score: float
+    hint_adjustment: HintAdjustment
+    effective_score: float
+    strategy_name: str
+    family: str
+
+    @property
+    def ownership(self) -> OwnershipScope:
+        """Delegate to the underlying fragment's ownership scope."""
+        return self.fragment.ownership
+
+    @property
+    def prerequisites(self) -> list[str]:
+        """Delegate to the underlying fragment's prerequisites."""
+        return self.fragment.prerequisites
+
+    @property
+    def risk_score(self) -> float:
+        """Delegate to the underlying fragment's risk score."""
+        return self.fragment.risk_score
+
+
+@dataclass(frozen=True)
+class PlannerDecision:
+    """The planner's verdict on a single candidate.
+
+    Pairs a :class:`PlannerCandidate` with a :class:`PlannerDecisionReason`
+    and optional human-readable detail. The :meth:`to_decision_record` method
+    converts this into the provenance vocabulary for auditing.
+
+    Attributes:
+        candidate: The evaluated candidate.
+        reason: Why the candidate was accepted or rejected.
+        detail: Human-readable explanation.
+    """
+
+    candidate: PlannerCandidate
+    reason: PlannerDecisionReason
+    detail: str = ""
+
+    def to_decision_record(self) -> DecisionRecord:
+        """Convert to a :class:`DecisionRecord` for provenance tracking.
+
+        Maps the planner-internal :class:`PlannerDecisionReason` to the
+        provenance-layer :class:`DecisionReasonCode` and :class:`DecisionPhase`.
+
+        Returns:
+            A frozen :class:`DecisionRecord` suitable for
+            :class:`PipelineProvenance`.
+        """
+        c = self.candidate
+        frag = c.fragment
+        return DecisionRecord(
+            strategy_name=c.strategy_name,
+            family=c.family,
+            phase=_REASON_TO_PHASE[self.reason],
+            reason_code=_REASON_TO_CODE[self.reason],
+            reason=self.detail or self.reason.value,
+            composite_score=c.base_score,
+            risk_score=frag.risk_score,
+            handler_count=frag.expected_benefit.handlers_resolved,
+            transition_count=frag.expected_benefit.transitions_resolved,
+            ownership_blocks=frozenset(frag.ownership.blocks),
+            prerequisites=frozenset(frag.prerequisites),
+            base_score=c.base_score,
+            hint_score_delta=c.hint_adjustment.score_delta,
+            effective_score=c.effective_score,
+            hint_reasons=c.hint_adjustment.reasons,
+        )
 
 
 @dataclass
