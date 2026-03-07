@@ -45,12 +45,16 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.conditional_fork
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.assignment_map_fallback import (
     AssignmentMapFallbackStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.private_terminal_suffix import (
+    PrivateTerminalSuffixStrategy,
+)
 
 __all__ = [
     "DirectHandlerLinearizationStrategy",
     "HiddenHandlerClosureStrategy",
     "EdgeSplitConflictResolutionStrategy",
     "TerminalLoopCleanupStrategy",
+    "PrivateTerminalSuffixStrategy",
     "PredPatchFallbackStrategy",
     "ConditionalForkFallbackStrategy",
     "AssignmentMapFallbackStrategy",
@@ -62,6 +66,7 @@ ALL_STRATEGIES: list[type] = [
     HiddenHandlerClosureStrategy,
     EdgeSplitConflictResolutionStrategy,
     TerminalLoopCleanupStrategy,
+    PrivateTerminalSuffixStrategy,
     PredPatchFallbackStrategy,
     ConditionalForkFallbackStrategy,
     AssignmentMapFallbackStrategy,
