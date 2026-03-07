@@ -235,6 +235,42 @@ class NopInstructions:
     insn_eas: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class PrivateTerminalSuffix:
+    """Clone a shared terminal epilogue suffix chain for one anchor block.
+
+    Privatizes a linear suffix chain (interior blocks nsucc==1, final nsucc==0)
+    so that each anchor gets its own copy of the shared epilogue. The original
+    shared suffix remains intact for other users.
+
+    Attributes:
+        anchor_serial: Block whose edge into shared_entry_serial will be rewired
+            to the cloned chain entry.
+        shared_entry_serial: First block of the shared suffix chain.
+        return_block_serial: Terminal stop/return block (last in the suffix chain).
+        suffix_serials: Ordered tuple of block serials in the shared suffix chain,
+            from shared_entry through return_block.
+        reason: Diagnostic reason string.
+
+    Example:
+        >>> mod = PrivateTerminalSuffix(
+        ...     anchor_serial=9,
+        ...     shared_entry_serial=63,
+        ...     return_block_serial=64,
+        ...     suffix_serials=(63, 64),
+        ... )
+        >>> mod.anchor_serial
+        9
+        >>> mod.suffix_serials
+        (63, 64)
+    """
+    anchor_serial: int
+    shared_entry_serial: int
+    return_block_serial: int
+    suffix_serials: tuple[int, ...]
+    reason: str = "terminal_return_shared_epilogue"
+
+
 # Union type for type discrimination via isinstance() or match statement
 GraphModification = Union[
     RedirectGoto,
@@ -246,6 +282,7 @@ GraphModification = Union[
     InsertBlock,
     RemoveEdge,
     NopInstructions,
+    PrivateTerminalSuffix,
 ]
 
 
@@ -259,5 +296,6 @@ __all__ = [
     "InsertBlock",
     "RemoveEdge",
     "NopInstructions",
+    "PrivateTerminalSuffix",
     "GraphModification",
 ]

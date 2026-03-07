@@ -728,3 +728,321 @@ def test_apply_sets_verify_failed_if_rollback_cannot_recover(monkeypatch):
 
     assert applied == 0
     assert modifier.verify_failed is True
+
+
+# ---------------------------------------------------------------------------
+#  Helpers for PrivateTerminalSuffix tests
+# ---------------------------------------------------------------------------
+
+
+class _SuffixEdgeSet(_FakeEdgeSet):
+    """Extended edge set with __iter__, __len__, and _del for suffix tests."""
+
+    def __iter__(self):
+        return iter(list(self._items))
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def _del(self, val: int) -> None:
+        try:
+            self._items.remove(val)
+        except ValueError:
+            pass
+
+
+class _FakeInsn:
+    """Minimal instruction stub with a linked-list ``next`` pointer."""
+
+    def __init__(self, opcode: int = 0, ea: int = 0x1000):
+        self.opcode = opcode
+        self.ea = ea
+        self.next = None  # type: _FakeInsn | None
+
+    def setaddr(self, _ea: int) -> None:
+        pass
+
+
+def _make_suffix_block(
+    serial: int,
+    *,
+    nsucc: int = 1,
+    succ_serial: int = 0,
+    insn_opcodes: tuple[int, ...] = (),
+    tail_opcode: int | None = None,
+) -> _FakeBlock:
+    """Build a _FakeBlock with configurable successor count and instruction chain."""
+    blk = _FakeBlock(serial)
+    blk.succset = _SuffixEdgeSet([succ_serial] if nsucc >= 1 else [])
+    blk.predset = _SuffixEdgeSet()
+    blk.nsucc = lambda _nsucc=nsucc: _nsucc  # type: ignore[assignment]
+    blk.succ = lambda _idx, _s=succ_serial: _s  # type: ignore[assignment]
+
+    # Build instruction linked list
+    head = None
+    prev = None
+    for opc in (insn_opcodes or (ida_hexrays.m_nop,)):
+        ins = _FakeInsn(opcode=opc, ea=0x1000 + serial)
+        if head is None:
+            head = ins
+        if prev is not None:
+            prev.next = ins
+        prev = ins
+
+    blk.head = head
+    if tail_opcode is not None and head is not None:
+        # Walk to tail and set its opcode
+        cur = head
+        while cur.next is not None:
+            cur = cur.next
+        cur.opcode = tail_opcode
+        blk.tail = cur
+    elif head is not None:
+        cur = head
+        while cur.next is not None:
+            cur = cur.next
+        blk.tail = cur
+    else:
+        blk.tail = None
+
+    return blk
+
+
+def _build_suffix_mba(blocks: dict[int, _FakeBlock]) -> _FakeMBA:
+    """Build a _FakeMBA with the given blocks."""
+    mba = _FakeMBA()
+    mba.blocks = blocks
+    mba.qty = max(blocks.keys()) + 1 if blocks else 0
+    return mba
+
+
+def _patch_suffix_dependencies(monkeypatch, mba):
+    """Monkeypatch ida_hexrays.minsn_t copy constructor and create_standalone_block.
+
+    Returns a state dict tracking created clones and successor changes.
+    """
+    state = {
+        "clones_created": [],       # list of (template_serial, clone_serial, is_0_way, target_serial)
+        "successor_changes": [],    # list of (blk_serial, new_target)
+        "next_serial": mba.qty,     # next serial for new clones
+    }
+
+    # Monkeypatch ida_hexrays.minsn_t as identity copy constructor
+    original_minsn_t = ida_hexrays.minsn_t
+    monkeypatch.setattr(
+        dm.ida_hexrays,
+        "minsn_t",
+        lambda obj, _orig=original_minsn_t: obj if isinstance(obj, _FakeInsn) else _orig(obj),
+    )
+
+    def _fake_create_standalone_block(ref_blk, blk_ins, target_serial=None, is_0_way=False, verify=True):
+        serial = state["next_serial"]
+        state["next_serial"] += 1
+
+        clone = _make_suffix_block(
+            serial,
+            nsucc=0 if is_0_way else 1,
+            succ_serial=target_serial if target_serial is not None else 0,
+            insn_opcodes=(ida_hexrays.m_nop,),
+        )
+        mba.blocks[serial] = clone
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        state["clones_created"].append((ref_blk.serial, serial, is_0_way, target_serial))
+        return clone
+
+    def _fake_change_1way(blk, new_target, verify=True):
+        state["successor_changes"].append((blk.serial, new_target))
+        # Update the fake block's successor
+        blk.succ = lambda _idx, _t=new_target: _t  # type: ignore[assignment]
+        blk.succset = _SuffixEdgeSet([new_target])
+        return True
+
+    monkeypatch.setattr(dm, "create_standalone_block", _fake_create_standalone_block)
+    monkeypatch.setattr(dm, "change_1way_block_successor", _fake_change_1way)
+
+    return state
+
+
+# ---------------------------------------------------------------------------
+#  TestPrivateTerminalSuffix
+# ---------------------------------------------------------------------------
+
+
+class TestPrivateTerminalSuffix:
+    """Tests for _apply_private_terminal_suffix covering P1 fixes."""
+
+    def test_apply_suffix_creates_private_chain(self, monkeypatch):
+        """Queue and apply a 2-block suffix (S->T) for anchor A.
+
+        Topology before:  A(1) -> S(2) -> T(3, 0-way stop)
+        Expected after:   A(1) -> clone_S(4) -> clone_T(5, 0-way)
+                          S(2) -> T(3) still exists unchanged.
+        """
+        # Block 3 is 0-way (BLT_STOP equivalent), block 2 is 1-way -> 3
+        blk_a = _make_suffix_block(1, nsucc=1, succ_serial=2, tail_opcode=ida_hexrays.m_goto)
+        blk_s = _make_suffix_block(2, nsucc=1, succ_serial=3, tail_opcode=ida_hexrays.m_goto)
+        blk_t = _make_suffix_block(3, nsucc=0, succ_serial=0, tail_opcode=ida_hexrays.m_nop)
+
+        mba = _build_suffix_mba({1: blk_a, 2: blk_s, 3: blk_t})
+        state = _patch_suffix_dependencies(monkeypatch, mba)
+        modifier = dm.DeferredGraphModifier(mba)
+
+        ok = modifier._apply_private_terminal_suffix(
+            anchor_blk=blk_a,
+            shared_entry_serial=2,
+            suffix_serials=(2, 3),
+            clone_expected_serials=(),
+        )
+
+        assert ok is True
+
+        # Two clones created: one for S (serial 4), one for T (serial 5)
+        assert len(state["clones_created"]) == 2
+        clone_s_info = state["clones_created"][0]
+        clone_t_info = state["clones_created"][1]
+        assert clone_s_info[0] == 2  # template = S
+        assert clone_s_info[2] is False  # not 0-way (interior)
+        assert clone_s_info[3] == 2  # placeholder target = shared_entry_serial
+        assert clone_t_info[0] == 3  # template = T
+        assert clone_t_info[2] is True  # 0-way (final)
+        assert clone_t_info[3] is None  # no target for 0-way
+
+        clone_s_serial = clone_s_info[1]
+        clone_t_serial = clone_t_info[1]
+
+        # Successor changes: chain wiring + anchor redirect
+        # 1. Wire clone_S -> clone_T
+        # 2. Redirect anchor A -> clone_S
+        wiring_changes = [
+            (s, t)
+            for s, t in state["successor_changes"]
+            if s not in (1,)  # exclude anchor redirect and stop-block fixes
+            and s >= 4  # only cloned blocks
+        ]
+        anchor_redirects = [(s, t) for s, t in state["successor_changes"] if s == 1]
+
+        assert any(s == clone_s_serial and t == clone_t_serial for s, t in wiring_changes), (
+            f"Expected clone_S({clone_s_serial}) -> clone_T({clone_t_serial}), got {wiring_changes}"
+        )
+        assert any(t == clone_s_serial for _, t in anchor_redirects), (
+            f"Expected anchor redirect to clone_S({clone_s_serial}), got {anchor_redirects}"
+        )
+
+        # Original S->T chain is unchanged (blocks still in MBA)
+        assert 2 in mba.blocks
+        assert 3 in mba.blocks
+
+    def test_apply_suffix_anchor_wrong_successor_fails_closed(self, monkeypatch):
+        """When anchor does NOT point at shared_entry_serial, apply rejects (P1 Bug 2)."""
+        # Anchor points at block 5 (not the shared entry 2)
+        blk_a = _make_suffix_block(1, nsucc=1, succ_serial=5, tail_opcode=ida_hexrays.m_goto)
+        blk_s = _make_suffix_block(2, nsucc=1, succ_serial=3, tail_opcode=ida_hexrays.m_goto)
+        blk_t = _make_suffix_block(3, nsucc=0, succ_serial=0)
+        blk_other = _make_suffix_block(5, nsucc=1, succ_serial=3)
+
+        mba = _build_suffix_mba({1: blk_a, 2: blk_s, 3: blk_t, 5: blk_other})
+        state = _patch_suffix_dependencies(monkeypatch, mba)
+        modifier = dm.DeferredGraphModifier(mba)
+
+        ok = modifier._apply_private_terminal_suffix(
+            anchor_blk=blk_a,
+            shared_entry_serial=2,  # anchor points at 5, not 2
+            suffix_serials=(2, 3),
+            clone_expected_serials=(),
+        )
+
+        assert ok is False
+        # No clones should have been created
+        assert len(state["clones_created"]) == 0
+        # Anchor successor unchanged
+        assert blk_a.succ(0) == 5
+
+    def test_apply_suffix_multi_block_chain(self, monkeypatch):
+        """3-block suffix (S1->S2->T) exercises multi-block chain wiring (P1 Bug 3).
+
+        Non-final clones must get placeholder target_serial for chain wiring.
+        """
+        blk_a = _make_suffix_block(1, nsucc=1, succ_serial=2, tail_opcode=ida_hexrays.m_goto)
+        blk_s1 = _make_suffix_block(2, nsucc=1, succ_serial=3, tail_opcode=ida_hexrays.m_goto)
+        blk_s2 = _make_suffix_block(3, nsucc=1, succ_serial=4, tail_opcode=ida_hexrays.m_goto)
+        blk_t = _make_suffix_block(4, nsucc=0, succ_serial=0)
+
+        mba = _build_suffix_mba({1: blk_a, 2: blk_s1, 3: blk_s2, 4: blk_t})
+        state = _patch_suffix_dependencies(monkeypatch, mba)
+        modifier = dm.DeferredGraphModifier(mba)
+
+        ok = modifier._apply_private_terminal_suffix(
+            anchor_blk=blk_a,
+            shared_entry_serial=2,
+            suffix_serials=(2, 3, 4),
+            clone_expected_serials=(),
+        )
+
+        assert ok is True
+
+        # Three clones created
+        assert len(state["clones_created"]) == 3
+
+        # Non-final clones (S1, S2) get placeholder target (shared_entry_serial=2)
+        clone_s1_info = state["clones_created"][0]
+        clone_s2_info = state["clones_created"][1]
+        clone_t_info = state["clones_created"][2]
+
+        assert clone_s1_info[2] is False  # not 0-way
+        assert clone_s1_info[3] == 2  # placeholder target = shared_entry_serial
+        assert clone_s2_info[2] is False  # not 0-way
+        assert clone_s2_info[3] == 2  # placeholder target = shared_entry_serial
+        assert clone_t_info[2] is True  # 0-way (final)
+        assert clone_t_info[3] is None  # no target
+
+        clone_s1_serial = clone_s1_info[1]
+        clone_s2_serial = clone_s2_info[1]
+        clone_t_serial = clone_t_info[1]
+
+        # Chain wiring: clone_S1 -> clone_S2 -> clone_T
+        chain_wires = [
+            (s, t)
+            for s, t in state["successor_changes"]
+            if s in (clone_s1_serial, clone_s2_serial)
+        ]
+        assert (clone_s1_serial, clone_s2_serial) in chain_wires
+        assert (clone_s2_serial, clone_t_serial) in chain_wires
+
+        # Anchor redirect: A -> clone_S1
+        assert any(
+            s == 1 and t == clone_s1_serial
+            for s, t in state["successor_changes"]
+        )
+
+    def test_apply_suffix_clone_serial_mismatch_non_fatal(self, monkeypatch):
+        """Expected serials that don't match actual IDA serials are non-fatal (P1 Bug 1).
+
+        Apply must still succeed with clones created and anchor rewired.
+        """
+        blk_a = _make_suffix_block(1, nsucc=1, succ_serial=2, tail_opcode=ida_hexrays.m_goto)
+        blk_s = _make_suffix_block(2, nsucc=1, succ_serial=3, tail_opcode=ida_hexrays.m_goto)
+        blk_t = _make_suffix_block(3, nsucc=0, succ_serial=0)
+
+        mba = _build_suffix_mba({1: blk_a, 2: blk_s, 3: blk_t})
+        state = _patch_suffix_dependencies(monkeypatch, mba)
+        modifier = dm.DeferredGraphModifier(mba)
+
+        # Expected serials (99, 100) will NOT match actual (4, 5)
+        ok = modifier._apply_private_terminal_suffix(
+            anchor_blk=blk_a,
+            shared_entry_serial=2,
+            suffix_serials=(2, 3),
+            clone_expected_serials=(99, 100),
+        )
+
+        # Must succeed despite serial mismatch (informational only)
+        assert ok is True
+        assert len(state["clones_created"]) == 2
+
+        # Anchor was redirected to actual clone serial (not the expected one)
+        clone_s_serial = state["clones_created"][0][1]
+        assert any(
+            s == 1 and t == clone_s_serial
+            for s, t in state["successor_changes"]
+        )
