@@ -185,8 +185,16 @@ class PlannerCandidate:
     base_score: float
     hint_adjustment: HintAdjustment
     effective_score: float
-    strategy_name: str
-    family: str
+
+    @property
+    def strategy_name(self) -> str:
+        """Delegate to the underlying fragment's strategy name."""
+        return self.fragment.strategy_name
+
+    @property
+    def family(self) -> str:
+        """Delegate to the underlying fragment's family."""
+        return self.fragment.family
 
     @property
     def ownership(self) -> OwnershipScope:
