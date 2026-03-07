@@ -1053,7 +1053,7 @@ class DeferredGraphModifier:
             mod_type=ModificationType.PRIVATE_TERMINAL_SUFFIX,
             block_serial=anchor_serial,
             new_target=shared_entry_serial,
-            priority=4,  # Before duplicate_block (5)
+            priority=12,  # After BLOCK_GOTO_CHANGE (10) so anchors already point to shared_entry
             description=description or (
                 f"private terminal suffix anchor={anchor_serial} "
                 f"shared_entry={shared_entry_serial} return={return_block_serial} "
