@@ -1226,6 +1226,17 @@ def pytest_addoption(parser):
         ),
     )
     parser.addoption(
+        "--dump-microcode-human-readable",
+        action="store_true",
+        default=False,
+        help=(
+            "Also print IDA-style human-readable microcode via "
+            "d810.recon.microcode_dump.print_mba_human_readable(). "
+            "Use with --dump-microcode-maturity or --dump-microcode-d810 to "
+            "exercise block-level VALRANGES and instruction-level vr={...} output."
+        ),
+    )
+    parser.addoption(
         "--dump-force-rettype",
         action="store",
         default=None,

@@ -389,6 +389,7 @@ def cmd_dump(args: argparse.Namespace) -> None:
     Dump before/after pseudocode and D810 rule stats for one or more functions.
     """
     from d810.core.stats import _maturity_name  # type: ignore[attr-defined]
+    from d810.recon.microcode_dump import print_mba_human_readable
 
     binary_path = _resolve_binary_path(args.binary)
     _apply_no_cython_flag(args.no_cython)
@@ -401,6 +402,7 @@ def cmd_dump(args: argparse.Namespace) -> None:
 
     with _open_ida_database(binary_path):
         import idaapi
+        import ida_hexrays
 
         _ensure_hexrays()
         state = _load_d810_state()
@@ -413,6 +415,19 @@ def cmd_dump(args: argparse.Namespace) -> None:
                 print(f"WARNING: could not load project {args.project}: {e}")
 
         binary_name = Path(binary_path).name
+        maturity_map = {
+            "GENERATED": ida_hexrays.MMAT_GENERATED,
+            "PREOPTIMIZED": ida_hexrays.MMAT_PREOPTIMIZED,
+            "LOCOPT": ida_hexrays.MMAT_LOCOPT,
+            "CALLS": ida_hexrays.MMAT_CALLS,
+            "GLBOPT1": ida_hexrays.MMAT_GLBOPT1,
+            "GLBOPT2": ida_hexrays.MMAT_GLBOPT2,
+            "GLBOPT3": ida_hexrays.MMAT_GLBOPT3,
+            "LVARS": ida_hexrays.MMAT_LVARS,
+        }
+        requested_human_maturity = None
+        if args.human_microcode:
+            requested_human_maturity = maturity_map[args.human_microcode_maturity.upper()]
 
         for func_name in names:
             func_ea = get_func_ea(func_name)
@@ -487,6 +502,29 @@ def cmd_dump(args: argparse.Namespace) -> None:
             print(before_s)
             print("\n--- AFTER ---")
             print(after_s)
+            if args.human_microcode:
+                func = idaapi.get_func(func_ea)
+                if func is not None:
+                    mbr = idaapi.mba_ranges_t()
+                    mbr.ranges.push_back(idaapi.range_t(func.start_ea, func.end_ea))
+                    hf = idaapi.hexrays_failure_t()
+                    mba = idaapi.gen_microcode(
+                        mbr,
+                        hf,
+                        None,
+                        idaapi.DECOMP_NO_WAIT,
+                        requested_human_maturity,
+                    )
+                    if mba is None:
+                        print(
+                            f"\n--- HUMAN MICROCODE ({args.human_microcode_maturity}) ---"
+                        )
+                        print("[failed to generate mba]")
+                    else:
+                        print(
+                            f"\n--- HUMAN MICROCODE ({args.human_microcode_maturity}) ---"
+                        )
+                        print_mba_human_readable(mba, func_name=func_name)
             print("=" * 88)
 
 
@@ -861,6 +899,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_dump.add_argument(
         "--project",
         help="Optional D810 project configuration name/path.",
+    )
+    p_dump.add_argument(
+        "--human-microcode",
+        action="store_true",
+        default=False,
+        help=(
+            "Also dump IDA-style human-readable microcode for each function. "
+            "Uses print_mba_human_readable() and exercises VALRANGES / vr={...} output."
+        ),
+    )
+    p_dump.add_argument(
+        "--human-microcode-maturity",
+        default="GLBOPT1",
+        choices=(
+            "GENERATED",
+            "PREOPTIMIZED",
+            "LOCOPT",
+            "CALLS",
+            "GLBOPT1",
+            "GLBOPT2",
+            "GLBOPT3",
+            "LVARS",
+        ),
+        help=(
+            "Microcode maturity to use with --human-microcode "
+            "(default: GLBOPT1)."
+        ),
     )
 
     # list
