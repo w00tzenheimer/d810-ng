@@ -57,8 +57,11 @@ logger = logging.getLogger("D810.hodur.strategy.direct_linearization")
 
 __all__ = [
     "CarrierSourceKind",
+    "CorridorRecommendation",
+    "CorridorShape",
     "DirectHandlerLinearizationStrategy",
     "ForwardFrontierEntry",
+    "SharedCorridorInfo",
 ]
 
 # Minimum number of unique normalized anchors (handler body exits redirected
@@ -119,6 +122,215 @@ class ForwardFrontierEntry:
     carrier_source_kind: CarrierSourceKind
     proof_status: str
     notes: str = ""
+
+
+class CorridorShape(str, enum.Enum):
+    """Shape classification of shared terminal corridor."""
+
+    LINEAR = "linear"
+    """Each block: 1 succ, no fan-in from outside corridor."""
+
+    FAN_IN = "fan_in"
+    """1 succ but multi pred from handlers."""
+
+    BRANCHING = "branching"
+    """Multi succ within corridor."""
+
+    COMPLEX = "complex"
+    """Both fan-in and branching."""
+
+
+class CorridorRecommendation(str, enum.Enum):
+    """Recommended semantic action for a shared corridor group."""
+
+    PRIVATE_RETURN_BLOCK = "private_return_block"
+    PRIVATE_TERMINAL_SUFFIX = "private_terminal_suffix"
+    PRIVATE_TERMINAL_CORRIDOR = "private_terminal_corridor"
+    DIRECT_TERMINAL_LOWERING = "direct_terminal_lowering"
+    UNRESOLVED = "unresolved"
+
+
+@dataclass(frozen=True)
+class SharedCorridorInfo:
+    """Diagnostic info for a shared terminal corridor group."""
+
+    shared_entry: int
+    return_block: int
+    suffix_serials: tuple[int, ...]
+    corridor_blocks: tuple[int, ...]
+    corridor_shape: CorridorShape
+    corridor_length: int
+    handler_entries: tuple[int, ...]
+    handler_count: int
+    entry_fan_in: int
+    carrier_in_corridor: bool
+    clonable: bool
+    recommendation: CorridorRecommendation
+    notes: str
+
+
+def _discover_shared_corridor(
+    fg: "FlowGraph",
+    shared_entry_serial: int,
+    suffix_serials: tuple[int, ...],
+    full_infra: frozenset[int],
+    forward_entries: list[ForwardFrontierEntry],
+) -> SharedCorridorInfo:
+    """Discover and classify the shared terminal corridor.
+
+    Walks forward from ``shared_entry_serial`` through single-successor
+    blocks that are NOT suffix blocks and NOT full infrastructure, collecting
+    them as the corridor chain.  Then classifies the corridor shape, checks
+    clonability, and recommends a semantic action.
+
+    This is DIAGNOSTIC ONLY -- no mutations are performed.
+
+    Args:
+        fg: Flow graph snapshot.
+        shared_entry_serial: First block of the shared region.
+        suffix_serials: Suffix block serials from the CFG frontier.
+        full_infra: Full infrastructure block set (BST + dispatcher + suffix +
+            pre-header).
+        forward_entries: Forward frontier entries from per-handler analysis.
+
+    Returns:
+        A :class:`SharedCorridorInfo` with corridor diagnostic data.
+    """
+    suffix_set = frozenset(suffix_serials)
+
+    # Collect handler entries and return block from forward entries.
+    handler_entries_list: list[int] = []
+    return_block = 0
+    for entry in forward_entries:
+        handler_entries_list.append(entry.handler_entry)
+        if entry.return_block is not None:
+            return_block = entry.return_block
+    handler_entries_tuple = tuple(sorted(set(handler_entries_list)))
+
+    # Walk forward from shared_entry to discover corridor blocks.
+    # Corridor = contiguous chain from shared_entry through blocks that are
+    # NOT in suffix_serials and NOT the return_block, following single
+    # successors.
+    corridor: list[int] = []
+    if shared_entry_serial not in suffix_set:
+        current = shared_entry_serial
+        visited: set[int] = set()
+        while current not in suffix_set and current not in visited:
+            visited.add(current)
+            corridor.append(current)
+            succs = fg.successors(current)
+            if len(succs) != 1:
+                break  # branching or terminal -- stop walk
+            nxt = succs[0]
+            if nxt in suffix_set or nxt == return_block:
+                break  # reached suffix
+            current = nxt
+    # else: shared_entry IS a suffix serial -- corridor is empty (degenerate PTS)
+
+    corridor_tuple = tuple(corridor)
+    corridor_length = len(corridor_tuple)
+
+    # Classify corridor shape.
+    has_branching = False
+    has_fan_in = False
+    corridor_set = frozenset(corridor_tuple)
+
+    for blk_serial in corridor_tuple:
+        blk_snap = fg.get_block(blk_serial)
+        if blk_snap is None:
+            continue
+        # Branching: >1 successor
+        if blk_snap.nsucc > 1:
+            has_branching = True
+        # Fan-in: >1 predecessor from outside corridor
+        outside_preds = [
+            p for p in blk_snap.preds if p not in corridor_set
+        ]
+        if len(outside_preds) > 1:
+            has_fan_in = True
+
+    if has_branching and has_fan_in:
+        corridor_shape = CorridorShape.COMPLEX
+    elif has_branching:
+        corridor_shape = CorridorShape.BRANCHING
+    elif has_fan_in:
+        corridor_shape = CorridorShape.FAN_IN
+    else:
+        corridor_shape = CorridorShape.LINEAR
+
+    # Entry fan-in: count distinct predecessors of corridor entry from handlers.
+    entry_fan_in = 0
+    if corridor_tuple:
+        entry_snap = fg.get_block(corridor_tuple[0])
+        if entry_snap is not None:
+            entry_fan_in = len([
+                p for p in entry_snap.preds if p not in corridor_set
+            ])
+
+    # Carrier in corridor: check if any corridor block has non-trivial
+    # instructions (beyond just control flow).
+    _CONTROL_FLOW_OPCODES = frozenset({
+        ida_hexrays.m_goto,
+        ida_hexrays.m_jnz,
+        ida_hexrays.m_ijmp,
+        ida_hexrays.m_jtbl,
+    })
+    carrier_in_corridor = False
+    for blk_serial in corridor_tuple:
+        blk_snap = fg.get_block(blk_serial)
+        if blk_snap is None:
+            continue
+        for insn in blk_snap.iter_insns():
+            if insn.opcode not in _CONTROL_FLOW_OPCODES:
+                carrier_in_corridor = True
+                break
+        if carrier_in_corridor:
+            break
+
+    # Clonability check.
+    handler_count = len(handler_entries_tuple)
+    clonable = (
+        corridor_shape in (CorridorShape.LINEAR, CorridorShape.FAN_IN)
+        and corridor_length <= 8
+        and handler_count >= 2
+    )
+
+    # Recommendation.
+    notes_parts: list[str] = []
+    if handler_count < 2:
+        recommendation = CorridorRecommendation.UNRESOLVED
+        notes_parts.append("handler_count < 2")
+    elif corridor_shape in (CorridorShape.BRANCHING, CorridorShape.COMPLEX):
+        recommendation = CorridorRecommendation.UNRESOLVED
+        notes_parts.append("corridor has branching/complex shape")
+    elif corridor_length == 0:
+        recommendation = CorridorRecommendation.PRIVATE_TERMINAL_SUFFIX
+        notes_parts.append("degenerate corridor (length=0)")
+    elif clonable:
+        recommendation = CorridorRecommendation.PRIVATE_TERMINAL_CORRIDOR
+        notes_parts.append(
+            "corridor clonable (len=%d, shape=%s)"
+            % (corridor_length, corridor_shape.value)
+        )
+    else:
+        recommendation = CorridorRecommendation.UNRESOLVED
+        notes_parts.append("corridor not clonable")
+
+    return SharedCorridorInfo(
+        shared_entry=shared_entry_serial,
+        return_block=return_block,
+        suffix_serials=suffix_serials,
+        corridor_blocks=corridor_tuple,
+        corridor_shape=corridor_shape,
+        corridor_length=corridor_length,
+        handler_entries=handler_entries_tuple,
+        handler_count=handler_count,
+        entry_fan_in=entry_fan_in,
+        carrier_in_corridor=carrier_in_corridor,
+        clonable=clonable,
+        recommendation=recommendation,
+        notes="; ".join(notes_parts) if notes_parts else "",
+    )
 
 
 def _classify_carrier_source(
@@ -1174,6 +1386,7 @@ class DirectHandlerLinearizationStrategy:
         private_suffix_count = 0
         cfg_frontier: TerminalCfgSuffixFrontier | None = None
         forward_frontier_entries: list[ForwardFrontierEntry] = []
+        corridor_infos: list[SharedCorridorInfo] = []
 
         if terminal_handler_terminal_paths:
             terminal_target_for_suffix = find_terminal_exit_target_snapshot(
@@ -1352,6 +1565,47 @@ class DirectHandlerLinearizationStrategy:
                     ),
                 )
 
+                # --- Shared corridor diagnostic ---
+                corridor_infos: list[SharedCorridorInfo] = []
+                if cfg_frontier is not None and forward_frontier_entries:
+                    corridor_info = _discover_shared_corridor(
+                        fg=fg,
+                        shared_entry_serial=shared_entry,
+                        suffix_serials=suffix_serials_tuple,
+                        full_infra=full_infra,
+                        forward_entries=forward_frontier_entries,
+                    )
+                    corridor_infos.append(corridor_info)
+
+                    if logger.debug_on:
+                        logger.debug(
+                            "[corridor-diag] shape=%s len=%d handlers=%d fan_in=%d "
+                            "carrier_in_corridor=%s clonable=%s rec=%s "
+                            "corridor_blocks=%s notes=%s",
+                            corridor_info.corridor_shape.value,
+                            corridor_info.corridor_length,
+                            corridor_info.handler_count,
+                            corridor_info.entry_fan_in,
+                            corridor_info.carrier_in_corridor,
+                            corridor_info.clonable,
+                            corridor_info.recommendation.value,
+                            corridor_info.corridor_blocks,
+                            corridor_info.notes,
+                        )
+
+                    # INFO-level summary
+                    logger.info(
+                        "[corridor-diag] shared_entry=blk[%d] corridor=%s shape=%s "
+                        "len=%d handlers=%d clonable=%s rec=%s",
+                        corridor_info.shared_entry,
+                        [("blk[%d]" % s) for s in corridor_info.corridor_blocks],
+                        corridor_info.corridor_shape.value,
+                        corridor_info.corridor_length,
+                        corridor_info.handler_count,
+                        corridor_info.clonable,
+                        corridor_info.recommendation.value,
+                    )
+
                 # EMISSION DISABLED — PTS modifications poison PlanFragment contract checker.
 
         if not modifications:
@@ -1396,5 +1650,6 @@ class DirectHandlerLinearizationStrategy:
                 "pre_header_serial": pre_header_serial,
                 "private_terminal_suffix_count": private_suffix_count,
                 "forward_frontier_entries": forward_frontier_entries,
+                "corridor_infos": corridor_infos,
             },
         )
