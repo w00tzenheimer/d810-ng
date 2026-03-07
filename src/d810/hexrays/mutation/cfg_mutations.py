@@ -1357,6 +1357,85 @@ def downgrade_nway_null_tail_to_1way(
         raise
 
 
+def remove_block_edge(
+    blk: ida_hexrays.mblock_t,
+    to_serial: int,
+    verify: bool = True,
+) -> bool:
+    """Remove a single edge from *blk* to *to_serial*.
+
+    Semantics depend on the source block's current successor count:
+
+    * **2-way → 1-way**: The conditional branch is NOP'd and replaced with an
+      unconditional goto to the *remaining* successor.  Equivalent to
+      ``make_2way_block_goto(blk, remaining_succ)``.
+    * **1-way → 0-way**: The goto instruction (if present) is NOP'd and the
+      block becomes ``BLT_0WAY``.
+
+    Args:
+        blk: Source block whose outgoing edge is removed.
+        to_serial: Serial of the successor to disconnect.
+        verify: If ``True``, run ``mba.verify()`` after the mutation.
+
+    Returns:
+        ``True`` on success (and verify passed if enabled).
+
+    Example:
+        >>> # Remove the conditional branch target from a 2-way block
+        >>> remove_block_edge(blk, conditional_target, verify=False)
+        True
+    """
+    mba = blk.mba
+    nsucc = blk.nsucc()
+
+    if nsucc == 2:
+        # Determine the surviving successor (the one NOT being removed).
+        succs = [s for s in blk.succset]
+        if to_serial not in succs:
+            helper_logger.warning(
+                "remove_block_edge: block %d does not have successor %d "
+                "(succs=%s)",
+                blk.serial, to_serial, succs,
+            )
+            return False
+        remaining = [s for s in succs if s != to_serial]
+        if not remaining:
+            helper_logger.warning(
+                "remove_block_edge: block %d has both successors == %d; "
+                "cannot determine remaining target",
+                blk.serial, to_serial,
+            )
+            return False
+        return make_2way_block_goto(blk, remaining[0], verify=verify)
+
+    if nsucc == 1:
+        if blk.succset[0] != to_serial:
+            helper_logger.warning(
+                "remove_block_edge: block %d successor is %d, not %d",
+                blk.serial, blk.succset[0], to_serial,
+            )
+            return False
+
+        # NOP the terminating goto if present.
+        if blk.tail is not None and blk.tail.opcode == ida_hexrays.m_goto:
+            blk.make_nop(blk.tail)
+
+        return _rewire_edge(
+            blk,
+            old_succs=[to_serial],
+            new_succs=[],
+            new_block_type=ida_hexrays.BLT_0WAY,
+            verify=verify,
+        )
+
+    helper_logger.warning(
+        "remove_block_edge: block %d has %d successors; only 1-way and "
+        "2-way blocks are supported",
+        blk.serial, nsucc,
+    )
+    return False
+
+
 __all__ = [
     "_rewire_edge",
     "insert_goto_instruction",
@@ -1382,4 +1461,5 @@ __all__ = [
     "mba_deep_cleaning",
     "ensure_child_has_an_unconditional_father",
     "downgrade_nway_null_tail_to_1way",
+    "remove_block_edge",
 ]

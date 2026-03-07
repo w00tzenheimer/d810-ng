@@ -228,6 +228,8 @@ from d810.hexrays.mutation.cfg_verify import (
 from d810.hexrays.mutation.cfg_verify import (
     snapshot_block_for_capture)
 from d810.hexrays.mutation.cfg_mutations import (
+    remove_block_edge)
+from d810.hexrays.mutation.cfg_mutations import (
     _rewire_edge)
 from d810.cfg.flowgraph import FlowGraph, InsnSnapshot
 from d810.hexrays.mutation.insn_snapshot_materializer import (
@@ -350,6 +352,7 @@ class ModificationType(Enum):
     BLOCK_DUPLICATE_AND_REDIRECT = auto()  # Duplicate source block and redirect one predecessor
     EDGE_REDIRECT_VIA_PRED_SPLIT = auto()  # Clone src block; redirect one predecessor to clone
     EDGE_SPLIT_TRAMPOLINE = auto()  # Materialize standalone trampoline and redirect one predecessor
+    EDGE_REMOVE = auto()  # Remove a single edge (2-way→1-way or 1-way→0-way)
 
 
 class TargetRefKind(Enum):
@@ -997,6 +1000,33 @@ class DeferredGraphModifier:
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
 
+    def queue_remove_edge(
+        self,
+        from_serial: int,
+        to_serial: int,
+        description: str = "",
+    ) -> None:
+        """Queue removal of a single edge from *from_serial* to *to_serial*.
+
+        At apply-time the source block is downgraded:
+        2-way becomes 1-way (goto to the remaining successor),
+        1-way becomes 0-way (goto NOP'd).
+        """
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.EDGE_REMOVE,
+            block_serial=from_serial,
+            new_target=to_serial,
+            priority=15,  # After goto changes (10) but before convert-to-goto (20)
+            description=description or f"remove edge {from_serial}->{to_serial}",
+        ))
+        logger.debug(
+            "Queued edge remove: %d -> %d",
+            from_serial,
+            to_serial,
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
     def has_modifications(self) -> bool:
         """Check if there are any queued modifications."""
         return len(self.modifications) > 0
@@ -1205,6 +1235,7 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT,
             ModificationType.BLOCK_DUPLICATE_AND_REDIRECT,
             ModificationType.EDGE_SPLIT_TRAMPOLINE,
+            ModificationType.EDGE_REMOVE,
         }
         terminal_type_rank = {
             ModificationType.BLOCK_GOTO_CHANGE: 1,
@@ -1214,6 +1245,7 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: 5,
             ModificationType.BLOCK_DUPLICATE_AND_REDIRECT: 6,
             ModificationType.EDGE_SPLIT_TRAMPOLINE: 7,
+            ModificationType.EDGE_REMOVE: 8,
             # EDGE_REDIRECT_VIA_PRED_SPLIT is intentionally absent: it is not
             # in terminal_mod_types (it executes via a separate code path in
             # apply_modifications) so ranking it here would cause it to be
@@ -2342,6 +2374,9 @@ class DeferredGraphModifier:
                 expected_serial=mod.expected_serial,
             )
 
+        elif mod.mod_type == ModificationType.EDGE_REMOVE:
+            return self._apply_remove_edge(blk, mod.new_target)
+
         else:
             logger.warning("Unknown modification type: %s", mod.mod_type)
             return False
@@ -2382,6 +2417,10 @@ class DeferredGraphModifier:
     def _apply_convert_to_goto(self, blk: ida_hexrays.mblock_t, goto_target: int) -> bool:
         """Convert a 2-way block to a 1-way goto."""
         return make_2way_block_goto(blk, goto_target, verify=False)
+
+    def _apply_remove_edge(self, blk: ida_hexrays.mblock_t, to_serial: int) -> bool:
+        """Remove a single outgoing edge from *blk* to *to_serial*."""
+        return remove_block_edge(blk, to_serial, verify=False)
 
     def _apply_insn_remove(self, blk: ida_hexrays.mblock_t, insn_ea: int) -> bool:
         """Remove an instruction by its EA."""
@@ -3695,6 +3734,22 @@ class ImmediateGraphModifier:
         ):
             self.modifications_applied += 1
 
+    def queue_remove_edge(
+        self,
+        from_serial: int,
+        to_serial: int,
+        description: str = "",
+    ) -> None:
+        """Remove a single edge immediately."""
+        blk = self.mba.get_mblock(from_serial)
+        if blk is None:
+            logger.warning("Block %d not found", from_serial)
+            return
+
+        logger.debug("Immediate remove edge: %d -> %d", from_serial, to_serial)
+        if self._apply_remove_edge(blk, to_serial):
+            self.modifications_applied += 1
+
     def has_modifications(self) -> bool:
         """Check if any modifications were applied."""
         return self.modifications_applied > 0
@@ -3785,6 +3840,10 @@ class ImmediateGraphModifier:
     def _apply_convert_to_goto(self, blk: ida_hexrays.mblock_t, goto_target: int) -> bool:
         """Convert a 2-way block to a 1-way goto."""
         return make_2way_block_goto(blk, goto_target, verify=False)
+
+    def _apply_remove_edge(self, blk: ida_hexrays.mblock_t, to_serial: int) -> bool:
+        """Remove a single outgoing edge from *blk* to *to_serial*."""
+        return remove_block_edge(blk, to_serial, verify=False)
 
     def _apply_insn_remove(self, blk: ida_hexrays.mblock_t, insn_ea: int) -> bool:
         """Remove an instruction by its EA."""
