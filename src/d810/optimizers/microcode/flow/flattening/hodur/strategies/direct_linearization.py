@@ -163,36 +163,36 @@ class CarrierBucket(str, enum.Enum):
     """All real_const — no PTS needed."""
 
     SUFFIX_AMBIGUOUS = "suffix_ambiguous"
-    """Has unknown, no stronger — PTS candidate."""
+    """Has unknown/expr/cursor_or_ptr (no state_const) — PTS candidate."""
 
     NEEDS_DIRECT_LOWERING = "needs_direct_lowering"
-    """Has state_const/expr/cursor — not PTS."""
+    """Has state_const — dispatcher semantic leak, not PTS."""
 
 
 def _classify_carrier_bucket(carrier_kinds: tuple[str, ...]) -> CarrierBucket:
     """Classify carrier profile into a semantic bucket.
 
     Rules:
-    - Any state_const, expr, cursor_or_ptr → NEEDS_DIRECT_LOWERING
-    - Any unknown (and no stronger kinds) → SUFFIX_AMBIGUOUS
+    - Any state_const → NEEDS_DIRECT_LOWERING (dispatcher leak)
+    - Any unknown/expr/cursor_or_ptr (no state_const) → SUFFIX_AMBIGUOUS
     - All real_const → BENIGN_SHARED_SUFFIX
     """
     kinds_set = set(carrier_kinds)
 
-    # Check for "stronger" semantic kinds that need direct lowering.
-    direct_lowering_kinds = {
-        CarrierSourceKind.STATE_CONST.value,
+    # state_const is the only carrier that definitively needs direct lowering
+    if CarrierSourceKind.STATE_CONST.value in kinds_set:
+        return CarrierBucket.NEEDS_DIRECT_LOWERING
+
+    # Check for ambiguous carriers (unknown, expr, cursor_or_ptr)
+    ambiguous_kinds = {
+        CarrierSourceKind.UNKNOWN.value,
         CarrierSourceKind.EXPR.value,
         CarrierSourceKind.CURSOR_OR_PTR.value,
     }
-    if kinds_set & direct_lowering_kinds:
-        return CarrierBucket.NEEDS_DIRECT_LOWERING
-
-    # Check for unknown → suffix is ambiguous.
-    if CarrierSourceKind.UNKNOWN.value in kinds_set:
+    if kinds_set & ambiguous_kinds:
         return CarrierBucket.SUFFIX_AMBIGUOUS
 
-    # All remaining (real_const only) → benign.
+    # All remaining (real_const only) → benign
     return CarrierBucket.BENIGN_SHARED_SUFFIX
 
 
@@ -290,7 +290,7 @@ def _compute_suffix_group_decision(
     if carrier_bucket == CarrierBucket.BENIGN_SHARED_SUFFIX:
         rejection_reasons.append("carrier_bucket=benign_shared_suffix (all real_const, structurally adequate)")
     if carrier_bucket == CarrierBucket.NEEDS_DIRECT_LOWERING:
-        rejection_reasons.append("carrier_bucket=needs_direct_lowering (has state_const/expr/cursor)")
+        rejection_reasons.append("carrier_bucket=needs_direct_lowering (has state_const — dispatcher semantic leak)")
 
     should_emit = len(rejection_reasons) == 0
 
