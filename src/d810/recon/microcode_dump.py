@@ -577,9 +577,9 @@ def print_mba_human_readable(
     Produces output similar to IDA's own microcode listing, including:
     - Block headers with type, predecessor/successor sets, EA range
     - USE/DEF/DNU liveness sets per block
-    - VALRANGES per block (via :func:`d810.recon.flow.valranges.collect_block_valranges`)
+    - VALRANGES per block (via :func:`d810.recon.flow.valranges.collect_block_valrange_records`)
     - Instruction-level VALRANGES via
-      :func:`d810.recon.flow.valranges.collect_instruction_valranges`
+      :func:`d810.recon.flow.valranges.collect_instruction_valrange_records`
     - Instructions via ``minsn_t._print()`` with per-instruction u=/d= annotations
 
     Args:
@@ -587,8 +587,8 @@ def print_mba_human_readable(
         func_name: Optional function name shown in the header.
     """
     from d810.recon.flow.valranges import (
-        collect_block_valranges,
-        collect_instruction_valranges,
+        collect_block_valrange_records,
+        collect_instruction_valrange_records,
     )
 
     _init_constants()
@@ -753,9 +753,9 @@ def print_mba_human_readable(
 
         # VALRANGES
         try:
-            vr_parts = collect_block_valranges(blk)
-            if vr_parts:
-                print(f"; VALRANGES: {', '.join(vr_parts)}")
+            vr_records = collect_block_valrange_records(blk)
+            if vr_records:
+                print(f"; VALRANGES: {', '.join(str(record) for record in vr_records)}")
         except Exception:
             pass
 
@@ -835,9 +835,9 @@ def print_mba_human_readable(
 
             ins_vr = ""
             try:
-                ins_vr_parts = collect_instruction_valranges(blk, ins)
-                if ins_vr_parts:
-                    ins_vr = f" vr={{{', '.join(ins_vr_parts)}}}"
+                ins_vr_records = collect_instruction_valrange_records(blk, ins)
+                if ins_vr_records:
+                    ins_vr = f" vr={{{', '.join(str(record) for record in ins_vr_records)}}}"
             except Exception:
                 pass
 
