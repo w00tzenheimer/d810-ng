@@ -251,7 +251,7 @@ def test_cycle_filter_preserves_non_redirect_modifications():
     )
     nop_mod = NopInstructions(block_serial=2, insn_eas=(0x1234,))
 
-    filtered = executor._filter_cycle_modifications(
+    filtered, removed_count = executor._filter_cycle_modifications(
         fragment=fragment,
         pre_adj=cfg.as_adjacency_dict(),
         terminal_exits={3},
@@ -261,6 +261,7 @@ def test_cycle_filter_preserves_non_redirect_modifications():
     )
 
     assert filtered == [nop_mod]
+    assert removed_count == 1
 
 
 def test_executor_runs_cfg_contract_pre_and_post(monkeypatch: pytest.MonkeyPatch):
@@ -529,6 +530,10 @@ def test_executor_premutation_failure_no_rollback(monkeypatch: pytest.MonkeyPatc
 
 def test_execute_pipeline_stops_on_quarantine(monkeypatch: pytest.MonkeyPatch):
     """Pipeline stops after a quarantine result even when rollback_needed=False."""
+    monkeypatch.setattr(
+        _executor_mod, "should_apply_cfg_modifications",
+        lambda *args, **kwargs: True,
+    )
     from d810.optimizers.microcode.flow.flattening.hodur.strategy import StageResult
 
     cfg = FlowGraph(
