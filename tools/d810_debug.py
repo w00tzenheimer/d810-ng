@@ -389,6 +389,9 @@ def cmd_dump(args: argparse.Namespace) -> None:
     Dump before/after pseudocode and D810 rule stats for one or more functions.
     """
     from d810.core.stats import _maturity_name  # type: ignore[attr-defined]
+    from d810.optimizers.microcode.flow.flattening.hodur.diagnostics import (
+        build_terminal_return_valrange_report_from_store,
+    )
     from d810.recon.microcode_dump import print_mba_human_readable
 
     binary_path = _resolve_binary_path(args.binary)
@@ -428,6 +431,11 @@ def cmd_dump(args: argparse.Namespace) -> None:
         requested_human_maturity = None
         if args.human_microcode:
             requested_human_maturity = maturity_map[args.human_microcode_maturity.upper()]
+        requested_debug_maturity = (
+            requested_human_maturity
+            if requested_human_maturity is not None
+            else ida_hexrays.MMAT_GLBOPT1
+        )
 
         for func_name in names:
             func_ea = get_func_ea(func_name)
@@ -502,7 +510,7 @@ def cmd_dump(args: argparse.Namespace) -> None:
             print(before_s)
             print("\n--- AFTER ---")
             print(after_s)
-            if args.human_microcode:
+            if args.human_microcode or args.terminal_return_valranges:
                 func = idaapi.get_func(func_ea)
                 if func is not None:
                     mbr = idaapi.mba_ranges_t()
@@ -513,18 +521,35 @@ def cmd_dump(args: argparse.Namespace) -> None:
                         hf,
                         None,
                         idaapi.DECOMP_NO_WAIT,
-                        requested_human_maturity,
+                        requested_debug_maturity,
                     )
                     if mba is None:
-                        print(
-                            f"\n--- HUMAN MICROCODE ({args.human_microcode_maturity}) ---"
-                        )
-                        print("[failed to generate mba]")
+                        if args.human_microcode:
+                            print(
+                                f"\n--- HUMAN MICROCODE ({args.human_microcode_maturity}) ---"
+                            )
+                            print("[failed to generate mba]")
+                        if args.terminal_return_valranges:
+                            print("\n--- TERMINAL RETURN VALRANGES ---")
+                            print("[failed to generate mba]")
                     else:
-                        print(
-                            f"\n--- HUMAN MICROCODE ({args.human_microcode_maturity}) ---"
-                        )
-                        print_mba_human_readable(mba, func_name=func_name)
+                        if args.human_microcode:
+                            print(
+                                f"\n--- HUMAN MICROCODE ({args.human_microcode_maturity}) ---"
+                            )
+                            print_mba_human_readable(mba, func_name=func_name)
+                        if args.terminal_return_valranges:
+                            print("\n--- TERMINAL RETURN VALRANGES ---")
+                            report = build_terminal_return_valrange_report_from_store(
+                                mba=mba,
+                                func_ea=func_ea,
+                                log_dir=None,
+                                maturity=None,
+                            )
+                            if report is None:
+                                print("[no terminal return audit available in recon store]")
+                            else:
+                                print(report.format())
             print("=" * 88)
 
 
@@ -925,6 +950,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Microcode maturity to use with --human-microcode "
             "(default: GLBOPT1)."
+        ),
+    )
+    p_dump.add_argument(
+        "--terminal-return-valranges",
+        action="store_true",
+        default=False,
+        help=(
+            "Also dump grouped terminal-return valrange diagnostics derived from "
+            "terminal-return audit artifacts and the current MBA."
         ),
     )
 
