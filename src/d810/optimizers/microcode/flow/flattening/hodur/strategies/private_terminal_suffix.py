@@ -191,7 +191,7 @@ class PrivateTerminalSuffixStrategy:
         # ---- Compute CFG suffix frontier ----
         cfg_frontier = compute_terminal_cfg_suffix_frontier(
             return_block_serial=terminal_target,
-            fg=fg,
+            predecessors_of=fg.predecessors,
         )
         if cfg_frontier is None:
             logger.info("[pts-strategy] no CFG suffix frontier")
