@@ -20,6 +20,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.planner import (
     PipelinePolicy,
     UnflatteningPlanner,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
+    PlannerInputs,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.snapshot import AnalysisSnapshot
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
@@ -166,7 +169,7 @@ def test_fragments_planned_from_same_snapshot_execute_stably(monkeypatch):
     assert second.snapshot_adjs == [pre_cfg.as_adjacency_dict()]
 
     planner = UnflatteningPlanner(PipelinePolicy())
-    pipeline, _provenance = planner.compose_pipeline(planned_fragments, total_handlers=2)
+    pipeline, _provenance = planner.compose_pipeline(planned_fragments, inputs=PlannerInputs(total_handlers=2))
     assert [fragment.strategy_name for fragment in pipeline] == ["first", "second"]
 
     translator = _SequenceTranslator([pre_cfg, mid_cfg, mid_cfg, post_cfg])

@@ -344,10 +344,23 @@ class HodurUnflattener(GenericUnflatteningRule):
                     reason_detail=result.error,
                     gate_accounting=acct,
                 )
-            elif result.failure_phase in (
-                "safeguard",
-                "post_apply_contract",
-            ):
+            elif result.failure_phase == "safeguard":
+                provenance = provenance.update_phase(
+                    frag.strategy_name,
+                    DecisionPhase.GATE_FAILED,
+                    reason_code=DecisionReasonCode.REJECTED_GATE_SAFEGUARD,
+                    reason_detail=result.error,
+                    gate_accounting=acct,
+                )
+            elif result.failure_phase == "semantic_gate":
+                provenance = provenance.update_phase(
+                    frag.strategy_name,
+                    DecisionPhase.GATE_FAILED,
+                    reason_code=DecisionReasonCode.REJECTED_GATE_SEMANTIC,
+                    reason_detail=result.error,
+                    gate_accounting=acct,
+                )
+            elif result.failure_phase == "post_apply_contract":
                 provenance = provenance.update_phase(
                     frag.strategy_name,
                     DecisionPhase.GATE_FAILED,
