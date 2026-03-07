@@ -99,7 +99,7 @@ class _FakeTranslator:
 
 def test_executor_uses_fragment_modifications(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        _executor_mod, "should_apply_cfg_modifications",
+        _executor_mod, "should_apply_bulk_cfg_modifications",
         lambda *args, **kwargs: True,
     )
 
@@ -137,7 +137,7 @@ def test_executor_uses_fragment_modifications(monkeypatch: pytest.MonkeyPatch):
 
 def test_executor_preflight_uses_backend_order(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        _executor_mod, "should_apply_cfg_modifications",
+        _executor_mod, "should_apply_bulk_cfg_modifications",
         lambda *args, **kwargs: True,
     )
 
@@ -182,7 +182,7 @@ def test_executor_preflight_uses_backend_order(monkeypatch: pytest.MonkeyPatch):
 
 def test_executor_rejects_legacy_block_creation_when_policy_disabled(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        _executor_mod, "should_apply_cfg_modifications",
+        _executor_mod, "should_apply_bulk_cfg_modifications",
         lambda *args, **kwargs: True,
     )
 
@@ -266,7 +266,7 @@ def test_cycle_filter_preserves_non_redirect_modifications():
 
 def test_executor_runs_cfg_contract_pre_and_post(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
-        _executor_mod, "should_apply_cfg_modifications",
+        _executor_mod, "should_apply_bulk_cfg_modifications",
         lambda *args, **kwargs: True,
     )
 
@@ -325,7 +325,7 @@ def test_executor_runs_cfg_contract_pre_and_post(monkeypatch: pytest.MonkeyPatch
 def test_executor_rejects_cfg_contract_pre_failures(monkeypatch: pytest.MonkeyPatch):
     """Engine's live_pre_check phase rejects before lowering; rollback_needed=False (pre-mutation)."""
     monkeypatch.setattr(
-        _executor_mod, "should_apply_cfg_modifications",
+        _executor_mod, "should_apply_bulk_cfg_modifications",
         lambda *args, **kwargs: True,
     )
 
@@ -381,7 +381,7 @@ def test_executor_rejects_cfg_contract_pre_failures(monkeypatch: pytest.MonkeyPa
 def test_executor_rejects_projected_cfg_contract_failures(monkeypatch: pytest.MonkeyPatch):
     """Engine's projected_contract phase rejects before live checks; rollback_needed=False."""
     monkeypatch.setattr(
-        _executor_mod, "should_apply_cfg_modifications",
+        _executor_mod, "should_apply_bulk_cfg_modifications",
         lambda *args, **kwargs: True,
     )
 
@@ -439,7 +439,7 @@ def test_executor_rejects_projected_cfg_contract_failures(monkeypatch: pytest.Mo
 def test_executor_routes_through_transaction_engine(monkeypatch: pytest.MonkeyPatch):
     """Verify execute_stage() creates a CfgTransactionEngine and calls apply()."""
     monkeypatch.setattr(
-        _executor_mod, "should_apply_cfg_modifications",
+        _executor_mod, "should_apply_bulk_cfg_modifications",
         lambda *args, **kwargs: True,
     )
 
@@ -487,7 +487,7 @@ def test_executor_routes_through_transaction_engine(monkeypatch: pytest.MonkeyPa
 def test_executor_premutation_failure_no_rollback(monkeypatch: pytest.MonkeyPatch):
     """Pre-mutation engine failure (projected_contract) yields rollback_needed=False."""
     monkeypatch.setattr(
-        _executor_mod, "should_apply_cfg_modifications",
+        _executor_mod, "should_apply_bulk_cfg_modifications",
         lambda *args, **kwargs: True,
     )
 
@@ -531,7 +531,7 @@ def test_executor_premutation_failure_no_rollback(monkeypatch: pytest.MonkeyPatc
 def test_execute_pipeline_stops_on_quarantine(monkeypatch: pytest.MonkeyPatch):
     """Pipeline stops after a quarantine result even when rollback_needed=False."""
     monkeypatch.setattr(
-        _executor_mod, "should_apply_cfg_modifications",
+        _executor_mod, "should_apply_bulk_cfg_modifications",
         lambda *args, **kwargs: True,
     )
     from d810.optimizers.microcode.flow.flattening.hodur.strategy import StageResult

@@ -9,7 +9,7 @@ MIN_ABSOLUTE_EDGES = 3
 MIN_EDGE_RATIO = 3  # Denominator: require at least 1/3 of case blocks
 
 
-def should_apply_cfg_modifications(
+def should_apply_bulk_cfg_modifications(
     num_redirected_edges: int,
     total_case_blocks: int,
     context: str = "",

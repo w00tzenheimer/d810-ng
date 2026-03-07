@@ -142,7 +142,7 @@ class _SequenceTranslator:
 def test_fragments_planned_from_same_snapshot_execute_stably(monkeypatch):
     monkeypatch.setattr(
         _executor_mod,
-        "should_apply_cfg_modifications",
+        "should_apply_bulk_cfg_modifications",
         lambda *args, **kwargs: True,
     )
 

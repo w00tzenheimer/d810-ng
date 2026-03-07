@@ -792,7 +792,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         # It already has two safety gates:
         #   1. flow_context.evaluate_fix_predecessor_gate() in check_if_rule_should_be_used
         #   2. Per-block structural checks (tail opcode, maturity, max passes)
-        # should_apply_cfg_modifications is too aggressive for small dispatchers
+        # should_apply_bulk_cfg_modifications is too aggressive for small dispatchers
         # like abc_xor_dispatch where resolving 1-2 predecessors IS the solution.
         # G2: audit trail via structured logging only.
         unflat_logger.info(
