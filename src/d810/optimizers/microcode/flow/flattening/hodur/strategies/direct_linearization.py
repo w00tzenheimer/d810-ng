@@ -64,6 +64,10 @@ __all__ = [
     "ForwardFrontierEntry",
     "SharedCorridorInfo",
     "SuffixGroupDecision",
+    "_classify_carrier_bucket",
+    "_classify_carrier_source",
+    "_compute_suffix_group_decision",
+    "_discover_shared_corridor",
 ]
 
 # Minimum number of unique normalized anchors (handler body exits redirected
