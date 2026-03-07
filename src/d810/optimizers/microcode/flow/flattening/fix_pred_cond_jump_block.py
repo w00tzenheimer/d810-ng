@@ -37,7 +37,6 @@ from d810.recon.flow.dispatcher_detection import (
     DispatcherType,
 )
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
-from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
 from d810.optimizers.microcode.flow.handler import FlowRulePriority
 from d810.evaluator.hexrays_microcode.tracker import get_all_possibles_values
 
@@ -788,18 +787,14 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         if nb_queued == 0:
             return 0
 
-        # Safeguard: check if enough edges were resolved to justify CFG mods
-        total_preds = blk.npred()
-        if not should_apply_cfg_modifications(
-            nb_queued, total_preds, "fix_pred_cond_jump"
-        ):
-            unflat_logger.warning(
-                "FixPredecessor safeguard: skipping %d queued modifications "
-                "(resolved %d / %d predecessors)",
-                nb_queued, nb_queued, total_preds,
-            )
-            self._pending_modifications.clear()
-            return 0
+        # NOTE: No bulk-CFG safeguard here. FixPredecessor makes targeted
+        # per-block edge redirects (not bulk CFG rewrites like Hodur).
+        # It already has two safety gates:
+        #   1. flow_context.evaluate_fix_predecessor_gate() in check_if_rule_should_be_used
+        #   2. Per-block structural checks (tail opcode, maturity, max passes)
+        # Adding should_apply_cfg_modifications (MIN_ABSOLUTE_EDGES=3) is too
+        # aggressive for small dispatchers like abc_xor_dispatch where resolving
+        # 1-2 predecessors IS the complete solution.
 
         # Phase 2: Apply - execute all modifications
         self.last_pass_nb_patch_done = self._apply_queued_modifications()
