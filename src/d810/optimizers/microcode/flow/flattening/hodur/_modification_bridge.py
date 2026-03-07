@@ -10,6 +10,7 @@ from d810.cfg.graph_modification import (
     EdgeRedirectViaPredSplit,
     GraphModification,
     NopInstructions,
+    PrivateTerminalSuffix,
     RedirectBranch,
     RedirectGoto,
 )
@@ -171,6 +172,24 @@ class ModificationBuilder:
             target_block=target_block,
             pred_serial=pred_serial,
             patch_kind=patch_kind,
+        )
+
+    def private_terminal_suffix(
+        self,
+        anchor_serial: int,
+        shared_entry_serial: int,
+        return_block_serial: int,
+        suffix_serials: tuple[int, ...],
+        *,
+        reason: str = "terminal_return_shared_epilogue",
+    ) -> PrivateTerminalSuffix:
+        """Emit a PrivateTerminalSuffix modification for one anchor."""
+        return PrivateTerminalSuffix(
+            anchor_serial=anchor_serial,
+            shared_entry_serial=shared_entry_serial,
+            return_block_serial=return_block_serial,
+            suffix_serials=suffix_serials,
+            reason=reason,
         )
 
 

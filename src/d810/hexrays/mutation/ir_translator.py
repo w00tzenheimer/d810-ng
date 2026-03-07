@@ -35,6 +35,7 @@ from d810.cfg.plan import (
     PatchInsertBlock,
     PatchNopInstructions,
     PatchPlan,
+    PatchPrivateTerminalSuffix,
     PatchRedirectBranch,
     PatchRedirectGoto,
     PatchRemoveEdge,
@@ -358,6 +359,8 @@ class IDAIRTranslator:
                     continue
                 case PatchNopInstructions() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect():
                     continue
+                case PatchPrivateTerminalSuffix():
+                    continue
                 case PatchInsertBlock() as insert_step:
                     reason = _unsupported_insert_block_reason(insert_step)
                     if reason is not None:
@@ -510,6 +513,26 @@ class IDAIRTranslator:
                     description=(
                         f"duplicate block src={src} pred={pred} "
                         f"target={target} via {assigned}"
+                    ),
+                )
+
+            case PatchPrivateTerminalSuffix(
+                anchor_serial=anchor,
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix,
+                clone_assigned_serials=clone_serials,
+            ):
+                modifier.queue_private_terminal_suffix(
+                    anchor_serial=anchor,
+                    shared_entry_serial=shared_entry,
+                    return_block_serial=return_block,
+                    suffix_serials=suffix,
+                    clone_expected_serials=clone_serials,
+                    description=(
+                        f"private terminal suffix anchor={anchor} "
+                        f"shared_entry={shared_entry} return={return_block} "
+                        f"suffix={suffix} clones={clone_serials}"
                     ),
                 )
 

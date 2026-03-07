@@ -27,6 +27,7 @@ from d810.cfg.graph_modification import (
     GraphModification,
     InsertBlock,
     NopInstructions,
+    PrivateTerminalSuffix,
     RedirectBranch,
     RedirectGoto,
     RemoveEdge,
@@ -228,11 +229,45 @@ class PatchDuplicateBlock:
         )
 
 
+@dataclass(frozen=True)
+class PatchPrivateTerminalSuffix:
+    """Finalized materialization of a private terminal suffix chain for one anchor.
+
+    Clones each block in the shared suffix, wires the cloned chain in order,
+    and redirects the anchor to the clone of shared_entry.
+
+    Attributes:
+        anchor_serial: Block whose edge to shared_entry gets rewired to clone chain.
+        shared_entry_serial: First block in the shared suffix.
+        return_block_serial: Terminal stop/return block (last in the suffix).
+        suffix_serials: Ordered shared suffix serials (entry..return_block).
+        clone_block_ids: Virtual block IDs for each clone (parallel to suffix_serials).
+        clone_assigned_serials: Assigned concrete serials for each clone
+            (parallel to suffix_serials). Populated after relocation.
+    """
+
+    anchor_serial: int
+    shared_entry_serial: int
+    return_block_serial: int
+    suffix_serials: tuple[int, ...]
+    clone_block_ids: tuple[VirtualBlockId, ...]
+    clone_assigned_serials: tuple[int, ...]
+
+    def to_graph_modification(self) -> PrivateTerminalSuffix:
+        return PrivateTerminalSuffix(
+            anchor_serial=self.anchor_serial,
+            shared_entry_serial=self.shared_entry_serial,
+            return_block_serial=self.return_block_serial,
+            suffix_serials=self.suffix_serials,
+        )
+
+
 BlockCreatingGraphModification = Union[
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
     DuplicateBlock,
     InsertBlock,
+    PrivateTerminalSuffix,
 ]
 
 
@@ -263,6 +298,7 @@ PatchOperation = Union[
     PatchConditionalRedirect,
     PatchInsertBlock,
     PatchDuplicateBlock,
+    PatchPrivateTerminalSuffix,
 ]
 
 PatchStep = Union[PatchOperation, LegacyBlockOperation]
@@ -351,6 +387,12 @@ class _PendingDuplicateBlock:
     fallthrough_block_id: VirtualBlockId | None = None
 
 
+@dataclass(frozen=True)
+class _PendingPrivateTerminalSuffix:
+    modification: PrivateTerminalSuffix
+    clone_block_ids: tuple[VirtualBlockId, ...]
+
+
 def is_block_creating_modification(modification: GraphModification) -> bool:
     """Return True when the modification requires a new block."""
     return isinstance(
@@ -360,6 +402,7 @@ def is_block_creating_modification(modification: GraphModification) -> bool:
             CreateConditionalRedirect,
             DuplicateBlock,
             InsertBlock,
+            PrivateTerminalSuffix,
         ),
     )
 
@@ -692,7 +735,7 @@ def _compile_duplicate_block_step(
 
 
 def _finalize_step(
-    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock,
+    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingPrivateTerminalSuffix,
     relocation_map: PatchRelocationMap,
 ) -> PatchStep:
     match step:
@@ -837,6 +880,30 @@ def _finalize_step(
                 ),
                 fallthrough_block_id=fallthrough_block_id,
                 fallthrough_serial=fallthrough_serial,
+            )
+
+        case _PendingPrivateTerminalSuffix(
+            modification=PrivateTerminalSuffix(
+                anchor_serial=anchor,
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix,
+            ),
+            clone_block_ids=clone_ids,
+        ):
+            assigned: list[int] = []
+            for clone_id in clone_ids:
+                serial = relocation_map.assigned_serial_for(clone_id)
+                if serial is None:
+                    raise ValueError(f"Missing assigned serial for {clone_id}")
+                assigned.append(serial)
+            return PatchPrivateTerminalSuffix(
+                anchor_serial=anchor,
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix,
+                clone_block_ids=clone_ids,
+                clone_assigned_serials=tuple(assigned),
             )
 
         case LegacyBlockOperation():
@@ -1014,6 +1081,48 @@ def compile_patch_plan(
                         raw_steps.append(pending_step)
                         new_blocks.extend(duplicate_specs)
 
+            case PrivateTerminalSuffix(
+                anchor_serial=anchor,
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix,
+            ):
+                if not suffix:
+                    raise ValueError("PrivateTerminalSuffix requires non-empty suffix_serials")
+                clone_ids: list[VirtualBlockId] = []
+                for idx, suffix_serial in enumerate(suffix):
+                    clone_id = allocator.alloc(f"private_suffix_a{anchor}")
+                    clone_ids.append(clone_id)
+                    # Build edges: last clone has no outgoing (0-way terminal);
+                    # others chain to next clone.
+                    if idx < len(suffix) - 1:
+                        next_clone_id = VirtualBlockId(
+                            namespace=f"private_suffix_a{anchor}",
+                            ordinal=clone_id.ordinal + 1,
+                        )
+                        outgoing = (PatchEdgeRef(source=clone_id, target=next_clone_id),)
+                    else:
+                        outgoing = ()
+                    # First clone gets incoming from anchor
+                    incoming = None
+                    if idx == 0:
+                        incoming = PatchEdgeRef(source=anchor, target=shared_entry)
+                    new_blocks.append(
+                        PatchBlockSpec(
+                            block_id=clone_id,
+                            kind="private_terminal_suffix_clone",
+                            template_block=suffix_serial,
+                            incoming_edge=incoming,
+                            outgoing_edges=outgoing,
+                        )
+                    )
+                raw_steps.append(
+                    _PendingPrivateTerminalSuffix(
+                        modification=modification,
+                        clone_block_ids=tuple(clone_ids),
+                    )
+                )
+
             case _:
                 raise TypeError(f"Unsupported GraphModification: {type(modification).__name__}")
 
@@ -1052,6 +1161,7 @@ __all__ = [
     "PatchConditionalRedirect",
     "PatchInsertBlock",
     "PatchDuplicateBlock",
+    "PatchPrivateTerminalSuffix",
     "LegacyBlockOperation",
     "PatchOperation",
     "PatchStep",

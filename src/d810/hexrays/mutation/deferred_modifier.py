@@ -353,6 +353,7 @@ class ModificationType(Enum):
     EDGE_REDIRECT_VIA_PRED_SPLIT = auto()  # Clone src block; redirect one predecessor to clone
     EDGE_SPLIT_TRAMPOLINE = auto()  # Materialize standalone trampoline and redirect one predecessor
     EDGE_REMOVE = auto()  # Remove a single edge (2-way→1-way or 1-way→0-way)
+    PRIVATE_TERMINAL_SUFFIX = auto()  # Clone shared suffix chain per anchor
 
 
 class TargetRefKind(Enum):
@@ -403,6 +404,10 @@ class GraphModification:
     expected_secondary_serial: int | None = None
     # How to resolve new_target at apply-time
     target_ref_kind: TargetRefKind = TargetRefKind.ABSOLUTE
+    # For PRIVATE_TERMINAL_SUFFIX: ordered suffix serials to clone
+    suffix_serials: tuple[int, ...] | None = None
+    # For PRIVATE_TERMINAL_SUFFIX: expected serials for each cloned block
+    clone_expected_serials: tuple[int, ...] | None = None
 
 
 def _prepare_block_creation_instructions(
@@ -1023,6 +1028,47 @@ class DeferredGraphModifier:
             "Queued edge remove: %d -> %d",
             from_serial,
             to_serial,
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_private_terminal_suffix(
+        self,
+        *,
+        anchor_serial: int,
+        shared_entry_serial: int,
+        return_block_serial: int,
+        suffix_serials: tuple[int, ...],
+        clone_expected_serials: tuple[int, ...],
+        description: str = "",
+    ) -> None:
+        """Queue cloning of a shared terminal suffix chain for one anchor.
+
+        At apply-time, each block in ``suffix_serials`` is cloned in reverse order,
+        the cloned chain is wired (first -> ... -> last with 0 succs), and the
+        anchor block is redirected from ``shared_entry_serial`` to the clone of
+        the first suffix block.
+        """
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.PRIVATE_TERMINAL_SUFFIX,
+            block_serial=anchor_serial,
+            new_target=shared_entry_serial,
+            priority=4,  # Before duplicate_block (5)
+            description=description or (
+                f"private terminal suffix anchor={anchor_serial} "
+                f"shared_entry={shared_entry_serial} return={return_block_serial} "
+                f"suffix={suffix_serials}"
+            ),
+            suffix_serials=suffix_serials,
+            clone_expected_serials=clone_expected_serials,
+        ))
+        logger.debug(
+            "Queued private_terminal_suffix: anchor=%d shared_entry=%d return=%d suffix=%s expected=%s",
+            anchor_serial,
+            shared_entry_serial,
+            return_block_serial,
+            suffix_serials,
+            clone_expected_serials,
         )
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
@@ -2377,6 +2423,14 @@ class DeferredGraphModifier:
         elif mod.mod_type == ModificationType.EDGE_REMOVE:
             return self._apply_remove_edge(blk, mod.new_target)
 
+        elif mod.mod_type == ModificationType.PRIVATE_TERMINAL_SUFFIX:
+            return self._apply_private_terminal_suffix(
+                anchor_blk=blk,
+                shared_entry_serial=mod.new_target,
+                suffix_serials=mod.suffix_serials or (),
+                clone_expected_serials=mod.clone_expected_serials or (),
+            )
+
         else:
             logger.warning("Unknown modification type: %s", mod.mod_type)
             return False
@@ -2974,6 +3028,221 @@ class DeferredGraphModifier:
                 source_blk.serial,
                 pred_serial,
                 target_serial,
+                exc,
+            )
+            import traceback
+            logger.error("Traceback: %s", traceback.format_exc())
+            return False
+
+    def _apply_private_terminal_suffix(
+        self,
+        *,
+        anchor_blk: ida_hexrays.mblock_t,
+        shared_entry_serial: int,
+        suffix_serials: tuple[int, ...],
+        clone_expected_serials: tuple[int, ...],
+    ) -> bool:
+        """Clone shared suffix chain and redirect anchor to the clone.
+
+        The suffix is cloned backward (tail first) because ``copy_block``
+        inserts before the STOP block. After all clones are created, the
+        chain is wired and the anchor is redirected.
+
+        Fail-closed on:
+        - anchor not 1-way
+        - any suffix block not found
+        - suffix interior blocks not 1-way
+        - suffix final block not 0-way (nsucc != 0)
+        - expected serial mismatch
+        """
+        mba = self.mba
+        if mba is None:
+            return False
+
+        # Pre-check: anchor must be 1-way
+        if anchor_blk.nsucc() != 1:
+            logger.warning(
+                "private_terminal_suffix: anchor blk[%d] is not 1-way (nsucc=%d)",
+                anchor_blk.serial,
+                anchor_blk.nsucc(),
+            )
+            return False
+
+        # Verify anchor still targets the shared entry
+        current_succ = anchor_blk.succ(0)
+        if current_succ != shared_entry_serial:
+            logger.warning(
+                "private_terminal_suffix: anchor blk[%d] targets blk[%d], "
+                "expected shared_entry blk[%d] — fail closed",
+                anchor_blk.serial,
+                current_succ,
+                shared_entry_serial,
+            )
+            return False
+
+        if not suffix_serials:
+            logger.warning("private_terminal_suffix: empty suffix_serials")
+            return False
+
+        # Validate suffix topology
+        for idx, suffix_serial in enumerate(suffix_serials):
+            suffix_blk = mba.get_mblock(suffix_serial)
+            if suffix_blk is None:
+                logger.warning(
+                    "private_terminal_suffix: suffix blk[%d] not found",
+                    suffix_serial,
+                )
+                return False
+            if idx < len(suffix_serials) - 1:
+                if suffix_blk.nsucc() != 1:
+                    logger.warning(
+                        "private_terminal_suffix: interior suffix blk[%d] is not 1-way (nsucc=%d)",
+                        suffix_serial,
+                        suffix_blk.nsucc(),
+                    )
+                    return False
+            else:
+                if suffix_blk.nsucc() != 0:
+                    logger.warning(
+                        "private_terminal_suffix: final suffix blk[%d] is not 0-way (nsucc=%d)",
+                        suffix_serial,
+                        suffix_blk.nsucc(),
+                    )
+                    return False
+
+        try:
+            old_stop_serial = mba.qty - 1
+            old_stop_pred_serials = [
+                serial
+                for serial in range(mba.qty)
+                if (blk := mba.get_mblock(serial)) is not None
+                and blk.nsucc() == 1
+                and blk.succ(0) == old_stop_serial
+            ]
+
+            cloned_serials: list[int] = []
+            # Clone suffix blocks in forward order (each creates a new block)
+            for idx, suffix_serial in enumerate(suffix_serials):
+                template_blk = mba.get_mblock(suffix_serial)
+                if template_blk is None:
+                    return False
+
+                is_last = idx == len(suffix_serials) - 1
+
+                # Collect instructions from template (skip trailing goto for non-final)
+                instructions_to_copy = []
+                cur_ins = template_blk.head
+                while cur_ins is not None:
+                    if (
+                        not is_last
+                        and template_blk.nsucc() == 1
+                        and template_blk.tail is not None
+                        and template_blk.tail.opcode == ida_hexrays.m_goto
+                        and cur_ins.next is None
+                    ):
+                        break
+                    cloned_ins = ida_hexrays.minsn_t(cur_ins)
+                    cloned_ins.setaddr(mba.entry_ea)
+                    instructions_to_copy.append(cloned_ins)
+                    cur_ins = cur_ins.next
+
+                # Create clone: last block is 0-way, others use shared_entry as
+                # placeholder target (gives nsucc==1 so chain wiring works).
+                cloned_blk = create_standalone_block(
+                    template_blk,
+                    instructions_to_copy,
+                    target_serial=None if is_last else shared_entry_serial,
+                    is_0_way=is_last,
+                    verify=False,
+                )
+                cloned_serials.append(cloned_blk.serial)
+
+                # Fix predecessors: remove any auto-inherited preds
+                prev_pred_serials = [x for x in cloned_blk.predset]
+                for prev_serial in prev_pred_serials:
+                    cloned_blk.predset._del(prev_serial)
+
+            # Fix stop-block relocation for all existing predecessors
+            new_stop_serial = mba.qty - 1
+            transient_stop_targets = set(cloned_serials)
+            for stop_pred_serial in old_stop_pred_serials:
+                stop_pred_blk = mba.get_mblock(stop_pred_serial)
+                if stop_pred_blk is None or stop_pred_blk.serial in transient_stop_targets:
+                    continue
+                if (
+                    stop_pred_blk.nsucc() != 1
+                    or stop_pred_blk.succ(0) not in transient_stop_targets
+                ):
+                    continue
+                if not change_1way_block_successor(
+                    stop_pred_blk,
+                    new_stop_serial,
+                    verify=False,
+                ):
+                    logger.warning(
+                        "private_terminal_suffix: failed to relocate stop pred blk[%d] -> blk[%d]",
+                        stop_pred_blk.serial,
+                        new_stop_serial,
+                    )
+                    return False
+
+            # Wire the cloned chain: each non-last clone -> next clone
+            for idx in range(len(cloned_serials) - 1):
+                clone_blk = mba.get_mblock(cloned_serials[idx])
+                next_clone_serial = cloned_serials[idx + 1]
+                if clone_blk is None:
+                    return False
+                if not change_1way_block_successor(
+                    clone_blk,
+                    next_clone_serial,
+                    verify=False,
+                ):
+                    logger.warning(
+                        "private_terminal_suffix: failed to wire clone blk[%d] -> blk[%d]",
+                        cloned_serials[idx],
+                        next_clone_serial,
+                    )
+                    return False
+
+            # Validate expected serials (informational only — clones already wired)
+            if clone_expected_serials:
+                for idx, (actual, expected) in enumerate(
+                    zip(cloned_serials, clone_expected_serials, strict=False)
+                ):
+                    if actual != expected:
+                        logger.info(
+                            "private_terminal_suffix: clone[%d] got blk[%d], expected blk[%d] (non-fatal)",
+                            idx,
+                            actual,
+                            expected,
+                        )
+
+            # Redirect anchor to first clone
+            if not change_1way_block_successor(
+                anchor_blk,
+                cloned_serials[0],
+                verify=False,
+            ):
+                logger.warning(
+                    "private_terminal_suffix: failed to redirect anchor blk[%d] -> clone blk[%d]",
+                    anchor_blk.serial,
+                    cloned_serials[0],
+                )
+                return False
+
+            logger.debug(
+                "private_terminal_suffix: anchor=%d -> clone chain %s (from suffix %s)",
+                anchor_blk.serial,
+                cloned_serials,
+                suffix_serials,
+            )
+            return True
+
+        except Exception as exc:
+            logger.error(
+                "Exception in private_terminal_suffix for anchor=%d suffix=%s: %s",
+                anchor_blk.serial,
+                suffix_serials,
                 exc,
             )
             import traceback

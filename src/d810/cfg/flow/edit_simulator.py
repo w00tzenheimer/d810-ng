@@ -39,6 +39,7 @@ from d810.cfg.plan import (
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
     PatchPlan,
+    PatchPrivateTerminalSuffix,
     PatchRemoveEdge,
     PatchRedirectBranch,
     PatchRedirectGoto,
@@ -495,6 +496,42 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                     )
                 )
 
+            case PatchPrivateTerminalSuffix(
+                anchor_serial=anchor,
+                shared_entry_serial=shared_entry,
+                suffix_serials=suffix,
+                clone_assigned_serials=clone_serials,
+            ):
+                # Model as: create cloned chain, redirect anchor to first clone.
+                # Each clone has one successor (next clone), except last (0 succs).
+                for idx, clone_serial in enumerate(clone_serials):
+                    if idx < len(clone_serials) - 1:
+                        next_serial = clone_serials[idx + 1]
+                    else:
+                        next_serial = None
+                    simulated.append(
+                        SimulatedEdit(
+                            kind="private_terminal_suffix_clone",
+                            source=suffix[idx],
+                            old_target=-1,
+                            new_target=next_serial,
+                            created_serial=clone_serial,
+                            stop_serial_before=stop_serial_before,
+                            stop_serial_after=stop_serial_after,
+                        )
+                    )
+                # Redirect anchor from shared_entry to first clone.
+                # Use dedicated kind so simulate_edits() fail-closes when
+                # anchor no longer targets shared_entry (backend parity).
+                simulated.append(
+                    SimulatedEdit(
+                        kind="private_terminal_suffix_anchor",
+                        source=anchor,
+                        old_target=shared_entry,
+                        new_target=clone_serials[0],
+                    )
+                )
+
             case LegacyBlockOperation(
                 modification=CreateConditionalRedirect(
                     source_block=src,
@@ -607,7 +644,17 @@ def simulate_edits(
 
         succs = result.get(edit.source, [])
 
-        if edit.kind in ("goto_redirect", "conditional_redirect"):
+        if edit.kind == "private_terminal_suffix_anchor":
+            # Fail-closed: anchor MUST still target shared_entry (old_target).
+            # Backend rejects this op otherwise; simulator must match.
+            new_succs = list(succs)
+            if edit.old_target in new_succs:
+                idx = new_succs.index(edit.old_target)
+                new_succs[idx] = edit.new_target
+                result[edit.source] = new_succs
+            # else: skip — anchor no longer targets shared_entry, no edit applied
+
+        elif edit.kind in ("goto_redirect", "conditional_redirect"):
             # Replace first occurrence of old_target with new_target
             new_succs = list(succs)
             try:
@@ -739,6 +786,17 @@ def simulate_edits(
                     clone_serial if succ == edit.source else succ
                     for succ in result[edit.via_pred]
                 ]
+
+        elif edit.kind == "private_terminal_suffix_clone":
+            clone_serial = edit.created_serial
+            if clone_serial is None:
+                clone_serial = max(result.keys(), default=-1) + 1
+            if edit.new_target is not None:
+                result[clone_serial] = [edit.new_target]
+            else:
+                result[clone_serial] = []
+            created_clones.add(clone_serial)
+            clone_origins[clone_serial] = edit
 
     return SimulationResult(
         adj=result,
