@@ -67,8 +67,6 @@ def _make_candidate(
         base_score=base,
         hint_adjustment=adj,
         effective_score=base + hint_delta,
-        strategy_name=frag.strategy_name,
-        family=frag.family,
     )
 
 
