@@ -138,8 +138,18 @@ class TransactionalExecutor:
             # Pre-execution safeguard gate: check before execute_stage()
             modifications = list(fragment.modifications)
             num_modifications = len(modifications)
+            safeguard_override = fragment.metadata.get("safeguard_min_required")
+            if safeguard_override is not None:
+                executor_logger.info(
+                    "[safeguard] using stage override: min_required=%d (stage=%s)",
+                    safeguard_override,
+                    fragment.strategy_name,
+                )
             safeguard_ok = should_apply_bulk_cfg_modifications(
-                num_modifications, total_handlers, "hodur"
+                num_modifications,
+                total_handlers,
+                "hodur",
+                min_required_override=safeguard_override,
             )
             if not safeguard_ok:
                 gate_accounting = GateAccounting().add(GateDecision(

@@ -348,5 +348,6 @@ class PrivateTerminalSuffixStrategy:
                 "corridor_info": corridor_info,
                 "anchor_count": len(anchors),
                 "carrier_bucket": decision.carrier_bucket.value,
+                "safeguard_min_required": max(2, len(anchors)),
             },
         )
