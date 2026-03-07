@@ -15,17 +15,13 @@ from d810.core.typing import TYPE_CHECKING
 from d810.core import logging
 from d810.cfg.flow.graph_checks import prove_terminal_sink
 from d810.recon.flow.bst_analysis import (
-    _mop_matches_stkoff,
-    find_bst_default_block,
     find_bst_default_block_snapshot,
 )
 from d810.recon.flow.bst_model import resolve_target_via_bst
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     collect_state_machine_blocks,
     evaluate_handler_paths,
-    find_terminal_exit_target,
     find_terminal_exit_target_snapshot,
-    resolve_exit_via_bst_default,
     resolve_exit_via_bst_default_snapshot,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
@@ -50,6 +46,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger("D810.hodur.strategy.direct_linearization")
 
 __all__ = ["DirectHandlerLinearizationStrategy"]
+
+
+def _mop_matches_stkoff_snapshot(mop_snap: object | None, stkoff: int) -> bool:
+    """Snapshot-based equivalent of ``_mop_matches_stkoff`` for ``MopSnapshot``.
+
+    Checks whether a :class:`~d810.cfg.flowgraph.MopSnapshot` represents a
+    stack variable operand at the given stack offset.  This avoids touching
+    live ``mop_t`` objects.
+    """
+    if mop_snap is None:
+        return False
+    return getattr(mop_snap, "stkoff", None) == stkoff
 
 
 class DirectHandlerLinearizationStrategy:
@@ -109,11 +117,9 @@ class DirectHandlerLinearizationStrategy:
         if not self.is_applicable(snapshot):
             return None
 
-        # K3: live mba_t still required — helper functions (evaluate_handler_paths,
-        # find_terminal_exit_target, resolve_exit_via_bst_default, find_bst_default_block,
-        # _mop_matches_stkoff) and instruction-chain walks (blk.head/tail/insn.next)
-        # all operate on live mblock_t objects.  Only topology-only loops (exit_blocks,
-        # adjacency) are migrated to flow_graph above.
+        # K3: live mba_t still required for DEEP_IDA paths —
+        # evaluate_handler_paths calls _forward_eval_insn on live minsn_t.
+        # All topology and instruction-chain walks are migrated to flow_graph snapshots.
         mba = snapshot.mba
         bst_result = snapshot.bst_result
         dispatcher_serial: int = snapshot.bst_dispatcher_serial
@@ -194,16 +200,7 @@ class DirectHandlerLinearizationStrategy:
                     exit_blocks.add(serial)
                 _preflight_adj[serial] = list(blk_snap.succs)
         else:
-            # K3: mba required — flow_graph not available in this snapshot
-            for i in range(mba.qty):
-                blk_i = mba.get_mblock(i)
-                succs = []
-                if blk_i is not None:
-                    if blk_i.nsucc() == 0:
-                        exit_blocks.add(i)
-                    for j in range(blk_i.nsucc()):
-                        succs.append(blk_i.succ(j))
-                _preflight_adj[i] = succs
+            raise ValueError("K3: flow_graph is required but not available in snapshot")
 
         def _queue_redirect(
             path: object,
@@ -217,8 +214,6 @@ class DirectHandlerLinearizationStrategy:
             of calling deferred.queue_*, it returns a descriptor that the outer
             function converts to graph modifications.
             """
-            exit_blk = mba.get_mblock(path.exit_block)
-
             # Fast path: exit block not yet claimed by any handler.
             if path.exit_block not in claimed_exits:
                 claimed_exits[path.exit_block] = target
@@ -258,11 +253,9 @@ class DirectHandlerLinearizationStrategy:
 
             old_target = 0
             # K3: TOPOLOGY_ONLY — use flow_graph for succ lookup
-            _exit_snap = fg.get_block(path.exit_block) if fg is not None else None
+            _exit_snap = fg.get_block(path.exit_block)
             if _exit_snap is not None and _exit_snap.nsucc > 0:
                 old_target = _exit_snap.succs[0]
-            elif exit_blk is not None and exit_blk.nsucc() > 0:
-                old_target = exit_blk.succ(0)
 
             edge_key = (path.exit_block, via_pred)
             if edge_key in claimed_edges:
@@ -287,29 +280,16 @@ class DirectHandlerLinearizationStrategy:
                     seg_key = (seg_src, seg_pred)
                     if seg_key not in claimed_edges and seg_src not in bst_node_blocks:
                         # K3: TOPOLOGY_ONLY — use flow_graph for nsucc/succ checks
-                        _seg_src_snap = fg.get_block(seg_src) if fg is not None else None
-                        _seg_pred_snap = fg.get_block(seg_pred) if fg is not None else None
-                        if _seg_src_snap is not None and _seg_pred_snap is not None:
-                            if _seg_src_snap.nsucc != 1:
-                                continue
-                            if _seg_pred_snap.nsucc != 1:
-                                continue
-                            if seg_src not in _seg_pred_snap.succs:
-                                continue
-                        else:
-                            seg_src_blk = mba.get_mblock(seg_src)
-                            seg_pred_blk = mba.get_mblock(seg_pred)
-                            if seg_src_blk is None or seg_pred_blk is None:
-                                continue
-                            if seg_src_blk.nsucc() != 1:
-                                continue
-                            if seg_pred_blk.nsucc() != 1:
-                                continue
-                            if not any(
-                                seg_pred_blk.succ(j) == seg_src
-                                for j in range(seg_pred_blk.nsucc())
-                            ):
-                                continue
+                        _seg_src_snap = fg.get_block(seg_src)
+                        _seg_pred_snap = fg.get_block(seg_pred)
+                        if _seg_src_snap is None or _seg_pred_snap is None:
+                            continue
+                        if _seg_src_snap.nsucc != 1:
+                            continue
+                        if _seg_pred_snap.nsucc != 1:
+                            continue
+                        if seg_src not in _seg_pred_snap.succs:
+                            continue
                         found_src = seg_src
                         found_pred = seg_pred
                         break
@@ -323,12 +303,8 @@ class DirectHandlerLinearizationStrategy:
                 src_block = found_src
                 use_pred = found_pred
                 # K3: TOPOLOGY_ONLY — use flow_graph for succ lookup
-                _src_snap = fg.get_block(src_block) if fg is not None else None
-                if _src_snap is not None:
-                    old_target = _src_snap.succs[0] if _src_snap.nsucc > 0 else 0
-                else:
-                    src_blk = mba.get_mblock(src_block)
-                    old_target = src_blk.succ(0) if src_blk is not None and src_blk.nsucc() > 0 else 0
+                _src_snap = fg.get_block(src_block)
+                old_target = _src_snap.succs[0] if _src_snap is not None and _src_snap.nsucc > 0 else 0
                 logger.info(
                     "REDIRECT_DECISION: exit_blk=%d target=%d via_pred=%d"
                     " decision=escalated reason=prior_edge_claimed",
@@ -429,6 +405,7 @@ class DirectHandlerLinearizationStrategy:
             if handler_serial in bst_node_blocks:
                 continue
 
+            # K3: DEEP_IDA — forward eval requires live minsn_t via mba
             paths = evaluate_handler_paths(
                 mba=mba,
                 entry_serial=handler_serial,
@@ -455,11 +432,8 @@ class DirectHandlerLinearizationStrategy:
                     # the function's real exit corridor so it survives DCE.
                     terminal_exit_blocks.add(path.exit_block)
                     # K3: TOPOLOGY_ONLY — use flow_graph for 0-succ check
-                    _exit_snap = fg.get_block(path.exit_block) if fg is not None else None
+                    _exit_snap = fg.get_block(path.exit_block)
                     _exit_nsucc = _exit_snap.nsucc if _exit_snap is not None else None
-                    if _exit_nsucc is None:
-                        exit_blk = mba.get_mblock(path.exit_block)
-                        _exit_nsucc = exit_blk.nsucc() if exit_blk is not None else None
                     if _exit_nsucc is not None and _exit_nsucc == 0:
                         # Block already has no successors (true terminal) — nothing to do.
                         logger.info(
@@ -473,14 +447,9 @@ class DirectHandlerLinearizationStrategy:
 
                     # Exit block still has successors (likely goto dispatcher).
                     # Find the function's terminal exit target (K3.5: snapshot).
-                    if fg is not None:
-                        terminal_target = find_terminal_exit_target_snapshot(
-                            fg, dispatcher_serial, sm_blocks
-                        )
-                    else:
-                        terminal_target = find_terminal_exit_target(
-                            mba, dispatcher_serial, sm_blocks
-                        )
+                    terminal_target = find_terminal_exit_target_snapshot(
+                        fg, dispatcher_serial, sm_blocks
+                    )
                     if terminal_target is not None and terminal_target != path.exit_block:
                         # Validate terminal sink before accepting redirect
                         sink_proof = prove_terminal_sink(
@@ -538,45 +507,27 @@ class DirectHandlerLinearizationStrategy:
 
                 if target_serial is None:
                     # No handler matches this state value — it's an exit transition.
-                    # K3.4: prefer snapshot for topology-only BST default lookup
-                    if fg is not None:
-                        bst_default = find_bst_default_block_snapshot(
-                            fg,
-                            dispatcher_serial,
-                            bst_result.bst_node_blocks,
-                            set(handler_state_map.keys()),
-                        )
-                    else:
-                        bst_default = find_bst_default_block(
-                            mba,
-                            dispatcher_serial,
-                            bst_result.bst_node_blocks,
-                            set(handler_state_map.keys()),
-                        )
+                    # K3: use flow_graph snapshot for topology-only BST default lookup
+                    bst_default = find_bst_default_block_snapshot(
+                        fg,
+                        dispatcher_serial,
+                        bst_result.bst_node_blocks,
+                        set(handler_state_map.keys()),
+                    )
                     exit_target: int | None = None
                     resolve_label: str = ""
                     if bst_default is not None and path.final_state is not None:
-                        # K3.4: prefer snapshot for BST walk with InsnSnapshot
-                        if fg is not None:
-                            exit_target = resolve_exit_via_bst_default_snapshot(
-                                fg, bst_default, path.final_state
-                            )
-                        else:
-                            exit_target = resolve_exit_via_bst_default(
-                                mba, bst_default, path.final_state
-                            )
+                        # K3: use flow_graph snapshot for BST walk
+                        exit_target = resolve_exit_via_bst_default_snapshot(
+                            fg, bst_default, path.final_state
+                        )
                         if exit_target is not None:
                             resolve_label = f"BST default blk[{bst_default}]"
                     if exit_target is None and path.final_state is not None:
-                        # K3.4: prefer snapshot for BST root-walk
-                        if fg is not None:
-                            exit_target = resolve_exit_via_bst_default_snapshot(
-                                fg, dispatcher_serial, path.final_state
-                            )
-                        else:
-                            exit_target = resolve_exit_via_bst_default(
-                                mba, dispatcher_serial, path.final_state
-                            )
+                        # K3: use flow_graph snapshot for BST root-walk
+                        exit_target = resolve_exit_via_bst_default_snapshot(
+                            fg, dispatcher_serial, path.final_state
+                        )
                         if exit_target is not None:
                             resolve_label = "BST root-walk"
                             bst_rootwalk_targets.add(exit_target)
@@ -609,33 +560,31 @@ class DirectHandlerLinearizationStrategy:
 
                                     )
                                 # NOP dead state_var writes in the resolved exit target block.
-                                exit_blk = mba.get_mblock(exit_target)
-                                if exit_blk is not None and exit_target not in bst_node_blocks:
-                                    scan_insn = exit_blk.head
-                                    while scan_insn is not None:
+                                # K3: INSN_CHAIN — migrated to snapshot iter_insns
+                                _exit_tgt_snap = fg.get_block(exit_target)
+                                if _exit_tgt_snap is not None and exit_target not in bst_node_blocks:
+                                    for _scan_insn in _exit_tgt_snap.iter_insns():
                                         if (
-                                            scan_insn.opcode == ida_hexrays.m_mov
-                                            and scan_insn.d is not None
-                                            and _mop_matches_stkoff(
-                                                scan_insn.d,
+                                            _scan_insn.opcode == ida_hexrays.m_mov
+                                            and _scan_insn.d is not None
+                                            and _mop_matches_stkoff_snapshot(
+                                                _scan_insn.d,
                                                 state_var_stkoff,
-                                                mba=mba,
                                             )
                                         ):
                                             logger.info(
                                                 "  NOP dead state_var write in exit target"
                                                 " blk[%d] ea=%#x",
                                                 exit_target,
-                                                scan_insn.ea,
+                                                _scan_insn.ea,
                                             )
                                             _append_nop(
 
                                                 source_block=exit_target,
 
-                                                instruction_ea=scan_insn.ea,
+                                                instruction_ea=_scan_insn.ea,
 
                                             )
-                                        scan_insn = scan_insn.next
                                 resolved_count += 1
                                 owned_transitions.add((incoming_state, path.final_state))
                         elif meta is not None and meta["kind"] in ("already_claimed", "already_claimed_edge"):
@@ -646,14 +595,10 @@ class DirectHandlerLinearizationStrategy:
 
                     # Fallback: redirect to bst_default directly (or terminal exit)
                     if bst_default is None:
-                        if fg is not None:
-                            bst_default = find_terminal_exit_target_snapshot(
-                                fg, dispatcher_serial, sm_blocks
-                            )
-                        else:
-                            bst_default = find_terminal_exit_target(
-                                mba, dispatcher_serial, sm_blocks
-                            )
+                        # K3: use flow_graph snapshot
+                        bst_default = find_terminal_exit_target_snapshot(
+                            fg, dispatcher_serial, sm_blocks
+                        )
                     if bst_default is not None:
                         _reason = (
                             f"hodur-linear: blk[{handler_serial}] "
@@ -690,14 +635,9 @@ class DirectHandlerLinearizationStrategy:
                         # NOP dead state writes (skip multi-pred blocks)
                         for write_blk, write_ea in path.state_writes:
                             # K3: TOPOLOGY_ONLY — use flow_graph for npred check
-                            _wb_snap = fg.get_block(write_blk) if fg is not None else None
-                            if _wb_snap is not None:
-                                if _wb_snap.npred > 1:
-                                    continue
-                            else:
-                                write_blk_obj = mba.get_mblock(write_blk)
-                                if write_blk_obj is not None and write_blk_obj.npred() > 1:
-                                    continue
+                            _wb_snap = fg.get_block(write_blk)
+                            if _wb_snap is not None and _wb_snap.npred > 1:
+                                continue
                             _append_nop(
 
                                 source_block=write_blk,
@@ -709,21 +649,13 @@ class DirectHandlerLinearizationStrategy:
                         owned_transitions.add((incoming_state, path.final_state))
 
         # ---- BST default back-edge pass ----
-        # K3.4: prefer snapshot for topology-only BST default lookup
-        if fg is not None:
-            bst_default_for_backedge = find_bst_default_block_snapshot(
-                fg,
-                dispatcher_serial,
-                bst_result.bst_node_blocks,
-                set(handler_state_map.keys()),
-            )
-        else:
-            bst_default_for_backedge = find_bst_default_block(
-                mba,
-                dispatcher_serial,
-                bst_result.bst_node_blocks,
-                set(handler_state_map.keys()),
-            )
+        # K3.4: use flow_graph snapshot for topology-only BST default lookup
+        bst_default_for_backedge = find_bst_default_block_snapshot(
+            fg,
+            dispatcher_serial,
+            bst_result.bst_node_blocks,
+            set(handler_state_map.keys()),
+        )
         if bst_default_for_backedge is not None:
             bst_default_region: set[int] = set()
             bde_queue: list[int] = [bst_default_for_backedge]
@@ -740,51 +672,42 @@ class DirectHandlerLinearizationStrategy:
                     continue
                 bst_default_region.add(serial)
                 # K3: TOPOLOGY_ONLY — use flow_graph for successor expansion
-                _bde_snap = fg.get_block(serial) if fg is not None else None
+                _bde_snap = fg.get_block(serial)
                 if _bde_snap is not None:
                     for _s in _bde_snap.succs:
                         bde_queue.append(_s)
-                else:
-                    blk = mba.get_mblock(serial)
-                    if blk is None:
-                        continue
-                    for i in range(blk.nsucc()):
-                        bde_queue.append(blk.succ(i))
 
             for serial in bst_default_region:
-                blk = mba.get_mblock(serial)
-                if blk is None:
+                _bde_blk_snap = fg.get_block(serial)
+                if _bde_blk_snap is None:
                     continue
                 backedge_succs = [
-                    blk.succ(i) for i in range(blk.nsucc())
-                    if blk.succ(i) in bst_node_blocks
+                    s for s in _bde_blk_snap.succs
+                    if s in bst_node_blocks
                 ]
                 if not backedge_succs:
                     continue
 
-                insn = blk.head
+                # K3: INSN_CHAIN — migrated to snapshot iter_insns
                 written_state = None
                 state_write_ea = None
-                while insn is not None:
-                    if insn.opcode == ida_hexrays.m_mov and insn.d is not None:
-                        if _mop_matches_stkoff(insn.d, state_var_stkoff, mba=mba):
-                            if insn.l is not None and insn.l.t == ida_hexrays.mop_n:
-                                written_state = int(insn.l.nnn.value)
-                                state_write_ea = insn.ea
-                    insn = insn.next
-
+                for insn_snap in _bde_blk_snap.iter_insns():
+                    if insn_snap.opcode == ida_hexrays.m_mov and insn_snap.d is not None:
+                        if _mop_matches_stkoff_snapshot(insn_snap.d, state_var_stkoff):
+                            if (
+                                insn_snap.l is not None
+                                and insn_snap.l.t == ida_hexrays.mop_n
+                                and insn_snap.l.value is not None
+                            ):
+                                written_state = int(insn_snap.l.value)
+                                state_write_ea = insn_snap.ea
                 if written_state is None:
                     continue
 
-                # K3.4: prefer snapshot for BST walk with InsnSnapshot
-                if fg is not None:
-                    target = resolve_exit_via_bst_default_snapshot(
-                        fg, bst_default_for_backedge, written_state
-                    )
-                else:
-                    target = resolve_exit_via_bst_default(
-                        mba, bst_default_for_backedge, written_state
-                    )
+                # K3.4: use flow_graph snapshot for BST walk
+                target = resolve_exit_via_bst_default_snapshot(
+                    fg, bst_default_for_backedge, written_state
+                )
                 if target is None:
                     continue
 
@@ -816,25 +739,24 @@ class DirectHandlerLinearizationStrategy:
                                 instruction_ea=state_write_ea,
 
                             )
-                        target_blk = mba.get_mblock(target)
-                        if target_blk is not None and target not in bst_node_blocks:
-                            scan_insn = target_blk.head
-                            while scan_insn is not None:
+                        # K3: INSN_CHAIN — migrated to snapshot iter_insns
+                        _tgt_snap = fg.get_block(target)
+                        if _tgt_snap is not None and target not in bst_node_blocks:
+                            for _scan_insn in _tgt_snap.iter_insns():
                                 if (
-                                    scan_insn.opcode == ida_hexrays.m_mov
-                                    and scan_insn.d is not None
-                                    and _mop_matches_stkoff(
-                                        scan_insn.d, state_var_stkoff, mba=mba
+                                    _scan_insn.opcode == ida_hexrays.m_mov
+                                    and _scan_insn.d is not None
+                                    and _mop_matches_stkoff_snapshot(
+                                        _scan_insn.d, state_var_stkoff
                                     )
                                 ):
                                     _append_nop(
 
                                         source_block=target,
 
-                                        instruction_ea=scan_insn.ea,
+                                        instruction_ea=_scan_insn.ea,
 
                                     )
-                                scan_insn = scan_insn.next
                         resolved_count += 1
 
         # ---- PASS 2: Hidden handler fixpoint closure ----
@@ -855,6 +777,7 @@ class DirectHandlerLinearizationStrategy:
             if rootwalk_blk in bst_node_blocks:
                 continue  # Skip actual BST comparison nodes
             try:
+                # K3: DEEP_IDA — forward eval requires live minsn_t via mba
                 hidden_paths = evaluate_handler_paths(
                     mba=mba,
                     entry_serial=rootwalk_blk,
@@ -871,23 +794,15 @@ class DirectHandlerLinearizationStrategy:
                     # still has successors (goto dispatcher).
                     terminal_exit_blocks.add(path.exit_block)
                     # K3: TOPOLOGY_ONLY — use flow_graph for 0-succ check
-                    _h_exit_snap = fg.get_block(path.exit_block) if fg is not None else None
+                    _h_exit_snap = fg.get_block(path.exit_block)
                     _h_exit_nsucc = _h_exit_snap.nsucc if _h_exit_snap is not None else None
-                    if _h_exit_nsucc is None:
-                        exit_blk = mba.get_mblock(path.exit_block)
-                        _h_exit_nsucc = exit_blk.nsucc() if exit_blk is not None else None
                     if _h_exit_nsucc is not None and _h_exit_nsucc == 0:
                         resolved_count += 1
                         continue  # True terminal, nothing to do.
-                    # K3.5: prefer snapshot path
-                    if fg is not None:
-                        terminal_target = find_terminal_exit_target_snapshot(
-                            fg, dispatcher_serial, sm_blocks
-                        )
-                    else:
-                        terminal_target = find_terminal_exit_target(
-                            mba, dispatcher_serial, sm_blocks
-                        )
+                    # K3.5: use flow_graph snapshot
+                    terminal_target = find_terminal_exit_target_snapshot(
+                        fg, dispatcher_serial, sm_blocks
+                    )
                     if terminal_target is not None and terminal_target != path.exit_block:
                         # Validate terminal sink before accepting redirect
                         sink_proof = prove_terminal_sink(
@@ -937,15 +852,10 @@ class DirectHandlerLinearizationStrategy:
                 # Try exact BST resolution first
                 target = resolve_target_via_bst(bst_result, path.final_state)
                 if target is None:
-                    # Try BST root-walk (K3.4: prefer snapshot)
-                    if fg is not None:
-                        target = resolve_exit_via_bst_default_snapshot(
-                            fg, dispatcher_serial, path.final_state
-                        )
-                    else:
-                        target = resolve_exit_via_bst_default(
-                            mba, dispatcher_serial, path.final_state
-                        )
+                    # Try BST root-walk (K3: use flow_graph snapshot)
+                    target = resolve_exit_via_bst_default_snapshot(
+                        fg, dispatcher_serial, path.final_state
+                    )
                     # Chain detection diagnostic
                     if (
                         target is not None
@@ -1011,14 +921,9 @@ class DirectHandlerLinearizationStrategy:
                         )
                         for write_blk, write_ea in path.state_writes:
                             # K3: TOPOLOGY_ONLY — use flow_graph for npred check
-                            _hwb_snap = fg.get_block(write_blk) if fg is not None else None
-                            if _hwb_snap is not None:
-                                if _hwb_snap.npred > 1:
-                                    continue  # Skip NOP on shared multi-pred blocks
-                            else:
-                                write_blk_obj = mba.get_mblock(write_blk)
-                                if write_blk_obj is not None and write_blk_obj.npred() > 1:
-                                    continue  # Skip NOP on shared multi-pred blocks
+                            _hwb_snap = fg.get_block(write_blk)
+                            if _hwb_snap is not None and _hwb_snap.npred > 1:
+                                continue  # Skip NOP on shared multi-pred blocks
                             _append_nop(
 
                                 source_block=write_blk,

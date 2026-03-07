@@ -13,9 +13,7 @@ from d810.core.typing import TYPE_CHECKING
 from d810.core import logging
 from d810.cfg.flowgraph import BlockSnapshot
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
-    can_reach_return,
     collect_state_machine_blocks,
-    find_terminal_exit_target,
     find_terminal_exit_target_snapshot,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
@@ -95,12 +93,8 @@ class TerminalLoopCleanupStrategy:
         if not self.is_applicable(snapshot):
             return None
 
-        # K3: live mba_t still required -- instruction-chain walks in
-        # _is_lightweight_terminal_transition_block, _is_degenerate_loop_block,
-        # _queue_legacy_terminal_backedge_fix, and helper find_terminal_exit_target
-        # all operate on live mblock_t objects.  Only _collect_nearby_blocks
-        # (pure topology BFS) is migrated to flow_graph.
-        mba = snapshot.mba
+        # K3: fully migrated to FlowGraph
+        flow_graph = snapshot.flow_graph
         sm = snapshot.state_machine
         handlers = getattr(sm, "handlers", {}) or {}
 
@@ -116,44 +110,38 @@ class TerminalLoopCleanupStrategy:
 
         # --- _queue_terminal_backedge_fix ---
         self._queue_terminal_backedge_fix(
-            mba=mba,
             sm=sm,
             handlers=handlers,
             state_machine_blocks=state_machine_blocks,
             first_check_block=first_check_block,
-            find_terminal_exit_target=find_terminal_exit_target,
             ida_hexrays=ida_hexrays,
             edits=modifications,
             owned_blocks=owned_blocks,
             builder=builder,
-            flow_graph=snapshot.flow_graph,
+            flow_graph=flow_graph,
         )
 
         # --- _queue_legacy_terminal_backedge_fix ---
         self._queue_legacy_terminal_backedge_fix(
-            mba=mba,
             sm=sm,
             state_machine_blocks=state_machine_blocks,
             first_check_block=first_check_block,
-            find_terminal_exit_target=find_terminal_exit_target,
             ida_hexrays=ida_hexrays,
             edits=modifications,
             owned_blocks=owned_blocks,
             builder=builder,
-            flow_graph=snapshot.flow_graph,
+            flow_graph=flow_graph,
         )
 
         # --- _fix_degenerate_terminal_loops ---
         self._fix_degenerate_terminal_loops(
-            mba=mba,
             handlers=handlers,
             state_machine_blocks=state_machine_blocks,
-            find_terminal_exit_target=find_terminal_exit_target,
             ida_hexrays=ida_hexrays,
             edits=modifications,
             owned_blocks=owned_blocks,
             builder=builder,
-            flow_graph=snapshot.flow_graph,
+            flow_graph=flow_graph,
         )
 
         if not modifications:
@@ -187,12 +175,13 @@ class TerminalLoopCleanupStrategy:
     def _find_terminal_loopback_transition(
         self,
         sm: object,
-        mba: object,
+        flow_graph: object,
         ida_hexrays: object,
     ) -> object | None:
         """Find the unique transition that loops back to the initial state.
 
         Faithful port of HodurUnflattener._find_terminal_loopback_transition.
+        K3: migrated from mba.get_mblock to flow_graph.get_block + snapshot.
         """
         if sm is None or sm.initial_state is None:
             return None
@@ -208,63 +197,49 @@ class TerminalLoopCleanupStrategy:
             return None
 
         transition = loopbacks[0]
-        transition_blk = mba.get_mblock(transition.from_block)
-        if transition_blk is None:
+        blk_snap = flow_graph.get_block(transition.from_block)
+        if blk_snap is None:
             return None
 
-        if not self._is_lightweight_terminal_transition_block(
-            transition_blk, sm, ida_hexrays
+        # Resolve state_var shape for snapshot path.
+        _sv = getattr(sm, "state_var", None) if sm is not None else None
+        _sv_t: int = getattr(_sv, "t", -1) if _sv is not None else -1
+        _sv_size: int = getattr(_sv, "size", 4) if _sv is not None else 4
+        _sv_stkoff: int | None = None
+        _sv_reg: int | None = None
+        if _sv is not None:
+            if _sv_t == ida_hexrays.mop_S:
+                _s = getattr(_sv, "s", None)
+                _sv_stkoff = getattr(_s, "off", None) if _s is not None else None
+            elif _sv_t == ida_hexrays.mop_r:
+                _sv_reg = getattr(_sv, "r", None)
+
+        _state_check_opcodes: set[int] = {
+            ida_hexrays.m_jnz, ida_hexrays.m_jz,
+            ida_hexrays.m_jae, ida_hexrays.m_jb,
+            ida_hexrays.m_ja, ida_hexrays.m_jbe,
+            ida_hexrays.m_jg, ida_hexrays.m_jge,
+            ida_hexrays.m_jl, ida_hexrays.m_jle,
+        }
+
+        if not self._is_lightweight_terminal_transition_snapshot(
+            blk_snap,
+            state_var_t=_sv_t,
+            state_var_size=_sv_size,
+            state_var_stkoff=_sv_stkoff,
+            state_var_reg=_sv_reg,
+            m_mov=ida_hexrays.m_mov,
+            m_goto=ida_hexrays.m_goto,
+            m_nop=ida_hexrays.m_nop,
+            mop_z=ida_hexrays.mop_z,
+            mop_n=ida_hexrays.mop_n,
+            mop_S=ida_hexrays.mop_S,
+            mop_r=ida_hexrays.mop_r,
+            state_check_opcodes=_state_check_opcodes,
         ):
             return None
 
         return transition
-
-    def _is_lightweight_terminal_transition_block(
-        self,
-        blk: object,
-        sm: object,
-        ida_hexrays: object,
-    ) -> bool:
-        """Return True if the block is a trivial transition (mov+goto/nop only).
-
-        Faithful port of HodurUnflattener._is_lightweight_terminal_transition_block.
-        """
-        if sm is None or sm.state_var is None:
-            return False
-
-        # Build HODUR_STATE_CHECK_OPCODES locally (IDA-runtime values).
-        state_check_opcodes = {
-            ida_hexrays.m_jnz,
-            ida_hexrays.m_jz,
-            ida_hexrays.m_jae,
-            ida_hexrays.m_jb,
-            ida_hexrays.m_ja,
-            ida_hexrays.m_jbe,
-            ida_hexrays.m_jg,
-            ida_hexrays.m_jge,
-            ida_hexrays.m_jl,
-            ida_hexrays.m_jle,
-        }
-
-        state_var = sm.state_var
-        insn = blk.head
-        while insn:
-            if insn.opcode == ida_hexrays.m_mov:
-                if (
-                    insn.d.t == ida_hexrays.mop_z
-                    or not self._mops_match_state_var(insn.d, state_var, ida_hexrays)
-                    or insn.l.t != ida_hexrays.mop_n
-                ):
-                    return False
-            elif insn.opcode in (ida_hexrays.m_goto, ida_hexrays.m_nop):
-                pass
-            else:
-                # Allow conditional jump tails on 2-way transition blocks.
-                if insn != blk.tail or insn.opcode not in state_check_opcodes:
-                    return False
-            insn = insn.next
-
-        return True
 
     @staticmethod
     def _is_lightweight_terminal_transition_snapshot(
@@ -331,59 +306,29 @@ class TerminalLoopCleanupStrategy:
                     return False
         return True
 
-    def _mops_match_state_var(
-        self,
-        candidate: object,
-        state_var: object,
-        ida_hexrays: object,
-    ) -> bool:
-        """Compare a mop_t against the state variable mop_t."""
-        if candidate is None:
-            return False
-        if candidate.t != state_var.t:
-            return False
-        if candidate.size != state_var.size:
-            return False
-        if candidate.t == ida_hexrays.mop_S:
-            return candidate.s.off == state_var.s.off
-        if candidate.t == ida_hexrays.mop_r:
-            return candidate.r == state_var.r
-        return False
-
+    @staticmethod
     def _collect_nearby_blocks(
-        self,
-        mba: object,
+        flow_graph: object,
         seed_blocks: set[int],
         depth: int = 2,
-        flow_graph: object | None = None,
     ) -> set[int]:
         """BFS expansion around seed_blocks up to given depth.
 
         Faithful port of HodurUnflattener._collect_nearby_blocks.
-        Uses flow_graph snapshot for topology when available.
+        K3: fully migrated to FlowGraph (mba fallback removed).
         """
         nearby = set(seed_blocks)
         frontier = set(seed_blocks)
         for _ in range(max(depth, 0)):
             next_frontier: set[int] = set()
             for blk_serial in frontier:
-                if flow_graph is not None:
-                    blk_snap = flow_graph.get_block(blk_serial)
-                    if blk_snap is None:
-                        continue
-                    succs = blk_snap.succs
-                    preds = blk_snap.preds
-                else:
-                    # K3: mba required -- flow_graph not available
-                    blk = mba.get_mblock(blk_serial)
-                    if blk is None:
-                        continue
-                    succs = blk.succset
-                    preds = blk.predset
-                for succ in succs:
+                blk_snap = flow_graph.get_block(blk_serial)
+                if blk_snap is None:
+                    continue
+                for succ in blk_snap.succs:
                     if succ not in nearby:
                         next_frontier.add(succ)
-                for pred in preds:
+                for pred in blk_snap.preds:
                     if pred not in nearby:
                         next_frontier.add(pred)
             if not next_frontier:
@@ -391,25 +336,6 @@ class TerminalLoopCleanupStrategy:
             nearby.update(next_frontier)
             frontier = next_frontier
         return nearby
-
-    def _is_degenerate_loop_block(
-        self,
-        blk: object,
-        ida_hexrays: object,
-    ) -> bool:
-        """Return True for trivial synthetic loop blocks (nop/goto-only).
-
-        Faithful port of HodurUnflattener._is_degenerate_loop_block.
-        """
-        insn = blk.head
-        meaningful = 0
-        while insn:
-            if insn.opcode not in (ida_hexrays.m_nop, ida_hexrays.m_goto):
-                meaningful += 1
-                if meaningful > 0:
-                    return False
-            insn = insn.next
-        return True
 
     @staticmethod
     def _is_degenerate_loop_block_snapshot(
@@ -437,12 +363,10 @@ class TerminalLoopCleanupStrategy:
 
     def _queue_terminal_backedge_fix(
         self,
-        mba: object,
         sm: object,
         handlers: dict,
         state_machine_blocks: set[int],
         first_check_block: int,
-        find_terminal_exit_target: object,
         ida_hexrays: object,
         edits: list,
         owned_blocks: set[int],
@@ -452,6 +376,7 @@ class TerminalLoopCleanupStrategy:
         """Find and fix the terminal back-edge that creates the while(1) wrapper.
 
         Faithful port of HodurUnflattener._queue_terminal_backedge_fix.
+        K3: fully migrated to FlowGraph (mba removed).
         """
         if sm is None or sm.initial_state is None:
             return
@@ -459,11 +384,9 @@ class TerminalLoopCleanupStrategy:
         # Preserve the previously-stable behavior for classic jnz-based Hodur/ABC
         # flattening before attempting broader structural heuristics.
         if self._queue_legacy_terminal_backedge_fix(
-            mba=mba,
             sm=sm,
             state_machine_blocks=state_machine_blocks,
             first_check_block=first_check_block,
-            find_terminal_exit_target=find_terminal_exit_target,
             ida_hexrays=ida_hexrays,
             edits=edits,
             owned_blocks=owned_blocks,
@@ -472,15 +395,9 @@ class TerminalLoopCleanupStrategy:
         ):
             return
 
-        # K3.5: prefer snapshot path when flow_graph is available
-        if flow_graph is not None:
-            success_target = find_terminal_exit_target_snapshot(
-                flow_graph, first_check_block, state_machine_blocks
-            )
-        else:
-            success_target = find_terminal_exit_target(
-                mba, first_check_block, state_machine_blocks
-            )
+        success_target = find_terminal_exit_target_snapshot(
+            flow_graph, first_check_block, state_machine_blocks
+        )
         if success_target is None:
             return
 
@@ -501,7 +418,7 @@ class TerminalLoopCleanupStrategy:
         # Fallback: no explicit loopback transition found, use structural back-edges
         # to the dispatcher entry among lightweight state-machine blocks.
         #
-        # K3.6: resolve state_var shape for snapshot path.
+        # K3: resolve state_var shape for snapshot path.
         _sv = getattr(sm, "state_var", None) if sm is not None else None
         _sv_t: int = getattr(_sv, "t", -1) if _sv is not None else -1
         _sv_size: int = getattr(_sv, "size", 4) if _sv is not None else 4
@@ -524,38 +441,25 @@ class TerminalLoopCleanupStrategy:
 
         if not candidate_blocks:
             for blk_serial in state_machine_blocks:
-                # K3.6: prefer BlockSnapshot for lightweight transition check.
-                blk_snap_cand = flow_graph.get_block(blk_serial) if flow_graph is not None else None
-                if blk_snap_cand is not None:
-                    if first_check_block not in blk_snap_cand.succs:
-                        continue
-                    if self._is_lightweight_terminal_transition_snapshot(
-                        blk_snap_cand,
-                        state_var_t=_sv_t,
-                        state_var_size=_sv_size,
-                        state_var_stkoff=_sv_stkoff,
-                        state_var_reg=_sv_reg,
-                        m_mov=ida_hexrays.m_mov,
-                        m_goto=ida_hexrays.m_goto,
-                        m_nop=ida_hexrays.m_nop,
-                        mop_z=ida_hexrays.mop_z,
-                        mop_n=ida_hexrays.mop_n,
-                        mop_S=ida_hexrays.mop_S,
-                        mop_r=ida_hexrays.mop_r,
-                        state_check_opcodes=_state_check_opcodes,
-                    ):
-                        candidate_blocks.append(blk_serial)
+                blk_snap_cand = flow_graph.get_block(blk_serial)
+                if blk_snap_cand is None:
                     continue
-
-                # Fallback: live mba_t
-                blk = mba.get_mblock(blk_serial)
-                if blk is None:
+                if first_check_block not in blk_snap_cand.succs:
                     continue
-                if (
-                    first_check_block in blk.succset
-                    and self._is_lightweight_terminal_transition_block(
-                        blk, sm, ida_hexrays
-                    )
+                if self._is_lightweight_terminal_transition_snapshot(
+                    blk_snap_cand,
+                    state_var_t=_sv_t,
+                    state_var_size=_sv_size,
+                    state_var_stkoff=_sv_stkoff,
+                    state_var_reg=_sv_reg,
+                    m_mov=ida_hexrays.m_mov,
+                    m_goto=ida_hexrays.m_goto,
+                    m_nop=ida_hexrays.m_nop,
+                    mop_z=ida_hexrays.mop_z,
+                    mop_n=ida_hexrays.mop_n,
+                    mop_S=ida_hexrays.mop_S,
+                    mop_r=ida_hexrays.mop_r,
+                    state_check_opcodes=_state_check_opcodes,
                 ):
                     candidate_blocks.append(blk_serial)
 
@@ -565,69 +469,39 @@ class TerminalLoopCleanupStrategy:
                 continue
             processed_blocks.add(blk_serial)
 
-            # K3: TOPOLOGY_ONLY -- use flow_graph for succ/nsucc checks
-            blk_snap = flow_graph.get_block(blk_serial) if flow_graph is not None else None
-            if blk_snap is not None:
-                if not any(succ in check_blocks for succ in blk_snap.succs):
-                    continue
+            blk_snap = flow_graph.get_block(blk_serial)
+            if blk_snap is None:
+                continue
+            if not any(succ in check_blocks for succ in blk_snap.succs):
+                continue
 
-                logger.info(
-                    "Redirecting terminal loopback block %d -> exit block %d",
-                    blk_serial,
-                    success_target,
+            logger.info(
+                "Redirecting terminal loopback block %d -> exit block %d",
+                blk_serial,
+                success_target,
+            )
+            if blk_snap.nsucc == 1:
+                edits.append(
+                    builder.goto_redirect(
+                        source_block=blk_serial,
+                        target_block=success_target,
+                    )
                 )
-                if blk_snap.nsucc == 1:
-                    edits.append(
-                        builder.goto_redirect(
-                            source_block=blk_serial,
-                            target_block=success_target,
-                        )
+                owned_blocks.add(blk_serial)
+            elif blk_snap.nsucc == 2:
+                edits.append(
+                    builder.convert_to_goto(
+                        source_block=blk_serial,
+                        target_block=success_target,
                     )
-                    owned_blocks.add(blk_serial)
-                elif blk_snap.nsucc == 2:
-                    edits.append(
-                        builder.convert_to_goto(
-                            source_block=blk_serial,
-                            target_block=success_target,
-                        )
-                    )
-                    owned_blocks.add(blk_serial)
-            else:
-                blk = mba.get_mblock(blk_serial)
-                if blk is None:
-                    continue
-                if not any(succ in check_blocks for succ in blk.succset):
-                    continue
-
-                logger.info(
-                    "Redirecting terminal loopback block %d -> exit block %d",
-                    blk_serial,
-                    success_target,
                 )
-                if blk.nsucc() == 1:
-                    edits.append(
-                        builder.goto_redirect(
-                            source_block=blk_serial,
-                            target_block=success_target,
-                        )
-                    )
-                    owned_blocks.add(blk_serial)
-                elif blk.nsucc() == 2:
-                    edits.append(
-                        builder.convert_to_goto(
-                            source_block=blk_serial,
-                            target_block=success_target,
-                        )
-                    )
-                    owned_blocks.add(blk_serial)
+                owned_blocks.add(blk_serial)
 
     def _queue_legacy_terminal_backedge_fix(
         self,
-        mba: object,
         sm: object,
         state_machine_blocks: set[int],
         first_check_block: int,
-        find_terminal_exit_target: object,
         ida_hexrays: object,
         edits: list,
         owned_blocks: set[int],
@@ -637,6 +511,7 @@ class TerminalLoopCleanupStrategy:
         """Legacy Hodur cleanup: rewrite direct goto back-edges to first check for jnz wrappers.
 
         Faithful port of HodurUnflattener._queue_legacy_terminal_backedge_fix.
+        K3: fully migrated to FlowGraph (mba removed).
 
         Returns:
             True if any redirects were queued, False otherwise.
@@ -644,28 +519,24 @@ class TerminalLoopCleanupStrategy:
         if sm is None:
             return False
 
-        first_check_blk = mba.get_mblock(first_check_block)
-        if first_check_blk is None or first_check_blk.tail is None:
+        first_check_snap = flow_graph.get_block(first_check_block)
+        if first_check_snap is None or first_check_snap.tail is None:
             return False
 
         # Default: jnz jump target (next check block in chain)
         jnz_target = None
+        tail_insn = first_check_snap.tail
         if (
-            first_check_blk.tail.opcode == ida_hexrays.m_jnz
-            and first_check_blk.tail.d.t == ida_hexrays.mop_b
+            tail_insn.opcode == ida_hexrays.m_jnz
+            and tail_insn.d is not None
+            and tail_insn.d.t == ida_hexrays.mop_b
         ):
-            jnz_target = first_check_blk.tail.d.b
+            jnz_target = tail_insn.d.block_ref
 
         # Prefer true exit target when it escapes the state machine region.
-        # K3.5: prefer snapshot path when flow_graph is available
-        if flow_graph is not None:
-            exit_target = find_terminal_exit_target_snapshot(
-                flow_graph, first_check_blk.serial, state_machine_blocks
-            )
-        else:
-            exit_target = find_terminal_exit_target(
-                mba, first_check_blk.serial, state_machine_blocks
-            )
+        exit_target = find_terminal_exit_target_snapshot(
+            flow_graph, first_check_block, state_machine_blocks
+        )
         if exit_target is not None and exit_target not in state_machine_blocks:
             success_target = exit_target
         else:
@@ -675,17 +546,18 @@ class TerminalLoopCleanupStrategy:
             return False
 
         queued_any = False
-        for blk_serial in range(mba.qty):
-            blk = mba.get_mblock(blk_serial)
-            if blk is None:
+        for blk_serial in range(flow_graph.block_count):
+            blk_snap = flow_graph.get_block(blk_serial)
+            if blk_snap is None:
                 continue
-            if first_check_block not in blk.succset:
+            if first_check_block not in blk_snap.succs:
                 continue
             if blk_serial <= first_check_block:
                 continue
-            if blk.tail is None or blk.tail.opcode != ida_hexrays.m_goto:
+            if blk_snap.tail is None or blk_snap.tail.opcode != ida_hexrays.m_goto:
                 continue
-            if blk.tail.l.t != ida_hexrays.mop_b or blk.tail.l.b != first_check_block:
+            blk_tail_l = blk_snap.tail.l
+            if blk_tail_l is None or blk_tail_l.t != ida_hexrays.mop_b or blk_tail_l.block_ref != first_check_block:
                 continue
 
             edits.append(
@@ -701,10 +573,8 @@ class TerminalLoopCleanupStrategy:
 
     def _fix_degenerate_terminal_loops(
         self,
-        mba: object,
         handlers: dict,
         state_machine_blocks: set[int],
-        find_terminal_exit_target: object,
         ida_hexrays: object,
         edits: list,
         owned_blocks: set[int],
@@ -714,73 +584,71 @@ class TerminalLoopCleanupStrategy:
         """Redirect trivial terminal loops that can remain after unflattening.
 
         Faithful port of HodurUnflattener._fix_degenerate_terminal_loops.
+        K3: fully migrated to FlowGraph (mba removed).
         """
         if not handlers:
             return
 
         first_check_block = list(handlers.values())[0].check_block
-        # K3.5: prefer snapshot path when flow_graph is available
-        if flow_graph is not None:
-            exit_target = find_terminal_exit_target_snapshot(
-                flow_graph, first_check_block, state_machine_blocks
-            )
-        else:
-            exit_target = find_terminal_exit_target(
-                mba, first_check_block, state_machine_blocks
-            )
+        exit_target = find_terminal_exit_target_snapshot(
+            flow_graph, first_check_block, state_machine_blocks
+        )
         if exit_target is None:
             return
 
         candidate_blocks = self._collect_nearby_blocks(
-            mba, state_machine_blocks, depth=4, flow_graph=flow_graph,
+            flow_graph, state_machine_blocks, depth=4,
         )
 
+        m_nop = ida_hexrays.m_nop
+        m_goto = ida_hexrays.m_goto
+
         for blk_serial in sorted(candidate_blocks):
-            blk = mba.get_mblock(blk_serial)  # K3: shared with insn_chain (_is_degenerate_loop_block)
-            if blk is None:
+            blk_snap = flow_graph.get_block(blk_serial)
+            if blk_snap is None:
                 continue
-            if blk.nsucc() != 1 or not self._is_degenerate_loop_block(  # K3: shared with insn_chain
-                blk, ida_hexrays
+            if blk_snap.nsucc != 1 or not self._is_degenerate_loop_block_snapshot(
+                blk_snap, m_nop, m_goto
             ):
                 continue
 
-            succ = next(iter(blk.succset))  # K3: shared with insn_chain
-            if succ == blk.serial and blk.serial != exit_target:
+            succ = blk_snap.succs[0]
+            if succ == blk_snap.serial and blk_snap.serial != exit_target:
                 edits.append(
                     builder.goto_redirect(
-                        source_block=blk.serial,
+                        source_block=blk_snap.serial,
                         target_block=exit_target,
                     )
                 )
-                owned_blocks.add(blk.serial)
+                owned_blocks.add(blk_snap.serial)
                 logger.info(
                     "Queued redirect: terminal self-loop block %d -> %d",
-                    blk.serial,
+                    blk_snap.serial,
                     exit_target,
                 )
                 continue
 
-            succ_blk = mba.get_mblock(succ)  # K3: shared with insn_chain (_is_degenerate_loop_block)
-            if succ_blk is None or succ_blk.nsucc() != 1:  # K3: shared with insn_chain
+            succ_snap = flow_graph.get_block(succ)
+            if succ_snap is None or succ_snap.nsucc != 1:
                 continue
-            if not self._is_degenerate_loop_block(succ_blk, ida_hexrays):
+            if not self._is_degenerate_loop_block_snapshot(succ_snap, m_nop, m_goto):
                 continue
-            succ2 = next(iter(succ_blk.succset))  # K3: shared with insn_chain
+            succ2 = succ_snap.succs[0]
             if (
-                succ2 == blk.serial
-                and blk.serial != exit_target
+                succ2 == blk_snap.serial
+                and blk_snap.serial != exit_target
                 and succ != exit_target
             ):
                 edits.append(
                     builder.goto_redirect(
-                        source_block=blk.serial,
+                        source_block=blk_snap.serial,
                         target_block=exit_target,
                     )
                 )
-                owned_blocks.add(blk.serial)
+                owned_blocks.add(blk_snap.serial)
                 logger.info(
                     "Queued redirect: terminal 2-block loop %d<->%d via %d",
-                    blk.serial,
+                    blk_snap.serial,
                     succ,
                     exit_target,
                 )

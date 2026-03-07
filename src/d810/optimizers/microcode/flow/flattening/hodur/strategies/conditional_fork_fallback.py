@@ -93,33 +93,40 @@ class ConditionalForkFallbackStrategy:
     # Private helpers (ported from HodurUnflattener)
     # ------------------------------------------------------------------
 
-    def _find_conditional_predecessor(self, mba: object, start_block: int) -> int | None:
+    def _find_conditional_predecessor(
+        self,
+        start_block: int,
+        flow_graph: object,
+    ) -> int | None:
         """Walk backward along single-predecessor chains to find a 2-way block.
 
-        Only follows single-predecessor paths (npred()==1) to avoid crossing
+        Only follows single-predecessor paths (npred==1) to avoid crossing
         dispatcher boundaries. Returns the serial of the first 2-way conditional
         block found, or None.
 
         Port of HodurUnflattener._find_conditional_predecessor.
+        K3: fully migrated to flow_graph (TOPO + INSN_CHAIN via tail_opcode).
         """
         current = start_block
         visited: set[int] = {current}
-        max_depth = mba.qty  # Safety bound  # K3: shared with insn_chain
+        max_depth = flow_graph.block_count  # Safety bound
 
         for _ in range(max_depth):
-            blk = mba.get_mblock(current)  # K3: shared with insn_chain
-            if blk.npred() != 1:  # K3: shared with insn_chain
-                return None  # Multi-predecessor — bail
+            blk_snap = flow_graph.get_block(current)
+            if blk_snap is None or blk_snap.npred != 1:
+                return None  # Multi-predecessor or missing — bail
 
-            pred_serial = blk.predset[0]  # K3: shared with insn_chain
+            pred_serial = blk_snap.preds[0]
             if pred_serial in visited:
                 return None  # Cycle
 
-            pred_blk = mba.get_mblock(pred_serial)
+            pred_snap = flow_graph.get_block(pred_serial)
+            if pred_snap is None:
+                return None
             if (
-                pred_blk.nsucc() == 2
-                and pred_blk.tail
-                and pred_blk.tail.opcode
+                pred_snap.nsucc == 2
+                and pred_snap.tail_opcode is not None
+                and pred_snap.tail_opcode
                 in (
                     ida_hexrays.m_jcnd,
                     ida_hexrays.m_jnz,
@@ -141,37 +148,104 @@ class ConditionalForkFallbackStrategy:
 
         return None
 
+    @staticmethod
+    def _extract_check_constant_from_snapshot(
+        insn_snap: object,
+    ) -> tuple[int, int, int] | None:
+        """Snapshot-based equivalent of _extract_check_constant_and_opcode.
+
+        Reads InsnSnapshot.l / InsnSnapshot.r to find the numeric operand
+        and returns (normalized_opcode, constant_value, operand_size).
+        """
+        l_mop = getattr(insn_snap, "l", None)
+        r_mop = getattr(insn_snap, "r", None)
+        opcode = insn_snap.opcode
+
+        # Determine which operand is mop_n (numeric)
+        if l_mop is not None and l_mop.t == ida_hexrays.mop_n:
+            num_val = l_mop.value
+            num_size = l_mop.size
+            # Operands are reversed — swap opcode direction
+            normalized = HodurStateMachineDetector._swap_jump_opcode_for_reversed_operands(opcode)
+        elif r_mop is not None and r_mop.t == ida_hexrays.mop_n:
+            num_val = r_mop.value
+            num_size = r_mop.size
+            normalized = opcode
+        else:
+            return None
+
+        if num_val is None:
+            return None
+        return (normalized, int(num_val), num_size)
+
+    @staticmethod
+    def _get_jump_and_fallthrough_from_snapshot(
+        blk_snap: object,
+    ) -> tuple[int | None, int | None]:
+        """Snapshot-based equivalent of _get_jump_and_fallthrough_targets.
+
+        Uses BlockSnapshot.tail.d.block_ref for jump target and
+        BlockSnapshot.succs to derive fallthrough.
+        """
+        tail = blk_snap.tail
+        if tail is None:
+            return None, None
+        d_mop = getattr(tail, "d", None)
+        if d_mop is None or d_mop.t != ida_hexrays.mop_b:
+            return None, None
+
+        jump_target = d_mop.block_ref
+        if jump_target is None:
+            return None, None
+
+        fallthrough = None
+        for succ in blk_snap.succs:
+            if succ != jump_target:
+                fallthrough = succ
+                break
+
+        if fallthrough is None and blk_snap.serial + 1 < len(blk_snap.succs) + blk_snap.serial + 1:
+            # Cannot determine fallthrough reliably from snapshot alone
+            pass
+
+        return jump_target, fallthrough
+
     def _resolve_conditional_chain_target(
         self,
-        mba: object,
         start_block: int,
         state_value: int,
         hodur_state_check_opcodes: list,
         detector_cls: object,
+        flow_graph: object,
     ) -> int | None:
         """Follow conditional-chain comparisons for a concrete state until a leaf block.
 
         Port of HodurUnflattener._resolve_conditional_chain_target.
+        K3: fully migrated to flow_graph (tail_opcode + snapshot constant extraction).
         """
         visited: set[int] = set()
         current = start_block
 
-        for _ in range(mba.qty):  # K3: shared with insn_chain
+        for _ in range(flow_graph.block_count):
             if current in visited:
                 return None
             visited.add(current)
 
-            blk = mba.get_mblock(current)
-            if blk.tail is None or blk.tail.opcode not in hodur_state_check_opcodes:
+            blk_snap = flow_graph.get_block(current)
+            if blk_snap is None:
+                return None
+            if blk_snap.tail_opcode is None or blk_snap.tail_opcode not in hodur_state_check_opcodes:
                 return current
-            check_info = detector_cls._extract_check_constant_and_opcode(blk.tail)
+
+            tail_insn = blk_snap.tail
+            if tail_insn is None:
+                return current
+            check_info = self._extract_check_constant_from_snapshot(tail_insn)
             if check_info is None:
                 return current
             check_opcode, check_const, check_size = check_info
 
-            jump_target, fallthrough = (
-                detector_cls._get_jump_and_fallthrough_targets(blk)
-            )
+            jump_target, fallthrough = self._get_jump_and_fallthrough_from_snapshot(blk_snap)
             if jump_target is None or fallthrough is None:
                 return None
 
@@ -193,18 +267,19 @@ class ConditionalForkFallbackStrategy:
         mba: object,
         dispatcher_set: set[int],
         entry_serial: int,
-        flow_graph: object | None = None,
+        flow_graph: object,
     ) -> list:
         """Collect all mops used-before-defined in the ladder (dispatcher) blocks.
 
         Port of HodurUnflattener._collect_ladder_use_before_def.
+        K3: BFS topology uses flow_graph; instruction walk is DEEP_IDA (for_all_ops).
         """
         use_list: list = []
         def_list: list = []
         use_before_def: list = []
 
         # Find all reachable blocks within dispatcher_set starting from entry_serial
-        # K3: BFS topology migrated to flow_graph when available
+        # K3: TOPO — BFS via flow_graph
         reachable: set[int] = set()
         queue = [entry_serial]
         while queue:
@@ -212,17 +287,12 @@ class ConditionalForkFallbackStrategy:
             if curr in reachable or curr not in dispatcher_set:
                 continue
             reachable.add(curr)
-            if flow_graph is not None:
-                blk_snap = flow_graph.get_block(curr)
-                if blk_snap is not None:
-                    for succ in blk_snap.succs:
-                        queue.append(succ)
-            else:
-                blk = mba.get_mblock(curr)
-                if blk:
-                    for succ in blk.succset:  # K3: shared with insn_chain
-                        queue.append(succ)
+            blk_snap = flow_graph.get_block(curr)
+            if blk_snap is not None:
+                for succ in blk_snap.succs:
+                    queue.append(succ)
 
+        # K3: DEEP_IDA — InstructionDefUseCollector.for_all_ops requires live minsn_t
         # Process reachable blocks in topological order (serial order)
         for serial in sorted(reachable):
             blk = mba.get_mblock(serial)
@@ -247,55 +317,32 @@ class ConditionalForkFallbackStrategy:
 
     def _get_successor_into_dispatcher(
         self,
-        from_block: object,
         dispatcher_set: set[int],
-        mba: object,
-        flow_graph: object | None = None,
-        from_block_serial: int | None = None,
+        flow_graph: object,
+        from_block_serial: int,
     ) -> int | None:
         """Return the successor that enters or stays in the dispatcher set.
 
         Port of HodurUnflattener._get_successor_into_dispatcher.
-        K3: topology migrated to flow_graph when available.
+        K3: fully migrated to flow_graph (TOPO only).
         """
-        # K3: TOPOLOGY_ONLY — use flow_graph for successor navigation
-        if flow_graph is not None and from_block_serial is not None:
-            from_snap = flow_graph.get_block(from_block_serial)
-            if from_snap is not None:
-                succs = list(from_snap.succs)
-                if not succs:
-                    return None
-                if from_snap.nsucc == 1:
-                    return succs[0]
-                if from_snap.nsucc == 2:
-                    in_disp = [s for s in succs if s in dispatcher_set]
-                    if in_disp:
-                        return in_disp[0]
-                    for s in succs:
-                        succ_snap = flow_graph.get_block(s)
-                        if succ_snap is None:
-                            continue
-                        for s2 in succ_snap.succs:
-                            if s2 in dispatcher_set:
-                                return s
-                    return None
-                return succs[0] if succs else None
-
-        # Fallback: live mba
-        succs = list(from_block.succset)
+        from_snap = flow_graph.get_block(from_block_serial)
+        if from_snap is None:
+            return None
+        succs = list(from_snap.succs)
         if not succs:
             return None
-        if from_block.nsucc() == 1:
+        if from_snap.nsucc == 1:
             return succs[0]
-        if from_block.nsucc() == 2:
+        if from_snap.nsucc == 2:
             in_disp = [s for s in succs if s in dispatcher_set]
             if in_disp:
                 return in_disp[0]
             for s in succs:
-                succ_blk = mba.get_mblock(s)
-                if succ_blk is None:
+                succ_snap = flow_graph.get_block(s)
+                if succ_snap is None:
                     continue
-                for s2 in succ_blk.succset:
+                for s2 in succ_snap.succs:
                     if s2 in dispatcher_set:
                         return s
             return None
@@ -317,6 +364,7 @@ class ConditionalForkFallbackStrategy:
 
         Port of HodurUnflattener._emulate_chain_exit.
         """
+        # K3: DEEP_IDA — MicroCodeInterpreter requires live mblock_t/minsn_t
         cur_blk = mba.get_mblock(entry_block_serial)
         if cur_blk is None:
             return None
@@ -328,6 +376,7 @@ class ConditionalForkFallbackStrategy:
         except Exception:
             return None
 
+        # K3: DEEP_IDA — resolve_mop_via_predecessors requires live mblock_t
         from_blk = mba.get_mblock(from_block_serial)
         if from_blk is None:
             return None
@@ -343,6 +392,7 @@ class ConditionalForkFallbackStrategy:
             except Exception:
                 return None
 
+        # K3: DEEP_IDA — emulation loop requires live insn objects
         cur_ins = cur_blk.head
         visited: set[int] = set()
         nb_emulated = 0
@@ -395,15 +445,13 @@ class ConditionalForkFallbackStrategy:
         if not self.is_applicable(snapshot):
             return None
 
-        # K3: mba required — most methods use instruction-chain walks
-        # (_find_conditional_predecessor, _resolve_conditional_chain_target,
-        # _emulate_chain_exit) and MicroCodeInterpreter/MopTracker which need
-        # live mblock_t.  Topology-only BFS in _collect_ladder_use_before_def
-        # and _get_successor_into_dispatcher migrated to flow_graph (K3.2).
+        # K3: mba required for DEEP_IDA paths (_emulate_chain_exit,
+        # _collect_ladder_use_before_def instruction walk).
+        # TOPO + INSN_CHAIN paths fully migrated to flow_graph.
         mba = snapshot.mba
         fg = snapshot.flow_graph
         sm = snapshot.state_machine
-        if mba is None or sm is None:
+        if mba is None or sm is None or fg is None:
             return None
 
         transitions = getattr(sm, "transitions", []) or []
@@ -439,7 +487,7 @@ class ConditionalForkFallbackStrategy:
                 continue
 
             # Walk backward from from_block looking for a 2-way conditional block
-            cond_block = self._find_conditional_predecessor(mba, from_blk_serial)
+            cond_block = self._find_conditional_predecessor(from_blk_serial, fg)
             if cond_block is None:
                 if logger.debug_on:
                     logger.debug(
@@ -451,10 +499,10 @@ class ConditionalForkFallbackStrategy:
             # Resolve which target block each state leads to through the chain
             state_a, state_b = unique_states[0], unique_states[1]
             target_a = self._resolve_conditional_chain_target(
-                mba, cond_block, state_a, HODUR_STATE_CHECK_OPCODES, HodurStateMachineDetector
+                cond_block, state_a, HODUR_STATE_CHECK_OPCODES, HodurStateMachineDetector, fg
             )
             target_b = self._resolve_conditional_chain_target(
-                mba, cond_block, state_b, HODUR_STATE_CHECK_OPCODES, HodurStateMachineDetector
+                cond_block, state_b, HODUR_STATE_CHECK_OPCODES, HodurStateMachineDetector, fg
             )
 
             if target_a is None or target_b is None:
@@ -464,15 +512,8 @@ class ConditionalForkFallbackStrategy:
                         mba, dispatcher_set, cond_block,
                         flow_graph=fg,
                     )
-                    from_blk = mba.get_mblock(from_blk_serial)
-                    ladder_entry = (
-                        self._get_successor_into_dispatcher(
-                            from_blk, dispatcher_set, mba,
-                            flow_graph=fg,
-                            from_block_serial=from_blk_serial,
-                        )
-                        if from_blk is not None
-                        else None
+                    ladder_entry = self._get_successor_into_dispatcher(
+                        dispatcher_set, fg, from_blk_serial,
                     )
                     if ladder_entry is not None:
                         try:
@@ -509,17 +550,19 @@ class ConditionalForkFallbackStrategy:
                     continue
 
             # Determine jcc taken/fallthrough mapping using the check block comparison
-            cond_blk = mba.get_mblock(cond_block)
+            # K3: migrated to flow_graph + snapshot constant extraction
+            cond_snap = fg.get_block(cond_block)
             if (
-                cond_blk is None
-                or cond_blk.tail is None
-                or cond_blk.tail.opcode not in HODUR_STATE_CHECK_OPCODES
+                cond_snap is None
+                or cond_snap.tail_opcode is None
+                or cond_snap.tail_opcode not in HODUR_STATE_CHECK_OPCODES
             ):
                 continue
 
-            check_info = HodurStateMachineDetector._extract_check_constant_and_opcode(
-                cond_blk.tail
-            )
+            cond_tail = cond_snap.tail
+            if cond_tail is None:
+                continue
+            check_info = self._extract_check_constant_from_snapshot(cond_tail)
             if check_info is None:
                 continue
             check_opcode, check_const, check_size = check_info
