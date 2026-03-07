@@ -17,13 +17,16 @@ from d810.cfg.flow.graph_checks import prove_terminal_sink
 from d810.recon.flow.bst_analysis import (
     _mop_matches_stkoff,
     find_bst_default_block,
+    find_bst_default_block_snapshot,
 )
 from d810.recon.flow.bst_model import resolve_target_via_bst
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     collect_state_machine_blocks,
     evaluate_handler_paths,
     find_terminal_exit_target,
+    find_terminal_exit_target_snapshot,
     resolve_exit_via_bst_default,
+    resolve_exit_via_bst_default_snapshot,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
     ModificationBuilder,
@@ -469,10 +472,15 @@ class DirectHandlerLinearizationStrategy:
                         continue
 
                     # Exit block still has successors (likely goto dispatcher).
-                    # Find the function's terminal exit target.
-                    terminal_target = find_terminal_exit_target(
-                        mba, dispatcher_serial, sm_blocks
-                    )
+                    # Find the function's terminal exit target (K3.5: snapshot).
+                    if fg is not None:
+                        terminal_target = find_terminal_exit_target_snapshot(
+                            fg, dispatcher_serial, sm_blocks
+                        )
+                    else:
+                        terminal_target = find_terminal_exit_target(
+                            mba, dispatcher_serial, sm_blocks
+                        )
                     if terminal_target is not None and terminal_target != path.exit_block:
                         # Validate terminal sink before accepting redirect
                         sink_proof = prove_terminal_sink(
@@ -530,24 +538,45 @@ class DirectHandlerLinearizationStrategy:
 
                 if target_serial is None:
                     # No handler matches this state value — it's an exit transition.
-                    bst_default = find_bst_default_block(
-                        mba,
-                        dispatcher_serial,
-                        bst_result.bst_node_blocks,
-                        set(handler_state_map.keys()),
-                    )
+                    # K3.4: prefer snapshot for topology-only BST default lookup
+                    if fg is not None:
+                        bst_default = find_bst_default_block_snapshot(
+                            fg,
+                            dispatcher_serial,
+                            bst_result.bst_node_blocks,
+                            set(handler_state_map.keys()),
+                        )
+                    else:
+                        bst_default = find_bst_default_block(
+                            mba,
+                            dispatcher_serial,
+                            bst_result.bst_node_blocks,
+                            set(handler_state_map.keys()),
+                        )
                     exit_target: int | None = None
                     resolve_label: str = ""
                     if bst_default is not None and path.final_state is not None:
-                        exit_target = resolve_exit_via_bst_default(
-                            mba, bst_default, path.final_state
-                        )
+                        # K3.4: prefer snapshot for BST walk with InsnSnapshot
+                        if fg is not None:
+                            exit_target = resolve_exit_via_bst_default_snapshot(
+                                fg, bst_default, path.final_state
+                            )
+                        else:
+                            exit_target = resolve_exit_via_bst_default(
+                                mba, bst_default, path.final_state
+                            )
                         if exit_target is not None:
                             resolve_label = f"BST default blk[{bst_default}]"
                     if exit_target is None and path.final_state is not None:
-                        exit_target = resolve_exit_via_bst_default(
-                            mba, dispatcher_serial, path.final_state
-                        )
+                        # K3.4: prefer snapshot for BST root-walk
+                        if fg is not None:
+                            exit_target = resolve_exit_via_bst_default_snapshot(
+                                fg, dispatcher_serial, path.final_state
+                            )
+                        else:
+                            exit_target = resolve_exit_via_bst_default(
+                                mba, dispatcher_serial, path.final_state
+                            )
                         if exit_target is not None:
                             resolve_label = "BST root-walk"
                             bst_rootwalk_targets.add(exit_target)
@@ -617,9 +646,14 @@ class DirectHandlerLinearizationStrategy:
 
                     # Fallback: redirect to bst_default directly (or terminal exit)
                     if bst_default is None:
-                        bst_default = find_terminal_exit_target(
-                            mba, dispatcher_serial, sm_blocks
-                        )
+                        if fg is not None:
+                            bst_default = find_terminal_exit_target_snapshot(
+                                fg, dispatcher_serial, sm_blocks
+                            )
+                        else:
+                            bst_default = find_terminal_exit_target(
+                                mba, dispatcher_serial, sm_blocks
+                            )
                     if bst_default is not None:
                         _reason = (
                             f"hodur-linear: blk[{handler_serial}] "
@@ -675,12 +709,21 @@ class DirectHandlerLinearizationStrategy:
                         owned_transitions.add((incoming_state, path.final_state))
 
         # ---- BST default back-edge pass ----
-        bst_default_for_backedge = find_bst_default_block(
-            mba,
-            dispatcher_serial,
-            bst_result.bst_node_blocks,
-            set(handler_state_map.keys()),
-        )
+        # K3.4: prefer snapshot for topology-only BST default lookup
+        if fg is not None:
+            bst_default_for_backedge = find_bst_default_block_snapshot(
+                fg,
+                dispatcher_serial,
+                bst_result.bst_node_blocks,
+                set(handler_state_map.keys()),
+            )
+        else:
+            bst_default_for_backedge = find_bst_default_block(
+                mba,
+                dispatcher_serial,
+                bst_result.bst_node_blocks,
+                set(handler_state_map.keys()),
+            )
         if bst_default_for_backedge is not None:
             bst_default_region: set[int] = set()
             bde_queue: list[int] = [bst_default_for_backedge]
@@ -733,9 +776,15 @@ class DirectHandlerLinearizationStrategy:
                 if written_state is None:
                     continue
 
-                target = resolve_exit_via_bst_default(
-                    mba, bst_default_for_backedge, written_state
-                )
+                # K3.4: prefer snapshot for BST walk with InsnSnapshot
+                if fg is not None:
+                    target = resolve_exit_via_bst_default_snapshot(
+                        fg, bst_default_for_backedge, written_state
+                    )
+                else:
+                    target = resolve_exit_via_bst_default(
+                        mba, bst_default_for_backedge, written_state
+                    )
                 if target is None:
                     continue
 
@@ -830,9 +879,15 @@ class DirectHandlerLinearizationStrategy:
                     if _h_exit_nsucc is not None and _h_exit_nsucc == 0:
                         resolved_count += 1
                         continue  # True terminal, nothing to do.
-                    terminal_target = find_terminal_exit_target(
-                        mba, dispatcher_serial, sm_blocks
-                    )
+                    # K3.5: prefer snapshot path
+                    if fg is not None:
+                        terminal_target = find_terminal_exit_target_snapshot(
+                            fg, dispatcher_serial, sm_blocks
+                        )
+                    else:
+                        terminal_target = find_terminal_exit_target(
+                            mba, dispatcher_serial, sm_blocks
+                        )
                     if terminal_target is not None and terminal_target != path.exit_block:
                         # Validate terminal sink before accepting redirect
                         sink_proof = prove_terminal_sink(
@@ -882,10 +937,15 @@ class DirectHandlerLinearizationStrategy:
                 # Try exact BST resolution first
                 target = resolve_target_via_bst(bst_result, path.final_state)
                 if target is None:
-                    # Try BST root-walk
-                    target = resolve_exit_via_bst_default(
-                        mba, dispatcher_serial, path.final_state
-                    )
+                    # Try BST root-walk (K3.4: prefer snapshot)
+                    if fg is not None:
+                        target = resolve_exit_via_bst_default_snapshot(
+                            fg, dispatcher_serial, path.final_state
+                        )
+                    else:
+                        target = resolve_exit_via_bst_default(
+                            mba, dispatcher_serial, path.final_state
+                        )
                     # Chain detection diagnostic
                     if (
                         target is not None
