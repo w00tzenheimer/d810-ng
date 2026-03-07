@@ -127,6 +127,42 @@ def find_bst_default_block(
     return None
 
 
+def find_bst_default_block_snapshot(
+    flow_graph: object,
+    bst_root_serial: int,
+    bst_node_blocks: set,
+    handler_block_serials: set,
+) -> Optional[int]:
+    """Snapshot variant of :func:`find_bst_default_block` using FlowGraph.
+
+    Uses ``FlowGraph.get_block()`` and ``BlockSnapshot.succs`` instead of
+    live ``mba_t`` objects.  Pure topology -- no IDA imports required.
+
+    Args:
+        flow_graph: A FlowGraph instance.
+        bst_root_serial: Serial of the BST dispatcher root.
+        bst_node_blocks: Set of block serials that are BST comparison nodes.
+        handler_block_serials: Set of block serials that are handler entries.
+
+    Returns:
+        Serial of the default fall-through block, or None if not found.
+    """
+    if flow_graph is None:
+        return None
+
+    all_bst_serials = bst_node_blocks | {bst_root_serial}
+
+    for bst_serial in all_bst_serials:
+        blk_snap = flow_graph.get_block(bst_serial)
+        if blk_snap is None:
+            continue
+        for succ in blk_snap.succs:
+            if succ not in all_bst_serials and succ not in handler_block_serials:
+                return succ
+
+    return None
+
+
 # -----------------------------------------------------------------------------
 # Internal helpers
 # -----------------------------------------------------------------------------
