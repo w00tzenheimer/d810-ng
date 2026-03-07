@@ -65,8 +65,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
 )
 from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
     load_return_frontier_audit_from_store,
+    load_terminal_return_audit_from_store,
     load_transition_report_from_store,
     record_return_frontier_stage,
+    save_terminal_return_audit_to_store,
     save_transition_report_to_store,
     write_return_frontier_artifact_from_store,
 )
@@ -281,11 +283,16 @@ class HodurUnflattener(GenericUnflatteningRule):
             maturity=self.cur_maturity,
             log_dir=self.log_dir,
         )
+        terminal_return_audit = load_terminal_return_audit_from_store(
+            func_ea=self.mba.entry_ea,
+            maturity=self.cur_maturity,
+            log_dir=self.log_dir,
+        )
         planner_inputs = PlannerInputs(
             total_handlers=snapshot.handler_count,
             handler_transitions=transition_report,
             return_frontier=return_frontier_audit,
-            terminal_return_audit=None,
+            terminal_return_audit=terminal_return_audit,
         )
         pipeline, provenance = self._planner.plan(
             snapshot, self._strategies, inputs=planner_inputs,
@@ -365,6 +372,18 @@ class HodurUnflattener(GenericUnflatteningRule):
                 reason_detail="pipeline aborted before this fragment was executed",
             )
         self._last_provenance = provenance
+
+        # Persist terminal return audit from executor results (for next pass)
+        for result in results:
+            audit = result.metadata.get("terminal_return_audit")
+            if audit is not None:
+                save_terminal_return_audit_to_store(
+                    func_ea=self.mba.entry_ea,
+                    maturity=self.cur_maturity,
+                    audit=audit,
+                    log_dir=self.log_dir,
+                )
+                break
 
         # Return frontier audit: post_apply stage
         if self.RETURN_FRONTIER_AUDIT_ENABLED and self._audit_return_sites:

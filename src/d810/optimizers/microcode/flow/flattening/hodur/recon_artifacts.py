@@ -15,6 +15,11 @@ from d810.cfg.flow.return_frontier import (
     ReturnSite,
     return_frontier_audit_from_dict,
 )
+from d810.cfg.flow.terminal_return import (
+    TerminalReturnAuditReport,
+    TerminalReturnSiteAudit,
+    TerminalReturnSourceKind,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
     HodurReturnSiteProvider,
 )
@@ -29,6 +34,7 @@ from d810.recon.store import ReconStore
 
 _HANDLER_TRANSITIONS = HandlerTransitionsCollector.name
 _RETURN_FRONTIER = ReturnFrontierCollector.name
+_TERMINAL_RETURN_COLLECTOR = "terminal_return_audit"
 
 
 def recon_db_path(log_dir: Path | str | None) -> Path:
@@ -230,6 +236,106 @@ def write_return_frontier_artifact_from_store(
     return output
 
 
+def _terminal_return_audit_to_dict(audit: TerminalReturnAuditReport) -> dict:
+    """Serialize a TerminalReturnAuditReport to a JSON-safe dict."""
+    return {
+        "function_ea": audit.function_ea,
+        "total_handlers": audit.total_handlers,
+        "terminal_handlers": audit.terminal_handlers,
+        "sites": [
+            {
+                "handler_serial": s.handler_serial,
+                "exit_serial": s.exit_serial,
+                "source_kind": s.source_kind.value,
+                "return_block_serial": s.return_block_serial,
+                "corridor_length": s.corridor_length,
+                "has_rax_write": s.has_rax_write,
+                "notes": s.notes,
+            }
+            for s in audit.sites
+        ],
+    }
+
+
+def _terminal_return_audit_from_dict(d: dict) -> TerminalReturnAuditReport:
+    """Deserialize a TerminalReturnAuditReport from a dict."""
+    sites = tuple(
+        TerminalReturnSiteAudit(
+            handler_serial=s["handler_serial"],
+            exit_serial=s.get("exit_serial"),
+            source_kind=TerminalReturnSourceKind(s["source_kind"]),
+            return_block_serial=s.get("return_block_serial"),
+            corridor_length=s.get("corridor_length", 0),
+            has_rax_write=s.get("has_rax_write"),
+            notes=s.get("notes", ""),
+        )
+        for s in d.get("sites", ())
+    )
+    return TerminalReturnAuditReport(
+        function_ea=d["function_ea"],
+        total_handlers=d["total_handlers"],
+        terminal_handlers=d["terminal_handlers"],
+        sites=sites,
+    )
+
+
+def load_terminal_return_audit_from_store(
+    *,
+    func_ea: int,
+    log_dir: Path | str | None,
+    maturity: int | None = None,
+) -> TerminalReturnAuditReport | None:
+    """Load the latest stored terminal return audit for a function."""
+    db_path = recon_db_path(log_dir)
+    if not db_path.exists():
+        return None
+
+    with ReconStore(db_path) as store:
+        result = store.load_latest_recon_result(
+            func_ea=func_ea,
+            collector_name=_TERMINAL_RETURN_COLLECTOR,
+            maturity=maturity,
+        )
+        if result is None and maturity is not None:
+            result = store.load_latest_recon_result(
+                func_ea=func_ea,
+                collector_name=_TERMINAL_RETURN_COLLECTOR,
+            )
+
+    if result is None:
+        return None
+    payload = result.metrics.get("audit_report")
+    if not isinstance(payload, dict):
+        return None
+    return _terminal_return_audit_from_dict(payload)
+
+
+def save_terminal_return_audit_to_store(
+    *,
+    func_ea: int,
+    maturity: int,
+    audit: TerminalReturnAuditReport,
+    log_dir: Path | str | None,
+) -> None:
+    """Persist a terminal return audit as a recon artifact."""
+    db_path = recon_db_path(log_dir)
+    report_dict = _terminal_return_audit_to_dict(audit)
+    result = ReconResult(
+        collector_name=_TERMINAL_RETURN_COLLECTOR,
+        func_ea=func_ea,
+        maturity=maturity,
+        timestamp=time.time(),
+        metrics=MappingProxyType({
+            "terminal_handlers": audit.terminal_handlers,
+            "total_handlers": audit.total_handlers,
+            "audit_report": report_dict,
+        }),
+        candidates=(),
+    )
+    with ReconStore(db_path) as store:
+        store.save_recon_result(result)
+
+
 __all__ = [
     "recon_db_path",
     "load_transition_report_from_store",
@@ -239,4 +345,6 @@ __all__ = [
     "save_return_frontier_audit_to_store",
     "record_return_frontier_stage",
     "write_return_frontier_artifact_from_store",
+    "load_terminal_return_audit_from_store",
+    "save_terminal_return_audit_to_store",
 ]
