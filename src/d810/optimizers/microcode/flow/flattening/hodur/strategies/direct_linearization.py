@@ -254,7 +254,11 @@ class DirectHandlerLinearizationStrategy:
                 return None
 
             old_target = 0
-            if exit_blk is not None and exit_blk.nsucc() > 0:
+            # K3: TOPOLOGY_ONLY — use flow_graph for succ lookup
+            _exit_snap = fg.get_block(path.exit_block) if fg is not None else None
+            if _exit_snap is not None and _exit_snap.nsucc > 0:
+                old_target = _exit_snap.succs[0]
+            elif exit_blk is not None and exit_blk.nsucc() > 0:
                 old_target = exit_blk.succ(0)
 
             edge_key = (path.exit_block, via_pred)
@@ -279,19 +283,30 @@ class DirectHandlerLinearizationStrategy:
                     seg_pred = path.ordered_path[i - 1]
                     seg_key = (seg_src, seg_pred)
                     if seg_key not in claimed_edges and seg_src not in bst_node_blocks:
-                        seg_src_blk = mba.get_mblock(seg_src)
-                        seg_pred_blk = mba.get_mblock(seg_pred)
-                        if seg_src_blk is None or seg_pred_blk is None:
-                            continue
-                        if seg_src_blk.nsucc() != 1:
-                            continue
-                        if seg_pred_blk.nsucc() != 1:
-                            continue
-                        if not any(
-                            seg_pred_blk.succ(j) == seg_src
-                            for j in range(seg_pred_blk.nsucc())
-                        ):
-                            continue
+                        # K3: TOPOLOGY_ONLY — use flow_graph for nsucc/succ checks
+                        _seg_src_snap = fg.get_block(seg_src) if fg is not None else None
+                        _seg_pred_snap = fg.get_block(seg_pred) if fg is not None else None
+                        if _seg_src_snap is not None and _seg_pred_snap is not None:
+                            if _seg_src_snap.nsucc != 1:
+                                continue
+                            if _seg_pred_snap.nsucc != 1:
+                                continue
+                            if seg_src not in _seg_pred_snap.succs:
+                                continue
+                        else:
+                            seg_src_blk = mba.get_mblock(seg_src)
+                            seg_pred_blk = mba.get_mblock(seg_pred)
+                            if seg_src_blk is None or seg_pred_blk is None:
+                                continue
+                            if seg_src_blk.nsucc() != 1:
+                                continue
+                            if seg_pred_blk.nsucc() != 1:
+                                continue
+                            if not any(
+                                seg_pred_blk.succ(j) == seg_src
+                                for j in range(seg_pred_blk.nsucc())
+                            ):
+                                continue
                         found_src = seg_src
                         found_pred = seg_pred
                         break
@@ -304,8 +319,13 @@ class DirectHandlerLinearizationStrategy:
                     return None
                 src_block = found_src
                 use_pred = found_pred
-                src_blk = mba.get_mblock(src_block)
-                old_target = src_blk.succ(0) if src_blk is not None and src_blk.nsucc() > 0 else 0
+                # K3: TOPOLOGY_ONLY — use flow_graph for succ lookup
+                _src_snap = fg.get_block(src_block) if fg is not None else None
+                if _src_snap is not None:
+                    old_target = _src_snap.succs[0] if _src_snap.nsucc > 0 else 0
+                else:
+                    src_blk = mba.get_mblock(src_block)
+                    old_target = src_blk.succ(0) if src_blk is not None and src_blk.nsucc() > 0 else 0
                 logger.info(
                     "REDIRECT_DECISION: exit_blk=%d target=%d via_pred=%d"
                     " decision=escalated reason=prior_edge_claimed",
@@ -431,8 +451,13 @@ class DirectHandlerLinearizationStrategy:
                     # The exit block may still goto the dispatcher; redirect it to
                     # the function's real exit corridor so it survives DCE.
                     terminal_exit_blocks.add(path.exit_block)
-                    exit_blk = mba.get_mblock(path.exit_block)
-                    if exit_blk is not None and exit_blk.nsucc() == 0:
+                    # K3: TOPOLOGY_ONLY — use flow_graph for 0-succ check
+                    _exit_snap = fg.get_block(path.exit_block) if fg is not None else None
+                    _exit_nsucc = _exit_snap.nsucc if _exit_snap is not None else None
+                    if _exit_nsucc is None:
+                        exit_blk = mba.get_mblock(path.exit_block)
+                        _exit_nsucc = exit_blk.nsucc() if exit_blk is not None else None
+                    if _exit_nsucc is not None and _exit_nsucc == 0:
                         # Block already has no successors (true terminal) — nothing to do.
                         logger.info(
                             "Handler blk[%d] (state=0x%x): true terminal exit via blk[%d] (0 succs)",
@@ -630,9 +655,15 @@ class DirectHandlerLinearizationStrategy:
                         linearized_blocks.add(path.exit_block)
                         # NOP dead state writes (skip multi-pred blocks)
                         for write_blk, write_ea in path.state_writes:
-                            write_blk_obj = mba.get_mblock(write_blk)
-                            if write_blk_obj is not None and write_blk_obj.npred() > 1:
-                                continue
+                            # K3: TOPOLOGY_ONLY — use flow_graph for npred check
+                            _wb_snap = fg.get_block(write_blk) if fg is not None else None
+                            if _wb_snap is not None:
+                                if _wb_snap.npred > 1:
+                                    continue
+                            else:
+                                write_blk_obj = mba.get_mblock(write_blk)
+                                if write_blk_obj is not None and write_blk_obj.npred() > 1:
+                                    continue
                             _append_nop(
 
                                 source_block=write_blk,
@@ -665,11 +696,17 @@ class DirectHandlerLinearizationStrategy:
                 if serial in handler_serials_set:
                     continue
                 bst_default_region.add(serial)
-                blk = mba.get_mblock(serial)
-                if blk is None:
-                    continue
-                for i in range(blk.nsucc()):
-                    bde_queue.append(blk.succ(i))
+                # K3: TOPOLOGY_ONLY — use flow_graph for successor expansion
+                _bde_snap = fg.get_block(serial) if fg is not None else None
+                if _bde_snap is not None:
+                    for _s in _bde_snap.succs:
+                        bde_queue.append(_s)
+                else:
+                    blk = mba.get_mblock(serial)
+                    if blk is None:
+                        continue
+                    for i in range(blk.nsucc()):
+                        bde_queue.append(blk.succ(i))
 
             for serial in bst_default_region:
                 blk = mba.get_mblock(serial)
@@ -784,8 +821,13 @@ class DirectHandlerLinearizationStrategy:
                     # Terminal path — redirect to function exit if the block
                     # still has successors (goto dispatcher).
                     terminal_exit_blocks.add(path.exit_block)
-                    exit_blk = mba.get_mblock(path.exit_block)
-                    if exit_blk is not None and exit_blk.nsucc() == 0:
+                    # K3: TOPOLOGY_ONLY — use flow_graph for 0-succ check
+                    _h_exit_snap = fg.get_block(path.exit_block) if fg is not None else None
+                    _h_exit_nsucc = _h_exit_snap.nsucc if _h_exit_snap is not None else None
+                    if _h_exit_nsucc is None:
+                        exit_blk = mba.get_mblock(path.exit_block)
+                        _h_exit_nsucc = exit_blk.nsucc() if exit_blk is not None else None
+                    if _h_exit_nsucc is not None and _h_exit_nsucc == 0:
                         resolved_count += 1
                         continue  # True terminal, nothing to do.
                     terminal_target = find_terminal_exit_target(
@@ -908,9 +950,15 @@ class DirectHandlerLinearizationStrategy:
                             path.final_state,
                         )
                         for write_blk, write_ea in path.state_writes:
-                            write_blk_obj = mba.get_mblock(write_blk)
-                            if write_blk_obj is not None and write_blk_obj.npred() > 1:
-                                continue  # Skip NOP on shared multi-pred blocks
+                            # K3: TOPOLOGY_ONLY — use flow_graph for npred check
+                            _hwb_snap = fg.get_block(write_blk) if fg is not None else None
+                            if _hwb_snap is not None:
+                                if _hwb_snap.npred > 1:
+                                    continue  # Skip NOP on shared multi-pred blocks
+                            else:
+                                write_blk_obj = mba.get_mblock(write_blk)
+                                if write_blk_obj is not None and write_blk_obj.npred() > 1:
+                                    continue  # Skip NOP on shared multi-pred blocks
                             _append_nop(
 
                                 source_block=write_blk,

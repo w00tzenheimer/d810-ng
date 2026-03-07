@@ -104,14 +104,14 @@ class ConditionalForkFallbackStrategy:
         """
         current = start_block
         visited: set[int] = {current}
-        max_depth = mba.qty  # Safety bound
+        max_depth = mba.qty  # Safety bound  # K3: shared with insn_chain
 
         for _ in range(max_depth):
-            blk = mba.get_mblock(current)
-            if blk.npred() != 1:
+            blk = mba.get_mblock(current)  # K3: shared with insn_chain
+            if blk.npred() != 1:  # K3: shared with insn_chain
                 return None  # Multi-predecessor — bail
 
-            pred_serial = blk.predset[0]
+            pred_serial = blk.predset[0]  # K3: shared with insn_chain
             if pred_serial in visited:
                 return None  # Cycle
 
@@ -156,7 +156,7 @@ class ConditionalForkFallbackStrategy:
         visited: set[int] = set()
         current = start_block
 
-        for _ in range(mba.qty):
+        for _ in range(mba.qty):  # K3: shared with insn_chain
             if current in visited:
                 return None
             visited.add(current)
@@ -193,6 +193,7 @@ class ConditionalForkFallbackStrategy:
         mba: object,
         dispatcher_set: set[int],
         entry_serial: int,
+        flow_graph: object | None = None,
     ) -> list:
         """Collect all mops used-before-defined in the ladder (dispatcher) blocks.
 
@@ -203,6 +204,7 @@ class ConditionalForkFallbackStrategy:
         use_before_def: list = []
 
         # Find all reachable blocks within dispatcher_set starting from entry_serial
+        # K3: BFS topology migrated to flow_graph when available
         reachable: set[int] = set()
         queue = [entry_serial]
         while queue:
@@ -210,10 +212,16 @@ class ConditionalForkFallbackStrategy:
             if curr in reachable or curr not in dispatcher_set:
                 continue
             reachable.add(curr)
-            blk = mba.get_mblock(curr)
-            if blk:
-                for succ in blk.succset:
-                    queue.append(succ)
+            if flow_graph is not None:
+                blk_snap = flow_graph.get_block(curr)
+                if blk_snap is not None:
+                    for succ in blk_snap.succs:
+                        queue.append(succ)
+            else:
+                blk = mba.get_mblock(curr)
+                if blk:
+                    for succ in blk.succset:  # K3: shared with insn_chain
+                        queue.append(succ)
 
         # Process reachable blocks in topological order (serial order)
         for serial in sorted(reachable):
@@ -242,11 +250,38 @@ class ConditionalForkFallbackStrategy:
         from_block: object,
         dispatcher_set: set[int],
         mba: object,
+        flow_graph: object | None = None,
+        from_block_serial: int | None = None,
     ) -> int | None:
         """Return the successor that enters or stays in the dispatcher set.
 
         Port of HodurUnflattener._get_successor_into_dispatcher.
+        K3: topology migrated to flow_graph when available.
         """
+        # K3: TOPOLOGY_ONLY — use flow_graph for successor navigation
+        if flow_graph is not None and from_block_serial is not None:
+            from_snap = flow_graph.get_block(from_block_serial)
+            if from_snap is not None:
+                succs = list(from_snap.succs)
+                if not succs:
+                    return None
+                if from_snap.nsucc == 1:
+                    return succs[0]
+                if from_snap.nsucc == 2:
+                    in_disp = [s for s in succs if s in dispatcher_set]
+                    if in_disp:
+                        return in_disp[0]
+                    for s in succs:
+                        succ_snap = flow_graph.get_block(s)
+                        if succ_snap is None:
+                            continue
+                        for s2 in succ_snap.succs:
+                            if s2 in dispatcher_set:
+                                return s
+                    return None
+                return succs[0] if succs else None
+
+        # Fallback: live mba
         succs = list(from_block.succset)
         if not succs:
             return None
@@ -360,12 +395,13 @@ class ConditionalForkFallbackStrategy:
         if not self.is_applicable(snapshot):
             return None
 
-        # K3: mba required — all methods use instruction-chain walks
+        # K3: mba required — most methods use instruction-chain walks
         # (_find_conditional_predecessor, _resolve_conditional_chain_target,
-        # _collect_ladder_use_before_def, _emulate_chain_exit) and
-        # MicroCodeInterpreter/MopTracker which need live mblock_t.
-        # No topology-only loops to migrate to flow_graph.
+        # _emulate_chain_exit) and MicroCodeInterpreter/MopTracker which need
+        # live mblock_t.  Topology-only BFS in _collect_ladder_use_before_def
+        # and _get_successor_into_dispatcher migrated to flow_graph (K3.2).
         mba = snapshot.mba
+        fg = snapshot.flow_graph
         sm = snapshot.state_machine
         if mba is None or sm is None:
             return None
@@ -425,11 +461,16 @@ class ConditionalForkFallbackStrategy:
                 # Static walk hit a loop; try emulation fallback
                 if dispatcher_set and state_var is not None:
                     use_before_def = self._collect_ladder_use_before_def(
-                        mba, dispatcher_set, cond_block
+                        mba, dispatcher_set, cond_block,
+                        flow_graph=fg,
                     )
                     from_blk = mba.get_mblock(from_blk_serial)
                     ladder_entry = (
-                        self._get_successor_into_dispatcher(from_blk, dispatcher_set, mba)
+                        self._get_successor_into_dispatcher(
+                            from_blk, dispatcher_set, mba,
+                            flow_graph=fg,
+                            from_block_serial=from_blk_serial,
+                        )
                         if from_blk is not None
                         else None
                     )

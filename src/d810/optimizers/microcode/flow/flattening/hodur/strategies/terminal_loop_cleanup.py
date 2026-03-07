@@ -124,6 +124,7 @@ class TerminalLoopCleanupStrategy:
             edits=modifications,
             owned_blocks=owned_blocks,
             builder=builder,
+            flow_graph=snapshot.flow_graph,
         )
 
         # --- _queue_legacy_terminal_backedge_fix ---
@@ -354,6 +355,7 @@ class TerminalLoopCleanupStrategy:
         edits: list,
         owned_blocks: set[int],
         builder: ModificationBuilder | None = None,
+        flow_graph: object | None = None,
     ) -> None:
         """Find and fix the terminal back-edge that creates the while(1) wrapper.
 
@@ -418,33 +420,61 @@ class TerminalLoopCleanupStrategy:
                 continue
             processed_blocks.add(blk_serial)
 
-            blk = mba.get_mblock(blk_serial)
-            if blk is None:
-                continue
-            if not any(succ in check_blocks for succ in blk.succset):
-                continue
+            # K3: TOPOLOGY_ONLY — use flow_graph for succ/nsucc checks
+            blk_snap = flow_graph.get_block(blk_serial) if flow_graph is not None else None
+            if blk_snap is not None:
+                if not any(succ in check_blocks for succ in blk_snap.succs):
+                    continue
 
-            logger.info(
-                "Redirecting terminal loopback block %d -> exit block %d",
-                blk_serial,
-                success_target,
-            )
-            if blk.nsucc() == 1:
-                edits.append(
-                    builder.goto_redirect(
-                        source_block=blk_serial,
-                        target_block=success_target,
-                    )
+                logger.info(
+                    "Redirecting terminal loopback block %d -> exit block %d",
+                    blk_serial,
+                    success_target,
                 )
-                owned_blocks.add(blk_serial)
-            elif blk.nsucc() == 2:
-                edits.append(
-                    builder.convert_to_goto(
-                        source_block=blk_serial,
-                        target_block=success_target,
+                if blk_snap.nsucc == 1:
+                    edits.append(
+                        builder.goto_redirect(
+                            source_block=blk_serial,
+                            target_block=success_target,
+                        )
                     )
+                    owned_blocks.add(blk_serial)
+                elif blk_snap.nsucc == 2:
+                    edits.append(
+                        builder.convert_to_goto(
+                            source_block=blk_serial,
+                            target_block=success_target,
+                        )
+                    )
+                    owned_blocks.add(blk_serial)
+            else:
+                blk = mba.get_mblock(blk_serial)
+                if blk is None:
+                    continue
+                if not any(succ in check_blocks for succ in blk.succset):
+                    continue
+
+                logger.info(
+                    "Redirecting terminal loopback block %d -> exit block %d",
+                    blk_serial,
+                    success_target,
                 )
-                owned_blocks.add(blk_serial)
+                if blk.nsucc() == 1:
+                    edits.append(
+                        builder.goto_redirect(
+                            source_block=blk_serial,
+                            target_block=success_target,
+                        )
+                    )
+                    owned_blocks.add(blk_serial)
+                elif blk.nsucc() == 2:
+                    edits.append(
+                        builder.convert_to_goto(
+                            source_block=blk_serial,
+                            target_block=success_target,
+                        )
+                    )
+                    owned_blocks.add(blk_serial)
 
     def _queue_legacy_terminal_backedge_fix(
         self,
@@ -549,15 +579,15 @@ class TerminalLoopCleanupStrategy:
         )
 
         for blk_serial in sorted(candidate_blocks):
-            blk = mba.get_mblock(blk_serial)
+            blk = mba.get_mblock(blk_serial)  # K3: shared with insn_chain (_is_degenerate_loop_block)
             if blk is None:
                 continue
-            if blk.nsucc() != 1 or not self._is_degenerate_loop_block(
+            if blk.nsucc() != 1 or not self._is_degenerate_loop_block(  # K3: shared with insn_chain
                 blk, ida_hexrays
             ):
                 continue
 
-            succ = next(iter(blk.succset))
+            succ = next(iter(blk.succset))  # K3: shared with insn_chain
             if succ == blk.serial and blk.serial != exit_target:
                 edits.append(
                     builder.goto_redirect(
@@ -573,12 +603,12 @@ class TerminalLoopCleanupStrategy:
                 )
                 continue
 
-            succ_blk = mba.get_mblock(succ)
-            if succ_blk is None or succ_blk.nsucc() != 1:
+            succ_blk = mba.get_mblock(succ)  # K3: shared with insn_chain (_is_degenerate_loop_block)
+            if succ_blk is None or succ_blk.nsucc() != 1:  # K3: shared with insn_chain
                 continue
             if not self._is_degenerate_loop_block(succ_blk, ida_hexrays):
                 continue
-            succ2 = next(iter(succ_blk.succset))
+            succ2 = next(iter(succ_blk.succset))  # K3: shared with insn_chain
             if (
                 succ2 == blk.serial
                 and blk.serial != exit_target

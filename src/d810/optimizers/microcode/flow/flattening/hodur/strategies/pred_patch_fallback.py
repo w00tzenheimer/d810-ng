@@ -102,7 +102,7 @@ class PredPatchFallbackStrategy:
         visited: set[int] = set()
         current = start_block
 
-        for _ in range(mba.qty):
+        for _ in range(mba.qty):  # K3: shared with insn_chain
             if current in visited:
                 return None
             visited.add(current)
@@ -201,7 +201,7 @@ class PredPatchFallbackStrategy:
             )
 
             # For each predecessor of the check block
-            pred_list = list(check_blk.predset)
+            pred_list = list(check_blk.predset)  # K3: shared with insn_chain
             for pred_serial in pred_list:
                 pred_blk = mba.get_mblock(pred_serial)
                 if pred_blk is None:
@@ -251,7 +251,7 @@ class PredPatchFallbackStrategy:
                             for v in val_list
                         ]
 
-                        if None not in handler_targets and pred_blk.nsucc() == 2:
+                        if None not in handler_targets and pred_blk.nsucc() == 2:  # K3: shared with insn_chain
                             check_opcode = (
                                 check_blk.tail.opcode if check_blk.tail else None
                             )

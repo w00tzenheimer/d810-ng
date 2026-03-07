@@ -102,11 +102,12 @@ class AssignmentMapFallbackStrategy:
         )
 
         # K3: mba required — instruction-chain walks in _queue_state_assignment_removals
-        # (blk.head, insn.next, insn.opcode), _resolve_remaining_via_assignment_map
-        # (blk.predset, blk.succset, instruction inspection), _resolve_handler_entry
-        # (blk.tail chain walk), and helper find_terminal_exit_target.
-        # No topology-only loops to migrate to flow_graph.
+        # (blk.head, insn.next, insn.opcode), _resolve_handler_entry (blk.tail chain
+        # walk), and helper find_terminal_exit_target.  Topology-only refs in
+        # _resolve_remaining_via_assignment_map (predset, succset, nsucc, npred,
+        # backward walk) migrated to flow_graph (K3.2).
         mba = snapshot.mba
+        fg = snapshot.flow_graph
         sm = snapshot.state_machine
         handlers = getattr(sm, "handlers", {}) or {}
         state_constants: set = getattr(sm, "state_constants", set()) or set()
@@ -148,6 +149,7 @@ class AssignmentMapFallbackStrategy:
             ida_hexrays=ida_hexrays,
             edits=modifications,
             owned_blocks=owned_blocks,
+            flow_graph=fg,
         )
 
         if not modifications:
@@ -275,7 +277,7 @@ class AssignmentMapFallbackStrategy:
         # NOP state variable assignments in handler body blocks.
         for handler in handlers.values():
             for blk_serial in handler.handler_blocks:
-                if blk_serial >= mba.qty:
+                if blk_serial >= mba.qty:  # K3: shared with insn_chain
                     continue
                 blk = mba.get_mblock(blk_serial)
                 if blk is None:
@@ -318,6 +320,7 @@ class AssignmentMapFallbackStrategy:
         ida_hexrays: object,
         edits: list,
         owned_blocks: set[int],
+        flow_graph: object | None = None,
     ) -> None:
         """Resolve remaining dispatcher back-edges using assignment_map lookup.
 
@@ -337,47 +340,85 @@ class AssignmentMapFallbackStrategy:
         check_blocks = {h.check_block for h in handlers.values()}
 
         # Collect predecessors of ALL check blocks.
+        # K3: TOPOLOGY_ONLY — use flow_graph for predecessor lookup
         preds_to_check: set[tuple[int, int]] = set()
         for cb_serial in check_blocks:
-            cb_blk = mba.get_mblock(cb_serial)
-            if cb_blk is None:
-                continue
-            for pred_serial in cb_blk.predset:
-                if pred_serial not in check_blocks:
-                    preds_to_check.add((pred_serial, cb_serial))
+            if flow_graph is not None:
+                cb_snap = flow_graph.get_block(cb_serial)
+                if cb_snap is None:
+                    continue
+                for pred_serial in cb_snap.preds:
+                    if pred_serial not in check_blocks:
+                        preds_to_check.add((pred_serial, cb_serial))
+            else:
+                cb_blk = mba.get_mblock(cb_serial)
+                if cb_blk is None:
+                    continue
+                for pred_serial in cb_blk.predset:
+                    if pred_serial not in check_blocks:
+                        preds_to_check.add((pred_serial, cb_serial))
 
         for pred_serial, dispatcher_target in preds_to_check:
-            pred_blk = mba.get_mblock(pred_serial)
-            if pred_blk is None:
-                continue
-
-            # Handle 2-way exit blocks ONLY outside the state machine region.
-            if pred_blk.nsucc() == 2:
-                if pred_serial not in state_machine_blocks:
-                    # Find the non-check-block successor (the forward path).
-                    forward_succs = [
-                        s for s in pred_blk.succset if s not in check_blocks
-                    ]
-                    if forward_succs:
-                        forward_target = forward_succs[0]
-                        modifications.append(
-                            builder.convert_to_goto(
-                                source_block=pred_serial,
-                                target_block=forward_target,
+            # K3: TOPOLOGY_ONLY — use flow_graph for nsucc/succset checks
+            pred_snap = flow_graph.get_block(pred_serial) if flow_graph is not None else None
+            if pred_snap is not None:
+                # Handle 2-way exit blocks ONLY outside the state machine region.
+                if pred_snap.nsucc == 2:
+                    if pred_serial not in state_machine_blocks:
+                        forward_succs = [
+                            s for s in pred_snap.succs if s not in check_blocks
+                        ]
+                        if forward_succs:
+                            forward_target = forward_succs[0]
+                            modifications.append(
+                                builder.convert_to_goto(
+                                    source_block=pred_serial,
+                                    target_block=forward_target,
+                                )
                             )
-                        )
-                        owned_blocks.add(pred_serial)
-                        logger.info(
-                            "Assignment-map resolver: converted 2-way exit blk[%d] "
-                            "to direct goto blk[%d]",
-                            pred_serial,
-                            forward_target,
-                        )
-                continue
+                            owned_blocks.add(pred_serial)
+                            logger.info(
+                                "Assignment-map resolver: converted 2-way exit blk[%d] "
+                                "to direct goto blk[%d]",
+                                pred_serial,
+                                forward_target,
+                            )
+                    continue
 
-            # Only handle 1-way blocks (goto blocks).
-            if pred_blk.nsucc() != 1:
-                continue
+                # Only handle 1-way blocks (goto blocks).
+                if pred_snap.nsucc != 1:
+                    continue
+            else:
+                pred_blk = mba.get_mblock(pred_serial)
+                if pred_blk is None:
+                    continue
+
+                # Handle 2-way exit blocks ONLY outside the state machine region.
+                if pred_blk.nsucc() == 2:
+                    if pred_serial not in state_machine_blocks:
+                        forward_succs = [
+                            s for s in pred_blk.succset if s not in check_blocks
+                        ]
+                        if forward_succs:
+                            forward_target = forward_succs[0]
+                            modifications.append(
+                                builder.convert_to_goto(
+                                    source_block=pred_serial,
+                                    target_block=forward_target,
+                                )
+                            )
+                            owned_blocks.add(pred_serial)
+                            logger.info(
+                                "Assignment-map resolver: converted 2-way exit blk[%d] "
+                                "to direct goto blk[%d]",
+                                pred_serial,
+                                forward_target,
+                            )
+                    continue
+
+                # Only handle 1-way blocks (goto blocks).
+                if pred_blk.nsucc() != 1:
+                    continue
 
             # Try to find state assignment in this block via assignment_map.
             target_state = self._extract_assigned_state_from_block(
@@ -385,13 +426,20 @@ class AssignmentMapFallbackStrategy:
             )
 
             # If not found directly, walk backward along single-pred chains.
+            # K3: TOPOLOGY_ONLY — use flow_graph for npred/predset navigation
             if target_state is None:
                 walk_serial = pred_serial
                 for _ in range(5):  # max backward walk depth
-                    walk_blk = mba.get_mblock(walk_serial)
-                    if walk_blk is None or walk_blk.npred() != 1:
-                        break
-                    walk_serial = list(walk_blk.predset)[0]
+                    if flow_graph is not None:
+                        walk_snap = flow_graph.get_block(walk_serial)
+                        if walk_snap is None or walk_snap.npred != 1:
+                            break
+                        walk_serial = walk_snap.preds[0]
+                    else:
+                        walk_blk = mba.get_mblock(walk_serial)
+                        if walk_blk is None or walk_blk.npred() != 1:
+                            break
+                        walk_serial = list(walk_blk.predset)[0]
                     target_state = self._extract_assigned_state_from_block(
                         walk_serial, assignment_map, state_var
                     )
@@ -488,7 +536,7 @@ class AssignmentMapFallbackStrategy:
         visited: set[int] = set()
         current = dispatcher_target
 
-        for _ in range(mba.qty):
+        for _ in range(mba.qty):  # K3: shared with insn_chain
             if current in visited:
                 return None
             visited.add(current)
