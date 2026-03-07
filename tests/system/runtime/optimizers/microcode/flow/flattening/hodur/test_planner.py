@@ -114,11 +114,16 @@ class TestFindConflicts:
 
 
 class TestApplyPolicy:
+    """Tests for policy gate via compose_pipeline (candidate-based path)."""
+
     def test_blocks_fallback_when_coverage_above_threshold(self) -> None:
         planner = UnflatteningPlanner(PipelinePolicy(direct_coverage_threshold=0.8))
         direct = _make_fragment("direct", family=FAMILY_DIRECT, handlers=9)
         fallback = _make_fragment("fallback_x", family=FAMILY_FALLBACK, handlers=1)
-        names = [f.strategy_name for f in planner.apply_policy([direct, fallback], total_handlers=10)]
+        pipeline, _prov = planner.compose_pipeline(
+            [direct, fallback], total_handlers=10,
+        )
+        names = [f.strategy_name for f in pipeline]
         assert "direct" in names
         assert "fallback_x" not in names
 
@@ -126,22 +131,31 @@ class TestApplyPolicy:
         planner = UnflatteningPlanner(PipelinePolicy(direct_coverage_threshold=0.8))
         direct = _make_fragment("direct", family=FAMILY_DIRECT, handlers=5)
         fallback = _make_fragment("fallback_x", family=FAMILY_FALLBACK, handlers=2)
-        names = [f.strategy_name for f in planner.apply_policy([direct, fallback], total_handlers=10)]
+        pipeline, _prov = planner.compose_pipeline(
+            [direct, fallback], total_handlers=10,
+        )
+        names = [f.strategy_name for f in pipeline]
         assert "direct" in names
         assert "fallback_x" in names
 
     def test_zero_total_handlers_allows_all(self) -> None:
         planner = UnflatteningPlanner(PipelinePolicy(direct_coverage_threshold=0.8))
-        assert len(planner.apply_policy([_make_fragment("fallback_x", family=FAMILY_FALLBACK, handlers=0)], total_handlers=0)) == 1
+        pipeline, _prov = planner.compose_pipeline(
+            [_make_fragment("fallback_x", family=FAMILY_FALLBACK, handlers=0)],
+            total_handlers=0,
+        )
+        assert len(pipeline) == 1
 
 
 class TestResolveConflicts:
+    """Tests for conflict resolution via compose_pipeline (candidate-based path)."""
+
     def test_higher_score_wins(self) -> None:
         planner = UnflatteningPlanner()
         high = _make_fragment("high", handlers=10, blocks={1})
         low = _make_fragment("low", handlers=1, blocks={1})
-        result = planner._resolve_conflicts([high, low], [("high", "low", frozenset({1}))])
-        names = [f.strategy_name for f in result]
+        pipeline, _prov = planner.compose_pipeline([high, low])
+        names = [f.strategy_name for f in pipeline]
         assert "high" in names
         assert "low" not in names
 
