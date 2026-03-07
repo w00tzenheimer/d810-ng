@@ -37,8 +37,15 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 from d810.recon.flow.transition_builder import (
     _get_state_var_stkoff,
 )
+from d810.cfg.flow.terminal_return import (
+    TerminalCfgSuffixFrontier,
+    TerminalSemanticLoweringFrontier,
+    TerminalLoweringAction,
+    compute_terminal_cfg_suffix_frontier,
+)
 
 if TYPE_CHECKING:
+    from d810.cfg.flowgraph import FlowGraph
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
         AnalysisSnapshot,
     )
@@ -46,6 +53,38 @@ if TYPE_CHECKING:
 logger = logging.getLogger("D810.hodur.strategy.direct_linearization")
 
 __all__ = ["DirectHandlerLinearizationStrategy"]
+
+
+def _compute_linear_suffix_chain(
+    fg: FlowGraph,
+    start_serial: int,
+) -> list[int] | None:
+    """Walk forward from start_serial following single successors until a 0-succ block.
+
+    Returns the block serial chain [start, ..., return_block] or None if:
+    - Any interior block has nsucc != 1
+    - The final block has nsucc != 0
+    - A cycle is detected
+    - Chain length < 2 (degenerate / no shared corridor)
+    """
+    chain = [start_serial]
+    visited = {start_serial}
+    current = start_serial
+    while True:
+        succs = fg.successors(current)
+        if len(succs) == 0:
+            break  # terminal block found
+        if len(succs) != 1:
+            return None  # not linear, fail closed
+        nxt = succs[0]
+        if nxt in visited:
+            return None  # cycle
+        visited.add(nxt)
+        chain.append(nxt)
+        current = nxt
+    if len(chain) < 2:
+        return None  # degenerate, no shared corridor to privatize
+    return chain
 
 
 def _mop_matches_stkoff_snapshot(mop_snap: object | None, stkoff: int) -> bool:
@@ -182,6 +221,9 @@ class DirectHandlerLinearizationStrategy:
 
         # Track terminal exit blocks for semantic gate cycle detection
         terminal_exit_blocks: set[int] = set()
+
+        # Track anchors (exit blocks) that get redirected to the shared terminal target
+        terminal_redirect_anchors: set[int] = set()
 
         handler_entry_set: set[int] = set(all_handlers.keys())
         pre_header_serial: int | None = getattr(bst_result, "pre_header_serial", None)
@@ -476,6 +518,8 @@ class DirectHandlerLinearizationStrategy:
                                 linearized_blocks.add(path.exit_block)
                                 # Track redirect target so cycle detector walks from it too
                                 terminal_exit_blocks.add(terminal_target)
+                                # Track anchor for PrivateTerminalSuffix emission
+                                terminal_redirect_anchors.add(path.exit_block)
                                 # NOP dead state writes on the terminal path
                                 for write_blk, write_ea in path.state_writes:
                                     _append_nop(
@@ -830,6 +874,8 @@ class DirectHandlerLinearizationStrategy:
                                 linearized_blocks.add(path.exit_block)
                                 # Track redirect target so cycle detector walks from it too
                                 terminal_exit_blocks.add(terminal_target)
+                                # Track anchor for PrivateTerminalSuffix emission
+                                terminal_redirect_anchors.add(path.exit_block)
                                 for write_blk, write_ea in path.state_writes:
                                     _append_nop(
 
@@ -966,6 +1012,34 @@ class DirectHandlerLinearizationStrategy:
             len(all_handlers),
         )
 
+        # --- PrivateTerminalSuffix diagnostic (emission disabled) ---
+        # NOTE: Actual emission is disabled. The anchors from
+        # compute_terminal_cfg_suffix_frontier are pre-linearization BST
+        # branch nodes — not 1-way blocks. The backend P1-2 precondition
+        # (anchor.succ(0) == shared_entry) fails because BST nodes have
+        # 2 successors. Enabling emission requires a two-phase approach:
+        # Phase 1: redirect terminal handler body exits → shared_entry
+        # Phase 2: emit PrivateTerminalSuffix per handler body exit
+        private_suffix_count = 0
+        terminal_target_for_suffix = find_terminal_exit_target_snapshot(
+            fg, dispatcher_serial, sm_blocks
+        )
+        if terminal_target_for_suffix is not None:
+            cfg_frontier = compute_terminal_cfg_suffix_frontier(
+                return_block_serial=terminal_target_for_suffix,
+                predecessors_of=fg.predecessors,
+            )
+
+            if (
+                len(cfg_frontier.suffix_serials) >= 2
+                and len(cfg_frontier.unique_anchor_serials) >= 2
+            ):
+                logger.info(
+                    "PrivateTerminalSuffix diagnostic: %s "
+                    "(emission disabled — anchors are pre-linearization BST nodes)",
+                    cfg_frontier.summary(),
+                )
+
         if not modifications:
             return None
 
@@ -1006,5 +1080,6 @@ class DirectHandlerLinearizationStrategy:
                 "forbidden_blocks": forbidden_blocks,
                 "exit_blocks": exit_blocks,
                 "pre_header_serial": pre_header_serial,
+                "private_terminal_suffix_count": private_suffix_count,
             },
         )
