@@ -56,6 +56,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("D810.hodur.strategy.direct_linearization")
 
 __all__ = [
+    "CarrierBucket",
     "CarrierSourceKind",
     "CorridorRecommendation",
     "CorridorShape",
@@ -151,6 +152,46 @@ class CorridorRecommendation(str, enum.Enum):
     UNRESOLVED = "unresolved"
 
 
+class CarrierBucket(str, enum.Enum):
+    """Semantic bucket for a suffix group's carrier profile."""
+
+    BENIGN_SHARED_SUFFIX = "benign_shared_suffix"
+    """All real_const — no PTS needed."""
+
+    SUFFIX_AMBIGUOUS = "suffix_ambiguous"
+    """Has unknown, no stronger — PTS candidate."""
+
+    NEEDS_DIRECT_LOWERING = "needs_direct_lowering"
+    """Has state_const/expr/cursor — not PTS."""
+
+
+def _classify_carrier_bucket(carrier_kinds: tuple[str, ...]) -> CarrierBucket:
+    """Classify carrier profile into a semantic bucket.
+
+    Rules:
+    - Any state_const, expr, cursor_or_ptr → NEEDS_DIRECT_LOWERING
+    - Any unknown (and no stronger kinds) → SUFFIX_AMBIGUOUS
+    - All real_const → BENIGN_SHARED_SUFFIX
+    """
+    kinds_set = set(carrier_kinds)
+
+    # Check for "stronger" semantic kinds that need direct lowering.
+    direct_lowering_kinds = {
+        CarrierSourceKind.STATE_CONST.value,
+        CarrierSourceKind.EXPR.value,
+        CarrierSourceKind.CURSOR_OR_PTR.value,
+    }
+    if kinds_set & direct_lowering_kinds:
+        return CarrierBucket.NEEDS_DIRECT_LOWERING
+
+    # Check for unknown → suffix is ambiguous.
+    if CarrierSourceKind.UNKNOWN.value in kinds_set:
+        return CarrierBucket.SUFFIX_AMBIGUOUS
+
+    # All remaining (real_const only) → benign.
+    return CarrierBucket.BENIGN_SHARED_SUFFIX
+
+
 @dataclass(frozen=True)
 class SharedCorridorInfo:
     """Diagnostic info for a shared terminal corridor group."""
@@ -181,6 +222,7 @@ class SuffixGroupDecision:
     handler_count: int
     carrier_source_kinds: tuple[str, ...]  # distinct CarrierSourceKind values
     has_state_const_carrier: bool
+    carrier_bucket: CarrierBucket
     proof_resolved_count: int
     proof_unresolved_count: int
     corridor_length: int
@@ -223,7 +265,10 @@ def _compute_suffix_group_decision(
     proof_resolved = sum(1 for e in forward_entries if e.proof_status == "resolved")
     proof_unresolved = sum(1 for e in forward_entries if e.proof_status == "unresolved")
 
-    # Determine should_emit by checking all conditions.
+    # Classify carrier bucket.
+    carrier_bucket = _classify_carrier_bucket(carrier_kinds)
+
+    # Determine should_emit using carrier bucket predicate.
     rejection_reasons: list[str] = []
 
     if semantic_action != TerminalLoweringAction.PRIVATE_TERMINAL_SUFFIX:
@@ -234,14 +279,14 @@ def _compute_suffix_group_decision(
         rejection_reasons.append("corridor not clonable")
     if handler_count < 2:
         rejection_reasons.append("handler_count=%d < 2" % handler_count)
-    if has_state_const:
-        rejection_reasons.append("has state_const carriers")
-    if proof_unresolved == 0:
-        rejection_reasons.append("no unresolved proofs (nothing to fix)")
     if proof_resolved > 0:
         rejection_reasons.append(
             "proof_resolved=%d > 0 (some already resolved)" % proof_resolved
         )
+    if carrier_bucket == CarrierBucket.BENIGN_SHARED_SUFFIX:
+        rejection_reasons.append("carrier_bucket=benign_shared_suffix (all real_const, structurally adequate)")
+    if carrier_bucket == CarrierBucket.NEEDS_DIRECT_LOWERING:
+        rejection_reasons.append("carrier_bucket=needs_direct_lowering (has state_const/expr/cursor)")
 
     should_emit = len(rejection_reasons) == 0
 
@@ -253,6 +298,7 @@ def _compute_suffix_group_decision(
         handler_count=handler_count,
         carrier_source_kinds=carrier_kinds,
         has_state_const_carrier=has_state_const,
+        carrier_bucket=carrier_bucket,
         proof_resolved_count=proof_resolved,
         proof_unresolved_count=proof_unresolved,
         corridor_length=corridor_info.corridor_length,
@@ -1713,11 +1759,12 @@ class DirectHandlerLinearizationStrategy:
 
                     logger.info(
                         "[decision-table] shared_entry=blk[%d] handlers=%d "
-                        "carriers=%s state_const=%s "
+                        "bucket=%s carriers=%s state_const=%s "
                         "resolved=%d unresolved=%d "
                         "clonable=%s should_emit=%s reasons=%s",
                         decision.shared_entry,
                         decision.handler_count,
+                        decision.carrier_bucket.value,
                         decision.carrier_source_kinds,
                         decision.has_state_const_carrier,
                         decision.proof_resolved_count,
