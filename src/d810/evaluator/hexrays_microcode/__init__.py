@@ -33,8 +33,14 @@ from d810.evaluator.hexrays_microcode.chains import (
     is_phi_like_merge,
 )
 from d810.evaluator.hexrays_microcode.valranges import (
+    ValrangeLocation,
+    ValrangeLocationKind,
+    ValrangeRecord,
+    collect_block_valrange_records,
     collect_block_valranges,
+    collect_instruction_valrange_records,
     collect_instruction_valranges,
+    collect_mba_valrange_records,
     collect_mba_valranges,
 )
 __all__ = [
@@ -59,7 +65,13 @@ __all__ = [
     "get_ud_du_chains",
     "is_passthru_chain",
     "is_phi_like_merge",
+    "ValrangeLocation",
+    "ValrangeLocationKind",
+    "ValrangeRecord",
+    "collect_block_valrange_records",
     "collect_block_valranges",
+    "collect_instruction_valrange_records",
     "collect_instruction_valranges",
+    "collect_mba_valrange_records",
     "collect_mba_valranges",
 ]
