@@ -284,8 +284,8 @@ class HodurUnflattener(GenericUnflatteningRule):
         planner_inputs = PlannerInputs(
             total_handlers=snapshot.handler_count,
             handler_transitions=transition_report,
-            return_frontier=None,  # return frontier sites not yet a planner input
-            terminal_return_audit=return_frontier_audit,
+            return_frontier=return_frontier_audit,
+            terminal_return_audit=None,
         )
         pipeline, provenance = self._planner.plan(
             snapshot, self._strategies, inputs=planner_inputs,

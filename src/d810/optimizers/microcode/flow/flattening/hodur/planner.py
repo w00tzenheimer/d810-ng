@@ -283,7 +283,9 @@ class UnflatteningPlanner:
 
         # --- Gate 3: Policy gate (coverage threshold drops fallbacks) ---
         accepted = self._apply_policy_with_provenance(
-            risk_passed, effective_total_handlers, rows
+            risk_passed, effective_total_handlers, rows,
+            hint_adjustments=hint_adjustments,
+            effective_scores=effective_scores,
         )
 
         # --- Gate 4: Conflict resolution (greedy independent set) ---
@@ -292,6 +294,7 @@ class UnflatteningPlanner:
             accepted = self._resolve_conflicts_with_provenance(
                 accepted, conflicts, rows,
                 effective_scores=effective_scores,
+                hint_adjustments=hint_adjustments,
             )
 
         # --- Gate 5: Selection (surviving fragments) ---
@@ -395,8 +398,23 @@ class UnflatteningPlanner:
         fragments: list[PlanFragment],
         total_handlers: int,
         rows: list[DecisionRecord],
+        *,
+        hint_adjustments: dict[str, HintAdjustment] | None = None,
+        effective_scores: dict[str, float] | None = None,
     ) -> list[PlanFragment]:
         """Apply policy gate and record provenance for dropped fallbacks."""
+        ha = hint_adjustments or {}
+        es = effective_scores or {}
+
+        def _hint_kwargs(f: PlanFragment) -> dict:
+            adj = ha.get(f.strategy_name, HintAdjustment())
+            return {
+                "base_score": f.expected_benefit.composite_score(),
+                "hint_score_delta": adj.score_delta,
+                "effective_score": es.get(f.strategy_name, f.expected_benefit.composite_score()),
+                "hint_reasons": adj.reasons,
+            }
+
         if not self.policy.allow_fallback_families:
             accepted: list[PlanFragment] = []
             for f in fragments:
@@ -406,6 +424,7 @@ class UnflatteningPlanner:
                         phase=DecisionPhase.POLICY_FILTERED,
                         reason_code=DecisionReasonCode.REJECTED_POLICY,
                         reason="fallback families disallowed by policy",
+                        **_hint_kwargs(f),
                     ))
                 else:
                     accepted.append(f)
@@ -430,6 +449,7 @@ class UnflatteningPlanner:
                                 f"direct coverage {coverage:.0%} >= "
                                 f"{self.policy.direct_coverage_threshold:.0%} threshold"
                             ),
+                            **_hint_kwargs(f),
                         ))
                     else:
                         accepted.append(f)
@@ -443,12 +463,15 @@ class UnflatteningPlanner:
         rows: list[DecisionRecord],
         *,
         effective_scores: dict[str, float] | None = None,
+        hint_adjustments: dict[str, HintAdjustment] | None = None,
     ) -> list[PlanFragment]:
         """Greedy independent set with provenance for dropped fragments."""
+        ha = hint_adjustments or {}
+        es = effective_scores or {}
 
         def _score(f: PlanFragment) -> float:
-            if effective_scores is not None and f.strategy_name in effective_scores:
-                return effective_scores[f.strategy_name]
+            if f.strategy_name in es:
+                return es[f.strategy_name]
             return f.expected_benefit.composite_score()
 
         scored = sorted(
@@ -468,6 +491,7 @@ class UnflatteningPlanner:
                 claimed = claimed.union(frag.ownership)
             else:
                 overlap_blocks = frag.ownership.blocks & claimed.blocks
+                adj = ha.get(frag.strategy_name, HintAdjustment())
                 rows.append(self._record(
                     frag,
                     phase=DecisionPhase.CONFLICT_DROPPED,
@@ -476,6 +500,10 @@ class UnflatteningPlanner:
                         f"ownership conflict: {len(overlap_blocks)} shared blocks"
                     ),
                     ownership_blocks=frozenset(frag.ownership.blocks),
+                    base_score=frag.expected_benefit.composite_score(),
+                    hint_score_delta=adj.score_delta,
+                    effective_score=_score(frag),
+                    hint_reasons=adj.reasons,
                 ))
         return accepted
 
