@@ -37,6 +37,7 @@ from d810.recon.flow.dispatcher_detection import (
     DispatcherType,
 )
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
+from d810.optimizers.microcode.flow.flattening.safeguards import should_apply_cfg_modifications
 from d810.optimizers.microcode.flow.handler import FlowRulePriority
 from d810.evaluator.hexrays_microcode.tracker import get_all_possibles_values
 
@@ -785,6 +786,19 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         nb_queued = self.analyze_blk(blk)
 
         if nb_queued == 0:
+            return 0
+
+        # Safeguard: check if enough edges were resolved to justify CFG mods
+        total_preds = blk.npred()
+        if not should_apply_cfg_modifications(
+            nb_queued, total_preds, "fix_pred_cond_jump"
+        ):
+            unflat_logger.warning(
+                "FixPredecessor safeguard: skipping %d queued modifications "
+                "(resolved %d / %d predecessors)",
+                nb_queued, nb_queued, total_preds,
+            )
+            self._pending_modifications.clear()
             return 0
 
         # Phase 2: Apply - execute all modifications
