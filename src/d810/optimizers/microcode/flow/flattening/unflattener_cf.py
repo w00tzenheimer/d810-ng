@@ -2071,6 +2071,14 @@ class UnflattenControlFlowRule(FlowOptimizationRule):
     """
     Removes opaque dispatcher-based control-flow flattening.
     Ported from pyhrdeobv2 (Eidolon).
+
+    Gate policy — AUDIT_ONLY (cf unflattener, no flow context gate):
+    This rule extends ``FlowOptimizationRule`` directly (not
+    ``GenericUnflatteningRule``) and is architecturally separate from the
+    main Hodur/OLLVM unflattening pipeline. ``FlowMaturityContext`` is not
+    wired — doing so would be a large cross-cutting change out of scope.
+    The rule uses its own safeguard via ``should_apply_cfg_modifications()``
+    at the apply phase.
     """
 
     CATEGORY = "OLLVM Unflattening"

@@ -173,6 +173,13 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
     1. analyze_blk() queues all needed modifications (stores only serials)
     2. _apply_queued_modifications() applies them after analysis completes
     3. No live pointers stored across CFG modifications
+
+    Gate policy — AUDIT_ONLY (targeted rule, no bulk safeguard):
+    This is a per-block targeted rule, NOT a bulk CFG reconstruction pass.
+    The ``should_apply_cfg_modifications`` bulk safeguard is intentionally
+    absent — it is designed for batch dispatcher rewrites and would be too
+    aggressive for small, targeted predecessor patches. This rule uses its
+    own structural gate via ``flow_context.evaluate_fix_predecessor_gate()``.
     """
 
     DESCRIPTION = "Detect if a predecessor of a conditional block always takes the same path and patch it (works for O-LLVM style control flow flattening)"
@@ -841,6 +848,14 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             self._verify_failed = False  # Reset on maturity change
 
         if self.cur_maturity not in self.maturities:
+            # Gate: maturity filter — normal operation, not a bypass.
+            if unflat_logger.debug_on:
+                unflat_logger.debug(
+                    "Gate skipped [maturity_filter]: %s at maturity %d not in %s",
+                    self.__class__.__name__,
+                    self.cur_maturity,
+                    self.maturities,
+                )
             return False
 
         if self.flow_context is not None:
@@ -854,6 +869,14 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                 return False
 
         if self.DEFAULT_MAX_PASSES is not None and self.cur_maturity_pass >= self.DEFAULT_MAX_PASSES:
+            # Gate: max passes reached.
+            if unflat_logger.debug_on:
+                unflat_logger.debug(
+                    "Gate skipped [max_passes]: %s pass %d >= %d",
+                    self.__class__.__name__,
+                    self.cur_maturity_pass,
+                    self.DEFAULT_MAX_PASSES,
+                )
             return False
 
         if blk.tail is None or blk.tail.opcode not in JMP_OPCODE_HANDLED:
