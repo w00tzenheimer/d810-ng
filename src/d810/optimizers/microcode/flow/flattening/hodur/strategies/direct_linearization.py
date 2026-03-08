@@ -129,6 +129,7 @@ class ForwardFrontierEntry:
     proof_status: str
     notes: str = ""
     state_const_written: int | None = None
+    requires_dtl: bool = False
 
 
 class CorridorShape(str, enum.Enum):
@@ -234,6 +235,7 @@ class SuffixGroupDecision:
     clonable: bool
     should_emit: bool
     rejection_reasons: tuple[str, ...]  # why should_emit=False, empty if True
+    dtl_anchor_serials: tuple[int, ...] = ()
 
 
 def _compute_suffix_group_decision(
@@ -295,6 +297,11 @@ def _compute_suffix_group_decision(
 
     should_emit = len(rejection_reasons) == 0
 
+    # Collect per-anchor DTL candidates: anchors that leak known state constants.
+    dtl_anchors = tuple(sorted(
+        e.handler_entry for e in forward_entries if e.requires_dtl
+    ))
+
     return SuffixGroupDecision(
         shared_entry=corridor_info.shared_entry,
         return_block=corridor_info.return_block,
@@ -310,6 +317,7 @@ def _compute_suffix_group_decision(
         clonable=corridor_info.clonable,
         should_emit=should_emit,
         rejection_reasons=tuple(rejection_reasons),
+        dtl_anchor_serials=dtl_anchors,
     )
 
 

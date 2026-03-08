@@ -249,11 +249,25 @@ class PrivateTerminalSuffixStrategy:
             )
             return None
 
+        # ---- Resolve known state constants for per-anchor DTL detection ----
+        known_state_constants: set[int] = set()
+        try:
+            sc = snapshot.state_constants
+            if sc is not None:
+                known_state_constants = set(sc)
+        except Exception:
+            pass
+
         # ---- Classify carriers per anchor ----
         forward_entries: list[ForwardFrontierEntry] = []
         for anchor_serial in anchors:
             carrier, carrier_const = _classify_carrier_source(
                 fg, anchor_serial, state_var_stkoff, full_infra
+            )
+
+            requires_dtl = (
+                carrier_const is not None
+                and carrier_const in known_state_constants
             )
 
             entry = ForwardFrontierEntry(
@@ -269,31 +283,29 @@ class PrivateTerminalSuffixStrategy:
                 proof_status="unresolved",
                 notes="pts-strategy-anchor",
                 state_const_written=carrier_const,
+                requires_dtl=requires_dtl,
             )
             forward_entries.append(entry)
 
         # ---- Per-anchor return audit diagnostic ----
-        known_state_constants: set[int] = set()
-        try:
-            sc = snapshot.state_constants
-            if sc is not None:
-                known_state_constants = set(sc)
-        except Exception:
-            pass
+        dtl_count = 0
         for entry in forward_entries:
             is_leak = (
                 entry.state_const_written is not None
                 and entry.state_const_written in known_state_constants
             )
+            if entry.requires_dtl:
+                dtl_count += 1
             logger.info(
                 "PTS_ANCHOR_AUDIT anchor=%d carrier=%s "
-                "state_const_written=%s is_state_leak=%s",
+                "state_const_written=%s is_state_leak=%s requires_dtl=%s",
                 entry.handler_entry,
                 entry.carrier_source_kind.value,
                 hex(entry.state_const_written)
                 if entry.state_const_written is not None
                 else "None",
                 is_leak,
+                entry.requires_dtl,
             )
         leak_count = sum(
             1
@@ -302,10 +314,11 @@ class PrivateTerminalSuffixStrategy:
             and e.state_const_written in known_state_constants
         )
         logger.info(
-            "PTS_ANCHOR_AUDIT_SUMMARY total=%d leaking=%d clean=%d",
+            "PTS_ANCHOR_AUDIT_SUMMARY total=%d leaking=%d clean=%d dtl_candidates=%d",
             len(forward_entries),
             leak_count,
             len(forward_entries) - leak_count,
+            dtl_count,
         )
 
         # ---- Build corridor info and compute decision ----
