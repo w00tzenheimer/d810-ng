@@ -97,11 +97,15 @@ class ReconAnalysisRuntime:
         """
         if func_ea == self._current_func_ea:
             return False  # already reset for this decompilation
+        # Flush previous function's outcomes if not finalized
+        prev_ea = self._current_func_ea
+        if prev_ea != -1:
+            self._persist_outcomes(prev_ea)
         self._current_func_ea = func_ea
         self._phase.reset(func_ea=func_ea)
         self._store.clear_func(func_ea=func_ea)
         self._outcome_log.reset_for_func(func_ea)
-        logger.debug("reset_for_func: cleared recon state for func=0x%x", func_ea)
+        logger.debug("reset_for_func: func=0x%x prev=0x%x flushed=%s", func_ea, prev_ea, prev_ea != -1)
         return True
 
     def mark_decompilation_finished(self) -> None:
@@ -111,20 +115,12 @@ class ReconAnalysisRuntime:
         self._current_func_ea = -1
 
     def _persist_outcomes(self, func_ea: int) -> None:
-        """Persist session summary and consumer outcomes to store."""
-        # Session summary from hints
-        hints = self._store.load_hints(func_ea=func_ea)
-        if hints is not None:
-            results = self._store.load_all_recon_results(func_ea=func_ea)
-            self._store.save_session_summary(
-                func_ea=func_ea,
-                collectors_fired=len({r.collector_name for r in results}) if results else 0,
-                classification=hints.obfuscation_type or "",
-                confidence=hints.confidence,
-                recipes=list(hints.recommended_recipes),
-                suppress_rules=list(hints.suppress_rules),
-            )
+        """Persist consumer outcomes to store.
 
+        Session summaries are persisted eagerly by ``analyze_and_persist``
+        and ``collect_and_analyze``, so this method only handles the
+        consumer-outcome rows.
+        """
         # Consumer outcomes
         reports = self._outcome_log.get_func_reports(func_ea)
         for report in reports:
@@ -250,6 +246,14 @@ class ReconAnalysisRuntime:
 
         if persist_hints:
             self._store.save_hints(hints)
+            self._store.save_session_summary(
+                func_ea=func_ea,
+                collectors_fired=len({r.collector_name for r in results}),
+                classification=hints.obfuscation_type or "",
+                confidence=hints.confidence,
+                recipes=list(hints.recommended_recipes),
+                suppress_rules=list(hints.suppress_rules),
+            )
             logger.debug(
                 "collect_and_analyze: persisted hints for func=0x%x type=%s conf=%.2f",
                 func_ea, hints.obfuscation_type, hints.confidence,
@@ -270,6 +274,16 @@ class ReconAnalysisRuntime:
             func_ea=func_ea, results=results, store=self._store,
         )
         self._store.save_hints(hints)
+        # Eagerly persist session summary alongside hints so it survives
+        # interrupted decompilations (plugin stop, no hxe_structural).
+        self._store.save_session_summary(
+            func_ea=func_ea,
+            collectors_fired=len({r.collector_name for r in results}),
+            classification=hints.obfuscation_type or "",
+            confidence=hints.confidence,
+            recipes=list(hints.recommended_recipes),
+            suppress_rules=list(hints.suppress_rules),
+        )
         logger.info(
             "analyze_and_persist: persisted hints for func=0x%x (type=%s, confidence=%.2f)",
             func_ea, hints.obfuscation_type, hints.confidence,

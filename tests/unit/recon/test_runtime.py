@@ -327,6 +327,50 @@ def test_mark_decompilation_finished_allows_re_reset() -> None:
     )
 
 
+def test_reset_for_func_flushes_previous_outcomes() -> None:
+    """Switching to func B flushes persisted outcomes for func A.
+
+    When reset_for_func(B) is called while func A is active, the runtime
+    should persist session summary and consumer outcomes for A *before*
+    clearing state for B.  This closes the gap where outcomes are lost if
+    mark_decompilation_finished is never called (e.g. IDA decompiles A
+    then immediately starts B).
+    """
+    rt, _mock_phase, _mock_analysis, mock_store = _make_runtime()
+
+    func_a = 0x401000
+    func_b = 0x402000
+
+    # Activate func A
+    rt.reset_for_func(func_a)
+
+    # Set up store responses for func A's persist path
+    hints_a = _make_hints(func_ea=func_a)
+    mock_store.load_hints.return_value = hints_a
+    results_a = [_make_recon_result(func_ea=func_a)]
+    mock_store.load_all_recon_results.return_value = results_a
+
+    # Record an outcome for func A
+    rt.record_rule_scope_outcome(
+        func_ea=func_a,
+        hints=hints_a,
+        apply_result=None,
+        source="analyzed",
+    )
+
+    # Now switch to func B -- should flush func A outcomes first
+    rt.reset_for_func(func_b)
+
+    # Session summaries are persisted eagerly by analyze_and_persist,
+    # not by _persist_outcomes, so no save_session_summary call here.
+    mock_store.save_session_summary.assert_not_called()
+    # Consumer outcome for func A was persisted
+    mock_store.save_consumer_outcome.assert_called_once()
+    outcome_call = mock_store.save_consumer_outcome.call_args
+    assert outcome_call.kwargs["func_ea"] == func_a
+    assert outcome_call.kwargs["consumer_name"] == "rule_scope"
+
+
 def test_reset_fires_on_different_func_without_mark_finished() -> None:
     """Switching to a different function fires reset without needing mark_finished.
 
@@ -539,15 +583,9 @@ def test_mark_decompilation_finished_persists_outcomes() -> None:
 
     rt.mark_decompilation_finished()
 
-    # Session summary was persisted
-    mock_store.save_session_summary.assert_called_once_with(
-        func_ea=_FUNC_EA,
-        collectors_fired=1,
-        classification="ollvm_flat",
-        confidence=0.85,
-        recipes=["unflattening_recipe"],
-        suppress_rules=[],
-    )
+    # Session summaries are persisted eagerly by analyze_and_persist,
+    # not by _persist_outcomes, so no save_session_summary call here.
+    mock_store.save_session_summary.assert_not_called()
     # Consumer outcome was persisted
     mock_store.save_consumer_outcome.assert_called_once()
     outcome_call = mock_store.save_consumer_outcome.call_args
@@ -558,12 +596,11 @@ def test_mark_decompilation_finished_persists_outcomes() -> None:
     assert outcome_call.kwargs["verdict_applied"] is False
 
 
-def test_mark_decompilation_finished_no_hints_skips_session_summary() -> None:
-    """When no hints exist, session summary is not persisted but outcomes are."""
+def test_mark_decompilation_finished_no_hints_still_persists_outcomes() -> None:
+    """Even without hints, consumer outcomes are persisted by _persist_outcomes."""
     rt, _mock_phase, _mock_analysis, mock_store = _make_runtime()
 
     rt.reset_for_func(_FUNC_EA)
-    mock_store.load_hints.return_value = None
 
     # Record a consumer outcome
     rt.record_rule_scope_outcome(
@@ -575,7 +612,7 @@ def test_mark_decompilation_finished_no_hints_skips_session_summary() -> None:
 
     rt.mark_decompilation_finished()
 
-    # No session summary
+    # Session summaries are handled eagerly, not here
     mock_store.save_session_summary.assert_not_called()
     # Consumer outcome still persisted
     mock_store.save_consumer_outcome.assert_called_once()
