@@ -413,6 +413,34 @@ def test_record_rule_scope_outcome() -> None:
     assert reports[0].consumer_verdict_applied is False  # apply_result=None
 
 
+def test_record_planner_outcome() -> None:
+    """record_planner_outcome creates PlannerOutcomeAdapter and records."""
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+
+    class FakeProvenance:
+        input_summary = None
+        rows = ()
+        accepted_count = 1
+
+    rt.record_planner_outcome(func_ea=0x5000, provenance=FakeProvenance())
+    reports = rt.outcome_log.get_func_reports(0x5000)
+    assert len(reports) == 1
+    assert reports[0].consumer_name == "hodur_planner"
+
+
+def test_record_flow_gate_outcome() -> None:
+    """record_flow_gate_outcome creates FlowGateOutcomeAdapter and records."""
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+
+    class FakeDecision:
+        allowed = True
+
+    rt.record_flow_gate_outcome(func_ea=0x6000, decision=FakeDecision())
+    reports = rt.outcome_log.get_func_reports(0x6000)
+    assert len(reports) == 1
+    assert reports[0].consumer_name == "flow_gate"
+
+
 def test_get_outcome_summary() -> None:
     """get_outcome_summary delegates to outcome log summary."""
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()

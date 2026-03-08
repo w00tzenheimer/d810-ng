@@ -401,6 +401,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             )
         self._last_provenance = provenance
 
+        # Record planner outcome via flow context callback
+        if self.flow_context is not None:
+            self.flow_context.report_outcome(provenance, "planner")
+
         # Persist terminal return audit from executor results (for next pass)
         for result in results:
             audit = result.metadata.get("terminal_return_audit")

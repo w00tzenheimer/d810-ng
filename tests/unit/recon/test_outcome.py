@@ -269,6 +269,25 @@ class TestReconOutcomeLog:
         log = ReconOutcomeLog()
         assert log.summary(0x9999) == {"func_ea": 0x9999, "consumers": []}
 
+    def test_dedup_across_consumers(self) -> None:
+        """Multiple consumers for same func_ea coexist (dedup is per consumer_name)."""
+        log = ReconOutcomeLog()
+
+        a1 = RuleScopeOutcomeAdapter(
+            _StubReconOutcome(func_ea=0x100, source="analyzed"),
+        )
+        log.record(a1)
+
+        a2 = PlannerOutcomeAdapter(
+            _StubPipelineProvenance(accepted_count=1), func_ea=0x100,
+        )
+        log.record(a2)
+
+        reports = log.get_func_reports(0x100)
+        assert len(reports) == 2
+        names = {r.consumer_name for r in reports}
+        assert names == {"rule_scope", "hodur_planner"}
+
     def test_get_func_reports_returns_copy(self) -> None:
         """get_func_reports returns a copy, not the internal list."""
         log = ReconOutcomeLog()

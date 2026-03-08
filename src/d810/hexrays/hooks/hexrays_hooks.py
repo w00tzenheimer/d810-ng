@@ -1007,6 +1007,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
             self._flow_context_key = key
             self._attach_hint_summary(self._flow_context)
+            if self._recon_runtime is not None:
+                self._flow_context.set_outcome_callback(self._record_flow_outcome)
         else:
             self._flow_context.refresh_mba(mba)
         self._flow_context.set_phase(
@@ -1031,6 +1033,17 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             summary.obfuscation_type,
             summary.confidence,
         )
+
+    def _record_flow_outcome(
+        self, func_ea: int, outcome_object: object, consumer_type: str,
+    ) -> None:
+        """Callback for flow-context rules to record outcomes."""
+        if self._recon_runtime is None:
+            return
+        if consumer_type == "planner":
+            self._recon_runtime.record_planner_outcome(func_ea, outcome_object)
+        elif consumer_type == "flow_gate":
+            self._recon_runtime.record_flow_gate_outcome(func_ea, outcome_object)
 
     def optimize(self, blk: ida_hexrays.mblock_t):
         active_rules = self._resolve_active_rules(blk)
