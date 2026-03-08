@@ -128,6 +128,7 @@ def test_active_optimizer_list_filters_by_maturity():
     mgr._last_optimizer_tried = None
     mgr.log_dir = None
     mgr._recon_phase = None
+    mgr._recon_runtime = None
 
     # Simulate maturity change to MMAT_LOCOPT
     blk = _make_blk(ida_hexrays.MMAT_LOCOPT)

@@ -60,7 +60,7 @@ def test_strategy_names_unique():
 
 def test_strategy_count():
     """ALL_STRATEGIES must contain exactly 7 strategies."""
-    assert len(ALL_STRATEGIES) == 7
+    assert len(ALL_STRATEGIES) == 8
 
 
 # ---------------------------------------------------------------------------
