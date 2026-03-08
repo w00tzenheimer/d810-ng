@@ -399,3 +399,42 @@ class TestReconOutcomeLog:
         reports = log.get_func_reports(0x3000)
         reports.clear()
         assert len(log.get_func_reports(0x3000)) == 1
+
+
+# ---------------------------------------------------------------------------
+# provenance_dict property
+# ---------------------------------------------------------------------------
+
+
+class TestProvenanceDict:
+    def test_rule_scope_provenance_dict_is_none(self) -> None:
+        adapter = RuleScopeOutcomeAdapter(_StubReconOutcome())
+        assert adapter.provenance_dict is None
+
+    def test_flow_gate_provenance_dict_is_none(self) -> None:
+        adapter = FlowGateOutcomeAdapter(_StubFlowGateDecision(), func_ea=0x2000)
+        assert adapter.provenance_dict is None
+
+    def test_planner_provenance_dict_returns_dict(self) -> None:
+        """PlannerOutcomeAdapter.provenance_dict delegates to to_dict()."""
+
+        @dataclass(frozen=True)
+        class _ProvWithToDict:
+            rows: tuple = ()
+            input_summary: object | None = None
+            accepted_count: int = 1
+
+            def to_dict(self) -> dict:
+                return {"accepted": self.accepted_count, "rows": list(self.rows)}
+
+        prov = _ProvWithToDict(accepted_count=3)
+        adapter = PlannerOutcomeAdapter(prov, func_ea=0x1000)
+        result = adapter.provenance_dict
+        assert isinstance(result, dict)
+        assert result == {"accepted": 3, "rows": []}
+
+    def test_planner_provenance_dict_none_without_to_dict(self) -> None:
+        """Stub without to_dict() returns None."""
+        prov = _StubPipelineProvenance()
+        adapter = PlannerOutcomeAdapter(prov, func_ea=0x1000)
+        assert adapter.provenance_dict is None

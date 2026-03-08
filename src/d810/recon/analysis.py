@@ -13,8 +13,15 @@ No IDA imports - fully unit-testable.
 """
 from __future__ import annotations
 
+from d810.core.logging import getLogger
+from d810.core.typing import TYPE_CHECKING
+
 from d810.recon.models import CandidateFlag, DeobfuscationHints, ReconResult
-from d810.recon.store import ReconStore
+
+if TYPE_CHECKING:
+    from d810.recon.store import ReconStore
+
+logger = getLogger("D810.recon.analysis")
 
 
 # ---------------------------------------------------------------------------
@@ -51,9 +58,39 @@ class AnalysisPhase:
     """
 
     def interpret(
-        self, *, func_ea: int, results: list[ReconResult]
+        self,
+        *,
+        func_ea: int,
+        results: list[ReconResult],
+        store: ReconStore | None = None,
     ) -> DeobfuscationHints:
-        """Classify obfuscation type from a list of ReconResults."""
+        """Classify obfuscation type from a list of ReconResults.
+
+        When *store* is provided and a user override exists for *func_ea*,
+        the override takes precedence over computed classification.
+        """
+        # --- User override (takes precedence over computed classification) ---
+        if store is not None:
+            override = store.load_user_override(func_ea)
+            if override is not None:
+                logger.info(
+                    "interpret: func=0x%x user override classification=%s confidence=%.2f",
+                    func_ea, override["override_value"], override["confidence"],
+                )
+                recipes: tuple[str, ...] = ()
+                suppress: tuple[str, ...] = ()
+                if override["override_value"] == "ollvm_flat":
+                    recipes = ("unflattening_recipe",)
+                    suppress = ("ConstantFolding",)
+                return DeobfuscationHints(
+                    func_ea=func_ea,
+                    obfuscation_type=override["override_value"],
+                    confidence=override["confidence"],
+                    recommended_recipes=recipes,
+                    candidates=(),
+                    suppress_rules=suppress,
+                )
+
         if not results:
             return DeobfuscationHints(
                 func_ea=func_ea,
@@ -165,4 +202,4 @@ class AnalysisPhase:
     ) -> DeobfuscationHints:
         """Load all ReconResults from the store and interpret them."""
         results = store.load_all_recon_results(func_ea=func_ea)
-        return self.interpret(func_ea=func_ea, results=results)
+        return self.interpret(func_ea=func_ea, results=results, store=store)

@@ -122,7 +122,7 @@ def test_apply_to_rule_scope_fresh_analysis() -> None:
         _SENTINEL_TARGET, func_ea=_FUNC_EA, maturity=_MATURITY,
     )
     mock_analysis.interpret.assert_called_once_with(
-        func_ea=_FUNC_EA, results=results,
+        func_ea=_FUNC_EA, results=results, store=mock_store,
     )
     mock_rule_scope.apply_hints.assert_called_once_with(hints)
 

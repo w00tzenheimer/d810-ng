@@ -87,7 +87,7 @@ def test_collect_and_analyze_persists_hints() -> None:
         _SENTINEL_TARGET, func_ea=_FUNC_EA, maturity=_MATURITY,
     )
     mock_analysis.interpret.assert_called_once_with(
-        func_ea=_FUNC_EA, results=results,
+        func_ea=_FUNC_EA, results=results, store=mock_store,
     )
     mock_store.save_hints.assert_called_once_with(hints)
 
@@ -173,7 +173,7 @@ def test_load_or_analyze_cache_miss() -> None:
         _SENTINEL_TARGET, func_ea=_FUNC_EA, maturity=_MATURITY,
     )
     mock_analysis.interpret.assert_called_once_with(
-        func_ea=_FUNC_EA, results=results,
+        func_ea=_FUNC_EA, results=results, store=mock_store,
     )
     mock_store.save_hints.assert_called_once_with(fresh_hints)
 
@@ -204,7 +204,7 @@ def test_analyze_and_persist_with_results() -> None:
     assert returned is hints
     mock_store.load_all_recon_results.assert_called_once_with(func_ea=_FUNC_EA)
     mock_analysis.interpret.assert_called_once_with(
-        func_ea=_FUNC_EA, results=results,
+        func_ea=_FUNC_EA, results=results, store=mock_store,
     )
     mock_store.save_hints.assert_called_once_with(hints)
 
@@ -273,7 +273,7 @@ def test_collect_and_analyze_saves_recon_results() -> None:
     )
     # Both results are forwarded to the analysis phase.
     mock_analysis.interpret.assert_called_once_with(
-        func_ea=_FUNC_EA, results=results,
+        func_ea=_FUNC_EA, results=results, store=mock_store,
     )
 
 
@@ -509,3 +509,73 @@ def test_get_outcome_summary() -> None:
     assert summary["func_ea"] == _FUNC_EA
     assert len(summary["consumers"]) == 1
     assert summary["consumers"][0]["name"] == "rule_scope"
+
+
+# ---------------------------------------------------------------------------
+# Persistence on decompilation finish
+# ---------------------------------------------------------------------------
+
+
+def test_mark_decompilation_finished_persists_outcomes() -> None:
+    """mark_decompilation_finished calls _persist_outcomes which saves to store."""
+    rt, _mock_phase, _mock_analysis, mock_store = _make_runtime()
+
+    # Set up active function with hints and an outcome
+    rt.reset_for_func(_FUNC_EA)
+
+    hints = _make_hints()
+    mock_store.load_hints.return_value = hints
+
+    results = [_make_recon_result()]
+    mock_store.load_all_recon_results.return_value = results
+
+    # Record a consumer outcome
+    rt.record_rule_scope_outcome(
+        func_ea=_FUNC_EA,
+        hints=hints,
+        apply_result=None,
+        source="analyzed",
+    )
+
+    rt.mark_decompilation_finished()
+
+    # Session summary was persisted
+    mock_store.save_session_summary.assert_called_once_with(
+        func_ea=_FUNC_EA,
+        collectors_fired=1,
+        classification="ollvm_flat",
+        confidence=0.85,
+        recipes=["unflattening_recipe"],
+        suppress_rules=[],
+    )
+    # Consumer outcome was persisted
+    mock_store.save_consumer_outcome.assert_called_once()
+    outcome_call = mock_store.save_consumer_outcome.call_args
+    assert outcome_call.kwargs["func_ea"] == _FUNC_EA
+    assert outcome_call.kwargs["consumer_name"] == "rule_scope"
+    assert outcome_call.kwargs["artifacts_available"] is True
+    assert outcome_call.kwargs["summary_available"] is True
+    assert outcome_call.kwargs["verdict_applied"] is False
+
+
+def test_mark_decompilation_finished_no_hints_skips_session_summary() -> None:
+    """When no hints exist, session summary is not persisted but outcomes are."""
+    rt, _mock_phase, _mock_analysis, mock_store = _make_runtime()
+
+    rt.reset_for_func(_FUNC_EA)
+    mock_store.load_hints.return_value = None
+
+    # Record a consumer outcome
+    rt.record_rule_scope_outcome(
+        func_ea=_FUNC_EA,
+        hints=None,
+        apply_result=None,
+        source="unavailable",
+    )
+
+    rt.mark_decompilation_finished()
+
+    # No session summary
+    mock_store.save_session_summary.assert_not_called()
+    # Consumer outcome still persisted
+    mock_store.save_consumer_outcome.assert_called_once()
