@@ -305,6 +305,34 @@ class PrivateTerminalSuffixStrategy:
         modifications = []
         owned_blocks: set[int] = set()
 
+        # Fix: Convert any fallthrough predecessor of the stop block to an
+        # explicit goto.  Stop-block relocation changes the return_block
+        # serial but the invariant checker derives outs from serial+1 for
+        # fallthrough blocks → CFG_50860_SUCC_MISMATCH.  This also covers
+        # the case where shared_entry == return_block (BLT_STOP has
+        # multiple predecessors, suffix is just the stop block itself).
+        return_blk = fg.get_block(return_block)
+        if return_blk is not None:
+            for pred_serial in return_blk.preds:
+                pred_blk = fg.get_block(pred_serial)
+                if (
+                    pred_blk is not None
+                    and pred_blk.nsucc == 1
+                    and pred_blk.tail_opcode != ida_hexrays.m_goto
+                ):
+                    modifications.append(
+                        builder.convert_to_goto(
+                            source_block=pred_serial,
+                            target_block=return_block,
+                        )
+                    )
+                    logger.info(
+                        "[pts-strategy] converting blk[%d] fallthrough to "
+                        "explicit goto -> blk[%d]",
+                        pred_serial,
+                        return_block,
+                    )
+
         for anchor_serial in anchors:
             mod = builder.private_terminal_suffix(
                 anchor_serial=anchor_serial,
