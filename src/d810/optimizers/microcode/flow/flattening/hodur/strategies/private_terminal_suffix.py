@@ -252,7 +252,7 @@ class PrivateTerminalSuffixStrategy:
         # ---- Classify carriers per anchor ----
         forward_entries: list[ForwardFrontierEntry] = []
         for anchor_serial in anchors:
-            carrier = _classify_carrier_source(
+            carrier, carrier_const = _classify_carrier_source(
                 fg, anchor_serial, state_var_stkoff, full_infra
             )
 
@@ -268,8 +268,45 @@ class PrivateTerminalSuffixStrategy:
                 carrier_source_kind=carrier,
                 proof_status="unresolved",
                 notes="pts-strategy-anchor",
+                state_const_written=carrier_const,
             )
             forward_entries.append(entry)
+
+        # ---- Per-anchor return audit diagnostic ----
+        known_state_constants: set[int] = set()
+        try:
+            sc = snapshot.state_constants
+            if sc is not None:
+                known_state_constants = set(sc)
+        except Exception:
+            pass
+        for entry in forward_entries:
+            is_leak = (
+                entry.state_const_written is not None
+                and entry.state_const_written in known_state_constants
+            )
+            logger.info(
+                "PTS_ANCHOR_AUDIT anchor=%d carrier=%s "
+                "state_const_written=%s is_state_leak=%s",
+                entry.handler_entry,
+                entry.carrier_source_kind.value,
+                hex(entry.state_const_written)
+                if entry.state_const_written is not None
+                else "None",
+                is_leak,
+            )
+        leak_count = sum(
+            1
+            for e in forward_entries
+            if e.state_const_written is not None
+            and e.state_const_written in known_state_constants
+        )
+        logger.info(
+            "PTS_ANCHOR_AUDIT_SUMMARY total=%d leaking=%d clean=%d",
+            len(forward_entries),
+            leak_count,
+            len(forward_entries) - leak_count,
+        )
 
         # ---- Build corridor info and compute decision ----
         corridor_info = _discover_shared_corridor(

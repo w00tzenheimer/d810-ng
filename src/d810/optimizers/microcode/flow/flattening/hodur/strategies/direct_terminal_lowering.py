@@ -262,7 +262,7 @@ class DirectTerminalLoweringStrategy:
         # ---- Classify carriers per anchor ----
         forward_entries: list[ForwardFrontierEntry] = []
         for anchor_serial in anchors:
-            carrier = _classify_carrier_source(
+            carrier, carrier_const = _classify_carrier_source(
                 fg, anchor_serial, state_var_stkoff, full_infra
             )
             entry = ForwardFrontierEntry(
@@ -277,6 +277,7 @@ class DirectTerminalLoweringStrategy:
                 carrier_source_kind=carrier,
                 proof_status="unresolved",
                 notes="dtl-strategy-anchor",
+                state_const_written=carrier_const,
             )
             forward_entries.append(entry)
 
