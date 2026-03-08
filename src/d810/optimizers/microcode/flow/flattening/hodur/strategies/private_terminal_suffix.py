@@ -262,7 +262,8 @@ class PrivateTerminalSuffixStrategy:
         forward_entries: list[ForwardFrontierEntry] = []
         for anchor_serial in anchors:
             carrier, carrier_const = _classify_carrier_source(
-                fg, anchor_serial, state_var_stkoff, full_infra
+                fg, anchor_serial, state_var_stkoff, full_infra,
+                mba=snapshot.mba,
             )
 
             requires_dtl = (

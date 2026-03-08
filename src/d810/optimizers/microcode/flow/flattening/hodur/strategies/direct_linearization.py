@@ -485,23 +485,226 @@ def _discover_shared_corridor(
     )
 
 
+def _extract_const_from_snapshot_mop(mop_snap: object) -> int | None:
+    """Extract a numeric constant from a snapshot mop (CfgMopSnapshot or rich MopSnapshot).
+
+    Handles both the lightweight CfgMopSnapshot (has .value directly) and the
+    rich MopSnapshot from hexrays/ir/mop_snapshot.py (has .nnn.value proxy).
+
+    Returns:
+        The integer constant if the mop is mop_n and carries a value, else None.
+    """
+    if mop_snap is None:
+        return None
+    src_t = getattr(mop_snap, "t", None)
+    if src_t != ida_hexrays.mop_n:
+        return None
+    # Rich MopSnapshot: .nnn.value proxy
+    nnn = getattr(mop_snap, "nnn", None)
+    if nnn is not None:
+        val = getattr(nnn, "value", None)
+        if val is not None:
+            return int(val)
+    # Lightweight CfgMopSnapshot: .value directly
+    val = getattr(mop_snap, "value", None)
+    if val is not None:
+        return int(val)
+    return None
+
+
+def _resolve_indirect_state_write_via_mba(
+    mba: object,
+    candidate_serial: int,
+    state_var_stkoff: int,
+) -> int | None:
+    """Resolve indirect state variable writes using live MBA backward scan.
+
+    For OLLVM patterns like ``v15 = 0x41FB8FBB; i = v15``, the snapshot sees
+    ``m_mov state_var, v15`` (mop_r/mop_S source, not mop_n).  This function
+    walks the live block backward to find the ``m_mov`` that writes to the
+    state variable, then uses ``find_def_in_block`` to resolve the source
+    operand to its defining instruction.
+
+    Args:
+        mba: Live ``ida_hexrays.mba_t`` object.
+        candidate_serial: Block serial to inspect.
+        state_var_stkoff: Stack offset of the state variable.
+
+    Returns:
+        The resolved integer constant, or ``None`` if resolution fails.
+    """
+    try:
+        from d810.recon.flow.def_search import find_def_in_block
+    except ImportError:
+        return None
+
+    try:
+        live_blk = mba.get_mblock(candidate_serial)
+    except Exception:
+        return None
+    if live_blk is None:
+        return None
+
+    # Walk backward through the live block to find the state variable write.
+    cur_ins = live_blk.tail
+    while cur_ins is not None:
+        if cur_ins.opcode == ida_hexrays.m_mov and cur_ins.d is not None:
+            # Check if destination is the state variable (mop_S with matching stkoff)
+            if (
+                cur_ins.d.t == ida_hexrays.mop_S
+                and cur_ins.d.s is not None
+                and cur_ins.d.s.off == state_var_stkoff
+            ):
+                source_mop = cur_ins.l
+                if source_mop is None:
+                    break
+                # If source is already a constant, return it directly.
+                if source_mop.t == ida_hexrays.mop_n:
+                    nnn = source_mop.nnn
+                    if nnn is not None:
+                        return int(nnn.value)
+                    break
+                # Source is register or stack var — resolve backward.
+                if source_mop.t not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
+                    break
+                def_ins = find_def_in_block(source_mop, live_blk, cur_ins)
+                if def_ins is None:
+                    break
+                # The defining instruction should be m_mov with mop_n source.
+                if (
+                    def_ins.opcode == ida_hexrays.m_mov
+                    and def_ins.l is not None
+                    and def_ins.l.t == ida_hexrays.mop_n
+                ):
+                    nnn = def_ins.l.nnn
+                    if nnn is not None:
+                        return int(nnn.value)
+                break
+        cur_ins = cur_ins.prev
+    return None
+
+
+def _resolve_state_const_via_valranges(
+    mba: object,
+    candidate_serial: int,
+    state_var_stkoff: int,
+) -> int | None:
+    """Resolve state variable constant via IDA value-range analysis.
+
+    Uses ``collect_instruction_valrange_record_for_location`` to query the
+    value range of the state variable at the ``m_mov`` instruction that writes
+    to it.  Only returns a value when the range is a singleton (single value).
+
+    Args:
+        mba: Live ``ida_hexrays.mba_t`` object.
+        candidate_serial: Block serial to inspect.
+        state_var_stkoff: Stack offset of the state variable.
+
+    Returns:
+        The resolved integer constant, or ``None`` if resolution fails or
+        the range is not a singleton.
+    """
+    try:
+        from d810.evaluator.hexrays_microcode.valranges import (
+            ValrangeLocation,
+            ValrangeLocationKind,
+            collect_instruction_valrange_record_for_location,
+        )
+    except ImportError:
+        return None
+
+    try:
+        live_blk = mba.get_mblock(candidate_serial)
+    except Exception:
+        return None
+    if live_blk is None:
+        return None
+
+    # Find the state variable write instruction in the live block.
+    cur_ins = live_blk.tail
+    state_write_ins = None
+    while cur_ins is not None:
+        if cur_ins.opcode == ida_hexrays.m_mov and cur_ins.d is not None:
+            if (
+                cur_ins.d.t == ida_hexrays.mop_S
+                and cur_ins.d.s is not None
+                and cur_ins.d.s.off == state_var_stkoff
+            ):
+                state_write_ins = cur_ins
+                break
+        cur_ins = cur_ins.prev
+    if state_write_ins is None:
+        return None
+
+    # Query valranges for the source operand at this instruction.
+    source_mop = state_write_ins.l
+    if source_mop is None:
+        return None
+    if source_mop.t not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
+        return None
+
+    if source_mop.t == ida_hexrays.mop_r:
+        location = ValrangeLocation(
+            kind=ValrangeLocationKind.REGISTER,
+            identifier=int(source_mop.r),
+            width=int(source_mop.size),
+        )
+    else:
+        try:
+            stkoff = source_mop.s.off
+        except Exception:
+            return None
+        location = ValrangeLocation(
+            kind=ValrangeLocationKind.STACK,
+            identifier=int(stkoff),
+            width=int(source_mop.size),
+        )
+
+    try:
+        record = collect_instruction_valrange_record_for_location(
+            live_blk, state_write_ins, location,
+        )
+    except Exception:
+        return None
+    if record is None:
+        return None
+
+    # Parse range_text for singleton values like "{0x41FB8FBB}" or "{1107294139}".
+    rt = record.range_text.strip()
+    if rt.startswith("{") and rt.endswith("}"):
+        inner = rt[1:-1].strip()
+        # Single value — no commas, no ranges
+        if "," not in inner and ".." not in inner:
+            try:
+                return int(inner, 0)
+            except ValueError:
+                pass
+    return None
+
+
 def _classify_carrier_source(
     fg: FlowGraph,
     candidate_serial: int,
     state_var_stkoff: int,
     infra_blocks: frozenset[int],
+    *,
+    mba: object | None = None,
 ) -> tuple[CarrierSourceKind, int | None]:
     """Classify what value the candidate block carries into the shared suffix.
 
     Scans the candidate block's instructions for writes to the state variable
     (state_const) or to registers/other operands. Uses snapshot-based instruction
-    iteration to avoid touching live mba objects.
+    iteration first, then falls back to live MBA backward resolution for indirect
+    writes (e.g. OLLVM ``v15 = 0x41FB8FBB; i = v15`` patterns).
 
     Args:
         fg: Flow graph snapshot.
         candidate_serial: Block serial to classify.
         state_var_stkoff: Stack offset of the state variable.
         infra_blocks: Infrastructure block set (for context).
+        mba: Optional live ``ida_hexrays.mba_t`` for resolving indirect state
+            writes via backward def-search.  When ``None``, only snapshot-based
+            classification is performed.
 
     Returns:
         A tuple of ``(kind, state_const_written)`` where *kind* is the
@@ -519,18 +722,24 @@ def _classify_carrier_source(
     has_ptr_write = False
     has_expr_write = False
     state_const_written: int | None = None
+    # Track whether the state write source was non-constant on the snapshot
+    # (eligible for live MBA resolution).
+    state_write_source_indirect = False
 
     for insn in blk_snap.iter_insns():
         if insn.opcode == ida_hexrays.m_mov and insn.d is not None:
             if _mop_matches_stkoff_snapshot(insn.d, state_var_stkoff):
                 has_state_write = True
-                # Capture the constant value written to the state variable
-                if insn.l is not None:
-                    src_t = getattr(insn.l, "t", None)
-                    if src_t == ida_hexrays.mop_n:
-                        nnn = getattr(insn.l, "nnn", None)
-                        if nnn is not None:
-                            state_const_written = getattr(nnn, "value", None)
+                # Capture the constant value written to the state variable.
+                # _extract_const_from_snapshot_mop handles both CfgMopSnapshot
+                # (.value) and rich MopSnapshot (.nnn.value).
+                const_val = _extract_const_from_snapshot_mop(insn.l)
+                if const_val is not None:
+                    state_const_written = const_val
+                elif insn.l is not None:
+                    # Source is non-constant (register/stack var) — mark for
+                    # live MBA fallback resolution.
+                    state_write_source_indirect = True
                 continue
             # Check source operand type
             if insn.l is not None:
@@ -541,6 +750,36 @@ def _classify_carrier_source(
                     has_ptr_write = True
                 elif src_t is not None:
                     has_expr_write = True
+
+    # Fallback: resolve indirect state writes via live MBA backward scan.
+    if has_state_write and state_const_written is None and state_write_source_indirect and mba is not None:
+        try:
+            resolved = _resolve_indirect_state_write_via_mba(
+                mba, candidate_serial, state_var_stkoff,
+            )
+            if resolved is not None:
+                state_const_written = resolved
+                logger.info(
+                    "[carrier] blk[%d] resolved indirect state write via def-search: %#x",
+                    candidate_serial, resolved,
+                )
+        except Exception:
+            pass
+
+        # Secondary fallback: value-range analysis.
+        if state_const_written is None:
+            try:
+                resolved = _resolve_state_const_via_valranges(
+                    mba, candidate_serial, state_var_stkoff,
+                )
+                if resolved is not None:
+                    state_const_written = resolved
+                    logger.info(
+                        "[carrier] blk[%d] resolved indirect state write via valranges: %#x",
+                        candidate_serial, resolved,
+                    )
+            except Exception:
+                pass
 
     if has_state_write and not (has_const_write or has_ptr_write or has_expr_write):
         return CarrierSourceKind.STATE_CONST, state_const_written
@@ -1609,6 +1848,7 @@ class DirectHandlerLinearizationStrategy:
                     if fw_candidate is not None:
                         carrier_kind, carrier_const = _classify_carrier_source(
                             fg, fw_candidate, state_var_stkoff, full_infra,
+                            mba=mba,
                         )
 
                     # Validate candidate
