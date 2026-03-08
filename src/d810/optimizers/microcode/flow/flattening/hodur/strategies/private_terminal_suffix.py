@@ -399,6 +399,11 @@ class PrivateTerminalSuffixStrategy:
                 "corridor_info": corridor_info,
                 "anchor_count": len(anchors),
                 "carrier_bucket": decision.carrier_bucket.value,
-                "safeguard_min_required": len(modifications),
+                # NOTE: grouped PTS emits only 2 top-level modifications
+                # (1 convert_to_goto + 1 group).  Use anchor_count as
+                # threshold so the safeguard rejects until the live backend
+                # parity gap is resolved.  Change to len(modifications)
+                # once _apply_private_terminal_suffix_group is validated.
+                "safeguard_min_required": max(2, len(anchors)),
             },
         )
