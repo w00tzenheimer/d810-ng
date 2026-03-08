@@ -15,6 +15,7 @@ from d810.recon.flow.dispatcher_detection import (
     DispatcherType,
 )
 from d810.core.gate_modes import GateOperationMode
+from d810.recon.flow_hints import FlowContextHintSummary
 
 if TYPE_CHECKING:
     from d810.recon.flow.dispatcher_detection import (
@@ -56,6 +57,26 @@ class FlowMaturityContext:
         self._profile_stats: FlowProfileStats | None = None
         self._profile_stats_error: Exception | None = None
         self._active_rule_names: tuple[str, ...] = tuple()
+        self._hint_summary: FlowContextHintSummary | None = None
+
+    @property
+    def hint_summary(self) -> FlowContextHintSummary | None:
+        """Return the current flow-context hint summary, or ``None``."""
+        return self._hint_summary
+
+    def set_hint_summary(self, summary: FlowContextHintSummary) -> None:
+        """Attach an analyzed hint summary from the recon lifecycle.
+
+        The summary is used as an *additional* signal in gate evaluation
+        methods. It does not replace existing dispatcher-analysis logic.
+
+        In the live path, ``BlockOptimizerManager._attach_hint_summary``
+        calls this automatically when a new ``FlowMaturityContext`` is
+        created (including after invalidation). The summary is derived
+        from persisted ``DeobfuscationHints`` via
+        :func:`derive_flow_context_summary`.
+        """
+        self._hint_summary = summary
 
     def refresh_mba(self, mba: ida_hexrays.mba_t) -> None:
         self.mba = mba
@@ -160,7 +181,14 @@ class FlowMaturityContext:
         return decision
 
     def _evaluate_unflattening_gate_inner(self) -> FlowGateDecision:
-        """Core unflattening gate logic (mode-independent)."""
+        """Core unflattening gate logic (mode-independent).
+
+        If a :class:`FlowContextHintSummary` is attached, its flattening
+        signal is used as an additional rescue: when the dispatcher
+        profile is too weak on its own but hints confirm flattening with
+        sufficient confidence (>= 0.5), the gate allows the rule to
+        proceed.  Existing positive decisions are never overridden.
+        """
         analysis = self.ensure_dispatcher_analysis()
         if analysis is None:
             return FlowGateDecision(False, "dispatcher analysis unavailable")
@@ -189,6 +217,21 @@ class FlowMaturityContext:
                         f"(scc={profile.dispatch_scc_n}, score={profile.flattening_score:.2f})"
                     ),
                 )
+            # Hint-rescue: if recon hints confirm flattening, allow despite
+            # weak profile.  This is additive — it never overrides a
+            # positive decision above.
+            if self._hint_summary is not None:
+                if (
+                    self._hint_summary.has_flattening_signal
+                    and self._hint_summary.confidence >= 0.5
+                ):
+                    return FlowGateDecision(
+                        True,
+                        (
+                            "unknown dispatcher rescued by recon hints "
+                            f"(confidence={self._hint_summary.confidence:.2f})"
+                        ),
+                    )
             return FlowGateDecision(
                 False,
                 (

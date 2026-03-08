@@ -21,6 +21,7 @@ class RuleScopeEvent(enum.Enum):
     FUNCTION_TAGS_UPDATED = "function_tags_updated"
     RECIPE_APPLIED = "recipe_applied"
     RECIPE_CLEARED = "recipe_cleared"
+    HINTS_APPLIED = "hints_applied"
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +97,152 @@ class FunctionRuleOverlayProvider(Protocol):
     def __call__(self, function_ea: int) -> FunctionRuleOverlay | None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ApplyHintsResult:
+    """Records what changed when ``RuleScopeService.apply_hints()`` ran.
+
+    Attributes:
+        func_ea: Function address the hints targeted.
+        recipes_applied: Names of recipes that were activated.
+        recipes_not_found: Names requested but not in the recipe registry.
+        rules_suppressed: Rule names that were added to the overlay's
+            disabled set for this function.
+        cache_invalidated: Whether the scope cache was invalidated.
+        generation_before: Service generation before the hints were applied.
+        generation_after: Service generation after the hints were applied.
+    """
+    func_ea: int
+    recipes_applied: tuple[str, ...]
+    recipes_not_found: tuple[str, ...]
+    rules_suppressed: tuple[str, ...]
+    cache_invalidated: bool
+    generation_before: int
+    generation_after: int
+
+
+class HintOverlayProvider:
+    """Overlay provider that merges hint-driven suppressions with a delegate.
+
+    Implements the ``FunctionRuleOverlayProvider`` protocol. For each
+    function EA, it returns the union of:
+
+    - Any overlay from the *delegate* provider (if set), and
+    - Hint-driven rule suppressions registered via ``suppress_rules()``.
+
+    This provider composes with (not replaces) any pre-existing overlay
+    provider on the ``RuleScopeService``.
+    """
+
+    def __init__(
+        self,
+        delegate: FunctionRuleOverlayProvider | None = None,
+    ) -> None:
+        self._delegate = delegate
+        self._suppressions: dict[int, frozenset[str]] = {}
+        self._hint_recipes: dict[int, list[RuleRecipeOverlay]] = {}
+
+    @property
+    def delegate(self) -> FunctionRuleOverlayProvider | None:
+        return self._delegate
+
+    def suppress_rules(
+        self,
+        func_ea: int,
+        rule_names: frozenset[str],
+    ) -> None:
+        """Register rule suppressions for a function.
+
+        Args:
+            func_ea: Target function address.
+            rule_names: Rule names to disable for this function.
+        """
+        existing = self._suppressions.get(func_ea, frozenset())
+        self._suppressions[func_ea] = existing | rule_names
+
+    def has_suppressions(self, func_ea: int) -> bool:
+        """Check whether any hint-driven suppressions exist for *func_ea*."""
+        return bool(self._suppressions.get(func_ea))
+
+    def clear_func(self, func_ea: int) -> None:
+        """Remove all hint-driven recipes and suppressions for a function."""
+        self._hint_recipes.pop(func_ea, None)
+        self._suppressions.pop(func_ea, None)
+
+    def clear_suppressions(self, func_ea: int | None = None) -> None:
+        """Remove suppressions for *func_ea*, or all if ``None``."""
+        if func_ea is None:
+            self._suppressions.clear()
+        else:
+            self._suppressions.pop(func_ea, None)
+
+    def add_recipe(self, func_ea: int, recipe: RuleRecipeOverlay) -> None:
+        """Register a hint-driven recipe activation for a function.
+
+        Multiple recipes for the same function accumulate; their
+        ``enabled_rules`` and ``disabled_rules`` are merged at query time.
+
+        Args:
+            func_ea: Target function address.
+            recipe: Recipe overlay to activate for this function.
+        """
+        self._hint_recipes.setdefault(func_ea, []).append(recipe)
+
+    def get_hint_recipes(self, func_ea: int) -> list[RuleRecipeOverlay]:
+        """Return all hint-driven recipes registered for *func_ea*."""
+        return self._hint_recipes.get(func_ea, [])
+
+    def merged_hint_recipe(self, func_ea: int) -> RuleRecipeOverlay | None:
+        """Return a single merged recipe for *func_ea*, or ``None``.
+
+        Merges all per-function hint recipes into one overlay whose
+        ``enabled_rules`` and ``disabled_rules`` are the union of all
+        registered recipes.
+        """
+        recipes = self._hint_recipes.get(func_ea)
+        if not recipes:
+            return None
+        if len(recipes) == 1:
+            return recipes[0]
+        merged_enabled: set[str] = set()
+        merged_disabled: set[str] = set()
+        names: list[str] = []
+        for r in recipes:
+            merged_enabled.update(r.enabled_rules)
+            merged_disabled.update(r.disabled_rules)
+            names.append(r.name)
+        return RuleRecipeOverlay(
+            name="+".join(names),
+            enabled_rules=frozenset(merged_enabled),
+            disabled_rules=frozenset(merged_disabled),
+            target_func_eas=frozenset({func_ea}),
+        )
+
+    def __call__(self, function_ea: int) -> FunctionRuleOverlay | None:
+        delegate_overlay = (
+            self._delegate(function_ea) if self._delegate is not None else None
+        )
+        hint_disabled = self._suppressions.get(function_ea, frozenset())
+
+        if delegate_overlay is None and not hint_disabled:
+            return None
+
+        base_enabled = (
+            delegate_overlay.enabled_rules if delegate_overlay else frozenset()
+        )
+        base_disabled = (
+            delegate_overlay.disabled_rules if delegate_overlay else frozenset()
+        )
+        base_tags = (
+            delegate_overlay.function_tags if delegate_overlay else frozenset()
+        )
+
+        return FunctionRuleOverlay(
+            enabled_rules=base_enabled,
+            disabled_rules=base_disabled | hint_disabled,
+            function_tags=base_tags,
+        )
+
+
 class RuleScopeService:
     """Compiles rule selectors and serves active rules per function quickly.
 
@@ -112,6 +259,8 @@ class RuleScopeService:
         self._overlay_provider: FunctionRuleOverlayProvider | None = None
         self._overlay_cache: dict[int, FunctionRuleOverlay | None] = {}
         self._active_recipe: RuleRecipeOverlay | None = None
+        self._recipe_registry: dict[str, RuleRecipeOverlay] = {}
+        self._hint_overlay: HintOverlayProvider | None = None
 
     @property
     def generation(self) -> int:
@@ -137,6 +286,7 @@ class RuleScopeService:
         partial_reasons = {
             RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
             RuleScopeEvent.FUNCTION_TAGS_UPDATED,
+            RuleScopeEvent.HINTS_APPLIED,
         }
         if payload.reason in partial_reasons and payload.func_eas:
             self._invalidate_functions(payload.func_eas)
@@ -179,6 +329,146 @@ class RuleScopeService:
 
     def set_active_recipe(self, recipe: RuleRecipeOverlay | None) -> None:
         self._active_recipe = recipe
+
+    def register_recipe(self, recipe: RuleRecipeOverlay) -> None:
+        """Register a named recipe for later lookup by ``apply_hints()``.
+
+        Args:
+            recipe: Recipe overlay to register. Its ``name`` is used as key.
+        """
+        self._recipe_registry[recipe.name] = recipe
+
+    def get_registered_recipe(self, name: str) -> RuleRecipeOverlay | None:
+        """Look up a recipe by name from the registry.
+
+        Args:
+            name: Recipe name to look up.
+
+        Returns:
+            The registered recipe, or ``None`` if not found.
+        """
+        return self._recipe_registry.get(name)
+
+    def clear_hint_state(self, func_ea: int) -> None:
+        """Clear all hint-driven recipes and suppressions for *func_ea*.
+
+        Delegates to ``HintOverlayProvider.clear_func()`` and invalidates
+        caches so subsequent ``get_active_rules()`` calls see the removal.
+        """
+        if self._hint_overlay is not None:
+            self._hint_overlay.clear_func(func_ea)
+            self.invalidate(
+                RuleScopeInvalidation(
+                    reason=RuleScopeEvent.HINTS_APPLIED,
+                    func_eas=frozenset({func_ea}),
+                )
+            )
+
+    def apply_hints(self, hints: Any) -> ApplyHintsResult:
+        """Apply analysed deobfuscation hints to rule scope configuration.
+
+        Bridges ``DeobfuscationHints`` -> overlay/recipe activation.
+        Accepts any object with ``func_ea``, ``recommended_recipes``,
+        and ``suppress_rules`` attributes (duck-typed to avoid a hard
+        import of ``d810.recon.models``).
+
+        Args:
+            hints: Analysed hints from AnalysisPhase.
+
+        Returns:
+            ``ApplyHintsResult`` recording what changed.
+        """
+        func_ea: int = hints.func_ea
+        recommended_recipes: tuple[str, ...] = hints.recommended_recipes
+        suppress_rules: tuple[str, ...] = hints.suppress_rules
+
+        generation_before = self._generation
+        recipes_applied: list[str] = []
+        recipes_not_found: list[str] = []
+
+        # --- 0. Clear previous hint state for this function ------------------
+        # Each call is a full replace, not an append: a later call with
+        # empty/different hints for the same func_ea retracts earlier decisions.
+        had_previous_state = False
+        if self._hint_overlay is not None:
+            had_previous_state = (
+                bool(self._hint_overlay.get_hint_recipes(func_ea))
+                or self._hint_overlay.has_suppressions(func_ea)
+            )
+            self._hint_overlay.clear_func(func_ea)
+
+        # --- 1. Apply recommended recipes -----------------------------------
+        for recipe_name in recommended_recipes:
+            recipe = self._recipe_registry.get(recipe_name)
+            if recipe is None:
+                recipes_not_found.append(recipe_name)
+                continue
+            # Narrow the recipe to this function by adding func_ea to targets
+            scoped = RuleRecipeOverlay(
+                name=recipe.name,
+                enabled_rules=recipe.enabled_rules,
+                disabled_rules=recipe.disabled_rules,
+                target_func_eas=recipe.target_func_eas | frozenset({func_ea}),
+                target_tags_any=recipe.target_tags_any,
+                target_tags_all=recipe.target_tags_all,
+                notes=recipe.notes,
+            )
+            # Store per-function via HintOverlayProvider (not global _active_recipe)
+            if self._hint_overlay is None:
+                self._hint_overlay = HintOverlayProvider(
+                    delegate=self._overlay_provider,
+                )
+                self._overlay_provider = self._hint_overlay
+                self._overlay_cache.clear()
+            self._hint_overlay.add_recipe(func_ea, scoped)
+            recipes_applied.append(recipe_name)
+
+        # --- 2. Apply suppress_rules via HintOverlayProvider -----------------
+        rules_suppressed: list[str] = []
+        if suppress_rules:
+            suppression_set = frozenset(suppress_rules)
+            # Lazily create the HintOverlayProvider, wrapping any existing
+            # provider as delegate.
+            if self._hint_overlay is None:
+                self._hint_overlay = HintOverlayProvider(
+                    delegate=self._overlay_provider,
+                )
+                self._overlay_provider = self._hint_overlay
+                self._overlay_cache.clear()
+            self._hint_overlay.suppress_rules(func_ea, suppression_set)
+            rules_suppressed = list(suppress_rules)
+
+        # --- 3. Invalidate caches for this function --------------------------
+        any_change = bool(recipes_applied) or bool(rules_suppressed) or had_previous_state
+        if any_change:
+            self.invalidate(
+                RuleScopeInvalidation(
+                    reason=RuleScopeEvent.HINTS_APPLIED,
+                    func_eas=frozenset({func_ea}),
+                    changed_rules=frozenset(rules_suppressed) or None,
+                )
+            )
+
+        generation_after = self._generation
+        result = ApplyHintsResult(
+            func_ea=func_ea,
+            recipes_applied=tuple(recipes_applied),
+            recipes_not_found=tuple(recipes_not_found),
+            rules_suppressed=tuple(rules_suppressed),
+            cache_invalidated=any_change,
+            generation_before=generation_before,
+            generation_after=generation_after,
+        )
+        if logger.debug_on:
+            logger.debug(
+                "apply_hints func_ea=0x%x: recipes=%s suppressed=%s gen=%d->%d",
+                func_ea,
+                result.recipes_applied,
+                result.rules_suppressed,
+                generation_before,
+                generation_after,
+            )
+        return result
 
     def compile_base_rules(
         self,
@@ -277,6 +567,14 @@ class RuleScopeService:
         if not names:
             return tuple()
 
+        # Determine the effective recipe: per-function hint recipe takes
+        # precedence over the global _active_recipe for this function.
+        effective_recipe = self._active_recipe
+        if self._hint_overlay is not None:
+            hint_recipe = self._hint_overlay.merged_hint_recipe(func_ea)
+            if hint_recipe is not None:
+                effective_recipe = hint_recipe
+
         active_for_maturity: list[Any] = []
         for rule_name in names:
             selector = compiled.selectors.get(f"{pipeline}:{rule_name}")
@@ -285,7 +583,7 @@ class RuleScopeService:
             if not self._overlay_allows(overlay, rule_name):
                 continue
             if not self._recipe_allows(
-                recipe=self._active_recipe,
+                recipe=effective_recipe,
                 rule_name=rule_name,
                 func_ea=func_ea,
                 tags=effective_tags,

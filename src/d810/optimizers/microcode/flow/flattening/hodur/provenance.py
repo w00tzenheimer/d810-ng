@@ -1,7 +1,13 @@
 """Structured decision provenance for Hodur planner pipeline.
 
-Every considered PlanFragment gets a DecisionRecord tracking its
-lifecycle phase, reason code, benefit/risk scores, and input context.
+This module contains the outcome layer of Hodur's participation in the
+shared recon-analysis-consumer lifecycle.  Every considered PlanFragment
+gets a :class:`DecisionRecord` tracking its lifecycle phase, reason code,
+benefit/risk scores, and input context.  The aggregate
+:class:`PipelineProvenance` records what the planner decided and why,
+closing the audit loop from recon artifacts through to pipeline
+composition.
+
 This vocabulary is shared across K1 (provenance), K2 (hint inputs),
 K4 (gate accounting), and K5 (planner ownership).
 """
@@ -156,10 +162,15 @@ class DecisionInputSummary:
 
 @dataclass(frozen=True)
 class PlannerInputs:
-    """Envelope carrying all planner inputs for one compose_pipeline call.
+    """Consumer-specific summary envelope for the Hodur planner.
 
-    Wires recon artifacts into fragment selection so that planning
-    decisions are auditable and explainable from inputs + policy.
+    Analogous to :class:`~d810.recon.models.DeobfuscationHints` for the
+    rule-scope consumer and
+    :class:`~d810.recon.flow_hints.FlowContextHintSummary`
+    for the flow-context consumer.  Carries recon artifacts (handler
+    transitions, return frontier, terminal return audit) into the planner
+    so that fragment selection is auditable and explainable from inputs
+    plus policy.
     """
 
     total_handlers: int = 0
@@ -226,7 +237,13 @@ class DecisionRecord:
 
 @dataclass(frozen=True)
 class PipelineProvenance:
-    """Complete decision ledger for one compose_pipeline call."""
+    """Complete decision ledger for one compose_pipeline call.
+
+    This is the outcome layer recording what the Hodur planner decided.
+    Each :class:`DecisionRecord` captures strategy-level accept/reject
+    verdicts with scores, ownership, and gate accounting, forming a
+    full audit trail from recon inputs through to pipeline composition.
+    """
 
     rows: tuple[DecisionRecord, ...] = ()
     input_summary: DecisionInputSummary | None = None
