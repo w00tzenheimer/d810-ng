@@ -14,6 +14,7 @@ hints so every decompilation pass starts from a clean slate.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from d810.core.logging import getLogger
@@ -104,15 +105,53 @@ class ReconAnalysisRuntime:
         return True
 
     def mark_decompilation_finished(self) -> None:
-        """Called at decompilation end -- resets the guard so next decompile triggers reset."""
+        """Called at decompilation end -- persist outcomes, then reset guard."""
         if self._current_func_ea != -1:
-            summary = self._outcome_log.summary(self._current_func_ea)
-            if summary.get("consumers"):
-                logger.info(
-                    "decompilation_finished: func=0x%x outcome_summary=%s",
-                    self._current_func_ea, summary,
-                )
+            self._persist_outcomes(self._current_func_ea)
         self._current_func_ea = -1
+
+    def _persist_outcomes(self, func_ea: int) -> None:
+        """Persist session summary and consumer outcomes to store."""
+        # Session summary from hints
+        hints = self._store.load_hints(func_ea=func_ea)
+        if hints is not None:
+            results = self._store.load_all_recon_results(func_ea=func_ea)
+            self._store.save_session_summary(
+                func_ea=func_ea,
+                collectors_fired=len({r.collector_name for r in results}) if results else 0,
+                classification=hints.obfuscation_type or "",
+                confidence=hints.confidence,
+                recipes=list(hints.recommended_recipes),
+                suppress_rules=list(hints.suppress_rules),
+            )
+
+        # Consumer outcomes
+        reports = self._outcome_log.get_func_reports(func_ea)
+        for report in reports:
+            prov_dict = report.provenance_dict
+            if prov_dict is not None:
+                try:
+                    provenance = json.dumps(prov_dict)
+                except (TypeError, ValueError):
+                    provenance = ""
+            else:
+                provenance = ""
+            self._store.save_consumer_outcome(
+                func_ea=func_ea,
+                consumer_name=report.consumer_name,
+                artifacts_available=report.source_artifacts_available,
+                summary_available=report.summary_available,
+                verdict_applied=report.consumer_verdict_applied,
+                detail=report.detail,
+                provenance_json=provenance,
+            )
+
+        summary = self._outcome_log.summary(func_ea)
+        if summary.get("consumers"):
+            logger.info(
+                "decompilation_finished: func=0x%x outcome_summary=%s",
+                func_ea, summary,
+            )
 
     # ------------------------------------------------------------------
     # Outcome recording
@@ -205,7 +244,9 @@ class ReconAnalysisRuntime:
             func_ea, maturity, len(results),
         )
 
-        hints = self._analysis.interpret(func_ea=func_ea, results=results)
+        hints = self._analysis.interpret(
+            func_ea=func_ea, results=results, store=self._store,
+        )
 
         if persist_hints:
             self._store.save_hints(hints)
@@ -225,7 +266,9 @@ class ReconAnalysisRuntime:
         results = self._store.load_all_recon_results(func_ea=func_ea)
         if not results:
             return None
-        hints = self._analysis.interpret(func_ea=func_ea, results=results)
+        hints = self._analysis.interpret(
+            func_ea=func_ea, results=results, store=self._store,
+        )
         self._store.save_hints(hints)
         logger.info(
             "analyze_and_persist: persisted hints for func=0x%x (type=%s, confidence=%.2f)",
@@ -328,8 +371,6 @@ class ReconAnalysisRuntime:
         Returns:
             ``ReconOutcome`` recording hints, apply result, and provenance.
         """
-        from d810.core.rule_scope import RuleScopeService as _RSS  # noqa: F811
-
         # --- 1. Resolve hints (cached or fresh) ---
         hints: DeobfuscationHints | None = None
         source: str = "unavailable"

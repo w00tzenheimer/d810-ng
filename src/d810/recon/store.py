@@ -42,6 +42,38 @@ CREATE TABLE IF NOT EXISTS deobfuscation_hints (
 
 CREATE INDEX IF NOT EXISTS idx_recon_func_ea
     ON recon_results(func_ea);
+
+CREATE TABLE IF NOT EXISTS recon_session_summary (
+    func_ea INTEGER NOT NULL,
+    timestamp REAL NOT NULL,
+    collectors_fired INTEGER NOT NULL DEFAULT 0,
+    classification TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    recipes_json TEXT NOT NULL DEFAULT '[]',
+    suppress_rules_json TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (func_ea)
+);
+
+CREATE TABLE IF NOT EXISTS consumer_outcomes (
+    func_ea INTEGER NOT NULL,
+    consumer_name TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    artifacts_available INTEGER NOT NULL DEFAULT 0,
+    summary_available INTEGER NOT NULL DEFAULT 0,
+    verdict_applied INTEGER NOT NULL DEFAULT 0,
+    detail TEXT NOT NULL DEFAULT '',
+    provenance_json TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (func_ea, consumer_name)
+);
+
+CREATE TABLE IF NOT EXISTS user_overrides (
+    func_ea INTEGER NOT NULL,
+    override_type TEXT NOT NULL,
+    override_value TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (func_ea, override_type)
+);
 """
 
 
@@ -248,13 +280,143 @@ class ReconStore:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Session summary persistence
+    # ------------------------------------------------------------------
+
+    def save_session_summary(
+        self,
+        func_ea: int,
+        collectors_fired: int,
+        classification: str,
+        confidence: float,
+        recipes: list[str],
+        suppress_rules: list[str],
+    ) -> None:
+        """Persist per-function session summary (upsert)."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO recon_session_summary "
+            "(func_ea, timestamp, collectors_fired, classification, confidence, "
+            "recipes_json, suppress_rules_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (func_ea, time.time(), collectors_fired, classification, confidence,
+             json.dumps(recipes), json.dumps(suppress_rules)),
+        )
+        self._conn.commit()
+
+    def load_session_summary(self, func_ea: int) -> dict | None:
+        """Load persisted session summary for a function."""
+        row = self._conn.execute(
+            "SELECT * FROM recon_session_summary WHERE func_ea = ?",
+            (func_ea,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "func_ea": row["func_ea"],
+            "collectors_fired": row["collectors_fired"],
+            "classification": row["classification"],
+            "confidence": row["confidence"],
+            "recipes": json.loads(row["recipes_json"]),
+            "suppress_rules": json.loads(row["suppress_rules_json"]),
+        }
+
+    # ------------------------------------------------------------------
+    # Consumer outcome persistence
+    # ------------------------------------------------------------------
+
+    def save_consumer_outcome(
+        self,
+        func_ea: int,
+        consumer_name: str,
+        artifacts_available: bool,
+        summary_available: bool,
+        verdict_applied: bool,
+        detail: str = "",
+        provenance_json: str = "",
+    ) -> None:
+        """Persist a consumer outcome record (upsert by func_ea + consumer_name)."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO consumer_outcomes "
+            "(func_ea, consumer_name, timestamp, artifacts_available, summary_available, "
+            "verdict_applied, detail, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (func_ea, consumer_name, time.time(),
+             int(artifacts_available), int(summary_available), int(verdict_applied),
+             detail, provenance_json),
+        )
+        self._conn.commit()
+
+    def load_consumer_outcomes(self, func_ea: int) -> list[dict]:
+        """Load all consumer outcomes for a function."""
+        rows = self._conn.execute(
+            "SELECT * FROM consumer_outcomes WHERE func_ea = ? ORDER BY consumer_name",
+            (func_ea,),
+        ).fetchall()
+        return [
+            {
+                "consumer_name": r["consumer_name"],
+                "artifacts_available": bool(r["artifacts_available"]),
+                "summary_available": bool(r["summary_available"]),
+                "verdict_applied": bool(r["verdict_applied"]),
+                "detail": r["detail"],
+                "provenance_json": r["provenance_json"],
+            }
+            for r in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # User override persistence
+    # ------------------------------------------------------------------
+
+    def save_user_override(
+        self,
+        func_ea: int,
+        override_type: str,
+        override_value: str,
+        confidence: float = 1.0,
+    ) -> None:
+        """Persist a user classification override (upsert)."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO user_overrides "
+            "(func_ea, override_type, override_value, confidence, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (func_ea, override_type, override_value, confidence, time.time()),
+        )
+        self._conn.commit()
+
+    def load_user_override(
+        self, func_ea: int, override_type: str = "classification"
+    ) -> dict | None:
+        """Load a user override for a function, or None."""
+        row = self._conn.execute(
+            "SELECT override_value, confidence FROM user_overrides "
+            "WHERE func_ea = ? AND override_type = ?",
+            (func_ea, override_type),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"override_value": row["override_value"], "confidence": row["confidence"]}
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     def clear_func(self, *, func_ea: int) -> None:
-        """Delete all stored data for a function (recon results + hints)."""
+        """Delete all stored data for a function except user overrides.
+
+        User overrides persist across decompilation resets so that manual
+        classifications survive re-analysis.
+        """
         self._conn.execute(
             "DELETE FROM recon_results WHERE func_ea = ?", (int(func_ea),)
         )
         self._conn.execute(
             "DELETE FROM deobfuscation_hints WHERE func_ea = ?", (int(func_ea),)
+        )
+        self._conn.execute(
+            "DELETE FROM recon_session_summary WHERE func_ea = ?", (int(func_ea),)
+        )
+        self._conn.execute(
+            "DELETE FROM consumer_outcomes WHERE func_ea = ?", (int(func_ea),)
         )
         self._conn.commit()
 

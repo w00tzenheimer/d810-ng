@@ -62,6 +62,11 @@ class ConsumerOutcomeReport(Protocol):
         """Optional subsystem-specific detail string."""
         ...
 
+    @property
+    def provenance_dict(self) -> dict | None:
+        """Optional rich provenance as a serialisable dict, or ``None``."""
+        ...
+
 
 class RuleScopeOutcomeAdapter:
     """Adapter exposing :class:`ReconOutcome` as a :class:`ConsumerOutcomeReport`.
@@ -95,6 +100,10 @@ class RuleScopeOutcomeAdapter:
     @property
     def detail(self) -> str:
         return f"source={self._outcome.source}"
+
+    @property
+    def provenance_dict(self) -> dict | None:
+        return None
 
 
 class PlannerOutcomeAdapter:
@@ -132,6 +141,12 @@ class PlannerOutcomeAdapter:
         if hasattr(self._provenance, "summary"):
             return str(self._provenance.summary())
         return ""
+
+    @property
+    def provenance_dict(self) -> dict | None:
+        if hasattr(self._provenance, "to_dict"):
+            return self._provenance.to_dict()
+        return None
 
 
 class FlowGateOutcomeAdapter:
@@ -172,6 +187,10 @@ class FlowGateOutcomeAdapter:
         if hasattr(self._decision, "reason"):
             return str(self._decision.reason)
         return ""
+
+    @property
+    def provenance_dict(self) -> dict | None:
+        return None
 
 
 class ReconOutcomeLog:

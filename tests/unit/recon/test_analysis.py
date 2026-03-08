@@ -1,6 +1,7 @@
 """Tests for AnalysisPhase.interpret() — core + supplementary collector signals."""
 from __future__ import annotations
 
+import tempfile
 from types import MappingProxyType
 
 from d810.recon.analysis import (
@@ -13,6 +14,7 @@ from d810.recon.analysis import (
     _SUPPRESS_CONFIDENCE_THRESHOLD,
 )
 from d810.recon.models import CandidateFlag, DeobfuscationHints, ReconResult
+from d810.recon.store import ReconStore
 
 
 # ---------------------------------------------------------------------------
@@ -441,3 +443,72 @@ class TestOpcodeDistributionSignal:
             func_ea=0x401000, results=_base_flat_results()
         )
         assert hints_with.confidence == hints_base.confidence
+
+
+# ---------------------------------------------------------------------------
+# User override
+# ---------------------------------------------------------------------------
+
+
+class TestUserOverride:
+    def test_user_override_takes_precedence(self) -> None:
+        """When a user override exists, interpret returns it instead of computing."""
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        store = ReconStore(tmp.name)
+        try:
+            store.save_user_override(
+                func_ea=0x401000,
+                override_type="classification",
+                override_value="ollvm_flat",
+                confidence=1.0,
+            )
+            phase = AnalysisPhase()
+            # Pass results that would NOT classify (empty results)
+            hints = phase.interpret(func_ea=0x401000, results=[], store=store)
+            assert hints.obfuscation_type == "ollvm_flat"
+            assert hints.confidence == 1.0
+            assert "unflattening_recipe" in hints.recommended_recipes
+            assert "ConstantFolding" in hints.suppress_rules
+        finally:
+            store.close()
+
+    def test_no_override_falls_through(self) -> None:
+        """Without a user override, normal classification logic applies."""
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        store = ReconStore(tmp.name)
+        try:
+            phase = AnalysisPhase()
+            hints = phase.interpret(func_ea=0x401000, results=[], store=store)
+            assert hints.obfuscation_type is None
+            assert hints.confidence == 0.0
+        finally:
+            store.close()
+
+    def test_override_without_store_ignores(self) -> None:
+        """When store is None, override check is skipped entirely."""
+        phase = AnalysisPhase()
+        hints = phase.interpret(func_ea=0x401000, results=[])
+        assert hints.obfuscation_type is None
+
+    def test_non_ollvm_override(self) -> None:
+        """User override with non-ollvm type produces no recipes/suppress."""
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        store = ReconStore(tmp.name)
+        try:
+            store.save_user_override(
+                func_ea=0x401000,
+                override_type="classification",
+                override_value="tigress_indirect",
+                confidence=0.9,
+            )
+            phase = AnalysisPhase()
+            hints = phase.interpret(func_ea=0x401000, results=[], store=store)
+            assert hints.obfuscation_type == "tigress_indirect"
+            assert hints.confidence == 0.9
+            assert hints.recommended_recipes == ()
+            assert hints.suppress_rules == ()
+        finally:
+            store.close()
