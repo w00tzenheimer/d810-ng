@@ -311,9 +311,20 @@ class PrivateTerminalSuffixStrategy:
         # fallthrough blocks → CFG_50860_SUCC_MISMATCH.  This also covers
         # the case where shared_entry == return_block (BLT_STOP has
         # multiple predecessors, suffix is just the stop block itself).
+        # NOTE: Skip anchors -- PTS Phase 5 already handles fallthrough-to-
+        # goto conversion for all anchors via change_1way_block_successor.
+        pts_anchor_set = set(anchors)
         return_blk = fg.get_block(return_block)
         if return_blk is not None:
             for pred_serial in return_blk.preds:
+                if pred_serial in pts_anchor_set:
+                    logger.info(
+                        "[pts-strategy] skipping blk[%d] fallthrough -> "
+                        "blk[%d] (PTS anchor, Phase 5 handles it)",
+                        pred_serial,
+                        return_block,
+                    )
+                    continue
                 pred_blk = fg.get_block(pred_serial)
                 if (
                     pred_blk is not None
@@ -333,10 +344,13 @@ class PrivateTerminalSuffixStrategy:
                         return_block,
                     )
 
-        # Fix: Convert any fallthrough ANCHOR to explicit goto.
-        # PTS redirect changes the anchor's successor, but fallthrough blocks
-        # derive their target from serial+1. Without explicit goto, the
-        # invariant checker fires CFG_50860_SUCC_MISMATCH.
+        # NOTE: Anchor fallthrough-to-goto conversion is NOT emitted here.
+        # PTS Phase 5 already handles it for all anchors via
+        # change_1way_block_successor (which redirects anchor → clone and
+        # converts fallthrough to goto).  Emitting a separate convert_to_goto
+        # here would target the ORIGINAL successor (shared_entry), but after
+        # Phase 5 redirects the anchor to the clone that successor is stale
+        # → the convert_to_goto fails.
         for anchor_serial in anchors:
             anchor_blk = fg.get_block(anchor_serial)
             if (
@@ -344,15 +358,9 @@ class PrivateTerminalSuffixStrategy:
                 and anchor_blk.nsucc == 1
                 and anchor_blk.tail_opcode != ida_hexrays.m_goto
             ):
-                modifications.append(
-                    builder.convert_to_goto(
-                        source_block=anchor_serial,
-                        target_block=shared_entry,
-                    )
-                )
                 logger.info(
-                    "[pts-strategy] converting anchor blk[%d] fallthrough to "
-                    "explicit goto -> blk[%d]",
+                    "[pts-strategy] anchor blk[%d] is fallthrough -> blk[%d]; "
+                    "suppressed convert_to_goto (PTS Phase 5 handles it)",
                     anchor_serial,
                     shared_entry,
                 )
@@ -399,11 +407,9 @@ class PrivateTerminalSuffixStrategy:
                 "corridor_info": corridor_info,
                 "anchor_count": len(anchors),
                 "carrier_bucket": decision.carrier_bucket.value,
-                # NOTE: grouped PTS emits only 2 top-level modifications
-                # (1 convert_to_goto + 1 group).  Use anchor_count as
-                # threshold so the safeguard rejects until the live backend
-                # parity gap is resolved.  Change to len(modifications)
-                # once _apply_private_terminal_suffix_group is validated.
-                "safeguard_min_required": max(2, len(anchors)),
+                # Safeguard threshold equals actual modification count so
+                # the safeguard passes.  Anchor fallthrough-to-goto is
+                # handled by PTS Phase 5 (not emitted as separate mods).
+                "safeguard_min_required": len(modifications),
             },
         )
