@@ -441,6 +441,59 @@ def test_record_flow_gate_outcome() -> None:
     assert reports[0].consumer_name == "flow_gate"
 
 
+def test_record_flow_gate_outcome_with_gate_name() -> None:
+    """record_flow_gate_outcome with custom gate_name uses that name."""
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+
+    class FakeDecision:
+        allowed = True
+
+    rt.record_flow_gate_outcome(
+        func_ea=0x6000, decision=FakeDecision(), gate_name="unflattening_gate",
+    )
+    reports = rt.outcome_log.get_func_reports(0x6000)
+    assert len(reports) == 1
+    assert reports[0].consumer_name == "unflattening_gate"
+
+
+def test_mark_decompilation_finished_logs_summary(caplog) -> None:
+    """mark_decompilation_finished logs outcome summary when func was active."""
+    import logging
+
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+
+    # Set active function
+    rt.reset_for_func(_FUNC_EA)
+
+    # Record an outcome
+    rt.record_rule_scope_outcome(
+        func_ea=_FUNC_EA,
+        hints=_make_hints(),
+        apply_result=None,
+        source="analyzed",
+    )
+
+    with caplog.at_level(logging.INFO, logger="D810.recon.runtime"):
+        rt.mark_decompilation_finished()
+
+    assert any("decompilation_finished" in r.message for r in caplog.records)
+    assert any("outcome_summary" in r.message for r in caplog.records)
+
+
+def test_mark_decompilation_finished_no_log_when_no_outcomes(caplog) -> None:
+    """mark_decompilation_finished does not log when no outcomes recorded."""
+    import logging
+
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+
+    rt.reset_for_func(_FUNC_EA)
+
+    with caplog.at_level(logging.INFO, logger="D810.recon.runtime"):
+        rt.mark_decompilation_finished()
+
+    assert not any("decompilation_finished" in r.message for r in caplog.records)
+
+
 def test_get_outcome_summary() -> None:
     """get_outcome_summary delegates to outcome log summary."""
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()

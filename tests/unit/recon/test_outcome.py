@@ -194,6 +194,12 @@ class TestFlowGateOutcomeAdapter:
         adapter = FlowGateOutcomeAdapter(_StubFlowGateDecision(), func_ea=0x2000)
         assert adapter.consumer_name == "flow_gate"
 
+    def test_custom_gate_name(self) -> None:
+        adapter = FlowGateOutcomeAdapter(
+            _StubFlowGateDecision(), func_ea=0x2000, gate_name="unflattening_gate",
+        )
+        assert adapter.consumer_name == "unflattening_gate"
+
     def test_source_artifacts_always_available(self) -> None:
         adapter = FlowGateOutcomeAdapter(_StubFlowGateDecision(), func_ea=0x2000)
         assert adapter.source_artifacts_available is True
@@ -222,6 +228,99 @@ class TestFlowGateOutcomeAdapter:
 
 
 # ---------------------------------------------------------------------------
+# detail property
+# ---------------------------------------------------------------------------
+
+
+class TestAdapterDetail:
+    def test_rule_scope_detail(self) -> None:
+        adapter = RuleScopeOutcomeAdapter(_StubReconOutcome(source="analyzed"))
+        assert adapter.detail == "source=analyzed"
+
+    def test_rule_scope_detail_unavailable(self) -> None:
+        adapter = RuleScopeOutcomeAdapter(_StubReconOutcome(source="unavailable"))
+        assert adapter.detail == "source=unavailable"
+
+    def test_planner_detail_with_summary(self) -> None:
+        @dataclass(frozen=True)
+        class _ProvWithSummary:
+            rows: tuple = ()
+            input_summary: object | None = None
+            accepted_count: int = 0
+
+            def summary(self) -> str:
+                return "2 accepted, 1 rejected"
+
+        adapter = PlannerOutcomeAdapter(_ProvWithSummary(), func_ea=0x1000)
+        assert adapter.detail == "2 accepted, 1 rejected"
+
+    def test_planner_detail_without_summary(self) -> None:
+        adapter = PlannerOutcomeAdapter(
+            _StubPipelineProvenance(), func_ea=0x1000,
+        )
+        assert adapter.detail == ""
+
+    def test_flow_gate_detail_with_reason(self) -> None:
+        decision = _StubFlowGateDecision(reason="switch-table dispatcher")
+        adapter = FlowGateOutcomeAdapter(decision, func_ea=0x2000)
+        assert adapter.detail == "switch-table dispatcher"
+
+    def test_flow_gate_detail_without_reason(self) -> None:
+        @dataclass(frozen=True)
+        class _NoReasonDecision:
+            allowed: bool = True
+
+        adapter = FlowGateOutcomeAdapter(_NoReasonDecision(), func_ea=0x2000)
+        assert adapter.detail == ""
+
+
+# ---------------------------------------------------------------------------
+# Different gate names coexist in ReconOutcomeLog
+# ---------------------------------------------------------------------------
+
+
+class TestGateNameCoexistence:
+    def test_different_gate_names_do_not_overwrite(self) -> None:
+        """Flow gate adapters with different gate_name values coexist."""
+        log = ReconOutcomeLog()
+
+        a1 = FlowGateOutcomeAdapter(
+            _StubFlowGateDecision(allowed=True), func_ea=0x1000,
+            gate_name="unflattening_gate",
+        )
+        a2 = FlowGateOutcomeAdapter(
+            _StubFlowGateDecision(allowed=False), func_ea=0x1000,
+            gate_name="fixpred_gate",
+        )
+        log.record(a1)
+        log.record(a2)
+
+        reports = log.get_func_reports(0x1000)
+        assert len(reports) == 2
+        names = {r.consumer_name for r in reports}
+        assert names == {"unflattening_gate", "fixpred_gate"}
+
+    def test_same_gate_name_overwrites(self) -> None:
+        """Two flow gate adapters with same gate_name: last-write-wins."""
+        log = ReconOutcomeLog()
+
+        a1 = FlowGateOutcomeAdapter(
+            _StubFlowGateDecision(allowed=True), func_ea=0x1000,
+            gate_name="flow_gate",
+        )
+        a2 = FlowGateOutcomeAdapter(
+            _StubFlowGateDecision(allowed=False), func_ea=0x1000,
+            gate_name="flow_gate",
+        )
+        log.record(a1)
+        log.record(a2)
+
+        reports = log.get_func_reports(0x1000)
+        assert len(reports) == 1
+        assert reports[0].consumer_verdict_applied is False  # last write
+
+
+# ---------------------------------------------------------------------------
 # ReconOutcomeLog
 # ---------------------------------------------------------------------------
 
@@ -247,8 +346,10 @@ class TestReconOutcomeLog:
         assert s["consumers"][0]["artifacts_available"] is True
         assert s["consumers"][0]["summary_available"] is True
         assert s["consumers"][0]["verdict_applied"] is True
+        assert s["consumers"][0]["detail"] == "source=analyzed"
         assert s["consumers"][1]["name"] == "flow_gate"
         assert s["consumers"][1]["verdict_applied"] is True
+        assert s["consumers"][1]["detail"] == "switch-table dispatcher"
 
     def test_reset_clears(self) -> None:
         """Record, reset, verify empty."""

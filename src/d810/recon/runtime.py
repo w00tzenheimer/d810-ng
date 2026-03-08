@@ -105,6 +105,13 @@ class ReconAnalysisRuntime:
 
     def mark_decompilation_finished(self) -> None:
         """Called at decompilation end -- resets the guard so next decompile triggers reset."""
+        if self._current_func_ea != -1:
+            summary = self._outcome_log.summary(self._current_func_ea)
+            if summary.get("consumers"):
+                logger.info(
+                    "decompilation_finished: func=0x%x outcome_summary=%s",
+                    self._current_func_ea, summary,
+                )
         self._current_func_ea = -1
 
     # ------------------------------------------------------------------
@@ -161,9 +168,10 @@ class ReconAnalysisRuntime:
         self,
         func_ea: int,
         decision: Any,
+        gate_name: str = "flow_gate",
     ) -> None:
         """Convenience: build a :class:`FlowGateOutcomeAdapter` and record it."""
-        adapter = FlowGateOutcomeAdapter(decision=decision, func_ea=func_ea)
+        adapter = FlowGateOutcomeAdapter(decision=decision, func_ea=func_ea, gate_name=gate_name)
         self.record_outcome(adapter)
 
     def get_outcome_summary(self, func_ea: int) -> dict:

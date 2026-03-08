@@ -4,10 +4,10 @@ Heuristics are deliberately simple in this first pass. The intent is to
 cover the common OLLVM control-flow flattening case and emit recipe names
 that ``RuleScopeService.apply_hints()`` can act on.
 
-Three supplementary collectors—``FixPredSignalsCollector``,
-``CompareChainCollector``, and ``FlowProfileClassifierCollector``—provide
-*additive* evidence when present.  Their absence does not change the
-baseline scoring.
+Four supplementary collectors—``FixPredSignalsCollector``,
+``CompareChainCollector``, ``FlowProfileClassifierCollector``, and
+``OpcodeDistributionCollector``—provide *additive* evidence when present.
+Their absence does not change the baseline scoring.
 
 No IDA imports - fully unit-testable.
 """
@@ -114,6 +114,19 @@ class AnalysisPhase:
             flow_profile
             and float(flow_profile.get("classification_confidence", 0.0))
             >= _FLOW_PROFILE_MIN_CONFIDENCE
+        ):
+            flat_signals += 1
+
+        # --- OpcodeDistribution (supplementary) ---
+        opcode_results = by_collector.get("OpcodeDistributionCollector", {})
+        if (
+            opcode_results
+            and any(
+                c.kind == "high_opcode_dominance"
+                for c in all_candidates
+            )
+            and float(opcode_results.get("top_opcode_ratio", 0))
+            > 0.5
         ):
             flat_signals += 1
 

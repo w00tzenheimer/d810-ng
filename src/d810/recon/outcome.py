@@ -57,6 +57,11 @@ class ConsumerOutcomeReport(Protocol):
         """Function effective address this outcome pertains to."""
         ...
 
+    @property
+    def detail(self) -> str:
+        """Optional subsystem-specific detail string."""
+        ...
+
 
 class RuleScopeOutcomeAdapter:
     """Adapter exposing :class:`ReconOutcome` as a :class:`ConsumerOutcomeReport`.
@@ -86,6 +91,10 @@ class RuleScopeOutcomeAdapter:
     @property
     def func_ea(self) -> int:
         return self._outcome.func_ea
+
+    @property
+    def detail(self) -> str:
+        return f"source={self._outcome.source}"
 
 
 class PlannerOutcomeAdapter:
@@ -118,6 +127,12 @@ class PlannerOutcomeAdapter:
     def func_ea(self) -> int:
         return self._func_ea
 
+    @property
+    def detail(self) -> str:
+        if hasattr(self._provenance, "summary"):
+            return str(self._provenance.summary())
+        return ""
+
 
 class FlowGateOutcomeAdapter:
     """Adapter exposing :class:`FlowGateDecision` as a :class:`ConsumerOutcomeReport`.
@@ -125,13 +140,14 @@ class FlowGateOutcomeAdapter:
     Wraps the flow-context gate decision without modifying it.
     """
 
-    def __init__(self, decision: FlowGateDecision, func_ea: int) -> None:
+    def __init__(self, decision: FlowGateDecision, func_ea: int, gate_name: str = "flow_gate") -> None:
         self._decision = decision
         self._func_ea = func_ea
+        self._gate_name = gate_name
 
     @property
     def consumer_name(self) -> str:
-        return "flow_gate"
+        return self._gate_name
 
     @property
     def source_artifacts_available(self) -> bool:
@@ -150,6 +166,12 @@ class FlowGateOutcomeAdapter:
     @property
     def func_ea(self) -> int:
         return self._func_ea
+
+    @property
+    def detail(self) -> str:
+        if hasattr(self._decision, "reason"):
+            return str(self._decision.reason)
+        return ""
 
 
 class ReconOutcomeLog:
@@ -195,6 +217,7 @@ class ReconOutcomeLog:
                     "artifacts_available": r.source_artifacts_available,
                     "summary_available": r.summary_available,
                     "verdict_applied": r.consumer_verdict_applied,
+                    "detail": r.detail,
                 }
                 for r in reports
             ],
