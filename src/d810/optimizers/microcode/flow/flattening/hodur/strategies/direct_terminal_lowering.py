@@ -55,6 +55,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.direct_lineariza
     CarrierBucket,
     CarrierSourceKind,
     ForwardFrontierEntry,
+    SuffixGroupDecision,
     _classify_carrier_source,
     _compute_suffix_group_decision,
     _discover_shared_corridor,
@@ -259,12 +260,27 @@ class DirectTerminalLoweringStrategy:
             )
             return None
 
+        # ---- Resolve known state constants for per-anchor DTL detection ----
+        known_state_constants: set[int] = set()
+        try:
+            sc = snapshot.state_constants
+            if sc is not None:
+                known_state_constants = set(sc)
+        except Exception:
+            pass
+
         # ---- Classify carriers per anchor ----
         forward_entries: list[ForwardFrontierEntry] = []
         for anchor_serial in anchors:
             carrier, carrier_const = _classify_carrier_source(
                 fg, anchor_serial, state_var_stkoff, full_infra
             )
+
+            requires_dtl = (
+                carrier_const is not None
+                and carrier_const in known_state_constants
+            )
+
             entry = ForwardFrontierEntry(
                 handler_entry=anchor_serial,
                 terminal_path=(anchor_serial,),
@@ -278,6 +294,7 @@ class DirectTerminalLoweringStrategy:
                 proof_status="unresolved",
                 notes="dtl-strategy-anchor",
                 state_const_written=carrier_const,
+                requires_dtl=requires_dtl,
             )
             forward_entries.append(entry)
 
@@ -306,17 +323,32 @@ class DirectTerminalLoweringStrategy:
             decision.rejection_reasons,
         )
 
-        # DTL only acts on needs_direct_lowering groups
-        if decision.carrier_bucket != CarrierBucket.NEEDS_DIRECT_LOWERING:
+        # DTL acts on needs_direct_lowering groups, OR per-anchor DTL
+        # overrides when the group bucket is suffix_ambiguous but individual
+        # anchors leak known state constants.
+        dtl_anchors: tuple[int, ...] = ()
+        if decision.carrier_bucket == CarrierBucket.NEEDS_DIRECT_LOWERING:
+            # Group-level: all anchors are DTL candidates.
+            dtl_anchors = tuple(anchors)
+        elif decision.dtl_anchor_serials:
+            # Per-anchor override: only anchors that leak state constants.
+            dtl_anchors = decision.dtl_anchor_serials
             logger.info(
-                "[dtl-strategy] bucket=%s is not needs_direct_lowering, skipping",
+                "[dtl-strategy] per-anchor DTL override: bucket=%s "
+                "dtl_anchor_serials=%s",
+                decision.carrier_bucket.value,
+                dtl_anchors,
+            )
+        else:
+            logger.info(
+                "[dtl-strategy] bucket=%s, no per-anchor DTL candidates, skipping",
                 decision.carrier_bucket.value,
             )
             return None
 
-        # ---- Prove return values per anchor ----
+        # ---- Prove return values per DTL anchor ----
         sites: list[DirectTerminalLoweringSite] = []
-        for anchor_serial in anchors:
+        for anchor_serial in dtl_anchors:
             site = self._prove_and_classify_anchor(
                 mba=snapshot.mba,
                 anchor_serial=anchor_serial,
