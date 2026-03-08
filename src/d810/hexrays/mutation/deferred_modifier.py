@@ -3396,6 +3396,8 @@ class DeferredGraphModifier:
                 and blk.nsucc() == 1
                 and blk.succ(0) == old_stop_serial
             ]
+            logger.debug("PTS_DIAG Phase3: old_stop_pred_serials=%s, BLT_STOP_serial=%d, mba.qty=%d",
+                          old_stop_pred_serials, suffix_serials[-1], mba.qty)
 
             # ---- Phase 4: Clone suffix chain for each anchor ----
             # Snapshot template blocks ONCE before cloning.  After the first
@@ -3413,22 +3415,27 @@ class DeferredGraphModifier:
                     return False
                 suffix_templates.append(tmpl)
 
+            logger.debug("PTS_DIAG pre_Phase4: suffix_templates serials=%s, mba.qty=%d",
+                          [t.serial for t in suffix_templates], mba.qty)
+
             per_anchor_first_clone: list[int] = []
             all_cloned_serials: set[int] = set()
 
+            # Clone only interior suffix blocks (skip BLT_STOP — the last
+            # serial).  Each anchor's last clone will wire directly to the
+            # real BLT_STOP so IDA's structurer recognises the return path.
+            interior_suffix_serials = suffix_serials[:-1]
+
             for anchor_idx, anchor_serial in enumerate(anchors):
                 cloned_serials: list[int] = []
-                for idx, suffix_serial in enumerate(suffix_serials):
+                for idx, suffix_serial in enumerate(interior_suffix_serials):
                     template_blk = suffix_templates[idx]
-
-                    is_last = idx == len(suffix_serials) - 1
 
                     instructions_to_copy = []
                     cur_ins = template_blk.head
                     while cur_ins is not None:
                         if (
-                            not is_last
-                            and template_blk.nsucc() == 1
+                            template_blk.nsucc() == 1
                             and template_blk.tail is not None
                             and template_blk.tail.opcode == ida_hexrays.m_goto
                             and cur_ins.next is None
@@ -3439,22 +3446,18 @@ class DeferredGraphModifier:
                         instructions_to_copy.append(cloned_ins)
                         cur_ins = cur_ins.next
 
-                    # Avoid self-copy: after earlier clones insert before
-                    # BLT_STOP, the BLT_STOP template may now sit at
-                    # mba.qty-1.  copy_block(blk, blk.serial) is undefined.
-                    # Use the first suffix template as a shell instead —
-                    # create_standalone_block strips all inherited edges and
-                    # instructions anyway.
-                    ref_for_copy = template_blk
-                    if template_blk.serial == mba.qty - 1:
-                        ref_for_copy = suffix_templates[0]
                     cloned_blk = create_standalone_block(
-                        ref_for_copy,
+                        template_blk,
                         instructions_to_copy,
-                        target_serial=None if is_last else shared_entry_serial,
-                        is_0_way=is_last,
+                        target_serial=shared_entry_serial,
+                        is_0_way=False,
                         verify=False,
                     )
+                    logger.debug("PTS_DIAG Phase4: anchor[%d]=%d, suffix[%d]=%d, clone_serial=%d, clone.type=%d, "
+                                  "clone.nsucc=%d, clone.npred=%d, mba.qty=%d, BLT_STOP_now=%d",
+                                  anchor_idx, anchor_serial, idx, suffix_serial,
+                                  cloned_blk.serial, cloned_blk.type, cloned_blk.nsucc(), cloned_blk.npred(),
+                                  mba.qty, mba.qty - 1)
                     cloned_serials.append(cloned_blk.serial)
                     all_cloned_serials.add(cloned_blk.serial)
 
@@ -3463,17 +3466,24 @@ class DeferredGraphModifier:
                     for prev_serial in prev_pred_serials:
                         cloned_blk.predset._del(prev_serial)
 
-                # Wire the cloned chain for this anchor
+                # Wire the interior cloned chain for this anchor
                 for idx in range(len(cloned_serials) - 1):
                     clone_blk = mba.get_mblock(cloned_serials[idx])
                     next_clone_serial = cloned_serials[idx + 1]
                     if clone_blk is None:
                         return False
-                    if not change_1way_block_successor(
+                    wire_ok = change_1way_block_successor(
                         clone_blk,
                         next_clone_serial,
                         verify=False,
-                    ):
+                    )
+                    logger.debug("PTS_DIAG Phase4_wire: clone[%d]=%d -> clone[%d]=%d, ok=%s, "
+                                  "clone_nsucc=%d, clone_succ0=%s",
+                                  idx, cloned_serials[idx], idx + 1, next_clone_serial, wire_ok,
+                                  clone_blk.nsucc(), clone_blk.succ(0) if clone_blk.nsucc() > 0 else -1)
+                    if not wire_ok:
+                        logger.debug("PTS_DIAG Phase4_wire FAILED: blk[%d].type=%d, nsucc=%d, npred=%d",
+                                      cloned_serials[idx], clone_blk.type, clone_blk.nsucc(), clone_blk.npred())
                         logger.warning(
                             "private_terminal_suffix_group: failed to wire "
                             "clone blk[%d] -> blk[%d] for anchor blk[%d]",
@@ -3482,6 +3492,20 @@ class DeferredGraphModifier:
                             anchor_serial,
                         )
                         return False
+
+                # Wire last interior clone to real BLT_STOP
+                last_clone_serial = cloned_serials[-1]
+                last_clone_blk = mba.get_mblock(last_clone_serial)
+                stop_serial = mba.qty - 1
+                wire_ok = change_1way_block_successor(
+                    last_clone_blk,
+                    stop_serial,
+                    verify=False,
+                )
+                logger.debug("PTS_DIAG Phase4_wire_to_stop: clone[%d]=%d -> BLT_STOP=%d, ok=%s",
+                              len(cloned_serials) - 1, last_clone_serial, stop_serial, wire_ok)
+                if not wire_ok:
+                    return False
 
                 per_anchor_first_clone.append(cloned_serials[0])
 
@@ -3501,13 +3525,21 @@ class DeferredGraphModifier:
                                 exp,
                             )
 
+            logger.debug("PTS_DIAG post_Phase4: all_cloned_serials=%s, per_anchor_first=%s, mba.qty=%d",
+                          sorted(all_cloned_serials), per_anchor_first_clone, mba.qty)
+
             # ---- Phase 5: Redirect ALL anchors to their first clones ----
             for anchor_idx, anchor_blk in enumerate(anchor_blks):
-                if not change_1way_block_successor(
+                redirect_ok = change_1way_block_successor(
                     anchor_blk,
                     per_anchor_first_clone[anchor_idx],
                     verify=False,
-                ):
+                )
+                logger.debug("PTS_DIAG Phase5: anchor[%d]=%d -> first_clone=%d, ok=%s, "
+                              "anchor_nsucc=%d, anchor_succ0=%s",
+                              anchor_idx, anchor_blk.serial, per_anchor_first_clone[anchor_idx], redirect_ok,
+                              anchor_blk.nsucc(), anchor_blk.succ(0) if anchor_blk.nsucc() > 0 else -1)
+                if not redirect_ok:
                     logger.warning(
                         "private_terminal_suffix_group: failed to redirect "
                         "anchor blk[%d] -> clone blk[%d]",
@@ -3518,20 +3550,33 @@ class DeferredGraphModifier:
 
             # ---- Phase 6: Relocate STOP predecessors ONCE ----
             new_stop_serial = mba.qty - 1
+            logger.debug("PTS_DIAG Phase6: new_stop_serial=%d, old_stop_pred_serials=%s, all_cloned=%s",
+                          new_stop_serial, old_stop_pred_serials, sorted(all_cloned_serials))
             for stop_pred_serial in old_stop_pred_serials:
                 stop_pred_blk = mba.get_mblock(stop_pred_serial)
                 if stop_pred_blk is None or stop_pred_blk.serial in all_cloned_serials:
+                    logger.debug("PTS_DIAG Phase6: skip pred_serial=%d (None=%s, in_cloned=%s)",
+                                  stop_pred_serial, stop_pred_blk is None,
+                                  stop_pred_serial in all_cloned_serials)
                     continue
                 if (
                     stop_pred_blk.nsucc() != 1
                     or stop_pred_blk.succ(0) not in all_cloned_serials
                 ):
+                    logger.debug("PTS_DIAG Phase6: skip pred_blk[%d] nsucc=%d, succ0=%s, succ0_in_cloned=%s",
+                                  stop_pred_blk.serial, stop_pred_blk.nsucc(),
+                                  stop_pred_blk.succ(0) if stop_pred_blk.nsucc() > 0 else -1,
+                                  stop_pred_blk.succ(0) in all_cloned_serials if stop_pred_blk.nsucc() > 0 else False)
                     continue
-                if not change_1way_block_successor(
+                old_succ = stop_pred_blk.succ(0)
+                relocate_ok = change_1way_block_successor(
                     stop_pred_blk,
                     new_stop_serial,
                     verify=False,
-                ):
+                )
+                logger.debug("PTS_DIAG Phase6: pred_blk[%d].succ(0)=%d -> new_stop=%d, ok=%s",
+                              stop_pred_blk.serial, old_succ, new_stop_serial, relocate_ok)
+                if not relocate_ok:
                     logger.warning(
                         "private_terminal_suffix_group: failed to relocate "
                         "stop pred blk[%d] -> blk[%d]",
@@ -3546,6 +3591,8 @@ class DeferredGraphModifier:
                 per_anchor_first_clone,
                 suffix_serials,
             )
+            logger.info("PTS group applied: %d anchors, %d clones, shared_entry=%d, stop=%d",
+                        len(anchors), len(all_cloned_serials), shared_entry_serial, mba.qty - 1)
             return True
 
         except Exception as exc:
