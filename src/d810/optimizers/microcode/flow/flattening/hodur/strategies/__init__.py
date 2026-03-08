@@ -15,11 +15,15 @@ Available strategies (in dependency order):
    duplication, family ``direct``.
 4. :class:`TerminalLoopCleanupStrategy` — break residual terminal loops,
    family ``cleanup``.
-5. :class:`PredPatchFallbackStrategy` — MopTracker predecessor patching,
+5. :class:`PrivateTerminalSuffixStrategy` — clone shared terminal suffix
+   per handler entry for ``suffix_ambiguous`` sites, family ``direct``.
+6. :class:`DirectTerminalLoweringStrategy` — per-anchor return value
+   materialization for ``needs_direct_lowering`` sites, family ``direct``.
+7. :class:`PredPatchFallbackStrategy` — MopTracker predecessor patching,
    family ``fallback``.
-6. :class:`ConditionalForkFallbackStrategy` — conditional-fork resolution,
+8. :class:`ConditionalForkFallbackStrategy` — conditional-fork resolution,
    family ``fallback``.
-7. :class:`AssignmentMapFallbackStrategy` — dead state-assignment NOPs and
+9. :class:`AssignmentMapFallbackStrategy` — dead state-assignment NOPs and
    assignment-map redirects, family ``fallback``.
 """
 from __future__ import annotations
@@ -48,6 +52,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.assignment_map_f
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.private_terminal_suffix import (
     PrivateTerminalSuffixStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.direct_terminal_lowering import (
+    DirectTerminalLoweringStrategy,
+)
 
 __all__ = [
     "DirectHandlerLinearizationStrategy",
@@ -58,6 +65,7 @@ __all__ = [
     "PredPatchFallbackStrategy",
     "ConditionalForkFallbackStrategy",
     "AssignmentMapFallbackStrategy",
+    "DirectTerminalLoweringStrategy",
     "ALL_STRATEGIES",
 ]
 
@@ -67,6 +75,7 @@ ALL_STRATEGIES: list[type] = [
     EdgeSplitConflictResolutionStrategy,
     TerminalLoopCleanupStrategy,
     PrivateTerminalSuffixStrategy,
+    DirectTerminalLoweringStrategy,
     PredPatchFallbackStrategy,
     ConditionalForkFallbackStrategy,
     AssignmentMapFallbackStrategy,
