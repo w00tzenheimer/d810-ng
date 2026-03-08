@@ -4,6 +4,11 @@ Heuristics are deliberately simple in this first pass. The intent is to
 cover the common OLLVM control-flow flattening case and emit recipe names
 that ``RuleScopeService.apply_hints()`` can act on.
 
+Three supplementary collectors—``FixPredSignalsCollector``,
+``CompareChainCollector``, and ``FlowProfileClassifierCollector``—provide
+*additive* evidence when present.  Their absence does not change the
+baseline scoring.
+
 No IDA imports - fully unit-testable.
 """
 from __future__ import annotations
@@ -23,6 +28,15 @@ _FLAT_NWAY_MIN = 1
 _CONF_FLAT_BASE = 0.5
 _CONF_FLAT_PER_SIGNAL = 0.15
 _CONF_CLASSIFY_THRESHOLD = 0.45
+
+# Supplementary collector thresholds (additive signals)
+_FIXPRED_MIN_DISPATCHER_PREDS = 3
+_COMPARE_CHAIN_MIN_LENGTH = 3
+_COMPARE_CHAIN_MIN_CONSTANTS = 4
+_FLOW_PROFILE_MIN_CONFIDENCE = 0.4
+
+# When confidence reaches this level with ollvm_flat, suppress ConstantFolding
+_SUPPRESS_CONFIDENCE_THRESHOLD = 0.7
 
 
 class AnalysisPhase:
@@ -57,7 +71,7 @@ class AnalysisPhase:
             by_collector[r.collector_name] = dict(r.metrics)
             all_candidates.extend(r.candidates)
 
-        # --- OLLVM flattening heuristic ---
+        # --- OLLVM flattening heuristic (core signals) ---
         flat_signals = 0
         cfg = by_collector.get("CFGShapeCollector", {})
         dispatch = by_collector.get("DispatchPatternCollector", {})
@@ -71,6 +85,39 @@ class AnalysisPhase:
         if int(dispatch.get("back_edge_count", 0)) >= _FLAT_BACK_EDGE_THRESHOLD:
             flat_signals += 1
 
+        # --- Supplementary signals (additive when collectors present) ---
+        fixpred = by_collector.get("FixPredSignalsCollector", {})
+        compare = by_collector.get("compare_chain", {})
+        flow_profile = by_collector.get("flow_profile_classifier", {})
+
+        if (
+            fixpred
+            and any(
+                c.kind == "fixpred_high_fanin_dispatcher"
+                for c in all_candidates
+            )
+            and int(fixpred.get("max_dispatcher_predecessors", 0))
+            >= _FIXPRED_MIN_DISPATCHER_PREDS
+        ):
+            flat_signals += 1
+
+        if (
+            compare
+            and int(compare.get("compare_chain_length", 0))
+            >= _COMPARE_CHAIN_MIN_LENGTH
+            and int(compare.get("unique_constants", 0))
+            >= _COMPARE_CHAIN_MIN_CONSTANTS
+        ):
+            flat_signals += 1
+
+        if (
+            flow_profile
+            and float(flow_profile.get("classification_confidence", 0.0))
+            >= _FLOW_PROFILE_MIN_CONFIDENCE
+        ):
+            flat_signals += 1
+
+        # --- Confidence calculation ---
         confidence = (
             _CONF_FLAT_BASE + flat_signals * _CONF_FLAT_PER_SIGNAL
             if flat_signals >= 2
@@ -80,7 +127,12 @@ class AnalysisPhase:
         if confidence >= _CONF_CLASSIFY_THRESHOLD:
             obfuscation_type: str | None = "ollvm_flat"
             recommended_recipes: tuple[str, ...] = ("unflattening_recipe",)
-            suppress_rules: tuple[str, ...] = ()
+            # Suppress ConstantFolding at high confidence — it conflicts
+            # with flattened dispatch variable propagation.
+            if min(1.0, confidence) >= _SUPPRESS_CONFIDENCE_THRESHOLD:
+                suppress_rules: tuple[str, ...] = ("ConstantFolding",)
+            else:
+                suppress_rules = ()
         else:
             obfuscation_type = None
             recommended_recipes = ()

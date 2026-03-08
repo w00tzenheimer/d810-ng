@@ -747,10 +747,9 @@ class D810Manager:
             phase.register(HandlerTransitionsCollector())
             phase.register(ReturnFrontierCollector())
             phase.register(CtreeStructureCollector())
-            # TODO: register when AnalysisPhase.interpret() is extended to consume these
-            # phase.register(CompareChainCollector())
-            # phase.register(FlowProfileClassifierCollector())
-            # phase.register(FixPredSignalsCollector())
+            phase.register(CompareChainCollector())
+            phase.register(FlowProfileClassifierCollector())
+            phase.register(FixPredSignalsCollector())
             logger.info(
                 "ReconPhase enabled: %d collectors, db=%s",
                 phase.collector_count,

@@ -21,7 +21,9 @@ from d810.core.typing import TYPE_CHECKING, Any
 
 from d810.recon.analysis import AnalysisPhase
 from d810.recon.models import DeobfuscationHints
+from d810.recon.outcome import ConsumerOutcomeReport, ReconOutcomeLog, RuleScopeOutcomeAdapter
 from d810.recon.phase import ReconPhase
+from d810.recon.flow_hints import derive_flow_context_summary
 from d810.recon.store import ReconStore
 
 if TYPE_CHECKING:
@@ -75,6 +77,7 @@ class ReconAnalysisRuntime:
         self._analysis = analysis
         self._store = store
         self._current_func_ea: int = -1
+        self._outcome_log: ReconOutcomeLog = ReconOutcomeLog()
 
     def reset_for_func(self, func_ea: int) -> bool:
         """Reset recon state -- deduplicates across managers.
@@ -90,12 +93,58 @@ class ReconAnalysisRuntime:
         self._current_func_ea = func_ea
         self._phase.reset(func_ea=func_ea)
         self._store.clear_func(func_ea=func_ea)
+        self._outcome_log.reset_for_func(func_ea)
         logger.debug("reset_for_func: cleared recon state for func=0x%x", func_ea)
         return True
 
     def mark_decompilation_finished(self) -> None:
         """Called at decompilation end -- resets the guard so next decompile triggers reset."""
         self._current_func_ea = -1
+
+    # ------------------------------------------------------------------
+    # Outcome recording
+    # ------------------------------------------------------------------
+
+    @property
+    def outcome_log(self) -> ReconOutcomeLog:
+        """Read-only access to the outcome log."""
+        return self._outcome_log
+
+    def record_outcome(self, report: ConsumerOutcomeReport) -> None:
+        """Record a consumer outcome report and log it at INFO level."""
+        self._outcome_log.record(report)
+        logger.info(
+            "outcome: func=0x%x consumer=%s artifacts=%s summary=%s verdict=%s",
+            report.func_ea, report.consumer_name,
+            report.source_artifacts_available,
+            report.summary_available,
+            report.consumer_verdict_applied,
+        )
+
+    def record_rule_scope_outcome(
+        self,
+        func_ea: int,
+        hints: DeobfuscationHints | None,
+        apply_result: ApplyHintsResult | None,
+        source: str,
+    ) -> None:
+        """Convenience: build a :class:`RuleScopeOutcomeAdapter` and record it.
+
+        Keeps the :class:`ReconOutcome` / adapter construction in the recon
+        layer so that ``d810.hexrays`` hooks do not need to import recon types.
+        """
+        outcome = ReconOutcome(
+            func_ea=func_ea,
+            hints=hints,
+            apply_result=apply_result,
+            source=source,
+        )
+        adapter = RuleScopeOutcomeAdapter(outcome)
+        self.record_outcome(adapter)
+
+    def get_outcome_summary(self, func_ea: int) -> dict:
+        """One-line summary per consumer for a function."""
+        return self._outcome_log.summary(func_ea)
 
     def collect_and_analyze(
         self,
@@ -173,8 +222,6 @@ class ReconAnalysisRuntime:
         hints = self.load_hints(func_ea)
         if hints is None:
             return None
-        from d810.recon.flow_hints import derive_flow_context_summary
-
         return derive_flow_context_summary(hints)
 
     def load_or_analyze(

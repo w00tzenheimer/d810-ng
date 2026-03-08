@@ -407,6 +407,11 @@ class UnflatteningPlanner:
     to bias fragment scoring.  The outcome layer --
     :class:`PipelineProvenance` -- records every accept/reject decision
     with full audit trail, closing the lifecycle loop.
+
+    **Hint persistence:** ``PlannerHintSignals`` remain ephemeral —
+    see :class:`~d810.optimizers.microcode.flow.flattening.hodur.provenance.PlannerInputs`
+    for rationale.  Persist only if a concrete need appears (offline
+    audit, cross-pass caching, or a second planner consumer).
     """
 
     def __init__(self, policy: PipelinePolicy | None = None):

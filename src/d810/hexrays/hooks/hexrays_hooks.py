@@ -392,10 +392,16 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     try:
                         hints = self._recon_runtime.analyze_and_persist(mba_ea)
                         if hints is not None and self._rule_scope_service is not None:
-                            self._rule_scope_service.apply_hints(hints)
+                            result = self._rule_scope_service.apply_hints(hints)
                             optimizer_logger.info(
                                 "Applied recon hints to rule scope for func=0x%x",
                                 mba_ea,
+                            )
+                            self._recon_runtime.record_rule_scope_outcome(
+                                func_ea=mba_ea,
+                                hints=hints,
+                                apply_result=result,
+                                source="analyzed",
                             )
                     except Exception:
                         optimizer_logger.exception(
@@ -861,10 +867,16 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     try:
                         hints = self._recon_runtime.analyze_and_persist(mba_ea)
                         if hints is not None and self._rule_scope_service is not None:
-                            self._rule_scope_service.apply_hints(hints)
+                            result = self._rule_scope_service.apply_hints(hints)
                             optimizer_logger.info(
                                 "Applied recon hints to rule scope (block) for func=0x%x",
                                 mba_ea,
+                            )
+                            self._recon_runtime.record_rule_scope_outcome(
+                                func_ea=mba_ea,
+                                hints=hints,
+                                apply_result=result,
+                                source="analyzed",
                             )
                     except Exception:
                         optimizer_logger.exception(

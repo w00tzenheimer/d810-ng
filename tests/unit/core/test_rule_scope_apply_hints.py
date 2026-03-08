@@ -525,3 +525,78 @@ class TestApplyHints:
         assert result.recipes_applied == ("unflatten",)
         assert result.rules_suppressed == ("R2",)
         assert _active_names(svc, 0x401000) == ("R1",)
+
+
+# ---------------------------------------------------------------------------
+# RuleScopeService.get_hint_state_summary
+# ---------------------------------------------------------------------------
+
+class TestGetHintStateSummary:
+    def test_empty_state(self) -> None:
+        svc = RuleScopeService()
+        summary = svc.get_hint_state_summary(0x1000)
+        assert summary["func_ea"] == 0x1000
+        assert summary["has_hint_recipes"] is False
+        assert summary["recipe_names"] == []
+        assert summary["suppressed_rules"] == []
+        assert summary["generation"] == svc.generation
+
+    def test_after_recipe_applied(self) -> None:
+        svc = _make_service_with_rules(
+            _DummyRule(name="R1", maturities=[1]),
+            _DummyRule(name="R2", maturities=[1]),
+        )
+        recipe = RuleRecipeOverlay(
+            name="only_r1",
+            enabled_rules=frozenset({"R1"}),
+        )
+        svc.register_recipe(recipe)
+        svc.apply_hints(_DummyHints(
+            func_ea=0x1000,
+            recommended_recipes=("only_r1",),
+        ))
+
+        summary = svc.get_hint_state_summary(0x1000)
+        assert summary["has_hint_recipes"] is True
+        assert "only_r1" in summary["recipe_names"]
+
+    def test_after_suppress_rules(self) -> None:
+        svc = _make_service_with_rules(
+            _DummyRule(name="R1", maturities=[1]),
+            _DummyRule(name="R2", maturities=[1]),
+        )
+        svc.apply_hints(_DummyHints(
+            func_ea=0x1000,
+            suppress_rules=("R2", "R1"),
+        ))
+
+        summary = svc.get_hint_state_summary(0x1000)
+        assert summary["has_hint_recipes"] is False
+        # suppressed_rules is sorted
+        assert summary["suppressed_rules"] == ["R1", "R2"]
+
+    def test_unaffected_function_empty(self) -> None:
+        svc = _make_service_with_rules(
+            _DummyRule(name="R1", maturities=[1]),
+        )
+        svc.apply_hints(_DummyHints(
+            func_ea=0x1000,
+            suppress_rules=("R1",),
+        ))
+
+        # Different function should show empty state
+        summary = svc.get_hint_state_summary(0x2000)
+        assert summary["has_hint_recipes"] is False
+        assert summary["suppressed_rules"] == []
+
+    def test_generation_tracks(self) -> None:
+        svc = _make_service_with_rules(
+            _DummyRule(name="R1", maturities=[1]),
+        )
+        gen_before = svc.generation
+        svc.apply_hints(_DummyHints(
+            func_ea=0x1000,
+            suppress_rules=("R1",),
+        ))
+        summary = svc.get_hint_state_summary(0x1000)
+        assert summary["generation"] == gen_before + 1

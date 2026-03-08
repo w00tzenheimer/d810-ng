@@ -9,6 +9,7 @@ from d810.recon.outcome import (
     ConsumerOutcomeReport,
     FlowGateOutcomeAdapter,
     PlannerOutcomeAdapter,
+    ReconOutcomeLog,
     RuleScopeOutcomeAdapter,
 )
 
@@ -218,3 +219,63 @@ class TestFlowGateOutcomeAdapter:
             _StubFlowGateDecision(), func_ea=0xCAFE,
         )
         assert adapter.func_ea == 0xCAFE
+
+
+# ---------------------------------------------------------------------------
+# ReconOutcomeLog
+# ---------------------------------------------------------------------------
+
+
+class TestReconOutcomeLog:
+    def test_record_and_summary(self) -> None:
+        """Record 2 adapters, verify summary dict."""
+        log = ReconOutcomeLog()
+
+        a1 = RuleScopeOutcomeAdapter(
+            _StubReconOutcome(func_ea=0x1000, source="analyzed", hints=object(), apply_result=object()),
+        )
+        a2 = FlowGateOutcomeAdapter(
+            _StubFlowGateDecision(allowed=True), func_ea=0x1000,
+        )
+        log.record(a1)
+        log.record(a2)
+
+        s = log.summary(0x1000)
+        assert s["func_ea"] == 0x1000
+        assert len(s["consumers"]) == 2
+        assert s["consumers"][0]["name"] == "rule_scope"
+        assert s["consumers"][0]["artifacts_available"] is True
+        assert s["consumers"][0]["summary_available"] is True
+        assert s["consumers"][0]["verdict_applied"] is True
+        assert s["consumers"][1]["name"] == "flow_gate"
+        assert s["consumers"][1]["verdict_applied"] is True
+
+    def test_reset_clears(self) -> None:
+        """Record, reset, verify empty."""
+        log = ReconOutcomeLog()
+
+        adapter = RuleScopeOutcomeAdapter(
+            _StubReconOutcome(func_ea=0x2000, source="cached"),
+        )
+        log.record(adapter)
+        assert len(log.get_func_reports(0x2000)) == 1
+
+        log.reset_for_func(0x2000)
+        assert log.get_func_reports(0x2000) == []
+        assert log.summary(0x2000) == {"func_ea": 0x2000, "consumers": []}
+
+    def test_summary_empty_func(self) -> None:
+        """Summary for unrecorded function returns empty consumers list."""
+        log = ReconOutcomeLog()
+        assert log.summary(0x9999) == {"func_ea": 0x9999, "consumers": []}
+
+    def test_get_func_reports_returns_copy(self) -> None:
+        """get_func_reports returns a copy, not the internal list."""
+        log = ReconOutcomeLog()
+        adapter = RuleScopeOutcomeAdapter(
+            _StubReconOutcome(func_ea=0x3000, source="analyzed"),
+        )
+        log.record(adapter)
+        reports = log.get_func_reports(0x3000)
+        reports.clear()
+        assert len(log.get_func_reports(0x3000)) == 1

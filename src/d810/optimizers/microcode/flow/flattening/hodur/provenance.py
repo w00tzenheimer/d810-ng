@@ -171,6 +171,13 @@ class PlannerInputs:
     transitions, return frontier, terminal return audit) into the planner
     so that fragment selection is auditable and explainable from inputs
     plus policy.
+
+    **Persistence policy:** PlannerInputs and the derived
+    :class:`~d810.optimizers.microcode.flow.flattening.hodur.planner.PlannerHintSignals`
+    are kept **ephemeral** (not persisted to ``ReconStore``).  They are
+    cheap to re-derive from canonical recon artifacts, tightly coupled
+    to planner scoring policy, and have no second consumer.  The
+    decision *outcome* is captured by :class:`PipelineProvenance`.
     """
 
     total_handlers: int = 0

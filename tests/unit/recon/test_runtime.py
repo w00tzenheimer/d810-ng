@@ -342,3 +342,89 @@ def test_reset_fires_on_different_func_without_mark_finished() -> None:
     mock_phase.reset.assert_has_calls(
         [call(func_ea=_FUNC_EA), call(func_ea=other_ea)]
     )
+
+
+# ---------------------------------------------------------------------------
+# Outcome recording
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_record_outcome() -> None:
+    """record_outcome delegates to outcome log."""
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+
+    from d810.recon.outcome import RuleScopeOutcomeAdapter
+    from d810.recon.runtime import ReconOutcome
+
+    outcome = ReconOutcome(
+        func_ea=_FUNC_EA,
+        hints=_make_hints(),
+        apply_result=None,
+        source="analyzed",
+    )
+    adapter = RuleScopeOutcomeAdapter(outcome)
+    rt.record_outcome(adapter)
+
+    reports = rt.outcome_log.get_func_reports(_FUNC_EA)
+    assert len(reports) == 1
+    assert reports[0].consumer_name == "rule_scope"
+    assert reports[0].func_ea == _FUNC_EA
+
+
+def test_reset_clears_outcome_log() -> None:
+    """reset_for_func clears outcome entries for the function."""
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+
+    from d810.recon.outcome import RuleScopeOutcomeAdapter
+    from d810.recon.runtime import ReconOutcome
+
+    outcome = ReconOutcome(
+        func_ea=_FUNC_EA,
+        hints=_make_hints(),
+        apply_result=None,
+        source="cached",
+    )
+    adapter = RuleScopeOutcomeAdapter(outcome)
+    rt.record_outcome(adapter)
+    assert len(rt.outcome_log.get_func_reports(_FUNC_EA)) == 1
+
+    # reset_for_func should also clear outcome log
+    rt.reset_for_func(_FUNC_EA)
+    assert rt.outcome_log.get_func_reports(_FUNC_EA) == []
+
+
+def test_record_rule_scope_outcome() -> None:
+    """record_rule_scope_outcome builds adapter internally and records."""
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+
+    hints = _make_hints()
+    rt.record_rule_scope_outcome(
+        func_ea=_FUNC_EA,
+        hints=hints,
+        apply_result=None,
+        source="analyzed",
+    )
+
+    reports = rt.outcome_log.get_func_reports(_FUNC_EA)
+    assert len(reports) == 1
+    assert reports[0].consumer_name == "rule_scope"
+    assert reports[0].source_artifacts_available is True
+    assert reports[0].summary_available is True
+    assert reports[0].consumer_verdict_applied is False  # apply_result=None
+
+
+def test_get_outcome_summary() -> None:
+    """get_outcome_summary delegates to outcome log summary."""
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+
+    rt.record_rule_scope_outcome(
+        func_ea=_FUNC_EA,
+        hints=_make_hints(),
+        apply_result=None,
+        source="analyzed",
+    )
+
+    summary = rt.get_outcome_summary(_FUNC_EA)
+    assert summary["func_ea"] == _FUNC_EA
+    assert len(summary["consumers"]) == 1
+    assert summary["consumers"][0]["name"] == "rule_scope"
