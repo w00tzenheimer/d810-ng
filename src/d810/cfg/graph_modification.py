@@ -271,6 +271,21 @@ class PrivateTerminalSuffix:
     reason: str = "terminal_return_shared_epilogue"
 
 
+@dataclass(frozen=True)
+class PrivateTerminalSuffixGroup:
+    """Clone a shared terminal suffix chain for multiple anchor blocks atomically.
+
+    Each anchor gets its own private copy of the suffix chain. All clones are
+    created in one pass to avoid serial drift from sequential STOP relocation.
+    """
+
+    anchors: tuple[int, ...]
+    shared_entry_serial: int
+    return_block_serial: int
+    suffix_serials: tuple[int, ...]
+    reason: str = "terminal_return_shared_epilogue"
+
+
 # Union type for type discrimination via isinstance() or match statement
 GraphModification = Union[
     RedirectGoto,
@@ -283,6 +298,7 @@ GraphModification = Union[
     RemoveEdge,
     NopInstructions,
     PrivateTerminalSuffix,
+    PrivateTerminalSuffixGroup,
 ]
 
 
@@ -297,5 +313,6 @@ __all__ = [
     "RemoveEdge",
     "NopInstructions",
     "PrivateTerminalSuffix",
+    "PrivateTerminalSuffixGroup",
     "GraphModification",
 ]

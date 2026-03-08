@@ -40,6 +40,7 @@ from d810.cfg.plan import (
     PatchInsertBlock,
     PatchPlan,
     PatchPrivateTerminalSuffix,
+    PatchPrivateTerminalSuffixGroup,
     PatchRemoveEdge,
     PatchRedirectBranch,
     PatchRedirectGoto,
@@ -106,6 +107,10 @@ def _tail_opcode_for_existing_block(
                 return _M_GOTO
             case PatchRedirectGoto(from_serial=serial) if (
                 serial == block.serial and int(block.block_type) == _BLT_1WAY
+            ):
+                return _M_GOTO
+            case PatchPrivateTerminalSuffixGroup(anchors=anchors) if (
+                block.serial in anchors
             ):
                 return _M_GOTO
     return block.tail_opcode
@@ -531,6 +536,40 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                         new_target=clone_serials[0],
                     )
                 )
+
+            case PatchPrivateTerminalSuffixGroup(
+                shared_entry_serial=shared_entry,
+                suffix_serials=suffix,
+                anchors=anchors,
+                per_anchor_clone_assigned_serials=per_anchor_serials,
+            ):
+                # Model as: for each anchor, create cloned chain + redirect.
+                for anchor_idx, anchor in enumerate(anchors):
+                    clone_serials = per_anchor_serials[anchor_idx]
+                    for idx, clone_serial in enumerate(clone_serials):
+                        if idx < len(clone_serials) - 1:
+                            next_serial = clone_serials[idx + 1]
+                        else:
+                            next_serial = None
+                        simulated.append(
+                            SimulatedEdit(
+                                kind="private_terminal_suffix_clone",
+                                source=suffix[idx],
+                                old_target=-1,
+                                new_target=next_serial,
+                                created_serial=clone_serial,
+                                stop_serial_before=stop_serial_before,
+                                stop_serial_after=stop_serial_after,
+                            )
+                        )
+                    simulated.append(
+                        SimulatedEdit(
+                            kind="private_terminal_suffix_anchor",
+                            source=anchor,
+                            old_target=shared_entry,
+                            new_target=clone_serials[0],
+                        )
+                    )
 
             case LegacyBlockOperation(
                 modification=CreateConditionalRedirect(

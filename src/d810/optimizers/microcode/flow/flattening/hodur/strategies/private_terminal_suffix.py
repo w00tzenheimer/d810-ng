@@ -333,15 +333,38 @@ class PrivateTerminalSuffixStrategy:
                         return_block,
                     )
 
+        # Fix: Convert any fallthrough ANCHOR to explicit goto.
+        # PTS redirect changes the anchor's successor, but fallthrough blocks
+        # derive their target from serial+1. Without explicit goto, the
+        # invariant checker fires CFG_50860_SUCC_MISMATCH.
         for anchor_serial in anchors:
-            mod = builder.private_terminal_suffix(
-                anchor_serial=anchor_serial,
-                shared_entry_serial=shared_entry,
-                return_block_serial=return_block,
-                suffix_serials=suffix_serials,
-            )
-            modifications.append(mod)
-            owned_blocks.add(anchor_serial)
+            anchor_blk = fg.get_block(anchor_serial)
+            if (
+                anchor_blk is not None
+                and anchor_blk.nsucc == 1
+                and anchor_blk.tail_opcode != ida_hexrays.m_goto
+            ):
+                modifications.append(
+                    builder.convert_to_goto(
+                        source_block=anchor_serial,
+                        target_block=shared_entry,
+                    )
+                )
+                logger.info(
+                    "[pts-strategy] converting anchor blk[%d] fallthrough to "
+                    "explicit goto -> blk[%d]",
+                    anchor_serial,
+                    shared_entry,
+                )
+
+        mod = builder.private_terminal_suffix_group(
+            anchors=tuple(anchors),
+            shared_entry_serial=shared_entry,
+            return_block_serial=return_block,
+            suffix_serials=suffix_serials,
+        )
+        modifications.append(mod)
+        owned_blocks.update(anchors)
 
         # Claim suffix blocks as owned
         owned_blocks.update(suffix_serials)
