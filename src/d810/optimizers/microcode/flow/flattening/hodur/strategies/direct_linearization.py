@@ -31,7 +31,11 @@ from d810.cfg.graph_modification import RedirectBranch
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
     ModificationBuilder,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.datamodel import HandlerPathResult
+from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
+    CarrierResolutionResult,
+    HandlerPathResult,
+    ResolutionMethod,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_DIRECT,
     BenefitMetrics,
@@ -518,7 +522,7 @@ def _resolve_indirect_state_write_via_mba(
     mba: object,
     candidate_serial: int,
     state_var_stkoff: int,
-) -> int | None:
+) -> CarrierResolutionResult | None:
     """Resolve indirect state variable writes using live MBA backward scan.
 
     For OLLVM patterns like ``v15 = 0x41FB8FBB; i = v15``, the snapshot sees
@@ -533,7 +537,8 @@ def _resolve_indirect_state_write_via_mba(
         state_var_stkoff: Stack offset of the state variable.
 
     Returns:
-        The resolved integer constant, or ``None`` if resolution fails.
+        A :class:`CarrierResolutionResult` with the resolved constant and
+        def location, or ``None`` if resolution fails.
     """
     try:
         from d810.recon.flow.def_search import find_def_in_block
@@ -564,12 +569,60 @@ def _resolve_indirect_state_write_via_mba(
                 if source_mop.t == ida_hexrays.mop_n:
                     nnn = source_mop.nnn
                     if nnn is not None:
-                        return int(nnn.value)
+                        return CarrierResolutionResult(
+                            kind=CarrierSourceKind.STATE_CONST.value,
+                            const_value=int(nnn.value),
+                            method=ResolutionMethod.MBA_DEF_SEARCH,
+                            def_blk_serial=None,
+                            def_insn_ea=None,
+                            source_mop_type=int(source_mop.t),
+                        )
                     break
                 # Source is register or stack var — resolve backward.
                 if source_mop.t not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
                     break
                 def_ins = find_def_in_block(source_mop, live_blk, cur_ins)
+                if def_ins is None:
+                    # Fallback: cross-block predecessor walk for two-step pattern
+                    # e.g. blk[194]: m_mov #0x41FB8FBB → %var_70
+                    #      blk[195]: m_mov %var_70     → %var_7BC (state)
+                    _pred_blk = live_blk
+                    for _depth in range(3):
+                        _npred = _pred_blk.npred()
+                        if _npred != 1:
+                            break
+                        _pred_serial = _pred_blk.pred(0)
+                        try:
+                            _pred_blk = mba.get_mblock(_pred_serial)
+                        except Exception:
+                            break
+                        if _pred_blk is None:
+                            break
+                        _scan = _pred_blk.tail
+                        while _scan is not None:
+                            if (
+                                _scan.opcode == ida_hexrays.m_mov
+                                and _scan.d is not None
+                                and _scan.d.t == source_mop.t
+                            ):
+                                _dest_matches = False
+                                if source_mop.t == ida_hexrays.mop_S:
+                                    try:
+                                        _dest_matches = _scan.d.s.off == source_mop.s.off
+                                    except Exception:
+                                        pass
+                                elif source_mop.t == ida_hexrays.mop_r:
+                                    try:
+                                        _dest_matches = _scan.d.r == source_mop.r
+                                    except Exception:
+                                        pass
+                                if _dest_matches and _scan.l is not None and _scan.l.t == ida_hexrays.mop_n:
+                                    def_ins = _scan
+                                    live_blk = _pred_blk
+                                    break
+                            _scan = _scan.prev
+                        if def_ins is not None:
+                            break
                 if def_ins is None:
                     break
                 # The defining instruction should be m_mov with mop_n source.
@@ -580,7 +633,29 @@ def _resolve_indirect_state_write_via_mba(
                 ):
                     nnn = def_ins.l.nnn
                     if nnn is not None:
-                        return int(nnn.value)
+                        # Capture source operand identity for diagnostics.
+                        src_stkoff: int | None = None
+                        src_mreg: int | None = None
+                        if source_mop.t == ida_hexrays.mop_S:
+                            try:
+                                src_stkoff = source_mop.s.off
+                            except Exception:
+                                pass
+                        elif source_mop.t == ida_hexrays.mop_r:
+                            try:
+                                src_mreg = int(source_mop.r)
+                            except Exception:
+                                pass
+                        return CarrierResolutionResult(
+                            kind=CarrierSourceKind.STATE_CONST.value,
+                            const_value=int(nnn.value),
+                            method=ResolutionMethod.MBA_DEF_SEARCH,
+                            def_blk_serial=live_blk.serial,
+                            def_insn_ea=def_ins.ea,
+                            source_mop_type=int(source_mop.t),
+                            source_stkoff=src_stkoff,
+                            source_mreg=src_mreg,
+                        )
                 break
         cur_ins = cur_ins.prev
     return None
@@ -590,7 +665,7 @@ def _resolve_state_const_via_valranges(
     mba: object,
     candidate_serial: int,
     state_var_stkoff: int,
-) -> int | None:
+) -> CarrierResolutionResult | None:
     """Resolve state variable constant via IDA value-range analysis.
 
     Uses ``collect_instruction_valrange_record_for_location`` to query the
@@ -603,8 +678,10 @@ def _resolve_state_const_via_valranges(
         state_var_stkoff: Stack offset of the state variable.
 
     Returns:
-        The resolved integer constant, or ``None`` if resolution fails or
-        the range is not a singleton.
+        A :class:`CarrierResolutionResult` with the resolved constant, or
+        ``None`` if resolution fails or the range is not a singleton.
+        Note: valranges does not track the def location, so
+        ``def_blk_serial`` and ``def_insn_ea`` will be ``None``.
     """
     try:
         from d810.evaluator.hexrays_microcode.valranges import (
@@ -678,9 +755,18 @@ def _resolve_state_const_via_valranges(
         # Single value — no commas, no ranges
         if "," not in inner and ".." not in inner:
             try:
-                return int(inner, 0)
+                val = int(inner, 0)
             except ValueError:
-                pass
+                return None
+            return CarrierResolutionResult(
+                kind=CarrierSourceKind.STATE_CONST.value,
+                const_value=val,
+                method=ResolutionMethod.VALRANGES,
+                # valranges doesn't track def location
+                def_blk_serial=None,
+                def_insn_ea=None,
+                source_mop_type=int(source_mop.t),
+            )
     return None
 
 
@@ -715,9 +801,39 @@ def _classify_carrier_source(
         the ``m_mov`` instruction), or ``None`` if no state write or the
         write is non-constant.
     """
+    result = _classify_carrier_source_rich(
+        fg, candidate_serial, state_var_stkoff, infra_blocks, mba=mba,
+    )
+    return CarrierSourceKind(result.kind), result.const_value
+
+
+def _classify_carrier_source_rich(
+    fg: FlowGraph,
+    candidate_serial: int,
+    state_var_stkoff: int,
+    infra_blocks: frozenset[int],
+    *,
+    mba: object | None = None,
+) -> CarrierResolutionResult:
+    """Rich variant of :func:`_classify_carrier_source`.
+
+    Returns the full :class:`CarrierResolutionResult` including def location
+    for temp-def NOP support.
+
+    Args:
+        fg: Flow graph snapshot.
+        candidate_serial: Block serial to classify.
+        state_var_stkoff: Stack offset of the state variable.
+        infra_blocks: Infrastructure block set (for context).
+        mba: Optional live ``ida_hexrays.mba_t`` for resolving indirect state
+            writes via backward def-search.
+
+    Returns:
+        A :class:`CarrierResolutionResult` with full resolution metadata.
+    """
     blk_snap = fg.get_block(candidate_serial)
     if blk_snap is None:
-        return CarrierSourceKind.UNKNOWN, None
+        return CarrierResolutionResult(kind=CarrierSourceKind.UNKNOWN.value)
 
     has_state_write = False
     has_const_write = False
@@ -727,6 +843,8 @@ def _classify_carrier_source(
     # Track whether the state write source was non-constant on the snapshot
     # (eligible for live MBA resolution).
     state_write_source_indirect = False
+    # Resolution result from MBA/valranges fallback (carries def location).
+    mba_resolution: CarrierResolutionResult | None = None
 
     for insn in blk_snap.iter_insns():
         if insn.opcode == ida_hexrays.m_mov and insn.d is not None:
@@ -756,14 +874,14 @@ def _classify_carrier_source(
     # Fallback: resolve indirect state writes via live MBA backward scan.
     if has_state_write and state_const_written is None and state_write_source_indirect and mba is not None:
         try:
-            resolved = _resolve_indirect_state_write_via_mba(
+            mba_resolution = _resolve_indirect_state_write_via_mba(
                 mba, candidate_serial, state_var_stkoff,
             )
-            if resolved is not None:
-                state_const_written = resolved
+            if mba_resolution is not None:
+                state_const_written = mba_resolution.const_value
                 logger.info(
                     "[carrier] blk[%d] resolved indirect state write via def-search: %#x",
-                    candidate_serial, resolved,
+                    candidate_serial, state_const_written,
                 )
         except Exception:
             pass
@@ -771,27 +889,49 @@ def _classify_carrier_source(
         # Secondary fallback: value-range analysis.
         if state_const_written is None:
             try:
-                resolved = _resolve_state_const_via_valranges(
+                vr_resolution = _resolve_state_const_via_valranges(
                     mba, candidate_serial, state_var_stkoff,
                 )
-                if resolved is not None:
-                    state_const_written = resolved
+                if vr_resolution is not None:
+                    state_const_written = vr_resolution.const_value
+                    mba_resolution = vr_resolution
                     logger.info(
                         "[carrier] blk[%d] resolved indirect state write via valranges: %#x",
-                        candidate_serial, resolved,
+                        candidate_serial, state_const_written,
                     )
             except Exception:
                 pass
 
+    # Determine the carrier kind.
     if has_state_write and not (has_const_write or has_ptr_write or has_expr_write):
-        return CarrierSourceKind.STATE_CONST, state_const_written
-    if has_const_write and not has_state_write:
-        return CarrierSourceKind.REAL_CONST, state_const_written
-    if has_ptr_write:
-        return CarrierSourceKind.CURSOR_OR_PTR, state_const_written
-    if has_expr_write:
-        return CarrierSourceKind.EXPR, state_const_written
-    return CarrierSourceKind.UNKNOWN, state_const_written
+        kind = CarrierSourceKind.STATE_CONST
+    elif has_const_write and not has_state_write:
+        kind = CarrierSourceKind.REAL_CONST
+    elif has_ptr_write:
+        kind = CarrierSourceKind.CURSOR_OR_PTR
+    elif has_expr_write:
+        kind = CarrierSourceKind.EXPR
+    else:
+        kind = CarrierSourceKind.UNKNOWN
+
+    # If we have a rich resolution result from MBA/valranges, propagate its
+    # def location; otherwise build a snapshot-only result.
+    if mba_resolution is not None:
+        return CarrierResolutionResult(
+            kind=kind.value,
+            const_value=state_const_written,
+            method=mba_resolution.method,
+            def_blk_serial=mba_resolution.def_blk_serial,
+            def_insn_ea=mba_resolution.def_insn_ea,
+            source_mop_type=mba_resolution.source_mop_type,
+            source_stkoff=mba_resolution.source_stkoff,
+            source_mreg=mba_resolution.source_mreg,
+        )
+    return CarrierResolutionResult(
+        kind=kind.value,
+        const_value=state_const_written,
+        method=ResolutionMethod.SNAPSHOT,
+    )
 
 
 def _compute_linear_suffix_chain(
@@ -852,151 +992,6 @@ def _mop_matches_stkoff_snapshot(mop_snap: object | None, stkoff: int) -> bool:
     if mop_snap is None:
         return False
     return getattr(mop_snap, "stkoff", None) == stkoff
-
-
-def _find_two_step_temp_def(
-    fg: "FlowGraph",
-    write_blk_serial: int,
-    write_ea: int,
-    ordered_path: list[int],
-) -> tuple[int, int, int] | None:
-    """Detect and return the temp-variable definition for a two-step state write.
-
-    OLLVM two-step pattern::
-
-        blk[A]: m_mov  #CONST       -> temp_var   (temp definition)
-        blk[B]: m_mov  temp_var     -> state_var  (state write, being NOPed)
-
-    After NOPing the state write (step 2), the temp definition (step 1)
-    survives and IDA propagates the constant into the return value.
-
-    This function inspects the state write instruction in the snapshot to
-    determine if its source operand is a stack variable (``mop_S``).  If so,
-    it scans backward through the handler's ``ordered_path`` to find a
-    ``m_mov #const -> temp`` where the destination matches the source stkoff.
-    It also verifies single-use: the temp must not appear as a source in any
-    other instruction across the handler's path blocks (excluding the state
-    write itself).
-
-    Args:
-        fg: Flow graph snapshot.
-        write_blk_serial: Block serial containing the state write.
-        write_ea: Instruction EA of the state write.
-        ordered_path: Ordered block serials visited during handler DFS.
-
-    Returns:
-        ``(def_blk_serial, def_insn_ea, const_value)`` if a single-use
-        constant temp definition is found, else ``None``.
-    """
-    if fg is None:
-        return None
-
-    # 1. Find the state write instruction in the snapshot.
-    write_blk_snap = fg.get_block(write_blk_serial)
-    if write_blk_snap is None:
-        return None
-
-    state_write_insn = None
-    for insn in write_blk_snap.iter_insns():
-        if insn.ea == write_ea:
-            state_write_insn = insn
-            break
-    if state_write_insn is None:
-        return None
-
-    # 2. Check if state write is m_mov with mop_S source (temp var).
-    if state_write_insn.opcode != ida_hexrays.m_mov:
-        return None
-    src_mop = state_write_insn.l
-    if src_mop is None:
-        return None
-    src_t = getattr(src_mop, "t", None)
-    if src_t != ida_hexrays.mop_S:
-        return None
-    temp_stkoff = getattr(src_mop, "stkoff", None)
-    if temp_stkoff is None:
-        return None
-
-    # 3. Scan backward through ordered_path to find temp definition.
-    #    The definition must be: m_mov #const -> mop_S(temp_stkoff)
-    # Build the path index of write_blk to only search at or before it.
-    try:
-        write_idx = ordered_path.index(write_blk_serial)
-    except ValueError:
-        # write_blk not in ordered_path; search all blocks
-        write_idx = len(ordered_path) - 1
-
-    def_blk_serial: int | None = None
-    def_insn_ea: int | None = None
-    def_const_value: int | None = None
-
-    # Search blocks in reverse order up to and including write_blk
-    for path_idx in range(write_idx, -1, -1):
-        blk_serial = ordered_path[path_idx]
-        blk_snap = fg.get_block(blk_serial)
-        if blk_snap is None:
-            continue
-        # Search instructions in reverse within the block
-        for insn in reversed(blk_snap.insn_snapshots):
-            if insn.opcode != ida_hexrays.m_mov:
-                continue
-            dest_mop = insn.d
-            if dest_mop is None:
-                continue
-            dest_t = getattr(dest_mop, "t", None)
-            if dest_t != ida_hexrays.mop_S:
-                continue
-            if getattr(dest_mop, "stkoff", None) != temp_stkoff:
-                continue
-            # Found a write to the temp var — check if source is constant.
-            def_src = insn.l
-            if def_src is None:
-                return None  # non-constant def, bail
-            const_val = _extract_const_from_snapshot_mop(def_src)
-            if const_val is None:
-                return None  # source is not a constant, bail
-            def_blk_serial = blk_serial
-            def_insn_ea = insn.ea
-            def_const_value = const_val
-            break  # found the closest definition
-        if def_blk_serial is not None:
-            break
-
-    if def_blk_serial is None:
-        return None
-
-    # 4. Single-use check: temp must only be used by the state write.
-    #    Scan all blocks in ordered_path for any instruction that reads
-    #    from mop_S(temp_stkoff) as source (l or r operand).
-    use_count = 0
-    for blk_serial in ordered_path:
-        blk_snap = fg.get_block(blk_serial)
-        if blk_snap is None:
-            continue
-        for insn in blk_snap.iter_insns():
-            # Check l operand
-            l_mop = insn.l
-            if l_mop is not None:
-                if (
-                    getattr(l_mop, "t", None) == ida_hexrays.mop_S
-                    and getattr(l_mop, "stkoff", None) == temp_stkoff
-                ):
-                    use_count += 1
-            # Check r operand
-            r_mop = insn.r
-            if r_mop is not None:
-                if (
-                    getattr(r_mop, "t", None) == ida_hexrays.mop_S
-                    and getattr(r_mop, "stkoff", None) == temp_stkoff
-                ):
-                    use_count += 1
-            if use_count > 1:
-                return None  # temp used more than once, not safe to NOP
-
-    if use_count != 1:
-        return None  # temp not used exactly once (the state write)
-
-    return (def_blk_serial, def_insn_ea, def_const_value)
 
 
 class DirectHandlerLinearizationStrategy:
@@ -1293,29 +1288,46 @@ class DirectHandlerLinearizationStrategy:
         # Track already-NOPed two-step temp defs to avoid duplicate NOPs.
         _two_step_nopped: set[tuple[int, int]] = set()
 
-        def _nop_two_step_temp(
+        def _nop_temp_def_if_resolved(
             write_blk: int,
             write_ea: int,
-            ordered_path: list[int],
             handler_serial: int,
-        ) -> None:
-            """NOP the temp-variable definition for a two-step OLLVM state write.
+        ) -> bool:
+            """NOP the temp-variable definition using live MBA backward resolution.
 
-            Must be called immediately after ``_append_nop`` for each state write.
+            Calls :func:`_resolve_indirect_state_write_via_mba` on the state
+            write block to get a :class:`CarrierResolutionResult` with the temp
+            def location, then queues a NOP if found.
+
+            Args:
+                write_blk: Block serial containing the state write.
+                write_ea: Instruction EA of the state write.
+                handler_serial: Handler entry serial (for diagnostics).
+
+            Returns:
+                True if a temp def NOP was queued.
             """
-            result = _find_two_step_temp_def(fg, write_blk, write_ea, ordered_path)
-            if result is None:
-                return
-            def_blk, def_ea, const_val = result
-            key = (def_blk, def_ea)
-            if key in _two_step_nopped:
-                return
-            _two_step_nopped.add(key)
-            _append_nop(source_block=def_blk, instruction_ea=def_ea)
-            logger.info(
-                "TWO_STEP_NOP: handler=blk[%d] temp_def=blk[%d]@0x%X const=0x%X",
-                handler_serial, def_blk, def_ea, const_val,
+            if mba is None:
+                return False
+            result = _resolve_indirect_state_write_via_mba(
+                mba, write_blk, state_var_stkoff,
             )
+            if result is None:
+                return False
+            if result.def_blk_serial is None or result.def_insn_ea is None:
+                return False
+            key = (result.def_blk_serial, result.def_insn_ea)
+            if key in _two_step_nopped:
+                return False
+            _two_step_nopped.add(key)
+            _append_nop(source_block=result.def_blk_serial, instruction_ea=result.def_insn_ea)
+            logger.info(
+                "TWO_STEP_NOP: handler=blk[%d] temp_def=blk[%d]@0x%X const=0x%X method=%s",
+                handler_serial, result.def_blk_serial, result.def_insn_ea,
+                result.const_value if result.const_value is not None else 0,
+                result.method.value,
+            )
+            return True
 
         def _emit_redirect(meta: dict, path: object, incoming_state: int, category: str, handler_serial: int) -> bool:
             """Convert redirect metadata into graph modifications."""
@@ -1502,6 +1514,11 @@ class DirectHandlerLinearizationStrategy:
                             source_block=ct.state_write_block,
                             instruction_ea=ct.state_write_ea,
                         )
+                    # 4b. Always try to NOP the two-step temp def — it's in a
+                    # different (predecessor) block, independent of the npred guard.
+                    _nop_temp_def_if_resolved(
+                        ct.state_write_block, ct.state_write_ea, ct.handler_entry,
+                    )
 
                     logger.info(
                         "CONDITIONAL_TRANSITION_REDIRECT: handler=blk[%d] "
@@ -1592,7 +1609,7 @@ class DirectHandlerLinearizationStrategy:
                                         instruction_ea=write_ea,
 
                                     )
-                                    _nop_two_step_temp(write_blk, write_ea, path.ordered_path, handler_serial)
+                                    _nop_temp_def_if_resolved(write_blk, write_ea, handler_serial)
                                 logger.info(
                                     "Handler blk[%d] (state=0x%x): terminal exit blk[%d] -> exit blk[%d]",
                                     handler_serial,
@@ -1667,7 +1684,7 @@ class DirectHandlerLinearizationStrategy:
                                         instruction_ea=write_ea,
 
                                     )
-                                    _nop_two_step_temp(write_blk, write_ea, path.ordered_path, handler_serial)
+                                    _nop_temp_def_if_resolved(write_blk, write_ea, handler_serial)
                                 # NOP dead state_var writes in the resolved exit target block.
                                 # K3: INSN_CHAIN — migrated to snapshot iter_insns
                                 _exit_tgt_snap = fg.get_block(exit_target)
@@ -1697,7 +1714,14 @@ class DirectHandlerLinearizationStrategy:
                                 resolved_count += 1
                                 owned_transitions.add((incoming_state, path.final_state))
                         elif meta is not None and meta["kind"] in ("already_claimed", "already_claimed_edge"):
-                            pass  # already counted
+                            # Redirect already queued, but still NOP state writes
+                            # (including two-step temp defs) to avoid constant leaks.
+                            for write_blk, write_ea in path.state_writes:
+                                _append_nop(
+                                    source_block=write_blk,
+                                    instruction_ea=write_ea,
+                                )
+                                _nop_temp_def_if_resolved(write_blk, write_ea, handler_serial)
                         else:
                             pass  # conflict, skip
                         continue
@@ -1754,7 +1778,7 @@ class DirectHandlerLinearizationStrategy:
                                 instruction_ea=write_ea,
 
                             )
-                            _nop_two_step_temp(write_blk, write_ea, path.ordered_path, handler_serial)
+                            _nop_temp_def_if_resolved(write_blk, write_ea, handler_serial)
                         resolved_count += 1
                         owned_transitions.add((incoming_state, path.final_state))
 
@@ -1849,7 +1873,7 @@ class DirectHandlerLinearizationStrategy:
                                 instruction_ea=state_write_ea,
 
                             )
-                            _nop_two_step_temp(serial, state_write_ea, _synthetic_path.ordered_path, serial)
+                            _nop_temp_def_if_resolved(serial, state_write_ea, serial)
                         # K3: INSN_CHAIN — migrated to snapshot iter_insns
                         _tgt_snap = fg.get_block(target)
                         if _tgt_snap is not None and target not in bst_node_blocks:
@@ -1956,7 +1980,7 @@ class DirectHandlerLinearizationStrategy:
                                         instruction_ea=write_ea,
 
                                     )
-                                    _nop_two_step_temp(write_blk, write_ea, path.ordered_path, rootwalk_blk)
+                                    _nop_temp_def_if_resolved(write_blk, write_ea, rootwalk_blk)
                                 logger.info(
                                     "hodur-linear: hidden blk[%d] terminal exit blk[%d] -> exit blk[%d]",
                                     rootwalk_blk,
@@ -2050,7 +2074,7 @@ class DirectHandlerLinearizationStrategy:
                                 instruction_ea=write_ea,
 
                             )
-                            _nop_two_step_temp(write_blk, write_ea, path.ordered_path, rootwalk_blk)
+                            _nop_temp_def_if_resolved(write_blk, write_ea, rootwalk_blk)
                         resolved_count += 1
 
         # ---- Pre-header redirect ----
