@@ -28,6 +28,13 @@ from d810.core.typing import NamedTuple, Optional
 
 logger = getLogger(__name__)
 
+try:
+    import ida_hexrays
+
+    IDA_AVAILABLE = True
+except ImportError:
+    IDA_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # Lazy IDA import helper
@@ -44,6 +51,45 @@ def _get_ida():  # type: ignore[return]
 # ---------------------------------------------------------------------------
 # Core types
 # ---------------------------------------------------------------------------
+
+
+class CarrierValueKind(str, enum.Enum):
+    """Classification of the source operand that defines the return carrier."""
+
+    CONST = "const"
+    """Source operand is ``mop_n`` (literal constant)."""
+
+    STACK_SLOT = "stack_slot"
+    """Source operand is ``mop_S`` (stack variable)."""
+
+    REGISTER = "register"
+    """Source operand is ``mop_r`` (register)."""
+
+    EXPRESSION = "expression"
+    """Source is complex (``mop_d``, ``mop_a``, etc.)."""
+
+    UNKNOWN = "unknown"
+    """Could not classify."""
+
+
+@dataclass(frozen=True)
+class CarrierValueClassification:
+    """Classification result for the return-carrier's source operand.
+
+    Attributes:
+        kind: The category of the source operand.
+        const_value: Literal constant value if *kind* is ``CONST``.
+        source_stkoff: Stack offset if *kind* is ``STACK_SLOT``.
+        source_mreg: Micro-register number if *kind* is ``REGISTER``.
+        materializer_serials: Block serials that contain the definition
+            (relevant for ``EXPRESSION``, ``STACK_SLOT``, ``REGISTER``).
+    """
+
+    kind: CarrierValueKind
+    const_value: int | None = None
+    source_stkoff: int | None = None
+    source_mreg: int | None = None
+    materializer_serials: tuple[int, ...] = ()
 
 
 class ProofLayer(str, enum.Enum):
@@ -103,6 +149,11 @@ class TerminalReturnValueProof:
     topology_kind: str
     proof_layer_used: ProofLayer
     notes: str = ""
+    value_kind: CarrierValueKind = CarrierValueKind.UNKNOWN
+    const_value: int | None = None
+    source_stkoff: int | None = None
+    source_mreg: int | None = None
+    materializer_serials: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -370,6 +421,131 @@ def _reaching_def_proof(
 
 
 # ---------------------------------------------------------------------------
+# Value classification
+# ---------------------------------------------------------------------------
+
+
+def classify_carrier_value(
+    mba: object,
+    proof: TerminalReturnValueProof,
+) -> CarrierValueClassification:
+    """Classify the source operand of the defining instruction for the carrier.
+
+    Inspects the first :class:`DefSiteLike` in *proof* to determine what kind
+    of value flows into the return carrier (constant, stack slot, register, or
+    complex expression).
+
+    Args:
+        mba: An ``ida_hexrays.mba_t`` instance.
+        proof: A proof with at least one resolved def site.
+
+    Returns:
+        A :class:`CarrierValueClassification` describing the source operand.
+    """
+    unknown = CarrierValueClassification(kind=CarrierValueKind.UNKNOWN)
+
+    if not IDA_AVAILABLE:
+        return unknown
+
+    if not proof.def_sites or proof.ambiguous:
+        return unknown
+
+    def_site = proof.def_sites[0]
+
+    # Find the block containing the definition.
+    try:
+        blk = mba.get_mblock(def_site.block_serial)  # type: ignore[attr-defined]
+    except (AttributeError, IndexError):
+        return unknown
+
+    # Iterate instructions to find the one at ins_ea.
+    ins = blk.head  # type: ignore[attr-defined]
+    target_ins = None
+    while ins:
+        if getattr(ins, "ea", None) == def_site.ins_ea:
+            target_ins = ins
+            break
+        ins = getattr(ins, "next", None)
+
+    if target_ins is None:
+        return unknown
+
+    # For m_mov, the source is ins.l; for other opcodes the source operand
+    # may differ, but we inspect ins.l as the most common case.
+    src = getattr(target_ins, "l", None)
+    if src is None:
+        return unknown
+
+    src_type = getattr(src, "t", None)
+    if src_type is None:
+        return unknown
+
+    if src_type == ida_hexrays.mop_n:
+        nnn = getattr(src, "nnn", None)
+        val = getattr(nnn, "value", None) if nnn is not None else None
+        return CarrierValueClassification(
+            kind=CarrierValueKind.CONST,
+            const_value=val,
+        )
+
+    if src_type == ida_hexrays.mop_S:
+        stkvar = getattr(src, "s", None)
+        off = getattr(stkvar, "off", None) if stkvar is not None else None
+        return CarrierValueClassification(
+            kind=CarrierValueKind.STACK_SLOT,
+            source_stkoff=off,
+            materializer_serials=(def_site.block_serial,),
+        )
+
+    if src_type == ida_hexrays.mop_r:
+        reg = getattr(src, "r", None)
+        return CarrierValueClassification(
+            kind=CarrierValueKind.REGISTER,
+            source_mreg=reg,
+            materializer_serials=(def_site.block_serial,),
+        )
+
+    # Anything else (mop_d, mop_a, mop_b, etc.) is an expression.
+    return CarrierValueClassification(
+        kind=CarrierValueKind.EXPRESSION,
+        materializer_serials=(def_site.block_serial,),
+    )
+
+
+def _enrich_proof_with_classification(
+    mba: object,
+    proof: TerminalReturnValueProof,
+) -> TerminalReturnValueProof:
+    """Merge carrier value classification into an existing proof.
+
+    If the proof is UNRESOLVED or has no def sites, returns it unchanged.
+
+    Args:
+        mba: An ``ida_hexrays.mba_t`` instance.
+        proof: The proof to enrich.
+
+    Returns:
+        A new :class:`TerminalReturnValueProof` with value classification fields set.
+    """
+    if proof.proof_layer_used == ProofLayer.UNRESOLVED or not proof.def_sites:
+        return proof
+
+    cls = classify_carrier_value(mba, proof)
+
+    # Reconstruct with classification fields via dataclass replace.
+    from dataclasses import replace
+
+    return replace(
+        proof,
+        value_kind=cls.kind,
+        const_value=cls.const_value,
+        source_stkoff=cls.source_stkoff,
+        source_mreg=cls.source_mreg,
+        materializer_serials=cls.materializer_serials,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
@@ -407,6 +583,7 @@ def prove_terminal_returns(
             mba, site, carrier_mreg=carrier_mreg, carrier_size=carrier_size,
             carrier_kind=carrier_kind,
         )
+        proof = _enrich_proof_with_classification(mba, proof)
         proofs.append(proof)
 
     report = TerminalReturnProofReport(
@@ -549,9 +726,12 @@ def _prove_single_site(
 
 
 __all__ = [
+    "CarrierValueClassification",
+    "CarrierValueKind",
     "DefSiteLike",
     "ProofLayer",
     "TerminalReturnProofReport",
     "TerminalReturnValueProof",
+    "classify_carrier_value",
     "prove_terminal_returns",
 ]

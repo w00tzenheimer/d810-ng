@@ -355,6 +355,7 @@ class ModificationType(Enum):
     EDGE_REMOVE = auto()  # Remove a single edge (2-way→1-way or 1-way→0-way)
     PRIVATE_TERMINAL_SUFFIX = auto()  # Clone shared suffix chain per anchor
     PRIVATE_TERMINAL_SUFFIX_GROUP = auto()  # Clone shared suffix chain for multiple anchors atomically
+    DIRECT_TERMINAL_LOWERING_GROUP = auto()  # Direct terminal lowering for multiple anchors
 
 
 class TargetRefKind(Enum):
@@ -413,6 +414,8 @@ class GraphModification:
     anchors: tuple[int, ...] | None = None
     # For PRIVATE_TERMINAL_SUFFIX_GROUP: per-anchor expected clone serials (parallel to anchors)
     per_anchor_clone_expected_serials: tuple[tuple[int, ...], ...] | None = None
+    # For DIRECT_TERMINAL_LOWERING_GROUP: per-site lowering specifications
+    sites: tuple | None = None
 
 
 def _prepare_block_creation_instructions(
@@ -1113,6 +1116,42 @@ class DeferredGraphModifier:
             shared_entry_serial,
             return_block_serial,
             suffix_serials,
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_direct_terminal_lowering_group(
+        self,
+        *,
+        shared_entry_serial: int,
+        return_block_serial: int,
+        suffix_serials: tuple[int, ...],
+        sites: tuple,
+        description: str = "",
+    ) -> None:
+        """Queue grouped direct terminal lowering for multiple anchors.
+
+        Each site specifies a lowering kind (CLONE_MATERIALIZER, RETURN_CONST, etc.)
+        and the backend creates per-anchor private return materializers.
+        """
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.DIRECT_TERMINAL_LOWERING_GROUP,
+            block_serial=sites[0].anchor_serial if sites else 0,
+            new_target=shared_entry_serial,
+            priority=12,
+            suffix_serials=suffix_serials,
+            sites=sites,
+            description=description or (
+                f"direct terminal lowering group "
+                f"shared_entry={shared_entry_serial} return={return_block_serial} "
+                f"sites={len(sites)}"
+            ),
+        ))
+        logger.debug(
+            "Queued direct_terminal_lowering_group: shared_entry=%d return=%d sites=%d",
+            shared_entry_serial,
+            return_block_serial,
+            len(sites),
         )
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
@@ -2483,6 +2522,9 @@ class DeferredGraphModifier:
                 per_anchor_clone_expected_serials=mod.per_anchor_clone_expected_serials or (),
             )
 
+        elif mod.mod_type == ModificationType.DIRECT_TERMINAL_LOWERING_GROUP:
+            return self._apply_direct_terminal_lowering_group(mba, mod)
+
         else:
             logger.warning("Unknown modification type: %s", mod.mod_type)
             return False
@@ -3599,6 +3641,286 @@ class DeferredGraphModifier:
             logger.error(
                 "Exception in private_terminal_suffix_group for anchors=%s suffix=%s: %s",
                 anchors,
+                suffix_serials,
+                exc,
+            )
+            import traceback
+            logger.error("Traceback: %s", traceback.format_exc())
+            return False
+
+    def _apply_direct_terminal_lowering_group(self, mba, mod) -> bool:
+        """Apply grouped direct terminal lowering.
+
+        Per-site lowering kinds:
+        - RETURN_CONST: (v1: falls back to CLONE_MATERIALIZER)
+        - CLONE_MATERIALIZER: clone materializer block(s) + wire to BLT_STOP
+        - RETURN_FROM_SLOT/REG: (v2, falls back to CLONE_MATERIALIZER)
+
+        Phases mirror PTS group backend:
+        1. Validate anchors
+        2. Validate suffix topology
+        3. (skipped — DTL sites wire directly to BLT_STOP)
+        4. Create private blocks per site
+        5. Redirect anchors
+        6. (skipped — no STOP relocation needed)
+        """
+        from d810.cfg.graph_modification import (
+            DirectTerminalLoweringKind,
+            DirectTerminalLoweringSite,
+        )
+
+        if mba is None:
+            return False
+
+        sites: tuple[DirectTerminalLoweringSite, ...] = mod.sites or ()
+        suffix_serials: tuple[int, ...] = mod.suffix_serials or ()
+        shared_entry_serial: int = mod.new_target
+
+        if not sites:
+            logger.warning("direct_terminal_lowering_group: empty sites")
+            return False
+
+        if not suffix_serials:
+            logger.warning("direct_terminal_lowering_group: empty suffix_serials")
+            return False
+
+        # ---- Phase 1: Validate ALL anchors (fail-closed) ----
+        anchor_blks: list = []
+        for site in sites:
+            anchor_blk = mba.get_mblock(site.anchor_serial)
+            if anchor_blk is None:
+                logger.warning(
+                    "direct_terminal_lowering_group: anchor blk[%d] not found",
+                    site.anchor_serial,
+                )
+                return False
+            if anchor_blk.nsucc() != 1:
+                logger.warning(
+                    "direct_terminal_lowering_group: anchor blk[%d] is not 1-way (nsucc=%d)",
+                    site.anchor_serial,
+                    anchor_blk.nsucc(),
+                )
+                return False
+            current_succ = anchor_blk.succ(0)
+            if current_succ != shared_entry_serial:
+                logger.warning(
+                    "direct_terminal_lowering_group: anchor blk[%d] targets blk[%d], "
+                    "expected shared_entry blk[%d]",
+                    site.anchor_serial,
+                    current_succ,
+                    shared_entry_serial,
+                )
+                return False
+            anchor_blks.append(anchor_blk)
+
+        # ---- Phase 2: Validate suffix topology ----
+        for idx, suffix_serial in enumerate(suffix_serials):
+            suffix_blk = mba.get_mblock(suffix_serial)
+            if suffix_blk is None:
+                logger.warning(
+                    "direct_terminal_lowering_group: suffix blk[%d] not found",
+                    suffix_serial,
+                )
+                return False
+            if idx < len(suffix_serials) - 1:
+                if suffix_blk.nsucc() != 1:
+                    logger.warning(
+                        "direct_terminal_lowering_group: interior suffix blk[%d] "
+                        "is not 1-way (nsucc=%d)",
+                        suffix_serial,
+                        suffix_blk.nsucc(),
+                    )
+                    return False
+            else:
+                # Last suffix block is BLT_STOP (0-way)
+                if suffix_blk.nsucc() != 0:
+                    logger.warning(
+                        "direct_terminal_lowering_group: final suffix blk[%d] "
+                        "is not 0-way (nsucc=%d)",
+                        suffix_serial,
+                        suffix_blk.nsucc(),
+                    )
+                    return False
+
+        try:
+            # Determine which blocks to clone per site.
+            # Interior suffix = everything except BLT_STOP (last serial).
+            interior_suffix_serials = suffix_serials[:-1]
+
+            # Snapshot template blocks ONCE before cloning to avoid serial drift.
+            suffix_templates: list = []
+            for suffix_serial in interior_suffix_serials:
+                tmpl = mba.get_mblock(suffix_serial)
+                if tmpl is None:
+                    logger.warning(
+                        "direct_terminal_lowering_group: suffix blk[%d] not found for template snapshot",
+                        suffix_serial,
+                    )
+                    return False
+                suffix_templates.append(tmpl)
+
+            logger.debug(
+                "DTL_DIAG pre_Phase4: %d sites, interior_suffix=%s, mba.qty=%d",
+                len(sites),
+                interior_suffix_serials,
+                mba.qty,
+            )
+
+            # ---- Phase 4: Create private blocks per site ----
+            per_site_first_clone: list[int] = []
+
+            for site_idx, site in enumerate(sites):
+                # Determine materializer serials for this site.
+                # For CLONE_MATERIALIZER: use site.materializer_serials
+                # For RETURN_CONST (v1 fallback): use interior suffix serials
+                # For RETURN_FROM_SLOT/REG (v2 fallback): use interior suffix serials
+                if (
+                    site.kind == DirectTerminalLoweringKind.CLONE_MATERIALIZER
+                    and site.materializer_serials
+                ):
+                    clone_source_serials = site.materializer_serials
+                    # Snapshot materializer templates for this site
+                    site_templates: list = []
+                    for ms in clone_source_serials:
+                        t = mba.get_mblock(ms)
+                        if t is None:
+                            logger.warning(
+                                "direct_terminal_lowering_group: materializer blk[%d] not found "
+                                "for site anchor=%d",
+                                ms,
+                                site.anchor_serial,
+                            )
+                            return False
+                        site_templates.append(t)
+                else:
+                    # Fallback: clone the full interior suffix chain
+                    clone_source_serials = interior_suffix_serials
+                    site_templates = list(suffix_templates)
+
+                cloned_serials: list[int] = []
+                for idx, source_serial in enumerate(clone_source_serials):
+                    template_blk = site_templates[idx]
+
+                    # Clone instructions (skip trailing goto — will be re-inserted)
+                    instructions_to_copy = []
+                    cur_ins = template_blk.head
+                    while cur_ins is not None:
+                        if (
+                            template_blk.nsucc() == 1
+                            and template_blk.tail is not None
+                            and template_blk.tail.opcode == ida_hexrays.m_goto
+                            and cur_ins.next is None
+                        ):
+                            break
+                        cloned_ins = ida_hexrays.minsn_t(cur_ins)
+                        cloned_ins.setaddr(mba.entry_ea)
+                        instructions_to_copy.append(cloned_ins)
+                        cur_ins = cur_ins.next
+
+                    cloned_blk = create_standalone_block(
+                        template_blk,
+                        instructions_to_copy,
+                        target_serial=shared_entry_serial,
+                        is_0_way=False,
+                        verify=False,
+                    )
+                    logger.debug(
+                        "DTL_DIAG Phase4: site[%d] anchor=%d, source[%d]=%d, "
+                        "clone_serial=%d, mba.qty=%d",
+                        site_idx,
+                        site.anchor_serial,
+                        idx,
+                        source_serial,
+                        cloned_blk.serial,
+                        mba.qty,
+                    )
+                    cloned_serials.append(cloned_blk.serial)
+
+                    # Clean inherited predecessors
+                    prev_pred_serials = [x for x in cloned_blk.predset]
+                    for prev_serial in prev_pred_serials:
+                        cloned_blk.predset._del(prev_serial)
+
+                # Wire the cloned chain together
+                for idx in range(len(cloned_serials) - 1):
+                    clone_blk = mba.get_mblock(cloned_serials[idx])
+                    next_clone_serial = cloned_serials[idx + 1]
+                    if clone_blk is None:
+                        return False
+                    wire_ok = change_1way_block_successor(
+                        clone_blk,
+                        next_clone_serial,
+                        verify=False,
+                    )
+                    if not wire_ok:
+                        logger.warning(
+                            "direct_terminal_lowering_group: failed to wire "
+                            "clone blk[%d] -> blk[%d] for site anchor=%d",
+                            cloned_serials[idx],
+                            next_clone_serial,
+                            site.anchor_serial,
+                        )
+                        return False
+
+                # Wire last clone to real BLT_STOP
+                last_clone_serial = cloned_serials[-1]
+                last_clone_blk = mba.get_mblock(last_clone_serial)
+                stop_serial = mba.qty - 1
+                wire_ok = change_1way_block_successor(
+                    last_clone_blk,
+                    stop_serial,
+                    verify=False,
+                )
+                logger.debug(
+                    "DTL_DIAG Phase4_wire_to_stop: site[%d] anchor=%d, "
+                    "clone[%d]=%d -> BLT_STOP=%d, ok=%s",
+                    site_idx,
+                    site.anchor_serial,
+                    len(cloned_serials) - 1,
+                    last_clone_serial,
+                    stop_serial,
+                    wire_ok,
+                )
+                if not wire_ok:
+                    return False
+
+                per_site_first_clone.append(cloned_serials[0])
+
+            # ---- Phase 5: Redirect ALL anchors to their first clones ----
+            for site_idx, anchor_blk in enumerate(anchor_blks):
+                redirect_ok = change_1way_block_successor(
+                    anchor_blk,
+                    per_site_first_clone[site_idx],
+                    verify=False,
+                )
+                logger.debug(
+                    "DTL_DIAG Phase5: anchor[%d]=%d -> first_clone=%d, ok=%s",
+                    site_idx,
+                    anchor_blk.serial,
+                    per_site_first_clone[site_idx],
+                    redirect_ok,
+                )
+                if not redirect_ok:
+                    logger.warning(
+                        "direct_terminal_lowering_group: failed to redirect "
+                        "anchor blk[%d] -> clone blk[%d]",
+                        anchor_blk.serial,
+                        per_site_first_clone[site_idx],
+                    )
+                    return False
+
+            logger.info(
+                "DTL group applied: %d sites, shared_entry=%d, stop=%d",
+                len(sites),
+                shared_entry_serial,
+                mba.qty - 1,
+            )
+            return True
+
+        except Exception as exc:
+            logger.error(
+                "Exception in direct_terminal_lowering_group for sites=%s suffix=%s: %s",
+                [s.anchor_serial for s in sites],
                 suffix_serials,
                 exc,
             )

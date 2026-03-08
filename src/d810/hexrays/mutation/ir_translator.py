@@ -37,6 +37,7 @@ from d810.cfg.plan import (
     PatchPlan,
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
+    PatchDirectTerminalLoweringGroup,
     PatchRedirectBranch,
     PatchRedirectGoto,
     PatchRemoveEdge,
@@ -364,6 +365,8 @@ class IDAIRTranslator:
                     continue
                 case PatchPrivateTerminalSuffixGroup():
                     continue
+                case PatchDirectTerminalLoweringGroup():
+                    continue
                 case PatchInsertBlock() as insert_step:
                     reason = _unsupported_insert_block_reason(insert_step)
                     if reason is not None:
@@ -552,6 +555,19 @@ class IDAIRTranslator:
                     return_block_serial=return_block,
                     suffix_serials=suffix_serials,
                     per_anchor_clone_expected_serials=per_anchor_serials,
+                )
+
+            case PatchDirectTerminalLoweringGroup(
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix_serials,
+                sites=sites,
+            ):
+                modifier.queue_direct_terminal_lowering_group(
+                    shared_entry_serial=shared_entry,
+                    return_block_serial=return_block,
+                    suffix_serials=suffix_serials,
+                    sites=sites,
                 )
 
             case LegacyBlockOperation(modification=mod):

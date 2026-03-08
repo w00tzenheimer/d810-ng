@@ -29,6 +29,7 @@ from d810.cfg.graph_modification import (
     NopInstructions,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
+    DirectTerminalLoweringSite,
     RedirectBranch,
     RedirectGoto,
     RemoveEdge,
@@ -284,6 +285,17 @@ class PatchPrivateTerminalSuffixGroup:
         )
 
 
+@dataclass(frozen=True)
+class PatchDirectTerminalLoweringGroup:
+    """Grouped direct terminal lowering for multiple anchors sharing the same suffix."""
+
+    shared_entry_serial: int
+    return_block_serial: int
+    suffix_serials: tuple[int, ...]
+    sites: tuple[DirectTerminalLoweringSite, ...]
+    per_site_clone_assigned_serials: dict[int, tuple[VirtualBlockId, ...]]
+
+
 BlockCreatingGraphModification = Union[
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
@@ -323,6 +335,7 @@ PatchOperation = Union[
     PatchDuplicateBlock,
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
+    PatchDirectTerminalLoweringGroup,
 ]
 
 PatchStep = Union[PatchOperation, LegacyBlockOperation]
@@ -1263,6 +1276,7 @@ __all__ = [
     "PatchDuplicateBlock",
     "PatchPrivateTerminalSuffix",
     "PatchPrivateTerminalSuffixGroup",
+    "PatchDirectTerminalLoweringGroup",
     "LegacyBlockOperation",
     "PatchOperation",
     "PatchStep",

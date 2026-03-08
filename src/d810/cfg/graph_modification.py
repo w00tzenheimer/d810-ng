@@ -37,6 +37,7 @@ Design Notes
 """
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass
 from d810.core.typing import Union
 
@@ -286,6 +287,35 @@ class PrivateTerminalSuffixGroup:
     reason: str = "terminal_return_shared_epilogue"
 
 
+class DirectTerminalLoweringKind(str, enum.Enum):
+    """Kind of direct terminal lowering to apply per anchor."""
+    RETURN_CONST = "return_const"
+    RETURN_FROM_SLOT = "return_from_slot"
+    RETURN_FROM_REG = "return_from_reg"
+    CLONE_MATERIALIZER = "clone_materializer"
+
+
+@dataclass(frozen=True)
+class DirectTerminalLoweringSite:
+    """Per-anchor lowering specification."""
+    anchor_serial: int
+    kind: DirectTerminalLoweringKind
+    const_value: int | None = None
+    source_stkoff: int | None = None
+    source_mreg: int | None = None
+    materializer_serials: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class DirectTerminalLoweringGroup:
+    """Grouped direct terminal lowering for multiple anchors sharing the same suffix."""
+    shared_entry_serial: int
+    return_block_serial: int
+    suffix_serials: tuple[int, ...]
+    sites: tuple[DirectTerminalLoweringSite, ...]
+    reason: str = "terminal_return_direct_lowering"
+
+
 # Union type for type discrimination via isinstance() or match statement
 GraphModification = Union[
     RedirectGoto,
@@ -299,6 +329,7 @@ GraphModification = Union[
     NopInstructions,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
+    DirectTerminalLoweringGroup,
 ]
 
 
@@ -314,5 +345,8 @@ __all__ = [
     "NopInstructions",
     "PrivateTerminalSuffix",
     "PrivateTerminalSuffixGroup",
+    "DirectTerminalLoweringKind",
+    "DirectTerminalLoweringSite",
+    "DirectTerminalLoweringGroup",
     "GraphModification",
 ]
