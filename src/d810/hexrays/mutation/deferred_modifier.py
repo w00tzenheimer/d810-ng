@@ -3439,8 +3439,17 @@ class DeferredGraphModifier:
                         instructions_to_copy.append(cloned_ins)
                         cur_ins = cur_ins.next
 
+                    # Avoid self-copy: after earlier clones insert before
+                    # BLT_STOP, the BLT_STOP template may now sit at
+                    # mba.qty-1.  copy_block(blk, blk.serial) is undefined.
+                    # Use the first suffix template as a shell instead —
+                    # create_standalone_block strips all inherited edges and
+                    # instructions anyway.
+                    ref_for_copy = template_blk
+                    if template_blk.serial == mba.qty - 1:
+                        ref_for_copy = suffix_templates[0]
                     cloned_blk = create_standalone_block(
-                        template_blk,
+                        ref_for_copy,
                         instructions_to_copy,
                         target_serial=None if is_last else shared_entry_serial,
                         is_0_way=is_last,
