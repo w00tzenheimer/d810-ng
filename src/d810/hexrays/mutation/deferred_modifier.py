@@ -3398,15 +3398,28 @@ class DeferredGraphModifier:
             ]
 
             # ---- Phase 4: Clone suffix chain for each anchor ----
+            # Snapshot template blocks ONCE before cloning.  After the first
+            # anchor's clones are inserted, mba.get_mblock(suffix_serial) may
+            # return a clone (serial drift) instead of the original block.
+            # The Python wrappers track the C++ mblock_t by identity, not serial.
+            suffix_templates: list = []
+            for suffix_serial in suffix_serials:
+                tmpl = mba.get_mblock(suffix_serial)
+                if tmpl is None:
+                    logger.warning(
+                        "private_terminal_suffix_group: suffix blk[%d] not found for template snapshot",
+                        suffix_serial,
+                    )
+                    return False
+                suffix_templates.append(tmpl)
+
             per_anchor_first_clone: list[int] = []
             all_cloned_serials: set[int] = set()
 
             for anchor_idx, anchor_serial in enumerate(anchors):
                 cloned_serials: list[int] = []
                 for idx, suffix_serial in enumerate(suffix_serials):
-                    template_blk = mba.get_mblock(suffix_serial)
-                    if template_blk is None:
-                        return False
+                    template_blk = suffix_templates[idx]
 
                     is_last = idx == len(suffix_serials) - 1
 
