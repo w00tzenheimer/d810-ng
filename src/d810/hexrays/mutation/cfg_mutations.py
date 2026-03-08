@@ -255,13 +255,20 @@ def change_0way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
 
 
 def change_2way_block_conditional_successor(
-    blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True
+    blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True,
+    old_target: int | None = None,
 ) -> bool:
     if blk.nsucc() != 2:
         return False
 
     mba = blk.mba
     previous_blk_conditional_successor_serial = blk.tail.d.b
+    if old_target is not None and previous_blk_conditional_successor_serial != old_target:
+        helper_logger.warning(
+            "change_2way_block_conditional_successor: blk[%d] expected old_target=%d "
+            "but current branch target is %d",
+            blk.serial, old_target, previous_blk_conditional_successor_serial,
+        )
     previous_blk_conditional_successor = mba.get_mblock(
         previous_blk_conditional_successor_serial
     )

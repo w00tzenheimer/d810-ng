@@ -13,7 +13,10 @@ from d810.core import logging
 from d810.recon.flow.bst_analysis import (
     _forward_eval_insn,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.datamodel import HandlerPathResult
+from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
+    ConditionalTransition,
+    HandlerPathResult,
+)
 
 if TYPE_CHECKING:
     from d810.cfg.flowgraph import FlowGraph
@@ -22,6 +25,7 @@ _helpers_logger = logging.getLogger("D810.hodur.strategy.helpers")
 
 __all__ = [
     "collect_state_machine_blocks",
+    "detect_conditional_transitions",
     "find_terminal_exit_target_snapshot",
     "can_reach_return_snapshot",
     "evaluate_handler_paths",
@@ -275,6 +279,106 @@ def resolve_exit_via_bst_default_snapshot(
         current_serial = next_serial
 
     return current_serial
+
+
+def detect_conditional_transitions(
+    handler_entry: int,
+    paths: list[HandlerPathResult],
+    state_constants: set[int],
+    flow_graph: FlowGraph,
+) -> list[ConditionalTransition]:
+    """Detect intra-handler conditional branches where one arm is a state transition.
+
+    For each path from a handler that writes a known state constant and exits
+    to the dispatcher, find the divergence point (conditional block) where this
+    path splits from the other paths of the same handler.
+
+    Args:
+        handler_entry: Block serial of the handler entry.
+        paths: All ``HandlerPathResult`` instances for this handler.
+        state_constants: Set of known dispatcher state constant values.
+        flow_graph: Immutable CFG snapshot for successor lookups.
+
+    Returns:
+        List of ``ConditionalTransition`` descriptors, one per detected
+        conditional state-transition arm.
+    """
+    if len(paths) < 2:
+        return []
+
+    all_ordered_paths = [p.ordered_path for p in paths]
+    results: list[ConditionalTransition] = []
+
+    for path in paths:
+        # Only interested in paths that write a known state constant
+        if path.final_state is None:
+            continue
+        if (path.final_state & 0xFFFFFFFF) not in state_constants:
+            continue
+        if not path.state_writes:
+            continue
+        if len(path.ordered_path) < 2:
+            continue
+
+        # Find the divergence point: the last block in the common prefix
+        # across ALL paths from this handler.
+        other_paths = [
+            op for op in all_ordered_paths if op is not path.ordered_path
+        ]
+        if not other_paths:
+            continue
+
+        # Compute the common prefix length across this path and all others
+        this_op = path.ordered_path
+        common_prefix_len = len(this_op)
+        for other_op in other_paths:
+            prefix_len = 0
+            for i in range(min(len(this_op), len(other_op))):
+                if this_op[i] == other_op[i]:
+                    prefix_len += 1
+                else:
+                    break
+            common_prefix_len = min(common_prefix_len, prefix_len)
+
+        if common_prefix_len < 1:
+            continue
+        # The divergence block is the last block in the common prefix
+        divergence_block = this_op[common_prefix_len - 1]
+
+        # The block after the divergence in this path tells us which arm
+        if common_prefix_len >= len(this_op):
+            # This path doesn't extend beyond the common prefix — skip
+            continue
+        next_block_in_path = this_op[common_prefix_len]
+
+        # Look up successors of the divergence block in the snapshot
+        div_snap = flow_graph.get_block(divergence_block)
+        if div_snap is None or len(div_snap.succs) != 2:
+            continue
+
+        # Determine branch arm: 0=fall-through (succ[0]), 1=taken (succ[1])
+        if next_block_in_path == div_snap.succs[0]:
+            branch_arm = 0
+        elif next_block_in_path == div_snap.succs[1]:
+            branch_arm = 1
+        else:
+            # Next block doesn't match either successor — skip
+            continue
+
+        # Use the first state write as the canonical write location
+        write_blk, write_ea = path.state_writes[0]
+
+        results.append(ConditionalTransition(
+            handler_entry=handler_entry,
+            branch_block=divergence_block,
+            target_state=path.final_state & 0xFFFFFFFF,
+            target_handler=None,
+            state_write_block=write_blk,
+            state_write_ea=write_ea,
+            branch_arm=branch_arm,
+        ))
+
+    return results
 
 
 # K3: DEEP_IDA — _forward_eval_insn requires live minsn_t

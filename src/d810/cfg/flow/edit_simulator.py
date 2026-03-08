@@ -113,6 +113,8 @@ def _tail_opcode_for_existing_block(
                 block.serial in anchors
             ):
                 return _M_GOTO
+            case PatchRedirectBranch(from_serial=serial) if serial == block.serial:
+                return block.tail_opcode  # tail stays as m_jcnd — only successor changes, not opcode
     return block.tail_opcode
 
 

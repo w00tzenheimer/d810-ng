@@ -618,6 +618,9 @@ def block_type_vs_tail(
                         verify_code=51774,
                     )
                 )
+            # Guarded by `not _is_snapshot_block(blk)` above — snapshot blocks
+            # may have non-contiguous serials, so serial+1 is only valid for
+            # live IDA blocks.
             expected_next = int(serial) + 1
             if nsucc == 0 or succs[0] != expected_next:
                 violations.append(
@@ -692,22 +695,20 @@ def successor_set_matches_tail_semantics(
                 if _mop_is_mblock(left):
                     outs.append(int(getattr(left, "b")))
         elif _is_conditional_jump_opcode(tail_opcode):
-            outs.append(int(serial) + 1)
-            target = None
             if _is_snapshot_block(blk):
-                for succ in succs:
-                    if succ != int(serial) + 1:
-                        target = int(succ)
-                        break
+                # Projected snapshot: trust simulated successor list
+                outs = list(succs)
             else:
+                outs.append(int(serial) + 1)  # fallthrough
                 dest = getattr(tail, "d", None)
                 if dest is not None and hasattr(dest, "b"):
                     try:
                         target = int(dest.b)
                     except Exception:
                         target = None
-            if target is not None and target not in outs:
-                outs.append(target)
+                    else:
+                        if target is not None and target not in outs:
+                            outs.append(target)
         elif tail_opcode in {
             int(getattr(ida_hexrays, "m_ijmp", -1)),
             int(getattr(ida_hexrays, "m_ret", -1)),
@@ -716,7 +717,10 @@ def successor_set_matches_tail_semantics(
         elif tail_opcode == int(getattr(ida_hexrays, "m_ext", -1)):
             outs = list(succs)
         elif expected_nsucc != 0:
-            outs.append(int(serial) + 1)
+            if _is_snapshot_block(blk):
+                outs = list(succs)
+            else:
+                outs.append(int(serial) + 1)
 
         if outs != succs:
             violations.append(
@@ -753,7 +757,16 @@ def _closing_opcodes() -> frozenset[int]:
 
 
 def _iter_insns(blk):
-    """Yield instructions from block.head through the .next chain."""
+    """Yield instructions from a block.
+
+    For :class:`BlockSnapshot` objects, iterates over ``insn_snapshots``
+    directly (``InsnSnapshot`` has no ``.next`` pointer, so the head→next
+    walk would silently yield only the first instruction).  For live IDA
+    blocks, walks the ``head → .next`` chain as before.
+    """
+    if _is_snapshot_block(blk):
+        yield from blk.insn_snapshots
+        return
     insn = getattr(blk, "head", None)
     while insn is not None:
         yield insn
