@@ -131,7 +131,7 @@ class MbaStatePreconditioner(FlowOptimizationRule):
             gate = self.flow_context.evaluate_unflattening_gate()
             # Record flow gate outcome
             if hasattr(self.flow_context, 'report_outcome'):
-                self.flow_context.report_outcome(gate, "flow_gate")
+                self.flow_context.report_outcome(gate, "preconditioner_gate")
             if not gate.allowed:
                 if logger.debug_on:
                     logger.debug(

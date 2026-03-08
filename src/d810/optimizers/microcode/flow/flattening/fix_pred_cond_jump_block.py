@@ -870,7 +870,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             gate = self.flow_context.evaluate_fix_predecessor_gate()
             # Record flow gate outcome
             if hasattr(self.flow_context, 'report_outcome'):
-                self.flow_context.report_outcome(gate, "flow_gate")
+                self.flow_context.report_outcome(gate, "fixpred_gate")
             if not gate.allowed:
                 unflat_logger.debug(
                     "Skipping %s via flow context gate: %s",

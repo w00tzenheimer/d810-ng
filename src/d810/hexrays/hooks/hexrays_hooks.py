@@ -1034,6 +1034,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             summary.confidence,
         )
 
+    _KNOWN_GATE_TYPES: typing.ClassVar[frozenset[str]] = frozenset({
+        "unflattening_gate", "fixpred_gate", "preconditioner_gate",
+    })
+
     def _record_flow_outcome(
         self, func_ea: int, outcome_object: object, consumer_type: str,
     ) -> None:
@@ -1042,8 +1046,13 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             return
         if consumer_type == "planner":
             self._recon_runtime.record_planner_outcome(func_ea, outcome_object)
-        elif consumer_type == "flow_gate":
-            self._recon_runtime.record_flow_gate_outcome(func_ea, outcome_object)
+        else:
+            if consumer_type not in self._KNOWN_GATE_TYPES:
+                optimizer_logger.warning(
+                    "_record_flow_outcome: unknown consumer_type=%r for func=0x%x",
+                    consumer_type, func_ea,
+                )
+            self._recon_runtime.record_flow_gate_outcome(func_ea, outcome_object, gate_name=consumer_type)
 
     def optimize(self, blk: ida_hexrays.mblock_t):
         active_rules = self._resolve_active_rules(blk)

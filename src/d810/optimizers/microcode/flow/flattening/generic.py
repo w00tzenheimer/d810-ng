@@ -821,7 +821,7 @@ class GenericUnflatteningRule(FlowOptimizationRule):
                 gate = self.flow_context.evaluate_unflattening_gate()
                 # Record flow gate outcome
                 if hasattr(self.flow_context, 'report_outcome'):
-                    self.flow_context.report_outcome(gate, "flow_gate")
+                    self.flow_context.report_outcome(gate, "unflattening_gate")
                 if not gate.allowed:
                     unflat_logger.debug(
                         "Skipping %s via flow context gate: %s",

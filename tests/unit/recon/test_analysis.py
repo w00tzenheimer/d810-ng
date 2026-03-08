@@ -371,3 +371,73 @@ class TestSuppressRules:
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type is None
         assert hints.suppress_rules == ()
+
+
+# ---------------------------------------------------------------------------
+# OpcodeDistributionCollector boost
+# ---------------------------------------------------------------------------
+
+
+class TestOpcodeDistributionSignal:
+    def test_high_opcode_dominance_adds_signal(self) -> None:
+        phase = AnalysisPhase()
+        results = _base_flat_results()
+        results.append(
+            _recon(
+                "OpcodeDistributionCollector",
+                {"top_opcode_ratio": 0.6},
+                candidates=(
+                    CandidateFlag(
+                        kind="high_opcode_dominance",
+                        block_serial=0,
+                        confidence=0.6,
+                        detail="top_opcode_ratio=0.6",
+                    ),
+                ),
+            )
+        )
+        hints = phase.interpret(func_ea=0x401000, results=results)
+        assert hints.obfuscation_type == "ollvm_flat"
+        hints_base = phase.interpret(
+            func_ea=0x401000, results=_base_flat_results()
+        )
+        assert hints.confidence > hints_base.confidence
+
+    def test_low_ratio_no_signal(self) -> None:
+        phase = AnalysisPhase()
+        results = _base_flat_results()
+        results.append(
+            _recon(
+                "OpcodeDistributionCollector",
+                {"top_opcode_ratio": 0.5},
+                candidates=(
+                    CandidateFlag(
+                        kind="high_opcode_dominance",
+                        block_serial=0,
+                        confidence=0.5,
+                        detail="top_opcode_ratio=0.5",
+                    ),
+                ),
+            )
+        )
+        hints_with = phase.interpret(func_ea=0x401000, results=results)
+        hints_base = phase.interpret(
+            func_ea=0x401000, results=_base_flat_results()
+        )
+        assert hints_with.confidence == hints_base.confidence
+
+    def test_no_candidate_no_signal(self) -> None:
+        phase = AnalysisPhase()
+        results = _base_flat_results()
+        results.append(
+            _recon(
+                "OpcodeDistributionCollector",
+                {"top_opcode_ratio": 0.9},
+                candidates=(),  # no candidate flag
+            )
+        )
+        hints_with = phase.interpret(func_ea=0x401000, results=results)
+        hints_base = phase.interpret(
+            func_ea=0x401000, results=_base_flat_results()
+        )
+        assert hints_with.confidence == hints_base.confidence
