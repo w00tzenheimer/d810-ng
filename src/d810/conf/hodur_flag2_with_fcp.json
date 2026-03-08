@@ -1,0 +1,47 @@
+{
+    "description": "FCP experiment: HodurUnflattener + JumpFixer + Z3ConstantOptimization + CstSimplification + ForwardConstantPropagation. Tests whether FCP eliminates leaked state constants (0x41FB8FBB, 0x432DC789).",
+    "ins_rules": [
+        {"name": "Z3ConstantOptimization", "is_activated": true, "config": {}},
+        {"name": "CstSimplificationRule17", "is_activated": true, "config": {}},
+        {"name": "CstSimplificationRule18", "is_activated": true, "config": {}}
+    ],
+    "blk_rules": [
+        {
+            "name": "HodurUnflattener",
+            "is_activated": true,
+            "config": {
+                "max_state_constants": 100,
+                "min_state_constant": 16777216,
+                "enable_transition_validator": true,
+                "enable_transition_uddu_validator": true
+            }
+        },
+        {
+            "name": "JumpFixer",
+            "is_activated": true,
+            "config": {
+                "enabled_rules": [
+                    "CompareConstantRule1",
+                    "CompareConstantRule2",
+                    "CompareConstantRule3",
+                    "JaeRule1",
+                    "JbRule1",
+                    "JnzRule1",
+                    "JnzRule2",
+                    "JnzRule3",
+                    "JnzRule4",
+                    "JnzRule5",
+                    "JnzRule6",
+                    "JnzRule7",
+                    "JnzRule8",
+                    "JmpRuleZ3Const"
+                ]
+            }
+        },
+        {
+            "name": "ForwardConstantPropagationRule",
+            "is_activated": true,
+            "config": {}
+        }
+    ]
+}

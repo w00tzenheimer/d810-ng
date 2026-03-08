@@ -27,6 +27,7 @@ __all__ = [
     # Defined here
     "HodurStateMachine",
     "HandlerPathResult",
+    "ConditionalTransition",
     "Pass0RedirectRecord",
 ]
 
@@ -65,6 +66,19 @@ class HandlerPathResult:
     final_state: Optional[int]  # concrete state value at exit; None for terminal (m_ret) paths
     state_writes: list  # [(block_serial, insn_ea), ...] of state var writes
     ordered_path: list = field(default_factory=list)  # ordered sequence of block serials visited during DFS
+
+
+@dataclass
+class ConditionalTransition:
+    """An intra-handler conditional branch where one arm is a state transition."""
+
+    handler_entry: int          # handler that contains this conditional
+    branch_block: int           # block serial with the m_jnz
+    target_state: int           # state constant written on the redirectable arm
+    target_handler: int | None  # resolved handler entry (filled during linearization)
+    state_write_block: int      # block that writes the state constant
+    state_write_ea: int         # instruction EA of the state write
+    branch_arm: int             # which successor arm (0=fall-through, 1=taken)
 
 
 @dataclass

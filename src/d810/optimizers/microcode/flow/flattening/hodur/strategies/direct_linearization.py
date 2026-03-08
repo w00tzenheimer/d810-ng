@@ -22,10 +22,12 @@ from d810.recon.flow.bst_analysis import (
 from d810.recon.flow.bst_model import resolve_target_via_bst
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     collect_state_machine_blocks,
+    detect_conditional_transitions,
     evaluate_handler_paths,
     find_terminal_exit_target_snapshot,
     resolve_exit_via_bst_default_snapshot,
 )
+from d810.cfg.graph_modification import RedirectBranch
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
     ModificationBuilder,
 )
@@ -852,6 +854,151 @@ def _mop_matches_stkoff_snapshot(mop_snap: object | None, stkoff: int) -> bool:
     return getattr(mop_snap, "stkoff", None) == stkoff
 
 
+def _find_two_step_temp_def(
+    fg: "FlowGraph",
+    write_blk_serial: int,
+    write_ea: int,
+    ordered_path: list[int],
+) -> tuple[int, int, int] | None:
+    """Detect and return the temp-variable definition for a two-step state write.
+
+    OLLVM two-step pattern::
+
+        blk[A]: m_mov  #CONST       -> temp_var   (temp definition)
+        blk[B]: m_mov  temp_var     -> state_var  (state write, being NOPed)
+
+    After NOPing the state write (step 2), the temp definition (step 1)
+    survives and IDA propagates the constant into the return value.
+
+    This function inspects the state write instruction in the snapshot to
+    determine if its source operand is a stack variable (``mop_S``).  If so,
+    it scans backward through the handler's ``ordered_path`` to find a
+    ``m_mov #const -> temp`` where the destination matches the source stkoff.
+    It also verifies single-use: the temp must not appear as a source in any
+    other instruction across the handler's path blocks (excluding the state
+    write itself).
+
+    Args:
+        fg: Flow graph snapshot.
+        write_blk_serial: Block serial containing the state write.
+        write_ea: Instruction EA of the state write.
+        ordered_path: Ordered block serials visited during handler DFS.
+
+    Returns:
+        ``(def_blk_serial, def_insn_ea, const_value)`` if a single-use
+        constant temp definition is found, else ``None``.
+    """
+    if fg is None:
+        return None
+
+    # 1. Find the state write instruction in the snapshot.
+    write_blk_snap = fg.get_block(write_blk_serial)
+    if write_blk_snap is None:
+        return None
+
+    state_write_insn = None
+    for insn in write_blk_snap.iter_insns():
+        if insn.ea == write_ea:
+            state_write_insn = insn
+            break
+    if state_write_insn is None:
+        return None
+
+    # 2. Check if state write is m_mov with mop_S source (temp var).
+    if state_write_insn.opcode != ida_hexrays.m_mov:
+        return None
+    src_mop = state_write_insn.l
+    if src_mop is None:
+        return None
+    src_t = getattr(src_mop, "t", None)
+    if src_t != ida_hexrays.mop_S:
+        return None
+    temp_stkoff = getattr(src_mop, "stkoff", None)
+    if temp_stkoff is None:
+        return None
+
+    # 3. Scan backward through ordered_path to find temp definition.
+    #    The definition must be: m_mov #const -> mop_S(temp_stkoff)
+    # Build the path index of write_blk to only search at or before it.
+    try:
+        write_idx = ordered_path.index(write_blk_serial)
+    except ValueError:
+        # write_blk not in ordered_path; search all blocks
+        write_idx = len(ordered_path) - 1
+
+    def_blk_serial: int | None = None
+    def_insn_ea: int | None = None
+    def_const_value: int | None = None
+
+    # Search blocks in reverse order up to and including write_blk
+    for path_idx in range(write_idx, -1, -1):
+        blk_serial = ordered_path[path_idx]
+        blk_snap = fg.get_block(blk_serial)
+        if blk_snap is None:
+            continue
+        # Search instructions in reverse within the block
+        for insn in reversed(blk_snap.insn_snapshots):
+            if insn.opcode != ida_hexrays.m_mov:
+                continue
+            dest_mop = insn.d
+            if dest_mop is None:
+                continue
+            dest_t = getattr(dest_mop, "t", None)
+            if dest_t != ida_hexrays.mop_S:
+                continue
+            if getattr(dest_mop, "stkoff", None) != temp_stkoff:
+                continue
+            # Found a write to the temp var — check if source is constant.
+            def_src = insn.l
+            if def_src is None:
+                return None  # non-constant def, bail
+            const_val = _extract_const_from_snapshot_mop(def_src)
+            if const_val is None:
+                return None  # source is not a constant, bail
+            def_blk_serial = blk_serial
+            def_insn_ea = insn.ea
+            def_const_value = const_val
+            break  # found the closest definition
+        if def_blk_serial is not None:
+            break
+
+    if def_blk_serial is None:
+        return None
+
+    # 4. Single-use check: temp must only be used by the state write.
+    #    Scan all blocks in ordered_path for any instruction that reads
+    #    from mop_S(temp_stkoff) as source (l or r operand).
+    use_count = 0
+    for blk_serial in ordered_path:
+        blk_snap = fg.get_block(blk_serial)
+        if blk_snap is None:
+            continue
+        for insn in blk_snap.iter_insns():
+            # Check l operand
+            l_mop = insn.l
+            if l_mop is not None:
+                if (
+                    getattr(l_mop, "t", None) == ida_hexrays.mop_S
+                    and getattr(l_mop, "stkoff", None) == temp_stkoff
+                ):
+                    use_count += 1
+            # Check r operand
+            r_mop = insn.r
+            if r_mop is not None:
+                if (
+                    getattr(r_mop, "t", None) == ida_hexrays.mop_S
+                    and getattr(r_mop, "stkoff", None) == temp_stkoff
+                ):
+                    use_count += 1
+            if use_count > 1:
+                return None  # temp used more than once, not safe to NOP
+
+    if use_count != 1:
+        return None  # temp not used exactly once (the state write)
+
+    return (def_blk_serial, def_insn_ea, def_const_value)
+
+
 class DirectHandlerLinearizationStrategy:
     """Propose GOTO_REDIRECT / EDGE_REDIRECT / NOP_INSN edits for all resolved handler exits.
 
@@ -1143,6 +1290,33 @@ class DirectHandlerLinearizationStrategy:
                 )
             )
 
+        # Track already-NOPed two-step temp defs to avoid duplicate NOPs.
+        _two_step_nopped: set[tuple[int, int]] = set()
+
+        def _nop_two_step_temp(
+            write_blk: int,
+            write_ea: int,
+            ordered_path: list[int],
+            handler_serial: int,
+        ) -> None:
+            """NOP the temp-variable definition for a two-step OLLVM state write.
+
+            Must be called immediately after ``_append_nop`` for each state write.
+            """
+            result = _find_two_step_temp_def(fg, write_blk, write_ea, ordered_path)
+            if result is None:
+                return
+            def_blk, def_ea, const_val = result
+            key = (def_blk, def_ea)
+            if key in _two_step_nopped:
+                return
+            _two_step_nopped.add(key)
+            _append_nop(source_block=def_blk, instruction_ea=def_ea)
+            logger.info(
+                "TWO_STEP_NOP: handler=blk[%d] temp_def=blk[%d]@0x%X const=0x%X",
+                handler_serial, def_blk, def_ea, const_val,
+            )
+
         def _emit_redirect(meta: dict, path: object, incoming_state: int, category: str, handler_serial: int) -> bool:
             """Convert redirect metadata into graph modifications."""
             kind = meta["kind"]
@@ -1226,6 +1400,131 @@ class DirectHandlerLinearizationStrategy:
             all_handler_paths[handler_serial] = list(paths)
             linearized_blocks.add(handler_serial)
 
+            # Phase 1 diagnostic: detect conditional intra-handler transitions
+            _known_state_consts: set[int] = set(handler_state_map.values())
+            if state_machine is not None:
+                _known_state_consts |= state_machine.state_constants
+            conditional_transitions = detect_conditional_transitions(
+                handler_entry=handler_serial,
+                paths=paths,
+                state_constants=_known_state_consts,
+                flow_graph=fg,
+            )
+            if conditional_transitions:
+                for ct in conditional_transitions:
+                    logger.info(
+                        "CONDITIONAL_TRANSITION: handler=blk[%d] branch=blk[%d] "
+                        "arm=%d target_state=0x%X write=blk[%d]@0x%X",
+                        ct.handler_entry, ct.branch_block, ct.branch_arm,
+                        ct.target_state, ct.state_write_block, ct.state_write_ea,
+                    )
+
+                # Phase 2: redirect conditional transition arms to resolved targets
+                # Track redirected branch blocks: {branch_block: {arm: target}}
+                redirected_branches: dict[int, dict[int, int]] = {}
+                for ct in conditional_transitions:
+                    # 1. Resolve target handler via BST
+                    ct_target = resolve_target_via_bst(bst_result, ct.target_state)
+                    if ct_target is None:
+                        logger.info(
+                            "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
+                            "target_state=0x%X no BST resolution",
+                            ct.handler_entry, ct.target_state,
+                        )
+                        continue
+                    ct.target_handler = ct_target
+
+                    # 2. Look up the current successor on the branch arm
+                    branch_snap = fg.get_block(ct.branch_block)
+                    if branch_snap is None or len(branch_snap.succs) != 2:
+                        logger.info(
+                            "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
+                            "branch=blk[%d] not a 2-way block (succs=%s)",
+                            ct.handler_entry, ct.branch_block,
+                            branch_snap.succs if branch_snap else "None",
+                        )
+                        continue
+
+                    old_target = branch_snap.succs[ct.branch_arm]
+
+                    # Guard: skip if this specific edge is already claimed
+                    edge_key = (ct.branch_block, old_target)
+                    if edge_key in claimed_edges:
+                        logger.info(
+                            "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
+                            "edge (%d->%d) already claimed by %d",
+                            ct.handler_entry, ct.branch_block,
+                            old_target, claimed_edges[edge_key],
+                        )
+                        continue
+
+                    # Guard: skip if target is the same as old (no-op)
+                    if old_target == ct_target:
+                        logger.info(
+                            "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
+                            "branch=blk[%d] arm=%d already points to target blk[%d]",
+                            ct.handler_entry, ct.branch_block,
+                            ct.branch_arm, ct_target,
+                        )
+                        continue
+
+                    # Guard: skip if both arms of the same branch block
+                    # resolve to the same target (would create duplicate pred)
+                    if ct.branch_block in redirected_branches:
+                        prev = redirected_branches[ct.branch_block]
+                        other_arm = next(iter(prev))
+                        if prev[other_arm] == ct_target:
+                            logger.info(
+                                "CONDITIONAL_TRANSITION_SKIP_DUPLICATE: handler=blk[%d] "
+                                "branch=blk[%d] both arms -> blk[%d], skipping arm=%d",
+                                ct.handler_entry, ct.branch_block,
+                                ct_target, ct.branch_arm,
+                            )
+                            continue
+
+                    # 3. Emit RedirectBranch to change the arm
+                    modifications.append(
+                        RedirectBranch(
+                            from_serial=ct.branch_block,
+                            old_target=old_target,
+                            new_target=ct_target,
+                        )
+                    )
+                    claimed_edges[edge_key] = ct_target
+                    redirected_branches.setdefault(ct.branch_block, {})[ct.branch_arm] = ct_target
+                    owned_blocks.add(ct.branch_block)
+                    owned_edges.add((ct.branch_block, ct_target))
+
+                    # 4. NOP the dead state write (skip multi-pred blocks)
+                    _sw_snap = fg.get_block(ct.state_write_block)
+                    if _sw_snap is None or _sw_snap.npred <= 1:
+                        _append_nop(
+                            source_block=ct.state_write_block,
+                            instruction_ea=ct.state_write_ea,
+                        )
+
+                    logger.info(
+                        "CONDITIONAL_TRANSITION_REDIRECT: handler=blk[%d] "
+                        "branch=blk[%d] arm=%d old_target=blk[%d] -> "
+                        "new_target=blk[%d] (state=0x%X) write_nop=blk[%d]@0x%X",
+                        ct.handler_entry, ct.branch_block, ct.branch_arm,
+                        old_target, ct_target, ct.target_state,
+                        ct.state_write_block, ct.state_write_ea,
+                    )
+
+                    resolved_count += 1
+                    owned_transitions.add((incoming_state, ct.target_state))
+                    pass0_ledger.append({
+                        "category": "conditional_transition",
+                        "handler_entry": handler_serial,
+                        "incoming_state": incoming_state,
+                        "exit_block": ct.branch_block,
+                        "final_state": ct.target_state,
+                        "source_block": ct.branch_block,
+                        "via_pred": None,
+                        "target_block": ct_target,
+                    })
+
             for path in paths:
                 if path.final_state is None:
                     # Terminal path — handler exits (e.g. m_ret or 0-succ block).
@@ -1293,6 +1592,7 @@ class DirectHandlerLinearizationStrategy:
                                         instruction_ea=write_ea,
 
                                     )
+                                    _nop_two_step_temp(write_blk, write_ea, path.ordered_path, handler_serial)
                                 logger.info(
                                     "Handler blk[%d] (state=0x%x): terminal exit blk[%d] -> exit blk[%d]",
                                     handler_serial,
@@ -1367,6 +1667,7 @@ class DirectHandlerLinearizationStrategy:
                                         instruction_ea=write_ea,
 
                                     )
+                                    _nop_two_step_temp(write_blk, write_ea, path.ordered_path, handler_serial)
                                 # NOP dead state_var writes in the resolved exit target block.
                                 # K3: INSN_CHAIN — migrated to snapshot iter_insns
                                 _exit_tgt_snap = fg.get_block(exit_target)
@@ -1453,6 +1754,7 @@ class DirectHandlerLinearizationStrategy:
                                 instruction_ea=write_ea,
 
                             )
+                            _nop_two_step_temp(write_blk, write_ea, path.ordered_path, handler_serial)
                         resolved_count += 1
                         owned_transitions.add((incoming_state, path.final_state))
 
@@ -1547,6 +1849,7 @@ class DirectHandlerLinearizationStrategy:
                                 instruction_ea=state_write_ea,
 
                             )
+                            _nop_two_step_temp(serial, state_write_ea, _synthetic_path.ordered_path, serial)
                         # K3: INSN_CHAIN — migrated to snapshot iter_insns
                         _tgt_snap = fg.get_block(target)
                         if _tgt_snap is not None and target not in bst_node_blocks:
@@ -1653,6 +1956,7 @@ class DirectHandlerLinearizationStrategy:
                                         instruction_ea=write_ea,
 
                                     )
+                                    _nop_two_step_temp(write_blk, write_ea, path.ordered_path, rootwalk_blk)
                                 logger.info(
                                     "hodur-linear: hidden blk[%d] terminal exit blk[%d] -> exit blk[%d]",
                                     rootwalk_blk,
@@ -1746,6 +2050,7 @@ class DirectHandlerLinearizationStrategy:
                                 instruction_ea=write_ea,
 
                             )
+                            _nop_two_step_temp(write_blk, write_ea, path.ordered_path, rootwalk_blk)
                         resolved_count += 1
 
         # ---- Pre-header redirect ----
