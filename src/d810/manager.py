@@ -48,13 +48,18 @@ from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
 )
 from d810.recon.collectors.cfg_shape import CFGShapeCollector
+from d810.recon.collectors.compare_chain import CompareChainCollector
 from d810.recon.collectors.ctree_structure import CtreeStructureCollector
 from d810.recon.collectors.dispatch_pattern import DispatchPatternCollector
+from d810.recon.collectors.fixpred_signals import FixPredSignalsCollector
 from d810.recon.collectors.handler_transitions import HandlerTransitionsCollector
 from d810.recon.collectors.opcode_distribution import OpcodeDistributionCollector
+from d810.recon.collectors.profile_classifier import FlowProfileClassifierCollector
 from d810.recon.collectors.return_frontier import ReturnFrontierCollector
 from d810.recon.microcode_dump import mba_to_dict
+from d810.recon.analysis import AnalysisPhase
 from d810.recon.phase import ReconPhase
+from d810.recon.runtime import ReconAnalysisRuntime
 from d810.recon.store import ReconStore
 
 try:
@@ -339,19 +344,35 @@ class D810Manager:
         if self.config.get("enable_recon_pipeline", True):
             self._recon_phase = self._build_recon_phase()
 
-        # Wire recon phase into microcode optimizers.
+        # Wire recon phase + runtime into microcode optimizers.
+        # The runtime provides reset_for_func() at decompilation start;
+        # the phase dispatches collectors at each maturity.
+        self._recon_runtime = None
         if self._recon_phase is not None:
-            self.instruction_optimizer.configure(recon_phase=self._recon_phase)
-            self.block_optimizer.configure(recon_phase=self._recon_phase)
+            self._recon_runtime = ReconAnalysisRuntime(
+                self._recon_phase,
+                AnalysisPhase(),
+                self._recon_phase._store,
+            )
+            self.instruction_optimizer.configure(
+                recon_phase=self._recon_phase,
+                recon_runtime=self._recon_runtime,
+            )
+            self.block_optimizer.configure(
+                recon_phase=self._recon_phase,
+                recon_runtime=self._recon_runtime,
+            )
 
         # Wire PassPipeline into BlockOptimizerManager so it fires at
         # MMAT_GLBOPT2, after the unflattener has run at MMAT_GLBOPT1.
         if _pass_pipeline is not None:
             self.block_optimizer.configure(pass_pipeline=_pass_pipeline)
 
-        # Build ctree optimizer with recon phase from the start.
+        # Build ctree optimizer with recon phase and runtime from the start.
         self.ctree_optimizer = CtreeOptimizerManager(
-            self.stats, recon_phase=self._recon_phase
+            self.stats,
+            recon_phase=self._recon_phase,
+            recon_runtime=self._recon_runtime,
         )
 
         for ctree_rule in self.ctree_optimizer_rules:
@@ -637,6 +658,12 @@ class D810Manager:
         ):
             self.event_emitter.on(DecompilationEvent.FINISHED, _subscriber)
 
+        if self._recon_runtime is not None:
+            self.event_emitter.on(
+                DecompilationEvent.FINISHED,
+                self._recon_runtime.mark_decompilation_finished,
+            )
+
         self.event_emitter.on(
             DecompilationEvent.MATURITY_CHANGED, self.dump_profiling_segment
         )
@@ -720,6 +747,10 @@ class D810Manager:
             phase.register(HandlerTransitionsCollector())
             phase.register(ReturnFrontierCollector())
             phase.register(CtreeStructureCollector())
+            # TODO: register when AnalysisPhase.interpret() is extended to consume these
+            # phase.register(CompareChainCollector())
+            # phase.register(FlowProfileClassifierCollector())
+            # phase.register(FixPredSignalsCollector())
             logger.info(
                 "ReconPhase enabled: %d collectors, db=%s",
                 phase.collector_count,

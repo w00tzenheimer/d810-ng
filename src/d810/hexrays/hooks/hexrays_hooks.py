@@ -177,6 +177,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         # is enabled in the project config. None means recon is disabled (zero
         # overhead: the guard below short-circuits immediately).
         self._recon_phase = None  # ReconPhase | None
+        # Optional ReconAnalysisRuntime - set via configure(recon_runtime=...).
+        # Used to reset recon state when a new function is decompiled.
+        self._recon_runtime = None  # ReconAnalysisRuntime | None
 
         self.instruction_optimizers = []
         self._active_optimizers: list = []
@@ -355,11 +358,29 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             self.reset_cycle_detection()
             self._active_instruction_rule_names_by_maturity.clear()
 
-            # Recon: fire microcode collectors at this maturity (no-op when
-            # recon is disabled - _recon_phase is None).
+            # Recon: reset state when a new function is decompiled, then
+            # fire microcode collectors at this maturity. No-op when recon is
+            # disabled (_recon_phase / _recon_runtime is None).
+            # The runtime deduplicates reset_for_func across managers.
+            mba_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            if self._recon_runtime is not None:
+                try:
+                    did_reset = self._recon_runtime.reset_for_func(mba_ea)
+                except Exception:
+                    optimizer_logger.exception(
+                        "ReconRuntime reset failed for func=0x%x", mba_ea
+                    )
+                    did_reset = False
+                if did_reset and self._rule_scope_service is not None:
+                    try:
+                        self._rule_scope_service.clear_hint_state(mba_ea)
+                    except Exception:
+                        optimizer_logger.exception(
+                            "RuleScopeService clear_hint_state failed for func=0x%x",
+                            mba_ea,
+                        )
             if self._recon_phase is not None:
                 try:
-                    mba_ea = int(getattr(mba, "entry_ea", 0) or 0)
                     self._recon_phase.run_microcode_collectors(
                         mba, func_ea=mba_ea, maturity=new_maturity
                     )
@@ -367,6 +388,20 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     optimizer_logger.exception(
                         "ReconPhase failed at maturity %d", new_maturity
                     )
+                if self._recon_runtime is not None:
+                    try:
+                        hints = self._recon_runtime.analyze_and_persist(mba_ea)
+                        if hints is not None and self._rule_scope_service is not None:
+                            self._rule_scope_service.apply_hints(hints)
+                            optimizer_logger.info(
+                                "Applied recon hints to rule scope for func=0x%x",
+                                mba_ea,
+                            )
+                    except Exception:
+                        optimizer_logger.exception(
+                            "ReconRuntime analyze_and_persist failed for func=0x%x",
+                            mba_ea,
+                        )
 
             for ins_optimizer in self.instruction_optimizers:
                 ins_optimizer.cur_maturity = self.current_maturity
@@ -397,6 +432,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self.generate_z3_code = generate_z3_code
         self.dump_intermediate_microcode = dump_intermediate_microcode
         self._recon_phase = kwargs.get("recon_phase", self._recon_phase)
+        self._recon_runtime = kwargs.get("recon_runtime", self._recon_runtime)
         self._rule_scope_service = kwargs.get(
             "rule_scope_service",
             self._rule_scope_service,
@@ -620,6 +656,9 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # Optional ReconPhase - set via configure(recon_phase=...). None means
         # recon is disabled (zero overhead when not enabled).
         self._recon_phase = None  # ReconPhase | None
+        # Optional ReconAnalysisRuntime - set via configure(recon_runtime=...).
+        # Used to reset recon state when a new function is decompiled.
+        self._recon_runtime = None  # ReconAnalysisRuntime | None
         # Optional PassPipeline - set via configure(pass_pipeline=...). None
         # means the pipeline is disabled (zero overhead). When set, fires once
         # at MMAT_GLBOPT2 (after the unflattener has finished at MMAT_GLBOPT1).
@@ -790,16 +829,48 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self.reset_pass_counter()
             self._invalidate_flow_context("maturity changed")
 
-            # Recon: fire microcode collectors at this maturity (no-op when
-            # _recon_phase is None - guarded for zero overhead).
+            # Recon: reset state when a new function is decompiled, then
+            # fire microcode collectors at this maturity. No-op when recon is
+            # disabled (_recon_phase / _recon_runtime is None).
+            # The runtime deduplicates reset_for_func across managers.
+            mba_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            if self._recon_runtime is not None:
+                try:
+                    did_reset = self._recon_runtime.reset_for_func(mba_ea)
+                except Exception:
+                    optimizer_logger.exception(
+                        "ReconRuntime reset failed for func=0x%x", mba_ea
+                    )
+                    did_reset = False
+                if did_reset and self._rule_scope_service is not None:
+                    try:
+                        self._rule_scope_service.clear_hint_state(mba_ea)
+                    except Exception:
+                        optimizer_logger.exception(
+                            "RuleScopeService clear_hint_state failed for func=0x%x",
+                            mba_ea,
+                        )
             if self._recon_phase is not None:
                 try:
-                    mba_ea = int(getattr(mba, "entry_ea", 0) or 0)
                     self._recon_phase.run_microcode_collectors(
                         mba, func_ea=mba_ea, maturity=mba.maturity
                     )
                 except Exception:
                     optimizer_logger.exception("ReconPhase (block) failed")
+                if self._recon_runtime is not None:
+                    try:
+                        hints = self._recon_runtime.analyze_and_persist(mba_ea)
+                        if hints is not None and self._rule_scope_service is not None:
+                            self._rule_scope_service.apply_hints(hints)
+                            optimizer_logger.info(
+                                "Applied recon hints to rule scope (block) for func=0x%x",
+                                mba_ea,
+                            )
+                    except Exception:
+                        optimizer_logger.exception(
+                            "ReconRuntime analyze_and_persist (block) failed for func=0x%x",
+                            mba_ea,
+                        )
 
             # PassPipeline: fire once at MMAT_GLBOPT2, after the unflattener
             # has already run at MMAT_GLBOPT1.  Runs at most once per maturity
@@ -923,6 +994,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 maturity=int(self.current_maturity),
             )
             self._flow_context_key = key
+            self._attach_hint_summary(self._flow_context)
         else:
             self._flow_context.refresh_mba(mba)
         self._flow_context.set_phase(
@@ -932,6 +1004,21 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         )
         self._flow_context.prime_for_rules(phase_rules)
         return self._flow_context
+
+    def _attach_hint_summary(self, flow_context: FlowMaturityContext) -> None:
+        """Derive and attach a hint summary from the recon store if available."""
+        if self._recon_runtime is None:
+            return
+        summary = self._recon_runtime.load_flow_context_summary(flow_context.func_ea)
+        if summary is None:
+            return
+        flow_context.set_hint_summary(summary)
+        optimizer_logger.debug(
+            "Attached hint summary to flow context: func=0x%x type=%s conf=%.2f",
+            flow_context.func_ea,
+            summary.obfuscation_type,
+            summary.confidence,
+        )
 
     def optimize(self, blk: ida_hexrays.mblock_t):
         active_rules = self._resolve_active_rules(blk)
@@ -1006,6 +1093,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
 
     def configure(self, **kwargs):
         self._recon_phase = kwargs.get("recon_phase", self._recon_phase)
+        self._recon_runtime = kwargs.get("recon_runtime", self._recon_runtime)
         self._pass_pipeline = kwargs.get("pass_pipeline", self._pass_pipeline)
         self._rule_scope_service = kwargs.get(
             "rule_scope_service", self._rule_scope_service

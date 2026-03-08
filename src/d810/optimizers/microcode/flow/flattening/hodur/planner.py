@@ -1,5 +1,18 @@
 """Central planner for Hodur unflattening pipeline.
 
+Hodur is a first-class consumer of the shared recon-analysis-consumer
+lifecycle.  The recon phase collects raw artifacts (handler transitions,
+return frontier, terminal return audit); the analysis phase interprets
+them into consumer-specific summaries; and this planner consumes those
+summaries to bias fragment scoring, policy filtering, and conflict
+resolution.
+
+The consumer-specific summary consumed here is :class:`PlannerInputs`
+(defined in ``provenance.py``), analogous to
+:class:`~d810.recon.models.DeobfuscationHints` for the rule-scope
+consumer and :class:`~d810.recon.flow_hints.FlowContextHintSummary`
+for the flow-context consumer.
+
 # PLANNER_AUTHORITY: The UnflatteningPlanner is the sole authority for
 # pipeline membership, ordering, and conflict resolution.  No downstream
 # component (executor, unflattener orchestrator) may re-select, reorder,
@@ -59,6 +72,13 @@ class PlannerHintSignals:
     Each field is a 0.0-1.0 float indicating confidence or risk level
     for a specific recon dimension. Used by :func:`compute_hint_adjustment`
     to bias fragment scoring before conflict resolution and ordering.
+
+    These signals are intentionally ephemeral -- they are not persisted
+    because they are cheap to derive from :class:`PlannerInputs` and
+    tightly coupled to the planner's scoring policy.  If the scoring
+    policy changes, the derivation logic in :func:`derive_hint_signals`
+    changes in lock-step, so caching would add staleness risk without
+    meaningful cost savings.
     """
 
     transition_confidence: float = 0.0
@@ -379,7 +399,15 @@ class PipelinePolicy:
 
 
 class UnflatteningPlanner:
-    """Selects, orders, and arbitrates strategy fragments."""
+    """Selects, orders, and arbitrates strategy fragments.
+
+    As a lifecycle consumer, the planner receives a :class:`PlannerInputs`
+    envelope containing recon artifacts (handler transitions, return
+    frontier, terminal return audit) and derives :class:`PlannerHintSignals`
+    to bias fragment scoring.  The outcome layer --
+    :class:`PipelineProvenance` -- records every accept/reject decision
+    with full audit trail, closing the lifecycle loop.
+    """
 
     def __init__(self, policy: PipelinePolicy | None = None):
         self.policy = policy or PipelinePolicy()
