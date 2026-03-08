@@ -163,6 +163,10 @@ class HintOverlayProvider:
         """Check whether any hint-driven suppressions exist for *func_ea*."""
         return bool(self._suppressions.get(func_ea))
 
+    def get_suppressions(self, func_ea: int) -> frozenset[str]:
+        """Return hint-owned suppressions for *func_ea* (excludes delegate)."""
+        return self._suppressions.get(func_ea, frozenset())
+
     def clear_func(self, func_ea: int) -> None:
         """Remove all hint-driven recipes and suppressions for a function."""
         self._hint_recipes.pop(func_ea, None)
@@ -370,10 +374,10 @@ class RuleScopeService:
             has_recipes = bool(hint_recipes)
             recipe_names = [r.name for r in hint_recipes]
 
-            # Gather suppressed rules from the overlay
-            overlay = self._hint_overlay(func_ea)
-            if overlay is not None:
-                suppressed = sorted(overlay.disabled_rules)
+            # Read only hint-owned suppressions (not delegate overlay)
+            hint_suppressed = self._hint_overlay.get_suppressions(func_ea)
+            if hint_suppressed:
+                suppressed = sorted(hint_suppressed)
 
         return {
             "func_ea": func_ea,

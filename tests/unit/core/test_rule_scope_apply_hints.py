@@ -600,3 +600,34 @@ class TestGetHintStateSummary:
         ))
         summary = svc.get_hint_state_summary(0x1000)
         assert summary["generation"] == gen_before + 1
+
+    def test_summary_excludes_delegate_overlay_suppressions(self) -> None:
+        """Suppressions from delegate overlay must NOT appear in hint summary."""
+        svc = RuleScopeService()
+        # Set a delegate that disables "BaseRule"
+        svc.set_overlay_provider(
+            lambda ea: FunctionRuleOverlay(disabled_rules=frozenset({"BaseRule"}))
+        )
+
+        # No hints applied -- summary should show empty suppressions
+        summary = svc.get_hint_state_summary(0x1000)
+        assert summary["suppressed_rules"] == [], (
+            f"Delegate suppressions leaked into hint summary: {summary['suppressed_rules']}"
+        )
+
+    def test_summary_includes_hint_owned_suppressions(self) -> None:
+        """Hint-driven suppressions must appear in the summary."""
+        from d810.recon.models import DeobfuscationHints
+
+        svc = RuleScopeService()
+        hints = DeobfuscationHints(
+            func_ea=0x2000,
+            obfuscation_type="ollvm_flat",
+            confidence=0.9,
+            recommended_recipes=(),
+            candidates=(),
+            suppress_rules=("BadRule",),
+        )
+        svc.apply_hints(hints)
+        summary = svc.get_hint_state_summary(0x2000)
+        assert summary["suppressed_rules"] == ["BadRule"]

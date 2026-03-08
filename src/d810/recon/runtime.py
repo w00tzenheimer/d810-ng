@@ -21,7 +21,13 @@ from d810.core.typing import TYPE_CHECKING, Any
 
 from d810.recon.analysis import AnalysisPhase
 from d810.recon.models import DeobfuscationHints
-from d810.recon.outcome import ConsumerOutcomeReport, ReconOutcomeLog, RuleScopeOutcomeAdapter
+from d810.recon.outcome import (
+    ConsumerOutcomeReport,
+    FlowGateOutcomeAdapter,
+    PlannerOutcomeAdapter,
+    ReconOutcomeLog,
+    RuleScopeOutcomeAdapter,
+)
 from d810.recon.phase import ReconPhase
 from d810.recon.flow_hints import derive_flow_context_summary
 from d810.recon.store import ReconStore
@@ -140,6 +146,24 @@ class ReconAnalysisRuntime:
             source=source,
         )
         adapter = RuleScopeOutcomeAdapter(outcome)
+        self.record_outcome(adapter)
+
+    def record_planner_outcome(
+        self,
+        func_ea: int,
+        provenance: Any,
+    ) -> None:
+        """Convenience: build a :class:`PlannerOutcomeAdapter` and record it."""
+        adapter = PlannerOutcomeAdapter(provenance=provenance, func_ea=func_ea)
+        self.record_outcome(adapter)
+
+    def record_flow_gate_outcome(
+        self,
+        func_ea: int,
+        decision: Any,
+    ) -> None:
+        """Convenience: build a :class:`FlowGateOutcomeAdapter` and record it."""
+        adapter = FlowGateOutcomeAdapter(decision=decision, func_ea=func_ea)
         self.record_outcome(adapter)
 
     def get_outcome_summary(self, func_ea: int) -> dict:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from d810.core.typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING, Callable
 
 import ida_hexrays
 
@@ -58,6 +58,7 @@ class FlowMaturityContext:
         self._profile_stats_error: Exception | None = None
         self._active_rule_names: tuple[str, ...] = tuple()
         self._hint_summary: FlowContextHintSummary | None = None
+        self._outcome_callback: Callable[[int, object, str], None] | None = None
 
     @property
     def hint_summary(self) -> FlowContextHintSummary | None:
@@ -77,6 +78,21 @@ class FlowMaturityContext:
         :func:`derive_flow_context_summary`.
         """
         self._hint_summary = summary
+
+    def set_outcome_callback(
+        self, callback: Callable[[int, object, str], None] | None,
+    ) -> None:
+        """Set a callback for recording consumer outcomes.
+
+        The callback signature is ``(func_ea, outcome_object, consumer_type)``
+        where *consumer_type* is ``"planner"`` or ``"flow_gate"``.
+        """
+        self._outcome_callback = callback
+
+    def report_outcome(self, outcome_object: object, consumer_type: str) -> None:
+        """Report a consumer outcome via the registered callback, if any."""
+        if self._outcome_callback is not None:
+            self._outcome_callback(self.func_ea, outcome_object, consumer_type)
 
     def refresh_mba(self, mba: ida_hexrays.mba_t) -> None:
         self.mba = mba
