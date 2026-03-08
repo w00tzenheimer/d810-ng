@@ -6,6 +6,9 @@ produces its own detailed outcome type.  This module defines a
 without forcing subsystem-specific provenance into one lossy format.
 
 Concrete adapters wrap existing outcome types to expose the shared view.
+
+:class:`ReconOutcomeLog` accumulates reports per-function for summary
+and diagnostic purposes.
 """
 from __future__ import annotations
 
@@ -147,3 +150,52 @@ class FlowGateOutcomeAdapter:
     @property
     def func_ea(self) -> int:
         return self._func_ea
+
+
+class ReconOutcomeLog:
+    """Accumulates consumer outcome reports for one decompilation pass.
+
+    Provides a per-function summary of what each consumer decided.
+    Reset at the start of each decompilation via :meth:`reset_for_func`.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[int, list[ConsumerOutcomeReport]] = {}
+
+    def record(self, report: ConsumerOutcomeReport) -> None:
+        """Record a consumer outcome report.
+
+        If a report with the same ``consumer_name`` already exists for the
+        function, the new report replaces it (last-write-wins).
+        """
+        entries = self._entries.setdefault(report.func_ea, [])
+        # Replace existing entry for same consumer (last-write-wins)
+        for i, existing in enumerate(entries):
+            if existing.consumer_name == report.consumer_name:
+                entries[i] = report
+                return
+        entries.append(report)
+
+    def reset_for_func(self, func_ea: int) -> None:
+        """Clear accumulated reports for a function."""
+        self._entries.pop(func_ea, None)
+
+    def get_func_reports(self, func_ea: int) -> list[ConsumerOutcomeReport]:
+        """Get all reports for a function."""
+        return list(self._entries.get(func_ea, []))
+
+    def summary(self, func_ea: int) -> dict:
+        """One-line summary per consumer for a function."""
+        reports = self._entries.get(func_ea, [])
+        return {
+            "func_ea": func_ea,
+            "consumers": [
+                {
+                    "name": r.consumer_name,
+                    "artifacts_available": r.source_artifacts_available,
+                    "summary_available": r.summary_available,
+                    "verdict_applied": r.consumer_verdict_applied,
+                }
+                for r in reports
+            ],
+        }

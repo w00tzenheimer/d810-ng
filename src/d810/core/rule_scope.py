@@ -349,6 +349,40 @@ class RuleScopeService:
         """
         return self._recipe_registry.get(name)
 
+    def get_hint_state_summary(self, func_ea: int) -> dict:
+        """Return a summary of hint-driven state for a function.
+
+        Provides activation observability without a full reporting surface.
+
+        Args:
+            func_ea: Function address to query.
+
+        Returns:
+            Dictionary with keys ``func_ea``, ``has_hint_recipes``,
+            ``recipe_names``, ``suppressed_rules``, ``generation``.
+        """
+        has_recipes = False
+        recipe_names: list[str] = []
+        suppressed: list[str] = []
+
+        if self._hint_overlay is not None:
+            hint_recipes = self._hint_overlay.get_hint_recipes(func_ea)
+            has_recipes = bool(hint_recipes)
+            recipe_names = [r.name for r in hint_recipes]
+
+            # Gather suppressed rules from the overlay
+            overlay = self._hint_overlay(func_ea)
+            if overlay is not None:
+                suppressed = sorted(overlay.disabled_rules)
+
+        return {
+            "func_ea": func_ea,
+            "has_hint_recipes": has_recipes,
+            "recipe_names": recipe_names,
+            "suppressed_rules": suppressed,
+            "generation": self._generation,
+        }
+
     def clear_hint_state(self, func_ea: int) -> None:
         """Clear all hint-driven recipes and suppressions for *func_ea*.
 
