@@ -28,6 +28,7 @@ from d810.cfg.graph_modification import (
     InsertBlock,
     NopInstructions,
     PrivateTerminalSuffix,
+    PrivateTerminalSuffixGroup,
     RedirectBranch,
     RedirectGoto,
     RemoveEdge,
@@ -262,12 +263,34 @@ class PatchPrivateTerminalSuffix:
         )
 
 
+@dataclass(frozen=True)
+class PatchPrivateTerminalSuffixGroup:
+    """Grouped materialization of private terminal suffix chains for multiple anchors."""
+
+    shared_entry_serial: int
+    return_block_serial: int
+    suffix_serials: tuple[int, ...]
+    anchors: tuple[int, ...]
+    # Parallel to anchors: per_anchor_clone_block_ids[i] are clone IDs for anchors[i]
+    per_anchor_clone_block_ids: tuple[tuple[VirtualBlockId, ...], ...]
+    per_anchor_clone_assigned_serials: tuple[tuple[int, ...], ...]
+
+    def to_graph_modification(self) -> PrivateTerminalSuffixGroup:
+        return PrivateTerminalSuffixGroup(
+            anchors=self.anchors,
+            shared_entry_serial=self.shared_entry_serial,
+            return_block_serial=self.return_block_serial,
+            suffix_serials=self.suffix_serials,
+        )
+
+
 BlockCreatingGraphModification = Union[
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
     DuplicateBlock,
     InsertBlock,
     PrivateTerminalSuffix,
+    PrivateTerminalSuffixGroup,
 ]
 
 
@@ -299,6 +322,7 @@ PatchOperation = Union[
     PatchInsertBlock,
     PatchDuplicateBlock,
     PatchPrivateTerminalSuffix,
+    PatchPrivateTerminalSuffixGroup,
 ]
 
 PatchStep = Union[PatchOperation, LegacyBlockOperation]
@@ -393,6 +417,12 @@ class _PendingPrivateTerminalSuffix:
     clone_block_ids: tuple[VirtualBlockId, ...]
 
 
+@dataclass(frozen=True)
+class _PendingPrivateTerminalSuffixGroup:
+    modification: PrivateTerminalSuffixGroup
+    per_anchor_clone_block_ids: tuple[tuple[VirtualBlockId, ...], ...]
+
+
 def is_block_creating_modification(modification: GraphModification) -> bool:
     """Return True when the modification requires a new block."""
     return isinstance(
@@ -403,6 +433,7 @@ def is_block_creating_modification(modification: GraphModification) -> bool:
             DuplicateBlock,
             InsertBlock,
             PrivateTerminalSuffix,
+            PrivateTerminalSuffixGroup,
         ),
     )
 
@@ -735,7 +766,7 @@ def _compile_duplicate_block_step(
 
 
 def _finalize_step(
-    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingPrivateTerminalSuffix,
+    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup,
     relocation_map: PatchRelocationMap,
 ) -> PatchStep:
     match step:
@@ -904,6 +935,33 @@ def _finalize_step(
                 suffix_serials=suffix,
                 clone_block_ids=clone_ids,
                 clone_assigned_serials=tuple(assigned),
+            )
+
+        case _PendingPrivateTerminalSuffixGroup(
+            modification=PrivateTerminalSuffixGroup(
+                anchors=anchors,
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix,
+            ),
+            per_anchor_clone_block_ids=per_anchor_ids,
+        ):
+            per_anchor_assigned: list[tuple[int, ...]] = []
+            for anchor_clone_ids in per_anchor_ids:
+                anchor_assigned: list[int] = []
+                for clone_id in anchor_clone_ids:
+                    serial = relocation_map.assigned_serial_for(clone_id)
+                    if serial is None:
+                        raise ValueError(f"Missing assigned serial for {clone_id}")
+                    anchor_assigned.append(serial)
+                per_anchor_assigned.append(tuple(anchor_assigned))
+            return PatchPrivateTerminalSuffixGroup(
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix,
+                anchors=anchors,
+                per_anchor_clone_block_ids=per_anchor_ids,
+                per_anchor_clone_assigned_serials=tuple(per_anchor_assigned),
             )
 
         case LegacyBlockOperation():
@@ -1123,6 +1181,48 @@ def compile_patch_plan(
                     )
                 )
 
+            case PrivateTerminalSuffixGroup(
+                anchors=anchors,
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix,
+            ):
+                if not suffix:
+                    raise ValueError("PrivateTerminalSuffixGroup requires non-empty suffix_serials")
+                per_anchor_clone_ids: list[tuple[VirtualBlockId, ...]] = []
+                for anchor in anchors:
+                    anchor_clone_ids: list[VirtualBlockId] = []
+                    for idx, suffix_serial in enumerate(suffix):
+                        clone_id = allocator.alloc(f"private_suffix_g_a{anchor}")
+                        anchor_clone_ids.append(clone_id)
+                        if idx < len(suffix) - 1:
+                            next_clone_id = VirtualBlockId(
+                                namespace=f"private_suffix_g_a{anchor}",
+                                ordinal=clone_id.ordinal + 1,
+                            )
+                            outgoing = (PatchEdgeRef(source=clone_id, target=next_clone_id),)
+                        else:
+                            outgoing = ()
+                        incoming = None
+                        if idx == 0:
+                            incoming = PatchEdgeRef(source=anchor, target=shared_entry)
+                        new_blocks.append(
+                            PatchBlockSpec(
+                                block_id=clone_id,
+                                kind="private_terminal_suffix_clone",
+                                template_block=suffix_serial,
+                                incoming_edge=incoming,
+                                outgoing_edges=outgoing,
+                            )
+                        )
+                    per_anchor_clone_ids.append(tuple(anchor_clone_ids))
+                raw_steps.append(
+                    _PendingPrivateTerminalSuffixGroup(
+                        modification=modification,
+                        per_anchor_clone_block_ids=tuple(per_anchor_clone_ids),
+                    )
+                )
+
             case _:
                 raise TypeError(f"Unsupported GraphModification: {type(modification).__name__}")
 
@@ -1162,6 +1262,7 @@ __all__ = [
     "PatchInsertBlock",
     "PatchDuplicateBlock",
     "PatchPrivateTerminalSuffix",
+    "PatchPrivateTerminalSuffixGroup",
     "LegacyBlockOperation",
     "PatchOperation",
     "PatchStep",

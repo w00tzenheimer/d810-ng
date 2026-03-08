@@ -11,6 +11,7 @@ from d810.cfg.graph_modification import (
     GraphModification,
     NopInstructions,
     PrivateTerminalSuffix,
+    PrivateTerminalSuffixGroup,
     RedirectBranch,
     RedirectGoto,
 )
@@ -186,6 +187,24 @@ class ModificationBuilder:
         """Emit a PrivateTerminalSuffix modification for one anchor."""
         return PrivateTerminalSuffix(
             anchor_serial=anchor_serial,
+            shared_entry_serial=shared_entry_serial,
+            return_block_serial=return_block_serial,
+            suffix_serials=suffix_serials,
+            reason=reason,
+        )
+
+    def private_terminal_suffix_group(
+        self,
+        anchors: tuple[int, ...],
+        shared_entry_serial: int,
+        return_block_serial: int,
+        suffix_serials: tuple[int, ...],
+        *,
+        reason: str = "terminal_return_shared_epilogue",
+    ) -> PrivateTerminalSuffixGroup:
+        """Emit a grouped PrivateTerminalSuffixGroup for all anchors."""
+        return PrivateTerminalSuffixGroup(
+            anchors=anchors,
             shared_entry_serial=shared_entry_serial,
             return_block_serial=return_block_serial,
             suffix_serials=suffix_serials,
