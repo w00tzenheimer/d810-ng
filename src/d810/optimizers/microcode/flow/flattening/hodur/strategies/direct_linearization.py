@@ -128,6 +128,7 @@ class ForwardFrontierEntry:
     carrier_source_kind: CarrierSourceKind
     proof_status: str
     notes: str = ""
+    state_const_written: int | None = None
 
 
 class CorridorShape(str, enum.Enum):
@@ -481,7 +482,7 @@ def _classify_carrier_source(
     candidate_serial: int,
     state_var_stkoff: int,
     infra_blocks: frozenset[int],
-) -> CarrierSourceKind:
+) -> tuple[CarrierSourceKind, int | None]:
     """Classify what value the candidate block carries into the shared suffix.
 
     Scans the candidate block's instructions for writes to the state variable
@@ -495,21 +496,33 @@ def _classify_carrier_source(
         infra_blocks: Infrastructure block set (for context).
 
     Returns:
-        The inferred :class:`CarrierSourceKind`.
+        A tuple of ``(kind, state_const_written)`` where *kind* is the
+        inferred :class:`CarrierSourceKind` and *state_const_written* is the
+        numeric constant written to the state variable (``mop_n`` value from
+        the ``m_mov`` instruction), or ``None`` if no state write or the
+        write is non-constant.
     """
     blk_snap = fg.get_block(candidate_serial)
     if blk_snap is None:
-        return CarrierSourceKind.UNKNOWN
+        return CarrierSourceKind.UNKNOWN, None
 
     has_state_write = False
     has_const_write = False
     has_ptr_write = False
     has_expr_write = False
+    state_const_written: int | None = None
 
     for insn in blk_snap.iter_insns():
         if insn.opcode == ida_hexrays.m_mov and insn.d is not None:
             if _mop_matches_stkoff_snapshot(insn.d, state_var_stkoff):
                 has_state_write = True
+                # Capture the constant value written to the state variable
+                if insn.l is not None:
+                    src_t = getattr(insn.l, "t", None)
+                    if src_t == ida_hexrays.mop_n:
+                        nnn = getattr(insn.l, "nnn", None)
+                        if nnn is not None:
+                            state_const_written = getattr(nnn, "value", None)
                 continue
             # Check source operand type
             if insn.l is not None:
@@ -522,14 +535,14 @@ def _classify_carrier_source(
                     has_expr_write = True
 
     if has_state_write and not (has_const_write or has_ptr_write or has_expr_write):
-        return CarrierSourceKind.STATE_CONST
+        return CarrierSourceKind.STATE_CONST, state_const_written
     if has_const_write and not has_state_write:
-        return CarrierSourceKind.REAL_CONST
+        return CarrierSourceKind.REAL_CONST, state_const_written
     if has_ptr_write:
-        return CarrierSourceKind.CURSOR_OR_PTR
+        return CarrierSourceKind.CURSOR_OR_PTR, state_const_written
     if has_expr_write:
-        return CarrierSourceKind.EXPR
-    return CarrierSourceKind.UNKNOWN
+        return CarrierSourceKind.EXPR, state_const_written
+    return CarrierSourceKind.UNKNOWN, state_const_written
 
 
 def _compute_linear_suffix_chain(
@@ -1584,8 +1597,9 @@ class DirectHandlerLinearizationStrategy:
 
                     # Classify carrier source kind
                     carrier_kind = CarrierSourceKind.UNKNOWN
+                    carrier_const: int | None = None
                     if fw_candidate is not None:
-                        carrier_kind = _classify_carrier_source(
+                        carrier_kind, carrier_const = _classify_carrier_source(
                             fg, fw_candidate, state_var_stkoff, full_infra,
                         )
 
@@ -1622,6 +1636,7 @@ class DirectHandlerLinearizationStrategy:
                         carrier_source_kind=carrier_kind,
                         proof_status=proof_status,
                         notes="; ".join(notes_parts) if notes_parts else "",
+                        state_const_written=carrier_const,
                     )
                     forward_frontier_entries.append(entry)
 
@@ -1648,6 +1663,7 @@ class DirectHandlerLinearizationStrategy:
                             notes="shared candidate (freq=%d)" % candidate_frequency[
                                 entry.forward_candidate
                             ],
+                            state_const_written=entry.state_const_written,
                         )
 
                 # --- Structured per-handler diagnostic ---
