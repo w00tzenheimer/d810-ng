@@ -46,20 +46,26 @@ If you need to verify actual IDA microcode (AstNode/mop_t), use this module:
 
 =============================================================================
 """
+
 from __future__ import annotations
 
 import functools
 import sys
 
-from d810.core import typing
-from d810.core.typing import TYPE_CHECKING, Dict, Tuple
-
 import ida_hexrays
 import idaapi
 
-from d810.core import getLogger
+from d810.core import getLogger, typing
+from d810.core.typing import TYPE_CHECKING, Dict, Tuple
 from d810.errors import D810Z3Exception
+from d810.evaluator.hexrays_microcode.def_search import (
+    recursively_resolve_ast as _recursively_resolve_ast,
+)
+from d810.evaluator.hexrays_microcode.def_search import (
+    resolve_mop_to_ast as _resolve_mop_to_ast,
+)
 from d810.hexrays.expr.ast import AstLeaf, AstNode
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
@@ -67,27 +73,27 @@ from d810.hexrays.utils.hexrays_formatters import (
     opcode_to_string,
 )
 from d810.hexrays.utils.hexrays_helpers import get_mop_index, structural_mop_hash
-from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.speedups.bootstrap import ensure_speedups_on_path
 
 logger = getLogger(__name__)
 
 ensure_speedups_on_path()
 
+# Since version 4.8.2, when Z3 is creating a BitVec, it relies on _str_to_bytes which uses sys.stdout.encoding
+# However, in IDA Pro (7.6sp1) sys.stdout is an object of type IDAPythonStdOut
+# which doesn't have a 'encoding' attribute, thus we set it to something, so that Z3 works
+
+try:
+    x = sys.stdout.encoding
+except AttributeError:
+    logger.debug("Couldn't find sys.stdout.encoding, setting it to utf-8")
+    sys.stdout.encoding = "utf-8"  # type: ignore
+
 try:
     import z3
 
     Z3_INSTALLED = True
-    # Since version 4.8.2, when Z3 is creating a BitVec, it relies on _str_to_bytes which uses sys.stdout.encoding
-    # However, in IDA Pro (7.6sp1) sys.stdout is an object of type IDAPythonStdOut
-    # which doesn't have a 'encoding' attribute, thus we set it to something, so that Z3 works
-    import sys
 
-    try:
-        x = sys.stdout.encoding
-    except AttributeError:
-        logger.debug("Couldn't find sys.stdout.encoding, setting it to utf-8")
-        sys.stdout.encoding = "utf-8"  # type: ignore
 except (ImportError, AttributeError, OSError) as e:
     logger.warning("Z3 import failed (%s). Z3 features disabled.", e)
     Z3_INSTALLED = False
@@ -332,7 +338,9 @@ class AstNodeZ3Visitor:
                 # Gracefully fail on unknown opcode; avoid type issues in logging.
                 op = getattr(ast, "opcode", None)
                 op_str = opcode_to_string(int(op)) if isinstance(op, int) else str(op)
-                raise D810Z3Exception(f"Z3 evaluation: Unknown opcode {op_str} for {ast}")
+                raise D810Z3Exception(
+                    f"Z3 evaluation: Unknown opcode {op_str} for {ast}"
+                )
 
 
 @requires_z3_installed
@@ -383,8 +391,18 @@ class Z3MopProver:
     ):
         self._blk = blk
         self._ins = ins
-        self._eq_cache: Dict[typing.Tuple[typing.Tuple[int, int, int | str], typing.Tuple[int, int, int | str]], bool] = {}
-        self._neq_cache: Dict[typing.Tuple[typing.Tuple[int, int, int | str], typing.Tuple[int, int, int | str]], bool] = {}
+        self._eq_cache: Dict[
+            typing.Tuple[
+                typing.Tuple[int, int, int | str], typing.Tuple[int, int, int | str]
+            ],
+            bool,
+        ] = {}
+        self._neq_cache: Dict[
+            typing.Tuple[
+                typing.Tuple[int, int, int | str], typing.Tuple[int, int, int | str]
+            ],
+            bool,
+        ] = {}
         self._always_zero_cache: Dict[typing.Tuple[int, int, int | str], bool] = {}
         self._always_nonzero_cache: Dict[typing.Tuple[int, int, int | str], bool] = {}
 
@@ -394,8 +412,10 @@ class Z3MopProver:
         ins: ida_hexrays.minsn_t | None,
     ) -> tuple[ida_hexrays.mblock_t | None, ida_hexrays.minsn_t | None]:
         """Per-call blk/ins override constructor defaults."""
-        return (blk if blk is not None else self._blk,
-                ins if ins is not None else self._ins)
+        return (
+            blk if blk is not None else self._blk,
+            ins if ins is not None else self._ins,
+        )
 
     @requires_z3_installed
     def are_equal(
@@ -416,10 +436,10 @@ class Z3MopProver:
         if isinstance(mop2, MopSnapshot):
             mop2 = mop2.to_mop()
         # Validate SWIG objects before accessing their attributes
-        if not hasattr(mop1, 't') or not hasattr(mop1, 'size'):
+        if not hasattr(mop1, "t") or not hasattr(mop1, "size"):
             logger.warning("are_equal: mop1 is invalid or freed SWIG object")
             return False
-        if not hasattr(mop2, 't') or not hasattr(mop2, 'size'):
+        if not hasattr(mop2, "t") or not hasattr(mop2, "size"):
             logger.warning("are_equal: mop2 is invalid or freed SWIG object")
             return False
         if logger.debug_on:
@@ -439,8 +459,16 @@ class Z3MopProver:
             k1 = (int(mop1.t), int(mop1.size), structural_mop_hash(mop1, 0))
             k2 = (int(mop2.t), int(mop2.size), structural_mop_hash(mop2, 0))
         except Exception:
-            k1 = (int(mop1.t), int(mop1.size), mop1.dstr() if hasattr(mop1, 'dstr') else repr(mop1))
-            k2 = (int(mop2.t), int(mop2.size), mop2.dstr() if hasattr(mop2, 'dstr') else repr(mop2))
+            k1 = (
+                int(mop1.t),
+                int(mop1.size),
+                mop1.dstr() if hasattr(mop1, "dstr") else repr(mop1),
+            )
+            k2 = (
+                int(mop2.t),
+                int(mop2.size),
+                mop2.dstr() if hasattr(mop2, "dstr") else repr(mop2),
+            )
         if k2 < k1:
             k1, k2 = k2, k1
         cache_key = (k1, k2)
@@ -478,10 +506,10 @@ class Z3MopProver:
         if isinstance(mop2, MopSnapshot):
             mop2 = mop2.to_mop()
         # Validate SWIG objects
-        if not hasattr(mop1, 't') or not hasattr(mop1, 'size'):
+        if not hasattr(mop1, "t") or not hasattr(mop1, "size"):
             logger.warning("are_unequal: mop1 is invalid or freed SWIG object")
             return True
-        if not hasattr(mop2, 't') or not hasattr(mop2, 'size'):
+        if not hasattr(mop2, "t") or not hasattr(mop2, "size"):
             logger.warning("are_unequal: mop2 is invalid or freed SWIG object")
             return True
         if logger.debug_on:
@@ -501,8 +529,16 @@ class Z3MopProver:
             k1 = (int(mop1.t), int(mop1.size), structural_mop_hash(mop1, 0))
             k2 = (int(mop2.t), int(mop2.size), structural_mop_hash(mop2, 0))
         except Exception:
-            k1 = (int(mop1.t), int(mop1.size), mop1.dstr() if hasattr(mop1, 'dstr') else repr(mop1))
-            k2 = (int(mop2.t), int(mop2.size), mop2.dstr() if hasattr(mop2, 'dstr') else repr(mop2))
+            k1 = (
+                int(mop1.t),
+                int(mop1.size),
+                mop1.dstr() if hasattr(mop1, "dstr") else repr(mop1),
+            )
+            k2 = (
+                int(mop2.t),
+                int(mop2.size),
+                mop2.dstr() if hasattr(mop2, "dstr") else repr(mop2),
+            )
         if k2 < k1:
             k1, k2 = k2, k1
         cache_key = (k1, k2)
@@ -537,7 +573,7 @@ class Z3MopProver:
         if isinstance(mop, MopSnapshot):
             mop = mop.to_mop()
         # Validate SWIG object
-        if not hasattr(mop, 't') or not hasattr(mop, 'size'):
+        if not hasattr(mop, "t") or not hasattr(mop, "size"):
             logger.warning("is_always_zero: mop is invalid or freed SWIG object")
             return False
 
@@ -545,7 +581,11 @@ class Z3MopProver:
         try:
             cache_key = (int(mop.t), int(mop.size), structural_mop_hash(mop, 0))
         except Exception:
-            cache_key = (int(mop.t), int(mop.size), mop.dstr() if hasattr(mop, 'dstr') else repr(mop))
+            cache_key = (
+                int(mop.t),
+                int(mop.size),
+                mop.dstr() if hasattr(mop, "dstr") else repr(mop),
+            )
 
         cached = self._always_zero_cache.get(cache_key)
         if cached is not None:
@@ -562,27 +602,25 @@ class Z3MopProver:
                 is_resolvable = True
 
         # If mop is resolvable and we have context, try to find its definition
-        if ast is None or (hasattr(ast, 'is_leaf') and ast.is_leaf() and is_resolvable):
+        if ast is None or (hasattr(ast, "is_leaf") and ast.is_leaf() and is_resolvable):
             if blk is not None and ins is not None:
-                from d810.recon.flow.def_search import resolve_mop_to_ast as _resolve_mop_to_ast
+
                 resolved_ast = _resolve_mop_to_ast(mop, blk, ins)
                 if resolved_ast is not None:
                     ast = resolved_ast
                     if logger.debug_on:
                         logger.debug(
                             "is_always_zero: Resolved %s via tracker to AST: %s",
-                            format_mop_t(mop), ast
+                            format_mop_t(mop),
+                            ast,
                         )
 
         # Recursively resolve any register/stack leaves in the AST
         if ast is not None and blk is not None and ins is not None:
-            from d810.recon.flow.def_search import recursively_resolve_ast as _recursively_resolve_ast
+
             ast = _recursively_resolve_ast(ast, blk, ins)
             if logger.debug_on:
-                logger.debug(
-                    "is_always_zero: After recursive resolution: %s",
-                    ast
-                )
+                logger.debug("is_always_zero: After recursive resolution: %s", ast)
 
         if ast is None:
             self._always_zero_cache[cache_key] = False
@@ -634,7 +672,7 @@ class Z3MopProver:
         if isinstance(mop, MopSnapshot):
             mop = mop.to_mop()
         # Validate SWIG object
-        if not hasattr(mop, 't') or not hasattr(mop, 'size'):
+        if not hasattr(mop, "t") or not hasattr(mop, "size"):
             logger.warning("is_always_nonzero: mop is invalid or freed SWIG object")
             return False
 
@@ -642,7 +680,11 @@ class Z3MopProver:
         try:
             cache_key = (int(mop.t), int(mop.size), structural_mop_hash(mop, 0))
         except Exception:
-            cache_key = (int(mop.t), int(mop.size), mop.dstr() if hasattr(mop, 'dstr') else repr(mop))
+            cache_key = (
+                int(mop.t),
+                int(mop.size),
+                mop.dstr() if hasattr(mop, "dstr") else repr(mop),
+            )
 
         cached = self._always_nonzero_cache.get(cache_key)
         if cached is not None:
@@ -659,27 +701,24 @@ class Z3MopProver:
                 is_resolvable = True
 
         # If mop is resolvable and we have context, try to find its definition
-        if ast is None or (hasattr(ast, 'is_leaf') and ast.is_leaf() and is_resolvable):
+        if ast is None or (hasattr(ast, "is_leaf") and ast.is_leaf() and is_resolvable):
             if blk is not None and ins is not None:
-                from d810.recon.flow.def_search import resolve_mop_to_ast as _resolve_mop_to_ast
                 resolved_ast = _resolve_mop_to_ast(mop, blk, ins)
                 if resolved_ast is not None:
                     ast = resolved_ast
                     if logger.debug_on:
                         logger.debug(
                             "is_always_nonzero: Resolved %s via tracker to AST: %s",
-                            format_mop_t(mop), ast
+                            format_mop_t(mop),
+                            ast,
                         )
 
         # Recursively resolve any register/stack leaves in the AST
         if ast is not None and blk is not None and ins is not None:
-            from d810.recon.flow.def_search import recursively_resolve_ast as _recursively_resolve_ast
+
             ast = _recursively_resolve_ast(ast, blk, ins)
             if logger.debug_on:
-                logger.debug(
-                    "is_always_nonzero: After recursive resolution: %s",
-                    ast
-                )
+                logger.debug("is_always_nonzero: After recursive resolution: %s", ast)
 
         if ast is None:
             self._always_nonzero_cache[cache_key] = False
@@ -735,7 +774,7 @@ class Z3MopProver:
             # Extract unique variable names (excluding constants)
             var_names = set()
             for leaf in all_leaves:
-                if not leaf.is_constant() and hasattr(leaf, 'name'):
+                if not leaf.is_constant() and hasattr(leaf, "name"):
                     var_names.add(leaf.name)
 
             # Create Z3 BitVec for each variable
@@ -743,13 +782,17 @@ class Z3MopProver:
 
             # Map the z3_vars to the leaves for conversion
             for leaf in all_leaves:
-                if not leaf.is_constant() and hasattr(leaf, 'name') and leaf.name in z3_vars:
+                if (
+                    not leaf.is_constant()
+                    and hasattr(leaf, "name")
+                    and leaf.name in z3_vars
+                ):
                     leaf.z3_var = z3_vars[leaf.name]
                     leaf.z3_var_name = leaf.name
         else:
             # Use provided z3_vars (includes both variables and pattern-matching constants)
             for leaf in all_leaves:
-                if not hasattr(leaf, 'name'):
+                if not hasattr(leaf, "name"):
                     continue
 
                 # Assign z3_var to regular variables
@@ -759,7 +802,7 @@ class Z3MopProver:
                 # Also assign z3_var to pattern-matching constants (symbolic constants)
                 elif leaf.is_constant() and leaf.name in z3_vars:
                     # Pattern-matching constant like Const("c_1") - treat as symbolic
-                    if hasattr(leaf, 'expected_value') and leaf.expected_value is None:
+                    if hasattr(leaf, "expected_value") and leaf.expected_value is None:
                         leaf.z3_var = z3_vars[leaf.name]
                         leaf.z3_var_name = leaf.name
 

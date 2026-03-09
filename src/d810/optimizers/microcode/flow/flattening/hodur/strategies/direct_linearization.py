@@ -541,7 +541,7 @@ def _resolve_indirect_state_write_via_mba(
         def location, or ``None`` if resolution fails.
     """
     try:
-        from d810.recon.flow.def_search import find_def_in_block
+        from d810.evaluator.hexrays_microcode.def_search import find_def_in_block
     except ImportError:
         return None
 

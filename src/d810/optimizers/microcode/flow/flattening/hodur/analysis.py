@@ -27,7 +27,7 @@ from d810.evaluator.hexrays_microcode.tracker import (
     get_all_possibles_values,
 )
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
-from d810.recon.flow.def_search import resolve_mop_via_predecessors
+from d810.evaluator.hexrays_microcode.def_search import resolve_mop_via_predecessors
 from d810.hexrays.utils.hexrays_formatters import format_mop_t
 from d810.hexrays.utils.hexrays_helpers import (
     append_mop_if_not_in_list,
