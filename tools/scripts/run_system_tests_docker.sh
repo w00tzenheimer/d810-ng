@@ -52,6 +52,7 @@
 # Examples:
 #   ./run_system_tests_docker.sh system
 #   ./run_system_tests_docker.sh system -w my-worktree
+#   (explicit repo root, e.g. when not cwd in repo): D810_REPO_ROOT=/path/to/d810 ./run_system_tests_docker.sh system -w recon-lifecycle
 #   ./run_system_tests_docker.sh shell
 #   ./run_system_tests_docker.sh shell -w verifycpp-on-ngFlowGraphTransform -l
 #   ./run_system_tests_docker.sh exec -- python -c 'print("hello world")'
