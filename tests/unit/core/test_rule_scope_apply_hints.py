@@ -1,4 +1,6 @@
 """Tests for RuleScopeService.apply_hints() and supporting types."""
+import logging
+
 import pytest
 from dataclasses import dataclass, field
 
@@ -771,3 +773,120 @@ class TestApplyHintsWithInferenceFactory:
 
         assert result.inferences_applied == ("good",)
         assert result.inferences_not_found == ("bad",)
+
+
+# ---------------------------------------------------------------------------
+# Conflict detection: user config overrides inference delta
+# ---------------------------------------------------------------------------
+
+
+class TestInferenceConflictLogging:
+    def test_suppress_overridden_by_whitelist(self, caplog: pytest.LogCaptureFixture) -> None:
+        """When user whitelists a function for a rule, suppress delta is overridden."""
+        svc = _make_service_with_rules(
+            _DummyRule(
+                name="ConstantFolding",
+                maturities=[1],
+                use_whitelist=True,
+                whitelisted_function_ea_list=[0x1000],
+            ),
+            _DummyRule(name="OtherRule", maturities=[1]),
+        )
+
+        def suppress_cf(hints: object) -> list[RuleDelta]:
+            return [RuleDelta("ConstantFolding", "suppress", {})]
+
+        svc.register_inference("test", suppress_cf)
+
+        hints = _DummyHints(func_ea=0x1000, recommended_inferences=("test",))
+        with caplog.at_level(logging.WARNING, logger="D810.rule_scope"):
+            svc.apply_hints(hints)
+
+        assert "overridden by user config" in caplog.text
+        assert "whitelisted" in caplog.text
+
+        # The rule should still be active because suppression was overridden
+        active = _active_names(svc, 0x1000)
+        assert "ConstantFolding" in active
+
+    def test_suppress_not_overridden_when_func_not_whitelisted(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Suppress delta is applied when func_ea is NOT in the whitelist."""
+        svc = _make_service_with_rules(
+            _DummyRule(
+                name="ConstantFolding",
+                maturities=[1],
+                use_whitelist=True,
+                whitelisted_function_ea_list=[0x9999],  # different func
+            ),
+        )
+
+        def suppress_cf(hints: object) -> list[RuleDelta]:
+            return [RuleDelta("ConstantFolding", "suppress", {})]
+
+        svc.register_inference("test", suppress_cf)
+
+        hints = _DummyHints(func_ea=0x1000, recommended_inferences=("test",))
+        with caplog.at_level(logging.WARNING, logger="D810.rule_scope"):
+            svc.apply_hints(hints)
+
+        assert "overridden by user config" not in caplog.text
+
+    def test_activate_overridden_by_blacklist(self, caplog: pytest.LogCaptureFixture) -> None:
+        """When user blacklists a function for a rule, activate delta is overridden."""
+        svc = _make_service_with_rules(
+            _DummyRule(
+                name="SomeRule",
+                maturities=[1],
+                use_blacklist=True,
+                blacklisted_function_ea_list=[0x2000],
+            ),
+        )
+
+        def activate_rule(hints: object) -> list[RuleDelta]:
+            return [RuleDelta("SomeRule", "activate", {})]
+
+        svc.register_inference("test", activate_rule)
+
+        hints = _DummyHints(func_ea=0x2000, recommended_inferences=("test",))
+        with caplog.at_level(logging.WARNING, logger="D810.rule_scope"):
+            svc.apply_hints(hints)
+
+        assert "overridden by user config" in caplog.text
+        assert "blacklisted" in caplog.text
+
+    def test_no_conflict_without_whitelist_or_blacklist(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """No conflict logged when rule has no whitelist/blacklist."""
+        svc = _make_service_with_rules(
+            _DummyRule(name="PlainRule", maturities=[1]),
+        )
+
+        def suppress_plain(hints: object) -> list[RuleDelta]:
+            return [RuleDelta("PlainRule", "suppress", {})]
+
+        svc.register_inference("test", suppress_plain)
+
+        hints = _DummyHints(func_ea=0x1000, recommended_inferences=("test",))
+        with caplog.at_level(logging.WARNING, logger="D810.rule_scope"):
+            svc.apply_hints(hints)
+
+        assert "overridden by user config" not in caplog.text
+
+    def test_suppress_applied_when_no_whitelist(self) -> None:
+        """Without whitelist, suppress delta still disables the rule."""
+        svc = _make_service_with_rules(
+            _DummyRule(name="R1", maturities=[1]),
+        )
+
+        def suppress_r1(hints: object) -> list[RuleDelta]:
+            return [RuleDelta("R1", "suppress", {})]
+
+        svc.register_inference("test", suppress_r1)
+        hints = _DummyHints(func_ea=0x1000, recommended_inferences=("test",))
+        svc.apply_hints(hints)
+
+        active = _active_names(svc, 0x1000)
+        assert "R1" not in active
