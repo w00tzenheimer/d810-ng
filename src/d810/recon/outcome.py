@@ -99,7 +99,20 @@ class RuleScopeOutcomeAdapter:
 
     @property
     def detail(self) -> str:
-        return f"source={self._outcome.source}"
+        parts = [f"source={self._outcome.source}"]
+        ar = self._outcome.apply_result
+        if ar is not None:
+            applied = getattr(ar, "inferences_applied", ())
+            not_found = getattr(ar, "inferences_not_found", ())
+            if applied:
+                parts.append(
+                    "inferences_applied=%s" % ",".join(applied)
+                )
+            if not_found:
+                parts.append(
+                    "inferences_not_found=%s" % ",".join(not_found)
+                )
+        return "; ".join(parts)
 
     @property
     def provenance_dict(self) -> dict | None:
