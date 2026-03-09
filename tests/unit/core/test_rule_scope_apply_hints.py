@@ -663,3 +663,111 @@ class TestGetHintStateSummary:
         svc.apply_hints(hints)
         summary = svc.get_hint_state_summary(0x2000)
         assert summary["suppressed_rules"] == ["BadRule"]
+
+
+# ---------------------------------------------------------------------------
+# TestApplyHintsWithInferenceFactory (Task 4 — E2E factory verification)
+# ---------------------------------------------------------------------------
+
+class TestApplyHintsWithInferenceFactory:
+    """End-to-end verification that registered inference factories are
+    called correctly by ``apply_hints`` and produce observable effects."""
+
+    def test_factory_called_and_suppress_applied(self) -> None:
+        """Factory returns suppress delta -> rule is disabled via inference overlay."""
+        svc = _make_service_with_rules(
+            _DummyRule(name="ConstantFolding", maturities=[1]),
+            _DummyRule(name="OtherRule", maturities=[1]),
+        )
+
+        def unflattening(hints: object) -> list[RuleDelta]:
+            return [RuleDelta("ConstantFolding", "suppress", {})]
+
+        svc.register_inference("unflattening", unflattening)
+
+        hints = _DummyHints(
+            func_ea=0x1000,
+            recommended_inferences=("unflattening",),
+        )
+        result = svc.apply_hints(hints)
+
+        assert "unflattening" in result.inferences_applied
+        assert "unflattening" not in result.inferences_not_found
+
+        # Verify inference is tracked in hint state summary
+        summary = svc.get_hint_state_summary(0x1000)
+        assert summary["has_hint_inferences"] is True
+        assert "unflattening" in summary["inference_names"]
+
+        # Verify suppressed rule is not active (disabled via inference overlay)
+        active = _active_names(svc, 0x1000)
+        assert "ConstantFolding" not in active
+        assert "OtherRule" in active  # only ConstantFolding is suppressed
+
+    def test_unknown_inference_in_not_found(self) -> None:
+        """Unknown inference names go to inferences_not_found."""
+        svc = _make_service_with_rules(
+            _DummyRule(name="R1", maturities=[1]),
+        )
+        hints = _DummyHints(
+            func_ea=0x1000,
+            recommended_inferences=("nonexistent",),
+        )
+        result = svc.apply_hints(hints)
+
+        assert "nonexistent" in result.inferences_not_found
+        assert result.inferences_applied == ()
+
+    def test_inferences_applied_populated(self) -> None:
+        """inferences_applied tracks all factories that ran successfully."""
+        svc = _make_service_with_rules(
+            _DummyRule(name="R1", maturities=[1]),
+            _DummyRule(name="R2", maturities=[1]),
+            _DummyRule(name="R3", maturities=[1]),
+        )
+
+        def factory_a(hints: object) -> list[RuleDelta]:
+            return [RuleDelta("R1", "suppress", {})]
+
+        def factory_b(hints: object) -> list[RuleDelta]:
+            return [RuleDelta("R2", "suppress", {})]
+
+        svc.register_inference("a", factory_a)
+        svc.register_inference("b", factory_b)
+
+        hints = _DummyHints(
+            func_ea=0x1000,
+            recommended_inferences=("a", "b"),
+        )
+        result = svc.apply_hints(hints)
+
+        assert result.inferences_applied == ("a", "b")
+        # Verify both inferences are tracked in summary
+        summary = svc.get_hint_state_summary(0x1000)
+        assert "a" in summary["inference_names"]
+        assert "b" in summary["inference_names"]
+        # Verify suppressed rules are not active
+        active = _active_names(svc, 0x1000)
+        assert "R1" not in active
+        assert "R2" not in active
+        assert "R3" in active
+
+    def test_mixed_found_and_not_found(self) -> None:
+        """Mix of known and unknown inferences populates both lists."""
+        svc = _make_service_with_rules(
+            _DummyRule(name="R1", maturities=[1]),
+        )
+
+        def good_factory(hints: object) -> list[RuleDelta]:
+            return [RuleDelta("R1", "suppress", {})]
+
+        svc.register_inference("good", good_factory)
+
+        hints = _DummyHints(
+            func_ea=0x1000,
+            recommended_inferences=("good", "bad"),
+        )
+        result = svc.apply_hints(hints)
+
+        assert result.inferences_applied == ("good",)
+        assert result.inferences_not_found == ("bad",)
