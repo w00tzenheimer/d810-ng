@@ -336,6 +336,9 @@ def find_reaching_defs_for_reg(
         )
         return []
 
+    if chain is None:
+        return []
+
     # chain_t extends intvec_t — each element is a block serial where the
     # register is defined.  We scan those blocks for actual defining instructions.
     results: list[DefSite] = []
@@ -393,6 +396,9 @@ def find_reaching_defs_for_stkvar(
             stkoff,
             size,
         )
+        return []
+
+    if chain is None:
         return []
 
     # chain_t extends intvec_t — each element is a block serial where the
@@ -581,6 +587,9 @@ def find_all_uses_of_stkvar(
             blk_chains = du[blk_idx]  # type: ignore[index]
             chain = blk_chains.get_stk_chain(stkoff, width)
         except (IndexError, AttributeError, RuntimeError):
+            continue
+
+        if chain is None:
             continue
 
         # chain_t entries are block serials where the variable is used.
