@@ -479,13 +479,25 @@ class RuleScopeService:
                 continue
             # Invoke factory to get deltas, then convert to overlay
             deltas = factory(hints)
+            logger.info(
+                "rule_inference: func=0x%x inference=%r produced %d delta(s)",
+                func_ea, inference_name, len(deltas),
+            )
             enabled: set[str] = set()
             disabled: set[str] = set()
             for delta in deltas:
                 if delta.action == "activate":
                     enabled.add(delta.rule_name)
+                    logger.info(
+                        "rule_inference: func=0x%x delta activate(%s) -> applied",
+                        func_ea, delta.rule_name,
+                    )
                 elif delta.action == "suppress":
                     disabled.add(delta.rule_name)
+                    logger.info(
+                        "rule_inference: func=0x%x delta suppress(%s) -> applied",
+                        func_ea, delta.rule_name,
+                    )
             scoped = RuleInferenceOverlay(
                 name=inference_name,
                 enabled_rules=frozenset(enabled),
