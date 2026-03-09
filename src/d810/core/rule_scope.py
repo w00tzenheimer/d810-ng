@@ -75,6 +75,36 @@ class RuleScopeCaches:
     active_by_scope: dict[ScopeKey, ActiveRuleBundle] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class RuleDelta:
+    """A single rule adjustment inferred from recon analysis.
+
+    Represents a diff from baseline rule behavior for a specific function.
+    Deltas are ephemeral by default (applied per-decompilation via
+    ``apply_hints``) and can be persisted to project config via the
+    ``persist_inference`` action.
+
+    Precedence (highest to lowest):
+        1. User ``per_function_overrides`` in project JSON
+        2. User ``whitelisted_functions`` / ``blacklisted_functions``
+        3. Inference ``override`` deltas (this type, runtime)
+        4. Inference ``suppress``/``activate`` deltas (this type, runtime)
+        5. Global rule config defaults
+
+    Actions:
+        - ``"suppress"``: Disable the rule for this function.
+        - ``"activate"``: Force-enable the rule for this function.
+        - ``"override"``: Apply parameter overrides from ``overrides`` dict.
+
+    The naming choice of "inference" over "recipe" reflects that these
+    adjustments are *derived from automated recon analysis*, not hand-authored
+    presets. "Delta" conveys a diff from baseline behavior.
+    """
+    rule_name: str
+    action: str                 # "suppress" | "activate" | "override"
+    overrides: dict[str, Any]   # {} for suppress/activate; key:value for override
+
+
 @dataclass(frozen=True, slots=True)
 class FunctionRuleOverlay:
     enabled_rules: frozenset[str] = frozenset()

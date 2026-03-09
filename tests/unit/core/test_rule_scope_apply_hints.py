@@ -1,4 +1,5 @@
 """Tests for RuleScopeService.apply_hints() and supporting types."""
+import pytest
 from dataclasses import dataclass, field
 
 from d810.core.rule_scope import (
@@ -6,9 +7,35 @@ from d810.core.rule_scope import (
     FunctionRuleOverlay,
     HintOverlayProvider,
     PIPELINE_INSTRUCTION,
+    RuleDelta,
     RuleRecipeOverlay,
     RuleScopeService,
 )
+
+
+# ---------------------------------------------------------------------------
+# RuleDelta
+# ---------------------------------------------------------------------------
+
+class TestRuleDelta:
+    def test_create_suppress_delta(self) -> None:
+        delta = RuleDelta(rule_name="ConstantFolding", action="suppress", overrides={})
+        assert delta.rule_name == "ConstantFolding"
+        assert delta.action == "suppress"
+        assert delta.overrides == {}
+
+    def test_create_override_delta(self) -> None:
+        delta = RuleDelta(
+            rule_name="HodurUnflattener",
+            action="override",
+            overrides={"max_passes": 10, "max_calls_exit_blocks": 500},
+        )
+        assert delta.overrides["max_passes"] == 10
+
+    def test_frozen(self) -> None:
+        delta = RuleDelta(rule_name="X", action="suppress", overrides={})
+        with pytest.raises(AttributeError):
+            delta.rule_name = "Y"  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
