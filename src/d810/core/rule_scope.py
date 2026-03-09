@@ -487,17 +487,31 @@ class RuleScopeService:
             disabled: set[str] = set()
             for delta in deltas:
                 if delta.action == "activate":
-                    enabled.add(delta.rule_name)
-                    logger.info(
-                        "rule_inference: func=0x%x delta activate(%s) -> applied",
-                        func_ea, delta.rule_name,
-                    )
+                    if self._user_config_overrides_delta(delta, func_ea):
+                        logger.warning(
+                            "rule_inference: func=0x%x delta activate(%s) -> "
+                            "overridden by user config (rule is blacklisted)",
+                            func_ea, delta.rule_name,
+                        )
+                    else:
+                        enabled.add(delta.rule_name)
+                        logger.info(
+                            "rule_inference: func=0x%x delta activate(%s) -> applied",
+                            func_ea, delta.rule_name,
+                        )
                 elif delta.action == "suppress":
-                    disabled.add(delta.rule_name)
-                    logger.info(
-                        "rule_inference: func=0x%x delta suppress(%s) -> applied",
-                        func_ea, delta.rule_name,
-                    )
+                    if self._user_config_overrides_delta(delta, func_ea):
+                        logger.warning(
+                            "rule_inference: func=0x%x delta suppress(%s) -> "
+                            "overridden by user config (rule is whitelisted)",
+                            func_ea, delta.rule_name,
+                        )
+                    else:
+                        disabled.add(delta.rule_name)
+                        logger.info(
+                            "rule_inference: func=0x%x delta suppress(%s) -> applied",
+                            func_ea, delta.rule_name,
+                        )
             scoped = RuleInferenceOverlay(
                 name=inference_name,
                 enabled_rules=frozenset(enabled),
@@ -829,3 +843,37 @@ class RuleScopeService:
         if rule_name in inference.disabled_rules:
             return False
         return True
+
+    def _user_config_overrides_delta(
+        self,
+        delta: RuleDelta,
+        func_ea: int,
+    ) -> bool:
+        """Check whether user config (whitelist/blacklist) would override a delta.
+
+        For ``suppress`` deltas: returns ``True`` if the rule has an
+        ``allow_eas`` whitelist containing *func_ea* (user explicitly
+        whitelisted this function for the rule).
+
+        For ``activate`` deltas: returns ``True`` if the rule has a
+        ``deny_eas`` blacklist containing *func_ea* (user explicitly
+        blacklisted this function from the rule).
+
+        Returns ``False`` if no compiled selectors exist or the rule is
+        not found in any pipeline.
+        """
+        compiled = self._caches.compiled
+        if compiled is None:
+            return False
+
+        # Selectors are keyed as "{pipeline}:{rule_name}"; check all pipelines.
+        for key, selector in compiled.selectors.items():
+            if selector.rule_name != delta.rule_name:
+                continue
+            if delta.action == "suppress":
+                if selector.allow_eas is not None and func_ea in selector.allow_eas:
+                    return True
+            elif delta.action == "activate":
+                if selector.deny_eas is not None and func_ea in selector.deny_eas:
+                    return True
+        return False
