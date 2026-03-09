@@ -36,6 +36,69 @@ logger = getLogger(__name__)
 _USE_NATIVE_DEF_SEARCH = os.environ.get("D810_PATTERN_USE_NATIVE_DEF_SEARCH", "1") != "0"
 
 
+# ---------------------------------------------------------------------------
+# mlist helpers
+# ---------------------------------------------------------------------------
+
+
+def operand_to_mlist(
+    blk: ida_hexrays.mblock_t, mop: ida_hexrays.mop_t
+) -> ida_hexrays.mlist_t:
+    """Build an ``mlist_t`` representing the locations touched by *mop*.
+
+    Uses ``blk.append_use_list(ml, mop, MUST_ACCESS)``.
+
+    Args:
+        blk: The block context (needed for stack frame layout).
+        mop: The operand to convert.
+
+    Returns:
+        An ``mlist_t`` with the locations of *mop*.
+    """
+    ml = ida_hexrays.mlist_t()
+    blk.append_use_list(ml, mop, ida_hexrays.MUST_ACCESS)
+    return ml
+
+
+def instruction_uses(
+    blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t
+) -> ida_hexrays.mlist_t:
+    """Return ``mlist_t`` of all locations read by *ins*.
+
+    Uses ``blk.build_use_list(ins, MUST_ACCESS)``.
+
+    Args:
+        blk: The block containing *ins*.
+        ins: The instruction to query.
+
+    Returns:
+        An ``mlist_t`` with all read locations.
+    """
+    return blk.build_use_list(ins, ida_hexrays.MUST_ACCESS)
+
+
+def instruction_defs(
+    blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t
+) -> ida_hexrays.mlist_t:
+    """Return ``mlist_t`` of all locations written by *ins*.
+
+    Uses ``blk.build_def_list(ins, MUST_ACCESS)``.
+
+    Args:
+        blk: The block containing *ins*.
+        ins: The instruction to query.
+
+    Returns:
+        An ``mlist_t`` with all written locations.
+    """
+    return blk.build_def_list(ins, ida_hexrays.MUST_ACCESS)
+
+
+# ---------------------------------------------------------------------------
+# Backward resolution
+# ---------------------------------------------------------------------------
+
+
 def resolve_memory_load_via_store(
     ldx_ins: ida_hexrays.minsn_t,
     blk: ida_hexrays.mblock_t,
