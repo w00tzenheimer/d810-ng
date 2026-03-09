@@ -1277,98 +1277,9 @@ class DirectHandlerLinearizationStrategy:
                 "old_target": old_target,
             }
 
-        # Track exit blocks that already received a state-var poison to avoid
-        # duplicate injections (a block can appear in multiple handler paths).
-        _poisoned_blocks: set[int] = set()
-
-        def _inject_state_var_poison(
-            exit_serial: int,
-            handler_serial: int,
-            incoming_state: int,
-            ordered_path: list[int] | None = None,
-        ) -> bool:
-            """Inject ``m_mov #0, state_var`` before the tail of a terminal block.
-
-            This kills the liveness of the state variable on early-exit paths
-            where the handler never writes a new state value.  Without this,
-            IDA's later passes propagate the handler's entry-state constant
-            (e.g. 0x41FB8FBB) into ``return`` expressions.
-
-            If the exit block has no tail (shared epilogue corridor), walk
-            backward through *ordered_path* to find the last block with a
-            valid tail instruction and inject there instead.
-
-            Returns True if the poison was injected, False otherwise.
-            """
-            # Find a suitable injection target: try exit block first, then
-            # walk backward through the DFS path.
-            target_serial = exit_serial
-            target_blk = None
-            try:
-                target_blk = mba.get_mblock(target_serial)
-            except Exception:
-                target_blk = None
-
-            if (target_blk is None or target_blk.tail is None) and ordered_path:
-                for blk_serial in reversed(ordered_path):
-                    try:
-                        candidate = mba.get_mblock(blk_serial)
-                    except Exception:
-                        continue
-                    if candidate is not None and candidate.tail is not None:
-                        target_serial = blk_serial
-                        target_blk = candidate
-                        break
-
-            if target_serial in _poisoned_blocks:
-                return False
-
-            if target_blk is None or target_blk.tail is None:
-                logger.warning(
-                    "STATE_VAR_POISON: handler=blk[%d] exit=blk[%d] — "
-                    "no block with tail found in path",
-                    handler_serial, exit_serial,
-                )
-                return False
-
-            if target_serial != exit_serial:
-                logger.info(
-                    "STATE_VAR_POISON: handler=blk[%d] path_block=blk[%d] "
-                    "(exit=blk[%d] had no tail)",
-                    handler_serial, target_serial, exit_serial,
-                )
-
-            ea = target_blk.tail.ea
-            poison = ida_hexrays.minsn_t(ea)
-            poison.opcode = ida_hexrays.m_mov
-            poison.l = ida_hexrays.mop_t()
-            poison.l.make_number(0, 4, ea)
-            poison.d = ida_hexrays.mop_t()
-            poison.d.erase()
-            poison.d._make_stkvar(mba, state_var_stkoff)
-            poison.d.size = 4
-
-            target_blk.insert_into_block(poison, target_blk.tail)
-            _poisoned_blocks.add(target_serial)
-            logger.info(
-                "STATE_VAR_POISON: handler=blk[%d] exit=blk[%d] "
-                "entry_state=0x%x — injected m_mov #0 to kill liveness",
-                handler_serial, exit_serial, incoming_state,
-            )
-            return True
-
         def _append_nop(source_block: int, instruction_ea: int) -> None:
             modifications.append(
                 builder.nop_instruction(
-                    source_block=source_block,
-                    instruction_ea=instruction_ea,
-                )
-            )
-
-        def _append_zero_state_write(source_block: int, instruction_ea: int) -> None:
-            """Replace state variable write source with #0 instead of NOPing."""
-            modifications.append(
-                builder.zero_state_write(
                     source_block=source_block,
                     instruction_ea=instruction_ea,
                 )
@@ -1596,10 +1507,10 @@ class DirectHandlerLinearizationStrategy:
                     owned_blocks.add(ct.branch_block)
                     owned_edges.add((ct.branch_block, ct_target))
 
-                    # 4. Zero the dead state write (skip multi-pred blocks)
+                    # 4. NOP the dead state write (skip multi-pred blocks)
                     _sw_snap = fg.get_block(ct.state_write_block)
                     if _sw_snap is None or _sw_snap.npred <= 1:
-                        _append_zero_state_write(
+                        _append_nop(
                             source_block=ct.state_write_block,
                             instruction_ea=ct.state_write_ea,
                         )
@@ -1653,12 +1564,6 @@ class DirectHandlerLinearizationStrategy:
                         terminal_handler_terminal_paths.setdefault(
                             handler_serial, []
                         ).append(path)
-                        # Poison state var on terminal paths with no state writes
-                        if not path.state_writes:
-                            _inject_state_var_poison(
-                                path.exit_block, handler_serial, incoming_state,
-                                ordered_path=path.ordered_path,
-                            )
                         resolved_count += 1
                         continue
 
@@ -1695,9 +1600,9 @@ class DirectHandlerLinearizationStrategy:
                                 terminal_exit_blocks.add(terminal_target)
                                 # Track anchor for PrivateTerminalSuffix emission
                                 terminal_redirect_anchors.add(path.exit_block)
-                                # Zero dead state writes on the terminal path
+                                # NOP dead state writes on the terminal path
                                 for write_blk, write_ea in path.state_writes:
-                                    _append_zero_state_write(
+                                    _append_nop(
 
                                         source_block=write_blk,
 
@@ -1705,11 +1610,6 @@ class DirectHandlerLinearizationStrategy:
 
                                     )
                                     _nop_temp_def_if_resolved(write_blk, write_ea, handler_serial)
-                                # Poison state var to kill entry-state liveness
-                                _inject_state_var_poison(
-                                    path.exit_block, handler_serial, incoming_state,
-                                    ordered_path=path.ordered_path,
-                                )
                                 logger.info(
                                     "Handler blk[%d] (state=0x%x): terminal exit blk[%d] -> exit blk[%d]",
                                     handler_serial,
@@ -1775,9 +1675,9 @@ class DirectHandlerLinearizationStrategy:
                             ok = _emit_redirect(meta, path, incoming_state, "exit_resolved", handler_serial)
                             if ok:
                                 linearized_blocks.add(path.exit_block)
-                                # Zero dead state writes in exit path
+                                # NOP dead state writes in exit path
                                 for write_blk, write_ea in path.state_writes:
-                                    _append_zero_state_write(
+                                    _append_nop(
 
                                         source_block=write_blk,
 
@@ -1785,7 +1685,7 @@ class DirectHandlerLinearizationStrategy:
 
                                     )
                                     _nop_temp_def_if_resolved(write_blk, write_ea, handler_serial)
-                                # Zero dead state_var writes in the resolved exit target block.
+                                # NOP dead state_var writes in the resolved exit target block.
                                 # K3: INSN_CHAIN — migrated to snapshot iter_insns
                                 _exit_tgt_snap = fg.get_block(exit_target)
                                 if _exit_tgt_snap is not None and exit_target not in bst_node_blocks:
@@ -1799,12 +1699,12 @@ class DirectHandlerLinearizationStrategy:
                                             )
                                         ):
                                             logger.info(
-                                                "  Zero dead state_var write in exit target"
+                                                "  NOP dead state_var write in exit target"
                                                 " blk[%d] ea=%#x",
                                                 exit_target,
                                                 _scan_insn.ea,
                                             )
-                                            _append_zero_state_write(
+                                            _append_nop(
 
                                                 source_block=exit_target,
 
@@ -1814,10 +1714,10 @@ class DirectHandlerLinearizationStrategy:
                                 resolved_count += 1
                                 owned_transitions.add((incoming_state, path.final_state))
                         elif meta is not None and meta["kind"] in ("already_claimed", "already_claimed_edge"):
-                            # Redirect already queued, but still zero state writes
+                            # Redirect already queued, but still NOP state writes
                             # (including two-step temp defs) to avoid constant leaks.
                             for write_blk, write_ea in path.state_writes:
-                                _append_zero_state_write(
+                                _append_nop(
                                     source_block=write_blk,
                                     instruction_ea=write_ea,
                                 )
@@ -1865,13 +1765,13 @@ class DirectHandlerLinearizationStrategy:
                     ok = _emit_redirect(meta, path, incoming_state, "state_transition", handler_serial)
                     if ok:
                         linearized_blocks.add(path.exit_block)
-                        # Zero dead state writes (skip multi-pred blocks)
+                        # NOP dead state writes (skip multi-pred blocks)
                         for write_blk, write_ea in path.state_writes:
                             # K3: TOPOLOGY_ONLY — use flow_graph for npred check
                             _wb_snap = fg.get_block(write_blk)
                             if _wb_snap is not None and _wb_snap.npred > 1:
                                 continue
-                            _append_zero_state_write(
+                            _append_nop(
 
                                 source_block=write_blk,
 
@@ -1966,7 +1866,7 @@ class DirectHandlerLinearizationStrategy:
                     ok = _emit_redirect(meta, _synthetic_path, written_state, "bst_default_backedge", serial)
                     if ok:
                         if state_write_ea is not None:
-                            _append_zero_state_write(
+                            _append_nop(
 
                                 source_block=serial,
 
@@ -1985,7 +1885,7 @@ class DirectHandlerLinearizationStrategy:
                                         _scan_insn.d, state_var_stkoff
                                     )
                                 ):
-                                    _append_zero_state_write(
+                                    _append_nop(
 
                                         source_block=target,
 
@@ -2037,12 +1937,6 @@ class DirectHandlerLinearizationStrategy:
                         terminal_handler_terminal_paths.setdefault(
                             rootwalk_blk, []
                         ).append(path)
-                        # Poison state var on terminal paths with no state writes
-                        if not path.state_writes:
-                            _inject_state_var_poison(
-                                path.exit_block, rootwalk_blk, 0,
-                                ordered_path=path.ordered_path,
-                            )
                         resolved_count += 1
                         continue  # True terminal, nothing to do.
                     # K3.5: use flow_graph snapshot
@@ -2079,7 +1973,7 @@ class DirectHandlerLinearizationStrategy:
                                 # Track anchor for PrivateTerminalSuffix emission
                                 terminal_redirect_anchors.add(path.exit_block)
                                 for write_blk, write_ea in path.state_writes:
-                                    _append_zero_state_write(
+                                    _append_nop(
 
                                         source_block=write_blk,
 
@@ -2087,11 +1981,6 @@ class DirectHandlerLinearizationStrategy:
 
                                     )
                                     _nop_temp_def_if_resolved(write_blk, write_ea, rootwalk_blk)
-                                # Poison state var to kill entry-state liveness
-                                _inject_state_var_poison(
-                                    path.exit_block, rootwalk_blk, 0,
-                                    ordered_path=path.ordered_path,
-                                )
                                 logger.info(
                                     "hodur-linear: hidden blk[%d] terminal exit blk[%d] -> exit blk[%d]",
                                     rootwalk_blk,
@@ -2177,8 +2066,8 @@ class DirectHandlerLinearizationStrategy:
                             # K3: TOPOLOGY_ONLY — use flow_graph for npred check
                             _hwb_snap = fg.get_block(write_blk)
                             if _hwb_snap is not None and _hwb_snap.npred > 1:
-                                continue  # Skip zero on shared multi-pred blocks
-                            _append_zero_state_write(
+                                continue  # Skip NOP on shared multi-pred blocks
+                            _append_nop(
 
                                 source_block=write_blk,
 
