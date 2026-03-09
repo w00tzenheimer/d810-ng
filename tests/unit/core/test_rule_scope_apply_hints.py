@@ -8,7 +8,7 @@ from d810.core.rule_scope import (
     HintOverlayProvider,
     PIPELINE_INSTRUCTION,
     RuleDelta,
-    RuleRecipeOverlay,
+    RuleInferenceOverlay,
     RuleScopeService,
 )
 
@@ -58,7 +58,7 @@ class _DummyRule:
 class _DummyHints:
     """Minimal duck-typed stand-in for DeobfuscationHints."""
     func_ea: int
-    recommended_recipes: tuple[str, ...] = ()
+    recommended_inferences: tuple[str, ...] = ()
     suppress_rules: tuple[str, ...] = ()
 
 
@@ -94,22 +94,22 @@ class TestApplyHintsResult:
     def test_frozen(self) -> None:
         r = ApplyHintsResult(
             func_ea=0x1000,
-            recipes_applied=("r1",),
-            recipes_not_found=(),
+            inferences_applied=("r1",),
+            inferences_not_found=(),
             rules_suppressed=("s1",),
             cache_invalidated=True,
             generation_before=0,
             generation_after=1,
         )
         assert r.func_ea == 0x1000
-        assert r.recipes_applied == ("r1",)
+        assert r.inferences_applied == ("r1",)
         assert r.rules_suppressed == ("s1",)
 
     def test_immutable(self) -> None:
         r = ApplyHintsResult(
             func_ea=0x1000,
-            recipes_applied=(),
-            recipes_not_found=(),
+            inferences_applied=(),
+            inferences_not_found=(),
             rules_suppressed=(),
             cache_invalidated=False,
             generation_before=0,
@@ -201,30 +201,30 @@ class TestHintOverlayProvider:
 
 
 # ---------------------------------------------------------------------------
-# RuleScopeService.register_recipe / get_registered_recipe
+# RuleScopeService.register_inference / get_registered_inference
 # ---------------------------------------------------------------------------
 
-class TestRecipeRegistry:
+class TestInferenceRegistry:
     def test_register_and_retrieve(self) -> None:
         svc = RuleScopeService()
-        recipe = RuleRecipeOverlay(
-            name="test_recipe",
+        inference = RuleInferenceOverlay(
+            name="test_inference",
             enabled_rules=frozenset({"R1"}),
         )
-        svc.register_recipe(recipe)
-        assert svc.get_registered_recipe("test_recipe") is recipe
+        svc.register_inference(inference)
+        assert svc.get_registered_inference("test_inference") is inference
 
     def test_missing_returns_none(self) -> None:
         svc = RuleScopeService()
-        assert svc.get_registered_recipe("nope") is None
+        assert svc.get_registered_inference("nope") is None
 
     def test_overwrite(self) -> None:
         svc = RuleScopeService()
-        r1 = RuleRecipeOverlay(name="r", enabled_rules=frozenset({"A"}))
-        r2 = RuleRecipeOverlay(name="r", enabled_rules=frozenset({"B"}))
-        svc.register_recipe(r1)
-        svc.register_recipe(r2)
-        assert svc.get_registered_recipe("r") is r2
+        r1 = RuleInferenceOverlay(name="r", enabled_rules=frozenset({"A"}))
+        r2 = RuleInferenceOverlay(name="r", enabled_rules=frozenset({"B"}))
+        svc.register_inference(r1)
+        svc.register_inference(r2)
+        assert svc.get_registered_inference("r") is r2
 
 
 # ---------------------------------------------------------------------------
@@ -239,65 +239,65 @@ class TestApplyHints:
         result = svc.apply_hints(hints)
 
         assert result.func_ea == 0x1000
-        assert result.recipes_applied == ()
-        assert result.recipes_not_found == ()
+        assert result.inferences_applied == ()
+        assert result.inferences_not_found == ()
         assert result.rules_suppressed == ()
         assert not result.cache_invalidated
         assert result.generation_before == gen_before
         assert result.generation_after == gen_before  # no change
 
-    def test_recipe_applied_activates_recipe(self) -> None:
+    def test_inference_applied_activates_inference(self) -> None:
         svc = _make_service_with_rules(
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
         )
-        recipe = RuleRecipeOverlay(
+        inference = RuleInferenceOverlay(
             name="only_r2",
             enabled_rules=frozenset({"R2"}),
         )
-        svc.register_recipe(recipe)
-        hints = _DummyHints(func_ea=0x1000, recommended_recipes=("only_r2",))
+        svc.register_inference(inference)
+        hints = _DummyHints(func_ea=0x1000, recommended_inferences=("only_r2",))
         result = svc.apply_hints(hints)
 
-        assert result.recipes_applied == ("only_r2",)
-        assert result.recipes_not_found == ()
+        assert result.inferences_applied == ("only_r2",)
+        assert result.inferences_not_found == ()
         assert result.cache_invalidated
         assert result.generation_after > result.generation_before
 
-        # The recipe should filter rules for func_ea 0x1000
+        # The inference should filter rules for func_ea 0x1000
         active = _active_names(svc, 0x1000)
         assert active == ("R2",)
 
-    def test_recipe_not_found(self) -> None:
+    def test_inference_not_found(self) -> None:
         svc = _make_service_with_rules(_DummyRule(name="R1", maturities=[1]))
         hints = _DummyHints(
             func_ea=0x1000,
-            recommended_recipes=("nonexistent_recipe",),
+            recommended_inferences=("nonexistent_inference",),
         )
         result = svc.apply_hints(hints)
 
-        assert result.recipes_applied == ()
-        assert result.recipes_not_found == ("nonexistent_recipe",)
+        assert result.inferences_applied == ()
+        assert result.inferences_not_found == ("nonexistent_inference",)
         assert not result.cache_invalidated
 
-    def test_mixed_found_and_not_found_recipes(self) -> None:
+    def test_mixed_found_and_not_found_inferences(self) -> None:
         svc = _make_service_with_rules(
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
         )
-        recipe = RuleRecipeOverlay(
-            name="good_recipe",
+        inference = RuleInferenceOverlay(
+            name="good_inference",
             enabled_rules=frozenset({"R1"}),
         )
-        svc.register_recipe(recipe)
+        svc.register_inference(inference)
         hints = _DummyHints(
             func_ea=0x1000,
-            recommended_recipes=("good_recipe", "bad_recipe"),
+            recommended_inferences=("good_inference", "bad_inference"),
         )
         result = svc.apply_hints(hints)
 
-        assert result.recipes_applied == ("good_recipe",)
-        assert result.recipes_not_found == ("bad_recipe",)
+        assert result.inferences_applied == ("good_inference",)
+        assert result.inferences_not_found == ("bad_inference",)
         assert result.cache_invalidated
 
     def test_suppress_rules_disables_rules(self) -> None:
@@ -335,27 +335,27 @@ class TestApplyHints:
         # 0x2000 unaffected
         assert _active_names(svc, 0x2000) == ("RuleA", "RuleB")
 
-    def test_recipe_and_suppress_combined(self) -> None:
+    def test_inference_and_suppress_combined(self) -> None:
         svc = _make_service_with_rules(
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
             _DummyRule(name="R3", maturities=[1]),
         )
-        recipe = RuleRecipeOverlay(
+        inference = RuleInferenceOverlay(
             name="enable_r1_r2",
             enabled_rules=frozenset({"R1", "R2"}),
         )
-        svc.register_recipe(recipe)
+        svc.register_inference(inference)
         hints = _DummyHints(
             func_ea=0x1000,
-            recommended_recipes=("enable_r1_r2",),
+            recommended_inferences=("enable_r1_r2",),
             suppress_rules=("R2",),
         )
         result = svc.apply_hints(hints)
 
-        assert result.recipes_applied == ("enable_r1_r2",)
+        assert result.inferences_applied == ("enable_r1_r2",)
         assert result.rules_suppressed == ("R2",)
-        # Recipe allows R1 and R2; suppress removes R2 -> only R1
+        # Inference allows R1 and R2; suppress removes R2 -> only R1
         assert _active_names(svc, 0x1000) == ("R1",)
 
     def test_hint_overlay_composes_with_existing_provider(self) -> None:
@@ -394,12 +394,12 @@ class TestApplyHints:
 
     def test_generation_advances_on_change(self) -> None:
         svc = _make_service_with_rules(_DummyRule(name="R1", maturities=[1]))
-        recipe = RuleRecipeOverlay(name="r", enabled_rules=frozenset({"R1"}))
-        svc.register_recipe(recipe)
+        inference = RuleInferenceOverlay(name="r", enabled_rules=frozenset({"R1"}))
+        svc.register_inference(inference)
 
         g0 = svc.generation
         result = svc.apply_hints(
-            _DummyHints(func_ea=0x1000, recommended_recipes=("r",))
+            _DummyHints(func_ea=0x1000, recommended_inferences=("r",))
         )
         assert result.generation_before == g0
         assert result.generation_after == g0 + 1
@@ -413,37 +413,37 @@ class TestApplyHints:
         assert result.generation_after == g0
         assert svc.generation == g0
 
-    def test_apply_hints_multiple_recipes_all_active(self) -> None:
-        """All recommended recipes for the same function must be active."""
+    def test_apply_hints_multiple_inferences_all_active(self) -> None:
+        """All recommended inferences for the same function must be active."""
         svc = _make_service_with_rules(
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
             _DummyRule(name="R3", maturities=[1]),
         )
-        recipe_a = RuleRecipeOverlay(
-            name="recipe_a",
+        inference_a = RuleInferenceOverlay(
+            name="inference_a",
             enabled_rules=frozenset({"R1"}),
         )
-        recipe_b = RuleRecipeOverlay(
-            name="recipe_b",
+        inference_b = RuleInferenceOverlay(
+            name="inference_b",
             enabled_rules=frozenset({"R2"}),
         )
-        svc.register_recipe(recipe_a)
-        svc.register_recipe(recipe_b)
+        svc.register_inference(inference_a)
+        svc.register_inference(inference_b)
 
         hints = _DummyHints(
             func_ea=0x1000,
-            recommended_recipes=("recipe_a", "recipe_b"),
+            recommended_inferences=("inference_a", "inference_b"),
         )
         result = svc.apply_hints(hints)
 
-        assert result.recipes_applied == ("recipe_a", "recipe_b")
-        # Both R1 (from recipe_a) and R2 (from recipe_b) must be active,
-        # not just R2 (last recipe).
+        assert result.inferences_applied == ("inference_a", "inference_b")
+        # Both R1 (from inference_a) and R2 (from inference_b) must be active,
+        # not just R2 (last inference).
         active = _active_names(svc, 0x1000)
         assert "R1" in active, f"R1 missing from active rules: {active}"
         assert "R2" in active, f"R2 missing from active rules: {active}"
-        # R3 is NOT in any recipe's enabled_rules, so it should be blocked
+        # R3 is NOT in any inference's enabled_rules, so it should be blocked
         assert "R3" not in active, f"R3 should be blocked: {active}"
 
     def test_apply_hints_different_functions_independent(self) -> None:
@@ -453,58 +453,58 @@ class TestApplyHints:
             _DummyRule(name="R2", maturities=[1]),
             _DummyRule(name="R3", maturities=[1]),
         )
-        recipe_for_a = RuleRecipeOverlay(
-            name="recipe_for_a",
+        inference_for_a = RuleInferenceOverlay(
+            name="inference_for_a",
             enabled_rules=frozenset({"R1"}),
         )
-        recipe_for_b = RuleRecipeOverlay(
-            name="recipe_for_b",
+        inference_for_b = RuleInferenceOverlay(
+            name="inference_for_b",
             enabled_rules=frozenset({"R2"}),
         )
-        svc.register_recipe(recipe_for_a)
-        svc.register_recipe(recipe_for_b)
+        svc.register_inference(inference_for_a)
+        svc.register_inference(inference_for_b)
 
         # Apply hints for func_A first, then func_B
         svc.apply_hints(_DummyHints(
             func_ea=0xA000,
-            recommended_recipes=("recipe_for_a",),
+            recommended_inferences=("inference_for_a",),
         ))
         svc.apply_hints(_DummyHints(
             func_ea=0xB000,
-            recommended_recipes=("recipe_for_b",),
+            recommended_inferences=("inference_for_b",),
         ))
 
-        # func_A should still have recipe_for_a active (R1 only)
+        # func_A should still have inference_for_a active (R1 only)
         active_a = _active_names(svc, 0xA000)
         assert "R1" in active_a, f"func_A lost R1: {active_a}"
         assert "R2" not in active_a, f"func_A should not have R2: {active_a}"
 
-        # func_B should have recipe_for_b active (R2 only)
+        # func_B should have inference_for_b active (R2 only)
         active_b = _active_names(svc, 0xB000)
         assert "R2" in active_b, f"func_B lost R2: {active_b}"
         assert "R1" not in active_b, f"func_B should not have R1: {active_b}"
 
-        # func_C (no hints) should have all rules (no recipe filtering)
+        # func_C (no hints) should have all rules (no inference filtering)
         active_c = _active_names(svc, 0xC000)
         assert active_c == ("R1", "R2", "R3"), f"func_C unexpected: {active_c}"
 
     def test_apply_hints_replaces_previous_for_same_func(self) -> None:
-        """Applying hints with recipe B after recipe A replaces, not appends."""
+        """Applying hints with inference B after inference A replaces, not appends."""
         svc = _make_service_with_rules(
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
             _DummyRule(name="R3", maturities=[1]),
         )
-        recipe_a = RuleRecipeOverlay(name="recipe_a", enabled_rules=frozenset({"R1"}))
-        recipe_b = RuleRecipeOverlay(name="recipe_b", enabled_rules=frozenset({"R2"}))
-        svc.register_recipe(recipe_a)
-        svc.register_recipe(recipe_b)
+        inference_a = RuleInferenceOverlay(name="inference_a", enabled_rules=frozenset({"R1"}))
+        inference_b = RuleInferenceOverlay(name="inference_b", enabled_rules=frozenset({"R2"}))
+        svc.register_inference(inference_a)
+        svc.register_inference(inference_b)
 
-        svc.apply_hints(_DummyHints(func_ea=0x1000, recommended_recipes=("recipe_a",)))
+        svc.apply_hints(_DummyHints(func_ea=0x1000, recommended_inferences=("inference_a",)))
         assert _active_names(svc, 0x1000) == ("R1",)
 
-        # Second call replaces — only recipe_b active now
-        svc.apply_hints(_DummyHints(func_ea=0x1000, recommended_recipes=("recipe_b",)))
+        # Second call replaces -- only inference_b active now
+        svc.apply_hints(_DummyHints(func_ea=0x1000, recommended_inferences=("inference_b",)))
         active = _active_names(svc, 0x1000)
         assert active == ("R2",), f"Expected only R2 after replace, got {active}"
 
@@ -514,13 +514,13 @@ class TestApplyHints:
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
         )
-        recipe = RuleRecipeOverlay(name="only_r1", enabled_rules=frozenset({"R1"}))
-        svc.register_recipe(recipe)
+        inference = RuleInferenceOverlay(name="only_r1", enabled_rules=frozenset({"R1"}))
+        svc.register_inference(inference)
 
-        svc.apply_hints(_DummyHints(func_ea=0x1000, recommended_recipes=("only_r1",)))
+        svc.apply_hints(_DummyHints(func_ea=0x1000, recommended_inferences=("only_r1",)))
         assert _active_names(svc, 0x1000) == ("R1",)
 
-        # Apply empty hints — should clear, restoring all rules
+        # Apply empty hints -- should clear, restoring all rules
         svc.apply_hints(_DummyHints(func_ea=0x1000))
         active = _active_names(svc, 0x1000)
         assert active == ("R1", "R2"), f"Expected all rules after clear, got {active}"
@@ -533,23 +533,23 @@ class TestApplyHints:
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
         )
-        recipe = RuleRecipeOverlay(
+        inference = RuleInferenceOverlay(
             name="unflatten",
             enabled_rules=frozenset({"R1"}),
         )
-        svc.register_recipe(recipe)
+        svc.register_inference(inference)
 
         hints = DeobfuscationHints(
             func_ea=0x401000,
             obfuscation_type="ollvm_flat",
             confidence=0.9,
-            recommended_recipes=("unflatten",),
+            recommended_inferences=("unflatten",),
             candidates=(),
             suppress_rules=("R2",),
         )
         result = svc.apply_hints(hints)
 
-        assert result.recipes_applied == ("unflatten",)
+        assert result.inferences_applied == ("unflatten",)
         assert result.rules_suppressed == ("R2",)
         assert _active_names(svc, 0x401000) == ("R1",)
 
@@ -563,29 +563,29 @@ class TestGetHintStateSummary:
         svc = RuleScopeService()
         summary = svc.get_hint_state_summary(0x1000)
         assert summary["func_ea"] == 0x1000
-        assert summary["has_hint_recipes"] is False
-        assert summary["recipe_names"] == []
+        assert summary["has_hint_inferences"] is False
+        assert summary["inference_names"] == []
         assert summary["suppressed_rules"] == []
         assert summary["generation"] == svc.generation
 
-    def test_after_recipe_applied(self) -> None:
+    def test_after_inference_applied(self) -> None:
         svc = _make_service_with_rules(
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
         )
-        recipe = RuleRecipeOverlay(
+        inference = RuleInferenceOverlay(
             name="only_r1",
             enabled_rules=frozenset({"R1"}),
         )
-        svc.register_recipe(recipe)
+        svc.register_inference(inference)
         svc.apply_hints(_DummyHints(
             func_ea=0x1000,
-            recommended_recipes=("only_r1",),
+            recommended_inferences=("only_r1",),
         ))
 
         summary = svc.get_hint_state_summary(0x1000)
-        assert summary["has_hint_recipes"] is True
-        assert "only_r1" in summary["recipe_names"]
+        assert summary["has_hint_inferences"] is True
+        assert "only_r1" in summary["inference_names"]
 
     def test_after_suppress_rules(self) -> None:
         svc = _make_service_with_rules(
@@ -598,7 +598,7 @@ class TestGetHintStateSummary:
         ))
 
         summary = svc.get_hint_state_summary(0x1000)
-        assert summary["has_hint_recipes"] is False
+        assert summary["has_hint_inferences"] is False
         # suppressed_rules is sorted
         assert summary["suppressed_rules"] == ["R1", "R2"]
 
@@ -613,7 +613,7 @@ class TestGetHintStateSummary:
 
         # Different function should show empty state
         summary = svc.get_hint_state_summary(0x2000)
-        assert summary["has_hint_recipes"] is False
+        assert summary["has_hint_inferences"] is False
         assert summary["suppressed_rules"] == []
 
     def test_generation_tracks(self) -> None:
@@ -651,7 +651,7 @@ class TestGetHintStateSummary:
             func_ea=0x2000,
             obfuscation_type="ollvm_flat",
             confidence=0.9,
-            recommended_recipes=(),
+            recommended_inferences=(),
             candidates=(),
             suppress_rules=("BadRule",),
         )

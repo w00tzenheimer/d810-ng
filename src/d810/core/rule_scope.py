@@ -19,8 +19,8 @@ class RuleScopeEvent(enum.Enum):
     IDB_OVERLAY_RELOADED = "idb_overlay_reloaded"
     FUNCTION_OVERRIDE_UPDATED = "function_override_updated"
     FUNCTION_TAGS_UPDATED = "function_tags_updated"
-    RECIPE_APPLIED = "recipe_applied"
-    RECIPE_CLEARED = "recipe_cleared"
+    INFERENCE_APPLIED = "inference_applied"
+    INFERENCE_CLEARED = "inference_cleared"
     HINTS_APPLIED = "hints_applied"
 
 
@@ -96,9 +96,9 @@ class RuleDelta:
         - ``"activate"``: Force-enable the rule for this function.
         - ``"override"``: Apply parameter overrides from ``overrides`` dict.
 
-    The naming choice of "inference" over "recipe" reflects that these
-    adjustments are *derived from automated recon analysis*, not hand-authored
-    presets. "Delta" conveys a diff from baseline behavior.
+    The naming choice of "inference" reflects that these adjustments are
+    *derived from automated recon analysis*, not hand-authored presets.
+    "Delta" conveys a diff from baseline behavior.
     """
     rule_name: str
     action: str                 # "suppress" | "activate" | "override"
@@ -113,7 +113,7 @@ class FunctionRuleOverlay:
 
 
 @dataclass(frozen=True, slots=True)
-class RuleRecipeOverlay:
+class RuleInferenceOverlay:
     name: str
     enabled_rules: frozenset[str] = frozenset()
     disabled_rules: frozenset[str] = frozenset()
@@ -133,8 +133,8 @@ class ApplyHintsResult:
 
     Attributes:
         func_ea: Function address the hints targeted.
-        recipes_applied: Names of recipes that were activated.
-        recipes_not_found: Names requested but not in the recipe registry.
+        inferences_applied: Names of inferences that were activated.
+        inferences_not_found: Names requested but not in the inference registry.
         rules_suppressed: Rule names that were added to the overlay's
             disabled set for this function.
         cache_invalidated: Whether the scope cache was invalidated.
@@ -142,8 +142,8 @@ class ApplyHintsResult:
         generation_after: Service generation after the hints were applied.
     """
     func_ea: int
-    recipes_applied: tuple[str, ...]
-    recipes_not_found: tuple[str, ...]
+    inferences_applied: tuple[str, ...]
+    inferences_not_found: tuple[str, ...]
     rules_suppressed: tuple[str, ...]
     cache_invalidated: bool
     generation_before: int
@@ -169,7 +169,7 @@ class HintOverlayProvider:
     ) -> None:
         self._delegate = delegate
         self._suppressions: dict[int, frozenset[str]] = {}
-        self._hint_recipes: dict[int, list[RuleRecipeOverlay]] = {}
+        self._hint_inferences: dict[int, list[RuleInferenceOverlay]] = {}
 
     @property
     def delegate(self) -> FunctionRuleOverlayProvider | None:
@@ -198,8 +198,8 @@ class HintOverlayProvider:
         return self._suppressions.get(func_ea, frozenset())
 
     def clear_func(self, func_ea: int) -> None:
-        """Remove all hint-driven recipes and suppressions for a function."""
-        self._hint_recipes.pop(func_ea, None)
+        """Remove all hint-driven inferences and suppressions for a function."""
+        self._hint_inferences.pop(func_ea, None)
         self._suppressions.pop(func_ea, None)
 
     def clear_suppressions(self, func_ea: int | None = None) -> None:
@@ -209,42 +209,42 @@ class HintOverlayProvider:
         else:
             self._suppressions.pop(func_ea, None)
 
-    def add_recipe(self, func_ea: int, recipe: RuleRecipeOverlay) -> None:
-        """Register a hint-driven recipe activation for a function.
+    def add_inference(self, func_ea: int, inference: RuleInferenceOverlay) -> None:
+        """Register a hint-driven inference activation for a function.
 
-        Multiple recipes for the same function accumulate; their
+        Multiple inferences for the same function accumulate; their
         ``enabled_rules`` and ``disabled_rules`` are merged at query time.
 
         Args:
             func_ea: Target function address.
-            recipe: Recipe overlay to activate for this function.
+            inference: Inference overlay to activate for this function.
         """
-        self._hint_recipes.setdefault(func_ea, []).append(recipe)
+        self._hint_inferences.setdefault(func_ea, []).append(inference)
 
-    def get_hint_recipes(self, func_ea: int) -> list[RuleRecipeOverlay]:
-        """Return all hint-driven recipes registered for *func_ea*."""
-        return self._hint_recipes.get(func_ea, [])
+    def get_hint_inferences(self, func_ea: int) -> list[RuleInferenceOverlay]:
+        """Return all hint-driven inferences registered for *func_ea*."""
+        return self._hint_inferences.get(func_ea, [])
 
-    def merged_hint_recipe(self, func_ea: int) -> RuleRecipeOverlay | None:
-        """Return a single merged recipe for *func_ea*, or ``None``.
+    def merged_hint_inference(self, func_ea: int) -> RuleInferenceOverlay | None:
+        """Return a single merged inference for *func_ea*, or ``None``.
 
-        Merges all per-function hint recipes into one overlay whose
+        Merges all per-function hint inferences into one overlay whose
         ``enabled_rules`` and ``disabled_rules`` are the union of all
-        registered recipes.
+        registered inferences.
         """
-        recipes = self._hint_recipes.get(func_ea)
-        if not recipes:
+        inferences = self._hint_inferences.get(func_ea)
+        if not inferences:
             return None
-        if len(recipes) == 1:
-            return recipes[0]
+        if len(inferences) == 1:
+            return inferences[0]
         merged_enabled: set[str] = set()
         merged_disabled: set[str] = set()
         names: list[str] = []
-        for r in recipes:
+        for r in inferences:
             merged_enabled.update(r.enabled_rules)
             merged_disabled.update(r.disabled_rules)
             names.append(r.name)
-        return RuleRecipeOverlay(
+        return RuleInferenceOverlay(
             name="+".join(names),
             enabled_rules=frozenset(merged_enabled),
             disabled_rules=frozenset(merged_disabled),
@@ -292,8 +292,8 @@ class RuleScopeService:
         self._attached = False
         self._overlay_provider: FunctionRuleOverlayProvider | None = None
         self._overlay_cache: dict[int, FunctionRuleOverlay | None] = {}
-        self._active_recipe: RuleRecipeOverlay | None = None
-        self._recipe_registry: dict[str, RuleRecipeOverlay] = {}
+        self._active_inference: RuleInferenceOverlay | None = None
+        self._inference_registry: dict[str, RuleInferenceOverlay] = {}
         self._hint_overlay: HintOverlayProvider | None = None
 
     @property
@@ -361,27 +361,27 @@ class RuleScopeService:
         self._overlay_provider = provider
         self._overlay_cache.clear()
 
-    def set_active_recipe(self, recipe: RuleRecipeOverlay | None) -> None:
-        self._active_recipe = recipe
+    def set_active_inference(self, inference: RuleInferenceOverlay | None) -> None:
+        self._active_inference = inference
 
-    def register_recipe(self, recipe: RuleRecipeOverlay) -> None:
-        """Register a named recipe for later lookup by ``apply_hints()``.
+    def register_inference(self, inference: RuleInferenceOverlay) -> None:
+        """Register a named inference for later lookup by ``apply_hints()``.
 
         Args:
-            recipe: Recipe overlay to register. Its ``name`` is used as key.
+            inference: Inference overlay to register. Its ``name`` is used as key.
         """
-        self._recipe_registry[recipe.name] = recipe
+        self._inference_registry[inference.name] = inference
 
-    def get_registered_recipe(self, name: str) -> RuleRecipeOverlay | None:
-        """Look up a recipe by name from the registry.
+    def get_registered_inference(self, name: str) -> RuleInferenceOverlay | None:
+        """Look up an inference by name from the registry.
 
         Args:
-            name: Recipe name to look up.
+            name: Inference name to look up.
 
         Returns:
-            The registered recipe, or ``None`` if not found.
+            The registered inference, or ``None`` if not found.
         """
-        return self._recipe_registry.get(name)
+        return self._inference_registry.get(name)
 
     def get_hint_state_summary(self, func_ea: int) -> dict:
         """Return a summary of hint-driven state for a function.
@@ -392,17 +392,17 @@ class RuleScopeService:
             func_ea: Function address to query.
 
         Returns:
-            Dictionary with keys ``func_ea``, ``has_hint_recipes``,
-            ``recipe_names``, ``suppressed_rules``, ``generation``.
+            Dictionary with keys ``func_ea``, ``has_hint_inferences``,
+            ``inference_names``, ``suppressed_rules``, ``generation``.
         """
-        has_recipes = False
-        recipe_names: list[str] = []
+        has_inferences = False
+        inference_names: list[str] = []
         suppressed: list[str] = []
 
         if self._hint_overlay is not None:
-            hint_recipes = self._hint_overlay.get_hint_recipes(func_ea)
-            has_recipes = bool(hint_recipes)
-            recipe_names = [r.name for r in hint_recipes]
+            hint_inferences = self._hint_overlay.get_hint_inferences(func_ea)
+            has_inferences = bool(hint_inferences)
+            inference_names = [r.name for r in hint_inferences]
 
             # Read only hint-owned suppressions (not delegate overlay)
             hint_suppressed = self._hint_overlay.get_suppressions(func_ea)
@@ -411,14 +411,14 @@ class RuleScopeService:
 
         return {
             "func_ea": func_ea,
-            "has_hint_recipes": has_recipes,
-            "recipe_names": recipe_names,
+            "has_hint_inferences": has_inferences,
+            "inference_names": inference_names,
             "suppressed_rules": suppressed,
             "generation": self._generation,
         }
 
     def clear_hint_state(self, func_ea: int) -> None:
-        """Clear all hint-driven recipes and suppressions for *func_ea*.
+        """Clear all hint-driven inferences and suppressions for *func_ea*.
 
         Delegates to ``HintOverlayProvider.clear_func()`` and invalidates
         caches so subsequent ``get_active_rules()`` calls see the removal.
@@ -435,8 +435,8 @@ class RuleScopeService:
     def apply_hints(self, hints: Any) -> ApplyHintsResult:
         """Apply analysed deobfuscation hints to rule scope configuration.
 
-        Bridges ``DeobfuscationHints`` -> overlay/recipe activation.
-        Accepts any object with ``func_ea``, ``recommended_recipes``,
+        Bridges ``DeobfuscationHints`` -> overlay/inference activation.
+        Accepts any object with ``func_ea``, ``recommended_inferences``,
         and ``suppress_rules`` attributes (duck-typed to avoid a hard
         import of ``d810.recon.models``).
 
@@ -447,12 +447,12 @@ class RuleScopeService:
             ``ApplyHintsResult`` recording what changed.
         """
         func_ea: int = hints.func_ea
-        recommended_recipes: tuple[str, ...] = hints.recommended_recipes
+        recommended_inferences: tuple[str, ...] = hints.recommended_inferences
         suppress_rules: tuple[str, ...] = hints.suppress_rules
 
         generation_before = self._generation
-        recipes_applied: list[str] = []
-        recipes_not_found: list[str] = []
+        inferences_applied: list[str] = []
+        inferences_not_found: list[str] = []
 
         # --- 0. Clear previous hint state for this function ------------------
         # Each call is a full replace, not an append: a later call with
@@ -460,36 +460,36 @@ class RuleScopeService:
         had_previous_state = False
         if self._hint_overlay is not None:
             had_previous_state = (
-                bool(self._hint_overlay.get_hint_recipes(func_ea))
+                bool(self._hint_overlay.get_hint_inferences(func_ea))
                 or self._hint_overlay.has_suppressions(func_ea)
             )
             self._hint_overlay.clear_func(func_ea)
 
-        # --- 1. Apply recommended recipes -----------------------------------
-        for recipe_name in recommended_recipes:
-            recipe = self._recipe_registry.get(recipe_name)
-            if recipe is None:
-                recipes_not_found.append(recipe_name)
+        # --- 1. Apply recommended inferences ---------------------------------
+        for inference_name in recommended_inferences:
+            inference = self._inference_registry.get(inference_name)
+            if inference is None:
+                inferences_not_found.append(inference_name)
                 continue
-            # Narrow the recipe to this function by adding func_ea to targets
-            scoped = RuleRecipeOverlay(
-                name=recipe.name,
-                enabled_rules=recipe.enabled_rules,
-                disabled_rules=recipe.disabled_rules,
-                target_func_eas=recipe.target_func_eas | frozenset({func_ea}),
-                target_tags_any=recipe.target_tags_any,
-                target_tags_all=recipe.target_tags_all,
-                notes=recipe.notes,
+            # Narrow the inference to this function by adding func_ea to targets
+            scoped = RuleInferenceOverlay(
+                name=inference.name,
+                enabled_rules=inference.enabled_rules,
+                disabled_rules=inference.disabled_rules,
+                target_func_eas=inference.target_func_eas | frozenset({func_ea}),
+                target_tags_any=inference.target_tags_any,
+                target_tags_all=inference.target_tags_all,
+                notes=inference.notes,
             )
-            # Store per-function via HintOverlayProvider (not global _active_recipe)
+            # Store per-function via HintOverlayProvider (not global _active_inference)
             if self._hint_overlay is None:
                 self._hint_overlay = HintOverlayProvider(
                     delegate=self._overlay_provider,
                 )
                 self._overlay_provider = self._hint_overlay
                 self._overlay_cache.clear()
-            self._hint_overlay.add_recipe(func_ea, scoped)
-            recipes_applied.append(recipe_name)
+            self._hint_overlay.add_inference(func_ea, scoped)
+            inferences_applied.append(inference_name)
 
         # --- 2. Apply suppress_rules via HintOverlayProvider -----------------
         rules_suppressed: list[str] = []
@@ -507,7 +507,7 @@ class RuleScopeService:
             rules_suppressed = list(suppress_rules)
 
         # --- 3. Invalidate caches for this function --------------------------
-        any_change = bool(recipes_applied) or bool(rules_suppressed) or had_previous_state
+        any_change = bool(inferences_applied) or bool(rules_suppressed) or had_previous_state
         if any_change:
             self.invalidate(
                 RuleScopeInvalidation(
@@ -520,8 +520,8 @@ class RuleScopeService:
         generation_after = self._generation
         result = ApplyHintsResult(
             func_ea=func_ea,
-            recipes_applied=tuple(recipes_applied),
-            recipes_not_found=tuple(recipes_not_found),
+            inferences_applied=tuple(inferences_applied),
+            inferences_not_found=tuple(inferences_not_found),
             rules_suppressed=tuple(rules_suppressed),
             cache_invalidated=any_change,
             generation_before=generation_before,
@@ -529,9 +529,9 @@ class RuleScopeService:
         )
         if logger.debug_on:
             logger.debug(
-                "apply_hints func_ea=0x%x: recipes=%s suppressed=%s gen=%d->%d",
+                "apply_hints func_ea=0x%x: inferences=%s suppressed=%s gen=%d->%d",
                 func_ea,
-                result.recipes_applied,
+                result.inferences_applied,
                 result.rules_suppressed,
                 generation_before,
                 generation_after,
@@ -635,13 +635,13 @@ class RuleScopeService:
         if not names:
             return tuple()
 
-        # Determine the effective recipe: per-function hint recipe takes
-        # precedence over the global _active_recipe for this function.
-        effective_recipe = self._active_recipe
+        # Determine the effective inference: per-function hint inference takes
+        # precedence over the global _active_inference for this function.
+        effective_inference = self._active_inference
         if self._hint_overlay is not None:
-            hint_recipe = self._hint_overlay.merged_hint_recipe(func_ea)
-            if hint_recipe is not None:
-                effective_recipe = hint_recipe
+            hint_inference = self._hint_overlay.merged_hint_inference(func_ea)
+            if hint_inference is not None:
+                effective_inference = hint_inference
 
         active_for_maturity: list[Any] = []
         for rule_name in names:
@@ -650,8 +650,8 @@ class RuleScopeService:
                 continue
             if not self._overlay_allows(overlay, rule_name):
                 continue
-            if not self._recipe_allows(
-                recipe=effective_recipe,
+            if not self._inference_allows(
+                inference=effective_inference,
                 rule_name=rule_name,
                 func_ea=func_ea,
                 tags=effective_tags,
@@ -771,38 +771,38 @@ class RuleScopeService:
         return frozenset(normalized)
 
     @staticmethod
-    def _recipe_targets_function(
-        recipe: RuleRecipeOverlay,
+    def _inference_targets_function(
+        inference: RuleInferenceOverlay,
         *,
         func_ea: int,
         tags: frozenset[str],
     ) -> bool:
-        if recipe.target_func_eas and func_ea not in recipe.target_func_eas:
+        if inference.target_func_eas and func_ea not in inference.target_func_eas:
             return False
-        if recipe.target_tags_any and recipe.target_tags_any.isdisjoint(tags):
+        if inference.target_tags_any and inference.target_tags_any.isdisjoint(tags):
             return False
-        if recipe.target_tags_all and not recipe.target_tags_all.issubset(tags):
+        if inference.target_tags_all and not inference.target_tags_all.issubset(tags):
             return False
         return True
 
     @staticmethod
-    def _recipe_allows(
+    def _inference_allows(
         *,
-        recipe: RuleRecipeOverlay | None,
+        inference: RuleInferenceOverlay | None,
         rule_name: str,
         func_ea: int,
         tags: frozenset[str],
     ) -> bool:
-        if recipe is None:
+        if inference is None:
             return True
-        if not RuleScopeService._recipe_targets_function(
-            recipe,
+        if not RuleScopeService._inference_targets_function(
+            inference,
             func_ea=func_ea,
             tags=tags,
         ):
             return True
-        if recipe.enabled_rules and rule_name not in recipe.enabled_rules:
+        if inference.enabled_rules and rule_name not in inference.enabled_rules:
             return False
-        if rule_name in recipe.disabled_rules:
+        if rule_name in inference.disabled_rules:
             return False
         return True
