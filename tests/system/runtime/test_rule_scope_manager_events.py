@@ -65,18 +65,18 @@ def test_set_function_tags_emits_function_level_invalidation():
     assert captured[0].func_eas == frozenset({0x401000})
 
 
-def test_recipe_apply_and_clear_emit_events_and_persist():
+def test_inference_apply_and_clear_emit_events_and_persist():
     manager = _build_manager()
     fake_storage = _FakeStorage()
     manager.storage = fake_storage
 
     applied: list[RuleScopeInvalidation] = []
     cleared: list[RuleScopeInvalidation] = []
-    manager.event_emitter.on(RuleScopeEvent.RECIPE_APPLIED, lambda payload: applied.append(payload))
-    manager.event_emitter.on(RuleScopeEvent.RECIPE_CLEARED, lambda payload: cleared.append(payload))
+    manager.event_emitter.on(RuleScopeEvent.INFERENCE_APPLIED, lambda payload: applied.append(payload))
+    manager.event_emitter.on(RuleScopeEvent.INFERENCE_CLEARED, lambda payload: cleared.append(payload))
 
     manager.set_active_rule_recipe(
-        recipe_name="focused_recipe",
+        recipe_name="focused_inference",
         enabled_rules={"RuleA", "RuleB"},
         disabled_rules={"RuleC"},
         target_func_eas={0x401000},
@@ -86,7 +86,7 @@ def test_recipe_apply_and_clear_emit_events_and_persist():
 
     recipe = manager.get_active_rule_recipe()
     assert recipe is not None
-    assert recipe.name == "focused_recipe"
+    assert recipe.name == "focused_inference"
     assert recipe.enabled_rules == frozenset({"RuleA", "RuleB"})
     assert recipe.disabled_rules == frozenset({"RuleC"})
     assert fake_storage.recipe_set_count == 1
@@ -98,12 +98,12 @@ def test_recipe_apply_and_clear_emit_events_and_persist():
     assert manager.get_active_rule_recipe() is None
     assert fake_storage.recipe_clear_count == 1
     assert len(cleared) == 1
-    assert cleared[0].reason == RuleScopeEvent.RECIPE_CLEARED
+    assert cleared[0].reason == RuleScopeEvent.INFERENCE_CLEARED
 
 
-def test_init_storage_loads_persisted_recipe_and_emits_events():
+def test_init_storage_loads_persisted_inference_and_emits_events():
     persisted = ActiveRuleRecipeConfig(
-        name="persisted_recipe",
+        name="persisted_inference",
         enabled_rules={"RuleA"},
         disabled_rules={"RuleB"},
         target_func_eas={0x402000},
@@ -115,7 +115,7 @@ def test_init_storage_loads_persisted_recipe_and_emits_events():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test_rules.db"
 
-        # Pre-seed a real SQLite storage with the persisted recipe.
+        # Pre-seed a real SQLite storage with the persisted inference.
         seed = create_optimization_storage(db_path)
         seed.set_active_rule_recipe(persisted)
         seed.close()
@@ -133,7 +133,7 @@ def test_init_storage_loads_persisted_recipe_and_emits_events():
             lambda payload: captured_reloaded.append(payload),
         )
         manager.event_emitter.on(
-            RuleScopeEvent.RECIPE_APPLIED,
+            RuleScopeEvent.INFERENCE_APPLIED,
             lambda payload: captured_applied.append(payload),
         )
 
@@ -141,7 +141,7 @@ def test_init_storage_loads_persisted_recipe_and_emits_events():
 
         active = manager.get_active_rule_recipe()
         assert active is not None
-        assert active.name == "persisted_recipe"
+        assert active.name == "persisted_inference"
         assert active.enabled_rules == frozenset({"RuleA"})
         assert active.disabled_rules == frozenset({"RuleB"})
         assert len(captured_applied) == 1
