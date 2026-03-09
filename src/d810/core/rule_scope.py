@@ -123,6 +123,10 @@ class RuleInferenceOverlay:
     notes: str = ""
 
 
+InferenceFactory = Callable[[Any], list[RuleDelta]]
+"""Callable that, given analysis context, produces a list of RuleDelta adjustments."""
+
+
 class FunctionRuleOverlayProvider(Protocol):
     def __call__(self, function_ea: int) -> FunctionRuleOverlay | None: ...
 
@@ -293,7 +297,7 @@ class RuleScopeService:
         self._overlay_provider: FunctionRuleOverlayProvider | None = None
         self._overlay_cache: dict[int, FunctionRuleOverlay | None] = {}
         self._active_inference: RuleInferenceOverlay | None = None
-        self._inference_registry: dict[str, RuleInferenceOverlay] = {}
+        self._inference_registry: dict[str, InferenceFactory] = {}
         self._hint_overlay: HintOverlayProvider | None = None
 
     @property
@@ -364,22 +368,24 @@ class RuleScopeService:
     def set_active_inference(self, inference: RuleInferenceOverlay | None) -> None:
         self._active_inference = inference
 
-    def register_inference(self, inference: RuleInferenceOverlay) -> None:
-        """Register a named inference for later lookup by ``apply_hints()``.
+    def register_inference(self, name: str, factory: InferenceFactory) -> None:
+        """Register a named inference factory for later invocation by ``apply_hints()``.
 
         Args:
-            inference: Inference overlay to register. Its ``name`` is used as key.
+            name: Inference name used as registry key.
+            factory: Callable that accepts analysis context and returns
+                a list of :class:`RuleDelta` adjustments.
         """
-        self._inference_registry[inference.name] = inference
+        self._inference_registry[name] = factory
 
-    def get_registered_inference(self, name: str) -> RuleInferenceOverlay | None:
-        """Look up an inference by name from the registry.
+    def get_registered_inference(self, name: str) -> InferenceFactory | None:
+        """Look up an inference factory by name from the registry.
 
         Args:
             name: Inference name to look up.
 
         Returns:
-            The registered inference, or ``None`` if not found.
+            The registered factory, or ``None`` if not found.
         """
         return self._inference_registry.get(name)
 
@@ -467,19 +473,24 @@ class RuleScopeService:
 
         # --- 1. Apply recommended inferences ---------------------------------
         for inference_name in recommended_inferences:
-            inference = self._inference_registry.get(inference_name)
-            if inference is None:
+            factory = self._inference_registry.get(inference_name)
+            if factory is None:
                 inferences_not_found.append(inference_name)
                 continue
-            # Narrow the inference to this function by adding func_ea to targets
+            # Invoke factory to get deltas, then convert to overlay
+            deltas = factory(hints)
+            enabled: set[str] = set()
+            disabled: set[str] = set()
+            for delta in deltas:
+                if delta.action == "activate":
+                    enabled.add(delta.rule_name)
+                elif delta.action == "suppress":
+                    disabled.add(delta.rule_name)
             scoped = RuleInferenceOverlay(
-                name=inference.name,
-                enabled_rules=inference.enabled_rules,
-                disabled_rules=inference.disabled_rules,
-                target_func_eas=inference.target_func_eas | frozenset({func_ea}),
-                target_tags_any=inference.target_tags_any,
-                target_tags_all=inference.target_tags_all,
-                notes=inference.notes,
+                name=inference_name,
+                enabled_rules=frozenset(enabled),
+                disabled_rules=frozenset(disabled),
+                target_func_eas=frozenset({func_ea}),
             )
             # Store per-function via HintOverlayProvider (not global _active_inference)
             if self._hint_overlay is None:
