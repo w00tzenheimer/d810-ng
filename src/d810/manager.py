@@ -58,6 +58,7 @@ from d810.recon.collectors.profile_classifier import FlowProfileClassifierCollec
 from d810.recon.collectors.return_frontier import ReturnFrontierCollector
 from d810.recon.microcode_dump import mba_to_dict
 from d810.recon.analysis import AnalysisPhase
+from d810.recon.inferences import unflattening_inference
 from d810.recon.phase import ReconPhase
 from d810.recon.runtime import ReconAnalysisRuntime
 from d810.recon.store import ReconStore
@@ -301,6 +302,7 @@ class D810Manager:
         self._init_storage()
         self.rule_scope_service.set_overlay_provider(self._get_rule_overlay)
         self.rule_scope_service.set_active_inference(self._active_rule_recipe)
+        self.rule_scope_service.register_inference("unflattening", unflattening_inference)
 
         # Instantiate core manager classes from registry
         self.instruction_optimizer = InstructionOptimizerManager(
