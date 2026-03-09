@@ -18,10 +18,8 @@ import ida_segment
 import idaapi
 
 from d810.core import CythonMode, getLogger, typing
-from d810.evaluator.hexrays_microcode.domains.constant_env import (
-    build_constant_entry_state,
-)
 from d810.evaluator.hexrays_microcode.forward_dataflow import (
+    build_constant_entry_state,
     run_forward_fixpoint_on_mba,
 )
 from d810.hexrays.ir.mop_utils import (

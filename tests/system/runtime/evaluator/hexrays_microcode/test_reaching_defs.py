@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from d810.cfg.lattice import BOTTOM, TOP
-from d810.evaluator.hexrays_microcode.domains.reaching_defs import (
+from d810.evaluator.hexrays_microcode.forward_dataflow import (
     DefSite,
     ReachingDefEnv,
     VarKey,

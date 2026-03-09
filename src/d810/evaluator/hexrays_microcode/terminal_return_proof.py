@@ -333,7 +333,7 @@ def _reaching_def_proof(
     from collections import deque
 
     from d810.cfg.lattice import BOTTOM
-    from d810.evaluator.hexrays_microcode.domains.reaching_defs import (
+    from d810.evaluator.hexrays_microcode.forward_dataflow import (
         DefSite as RDDefSite,
         ReachingDefEnv,
         VarKey,
