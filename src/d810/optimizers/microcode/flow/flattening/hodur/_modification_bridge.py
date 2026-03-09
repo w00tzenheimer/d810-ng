@@ -12,6 +12,7 @@ from d810.cfg.graph_modification import (
     EdgeRedirectViaPredSplit,
     GraphModification,
     NopInstructions,
+    ZeroStateWrite,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     RedirectBranch,
@@ -112,6 +113,9 @@ class ModificationBuilder:
 
     def nop_instruction(self, source_block: int, instruction_ea: int) -> NopInstructions:
         return NopInstructions(block_serial=source_block, insn_eas=(instruction_ea,))
+
+    def zero_state_write(self, source_block: int, instruction_ea: int) -> ZeroStateWrite:
+        return ZeroStateWrite(block_serial=source_block, insn_ea=instruction_ea)
 
     def conditional_redirect(
         self,

@@ -27,6 +27,7 @@ from d810.cfg.graph_modification import (
     GraphModification,
     InsertBlock,
     NopInstructions,
+    ZeroStateWrite,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     DirectTerminalLoweringSite,
@@ -151,6 +152,16 @@ class PatchNopInstructions:
 
     def to_graph_modification(self) -> NopInstructions:
         return NopInstructions(block_serial=self.block_serial, insn_eas=self.insn_eas)
+
+
+@dataclass(frozen=True)
+class PatchZeroStateWrite:
+    """Zero the source operand of a state variable write instruction."""
+    block_serial: int
+    insn_ea: int
+
+    def to_graph_modification(self) -> ZeroStateWrite:
+        return ZeroStateWrite(block_serial=self.block_serial, insn_ea=self.insn_ea)
 
 
 @dataclass(frozen=True)
@@ -329,6 +340,7 @@ PatchOperation = Union[
     PatchConvertToGoto,
     PatchRemoveEdge,
     PatchNopInstructions,
+    PatchZeroStateWrite,
     PatchEdgeSplitTrampoline,
     PatchConditionalRedirect,
     PatchInsertBlock,
@@ -812,6 +824,9 @@ def _finalize_step(
         case PatchNopInstructions():
             return step
 
+        case PatchZeroStateWrite():
+            return step
+
         case _PendingEdgeSplitTrampoline(
             modification=EdgeRedirectViaPredSplit(
                 src_block=src,
@@ -1021,6 +1036,9 @@ def compile_patch_plan(
 
             case NopInstructions(block_serial=serial, insn_eas=eas):
                 raw_steps.append(PatchNopInstructions(block_serial=serial, insn_eas=eas))
+
+            case ZeroStateWrite(block_serial=serial, insn_ea=ea):
+                raw_steps.append(PatchZeroStateWrite(block_serial=serial, insn_ea=ea))
 
             case EdgeRedirectViaPredSplit(
                 src_block=src,
@@ -1270,6 +1288,7 @@ __all__ = [
     "PatchConvertToGoto",
     "PatchRemoveEdge",
     "PatchNopInstructions",
+    "PatchZeroStateWrite",
     "PatchEdgeSplitTrampoline",
     "PatchConditionalRedirect",
     "PatchInsertBlock",

@@ -34,6 +34,7 @@ from d810.cfg.plan import (
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
     PatchNopInstructions,
+    PatchZeroStateWrite,
     PatchPlan,
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
@@ -359,7 +360,7 @@ class IDAIRTranslator:
             match step:
                 case PatchRedirectGoto() | PatchRedirectBranch() | PatchConvertToGoto():
                     continue
-                case PatchNopInstructions() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect():
+                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect():
                     continue
                 case PatchPrivateTerminalSuffix():
                     continue
@@ -443,6 +444,13 @@ class IDAIRTranslator:
                         ea,
                         description=f"nop {hex(ea)} in block {serial}",
                     )
+
+            case PatchZeroStateWrite(block_serial=serial, insn_ea=ea):
+                modifier.queue_zero_state_write(
+                    serial,
+                    ea,
+                    description=f"zero state write {hex(ea)} in block {serial}",
+                )
 
             case PatchEdgeSplitTrampoline(
                 source_serial=src,
