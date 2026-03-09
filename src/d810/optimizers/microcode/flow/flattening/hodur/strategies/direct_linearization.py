@@ -1438,43 +1438,12 @@ class DirectHandlerLinearizationStrategy:
                     # 1. Resolve target handler via BST
                     ct_target = resolve_target_via_bst(bst_result, ct.target_state)
                     if ct_target is None:
-                        # Fallback: BST root-walk resolution (same as main handler loop)
-                        _ct_bst_default = find_bst_default_block_snapshot(
-                            fg,
-                            dispatcher_serial,
-                            bst_result.bst_node_blocks,
-                            set(handler_state_map.keys()),
+                        logger.info(
+                            "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
+                            "target_state=0x%X no BST resolution",
+                            ct.handler_entry, ct.target_state,
                         )
-                        if _ct_bst_default is not None:
-                            ct_target = resolve_exit_via_bst_default_snapshot(
-                                fg, _ct_bst_default, ct.target_state
-                            )
-                        if ct_target is None:
-                            # Try root-walk from dispatcher root
-                            ct_target = resolve_exit_via_bst_default_snapshot(
-                                fg, dispatcher_serial, ct.target_state
-                            )
-                        if ct_target is not None and ct_target in bst_node_blocks:
-                            logger.info(
-                                "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
-                                "target_state=0x%X root-walk resolved to BST internal blk[%d]",
-                                ct.handler_entry, ct.target_state, ct_target,
-                            )
-                            ct_target = None
-                        if ct_target is not None:
-                            bst_rootwalk_targets.add(ct_target)
-                            logger.info(
-                                "conditional redirect: BST root-walk fallback resolved "
-                                "0x%08X -> blk[%d]",
-                                ct.target_state, ct_target,
-                            )
-                        else:
-                            logger.info(
-                                "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
-                                "target_state=0x%X no BST resolution",
-                                ct.handler_entry, ct.target_state,
-                            )
-                            continue
+                        continue
                     ct.target_handler = ct_target
 
                     # 2. Look up the current successor on the branch arm
@@ -1490,29 +1459,14 @@ class DirectHandlerLinearizationStrategy:
 
                     old_target = branch_snap.succs[ct.branch_arm]
 
-                    # Guard: if this specific edge is already claimed, defer
-                    # to hidden handler closure instead of dropping entirely.
+                    # Guard: skip if this specific edge is already claimed
                     edge_key = (ct.branch_block, old_target)
                     if edge_key in claimed_edges:
                         logger.info(
-                            "CONDITIONAL_TRANSITION_DEFERRED: handler=blk[%d] "
-                            "edge (%d->%d) already claimed by %d, "
-                            "deferring target blk[%d] to hidden handler closure",
+                            "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
+                            "edge (%d->%d) already claimed by %d",
                             ct.handler_entry, ct.branch_block,
-                            old_target, claimed_edges[edge_key], ct_target,
-                        )
-                        # Add target to hidden handler worklist so PASS 2
-                        # can linearize the handler chain that starts there.
-                        bst_rootwalk_targets.add(ct_target)
-                        # Still NOP dead state writes (skip multi-pred blocks)
-                        _sw_snap = fg.get_block(ct.state_write_block)
-                        if _sw_snap is None or _sw_snap.npred <= 1:
-                            _append_nop(
-                                source_block=ct.state_write_block,
-                                instruction_ea=ct.state_write_ea,
-                            )
-                        _nop_temp_def_if_resolved(
-                            ct.state_write_block, ct.state_write_ea, ct.handler_entry,
+                            old_target, claimed_edges[edge_key],
                         )
                         continue
 
