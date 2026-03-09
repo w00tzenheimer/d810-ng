@@ -6,6 +6,7 @@ from d810.core.rule_scope import (
     ApplyHintsResult,
     FunctionRuleOverlay,
     HintOverlayProvider,
+    InferenceFactory,
     PIPELINE_INSTRUCTION,
     RuleDelta,
     RuleInferenceOverlay,
@@ -60,6 +61,13 @@ class _DummyHints:
     func_ea: int
     recommended_inferences: tuple[str, ...] = ()
     suppress_rules: tuple[str, ...] = ()
+
+
+def _make_activate_factory(*rule_names: str) -> InferenceFactory:
+    """Create a factory that activates the given rules."""
+    def factory(hints: object) -> list[RuleDelta]:
+        return [RuleDelta(rule_name=r, action="activate", overrides={}) for r in rule_names]
+    return factory
 
 
 def _make_service_with_rules(*rules: _DummyRule) -> RuleScopeService:
@@ -207,12 +215,9 @@ class TestHintOverlayProvider:
 class TestInferenceRegistry:
     def test_register_and_retrieve(self) -> None:
         svc = RuleScopeService()
-        inference = RuleInferenceOverlay(
-            name="test_inference",
-            enabled_rules=frozenset({"R1"}),
-        )
-        svc.register_inference(inference)
-        assert svc.get_registered_inference("test_inference") is inference
+        factory = _make_activate_factory("R1")
+        svc.register_inference("test_inference", factory)
+        assert svc.get_registered_inference("test_inference") is factory
 
     def test_missing_returns_none(self) -> None:
         svc = RuleScopeService()
@@ -220,11 +225,51 @@ class TestInferenceRegistry:
 
     def test_overwrite(self) -> None:
         svc = RuleScopeService()
-        r1 = RuleInferenceOverlay(name="r", enabled_rules=frozenset({"A"}))
-        r2 = RuleInferenceOverlay(name="r", enabled_rules=frozenset({"B"}))
-        svc.register_inference(r1)
-        svc.register_inference(r2)
-        assert svc.get_registered_inference("r") is r2
+        f1 = _make_activate_factory("A")
+        f2 = _make_activate_factory("B")
+        svc.register_inference("r", f1)
+        svc.register_inference("r", f2)
+        assert svc.get_registered_inference("r") is f2
+
+    def test_factory_receives_hints(self) -> None:
+        """Factory callable receives the hints object passed to apply_hints."""
+        svc = _make_service_with_rules(
+            _DummyRule(name="R1", maturities=[1]),
+        )
+        received: list[object] = []
+
+        def capturing_factory(hints: object) -> list[RuleDelta]:
+            received.append(hints)
+            return [RuleDelta(rule_name="R1", action="activate", overrides={})]
+
+        svc.register_inference("cap", capturing_factory)
+        hints = _DummyHints(func_ea=0x1000, recommended_inferences=("cap",))
+        svc.apply_hints(hints)
+        assert len(received) == 1
+        assert received[0] is hints
+
+    def test_factory_returns_deltas(self) -> None:
+        """Factory-produced deltas are converted to overlay correctly."""
+        svc = _make_service_with_rules(
+            _DummyRule(name="R1", maturities=[1]),
+            _DummyRule(name="R2", maturities=[1]),
+            _DummyRule(name="R3", maturities=[1]),
+        )
+
+        def mixed_factory(hints: object) -> list[RuleDelta]:
+            return [
+                RuleDelta(rule_name="R1", action="activate", overrides={}),
+                RuleDelta(rule_name="R3", action="suppress", overrides={}),
+            ]
+
+        svc.register_inference("mixed", mixed_factory)
+        hints = _DummyHints(func_ea=0x1000, recommended_inferences=("mixed",))
+        result = svc.apply_hints(hints)
+        assert result.inferences_applied == ("mixed",)
+
+        active = _active_names(svc, 0x1000)
+        assert "R1" in active
+        assert "R3" not in active
 
 
 # ---------------------------------------------------------------------------
@@ -251,11 +296,7 @@ class TestApplyHints:
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
         )
-        inference = RuleInferenceOverlay(
-            name="only_r2",
-            enabled_rules=frozenset({"R2"}),
-        )
-        svc.register_inference(inference)
+        svc.register_inference("only_r2", _make_activate_factory("R2"))
         hints = _DummyHints(func_ea=0x1000, recommended_inferences=("only_r2",))
         result = svc.apply_hints(hints)
 
@@ -285,11 +326,7 @@ class TestApplyHints:
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
         )
-        inference = RuleInferenceOverlay(
-            name="good_inference",
-            enabled_rules=frozenset({"R1"}),
-        )
-        svc.register_inference(inference)
+        svc.register_inference("good_inference", _make_activate_factory("R1"))
         hints = _DummyHints(
             func_ea=0x1000,
             recommended_inferences=("good_inference", "bad_inference"),
@@ -341,11 +378,7 @@ class TestApplyHints:
             _DummyRule(name="R2", maturities=[1]),
             _DummyRule(name="R3", maturities=[1]),
         )
-        inference = RuleInferenceOverlay(
-            name="enable_r1_r2",
-            enabled_rules=frozenset({"R1", "R2"}),
-        )
-        svc.register_inference(inference)
+        svc.register_inference("enable_r1_r2", _make_activate_factory("R1", "R2"))
         hints = _DummyHints(
             func_ea=0x1000,
             recommended_inferences=("enable_r1_r2",),
@@ -394,8 +427,7 @@ class TestApplyHints:
 
     def test_generation_advances_on_change(self) -> None:
         svc = _make_service_with_rules(_DummyRule(name="R1", maturities=[1]))
-        inference = RuleInferenceOverlay(name="r", enabled_rules=frozenset({"R1"}))
-        svc.register_inference(inference)
+        svc.register_inference("r", _make_activate_factory("R1"))
 
         g0 = svc.generation
         result = svc.apply_hints(
@@ -420,16 +452,8 @@ class TestApplyHints:
             _DummyRule(name="R2", maturities=[1]),
             _DummyRule(name="R3", maturities=[1]),
         )
-        inference_a = RuleInferenceOverlay(
-            name="inference_a",
-            enabled_rules=frozenset({"R1"}),
-        )
-        inference_b = RuleInferenceOverlay(
-            name="inference_b",
-            enabled_rules=frozenset({"R2"}),
-        )
-        svc.register_inference(inference_a)
-        svc.register_inference(inference_b)
+        svc.register_inference("inference_a", _make_activate_factory("R1"))
+        svc.register_inference("inference_b", _make_activate_factory("R2"))
 
         hints = _DummyHints(
             func_ea=0x1000,
@@ -453,16 +477,8 @@ class TestApplyHints:
             _DummyRule(name="R2", maturities=[1]),
             _DummyRule(name="R3", maturities=[1]),
         )
-        inference_for_a = RuleInferenceOverlay(
-            name="inference_for_a",
-            enabled_rules=frozenset({"R1"}),
-        )
-        inference_for_b = RuleInferenceOverlay(
-            name="inference_for_b",
-            enabled_rules=frozenset({"R2"}),
-        )
-        svc.register_inference(inference_for_a)
-        svc.register_inference(inference_for_b)
+        svc.register_inference("inference_for_a", _make_activate_factory("R1"))
+        svc.register_inference("inference_for_b", _make_activate_factory("R2"))
 
         # Apply hints for func_A first, then func_B
         svc.apply_hints(_DummyHints(
@@ -495,10 +511,8 @@ class TestApplyHints:
             _DummyRule(name="R2", maturities=[1]),
             _DummyRule(name="R3", maturities=[1]),
         )
-        inference_a = RuleInferenceOverlay(name="inference_a", enabled_rules=frozenset({"R1"}))
-        inference_b = RuleInferenceOverlay(name="inference_b", enabled_rules=frozenset({"R2"}))
-        svc.register_inference(inference_a)
-        svc.register_inference(inference_b)
+        svc.register_inference("inference_a", _make_activate_factory("R1"))
+        svc.register_inference("inference_b", _make_activate_factory("R2"))
 
         svc.apply_hints(_DummyHints(func_ea=0x1000, recommended_inferences=("inference_a",)))
         assert _active_names(svc, 0x1000) == ("R1",)
@@ -514,8 +528,7 @@ class TestApplyHints:
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
         )
-        inference = RuleInferenceOverlay(name="only_r1", enabled_rules=frozenset({"R1"}))
-        svc.register_inference(inference)
+        svc.register_inference("only_r1", _make_activate_factory("R1"))
 
         svc.apply_hints(_DummyHints(func_ea=0x1000, recommended_inferences=("only_r1",)))
         assert _active_names(svc, 0x1000) == ("R1",)
@@ -533,11 +546,7 @@ class TestApplyHints:
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
         )
-        inference = RuleInferenceOverlay(
-            name="unflatten",
-            enabled_rules=frozenset({"R1"}),
-        )
-        svc.register_inference(inference)
+        svc.register_inference("unflatten", _make_activate_factory("R1"))
 
         hints = DeobfuscationHints(
             func_ea=0x401000,
@@ -573,11 +582,7 @@ class TestGetHintStateSummary:
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
         )
-        inference = RuleInferenceOverlay(
-            name="only_r1",
-            enabled_rules=frozenset({"R1"}),
-        )
-        svc.register_inference(inference)
+        svc.register_inference("only_r1", _make_activate_factory("R1"))
         svc.apply_hints(_DummyHints(
             func_ea=0x1000,
             recommended_inferences=("only_r1",),
