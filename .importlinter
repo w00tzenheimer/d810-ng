@@ -28,14 +28,6 @@ source_modules =
     tests.unit
 forbidden_modules =
     d810.optimizers
-ignore_imports =
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner_authority -> d810.optimizers.microcode.flow.flattening.hodur.strategy
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner_authority -> d810.optimizers.microcode.flow.flattening.hodur.planner
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner_authority -> d810.optimizers.microcode.flow.flattening.hodur.provenance
-    tests.unit.optimizers.microcode.flow.flattening.test_strict_mode_gates -> d810.optimizers.microcode.flow.flattening.hodur.provenance
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner_integration -> d810.optimizers.microcode.flow.flattening.hodur.strategy
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner_integration -> d810.optimizers.microcode.flow.flattening.hodur.planner
-    tests.unit.optimizers.microcode.flow.flattening.hodur.test_planner_integration -> d810.optimizers.microcode.flow.flattening.hodur.provenance
 
 [importlinter:contract:layered-architecture]
 name = Layered architecture prevents upward imports
@@ -51,8 +43,6 @@ layers =
     d810.cfg
     d810.core
     d810.errors
-ignore_imports =
-    d810.backends.ast.z3 -> d810.recon.flow.def_search
 
 [importlinter:contract:mba-core-no-hexrays]
 name = MBA core must not import hexrays
