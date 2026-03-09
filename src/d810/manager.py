@@ -456,7 +456,7 @@ class D810Manager:
         self._active_rule_recipe = recipe
         self.rule_scope_service.set_active_inference(recipe)
         self.emit_rule_scope_invalidation(
-            RuleScopeEvent.RECIPE_APPLIED,
+            RuleScopeEvent.INFERENCE_APPLIED,
             project_name=str(self.config.get("project_name", "")),
             changed_rules=frozenset(recipe.enabled_rules | recipe.disabled_rules),
         )
@@ -587,7 +587,7 @@ class D810Manager:
                 )
             )
         self.emit_rule_scope_invalidation(
-            RuleScopeEvent.RECIPE_APPLIED,
+            RuleScopeEvent.INFERENCE_APPLIED,
             project_name=str(self.config.get("project_name", "")),
             changed_rules=frozenset(
                 (enabled_rules or set()) | (disabled_rules or set())
@@ -604,7 +604,7 @@ class D810Manager:
         ):
             self.storage.clear_active_rule_recipe()
         self.emit_rule_scope_invalidation(
-            RuleScopeEvent.RECIPE_CLEARED,
+            RuleScopeEvent.INFERENCE_CLEARED,
             project_name=str(self.config.get("project_name", "")),
         )
 
