@@ -27,6 +27,8 @@ Available strategies (in dependency order):
    family ``fallback``.
 10. :class:`AssignmentMapFallbackStrategy` — dead state-assignment NOPs and
     assignment-map redirects, family ``fallback``.
+11. :class:`DeadStateVariableEliminationStrategy` — NOP remaining reads of
+    the dead state variable after linearization, family ``cleanup``.
 """
 from __future__ import annotations
 
@@ -60,6 +62,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.private_terminal
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.direct_terminal_lowering import (
     DirectTerminalLoweringStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.dead_state_variable_elimination import (
+    DeadStateVariableEliminationStrategy,
+)
 
 __all__ = [
     "DirectHandlerLinearizationStrategy",
@@ -72,6 +77,7 @@ __all__ = [
     "ConditionalForkFallbackStrategy",
     "AssignmentMapFallbackStrategy",
     "DirectTerminalLoweringStrategy",
+    "DeadStateVariableEliminationStrategy",
     "ALL_STRATEGIES",
 ]
 
@@ -86,4 +92,5 @@ ALL_STRATEGIES: list[type] = [
     PredPatchFallbackStrategy,
     ConditionalForkFallbackStrategy,
     AssignmentMapFallbackStrategy,
+    DeadStateVariableEliminationStrategy,
 ]
