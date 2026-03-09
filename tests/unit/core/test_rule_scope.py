@@ -5,7 +5,7 @@ from d810.core.rule_scope import (
     FunctionRuleOverlay,
     PIPELINE_FLOW,
     PIPELINE_INSTRUCTION,
-    RuleRecipeOverlay,
+    RuleInferenceOverlay,
     RuleScopeEvent,
     RuleScopeInvalidation,
     RuleScopeService,
@@ -373,7 +373,7 @@ def test_selector_consumes_function_tags_from_overlay():
     assert tuple(rule.name for rule in untagged_active) == ("Plain",)
 
 
-def test_active_recipe_filters_targeted_scope_only():
+def test_active_inference_filters_targeted_scope_only():
     svc = RuleScopeService()
     rule_a = _DummyRule(name="RuleA", maturities=[1])
     rule_b = _DummyRule(name="RuleB", maturities=[1])
@@ -383,9 +383,9 @@ def test_active_recipe_filters_targeted_scope_only():
         flow_rules=(),
         ctree_rules=(),
     )
-    svc.set_active_recipe(
-        RuleRecipeOverlay(
-            name="targeted_recipe",
+    svc.set_active_inference(
+        RuleInferenceOverlay(
+            name="targeted_inference",
             enabled_rules=frozenset({"RuleB"}),
             target_func_eas=frozenset({0x7000}),
         )
