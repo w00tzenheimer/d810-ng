@@ -17,17 +17,22 @@
 # SETUP (same for all commands): export IDA/PYTHONPATH env, pip install -e .[dev], python -m d810.speedups.install
 #
 # Options (system/shell/exec):
-#   -w, --worktree REL      Use worktree at REPO_ROOT/WORKTREE_ROOT/REL as /work (default worktree root: .worktrees)
+#   -w, --worktree REL      Use worktree at REPO_ROOT/WORKTREE_ROOT/REL as /work. REL is relative to
+#                           WORKTREE_ROOT (default .worktrees). If your worktree is under a different
+#                           root (e.g. .claude/worktrees/agent-foo), set D810_WORKTREE_ROOT and pass
+#                           only the relative part: D810_WORKTREE_ROOT=.claude/worktrees -w agent-foo.
 #   -l, --logs              Mount work dir .tmp/logs at /root/.idapro/logs
-#   -o, --out FILE          (system only) Redirect stdout+stderr to .tmp/FILE
+#   -o, --out FILE          (system only) Redirect stdout+stderr to WORK_DIR/.tmp/FILE. Use a relative
+#                           filename (e.g. out.txt), not an absolute path; the script prepends .tmp/.
 #   --                      Remaining args passed to pytest (system only) or used as command separator (exec)
 #
 # Options (dump only):
 #   -f, --function NAME     Pass --dump-function-pseudocode NAME
 #   -m, --maturity LIST     Pass --dump-microcode-maturity LIST (comma-separated)
 #   -p, --project NAME      Pass --dump-project NAME (JSON project name)
-#   -o, --out FILE          Redirect stdout+stderr to .tmp/FILE; file is truncated at start of each run (not appended)
-#   --                      Remaining args passed to pytest
+#   -o, --out FILE          Redirect stdout+stderr to WORK_DIR/.tmp/FILE; truncated each run. Use a
+#                           relative filename (e.g. dump.txt), not an absolute path; the script prepends .tmp/.
+#   --                      Remaining args passed to pytest (e.g. --dump-microcode-d810, --dump-terminal-return-valranges, --dump-microcode-maturity MATURITY)
 #
 # Options (exec): same as system/shell; then -- COMMAND [ARGS...] to run after SETUP (required).
 #
@@ -53,6 +58,13 @@
 #   ./run_system_tests_docker.sh exec -- bash -c 'echo hi && $PYTHON -m pytest tests/unit/ -v'
 #   ./run_system_tests_docker.sh dump -f sub_7FFD3338C040 -m LOCOPT,CALLS,GLBOPT1,GLBOPT2 -p hodur_flag2.json -o hodur_flag2_dump.txt
 #   ./run_system_tests_docker.sh dump -f AntiDebug_ExceptionFilter -p example_libobfuscated.json -o antidebug_dump4.txt -w verifycpp-on-ngFlowGraphTransform -l
+#
+# Dump examples (hodur_flag2 / hodur_func):
+#   ./run_system_tests_docker.sh dump -f sub_7FFD3338C040 -p hodur_flag2.json -o sub7FFD_docker_fresh_$(date +%Y%m%d%H%M%S).txt -l
+#   ./run_system_tests_docker.sh dump -f hodur_func -p example_hodur.json -o hodur_func_baseline_$(date +%Y%m%d%H%M%S).txt -l
+#   (with worktree under .claude/worktrees): D810_WORKTREE_ROOT=.claude/worktrees ./run_system_tests_docker.sh dump -w agent-xyz -f sub_7FFD3338C040 -p hodur_flag2.json -o sub7FFD_$(date +%Y%m%d%H%M%S).txt -l
+#   (dump post-d810 microcode and terminal return valranges; pass after --):
+#   ./run_system_tests_docker.sh dump -f sub_7FFD3338C040 -p hodur_flag2.json -o sub7FFD_full_$(date +%Y%m%d%H%M%S).txt -l -- --dump-microcode-d810 --dump-terminal-return-valranges --dump-microcode-maturity LOCOPT,CALLS,GLBOPT1
 set -e
 
 DOCKER_IMAGE="${D810_DOCKER_IMAGE:-idapro-9.3}"
@@ -158,6 +170,34 @@ if [ -n "$MOUNT_LOGS" ]; then
   mkdir -p "$LOGS_DIR"
   VOL_LOGS="-v ${LOGS_DIR}:/root/.idapro/logs"
 fi
+
+# Plan: print what we're about to do so agents see worktree, output path, and options
+echo "$0 plan:"
+echo "  command: $CMD"
+if [ -n "$WORKTREE_REL" ]; then
+  echo "  worktree: $WORK_DIR (WORKTREE_ROOT=$WORKTREE_ROOT, REL=$WORKTREE_REL)"
+else
+  echo "  worktree: $WORK_DIR (repo root)"
+fi
+if [ -n "$DUMP_OUT" ]; then
+  echo "  output:   stdout+stderr -> $WORK_DIR/.tmp/$DUMP_OUT"
+fi
+if [ -n "$MOUNT_LOGS" ]; then
+  echo "  logs:     $LOGS_DIR -> /root/.idapro/logs in container"
+fi
+case "$CMD" in
+  system) echo "  run:      pytest tests/system -v${EXTRA_PYTEST[*]:+ ${EXTRA_PYTEST[*]}}" ;;
+  dump)
+    echo "  run:      pytest test_dump_function_pseudocode.py"
+    [ -n "$DUMP_FUNCTION" ] && echo "  function: $DUMP_FUNCTION"
+    [ -n "$DUMP_PROJECT" ]  && echo "  project:  $DUMP_PROJECT"
+    [ -n "$DUMP_MATURITY" ] && echo "  maturity: $DUMP_MATURITY"
+    [ ${#EXTRA_PYTEST[@]} -gt 0 ] && echo "  extra:    ${EXTRA_PYTEST[*]}"
+    ;;
+  exec) echo "  exec:     ${EXEC_ARGS[*]}" ;;
+  shell) echo "  run:      interactive shell" ;;
+esac
+echo ""
 
 ENV_IDA="IDA_PREFIX=/app/ida IDA_INSTALL_DIR=/app/ida D810_LIBCLANG_PATH=/app/ida/libclang.so"
 ENV_PYTHON="PYTHONPATH=${PYWORK}:/app/ida/python:\$PYTHONPATH"
