@@ -146,6 +146,25 @@ class DeadStateVariableEliminationStrategy:
             # source operand (not a write destination -- those are handled by
             # DirectLinearization).
             if self._is_state_var_read(mba, use, state_var_stkoff):
+                # Guard: do NOT NOP instructions whose destination is a
+                # non-state stack variable (e.g. m_xdu widening the dead
+                # state var into the return slot).  NOPing such instructions
+                # kills the only definition of the return slot, producing
+                # uninitialized return values.
+                skip_reason = self._dest_is_non_state_stkvar(
+                    mba, use, state_var_stkoff,
+                )
+                if skip_reason is not None:
+                    logger.warning(
+                        "DSVE: skipping NOP of %s at blk[%d]:0x%x"
+                        " — dest is non-state stkvar at off=0x%x",
+                        skip_reason[0],
+                        use.block_serial,
+                        use.ins_ea,
+                        skip_reason[1],
+                    )
+                    continue
+
                 modifications.append(
                     builder.nop_instruction(
                         source_block=use.block_serial,
@@ -299,3 +318,70 @@ class DeadStateVariableEliminationStrategy:
             cur_ins = cur_ins.next
 
         return False
+
+    # Opcodes that copy/widen a source into a destination.
+    _COPY_OPCODES: frozenset[int] = frozenset({
+        ida_hexrays.m_mov,
+        ida_hexrays.m_xdu,
+        ida_hexrays.m_xds,
+    })
+
+    # Opcode names for diagnostic logging.
+    _OPCODE_NAMES: dict[int, str] = {
+        ida_hexrays.m_mov: "m_mov",
+        ida_hexrays.m_xdu: "m_xdu",
+        ida_hexrays.m_xds: "m_xds",
+    }
+
+    @staticmethod
+    def _dest_is_non_state_stkvar(
+        mba: object,
+        use: UseSite,
+        state_var_stkoff: int,
+    ) -> tuple[str, int] | None:
+        """Check if the instruction writes to a non-state stack variable.
+
+        When a copy/widening instruction (``m_mov``, ``m_xdu``, ``m_xds``)
+        reads the dead state variable as SOURCE but writes to a DIFFERENT
+        stack variable as DESTINATION, NOPing it would destroy the only
+        definition of that destination (e.g., the return slot).
+
+        Args:
+            mba: An ``ida_hexrays.mba_t`` instance.
+            use: The use site to inspect.
+            state_var_stkoff: Stack offset of the dead state variable.
+
+        Returns:
+            A ``(opcode_name, dest_stkoff)`` tuple if the guard triggers
+            (meaning the NOP should be skipped), or ``None`` if safe to NOP.
+        """
+        try:
+            blk = mba.get_mblock(use.block_serial)  # type: ignore[attr-defined]
+        except (AttributeError, IndexError):
+            return None
+
+        if blk is None:
+            return None
+
+        cur_ins = blk.head
+        while cur_ins is not None:
+            if cur_ins.ea == use.ins_ea:
+                # Only guard copy/widening opcodes.
+                if cur_ins.opcode not in DeadStateVariableEliminationStrategy._COPY_OPCODES:
+                    return None
+                # Check if dest is a stack variable different from state var.
+                d = cur_ins.d
+                if (
+                    d is not None
+                    and d.t == ida_hexrays.mop_S
+                    and d.s is not None
+                    and d.s.off != state_var_stkoff
+                ):
+                    opname = DeadStateVariableEliminationStrategy._OPCODE_NAMES.get(
+                        cur_ins.opcode, "opcode_%d" % cur_ins.opcode,
+                    )
+                    return (opname, d.s.off)
+                return None
+            cur_ins = cur_ins.next
+
+        return None
