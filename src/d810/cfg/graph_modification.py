@@ -237,6 +237,27 @@ class NopInstructions:
 
 
 @dataclass(frozen=True)
+class ZeroStateWrite:
+    """Zero the source operand of a state variable write instruction.
+
+    Instead of NOPing a ``m_mov #CONST, state_var`` instruction, replaces
+    the source constant with ``#0``.  This kills the entry-state constant's
+    liveness so IDA cannot propagate the stale value (e.g. to a ``return``).
+
+    Attributes:
+        block_serial: Block containing the instruction.
+        insn_ea: Effective address of the ``m_mov`` instruction to zero.
+
+    Example:
+        >>> mod = ZeroStateWrite(block_serial=10, insn_ea=0x1000)
+        >>> mod.block_serial
+        10
+    """
+    block_serial: int
+    insn_ea: int
+
+
+@dataclass(frozen=True)
 class PrivateTerminalSuffix:
     """Clone a shared terminal epilogue suffix chain for one anchor block.
 
@@ -327,6 +348,7 @@ GraphModification = Union[
     InsertBlock,
     RemoveEdge,
     NopInstructions,
+    ZeroStateWrite,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     DirectTerminalLoweringGroup,
@@ -343,6 +365,7 @@ __all__ = [
     "InsertBlock",
     "RemoveEdge",
     "NopInstructions",
+    "ZeroStateWrite",
     "PrivateTerminalSuffix",
     "PrivateTerminalSuffixGroup",
     "DirectTerminalLoweringKind",

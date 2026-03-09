@@ -347,6 +347,7 @@ class ModificationType(Enum):
     BLOCK_NOP_INSNS = auto()          # NOP instructions in a block
     INSN_REMOVE = auto()              # Remove a specific instruction
     INSN_NOP = auto()                 # NOP a specific instruction
+    INSN_ZERO_STATE_WRITE = auto()    # Zero source operand of state variable write
     BLOCK_CREATE_WITH_REDIRECT = auto()  # Create intermediate block and redirect
     BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT = auto()  # Create conditional 2-way block with redirect
     BLOCK_DUPLICATE_AND_REDIRECT = auto()  # Duplicate source block and redirect one predecessor
@@ -757,6 +758,28 @@ class DeferredGraphModifier:
             description=description or f"nop insn at {hex(insn_ea)} in block {block_serial}",
         ))
         logger.debug("Queued insn nop: block %d, ea=%s", block_serial, hex(insn_ea))
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_zero_state_write(
+        self,
+        block_serial: int,
+        insn_ea: int,
+        description: str = "",
+    ) -> None:
+        """Queue zeroing the source operand of a state variable write.
+
+        Instead of NOPing the instruction, replaces the source constant with
+        ``#0`` so the state variable's *previous* (entry) value is killed.
+        """
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.INSN_ZERO_STATE_WRITE,
+            block_serial=block_serial,
+            insn_ea=insn_ea,
+            priority=900,
+            description=description or f"zero state write at {hex(insn_ea)} in block {block_serial}",
+        ))
+        logger.debug("Queued zero state write: block %d, ea=%s", block_serial, hex(insn_ea))
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
 
@@ -2461,6 +2484,9 @@ class DeferredGraphModifier:
         elif mod.mod_type == ModificationType.INSN_NOP:
             return self._apply_insn_nop(blk, mod.insn_ea)
 
+        elif mod.mod_type == ModificationType.INSN_ZERO_STATE_WRITE:
+            return self._apply_zero_state_write(blk, mod.insn_ea)
+
         elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_REDIRECT:
             return self._apply_create_and_redirect(
                 blk,
@@ -2597,6 +2623,32 @@ class DeferredGraphModifier:
         logger.warning(
             "Instruction at EA %s not found in block %d",
             hex(insn_ea), blk.serial
+        )
+        return False
+
+    def _apply_zero_state_write(self, blk: ida_hexrays.mblock_t, insn_ea: int) -> bool:
+        """Zero the source operand of a state variable write instruction.
+
+        Finds ``m_mov #CONST, state_var`` at *insn_ea* and replaces ``#CONST``
+        with ``#0``, keeping the instruction alive so the state variable is
+        explicitly written to zero (killing entry-state liveness).
+        """
+        insn = blk.head
+        while insn:
+            if insn.ea == insn_ea:
+                old_value = insn.l.nnn.value if insn.l.t == ida_hexrays.mop_n else 0
+                insn.l.make_number(0, insn.l.size, insn.ea)
+                logger.info(
+                    "STATE_WRITE_ZERO: blk[%d]@0x%x — replaced state write "
+                    "with m_mov #0 (was 0x%x)",
+                    blk.serial, insn_ea, old_value,
+                )
+                return True
+            insn = insn.next
+
+        logger.warning(
+            "Zero state write: instruction at EA %s not found in block %d",
+            hex(insn_ea), blk.serial,
         )
         return False
 
@@ -4654,6 +4706,22 @@ class ImmediateGraphModifier:
         if self._apply_insn_nop(blk, insn_ea):
             self.modifications_applied += 1
 
+    def queue_zero_state_write(
+        self,
+        block_serial: int,
+        insn_ea: int,
+        description: str = "",
+    ) -> None:
+        """Zero the source operand of a state variable write immediately."""
+        blk = self.mba.get_mblock(block_serial)
+        if blk is None:
+            logger.warning("Block %d not found", block_serial)
+            return
+
+        logger.debug("Immediate zero state write: block %d, ea=%s", block_serial, hex(insn_ea))
+        if self._apply_zero_state_write(blk, insn_ea):
+            self.modifications_applied += 1
+
     def queue_create_and_redirect(
         self,
         source_block_serial: int,
@@ -4820,6 +4888,32 @@ class ImmediateGraphModifier:
         logger.warning(
             "Instruction at EA %s not found in block %d",
             hex(insn_ea), blk.serial
+        )
+        return False
+
+    def _apply_zero_state_write(self, blk: ida_hexrays.mblock_t, insn_ea: int) -> bool:
+        """Zero the source operand of a state variable write instruction.
+
+        Finds ``m_mov #CONST, state_var`` at *insn_ea* and replaces ``#CONST``
+        with ``#0``, keeping the instruction alive so the state variable is
+        explicitly written to zero (killing entry-state liveness).
+        """
+        insn = blk.head
+        while insn:
+            if insn.ea == insn_ea:
+                old_value = insn.l.nnn.value if insn.l.t == ida_hexrays.mop_n else 0
+                insn.l.make_number(0, insn.l.size, insn.ea)
+                logger.info(
+                    "STATE_WRITE_ZERO: blk[%d]@0x%x — replaced state write "
+                    "with m_mov #0 (was 0x%x)",
+                    blk.serial, insn_ea, old_value,
+                )
+                return True
+            insn = insn.next
+
+        logger.warning(
+            "Zero state write: instruction at EA %s not found in block %d",
+            hex(insn_ea), blk.serial,
         )
         return False
 
