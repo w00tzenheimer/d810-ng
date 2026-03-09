@@ -259,6 +259,52 @@ def collect_mba_valranges(mba) -> Dict[int, List[str]]:
     }
 
 
+def resolve_state_via_valranges(blk, stkoff_mop, ins) -> int | None:
+    """Resolve a stack-variable operand to a single concrete value via IDA valranges.
+
+    Queries IDA's pre-computed value range analysis for the given stack operand
+    at the specified instruction point.  Tries ``VR_EXACT`` first (strictest,
+    no over-approximation), then falls back to ``VR_AT_START`` and ``VR_AT_END``.
+
+    Args:
+        blk: ``ida_hexrays.mblock_t`` block containing *ins*.
+        stkoff_mop: ``ida_hexrays.mop_t`` stack operand (``mop_S``) to query.
+        ins: Instruction anchor for the query point.
+
+    Returns:
+        A single concrete integer value if the valrange collapses to one value,
+        otherwise ``None``.
+    """
+    ida_hexrays = _ida_hexrays()
+
+    try:
+        vivl = ida_hexrays.vivl_t()
+        try:
+            stkoff = stkoff_mop.s.off
+        except Exception:
+            stkoff = getattr(stkoff_mop, "stkoff", None)
+            if stkoff is None:
+                return None
+        vivl.set_stkoff(stkoff, stkoff_mop.size)
+    except Exception:
+        return None
+
+    vr = ida_hexrays.valrng_t(stkoff_mop.size)
+
+    # Priority 1: VR_EXACT — only provably-exact values
+    for vr_flag in (ida_hexrays.VR_EXACT, ida_hexrays.VR_AT_START, ida_hexrays.VR_AT_END):
+        try:
+            ok = blk.get_valranges(vr, vivl, ins, vr_flag)
+            if ok and not vr.empty() and not vr.all_values():
+                ok_single, val = vr.cvt_to_single_value()
+                if ok_single:
+                    return int(val)
+        except Exception:
+            continue
+
+    return None
+
+
 __all__ = [
     "ValrangeLocationKind",
     "ValrangeLocation",
@@ -271,4 +317,5 @@ __all__ = [
     "collect_block_valranges",
     "collect_instruction_valranges",
     "collect_mba_valranges",
+    "resolve_state_via_valranges",
 ]
