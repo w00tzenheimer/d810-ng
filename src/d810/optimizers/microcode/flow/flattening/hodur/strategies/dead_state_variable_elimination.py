@@ -190,6 +190,7 @@ class DeadStateVariableEliminationStrategy:
             prerequisites=["direct_handler_linearization"],
             expected_benefit=benefit,
             risk_score=0.1,
+            metadata={"safeguard_min_required": 1},
         )
 
     @staticmethod
