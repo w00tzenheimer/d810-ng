@@ -9,27 +9,32 @@ Available strategies (in dependency order):
 
 1. :class:`DirectHandlerLinearizationStrategy` — BST-based goto-redirect,
    family ``direct``.
-2. :class:`HiddenHandlerClosureStrategy` — second-pass for BST root-walk
+2. :class:`ValrangeResolutionStrategy` — IDA value-range fallback for
+   unresolved exits, family ``fallback``.
+3. :class:`HiddenHandlerClosureStrategy` — second-pass for BST root-walk
    targets, family ``direct``.
-3. :class:`EdgeSplitConflictResolutionStrategy` — conflict-driven block
+4. :class:`EdgeSplitConflictResolutionStrategy` — conflict-driven block
    duplication, family ``direct``.
-4. :class:`TerminalLoopCleanupStrategy` — break residual terminal loops,
+5. :class:`TerminalLoopCleanupStrategy` — break residual terminal loops,
    family ``cleanup``.
-5. :class:`PrivateTerminalSuffixStrategy` — clone shared terminal suffix
+6. :class:`PrivateTerminalSuffixStrategy` — clone shared terminal suffix
    per handler entry for ``suffix_ambiguous`` sites, family ``direct``.
-6. :class:`DirectTerminalLoweringStrategy` — per-anchor return value
+7. :class:`DirectTerminalLoweringStrategy` — per-anchor return value
    materialization for ``needs_direct_lowering`` sites, family ``direct``.
-7. :class:`PredPatchFallbackStrategy` — MopTracker predecessor patching,
+8. :class:`PredPatchFallbackStrategy` — MopTracker predecessor patching,
    family ``fallback``.
-8. :class:`ConditionalForkFallbackStrategy` — conditional-fork resolution,
+9. :class:`ConditionalForkFallbackStrategy` — conditional-fork resolution,
    family ``fallback``.
-9. :class:`AssignmentMapFallbackStrategy` — dead state-assignment NOPs and
-   assignment-map redirects, family ``fallback``.
+10. :class:`AssignmentMapFallbackStrategy` — dead state-assignment NOPs and
+    assignment-map redirects, family ``fallback``.
 """
 from __future__ import annotations
 
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.direct_linearization import (
     DirectHandlerLinearizationStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.valrange_resolution import (
+    ValrangeResolutionStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.hidden_handler_closure import (
     HiddenHandlerClosureStrategy,
@@ -58,6 +63,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.direct_terminal_
 
 __all__ = [
     "DirectHandlerLinearizationStrategy",
+    "ValrangeResolutionStrategy",
     "HiddenHandlerClosureStrategy",
     "EdgeSplitConflictResolutionStrategy",
     "TerminalLoopCleanupStrategy",
@@ -71,6 +77,7 @@ __all__ = [
 
 ALL_STRATEGIES: list[type] = [
     DirectHandlerLinearizationStrategy,
+    ValrangeResolutionStrategy,
     HiddenHandlerClosureStrategy,
     EdgeSplitConflictResolutionStrategy,
     TerminalLoopCleanupStrategy,
