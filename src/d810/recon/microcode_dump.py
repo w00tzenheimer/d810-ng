@@ -20,26 +20,28 @@ from __future__ import annotations
 
 import json
 import re
-from d810.core.logging import getLogger
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from enum import IntEnum
 
-from d810.core.typing import List, Optional, Dict, Any, Union, Tuple, TYPE_CHECKING
+from d810.core.logging import getLogger
+from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from d810.evaluator.hexrays_microcode.valranges import (
+    collect_block_valrange_records,
+    collect_instruction_valrange_records,
+)
 from d810.recon.flow.bst_analysis import (
-    analyze_bst_dispatcher,
     BSTAnalysisResult,
-    _get_mop_const_value,
+    _detect_state_var_stkoff,
     _dump_dispatcher_node,
+    _extract_state_from_block,
     _find_pre_header,
+    _find_pre_header_state,
+    _get_mop_const_value,
     _mop_matches_stkoff,
     _resolve_mop_value_in_block,
-    _extract_state_from_block,
-    _find_pre_header_state,
-    _detect_state_var_stkoff,
+    analyze_bst_dispatcher,
 )
-from d810.recon.flow.transition_report import (
-    build_dispatcher_transition_report,
-)
+from d810.recon.flow.transition_report import build_dispatcher_transition_report
 
 # Defer IDA imports until needed - allows module to be imported for CLI --help
 idaapi = None
@@ -67,6 +69,7 @@ def _ensure_ida_imports():
             logging.warning(
                 "Could not import ida_hexrays. Hex-Rays functionality may fail."
             )
+
 
 # -----------------------------------------------------------------------------
 # Configuration & Logging
@@ -126,6 +129,7 @@ def _init_constants():
                 pass
 
     _maps_initialized = True
+
 
 # -----------------------------------------------------------------------------
 # Data Classes for JSON Serialization
@@ -201,7 +205,9 @@ class FunctionMicrocode:
 # -----------------------------------------------------------------------------
 
 
-def mop_to_dict(mop: "idaapi.mop_t", depth: int = 0, max_depth: int = 10) -> Optional[Dict[str, Any]]:
+def mop_to_dict(
+    mop: "idaapi.mop_t", depth: int = 0, max_depth: int = 10
+) -> Optional[Dict[str, Any]]:
     """Convert a mop_t to a dictionary for JSON serialization."""
     _init_constants()
 
@@ -254,7 +260,9 @@ def mop_to_dict(mop: "idaapi.mop_t", depth: int = 0, max_depth: int = 10) -> Opt
     elif mop_type == idaapi.mop_d:  # Sub-instruction
         sub_ins = getattr(mop, "d", None)
         if sub_ins is not None:
-            result["sub_instruction"] = instruction_to_dict(sub_ins, depth + 1, max_depth)
+            result["sub_instruction"] = instruction_to_dict(
+                sub_ins, depth + 1, max_depth
+            )
 
     elif mop_type == idaapi.mop_a:  # Address (mop_addr_t)
         inner = getattr(mop, "a", None)
@@ -265,7 +273,11 @@ def mop_to_dict(mop: "idaapi.mop_t", depth: int = 0, max_depth: int = 10) -> Opt
         f = getattr(mop, "f", None)
         if f is not None:
             args = getattr(f, "args", [])
-            result["args"] = [mop_to_dict(arg, depth + 1, max_depth) for arg in args if arg is not None]
+            result["args"] = [
+                mop_to_dict(arg, depth + 1, max_depth)
+                for arg in args
+                if arg is not None
+            ]
 
     elif mop_type == idaapi.mop_l:  # Local variable
         l = getattr(mop, "l", None)
@@ -280,8 +292,12 @@ def mop_to_dict(mop: "idaapi.mop_t", depth: int = 0, max_depth: int = 10) -> Opt
     elif mop_type == idaapi.mop_p:  # Pair
         pair = getattr(mop, "pair", None)
         if pair is not None:
-            result["pair_low"] = mop_to_dict(getattr(pair, "lop", None), depth + 1, max_depth)
-            result["pair_high"] = mop_to_dict(getattr(pair, "hop", None), depth + 1, max_depth)
+            result["pair_low"] = mop_to_dict(
+                getattr(pair, "lop", None), depth + 1, max_depth
+            )
+            result["pair_high"] = mop_to_dict(
+                getattr(pair, "hop", None), depth + 1, max_depth
+            )
 
     return result
 
@@ -540,9 +556,9 @@ def _fix_block_refs(s: str) -> str:
     """
     # Pattern: ') (' + exactly 16 hex chars + decimal digits + ' )'
     # Capture group 1: the trailing decimal serial
-    s = re.sub(r'\) \([0-9A-Fa-f]{16}(\d+) \)', r'@\1', s)
+    s = re.sub(r"\) \([0-9A-Fa-f]{16}(\d+) \)", r"@\1", s)
     # goto lines end up with '@ @N' after the above substitution
-    s = s.replace('@ @', '@')
+    s = s.replace("@ @", "@")
     return s
 
 
@@ -565,7 +581,7 @@ def _fix_var_names(s: str, frsize: int) -> str:
         sp_off = frsize - frame_off
         return f"sp+0x{sp_off:X}.{size}"
 
-    return re.sub(r'%var_([0-9A-Fa-f]+)\.(\d+)', _repl, s)
+    return re.sub(r"%var_([0-9A-Fa-f]+)\.(\d+)", _repl, s)
 
 
 def print_mba_human_readable(
@@ -577,19 +593,15 @@ def print_mba_human_readable(
     Produces output similar to IDA's own microcode listing, including:
     - Block headers with type, predecessor/successor sets, EA range
     - USE/DEF/DNU liveness sets per block
-    - VALRANGES per block (via :func:`d810.recon.flow.valranges.collect_block_valrange_records`)
+    - VALRANGES per block (via :func:`d810.evaluator.hexrays_microcode.valranges.collect_block_valrange_records`)
     - Instruction-level VALRANGES via
-      :func:`d810.recon.flow.valranges.collect_instruction_valrange_records`
+      :func:`d810.evaluator.hexrays_microcode.valranges.collect_instruction_valrange_records`
     - Instructions via ``minsn_t._print()`` with per-instruction u=/d= annotations
 
     Args:
         mba: The microcode block array to print.
         func_name: Optional function name shown in the header.
     """
-    from d810.recon.flow.valranges import (
-        collect_block_valrange_records,
-        collect_instruction_valrange_records,
-    )
 
     _init_constants()
 
@@ -597,17 +609,14 @@ def print_mba_human_readable(
     maturity = getattr(mba, "maturity", 0)
 
     # frsize is needed to convert %var_XX.N -> sp+0xOFF.N
-    _frsize: int = (
-        getattr(mba, "stacksize", 0)
-        or getattr(mba, "frsize", 0)
-        or 0
-    )
+    _frsize: int = getattr(mba, "stacksize", 0) or getattr(mba, "frsize", 0) or 0
     maturity_name = MATURITY_NAMES.get(maturity, f"MMAT_UNKNOWN_{maturity}")
     num_blocks = mba.qty
 
     # Block type enum: try runtime constants first, fall back to hard-coded
     try:
         import ida_hexrays as _ihr
+
         _BLT_NAMES = {
             _ihr.BLT_NONE: "BLT_NONE",
             _ihr.BLT_STOP: "BLT_STOP",
@@ -629,6 +638,7 @@ def print_mba_human_readable(
     # Flag constants
     try:
         import ida_hexrays as _ihr2
+
         MBL_FAKE = getattr(_ihr2, "MBL_FAKE", 0x200)
         MBL_INBOUNDS = getattr(_ihr2, "MBL_INBOUNDS", 0x0040)
         SHINS_NUMADDR = getattr(_ihr2, "SHINS_NUMADDR", 0x01)
@@ -665,12 +675,13 @@ def print_mba_human_readable(
         if raw is None:
             return "<none>"
         return "".join(
-            c if c == "\t" or 0x20 <= ord(c) <= 0x7E else " "
-            for c in str(raw)
+            c if c == "\t" or 0x20 <= ord(c) <= 0x7E else " " for c in str(raw)
         ).rstrip()
 
     header = func_name or f"sub_{entry_ea:x}"
-    print(f"; ===== Microcode: {header} @ 0x{entry_ea:x}  maturity={maturity_name}  blocks={num_blocks} =====")
+    print(
+        f"; ===== Microcode: {header} @ 0x{entry_ea:x}  maturity={maturity_name}  blocks={num_blocks} ====="
+    )
 
     for i in range(num_blocks):
         blk = mba.get_mblock(i)
@@ -694,7 +705,9 @@ def print_mba_human_readable(
 
         # Block header line
         inbounds_tag = " (INBOUNDS)" if is_inbounds else ""
-        print(f"\nblock {serial}{inbounds_tag}: ; preds: {preds_str}; succs: {succs_str}")
+        print(
+            f"\nblock {serial}{inbounds_tag}: ; preds: {preds_str}; succs: {succs_str}"
+        )
 
         # Stack frame info on block 0
         if serial == 0:
@@ -749,7 +762,9 @@ def print_mba_human_readable(
             def_parts.append(f"(may:{def_may})")
         def_str = ", ".join(def_parts)
 
-        print(f"; USE: {_paren_if_multi(use_str)} ; DEF: {_paren_if_multi(def_str)} ; DNU: {_paren_if_multi(dnu)}")
+        print(
+            f"; USE: {_paren_if_multi(use_str)} ; DEF: {_paren_if_multi(def_str)} ; DNU: {_paren_if_multi(dnu)}"
+        )
 
         # VALRANGES
         try:
@@ -769,6 +784,7 @@ def print_mba_human_readable(
         # Per-instruction use/def lists
         try:
             import ida_hexrays as _ihr_ins
+
             _mlist_t = _ihr_ins.mlist_t
             _MUST_ACCESS = _ihr_ins.MUST_ACCESS
             _MAY_ACCESS = _ihr_ins.MAY_ACCESS
@@ -837,7 +853,9 @@ def print_mba_human_readable(
             try:
                 ins_vr_records = collect_instruction_valrange_records(blk, ins)
                 if ins_vr_records:
-                    ins_vr = f" vr={{{', '.join(str(record) for record in ins_vr_records)}}}"
+                    ins_vr = (
+                        f" vr={{{', '.join(str(record) for record in ins_vr_records)}}}"
+                    )
             except Exception:
                 pass
 
@@ -933,7 +951,9 @@ def dump_dispatcher_tree(
             state_var_stkoff = detected
             state_var_lvar_idx = detected_lvar_idx
             lvar_note = (
-                f" lvar_idx={detected_lvar_idx}" if detected_lvar_idx is not None else ""
+                f" lvar_idx={detected_lvar_idx}"
+                if detected_lvar_idx is not None
+                else ""
             )
             diag_section.append(
                 f"Auto-detected state_var_stkoff=0x{detected:x}{lvar_note}"
@@ -943,11 +963,16 @@ def dump_dispatcher_tree(
     # --- Section 1: Pre-header ---
     sections.append("=== STATE MACHINE ===")
     pre_header_serial, initial_state = _find_pre_header_state(
-        mba, dispatcher_entry_serial, state_var_stkoff, diag_lines=diag_section,
+        mba,
+        dispatcher_entry_serial,
+        state_var_stkoff,
+        diag_lines=diag_section,
         state_var_lvar_idx=state_var_lvar_idx,
     )
     if pre_header_serial is not None:
-        state_str = f"0x{initial_state:08x}" if initial_state is not None else "<unknown>"
+        state_str = (
+            f"0x{initial_state:08x}" if initial_state is not None else "<unknown>"
+        )
         sections.append(
             f"Pre-header: blk[{pre_header_serial}] -> state = {state_str}"
             f" -> dispatcher blk[{dispatcher_entry_serial}]"
@@ -962,9 +987,13 @@ def dump_dispatcher_tree(
     sections.append("=== DISPATCHER BST ===")
     bst_lines: List[str] = []
     bst_visited: set = set()
-    handler_state_map: Dict[int, int] = {}   # handler_serial -> state_constant (from BST leaf)
+    handler_state_map: Dict[int, int] = (
+        {}
+    )  # handler_serial -> state_constant (from BST leaf)
     handler_serials: set = set()
-    handler_range_map: Dict[int, Tuple[Optional[int], Optional[int]]] = {}  # handler_serial -> (lo, hi)
+    handler_range_map: Dict[int, Tuple[Optional[int], Optional[int]]] = (
+        {}
+    )  # handler_serial -> (lo, hi)
 
     _dump_dispatcher_node(
         mba,
@@ -1064,7 +1093,16 @@ Examples:
     parser.add_argument(
         "-m",
         "--maturity",
-        choices=["GENERATED", "PREOPTIMIZED", "LOCOPT", "CALLS", "GLBOPT1", "GLBOPT2", "GLBOPT3", "LVARS"],
+        choices=[
+            "GENERATED",
+            "PREOPTIMIZED",
+            "LOCOPT",
+            "CALLS",
+            "GLBOPT1",
+            "GLBOPT2",
+            "GLBOPT3",
+            "LVARS",
+        ],
         default="LVARS",
         help="Microcode maturity level (default: LVARS)",
     )
