@@ -22,8 +22,8 @@ from d810.recon.outcome import (
 @dataclass(frozen=True)
 class _StubApplyHintsResult:
     func_ea: int = 0x401000
-    recipes_applied: tuple[str, ...] = ()
-    recipes_not_found: tuple[str, ...] = ()
+    inferences_applied: tuple[str, ...] = ()
+    inferences_not_found: tuple[str, ...] = ()
     rules_suppressed: tuple[str, ...] = ()
     cache_invalidated: bool = False
     generation_before: int = 0
@@ -235,11 +235,31 @@ class TestFlowGateOutcomeAdapter:
 class TestAdapterDetail:
     def test_rule_scope_detail(self) -> None:
         adapter = RuleScopeOutcomeAdapter(_StubReconOutcome(source="analyzed"))
-        assert adapter.detail == "source=analyzed"
+        assert "source=analyzed" in adapter.detail
 
     def test_rule_scope_detail_unavailable(self) -> None:
         adapter = RuleScopeOutcomeAdapter(_StubReconOutcome(source="unavailable"))
-        assert adapter.detail == "source=unavailable"
+        assert "source=unavailable" in adapter.detail
+
+    def test_rule_scope_detail_includes_inferences_applied(self) -> None:
+        ar = _StubApplyHintsResult(inferences_applied=("unflattening", "mba"))
+        adapter = RuleScopeOutcomeAdapter(
+            _StubReconOutcome(source="analyzed", apply_result=ar),
+        )
+        assert "inferences_applied=unflattening,mba" in adapter.detail
+
+    def test_rule_scope_detail_includes_inferences_not_found(self) -> None:
+        ar = _StubApplyHintsResult(inferences_not_found=("missing_one",))
+        adapter = RuleScopeOutcomeAdapter(
+            _StubReconOutcome(source="analyzed", apply_result=ar),
+        )
+        assert "inferences_not_found=missing_one" in adapter.detail
+
+    def test_rule_scope_detail_no_inference_when_no_apply_result(self) -> None:
+        adapter = RuleScopeOutcomeAdapter(
+            _StubReconOutcome(source="analyzed", apply_result=None),
+        )
+        assert "inferences_applied" not in adapter.detail
 
     def test_planner_detail_with_summary(self) -> None:
         @dataclass(frozen=True)
@@ -346,7 +366,7 @@ class TestReconOutcomeLog:
         assert s["consumers"][0]["artifacts_available"] is True
         assert s["consumers"][0]["summary_available"] is True
         assert s["consumers"][0]["verdict_applied"] is True
-        assert s["consumers"][0]["detail"] == "source=analyzed"
+        assert "source=analyzed" in s["consumers"][0]["detail"]
         assert s["consumers"][1]["name"] == "flow_gate"
         assert s["consumers"][1]["verdict_applied"] is True
         assert s["consumers"][1]["detail"] == "switch-table dispatcher"
