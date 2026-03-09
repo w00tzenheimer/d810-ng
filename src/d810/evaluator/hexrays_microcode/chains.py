@@ -16,24 +16,15 @@ NOT allowed:
     - mba.mark_chains_dirty()
     - any CFG/instruction mutation
 """
+
 from __future__ import annotations
 
-from d810.core.logging import getLogger
-from d810.core.typing import (
-    TYPE_CHECKING,
-    NamedTuple,
-    Optional,
-)
+import ida_hexrays
 
-if TYPE_CHECKING:
-    pass
+from d810.core.logging import getLogger
+from d810.core.typing import NamedTuple, Optional
 
 logger = getLogger(__name__)
-
-_CHAINS_STUB_WARNING = (
-    "chains.py: IDA chain API not available; returning stub result. "
-    "Wire in live IDA chain access when integrating with runtime."
-)
 
 
 class DefSite(NamedTuple):
@@ -45,6 +36,22 @@ class DefSite(NamedTuple):
         block_serial: Serial number of the block containing the definition.
         ins_ea: Effective address of the defining instruction.
         ins_opcode: Microcode opcode of the defining instruction (e.g. m_mov).
+    """
+
+    block_serial: int
+    ins_ea: int
+    ins_opcode: int
+
+
+class UseSite(NamedTuple):
+    """A single use site for a register or stack variable.
+
+    Lightweight and hashable for use in sets and as dict keys.
+
+    Attributes:
+        block_serial: Serial number of the block containing the use.
+        ins_ea: Effective address of the instruction reading the variable.
+        ins_opcode: Microcode opcode of the instruction (e.g. m_xdu, m_mov).
     """
 
     block_serial: int
@@ -65,17 +72,14 @@ def ensure_graph_and_lists_ready(mba: object) -> None:
         mba: An ``ida_hexrays.mba_t`` instance (typed as ``object`` to
             avoid a hard import dependency on IDA).
     """
-    try:
-        import ida_hexrays  # noqa: F811
-    except ImportError:
-        logger.warning(_CHAINS_STUB_WARNING)
-        return
 
     # build_graph is idempotent when the graph is already up-to-date.
     try:
         mba.build_graph()  # type: ignore[attr-defined]
     except Exception:
-        logger.debug("ensure_graph_and_lists_ready: build_graph() failed or unavailable")
+        logger.debug(
+            "ensure_graph_and_lists_ready: build_graph() failed or unavailable"
+        )
 
     qty: int = mba.qty  # type: ignore[attr-defined]
     for i in range(qty):
@@ -95,34 +99,201 @@ def get_ud_du_chains(
 ) -> tuple[object | None, object | None]:
     """Retrieve use-def and def-use chains from the MBA (read-only).
 
-    Calls ``mba.get_ud()`` and ``mba.get_du()`` to obtain the chain
-    objects.  If *gctype* is provided it is currently unused (reserved
-    for future IDA API variants that accept a graph-chain type).
+    Uses ``mba.get_graph().get_ud(gctype)`` and ``get_du(gctype)`` to obtain
+    the ``graph_chains_t`` objects.  Defaults to
+    ``ida_hexrays.GC_REGS_AND_STKVARS`` when *gctype* is ``None``.
 
     This function is READ-ONLY.
 
     Args:
         mba: An ``ida_hexrays.mba_t`` instance.
-        gctype: Optional graph-chain type constant (e.g.
-            ``ida_hexrays.GC_REGS_AND_STKVARS``).  Reserved for future use.
+        gctype: Graph-chain type constant (e.g.
+            ``ida_hexrays.GC_REGS_AND_STKVARS``).  Defaults to
+            ``GC_REGS_AND_STKVARS`` when ``None``.
 
     Returns:
         ``(ud_chains, du_chains)`` tuple.  Returns ``(None, None)`` if
         the chain API is unavailable or chains have not been computed.
     """
-    try:
-        import ida_hexrays  # noqa: F811
-    except ImportError:
-        logger.warning(_CHAINS_STUB_WARNING)
-        return (None, None)
+
+    if gctype is None:
+        gctype = ida_hexrays.GC_REGS_AND_STKVARS
 
     try:
-        ud = mba.get_ud()  # type: ignore[attr-defined]
-        du = mba.get_du()  # type: ignore[attr-defined]
+        graph = mba.get_graph()  # type: ignore[attr-defined]
+        ud = graph.get_ud(gctype)
+        du = graph.get_du(gctype)
         return (ud, du)
     except (AttributeError, RuntimeError):
         logger.debug("get_ud_du_chains: chain API unavailable on this MBA")
         return (None, None)
+
+
+def _scan_block_for_stkvar_defs(
+    mba: object,
+    blk_serial: int,
+    stkoff: int,
+    size: int,
+) -> list[DefSite]:
+    """Scan a block's instructions for definitions of a stack variable.
+
+    Walks instructions from head to tail looking for ``m_mov`` instructions
+    whose destination is ``mop_S`` with matching stack offset.
+
+    Args:
+        mba: An ``ida_hexrays.mba_t`` instance.
+        blk_serial: Serial number of the block to scan.
+        stkoff: Stack offset of the variable.
+        size: Operand size in bytes.
+
+    Returns:
+        List of :class:`DefSite` entries found in the block.
+    """
+
+    blk = mba.get_mblock(blk_serial)  # type: ignore[attr-defined]
+    if blk is None:
+        return []
+
+    results: list[DefSite] = []
+    cur_ins = blk.head
+    while cur_ins is not None:
+        if cur_ins.d is not None:
+            if (
+                cur_ins.d.t == ida_hexrays.mop_S
+                and cur_ins.d.s is not None
+                and cur_ins.d.s.off == stkoff
+                and cur_ins.d.size == size
+            ):
+                results.append(
+                    DefSite(
+                        block_serial=blk_serial,
+                        ins_ea=cur_ins.ea,
+                        ins_opcode=cur_ins.opcode,
+                    )
+                )
+        cur_ins = cur_ins.next
+    return results
+
+
+def _scan_block_for_reg_defs(
+    mba: object,
+    blk_serial: int,
+    reg_mreg: int,
+    size: int,
+) -> list[DefSite]:
+    """Scan a block's instructions for definitions of a register.
+
+    Walks instructions from head to tail looking for instructions whose
+    destination is ``mop_r`` with matching micro-register number.
+
+    Args:
+        mba: An ``ida_hexrays.mba_t`` instance.
+        blk_serial: Serial number of the block to scan.
+        reg_mreg: Micro-register number.
+        size: Operand size in bytes.
+
+    Returns:
+        List of :class:`DefSite` entries found in the block.
+    """
+
+    blk = mba.get_mblock(blk_serial)  # type: ignore[attr-defined]
+    if blk is None:
+        return []
+
+    results: list[DefSite] = []
+    cur_ins = blk.head
+    while cur_ins is not None:
+        if cur_ins.d is not None:
+            if (
+                cur_ins.d.t == ida_hexrays.mop_r
+                and cur_ins.d.r == reg_mreg
+                and cur_ins.d.size == size
+            ):
+                results.append(
+                    DefSite(
+                        block_serial=blk_serial,
+                        ins_ea=cur_ins.ea,
+                        ins_opcode=cur_ins.opcode,
+                    )
+                )
+        cur_ins = cur_ins.next
+    return results
+
+
+def _scan_block_for_stkvar_uses(
+    mba: object,
+    blk_serial: int,
+    stkoff: int,
+    size: int,
+) -> list[UseSite]:
+    """Scan a block's instructions for reads of a stack variable.
+
+    Walks instructions from head to tail looking for instructions that
+    reference the stack variable at *stkoff* as a **source** operand
+    (``l``, ``r``, or sub-operands within ``d`` when ``d`` is ``mop_d``).
+
+    Args:
+        mba: An ``ida_hexrays.mba_t`` instance.
+        blk_serial: Serial number of the block to scan.
+        stkoff: Stack offset of the variable.
+        size: Operand size in bytes.
+
+    Returns:
+        List of :class:`UseSite` entries found in the block.
+    """
+
+    blk = mba.get_mblock(blk_serial)  # type: ignore[attr-defined]
+    if blk is None:
+        return []
+
+    results: list[UseSite] = []
+    cur_ins = blk.head
+    while cur_ins is not None:
+        found = False
+        # Check left operand
+        if cur_ins.l is not None and _mop_is_stkvar(
+            cur_ins.l, stkoff, size, ida_hexrays
+        ):
+            found = True
+        # Check right operand
+        if (
+            not found
+            and cur_ins.r is not None
+            and _mop_is_stkvar(cur_ins.r, stkoff, size, ida_hexrays)
+        ):
+            found = True
+        if found:
+            results.append(
+                UseSite(
+                    block_serial=blk_serial,
+                    ins_ea=cur_ins.ea,
+                    ins_opcode=cur_ins.opcode,
+                )
+            )
+        cur_ins = cur_ins.next
+    return results
+
+
+def _mop_is_stkvar(mop: object, stkoff: int, size: int, ida_hexrays: object) -> bool:
+    """Check whether a micro-operand references a stack variable at *stkoff*.
+
+    Args:
+        mop: An ``ida_hexrays.mop_t`` instance.
+        stkoff: Stack offset to match.
+        size: Operand size in bytes.
+        ida_hexrays: The ``ida_hexrays`` module (passed to avoid re-import).
+
+    Returns:
+        ``True`` if the operand is ``mop_S`` with matching offset.
+    """
+    try:
+        return (
+            mop.t == ida_hexrays.mop_S  # type: ignore[attr-defined]
+            and mop.s is not None  # type: ignore[attr-defined]
+            and mop.s.off == stkoff  # type: ignore[attr-defined]
+        )
+    except (AttributeError, TypeError):
+        return False
 
 
 def find_reaching_defs_for_reg(
@@ -147,27 +318,41 @@ def find_reaching_defs_for_reg(
     Returns:
         List of :class:`DefSite` entries.  Empty if chains are unavailable.
     """
-    try:
-        import ida_hexrays  # noqa: F811
-    except ImportError:
-        logger.warning(_CHAINS_STUB_WARNING)
-        return []
 
+    ensure_graph_and_lists_ready(mba)
     ud, _ = get_ud_du_chains(mba)
     if ud is None:
         return []
 
-    # Stub: the concrete UD-chain iteration protocol depends on the IDA
-    # version's chain_t / graph_chains_t layout.  When wiring to live IDA,
-    # iterate ud entries whose use-site matches (blk_serial, reg_mreg, size)
-    # and collect corresponding def-sites.
+    try:
+        blk_chains = ud[blk_serial]  # type: ignore[index]
+        chain = blk_chains.get_reg_chain(reg_mreg, size)
+    except (IndexError, AttributeError, RuntimeError):
+        logger.debug(
+            "find_reaching_defs_for_reg: chain access failed — blk=%d mreg=%d size=%d",
+            blk_serial,
+            reg_mreg,
+            size,
+        )
+        return []
+
+    # chain_t extends intvec_t — each element is a block serial where the
+    # register is defined.  We scan those blocks for actual defining instructions.
+    results: list[DefSite] = []
+    n = chain.size()
+    for i in range(n):
+        def_blk_serial = chain.at(i)
+        results.extend(_scan_block_for_reg_defs(mba, def_blk_serial, reg_mreg, size))
+
     logger.debug(
-        "find_reaching_defs_for_reg: stub — blk=%d mreg=%d size=%d",
+        "find_reaching_defs_for_reg: blk=%d mreg=%d size=%d -> %d defs from %d chain entries",
         blk_serial,
         reg_mreg,
         size,
+        len(results),
+        n,
     )
-    return []
+    return results
 
 
 def find_reaching_defs_for_stkvar(
@@ -192,25 +377,41 @@ def find_reaching_defs_for_stkvar(
     Returns:
         List of :class:`DefSite` entries.  Empty if chains are unavailable.
     """
-    try:
-        import ida_hexrays  # noqa: F811
-    except ImportError:
-        logger.warning(_CHAINS_STUB_WARNING)
-        return []
 
+    ensure_graph_and_lists_ready(mba)
     ud, _ = get_ud_du_chains(mba)
     if ud is None:
         return []
 
-    # Stub: same as find_reaching_defs_for_reg but for stack variables.
-    # Wire in the concrete chain iteration when integrating with live IDA.
+    try:
+        blk_chains = ud[blk_serial]  # type: ignore[index]
+        chain = blk_chains.get_stk_chain(stkoff, size)
+    except (IndexError, AttributeError, RuntimeError):
+        logger.debug(
+            "find_reaching_defs_for_stkvar: chain access failed — blk=%d stkoff=0x%x size=%d",
+            blk_serial,
+            stkoff,
+            size,
+        )
+        return []
+
+    # chain_t extends intvec_t — each element is a block serial where the
+    # stack variable is defined.  We scan those blocks for actual definitions.
+    results: list[DefSite] = []
+    n = chain.size()
+    for i in range(n):
+        def_blk_serial = chain.at(i)
+        results.extend(_scan_block_for_stkvar_defs(mba, def_blk_serial, stkoff, size))
+
     logger.debug(
-        "find_reaching_defs_for_stkvar: stub — blk=%d stkoff=0x%x size=%d",
+        "find_reaching_defs_for_stkvar: blk=%d stkoff=0x%x size=%d -> %d defs from %d chain entries",
         blk_serial,
         stkoff,
         size,
+        len(results),
+        n,
     )
-    return []
+    return results
 
 
 def is_passthru_chain(chain: object) -> bool:
@@ -228,51 +429,37 @@ def is_passthru_chain(chain: object) -> bool:
         ``True`` if the chain has ``CHF_PASSTHRU`` set, ``False`` otherwise
         or if the flag constant is unavailable.
     """
-    try:
-        import ida_hexrays  # noqa: F811
-    except ImportError:
-        logger.warning(_CHAINS_STUB_WARNING)
-        return False
-
-    try:
-        chf_passthru = ida_hexrays.CHF_PASSTHRU
-    except AttributeError:
-        logger.debug("is_passthru_chain: CHF_PASSTHRU not available in this IDA version")
-        return False
-
-    try:
-        return bool(chain.flags & chf_passthru)  # type: ignore[attr-defined]
-    except (AttributeError, TypeError):
-        return False
+    return bool(chain.flags & ida_hexrays.CHF_PASSTHRU)  # type: ignore[attr-defined]
 
 
 def collect_pred_defs_for_block(
     mba: object,
     blk_serial: int,
     target_mreg: Optional[int] = None,
+    *,
+    stkoff: Optional[int] = None,
+    width: int = 4,
 ) -> dict[int, list[DefSite]]:
     """Collect DefSites from each predecessor of a block (read-only).
 
     For each predecessor of *blk_serial*, gathers definitions of
-    *target_mreg* (or all registers if ``None``).
+    *target_mreg* (register mode) or *stkoff* (stack variable mode).
 
     This function is READ-ONLY.
 
     Args:
         mba: An ``ida_hexrays.mba_t`` instance.
         blk_serial: Serial number of the target block.
-        target_mreg: If provided, only collect defs for this micro-register.
-            If ``None``, collect defs for all registers.
+        target_mreg: If provided, collect defs for this micro-register.
+        stkoff: If provided, collect defs for this stack variable offset.
+            Mutually exclusive with *target_mreg* in practice, though both
+            may be ``None`` (returns empty defs for each predecessor).
+        width: Operand size in bytes (used with *stkoff*).  Defaults to 4.
 
     Returns:
         ``{pred_serial: [DefSite, ...]}`` mapping.  Empty dict if chains
         are unavailable or the block has no predecessors.
     """
-    try:
-        import ida_hexrays  # noqa: F811
-    except ImportError:
-        logger.warning(_CHAINS_STUB_WARNING)
-        return {}
 
     try:
         blk = mba.get_mblock(blk_serial)  # type: ignore[attr-defined]
@@ -282,16 +469,30 @@ def collect_pred_defs_for_block(
 
     result: dict[int, list[DefSite]] = {}
     for pred_serial in pred_serials:
-        # Stub: in a live IDA environment, walk the UD chains for the
-        # predecessor block and collect DefSites matching target_mreg.
-        result[pred_serial] = []
+        if stkoff is not None:
+            result[pred_serial] = find_reaching_defs_for_stkvar(
+                mba,
+                pred_serial,
+                stkoff,
+                width,
+            )
+        elif target_mreg is not None:
+            result[pred_serial] = find_reaching_defs_for_reg(
+                mba,
+                pred_serial,
+                target_mreg,
+                width,
+            )
+        else:
+            result[pred_serial] = []
 
     if result:
         logger.debug(
-            "collect_pred_defs_for_block: stub — blk=%d preds=%s target_mreg=%s",
+            "collect_pred_defs_for_block: blk=%d preds=%s target_mreg=%s stkoff=%s",
             blk_serial,
             list(result.keys()),
             target_mreg,
+            hex(stkoff) if stkoff is not None else None,
         )
 
     return result
@@ -301,26 +502,38 @@ def is_phi_like_merge(
     mba: object,
     blk_serial: int,
     mreg: int,
+    *,
+    stkoff: Optional[int] = None,
+    width: int = 4,
 ) -> bool:
-    """Check if a block is a phi-like merge point for a register (read-only).
+    """Check if a block is a phi-like merge point for a variable (read-only).
 
     Returns ``True`` if two or more predecessors of *blk_serial* provide
-    distinct definitions of *mreg*, indicating a merge point analogous to
-    a phi-node in SSA form.
+    distinct definitions of *mreg* (or *stkoff*), indicating a merge point
+    analogous to a phi-node in SSA form.
 
     This function is READ-ONLY.
 
     Args:
         mba: An ``ida_hexrays.mba_t`` instance.
         blk_serial: Serial number of the target block.
-        mreg: Micro-register number to check.
+        mreg: Micro-register number to check (used when *stkoff* is ``None``).
+        stkoff: If provided, check stack variable at this offset instead of
+            the register *mreg*.
+        width: Operand size in bytes (used with *stkoff*).  Defaults to 4.
 
     Returns:
-        ``True`` if 2+ predecessors define *mreg* with different DefSites.
+        ``True`` if 2+ predecessors define the variable with different DefSites.
         ``False`` if chains are unavailable, the block has fewer than 2
         predecessors, or all predecessors agree on the definition.
     """
-    pred_defs = collect_pred_defs_for_block(mba, blk_serial, target_mreg=mreg)
+    pred_defs = collect_pred_defs_for_block(
+        mba,
+        blk_serial,
+        target_mreg=mreg,
+        stkoff=stkoff,
+        width=width,
+    )
     if len(pred_defs) < 2:
         return False
 
@@ -329,15 +542,79 @@ def is_phi_like_merge(
     for defs in pred_defs.values():
         unique_def_sets.add(frozenset(defs))
 
-    # If the stub returns empty lists for all preds, they are "equal" (all empty).
-    # In a live environment, distinct non-empty sets indicate a phi merge.
+    # If all preds have identical def sets they agree — no phi.
     return len(unique_def_sets) >= 2
+
+
+def find_all_uses_of_stkvar(
+    mba: object,
+    stkoff: int,
+    width: int = 4,
+) -> list[UseSite]:
+    """Find all use (read) sites of a stack variable across the entire MBA.
+
+    Uses DU chains to locate every block that reads the stack variable at
+    *stkoff*, then scans each block's instructions to find the exact use
+    sites.
+
+    This function is READ-ONLY.
+
+    Args:
+        mba: An ``ida_hexrays.mba_t`` instance.
+        stkoff: Stack offset of the variable.
+        width: Operand size in bytes.  Defaults to 4.
+
+    Returns:
+        List of :class:`UseSite` entries.  Empty if chains are unavailable.
+    """
+
+    ensure_graph_and_lists_ready(mba)
+    _, du = get_ud_du_chains(mba)
+    if du is None:
+        return []
+
+    results: list[UseSite] = []
+    qty: int = mba.qty  # type: ignore[attr-defined]
+
+    for blk_idx in range(qty):
+        try:
+            blk_chains = du[blk_idx]  # type: ignore[index]
+            chain = blk_chains.get_stk_chain(stkoff, width)
+        except (IndexError, AttributeError, RuntimeError):
+            continue
+
+        # chain_t entries are block serials where the variable is used.
+        # For DU chains accessed at block blk_idx, the chain lists blocks
+        # that use the definition from blk_idx.  We scan each target block.
+        n = chain.size()
+        for i in range(n):
+            use_blk_serial = chain.at(i)
+            uses = _scan_block_for_stkvar_uses(mba, use_blk_serial, stkoff, width)
+            results.extend(uses)
+
+    # Deduplicate: the same use site may be reported by multiple def blocks.
+    seen: set[UseSite] = set()
+    deduped: list[UseSite] = []
+    for use in results:
+        if use not in seen:
+            seen.add(use)
+            deduped.append(use)
+
+    logger.debug(
+        "find_all_uses_of_stkvar: stkoff=0x%x width=%d -> %d unique use sites",
+        stkoff,
+        width,
+        len(deduped),
+    )
+    return deduped
 
 
 __all__ = [
     "DefSite",
+    "UseSite",
     "collect_pred_defs_for_block",
     "ensure_graph_and_lists_ready",
+    "find_all_uses_of_stkvar",
     "find_reaching_defs_for_reg",
     "find_reaching_defs_for_stkvar",
     "get_ud_du_chains",

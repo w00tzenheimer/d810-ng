@@ -24,8 +24,10 @@ from d810.evaluator.hexrays_microcode.forward_dataflow import (
 )
 from d810.evaluator.hexrays_microcode.chains import (
     DefSite,
+    UseSite,
     collect_pred_defs_for_block,
     ensure_graph_and_lists_ready,
+    find_all_uses_of_stkvar,
     find_reaching_defs_for_reg,
     find_reaching_defs_for_stkvar,
     get_ud_du_chains,
@@ -68,8 +70,10 @@ __all__ = [
     "run_forward_fixpoint_on_mba",
     "transfer_block_insnwise",
     "DefSite",
+    "UseSite",
     "collect_pred_defs_for_block",
     "ensure_graph_and_lists_ready",
+    "find_all_uses_of_stkvar",
     "find_reaching_defs_for_reg",
     "find_reaching_defs_for_stkvar",
     "get_ud_du_chains",
