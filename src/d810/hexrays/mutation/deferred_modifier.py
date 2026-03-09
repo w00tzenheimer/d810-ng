@@ -4368,17 +4368,6 @@ class DeferredGraphModifier:
                 new_target,
             )
             return False
-        if via_pred_blk.tail is None or via_pred_blk.tail.opcode != ida_hexrays.m_goto:
-            logger.warning(
-                "EDGE_SPLIT_ILLEGAL_PRECOND: via_pred blk[%d] tail is not m_goto "
-                "(opcode=%s, src=%d, old_target=%d, new_target=%d)",
-                via_pred_blk.serial,
-                via_pred_blk.tail.opcode if via_pred_blk.tail is not None else "none",
-                src_blk.serial,
-                old_target,
-                new_target,
-            )
-            return False
 
         if src_blk.nsucc() != 1:
             logger.warning(
@@ -4387,6 +4376,9 @@ class DeferredGraphModifier:
                 src_blk.nsucc(),
             )
             return False
+        # via_pred must be a 1-way block.  Its tail does NOT need to be m_goto —
+        # change_1way_block_successor handles m_call, m_ijmp, None, etc. by
+        # inserting an explicit goto before rewiring.
         if via_pred_blk.nsucc() != 1:
             logger.warning(
                 "edge_split_trampoline: via_pred block %d has nsucc=%d, expected 1",
@@ -4459,23 +4451,10 @@ class DeferredGraphModifier:
             )
             return False
 
+        # via_pred tail does NOT need to be m_goto — change_1way_block_successor
+        # (used below for the actual rewire) handles m_call, m_ijmp, None, etc.
+        # by inserting an explicit goto before rewiring.
         via_pred_blk_pre = mba.get_mblock(via_pred)
-        if via_pred_blk_pre is not None:
-            _vp_tail = via_pred_blk_pre.tail
-            if _vp_tail is None:
-                logger.warning(
-                    "EDGE_SPLIT_ILLEGAL_PRECOND: via_pred blk[%d] has no tail "
-                    "(src=%d, old_target=%d, new_target=%d)",
-                    via_pred, blk.serial, old_target, new_target,
-                )
-                return False
-            if _vp_tail.opcode != ida_hexrays.m_goto:
-                logger.warning(
-                    "EDGE_SPLIT_ILLEGAL_PRECOND: via_pred blk[%d] tail is not m_goto "
-                    "(opcode=%d, src=%d, old_target=%d, new_target=%d)",
-                    via_pred, _vp_tail.opcode, blk.serial, old_target, new_target,
-                )
-                return False
 
         # via_pred must currently target src
         if via_pred_blk_pre is not None:
