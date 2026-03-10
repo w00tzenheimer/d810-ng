@@ -22,8 +22,10 @@ from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
 from d810.evaluator.hexrays_microcode.chains import (
+    DefSite,
     UseSite,
     find_all_uses_of_stkvar,
+    find_reaching_defs_for_stkvar,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
     ModificationBuilder,
@@ -124,6 +126,9 @@ class DeadStateVariableEliminationStrategy:
         # Determine width of the state variable (typically 4 bytes for OLLVM).
         state_var_width = self._resolve_width(snapshot, state_var_stkoff)
 
+        # Collect known state constants for reaching-def override check.
+        state_constants = self._collect_state_constants(snapshot)
+
         # Find all read sites via DU chains.
         use_sites: list[UseSite] = find_all_uses_of_stkvar(
             mba, state_var_stkoff, state_var_width,
@@ -153,6 +158,8 @@ class DeadStateVariableEliminationStrategy:
                 # uninitialized return values.
                 skip_reason = self._dest_is_non_state_stkvar(
                     mba, use, state_var_stkoff,
+                    state_constants=state_constants,
+                    state_var_width=state_var_width,
                 )
                 if skip_reason is not None:
                     logger.warning(
@@ -334,10 +341,45 @@ class DeadStateVariableEliminationStrategy:
     }
 
     @staticmethod
+    def _collect_state_constants(snapshot: AnalysisSnapshot) -> frozenset[int]:
+        """Collect all known state constants from the snapshot and BST result.
+
+        Merges ``snapshot.state_constants`` with values from
+        ``bst_result.handler_state_map`` and ``bst_result.handler_range_map``.
+
+        Args:
+            snapshot: Immutable analysis snapshot.
+
+        Returns:
+            Frozen set of integer state constant values.
+        """
+        consts: set[int] = set(snapshot.state_constants)
+
+        bst = snapshot.bst_result
+        if bst is not None:
+            handler_state_map: dict = (
+                getattr(bst, "handler_state_map", {}) or {}
+            )
+            handler_range_map: dict = (
+                getattr(bst, "handler_range_map", {}) or {}
+            )
+            for state_val in handler_state_map.values():
+                consts.add(int(state_val))
+            for low, high in handler_range_map.values():
+                if low is not None:
+                    consts.add(int(low))
+                if high is not None:
+                    consts.add(int(high))
+
+        return frozenset(consts)
+
+    @staticmethod
     def _dest_is_non_state_stkvar(
         mba: object,
         use: UseSite,
         state_var_stkoff: int,
+        state_constants: frozenset[int] = frozenset(),
+        state_var_width: int = 4,
     ) -> tuple[str, int] | None:
         """Check if the instruction writes to a non-state stack variable.
 
@@ -346,10 +388,18 @@ class DeadStateVariableEliminationStrategy:
         stack variable as DESTINATION, NOPing it would destroy the only
         definition of that destination (e.g., the return slot).
 
+        However, if ALL reaching definitions of the state variable at this
+        block are known state constants (or already NOPed), the instruction
+        is pure dispatcher glue and can safely be NOPed -- the return slot
+        has no legitimate value coming through this path.
+
         Args:
             mba: An ``ida_hexrays.mba_t`` instance.
             use: The use site to inspect.
             state_var_stkoff: Stack offset of the dead state variable.
+            state_constants: Known dispatcher state constant values for
+                reaching-def override check.
+            state_var_width: Operand width of the state variable in bytes.
 
         Returns:
             A ``(opcode_name, dest_stkoff)`` tuple if the guard triggers
@@ -380,7 +430,98 @@ class DeadStateVariableEliminationStrategy:
                     opname = DeadStateVariableEliminationStrategy._OPCODE_NAMES.get(
                         cur_ins.opcode, "opcode_%d" % cur_ins.opcode,
                     )
-                    return (opname, d.s.off)
+                    skip_tuple = (opname, d.s.off)
+
+                    # --- Reaching-def override ---
+                    # If all reaching defs of the state var at this block are
+                    # known state constants (or already NOPed), the copy is
+                    # pure dispatcher glue and safe to NOP.
+                    if not state_constants:
+                        return skip_tuple
+
+                    try:
+                        defs: list[DefSite] = find_reaching_defs_for_stkvar(
+                            mba, use.block_serial,
+                            state_var_stkoff, state_var_width,
+                        )
+                    except Exception:
+                        logger.info(
+                            "DSVE reaching-def check EXCEPTION for blk[%d];"
+                            " preserving guard",
+                            use.block_serial,
+                        )
+                        return skip_tuple
+
+                    if not defs:
+                        logger.info(
+                            "DSVE reaching-def check for blk[%d]: 0 defs found;"
+                            " preserving guard",
+                            use.block_serial,
+                        )
+                        return skip_tuple
+
+                    logger.info(
+                        "DSVE reaching-def check for blk[%d]: %d defs found",
+                        use.block_serial, len(defs),
+                    )
+
+                    non_const_count = 0
+                    for def_site in defs:
+                        is_state_const = False
+                        try:
+                            def_blk = mba.get_mblock(  # type: ignore[attr-defined]
+                                def_site.block_serial,
+                            )
+                            if def_blk is not None:
+                                def_ins = def_blk.head
+                                while def_ins is not None:
+                                    if def_ins.ea == def_site.ins_ea:
+                                        # Already NOPed → safe
+                                        if def_ins.opcode == ida_hexrays.m_nop:
+                                            is_state_const = True
+                                        # m_mov with immediate state constant
+                                        elif (
+                                            def_ins.opcode == ida_hexrays.m_mov
+                                            and def_ins.l is not None
+                                            and def_ins.l.t == ida_hexrays.mop_n
+                                        ):
+                                            try:
+                                                val = def_ins.l.nnn.value
+                                            except (AttributeError, TypeError):
+                                                val = None
+                                            if val is not None and val in state_constants:
+                                                is_state_const = True
+                                        break
+                                    def_ins = def_ins.next
+                        except Exception:
+                            pass
+
+                        logger.info(
+                            "  def in blk[%d] ea=0x%x: opcode=%d"
+                            " (is_state_const=%s)",
+                            def_site.block_serial,
+                            def_site.ins_ea,
+                            def_site.ins_opcode,
+                            is_state_const,
+                        )
+                        if not is_state_const:
+                            non_const_count += 1
+
+                    if non_const_count == 0:
+                        logger.info(
+                            "DSVE guard OVERRIDDEN for blk[%d]: all %d"
+                            " reaching defs are state constants",
+                            use.block_serial, len(defs),
+                        )
+                        return None  # Allow NOP
+
+                    logger.info(
+                        "DSVE guard PRESERVED for blk[%d]: %d/%d defs"
+                        " are non-constant",
+                        use.block_serial, non_const_count, len(defs),
+                    )
+                    return skip_tuple
+
                 return None
             cur_ins = cur_ins.next
 
