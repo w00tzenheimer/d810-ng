@@ -1421,6 +1421,7 @@ class DirectHandlerLinearizationStrategy:
                 paths=paths,
                 state_constants=_known_state_consts,
                 flow_graph=fg,
+                incoming_state=incoming_state,
             )
             if conditional_transitions:
                 for ct in conditional_transitions:
@@ -1778,7 +1779,11 @@ class DirectHandlerLinearizationStrategy:
                         )
                     continue
 
-                # Normal state transition to another handler
+                # Normal state transition to another handler.
+                # NOTE: is_self_loop uses BST-resolved target_serial == handler_serial,
+                # which correctly handles MBA-computed states. The _helpers.py
+                # conditional-transition filter uses exact state equality and
+                # misses MBA self-loops — see ticket d81-b6yj.
                 is_self_loop = target_serial == handler_serial
                 _reason = (
                     f"hodur-linear: blk[{handler_serial}] "
@@ -1790,20 +1795,31 @@ class DirectHandlerLinearizationStrategy:
                     ok = _emit_redirect(meta, path, incoming_state, "state_transition", handler_serial)
                     if ok:
                         linearized_blocks.add(path.exit_block)
-                        # NOP dead state writes (skip multi-pred blocks)
-                        for write_blk, write_ea in path.state_writes:
-                            # K3: TOPOLOGY_ONLY — use flow_graph for npred check
-                            _wb_snap = fg.get_block(write_blk)
-                            if _wb_snap is not None and _wb_snap.npred > 1:
-                                continue
-                            _append_nop(
-
-                                source_block=write_blk,
-
-                                instruction_ea=write_ea,
-
+                        if is_self_loop:
+                            # Self-loop: preserve state writes for loop back-edge.
+                            # The redirect keeps the handler wired to itself; NOPing
+                            # the state write would destroy the loop iteration.
+                            logger.info(
+                                "Self-loop detected: preserving state writes for "
+                                "loop back-edge blk[%d] (state 0x%x)",
+                                handler_serial,
+                                incoming_state,
                             )
-                            _nop_temp_def_if_resolved(write_blk, write_ea, handler_serial)
+                        else:
+                            # NOP dead state writes (skip multi-pred blocks)
+                            for write_blk, write_ea in path.state_writes:
+                                # K3: TOPOLOGY_ONLY — use flow_graph for npred check
+                                _wb_snap = fg.get_block(write_blk)
+                                if _wb_snap is not None and _wb_snap.npred > 1:
+                                    continue
+                                _append_nop(
+
+                                    source_block=write_blk,
+
+                                    instruction_ea=write_ea,
+
+                                )
+                                _nop_temp_def_if_resolved(write_blk, write_ea, handler_serial)
                         resolved_count += 1
                         owned_transitions.add((incoming_state, path.final_state))
 

@@ -286,12 +286,17 @@ def detect_conditional_transitions(
     paths: list[HandlerPathResult],
     state_constants: set[int],
     flow_graph: FlowGraph,
+    incoming_state: int | None = None,
 ) -> list[ConditionalTransition]:
     """Detect intra-handler conditional branches where one arm is a state transition.
 
     For each path from a handler that writes a known state constant and exits
     to the dispatcher, find the divergence point (conditional block) where this
     path splits from the other paths of the same handler.
+
+    Self-loop paths (where ``path.final_state`` matches ``incoming_state``)
+    are skipped — they represent loop-continue back-edges, not inter-handler
+    conditional transitions.
 
     When multiple state-write paths share the same arm at an outer divergence
     point, the function recurses to find the **deepest** 2-way divergence for
@@ -324,6 +329,23 @@ def detect_conditional_transitions(
         if not path.state_writes:
             continue
         if len(path.ordered_path) < 2:
+            continue
+
+        # Skip self-loop paths: if the path writes the handler's own entry
+        # state, it's a loop-continue back-edge, not an inter-handler
+        # conditional transition.  Redirecting these would destroy do-while
+        # loop structure.
+        # NOTE: This uses exact state equality (final_state == incoming_state).
+        # OLLVM MBA self-loops (e.g., state ^ C1 - C2) resolve to the same
+        # handler via BST but differ from incoming_state numerically.
+        # Catching those requires BST resolution: resolve_target_via_bst().
+        # See ticket d81-b6yj.
+        if incoming_state is not None and (path.final_state & 0xFFFFFFFF) == (incoming_state & 0xFFFFFFFF):
+            _helpers_logger.info(
+                "detect_conditional_transitions: skipping self-loop path "
+                "handler=blk[%d] final_state=0x%X == incoming_state=0x%X",
+                handler_entry, path.final_state, incoming_state,
+            )
             continue
 
         # Find the DEEPEST divergence point: the 2-way block where this path
