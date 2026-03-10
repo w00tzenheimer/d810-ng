@@ -1764,6 +1764,27 @@ class DirectHandlerLinearizationStrategy:
                             exit_target = None
 
                     if exit_target is not None:
+                        # Intercept BST catch-all exits: if exit_target is a BST
+                        # leaf block (not a handler entry, not a BST comparison node),
+                        # it's the m_xdu catch-all. Redirect to terminal exit instead
+                        # to prevent state-variable clobber of the return slot.
+                        if (
+                            exit_target not in handler_state_map
+                            and exit_target not in bst_node_blocks
+                            and exit_target != dispatcher_serial
+                            and _terminal_exit_target is not None
+                            and exit_target != _terminal_exit_target
+                        ):
+                            logger.info(
+                                "MBA_TERMINAL_RETURN_PASS1: handler=blk[%d] "
+                                "exit_state=0x%X bst_catchall=blk[%d] -> "
+                                "terminal_exit=blk[%d]",
+                                handler_serial,
+                                path.final_state,
+                                exit_target,
+                                _terminal_exit_target,
+                            )
+                            exit_target = _terminal_exit_target
                         _reason = (
                             f"hodur-linear: blk[{handler_serial}] "
                             f"exit 0x{path.final_state:x} -> {resolve_label} -> blk[{exit_target}]"
