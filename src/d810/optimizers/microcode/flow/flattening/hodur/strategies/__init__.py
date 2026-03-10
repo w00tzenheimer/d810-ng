@@ -104,7 +104,10 @@ ALL_STRATEGIES: list[type] = [
     PredPatchFallbackStrategy,
     ConditionalForkFallbackStrategy,
     AssignmentMapFallbackStrategy,
-    # DISABLED: causes INTERR 50860 on hodur_func (verify failure in DuplicateBlock)
+    # InnerMergeDuplicationStrategy disabled: tail-duplication of merge blocks
+    # causes IDA structurer regressions (goto proliferation) that outweigh the
+    # occasional goto elimination it provides.  Keep the import so the class
+    # remains accessible for manual/experimental use.
     # InnerMergeDuplicationStrategy,
     StateConstantReturnFixupStrategy,
     DeadStateVariableEliminationStrategy,

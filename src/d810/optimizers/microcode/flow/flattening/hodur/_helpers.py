@@ -293,6 +293,12 @@ def detect_conditional_transitions(
     to the dispatcher, find the divergence point (conditional block) where this
     path splits from the other paths of the same handler.
 
+    When multiple state-write paths share the same arm at an outer divergence
+    point, the function recurses to find the **deepest** 2-way divergence for
+    each path.  This preserves nested conditional logic (e.g., a tri-branch
+    sub-CFG below the outer arm) instead of collapsing all paths onto one
+    redirected edge.
+
     Args:
         handler_entry: Block serial of the handler entry.
         paths: All ``HandlerPathResult`` instances for this handler.
@@ -320,17 +326,22 @@ def detect_conditional_transitions(
         if len(path.ordered_path) < 2:
             continue
 
-        # Find the divergence point: the last block in the common prefix
-        # across ALL paths from this handler.
+        # Find the DEEPEST divergence point: the 2-way block where this path
+        # splits from at least one other path, using the maximum pairwise
+        # common-prefix length.  This avoids collapsing nested conditionals
+        # when multiple state-write paths share the same outer arm.
         other_paths = [
             op for op in all_ordered_paths if op is not path.ordered_path
         ]
         if not other_paths:
             continue
 
-        # Compute the common prefix length across this path and all others
         this_op = path.ordered_path
-        common_prefix_len = len(this_op)
+
+        # Compute pairwise prefix lengths and take the MAXIMUM.
+        # The maximum gives the deepest point where this path still diverges
+        # from at least one sibling — the innermost conditional branch.
+        max_prefix_len = 0
         for other_op in other_paths:
             prefix_len = 0
             for i in range(min(len(this_op), len(other_op))):
@@ -338,31 +349,60 @@ def detect_conditional_transitions(
                     prefix_len += 1
                 else:
                     break
-            common_prefix_len = min(common_prefix_len, prefix_len)
+            if prefix_len > max_prefix_len:
+                max_prefix_len = prefix_len
 
-        if common_prefix_len < 1:
-            continue
-        # The divergence block is the last block in the common prefix
-        divergence_block = this_op[common_prefix_len - 1]
-
-        # The block after the divergence in this path tells us which arm
-        if common_prefix_len >= len(this_op):
-            # This path doesn't extend beyond the common prefix — skip
-            continue
-        next_block_in_path = this_op[common_prefix_len]
-
-        # Look up successors of the divergence block in the snapshot
-        div_snap = flow_graph.get_block(divergence_block)
-        if div_snap is None or len(div_snap.succs) != 2:
+        if max_prefix_len < 1:
             continue
 
-        # Determine branch arm: 0=fall-through (succ[0]), 1=taken (succ[1])
-        if next_block_in_path == div_snap.succs[0]:
-            branch_arm = 0
-        elif next_block_in_path == div_snap.succs[1]:
-            branch_arm = 1
-        else:
-            # Next block doesn't match either successor — skip
+        # Walk from the deepest common prefix backwards to find a valid 2-way
+        # divergence block.  The block at (prefix_len - 1) is the last shared
+        # block; this path's next block (at prefix_len) tells us the arm.
+        divergence_block = None
+        branch_arm = None
+        next_block_in_path = None
+
+        for candidate_len in range(max_prefix_len, 0, -1):
+            if candidate_len >= len(this_op):
+                # Path doesn't extend beyond this prefix — try shorter
+                continue
+
+            cand_block = this_op[candidate_len - 1]
+            cand_next = this_op[candidate_len]
+
+            # Check that this is a 2-way block
+            cand_snap = flow_graph.get_block(cand_block)
+            if cand_snap is None or len(cand_snap.succs) != 2:
+                continue
+
+            # Determine branch arm: 0=fall-through (succ[0]), 1=taken (succ[1])
+            if cand_next == cand_snap.succs[0]:
+                arm = 0
+            elif cand_next == cand_snap.succs[1]:
+                arm = 1
+            else:
+                continue
+
+            # Verify that at least one OTHER path actually diverges here
+            # (i.e., takes a different successor at this block).
+            has_diverging_sibling = False
+            for other_op in other_paths:
+                if candidate_len - 1 < len(other_op) and other_op[candidate_len - 1] == cand_block:
+                    if candidate_len < len(other_op) and other_op[candidate_len] != cand_next:
+                        has_diverging_sibling = True
+                        break
+                elif candidate_len - 1 >= len(other_op):
+                    # Other path is shorter — it diverged earlier
+                    has_diverging_sibling = True
+                    break
+
+            if has_diverging_sibling:
+                divergence_block = cand_block
+                branch_arm = arm
+                next_block_in_path = cand_next
+                break
+
+        if divergence_block is None or branch_arm is None:
             continue
 
         # Use the first state write as the canonical write location
@@ -379,6 +419,7 @@ def detect_conditional_transitions(
         ))
 
     return results
+
 
 
 # K3: DEEP_IDA — _forward_eval_insn requires live minsn_t

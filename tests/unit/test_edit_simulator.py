@@ -268,7 +268,7 @@ class TestSimulateEdits:
 
         assert sim.adj[9] == [14]
         assert sim.adj[10] == [11, 12]
-        assert sim.adj[14] == [12, 15]
+        assert sim.adj[14] == [15, 12]
         assert sim.adj[15] == [11]
         assert sim.adj[16] == []
 
