@@ -1,6 +1,7 @@
 """Unit tests for ReconStore provenance persistence tables."""
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 from pathlib import Path
 
@@ -312,5 +313,104 @@ def test_load_all_session_summaries() -> None:
         assert len(summaries) == 2
         eas = {s["func_ea"] for s in summaries}
         assert eas == {0x1000, 0x2000}
+    finally:
+        store.close()
+
+
+# ---------------------------------------------------------------------------
+# Schema migration (backward compatibility with pre-recon-lifecycle DBs)
+# ---------------------------------------------------------------------------
+
+
+def _create_legacy_db(path: str) -> None:
+    """Create a DB with old schema missing recommended_inferences_json."""
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS recon_results (
+            func_ea         INTEGER NOT NULL,
+            maturity        INTEGER NOT NULL,
+            collector_name  TEXT    NOT NULL,
+            timestamp       REAL    NOT NULL,
+            metrics_json    TEXT    NOT NULL,
+            candidates_json TEXT    NOT NULL,
+            PRIMARY KEY (func_ea, maturity, collector_name)
+        );
+        CREATE TABLE IF NOT EXISTS deobfuscation_hints (
+            func_ea              INTEGER PRIMARY KEY,
+            obfuscation_type     TEXT,
+            confidence           REAL    NOT NULL,
+            candidates_json      TEXT    NOT NULL,
+            suppress_rules_json  TEXT    NOT NULL,
+            updated_at           REAL    NOT NULL
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+
+def test_migration_adds_recommended_inferences_column() -> None:
+    """Opening a store with legacy DB auto-adds recommended_inferences_json."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    _create_legacy_db(tmp.name)
+
+    # Verify old schema lacks the column
+    conn = sqlite3.connect(tmp.name)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(deobfuscation_hints)")}
+    assert "recommended_inferences_json" not in cols
+    conn.close()
+
+    # Opening ReconStore should migrate
+    store = ReconStore(tmp.name)
+    try:
+        # Verify column now exists
+        cols = {
+            r[1]
+            for r in store._conn.execute(
+                "PRAGMA table_info(deobfuscation_hints)"
+            )
+        }
+        assert "recommended_inferences_json" in cols
+
+        # save_hints and load_hints should work on the migrated DB
+        store.save_hints(DeobfuscationHints(
+            func_ea=0x1000,
+            obfuscation_type="flattening",
+            confidence=0.9,
+            recommended_inferences=("unflattening",),
+            candidates=(),
+            suppress_rules=(),
+        ))
+        loaded = store.load_hints(func_ea=0x1000)
+        assert loaded is not None
+        assert loaded.recommended_inferences == ("unflattening",)
+    finally:
+        store.close()
+
+
+def test_migration_idempotent_on_fresh_db() -> None:
+    """Migration is a no-op on a fresh DB (column already exists)."""
+    store = _make_store()
+    try:
+        cols = {
+            r[1]
+            for r in store._conn.execute(
+                "PRAGMA table_info(deobfuscation_hints)"
+            )
+        }
+        assert "recommended_inferences_json" in cols
+
+        # Full round-trip works
+        store.save_hints(DeobfuscationHints(
+            func_ea=0x2000,
+            obfuscation_type="",
+            confidence=0.5,
+            recommended_inferences=(),
+            candidates=(),
+            suppress_rules=(),
+        ))
+        loaded = store.load_hints(func_ea=0x2000)
+        assert loaded is not None
+        assert loaded.recommended_inferences == ()
     finally:
         store.close()

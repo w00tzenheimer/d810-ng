@@ -16,7 +16,10 @@ import time
 from pathlib import Path
 from types import MappingProxyType
 
+from d810.core import logging
 from d810.recon.models import CandidateFlag, DeobfuscationHints, ReconResult
+
+logger = logging.getLogger(__name__)
 
 
 _SCHEMA = """
@@ -77,6 +80,42 @@ CREATE TABLE IF NOT EXISTS user_overrides (
 """
 
 
+# -- Schema migrations for existing databases --------------------------------
+# Maps (table_name, column_name) -> column_definition for ALTER TABLE ADD COLUMN.
+# Each entry is checked on connection; if the column is missing it is added.
+_MIGRATIONS: list[tuple[str, str, str]] = [
+    (
+        "deobfuscation_hints",
+        "recommended_inferences_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    ),
+]
+
+
+def _get_existing_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    """Return the set of column names for *table*, or empty set if missing."""
+    cursor = conn.execute("PRAGMA table_info(%s)" % table)
+    return {row[1] for row in cursor.fetchall()}
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Add any columns required by the current schema but absent in the DB.
+
+    ``CREATE TABLE IF NOT EXISTS`` is a no-op when a table already exists,
+    so columns added after initial creation must be back-filled here.
+    """
+    for table, column, col_def in _MIGRATIONS:
+        existing = _get_existing_columns(conn, table)
+        if not existing:
+            # Table doesn't exist yet (will be created by _SCHEMA).
+            continue
+        if column not in existing:
+            stmt = "ALTER TABLE %s ADD COLUMN %s %s" % (table, column, col_def)
+            logger.info("recon store: migrating schema — %s", stmt)
+            conn.execute(stmt)
+    conn.commit()
+
+
 def _candidate_to_dict(c: CandidateFlag) -> dict:
     return {
         "kind": c.kind,
@@ -110,6 +149,9 @@ class ReconStore:
         self._conn: sqlite3.Connection = sqlite3.connect(str(self.db_path))
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.row_factory = sqlite3.Row
+        # Migrate existing tables before CREATE TABLE IF NOT EXISTS (no-op
+        # for tables that already exist, so new columns must be ALTER'd first).
+        _migrate_schema(self._conn)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
