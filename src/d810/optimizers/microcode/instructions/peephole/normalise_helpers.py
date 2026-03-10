@@ -524,6 +524,8 @@ def _fold(op, a, b, bits):
     mask = _get_mask(bits)
     if op == ida_hexrays.m_add:
         return (a + b) & mask
+    if op == ida_hexrays.m_ofadd:
+        return (a + b) & mask
     if op == ida_hexrays.m_sub:
         return (a - b) & mask
     if op == ida_hexrays.m_mul:

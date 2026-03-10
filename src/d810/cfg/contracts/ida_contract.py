@@ -11,9 +11,9 @@ from d810.cfg.contracts.native_oracle import NATIVE_ORACLE_AVAILABLE, check_mba_
 logger = getLogger(__name__)
 
 if NATIVE_ORACLE_AVAILABLE:
-    logger.info("Native CFG oracle available — full parity mode")
+    logger.info("Native CFG oracle available - full parity mode")
 else:
-    logger.info("Native CFG oracle unavailable — Python-only parity mode")
+    logger.info("Native CFG oracle unavailable - Python-only parity mode")
 from d810.cfg.contracts.insn_invariants import check_all_insn_invariants
 from d810.cfg.contracts.invariants import (
     block_address_range,
