@@ -102,6 +102,28 @@ class CarrierSourceKind(str, enum.Enum):
     """Cannot classify the carried value."""
 
 
+def _is_bst_default_terminal(
+    resolved_serial: int,
+    target_state: int,
+    handler_state_map: dict[int, int],
+    bst_default_serial: int | None,
+) -> bool:
+    """Return True when a conditional transition's BST resolution lands on
+    the BST default block AND the target state is not a known handler state.
+
+    This detects the OLLVM MBA off-by-one pattern where computed states
+    (e.g., 0x6E958F9A) deliberately fall through all BST comparisons to the
+    default return block, clobbering the return slot via m_xdu.
+    """
+    if bst_default_serial is None:
+        return False
+    if resolved_serial != bst_default_serial:
+        return False
+    # Only treat as terminal if the state is NOT a known handler entry
+    known_states = set(handler_state_map.values())
+    return target_state not in known_states
+
+
 @dataclass(frozen=True)
 class ForwardFrontierEntry:
     """Per-handler-entry forward ownership frontier diagnostic record.
@@ -1387,6 +1409,19 @@ class DirectHandlerLinearizationStrategy:
 
             return False
 
+        # Pre-compute BST default serial for MBA terminal return detection
+        _bst_default_serial: int | None = find_bst_default_block_snapshot(
+            fg,
+            dispatcher_serial,
+            bst_result.bst_node_blocks,
+            set(handler_state_map.keys()),
+        )
+
+        # Pre-compute terminal exit target for MBA terminal return redirect
+        _terminal_exit_target: int | None = find_terminal_exit_target_snapshot(
+            fg, dispatcher_serial, sm_blocks
+        )
+
         # ---- Main handler loop ----
         for handler_serial, incoming_state in all_handlers.items():
             if handler_serial in bst_node_blocks:
@@ -1439,12 +1474,49 @@ class DirectHandlerLinearizationStrategy:
                     # 1. Resolve target handler via BST
                     ct_target = resolve_target_via_bst(bst_result, ct.target_state)
                     if ct_target is None:
-                        logger.info(
-                            "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
-                            "target_state=0x%X no BST resolution",
-                            ct.handler_entry, ct.target_state,
-                        )
-                        continue
+                        # Try BST root-walk fallback — but ONLY redirect if
+                        # it resolves to the BST default block (MBA terminal
+                        # return pattern).  Do NOT redirect for any other
+                        # unresolved target — that causes 646/140 regression.
+                        _ct_bst_resolved: int | None = None
+                        if _bst_default_serial is not None:
+                            _ct_bst_resolved = resolve_exit_via_bst_default_snapshot(
+                                fg, _bst_default_serial, ct.target_state,
+                            )
+                        if (
+                            _ct_bst_resolved is not None
+                            and _terminal_exit_target is not None
+                            and _is_bst_default_terminal(
+                                _ct_bst_resolved,
+                                ct.target_state,
+                                handler_state_map,
+                                _bst_default_serial,
+                            )
+                        ):
+                            logger.info(
+                                "MBA_TERMINAL_RETURN: handler=blk[%d] "
+                                "branch=blk[%d] arm=%d state=0x%X "
+                                "resolved_to_bst_default=blk[%d] -> "
+                                "redirect to terminal_exit=blk[%d]",
+                                ct.handler_entry, ct.branch_block,
+                                ct.branch_arm, ct.target_state,
+                                _ct_bst_resolved, _terminal_exit_target,
+                            )
+                            # Override ct_target with terminal exit
+                            ct_target = _terminal_exit_target
+                            # Fall through to the existing redirect logic
+                            # (arm=1 emits RedirectBranch, arm=0 defers)
+                        else:
+                            logger.info(
+                                "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
+                                "target_state=0x%X no BST resolution "
+                                "(bst_resolved=%s, is_default=%s)",
+                                ct.handler_entry, ct.target_state,
+                                _ct_bst_resolved,
+                                _ct_bst_resolved == _bst_default_serial
+                                if _ct_bst_resolved is not None else "N/A",
+                            )
+                            continue
                     ct.target_handler = ct_target
 
                     # 2. Look up the current successor on the branch arm
