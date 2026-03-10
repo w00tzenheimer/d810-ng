@@ -1494,20 +1494,40 @@ class DirectHandlerLinearizationStrategy:
                             )
                             continue
 
-                    # 3. Emit RedirectBranch to change the arm
-                    modifications.append(
-                        RedirectBranch(
-                            from_serial=ct.branch_block,
-                            old_target=old_target,
-                            new_target=ct_target,
+                    # 3. Emit redirect (arm-aware)
+                    if ct.branch_arm == 1:
+                        # Arm 1 = jcc taken target. RedirectBranch rewrites
+                        # blk.tail.d.b — the only operand
+                        # change_2way_block_conditional_successor touches.
+                        modifications.append(
+                            RedirectBranch(
+                                from_serial=ct.branch_block,
+                                old_target=old_target,
+                                new_target=ct_target,
+                            )
                         )
-                    )
-                    claimed_edges[edge_key] = ct_target
-                    redirected_branches.setdefault(ct.branch_block, {})[ct.branch_arm] = ct_target
-                    owned_blocks.add(ct.branch_block)
-                    owned_edges.add((ct.branch_block, ct_target))
+                        claimed_edges[edge_key] = ct_target
+                        redirected_branches.setdefault(ct.branch_block, {})[ct.branch_arm] = ct_target
+                        owned_blocks.add(ct.branch_block)
+                        owned_edges.add((ct.branch_block, ct_target))
+                    elif ct.branch_arm == 0:
+                        # Arm 0 = fall-through successor.  Cannot be changed
+                        # via jcc rewrite — change_2way_block_conditional_
+                        # successor only modifies blk.tail.d.b (arm 1).  The
+                        # downstream exit block already receives a RedirectGoto
+                        # from the main linearization loop, so no additional
+                        # redirect is needed here.  We still NOP the state
+                        # write below.
+                        logger.info(
+                            "CONDITIONAL_TRANSITION_ARM0_SKIP: handler=blk[%d] "
+                            "branch=blk[%d] arm=0 -> state 0x%x defers to "
+                            "exit-block RedirectGoto",
+                            ct.handler_entry, ct.branch_block, ct.target_state,
+                        )
 
                     # 4. NOP the dead state write (skip multi-pred blocks)
+                    # Fires for BOTH arms — the state variable write is dead
+                    # regardless of which arm carried the transition.
                     _sw_snap = fg.get_block(ct.state_write_block)
                     if _sw_snap is None or _sw_snap.npred <= 1:
                         _append_nop(
@@ -1520,27 +1540,32 @@ class DirectHandlerLinearizationStrategy:
                         ct.state_write_block, ct.state_write_ea, ct.handler_entry,
                     )
 
-                    logger.info(
-                        "CONDITIONAL_TRANSITION_REDIRECT: handler=blk[%d] "
-                        "branch=blk[%d] arm=%d old_target=blk[%d] -> "
-                        "new_target=blk[%d] (state=0x%X) write_nop=blk[%d]@0x%X",
-                        ct.handler_entry, ct.branch_block, ct.branch_arm,
-                        old_target, ct_target, ct.target_state,
-                        ct.state_write_block, ct.state_write_ea,
-                    )
+                    # 5. Bookkeeping — only for arm=1 which emitted a redirect.
+                    # Arm=0 transitions are resolved by the main loop's
+                    # RedirectGoto on the downstream exit block; counting them
+                    # here would double-count.
+                    if ct.branch_arm != 0:
+                        logger.info(
+                            "CONDITIONAL_TRANSITION_REDIRECT: handler=blk[%d] "
+                            "branch=blk[%d] arm=%d old_target=blk[%d] -> "
+                            "new_target=blk[%d] (state=0x%X) write_nop=blk[%d]@0x%X",
+                            ct.handler_entry, ct.branch_block, ct.branch_arm,
+                            old_target, ct_target, ct.target_state,
+                            ct.state_write_block, ct.state_write_ea,
+                        )
 
-                    resolved_count += 1
-                    owned_transitions.add((incoming_state, ct.target_state))
-                    pass0_ledger.append({
-                        "category": "conditional_transition",
-                        "handler_entry": handler_serial,
-                        "incoming_state": incoming_state,
-                        "exit_block": ct.branch_block,
-                        "final_state": ct.target_state,
-                        "source_block": ct.branch_block,
-                        "via_pred": None,
-                        "target_block": ct_target,
-                    })
+                        resolved_count += 1
+                        owned_transitions.add((incoming_state, ct.target_state))
+                        pass0_ledger.append({
+                            "category": "conditional_transition",
+                            "handler_entry": handler_serial,
+                            "incoming_state": incoming_state,
+                            "exit_block": ct.branch_block,
+                            "final_state": ct.target_state,
+                            "source_block": ct.branch_block,
+                            "via_pred": None,
+                            "target_block": ct_target,
+                        })
 
             for path in paths:
                 if path.final_state is None:
