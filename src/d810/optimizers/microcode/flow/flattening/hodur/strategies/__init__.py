@@ -27,7 +27,11 @@ Available strategies (in dependency order):
    family ``fallback``.
 10. :class:`AssignmentMapFallbackStrategy` — dead state-assignment NOPs and
     assignment-map redirects, family ``fallback``.
-11. :class:`DeadStateVariableEliminationStrategy` — NOP remaining reads of
+11. :class:`InnerMergeDuplicationStrategy` — tail-duplicate small DAG merge
+    blocks to eliminate structurer gotos, family ``cleanup``.
+12. :class:`StateConstantReturnFixupStrategy` — NOP leaked state constants
+    in BLT_STOP predecessor return paths, family ``cleanup``.
+13. :class:`DeadStateVariableEliminationStrategy` — NOP remaining reads of
     the dead state variable after linearization, family ``cleanup``.
 """
 from __future__ import annotations
@@ -65,6 +69,12 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.direct_terminal_
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.dead_state_variable_elimination import (
     DeadStateVariableEliminationStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.inner_merge_duplication import (
+    InnerMergeDuplicationStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.state_constant_return_fixup import (
+    StateConstantReturnFixupStrategy,
+)
 
 __all__ = [
     "DirectHandlerLinearizationStrategy",
@@ -78,6 +88,8 @@ __all__ = [
     "AssignmentMapFallbackStrategy",
     "DirectTerminalLoweringStrategy",
     "DeadStateVariableEliminationStrategy",
+    "InnerMergeDuplicationStrategy",
+    "StateConstantReturnFixupStrategy",
     "ALL_STRATEGIES",
 ]
 
@@ -92,5 +104,8 @@ ALL_STRATEGIES: list[type] = [
     PredPatchFallbackStrategy,
     ConditionalForkFallbackStrategy,
     AssignmentMapFallbackStrategy,
+    # DISABLED: causes INTERR 50860 on hodur_func (verify failure in DuplicateBlock)
+    # InnerMergeDuplicationStrategy,
+    StateConstantReturnFixupStrategy,
     DeadStateVariableEliminationStrategy,
 ]
