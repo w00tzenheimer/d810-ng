@@ -1764,36 +1764,27 @@ class DirectHandlerLinearizationStrategy:
                             exit_target = None
 
                     if exit_target is not None:
-                        # Intercept BST m_xdu catch-all exits: if the resolved
-                        # exit_target block contains an m_xdu instruction (e.g.,
-                        # m_xdu state_var → return_slot), it's a BST default
-                        # catch-all that clobbers the return slot. Redirect to
-                        # terminal exit instead to preserve the correct return value.
-                        # Guard: only fires for m_xdu blocks, NOT for hidden handler
-                        # entries (which have normal handler bodies).
+                        # Intercept BST catch-all exits: if exit_target is a BST
+                        # leaf block (not a handler entry, not a BST comparison node),
+                        # it's the m_xdu catch-all. Redirect to terminal exit instead
+                        # to prevent state-variable clobber of the return slot.
                         if (
-                            _terminal_exit_target is not None
+                            exit_target not in handler_state_map
+                            and exit_target not in bst_node_blocks
+                            and exit_target != dispatcher_serial
+                            and _terminal_exit_target is not None
                             and exit_target != _terminal_exit_target
                         ):
-                            _catchall_snap = fg.get_block(exit_target)
-                            _has_mxdu = (
-                                _catchall_snap is not None
-                                and any(
-                                    _ci.opcode == ida_hexrays.m_xdu
-                                    for _ci in _catchall_snap.iter_insns()
-                                )
+                            logger.info(
+                                "MBA_TERMINAL_RETURN_PASS1: handler=blk[%d] "
+                                "exit_state=0x%X bst_catchall=blk[%d] -> "
+                                "terminal_exit=blk[%d]",
+                                handler_serial,
+                                path.final_state,
+                                exit_target,
+                                _terminal_exit_target,
                             )
-                            if _has_mxdu:
-                                logger.info(
-                                    "MBA_TERMINAL_RETURN_PASS1: handler=blk[%d] "
-                                    "exit_state=0x%X bst_catchall=blk[%d] "
-                                    "(m_xdu detected) -> terminal_exit=blk[%d]",
-                                    handler_serial,
-                                    path.final_state,
-                                    exit_target,
-                                    _terminal_exit_target,
-                                )
-                                exit_target = _terminal_exit_target
+                            exit_target = _terminal_exit_target
                         _reason = (
                             f"hodur-linear: blk[{handler_serial}] "
                             f"exit 0x{path.final_state:x} -> {resolve_label} -> blk[{exit_target}]"
