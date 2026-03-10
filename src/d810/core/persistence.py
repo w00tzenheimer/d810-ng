@@ -99,8 +99,8 @@ class FunctionRuleConfig:
 
 
 @dataclass
-class ActiveRuleRecipeConfig:
-    """Persisted active rule recipe selector."""
+class ActiveRuleInferenceConfig:
+    """Persisted active rule inference selector."""
 
     name: str
     enabled_rules: Set[str] = field(default_factory=set)
@@ -135,9 +135,9 @@ class SupportsOptimizationStorage(Protocol):
     def get_function_rules(self, function_addr: int) -> Optional[FunctionRuleConfig]: ...
     def set_function_tags(self, function_addr: int, tags: Set[str]) -> None: ...
     def get_function_tags(self, function_addr: int) -> Set[str]: ...
-    def set_active_rule_recipe(self, recipe: ActiveRuleRecipeConfig) -> None: ...
-    def get_active_rule_recipe(self) -> Optional[ActiveRuleRecipeConfig]: ...
-    def clear_active_rule_recipe(self) -> None: ...
+    def set_active_rule_inference(self, inference: ActiveRuleInferenceConfig) -> None: ...
+    def get_active_rule_inference(self) -> Optional[ActiveRuleInferenceConfig]: ...
+    def clear_active_rule_inference(self) -> None: ...
     def should_run_rule(self, function_addr: int, rule_name: str) -> bool: ...
     def invalidate_function(self, function_addr: int) -> None: ...
     def get_statistics(self) -> Dict[str, Any]: ...
@@ -461,7 +461,7 @@ class NetnodeOptimizationStorage:
             "results": {},
             "patches": {},
             "function_rules": {},
-            "active_recipe": None,
+            "active_inference": None,
         }
         self._state = self._load_state()
         logger.info("Netnode optimization storage initialized: %s", self.node_name)
@@ -476,7 +476,7 @@ class NetnodeOptimizationStorage:
                 "results": {},
                 "patches": {},
                 "function_rules": {},
-                "active_recipe": None,
+                "active_inference": None,
             }
         if not isinstance(payload, dict):
             return {
@@ -484,13 +484,18 @@ class NetnodeOptimizationStorage:
                 "results": {},
                 "patches": {},
                 "function_rules": {},
-                "active_recipe": None,
+                "active_inference": None,
             }
         payload.setdefault("functions", {})
         payload.setdefault("results", {})
         payload.setdefault("patches", {})
         payload.setdefault("function_rules", {})
-        payload.setdefault("active_recipe", None)
+        # Backward compat: migrate old "active_recipe" key to "active_inference"
+        if "active_recipe" in payload and "active_inference" not in payload:
+            payload["active_inference"] = payload.pop("active_recipe")
+        elif "active_recipe" in payload:
+            payload.pop("active_recipe")
+        payload.setdefault("active_inference", None)
         return payload
 
     def _load_state(self) -> dict[str, Any]:
@@ -627,25 +632,25 @@ class NetnodeOptimizationStorage:
             return set()
         return set(row.get("tags", []))
 
-    def set_active_rule_recipe(self, recipe: ActiveRuleRecipeConfig) -> None:
-        self._state["active_recipe"] = {
-            "name": str(recipe.name),
-            "enabled_rules": sorted(str(rule) for rule in recipe.enabled_rules),
-            "disabled_rules": sorted(str(rule) for rule in recipe.disabled_rules),
-            "target_func_eas": sorted(int(ea) for ea in recipe.target_func_eas),
-            "target_tags_any": sorted(str(tag) for tag in recipe.target_tags_any),
-            "target_tags_all": sorted(str(tag) for tag in recipe.target_tags_all),
-            "notes": str(recipe.notes),
+    def set_active_rule_inference(self, inference: ActiveRuleInferenceConfig) -> None:
+        self._state["active_inference"] = {
+            "name": str(inference.name),
+            "enabled_rules": sorted(str(rule) for rule in inference.enabled_rules),
+            "disabled_rules": sorted(str(rule) for rule in inference.disabled_rules),
+            "target_func_eas": sorted(int(ea) for ea in inference.target_func_eas),
+            "target_tags_any": sorted(str(tag) for tag in inference.target_tags_any),
+            "target_tags_all": sorted(str(tag) for tag in inference.target_tags_all),
+            "notes": str(inference.notes),
             "updated_at": time.time(),
         }
         self._flush_state()
-        logger.info("Updated active rule recipe: %s", recipe.name)
+        logger.info("Updated active rule inference: %s", inference.name)
 
-    def get_active_rule_recipe(self) -> Optional[ActiveRuleRecipeConfig]:
-        row = self._state.get("active_recipe")
+    def get_active_rule_inference(self) -> Optional[ActiveRuleInferenceConfig]:
+        row = self._state.get("active_inference")
         if not row:
             return None
-        return ActiveRuleRecipeConfig(
+        return ActiveRuleInferenceConfig(
             name=str(row.get("name", "")),
             enabled_rules=set(row.get("enabled_rules", [])),
             disabled_rules=set(row.get("disabled_rules", [])),
@@ -655,10 +660,10 @@ class NetnodeOptimizationStorage:
             notes=str(row.get("notes", "")),
         )
 
-    def clear_active_rule_recipe(self) -> None:
-        self._state["active_recipe"] = None
+    def clear_active_rule_inference(self) -> None:
+        self._state["active_inference"] = None
         self._flush_state()
-        logger.info("Cleared active rule recipe")
+        logger.info("Cleared active rule inference")
 
     def should_run_rule(self, function_addr: int, rule_name: str) -> bool:
         config = self.get_function_rules(function_addr)
@@ -851,9 +856,9 @@ class SQLiteOptimizationStorage:
             )
         """)
 
-        # Active rule recipe table: single persisted selector overlay
+        # Active rule inference table: single persisted selector overlay
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS rule_scope_recipe (
+            CREATE TABLE IF NOT EXISTS rule_scope_inference (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 name TEXT NOT NULL,
                 enabled_rules TEXT,    -- JSON array of rule names
@@ -1186,40 +1191,40 @@ class SQLiteOptimizationStorage:
             return set()
         return set(config.tags)
 
-    def set_active_rule_recipe(self, recipe: ActiveRuleRecipeConfig) -> None:
+    def set_active_rule_inference(self, inference: ActiveRuleInferenceConfig) -> None:
         if not self.conn:
             return
         cursor = self.conn.cursor()
         cursor.execute("""
-            INSERT OR REPLACE INTO rule_scope_recipe
+            INSERT OR REPLACE INTO rule_scope_inference
             (id, name, enabled_rules, disabled_rules, target_func_eas, target_tags_any, target_tags_all, notes, updated_at)
             VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            str(recipe.name),
-            json.dumps(sorted(str(rule) for rule in recipe.enabled_rules)),
-            json.dumps(sorted(str(rule) for rule in recipe.disabled_rules)),
-            json.dumps(sorted(int(ea) for ea in recipe.target_func_eas)),
-            json.dumps(sorted(str(tag) for tag in recipe.target_tags_any)),
-            json.dumps(sorted(str(tag) for tag in recipe.target_tags_all)),
-            str(recipe.notes),
+            str(inference.name),
+            json.dumps(sorted(str(rule) for rule in inference.enabled_rules)),
+            json.dumps(sorted(str(rule) for rule in inference.disabled_rules)),
+            json.dumps(sorted(int(ea) for ea in inference.target_func_eas)),
+            json.dumps(sorted(str(tag) for tag in inference.target_tags_any)),
+            json.dumps(sorted(str(tag) for tag in inference.target_tags_all)),
+            str(inference.notes),
             time.time(),
         ))
         self.conn.commit()
-        logger.info("Updated active rule recipe: %s", recipe.name)
+        logger.info("Updated active rule inference: %s", inference.name)
 
-    def get_active_rule_recipe(self) -> Optional[ActiveRuleRecipeConfig]:
+    def get_active_rule_inference(self) -> Optional[ActiveRuleInferenceConfig]:
         if not self.conn:
             return None
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT name, enabled_rules, disabled_rules, target_func_eas, target_tags_any, target_tags_all, notes
-            FROM rule_scope_recipe
+            FROM rule_scope_inference
             WHERE id = 1
         """)
         row = cursor.fetchone()
         if not row:
             return None
-        return ActiveRuleRecipeConfig(
+        return ActiveRuleInferenceConfig(
             name=str(row["name"]),
             enabled_rules=set(json.loads(row["enabled_rules"] or "[]")),
             disabled_rules=set(json.loads(row["disabled_rules"] or "[]")),
@@ -1229,13 +1234,13 @@ class SQLiteOptimizationStorage:
             notes=str(row["notes"] or ""),
         )
 
-    def clear_active_rule_recipe(self) -> None:
+    def clear_active_rule_inference(self) -> None:
         if not self.conn:
             return
         cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM rule_scope_recipe WHERE id = 1")
+        cursor.execute("DELETE FROM rule_scope_inference WHERE id = 1")
         self.conn.commit()
-        logger.info("Cleared active rule recipe")
+        logger.info("Cleared active rule inference")
 
     def should_run_rule(self, function_addr: int, rule_name: str) -> bool:
         """Check if a rule should run on a function.

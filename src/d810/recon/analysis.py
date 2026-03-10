@@ -1,7 +1,7 @@
 """AnalysisPhase - interprets ReconResults into DeobfuscationHints.
 
 Heuristics are deliberately simple in this first pass. The intent is to
-cover the common OLLVM control-flow flattening case and emit recipe names
+cover the common OLLVM control-flow flattening case and emit inference names
 that ``RuleScopeService.apply_hints()`` can act on.
 
 Four supplementary collectors—``FixPredSignalsCollector``,
@@ -77,16 +77,16 @@ class AnalysisPhase:
                     "interpret: func=0x%x user override classification=%s confidence=%.2f",
                     func_ea, override["override_value"], override["confidence"],
                 )
-                recipes: tuple[str, ...] = ()
+                inferences: tuple[str, ...] = ()
                 suppress: tuple[str, ...] = ()
                 if override["override_value"] == "ollvm_flat":
-                    recipes = ("unflattening_recipe",)
+                    inferences = ("unflattening",)
                     suppress = ("ConstantFolding",)
                 return DeobfuscationHints(
                     func_ea=func_ea,
                     obfuscation_type=override["override_value"],
                     confidence=override["confidence"],
-                    recommended_recipes=recipes,
+                    recommended_inferences=inferences,
                     candidates=(),
                     suppress_rules=suppress,
                 )
@@ -96,7 +96,7 @@ class AnalysisPhase:
                 func_ea=func_ea,
                 obfuscation_type=None,
                 confidence=0.0,
-                recommended_recipes=(),
+                recommended_inferences=(),
                 candidates=(),
                 suppress_rules=(),
             )
@@ -176,7 +176,7 @@ class AnalysisPhase:
 
         if confidence >= _CONF_CLASSIFY_THRESHOLD:
             obfuscation_type: str | None = "ollvm_flat"
-            recommended_recipes: tuple[str, ...] = ("unflattening_recipe",)
+            recommended_inferences: tuple[str, ...] = ("unflattening",)
             # Suppress ConstantFolding at high confidence — it conflicts
             # with flattened dispatch variable propagation.
             if min(1.0, confidence) >= _SUPPRESS_CONFIDENCE_THRESHOLD:
@@ -185,14 +185,14 @@ class AnalysisPhase:
                 suppress_rules = ()
         else:
             obfuscation_type = None
-            recommended_recipes = ()
+            recommended_inferences = ()
             suppress_rules = ()
 
         return DeobfuscationHints(
             func_ea=func_ea,
             obfuscation_type=obfuscation_type,
             confidence=min(1.0, confidence),
-            recommended_recipes=recommended_recipes,
+            recommended_inferences=recommended_inferences,
             candidates=tuple(all_candidates),
             suppress_rules=suppress_rules,
         )

@@ -935,6 +935,43 @@ def d810_state_all_rules():
 
 
 # =============================================================================
+# Pytest Fixtures - Recon Store (E2E pipeline assertions)
+# =============================================================================
+
+
+@pytest.fixture(scope="session")
+def recon_store_path():
+    """Session-scoped: path to the recon DB created during this test session.
+
+    Returns None if the D810 state hasn't been loaded or recon is disabled.
+    """
+    from d810.manager import D810State
+
+    state = D810State()
+    if not state.is_loaded():
+        yield None
+        return
+    db_path = state.manager.recon_db
+    yield db_path
+
+
+@pytest.fixture(scope="session")
+def recon_store_session(recon_store_path):
+    """Session-scoped: open ReconStore for aggregate queries.
+
+    Returns None if recon is disabled.
+    """
+    if recon_store_path is None:
+        yield None
+        return
+    from d810.recon.store import ReconStore
+
+    store = ReconStore(recon_store_path)
+    yield store
+    store.close()
+
+
+# =============================================================================
 # Pytest Fixtures - Clang / AST Comparison
 # =============================================================================
 

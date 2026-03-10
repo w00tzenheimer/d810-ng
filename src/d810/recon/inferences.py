@@ -5,9 +5,8 @@ An inference factory translates ``DeobfuscationHints`` into a list of
 
 Design rationale
 ----------------
-The naming choice of "inference" over "recipe" reflects that these
-adjustments are *derived from automated recon analysis*, not hand-authored
-presets.  "Delta" conveys a diff from baseline behavior, not an absolute
+The naming choice of "inference" reflects that these adjustments are
+*derived from automated recon analysis*, not hand-authored presets.  "Delta" conveys a diff from baseline behavior, not an absolute
 configuration.
 
 Precedence

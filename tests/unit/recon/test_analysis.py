@@ -468,7 +468,7 @@ class TestUserOverride:
             hints = phase.interpret(func_ea=0x401000, results=[], store=store)
             assert hints.obfuscation_type == "ollvm_flat"
             assert hints.confidence == 1.0
-            assert "unflattening_recipe" in hints.recommended_recipes
+            assert "unflattening" in hints.recommended_inferences
             assert "ConstantFolding" in hints.suppress_rules
         finally:
             store.close()
@@ -493,7 +493,7 @@ class TestUserOverride:
         assert hints.obfuscation_type is None
 
     def test_non_ollvm_override(self) -> None:
-        """User override with non-ollvm type produces no recipes/suppress."""
+        """User override with non-ollvm type produces no inferences/suppress."""
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()
         store = ReconStore(tmp.name)
@@ -508,7 +508,7 @@ class TestUserOverride:
             hints = phase.interpret(func_ea=0x401000, results=[], store=store)
             assert hints.obfuscation_type == "tigress_indirect"
             assert hints.confidence == 0.9
-            assert hints.recommended_recipes == ()
+            assert hints.recommended_inferences == ()
             assert hints.suppress_rules == ()
         finally:
             store.close()

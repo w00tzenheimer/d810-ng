@@ -43,7 +43,7 @@ def _make_hints(
         func_ea=func_ea,
         obfuscation_type=obfuscation_type,
         confidence=confidence,
-        recommended_recipes=("unflattening_recipe",),
+        recommended_inferences=("unflattening",),
         candidates=(),
         suppress_rules=(),
     )

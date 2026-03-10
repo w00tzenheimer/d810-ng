@@ -69,7 +69,7 @@ def derive_flow_context_summary(
         ...     func_ea=0x401000,
         ...     obfuscation_type="ollvm_flat",
         ...     confidence=0.9,
-        ...     recommended_recipes=(),
+        ...     recommended_inferences=(),
         ...     candidates=(),
         ...     suppress_rules=(),
         ... )

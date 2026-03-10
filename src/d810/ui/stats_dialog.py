@@ -406,10 +406,10 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
         # Add "Save for function" option
         action = self.add_menu.addAction("Save for function")
         action.triggered.connect(self._on_save_for_function)
-        recipe_action = self.add_menu.addAction("Apply fired rules as active recipe")
-        recipe_action.triggered.connect(self._on_apply_recipe_for_function)
-        clear_recipe_action = self.add_menu.addAction("Clear active recipe")
-        clear_recipe_action.triggered.connect(self._on_clear_active_recipe)
+        inference_action = self.add_menu.addAction("Apply fired rules as active inference")
+        inference_action.triggered.connect(self._on_apply_inference_for_function)
+        clear_inference_action = self.add_menu.addAction("Clear active inference")
+        clear_inference_action.triggered.connect(self._on_clear_active_inference)
 
     def _on_save_for_function(self) -> None:
         """Handle save fired rules for function action."""
@@ -445,39 +445,39 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
         func_name = self._func_name or f"sub_{self._func_ea:X}"
         ida_kernwin.msg(f"d810-ng: Saved {len(fired_rule_names)} rules for {func_name}\n")
 
-    def _on_apply_recipe_for_function(self) -> None:
+    def _on_apply_inference_for_function(self) -> None:
         if self._func_ea is None:
             return
         from d810.ui.stats_logic import get_fired_rule_names
 
         fired_rule_names = get_fired_rule_names(self._stats)
         if not fired_rule_names:
-            ida_kernwin.msg("d810-ng: No fired rules to build recipe\n")
+            ida_kernwin.msg("d810-ng: No fired rules to build inference\n")
             return
         manager = getattr(self._state, "manager", None)
-        if manager is None or not hasattr(manager, "set_active_rule_recipe"):
-            ida_kernwin.warning("d810-ng manager does not support active recipe application.")
+        if manager is None or not hasattr(manager, "set_active_rule_inference"):
+            ida_kernwin.warning("d810-ng manager does not support active inference application.")
             return
         func_name = self._func_name or f"sub_{self._func_ea:X}"
-        recipe_name = f"fired_{func_name}_{self._func_ea:X}"
-        manager.set_active_rule_recipe(
-            recipe_name=recipe_name,
+        inference_name = f"fired_{func_name}_{self._func_ea:X}"
+        manager.set_active_rule_inference(
+            inference_name=inference_name,
             enabled_rules=set(fired_rule_names),
             target_func_eas={int(self._func_ea)},
             notes=f"Derived from fired rules for {func_name}",
         )
         ida_kernwin.msg(
-            f"d810-ng: Applied active recipe '{recipe_name}' "
+            f"d810-ng: Applied active inference '{inference_name}' "
             f"for function {func_name} ({len(fired_rule_names)} rules)\n"
         )
 
-    def _on_clear_active_recipe(self) -> None:
+    def _on_clear_active_inference(self) -> None:
         manager = getattr(self._state, "manager", None)
-        if manager is None or not hasattr(manager, "clear_active_rule_recipe"):
-            ida_kernwin.warning("d810-ng manager does not support clearing active recipe.")
+        if manager is None or not hasattr(manager, "clear_active_rule_inference"):
+            ida_kernwin.warning("d810-ng manager does not support clearing active inference.")
             return
-        manager.clear_active_rule_recipe()
-        ida_kernwin.msg("d810-ng: Cleared active recipe\n")
+        manager.clear_active_rule_inference()
+        ida_kernwin.msg("d810-ng: Cleared active inference\n")
 
     def _export_csv(self) -> None:
         """Export statistics to CSV file."""

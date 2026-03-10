@@ -19,7 +19,7 @@ from d810.backends.mba.ida import adapt_rules
 from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE, typing
 from d810.core.config import D810Configuration, ProjectConfiguration
 from d810.core.logging import clear_logs, configure_loggers, getLogger
-from d810.core.persistence import ActiveRuleRecipeConfig, create_optimization_storage
+from d810.core.persistence import ActiveRuleInferenceConfig, create_optimization_storage
 from d810.core.platform import resolve_arch_config
 from d810.core.project import ProjectContext, ProjectManager
 from d810.core.registry import EventEmitter, SingletonMeta
@@ -151,7 +151,7 @@ class D810Manager:
         default_factory=RuleScopeService
     )
     storage: typing.Any = None
-    _active_rule_recipe: RuleInferenceOverlay | None = dataclasses.field(
+    _active_rule_inference: RuleInferenceOverlay | None = dataclasses.field(
         default=None, init=False
     )
     profiler: typing.Any = dataclasses.field(
@@ -172,6 +172,14 @@ class D810Manager:
     @property
     def started(self):
         return self._started
+
+    @property
+    def recon_db(self) -> pathlib.Path | None:
+        """Path to the recon SQLite database, or None if recon is disabled."""
+        rt = getattr(self, "_recon_runtime", None)
+        if rt is None:
+            return None
+        return rt._store.db_path
 
     def configure(self, **kwargs):
         self.config = kwargs
@@ -301,7 +309,7 @@ class D810Manager:
         self.rule_scope_service.attach(self.event_emitter)
         self._init_storage()
         self.rule_scope_service.set_overlay_provider(self._get_rule_overlay)
-        self.rule_scope_service.set_active_inference(self._active_rule_recipe)
+        self.rule_scope_service.set_active_inference(self._active_rule_inference)
         self.rule_scope_service.register_inference("unflattening", unflattening_inference)
 
         # Instantiate core manager classes from registry
@@ -412,7 +420,7 @@ class D810Manager:
                 backend,
                 target,
             )
-            self._load_active_recipe_from_storage()
+            self._load_active_inference_from_storage()
             self.emit_rule_scope_invalidation(
                 RuleScopeEvent.IDB_OVERLAY_RELOADED,
                 project_name=str(self.config.get("project_name", "")),
@@ -425,19 +433,19 @@ class D810Manager:
                 project_name=str(self.config.get("project_name", "")),
             )
 
-    def _load_active_recipe_from_storage(self) -> None:
+    def _load_active_inference_from_storage(self) -> None:
         storage = self.storage
-        if storage is None or not hasattr(storage, "get_active_rule_recipe"):
-            self._active_rule_recipe = None
+        if storage is None or not hasattr(storage, "get_active_rule_inference"):
+            self._active_rule_inference = None
             self.rule_scope_service.set_active_inference(None)
             return
-        persisted = storage.get_active_rule_recipe()
+        persisted = storage.get_active_rule_inference()
         if persisted is None:
-            self._active_rule_recipe = None
+            self._active_rule_inference = None
             self.rule_scope_service.set_active_inference(None)
             return
-        recipe = RuleInferenceOverlay(
-            name=str(persisted.name).strip() or "unnamed_recipe",
+        inference = RuleInferenceOverlay(
+            name=str(persisted.name).strip() or "unnamed_inference",
             enabled_rules=frozenset(str(rule) for rule in persisted.enabled_rules),
             disabled_rules=frozenset(str(rule) for rule in persisted.disabled_rules),
             target_func_eas=frozenset(int(ea) for ea in persisted.target_func_eas),
@@ -453,12 +461,12 @@ class D810Manager:
             ),
             notes=str(persisted.notes),
         )
-        self._active_rule_recipe = recipe
-        self.rule_scope_service.set_active_inference(recipe)
+        self._active_rule_inference = inference
+        self.rule_scope_service.set_active_inference(inference)
         self.emit_rule_scope_invalidation(
             RuleScopeEvent.INFERENCE_APPLIED,
             project_name=str(self.config.get("project_name", "")),
-            changed_rules=frozenset(recipe.enabled_rules | recipe.disabled_rules),
+            changed_rules=frozenset(inference.enabled_rules | inference.disabled_rules),
         )
 
     def _get_rule_overlay(self, function_ea: int) -> FunctionRuleOverlay | None:
@@ -542,10 +550,10 @@ class D810Manager:
             func_eas=frozenset({int(function_addr)}),
         )
 
-    def set_active_rule_recipe(
+    def set_active_rule_inference(
         self,
         *,
-        recipe_name: str,
+        inference_name: str,
         enabled_rules: typing.Optional[typing.Set[str]] = None,
         disabled_rules: typing.Optional[typing.Set[str]] = None,
         target_func_eas: typing.Optional[typing.Set[int]] = None,
@@ -555,8 +563,8 @@ class D810Manager:
     ) -> None:
         if self.storage is None:
             self._init_storage()
-        recipe = RuleInferenceOverlay(
-            name=str(recipe_name).strip() or "unnamed_recipe",
+        inference = RuleInferenceOverlay(
+            name=str(inference_name).strip() or "unnamed_inference",
             enabled_rules=frozenset(enabled_rules or set()),
             disabled_rules=frozenset(disabled_rules or set()),
             target_func_eas=frozenset(int(ea) for ea in (target_func_eas or set())),
@@ -572,18 +580,18 @@ class D810Manager:
             ),
             notes=notes,
         )
-        self._active_rule_recipe = recipe
-        self.rule_scope_service.set_active_inference(recipe)
-        if self.storage is not None and hasattr(self.storage, "set_active_rule_recipe"):
-            self.storage.set_active_rule_recipe(
-                ActiveRuleRecipeConfig(
-                    name=recipe.name,
-                    enabled_rules=set(recipe.enabled_rules),
-                    disabled_rules=set(recipe.disabled_rules),
-                    target_func_eas=set(recipe.target_func_eas),
-                    target_tags_any=set(recipe.target_tags_any),
-                    target_tags_all=set(recipe.target_tags_all),
-                    notes=recipe.notes,
+        self._active_rule_inference = inference
+        self.rule_scope_service.set_active_inference(inference)
+        if self.storage is not None and hasattr(self.storage, "set_active_rule_inference"):
+            self.storage.set_active_rule_inference(
+                ActiveRuleInferenceConfig(
+                    name=inference.name,
+                    enabled_rules=set(inference.enabled_rules),
+                    disabled_rules=set(inference.disabled_rules),
+                    target_func_eas=set(inference.target_func_eas),
+                    target_tags_any=set(inference.target_tags_any),
+                    target_tags_all=set(inference.target_tags_all),
+                    notes=inference.notes,
                 )
             )
         self.emit_rule_scope_invalidation(
@@ -594,22 +602,22 @@ class D810Manager:
             ),
         )
 
-    def clear_active_rule_recipe(self) -> None:
+    def clear_active_rule_inference(self) -> None:
         if self.storage is None:
             self._init_storage()
-        self._active_rule_recipe = None
+        self._active_rule_inference = None
         self.rule_scope_service.set_active_inference(None)
         if self.storage is not None and hasattr(
-            self.storage, "clear_active_rule_recipe"
+            self.storage, "clear_active_rule_inference"
         ):
-            self.storage.clear_active_rule_recipe()
+            self.storage.clear_active_rule_inference()
         self.emit_rule_scope_invalidation(
             RuleScopeEvent.INFERENCE_CLEARED,
             project_name=str(self.config.get("project_name", "")),
         )
 
-    def get_active_rule_recipe(self) -> RuleInferenceOverlay | None:
-        return self._active_rule_recipe
+    def get_active_rule_inference(self) -> RuleInferenceOverlay | None:
+        return self._active_rule_inference
 
     def _compile_rule_scope(self) -> None:
         self.rule_scope_service.compile_base_rules(

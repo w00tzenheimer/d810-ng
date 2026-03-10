@@ -32,7 +32,7 @@ def sample_hints() -> DeobfuscationHints:
         func_ea=0x401000,
         obfuscation_type="ollvm_flat",
         confidence=0.85,
-        recommended_recipes=("unflattening_recipe",),
+        recommended_inferences=("unflattening",),
         candidates=(),
         suppress_rules=(),
     )
@@ -168,7 +168,7 @@ class TestReconStoreHints:
         assert loaded is not None
         assert loaded.obfuscation_type == "ollvm_flat"
         assert loaded.confidence == pytest.approx(0.85)
-        assert "unflattening_recipe" in loaded.recommended_recipes
+        assert "unflattening" in loaded.recommended_inferences
 
     def test_hints_upsert(self, store, sample_hints):
         store.save_hints(sample_hints)
@@ -176,7 +176,7 @@ class TestReconStoreHints:
             func_ea=0x401000,
             obfuscation_type="mixed",
             confidence=0.55,
-            recommended_recipes=("mba_recipe",),
+            recommended_inferences=("mba",),
             candidates=(),
             suppress_rules=("SlowRule",),
         )

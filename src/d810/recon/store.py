@@ -2,7 +2,7 @@
 
 Schema follows the existing pattern in ``core/persistence.py``:
 - ``INSERT OR REPLACE`` for upsert semantics
-- JSON columns for variable-length data (metrics, candidates, recipes)
+- JSON columns for variable-length data (metrics, candidates, inferences)
 - Composite primary key ``(func_ea, maturity, collector_name)`` for results
 - Single primary key ``func_ea`` for hints
 
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS deobfuscation_hints (
     func_ea                  INTEGER PRIMARY KEY,
     obfuscation_type         TEXT,
     confidence               REAL    NOT NULL,
-    recommended_recipes_json TEXT    NOT NULL,
+    recommended_inferences_json TEXT    NOT NULL,
     candidates_json          TEXT    NOT NULL,
     suppress_rules_json      TEXT    NOT NULL,
     updated_at               REAL    NOT NULL
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS recon_session_summary (
     collectors_fired INTEGER NOT NULL DEFAULT 0,
     classification TEXT NOT NULL DEFAULT '',
     confidence REAL NOT NULL DEFAULT 0.0,
-    recipes_json TEXT NOT NULL DEFAULT '[]',
+    inferences_json TEXT NOT NULL DEFAULT '[]',
     suppress_rules_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY (func_ea)
 );
@@ -234,7 +234,7 @@ class ReconStore:
             """
             INSERT OR REPLACE INTO deobfuscation_hints
                 (func_ea, obfuscation_type, confidence,
-                 recommended_recipes_json, candidates_json,
+                 recommended_inferences_json, candidates_json,
                  suppress_rules_json, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
@@ -242,7 +242,7 @@ class ReconStore:
                 int(hints.func_ea),
                 hints.obfuscation_type,
                 float(hints.confidence),
-                json.dumps(list(hints.recommended_recipes)),
+                json.dumps(list(hints.recommended_inferences)),
                 json.dumps([_candidate_to_dict(c) for c in hints.candidates]),
                 json.dumps(list(hints.suppress_rules)),
                 time.time(),
@@ -254,7 +254,7 @@ class ReconStore:
         """Load DeobfuscationHints for a function, or None if not present."""
         cursor = self._conn.execute(
             """
-            SELECT obfuscation_type, confidence, recommended_recipes_json,
+            SELECT obfuscation_type, confidence, recommended_inferences_json,
                    candidates_json, suppress_rules_json
             FROM deobfuscation_hints
             WHERE func_ea = ?
@@ -272,7 +272,7 @@ class ReconStore:
             func_ea=int(func_ea),
             obfuscation_type=row["obfuscation_type"],
             confidence=float(row["confidence"]),
-            recommended_recipes=tuple(json.loads(row["recommended_recipes_json"] or "[]")),
+            recommended_inferences=tuple(json.loads(row["recommended_inferences_json"] or "[]")),
             candidates=candidates,
             suppress_rules=tuple(json.loads(row["suppress_rules_json"] or "[]")),
         )
@@ -291,16 +291,16 @@ class ReconStore:
         collectors_fired: int,
         classification: str,
         confidence: float,
-        recipes: list[str],
+        inferences: list[str],
         suppress_rules: list[str],
     ) -> None:
         """Persist per-function session summary (upsert)."""
         self._conn.execute(
             "INSERT OR REPLACE INTO recon_session_summary "
             "(func_ea, timestamp, collectors_fired, classification, confidence, "
-            "recipes_json, suppress_rules_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "inferences_json, suppress_rules_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (func_ea, time.time(), collectors_fired, classification, confidence,
-             json.dumps(recipes), json.dumps(suppress_rules)),
+             json.dumps(inferences), json.dumps(suppress_rules)),
         )
         self._conn.commit()
 
@@ -317,7 +317,7 @@ class ReconStore:
             "collectors_fired": row["collectors_fired"],
             "classification": row["classification"],
             "confidence": row["confidence"],
-            "recipes": json.loads(row["recipes_json"]),
+            "inferences": json.loads(row["inferences_json"]),
             "suppress_rules": json.loads(row["suppress_rules_json"]),
         }
 
@@ -360,6 +360,68 @@ class ReconStore:
                 "verdict_applied": bool(r["verdict_applied"]),
                 "detail": r["detail"],
                 "provenance_json": r["provenance_json"],
+            }
+            for r in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # Aggregate queries (for E2E pipeline assertions)
+    # ------------------------------------------------------------------
+
+    def count_functions_with_hints(self) -> int:
+        """Count distinct functions that have deobfuscation hints."""
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT func_ea) AS cnt FROM deobfuscation_hints"
+        ).fetchone()
+        return int(row["cnt"]) if row else 0
+
+    def count_functions_with_session_summaries(self) -> int:
+        """Count distinct functions that have session summaries."""
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT func_ea) AS cnt FROM recon_session_summary"
+        ).fetchone()
+        return int(row["cnt"]) if row else 0
+
+    def count_functions_with_consumer_outcomes(self) -> int:
+        """Count distinct functions that have at least one consumer outcome."""
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT func_ea) AS cnt FROM consumer_outcomes"
+        ).fetchone()
+        return int(row["cnt"]) if row else 0
+
+    def list_functions_with_hints(self) -> list[int]:
+        """Return sorted list of func_ea values that have hints."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT func_ea FROM deobfuscation_hints ORDER BY func_ea"
+        ).fetchall()
+        return [int(r["func_ea"]) for r in rows]
+
+    def list_functions_missing_session_summary(self) -> list[int]:
+        """Return func_eas that have hints but no session summary."""
+        rows = self._conn.execute(
+            """
+            SELECT DISTINCT h.func_ea
+            FROM deobfuscation_hints h
+            LEFT JOIN recon_session_summary s ON h.func_ea = s.func_ea
+            WHERE s.func_ea IS NULL
+            ORDER BY h.func_ea
+            """
+        ).fetchall()
+        return [int(r["func_ea"]) for r in rows]
+
+    def load_all_session_summaries(self) -> list[dict]:
+        """Load all session summaries across all functions."""
+        rows = self._conn.execute(
+            "SELECT * FROM recon_session_summary ORDER BY func_ea"
+        ).fetchall()
+        return [
+            {
+                "func_ea": int(r["func_ea"]),
+                "collectors_fired": int(r["collectors_fired"]),
+                "classification": r["classification"],
+                "confidence": float(r["confidence"]),
+                "inferences": json.loads(r["inferences_json"]),
+                "suppress_rules": json.loads(r["suppress_rules_json"]),
             }
             for r in rows
         ]
