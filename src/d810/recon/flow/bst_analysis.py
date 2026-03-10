@@ -250,10 +250,12 @@ def _dump_dispatcher_node(
 
     is_jbe = opcode is not None and hasattr(idaapi, "m_jbe") and opcode == idaapi.m_jbe
     is_ja = opcode is not None and hasattr(idaapi, "m_ja") and opcode == idaapi.m_ja
+    is_jb = opcode is not None and hasattr(idaapi, "m_jb") and opcode == idaapi.m_jb
+    is_jae = opcode is not None and hasattr(idaapi, "m_jae") and opcode == idaapi.m_jae
     is_jnz = opcode is not None and hasattr(idaapi, "m_jnz") and opcode == idaapi.m_jnz
     is_jz = opcode is not None and hasattr(idaapi, "m_jz") and opcode == idaapi.m_jz
 
-    if is_jbe or is_ja:
+    if is_jbe or is_ja or is_jb or is_jae:
         if bst_node_blocks is not None:
             bst_node_blocks.add(serial)  # Track BST node for later NOP
         cmp_str = f"<= 0x{cmp_val:x}" if cmp_val is not None else "<= ?"
@@ -267,6 +269,12 @@ def _dump_dispatcher_node(
         # m_ja: if state_var > X → jump (succs[1]); else fall-through (succs[0])
         #   fall-through range: [lo,  X]   (state <= X)
         #   taken      range:   [X+1, hi]  (state > X)
+        # m_jb: if state_var < X → jump (succs[1]); else fall-through (succs[0])
+        #   fall-through range: [X,   hi]  (state >= X)
+        #   taken      range:   [lo,  X-1] (state < X)
+        # m_jae: if state_var >= X → jump (succs[1]); else fall-through (succs[0])
+        #   fall-through range: [lo,  X-1] (state < X)
+        #   taken      range:   [X,   hi]  (state >= X)
         X = cmp_val
         MASK = 0xFFFFFFFF
         if is_jbe:
@@ -274,10 +282,20 @@ def _dump_dispatcher_node(
             fall_hi = value_hi
             taken_lo = value_lo
             taken_hi = X
-        else:  # m_ja
+        elif is_ja:
             fall_lo = value_lo
             fall_hi = X
             taken_lo = (X + 1) & MASK if X is not None else None
+            taken_hi = value_hi
+        elif is_jb:
+            fall_lo = X
+            fall_hi = value_hi
+            taken_lo = value_lo
+            taken_hi = (X - 1) & MASK if X is not None else None
+        else:  # m_jae
+            fall_lo = value_lo
+            fall_hi = (X - 1) & MASK if X is not None else None
+            taken_lo = X
             taken_hi = value_hi
 
         child_ranges = [(fall_lo, fall_hi), (taken_lo, taken_hi)]
@@ -342,7 +360,7 @@ def _dump_dispatcher_node(
         # Helper: determine if a block serial is a BST comparison node
         # (has a conditional tail opcode and exactly 2 successors).
         _bst_opcodes = set()
-        for _attr in ("m_jbe", "m_ja", "m_jnz", "m_jz"):
+        for _attr in ("m_jbe", "m_ja", "m_jb", "m_jae", "m_jnz", "m_jz"):
             _v = getattr(idaapi, _attr, None)
             if _v is not None:
                 _bst_opcodes.add(_v)
