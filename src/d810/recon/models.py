@@ -95,7 +95,7 @@ class DeobfuscationHints:
             One of: ``"ollvm_flat"``, ``"tigress_indirect"``, ``"mixed"``,
             ``None``.
         confidence: Overall classification confidence in ``[0.0, 1.0]``.
-        recommended_recipes: Tuple of ``RuleRecipeOverlay`` names to activate.
+        recommended_inferences: Tuple of inference names to activate.
         candidates: Forwarded candidate flags from ReconResults.
         suppress_rules: Rule names to explicitly disable for this function.
 
@@ -104,7 +104,7 @@ class DeobfuscationHints:
         ...     func_ea=0x401000,
         ...     obfuscation_type="ollvm_flat",
         ...     confidence=0.85,
-        ...     recommended_recipes=("unflattening_recipe",),
+        ...     recommended_inferences=("unflattening",),
         ...     candidates=(),
         ...     suppress_rules=(),
         ... )
@@ -114,6 +114,6 @@ class DeobfuscationHints:
     func_ea: int
     obfuscation_type: str | None
     confidence: float
-    recommended_recipes: tuple[str, ...]
+    recommended_inferences: tuple[str, ...]
     candidates: tuple[CandidateFlag, ...]
     suppress_rules: tuple[str, ...]

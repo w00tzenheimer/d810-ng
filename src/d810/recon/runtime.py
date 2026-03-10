@@ -251,7 +251,7 @@ class ReconAnalysisRuntime:
                 collectors_fired=len({r.collector_name for r in results}),
                 classification=hints.obfuscation_type or "",
                 confidence=hints.confidence,
-                recipes=list(hints.recommended_recipes),
+                inferences=list(hints.recommended_inferences),
                 suppress_rules=list(hints.suppress_rules),
             )
             logger.debug(
@@ -281,7 +281,7 @@ class ReconAnalysisRuntime:
             collectors_fired=len({r.collector_name for r in results}),
             classification=hints.obfuscation_type or "",
             confidence=hints.confidence,
-            recipes=list(hints.recommended_recipes),
+            inferences=list(hints.recommended_inferences),
             suppress_rules=list(hints.suppress_rules),
         )
         logger.info(
@@ -421,9 +421,9 @@ class ReconAnalysisRuntime:
             apply_result = rule_scope.apply_hints(hints)
             logger.info(
                 "apply_to_rule_scope: func=0x%x applied -> "
-                "recipes=%s suppressed=%s gen=%d->%d",
+                "inferences=%s suppressed=%s gen=%d->%d",
                 func_ea,
-                apply_result.recipes_applied,
+                apply_result.inferences_applied,
                 apply_result.rules_suppressed,
                 apply_result.generation_before,
                 apply_result.generation_after,

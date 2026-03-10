@@ -6,17 +6,17 @@ from pathlib import Path
 
 import tempfile
 
-from d810.core.persistence import ActiveRuleRecipeConfig, create_optimization_storage
+from d810.core.persistence import ActiveRuleInferenceConfig, create_optimization_storage
 from d810.core.rule_scope import RuleScopeEvent, RuleScopeInvalidation
 from d810.manager import D810Manager
 
 
 class _FakeStorage:
-    def __init__(self, recipe: ActiveRuleRecipeConfig | None = None):
+    def __init__(self, inference: ActiveRuleInferenceConfig | None = None):
         self._function_tags: dict[int, set[str]] = {}
-        self._active_recipe = recipe
-        self.recipe_set_count = 0
-        self.recipe_clear_count = 0
+        self._active_inference = inference
+        self.inference_set_count = 0
+        self.inference_clear_count = 0
 
     def close(self) -> None:
         return
@@ -27,16 +27,16 @@ class _FakeStorage:
     def set_function_tags(self, function_addr: int, tags: set[str]) -> None:
         self._function_tags[int(function_addr)] = set(tags)
 
-    def set_active_rule_recipe(self, recipe: ActiveRuleRecipeConfig) -> None:
-        self._active_recipe = recipe
-        self.recipe_set_count += 1
+    def set_active_rule_inference(self, inference: ActiveRuleInferenceConfig) -> None:
+        self._active_inference = inference
+        self.inference_set_count += 1
 
-    def get_active_rule_recipe(self) -> ActiveRuleRecipeConfig | None:
-        return self._active_recipe
+    def get_active_rule_inference(self) -> ActiveRuleInferenceConfig | None:
+        return self._active_inference
 
-    def clear_active_rule_recipe(self) -> None:
-        self._active_recipe = None
-        self.recipe_clear_count += 1
+    def clear_active_rule_inference(self) -> None:
+        self._active_inference = None
+        self.inference_clear_count += 1
 
 
 
@@ -75,8 +75,8 @@ def test_inference_apply_and_clear_emit_events_and_persist():
     manager.event_emitter.on(RuleScopeEvent.INFERENCE_APPLIED, lambda payload: applied.append(payload))
     manager.event_emitter.on(RuleScopeEvent.INFERENCE_CLEARED, lambda payload: cleared.append(payload))
 
-    manager.set_active_rule_recipe(
-        recipe_name="focused_inference",
+    manager.set_active_rule_inference(
+        inference_name="focused_inference",
         enabled_rules={"RuleA", "RuleB"},
         disabled_rules={"RuleC"},
         target_func_eas={0x401000},
@@ -84,25 +84,25 @@ def test_inference_apply_and_clear_emit_events_and_persist():
         notes="runtime test",
     )
 
-    recipe = manager.get_active_rule_recipe()
-    assert recipe is not None
-    assert recipe.name == "focused_inference"
-    assert recipe.enabled_rules == frozenset({"RuleA", "RuleB"})
-    assert recipe.disabled_rules == frozenset({"RuleC"})
-    assert fake_storage.recipe_set_count == 1
+    active = manager.get_active_rule_inference()
+    assert active is not None
+    assert active.name == "focused_inference"
+    assert active.enabled_rules == frozenset({"RuleA", "RuleB"})
+    assert active.disabled_rules == frozenset({"RuleC"})
+    assert fake_storage.inference_set_count == 1
     assert len(applied) == 1
     assert applied[0].changed_rules == frozenset({"RuleA", "RuleB", "RuleC"})
 
-    manager.clear_active_rule_recipe()
+    manager.clear_active_rule_inference()
 
-    assert manager.get_active_rule_recipe() is None
-    assert fake_storage.recipe_clear_count == 1
+    assert manager.get_active_rule_inference() is None
+    assert fake_storage.inference_clear_count == 1
     assert len(cleared) == 1
     assert cleared[0].reason == RuleScopeEvent.INFERENCE_CLEARED
 
 
 def test_init_storage_loads_persisted_inference_and_emits_events():
-    persisted = ActiveRuleRecipeConfig(
+    persisted = ActiveRuleInferenceConfig(
         name="persisted_inference",
         enabled_rules={"RuleA"},
         disabled_rules={"RuleB"},
@@ -117,7 +117,7 @@ def test_init_storage_loads_persisted_inference_and_emits_events():
 
         # Pre-seed a real SQLite storage with the persisted inference.
         seed = create_optimization_storage(db_path)
-        seed.set_active_rule_recipe(persisted)
+        seed.set_active_rule_inference(persisted)
         seed.close()
 
         manager = _build_manager()
@@ -139,7 +139,7 @@ def test_init_storage_loads_persisted_inference_and_emits_events():
 
         manager._init_storage()
 
-        active = manager.get_active_rule_recipe()
+        active = manager.get_active_rule_inference()
         assert active is not None
         assert active.name == "persisted_inference"
         assert active.enabled_rules == frozenset({"RuleA"})

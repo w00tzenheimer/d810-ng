@@ -39,14 +39,14 @@ def _make_hints(
     func_ea: int = _FUNC_EA,
     obfuscation_type: str | None = "ollvm_flat",
     confidence: float = 0.85,
-    recommended_recipes: tuple[str, ...] = ("unflattening_recipe",),
+    recommended_inferences: tuple[str, ...] = ("unflattening",),
     suppress_rules: tuple[str, ...] = (),
 ) -> DeobfuscationHints:
     return DeobfuscationHints(
         func_ea=func_ea,
         obfuscation_type=obfuscation_type,
         confidence=confidence,
-        recommended_recipes=recommended_recipes,
+        recommended_inferences=recommended_inferences,
         candidates=(),
         suppress_rules=suppress_rules,
     )
@@ -54,8 +54,8 @@ def _make_hints(
 
 def _make_apply_result(
     func_ea: int = _FUNC_EA,
-    recipes_applied: tuple[str, ...] = ("unflattening_recipe",),
-    recipes_not_found: tuple[str, ...] = (),
+    inferences_applied: tuple[str, ...] = ("unflattening",),
+    inferences_not_found: tuple[str, ...] = (),
     rules_suppressed: tuple[str, ...] = (),
     cache_invalidated: bool = True,
     generation_before: int = 0,
@@ -63,8 +63,8 @@ def _make_apply_result(
 ) -> ApplyHintsResult:
     return ApplyHintsResult(
         func_ea=func_ea,
-        recipes_applied=recipes_applied,
-        recipes_not_found=recipes_not_found,
+        inferences_applied=inferences_applied,
+        inferences_not_found=inferences_not_found,
         rules_suppressed=rules_suppressed,
         cache_invalidated=cache_invalidated,
         generation_before=generation_before,

@@ -44,7 +44,7 @@ class TestAnalysisPhaseOllvmFlat:
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type == "ollvm_flat"
         assert hints.confidence >= 0.6
-        assert "unflattening_recipe" in hints.recommended_recipes
+        assert "unflattening" in hints.recommended_inferences
 
     def test_weak_signals_no_classification(self):
         results = [
@@ -57,7 +57,7 @@ class TestAnalysisPhaseOllvmFlat:
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type is None
         assert hints.confidence < 0.3
-        assert hints.recommended_recipes == ()
+        assert hints.recommended_inferences == ()
 
     def test_candidates_forwarded(self):
         flag = CandidateFlag("switch_dispatcher", 3, 0.8, "NWAY")

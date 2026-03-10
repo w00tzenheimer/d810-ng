@@ -6,7 +6,7 @@ import pytest
 from pathlib import Path
 
 from d810.core.persistence import (
-    ActiveRuleRecipeConfig,
+    ActiveRuleInferenceConfig,
     SQLiteOptimizationStorage,
     FunctionFingerprint,
     CachedResult,
@@ -166,30 +166,30 @@ class TestSQLiteOptimizationStorage:
         assert config is not None
         assert config.tags == {"flattened"}
 
-    def test_set_get_and_clear_active_rule_recipe(self, storage):
-        recipe = ActiveRuleRecipeConfig(
-            name="focused_recipe",
+    def test_set_get_and_clear_active_rule_inference(self, storage):
+        inference = ActiveRuleInferenceConfig(
+            name="focused_inference",
             enabled_rules={"RuleA", "RuleB"},
             disabled_rules={"RuleC"},
             target_func_eas={0x401000},
             target_tags_any={"flattened"},
             target_tags_all={"dispatcher"},
-            notes="test recipe persistence",
+            notes="test inference persistence",
         )
-        storage.set_active_rule_recipe(recipe)
+        storage.set_active_rule_inference(inference)
 
-        loaded = storage.get_active_rule_recipe()
+        loaded = storage.get_active_rule_inference()
         assert loaded is not None
-        assert loaded.name == "focused_recipe"
+        assert loaded.name == "focused_inference"
         assert loaded.enabled_rules == {"RuleA", "RuleB"}
         assert loaded.disabled_rules == {"RuleC"}
         assert loaded.target_func_eas == {0x401000}
         assert loaded.target_tags_any == {"flattened"}
         assert loaded.target_tags_all == {"dispatcher"}
-        assert loaded.notes == "test recipe persistence"
+        assert loaded.notes == "test inference persistence"
 
-        storage.clear_active_rule_recipe()
-        assert storage.get_active_rule_recipe() is None
+        storage.clear_active_rule_inference()
+        assert storage.get_active_rule_inference() is None
 
     def test_should_run_rule_no_config(self, storage):
         """Test should_run_rule with no configuration."""

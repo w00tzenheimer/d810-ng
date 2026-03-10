@@ -24,7 +24,7 @@ def _make_hints(
         func_ea=0x401000,
         obfuscation_type=obfuscation_type,
         confidence=confidence,
-        recommended_recipes=(),
+        recommended_inferences=(),
         candidates=(),
         suppress_rules=(),
     )

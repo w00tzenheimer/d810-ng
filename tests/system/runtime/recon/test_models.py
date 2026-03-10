@@ -69,31 +69,31 @@ class TestDeobfuscationHints:
             func_ea=0x402000,
             obfuscation_type=None,
             confidence=0.0,
-            recommended_recipes=(),
+            recommended_inferences=(),
             candidates=(),
             suppress_rules=(),
         )
         assert hints.obfuscation_type is None
         assert hints.confidence == 0.0
-        assert hints.recommended_recipes == ()
+        assert hints.recommended_inferences == ()
 
     def test_construction_with_obfuscation(self):
         hints = DeobfuscationHints(
             func_ea=0x403000,
             obfuscation_type="ollvm_flat",
             confidence=0.85,
-            recommended_recipes=("unflattening_recipe", "mba_recipe"),
+            recommended_inferences=("unflattening", "mba"),
             candidates=(),
             suppress_rules=("SlowRule",),
         )
         assert hints.obfuscation_type == "ollvm_flat"
-        assert "unflattening_recipe" in hints.recommended_recipes
+        assert "unflattening" in hints.recommended_inferences
         assert "SlowRule" in hints.suppress_rules
 
     def test_frozen(self):
         hints = DeobfuscationHints(
             func_ea=0, obfuscation_type=None, confidence=0.0,
-            recommended_recipes=(), candidates=(), suppress_rules=(),
+            recommended_inferences=(), candidates=(), suppress_rules=(),
         )
         with pytest.raises((AttributeError, TypeError)):
             hints.func_ea = 1  # type: ignore[misc]
