@@ -1764,6 +1764,28 @@ class DirectHandlerLinearizationStrategy:
                             exit_target = None
 
                     if exit_target is not None:
+                        # MBA terminal return detection: when exit resolves
+                        # to BST default (catch-all m_xdu clobber), redirect
+                        # to terminal exit instead.  Only fires when the
+                        # state is NOT a known handler entry — avoids false
+                        # positives on hidden handler chain links.
+                        if (
+                            _terminal_exit_target is not None
+                            and _is_bst_default_terminal(
+                                exit_target,
+                                path.final_state,
+                                handler_state_map,
+                                _bst_default_serial,
+                            )
+                        ):
+                            logger.info(
+                                "MBA_TERMINAL_RETURN_PASS1: handler=blk[%d] "
+                                "state=0x%X bst_default=blk[%d] -> "
+                                "terminal_exit=blk[%d]",
+                                handler_serial, path.final_state,
+                                exit_target, _terminal_exit_target,
+                            )
+                            exit_target = _terminal_exit_target
                         _reason = (
                             f"hodur-linear: blk[{handler_serial}] "
                             f"exit 0x{path.final_state:x} -> {resolve_label} -> blk[{exit_target}]"
