@@ -1,9 +1,18 @@
 """Tests for D810Manager.recon_db property."""
 import pathlib
 import tempfile
-from unittest.mock import MagicMock
 
 from d810.manager import D810Manager
+
+
+class _StubStore:
+    def __init__(self, db_path: pathlib.Path) -> None:
+        self.db_path = db_path
+
+
+class _StubRuntime:
+    def __init__(self, db_path: pathlib.Path) -> None:
+        self._store = _StubStore(db_path)
 
 
 class TestReconDbProperty:
@@ -13,11 +22,7 @@ class TestReconDbProperty:
 
     def test_recon_db_returns_path_when_runtime_set(self):
         mgr = D810Manager(log_dir=pathlib.Path(tempfile.gettempdir()))
-        mock_store = MagicMock()
-        mock_store.db_path = pathlib.Path("/tmp/d810_recon.db")
-        mock_runtime = MagicMock()
-        mock_runtime._store = mock_store
-        mgr._recon_runtime = mock_runtime
+        mgr._recon_runtime = _StubRuntime(pathlib.Path("/tmp/d810_recon.db"))
         assert mgr.recon_db == pathlib.Path("/tmp/d810_recon.db")
 
     def test_recon_db_none_when_runtime_is_none(self):
