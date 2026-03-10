@@ -801,14 +801,17 @@ def simulate_edits(
             elif len(source_successors) <= 1:
                 clone_succs = source_successors
             else:
+                # 2-way block (m_jcnd): IDA verify.cpp expects
+                # succset = [serial+1, tail.d.b] = [fallthrough, conditional].
+                # Fallthrough trampoline must be succset[0] (= clone serial+1).
                 clone_succs = []
                 conditional_target = edit.conditional_target
                 if conditional_target is None and source_successors:
                     conditional_target = source_successors[0]
-                if conditional_target is not None:
-                    clone_succs.append(conditional_target)
                 if fallthrough_serial is not None:
                     clone_succs.append(fallthrough_serial)
+                if conditional_target is not None:
+                    clone_succs.append(conditional_target)
 
             result[clone_serial] = clone_succs
             created_clones.add(clone_serial)
