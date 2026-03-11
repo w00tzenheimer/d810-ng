@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from types import MappingProxyType
-from unittest.mock import MagicMock, create_autospec
+from pathlib import Path
+from unittest.mock import MagicMock, create_autospec, patch
+
+import pytest
 
 from d810.core.rule_scope import ApplyHintsResult, RuleScopeService
 from d810.recon.analysis import AnalysisPhase
@@ -72,6 +75,25 @@ def _make_apply_result(
     )
 
 
+def _make_sync_writer(mock_store: MagicMock) -> MagicMock:
+    writer = MagicMock()
+    writer.submit.side_effect = lambda fn: fn(mock_store)
+    writer.submit_sync.side_effect = lambda fn: fn(mock_store)
+    writer.flush.return_value = None
+    return writer
+
+
+_active_patchers: list = []
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_writer_patchers():
+    yield
+    for p in _active_patchers:
+        p.stop()
+    _active_patchers.clear()
+
+
 def _make_runtime() -> tuple[
     ReconAnalysisRuntime, MagicMock, MagicMock, MagicMock
 ]:
@@ -82,6 +104,15 @@ def _make_runtime() -> tuple[
     mock_phase = create_autospec(ReconPhase, instance=True)
     mock_analysis = create_autospec(AnalysisPhase, instance=True)
     mock_store = create_autospec(ReconStore, instance=True)
+    mock_store.db_path = Path("/tmp/test_recon.db")
+
+    writer = _make_sync_writer(mock_store)
+    p1 = patch("d810.recon.runtime.get_recon_writer", return_value=writer)
+    p2 = patch("d810.recon.phase.get_recon_writer", return_value=writer)
+    p1.start()
+    p2.start()
+    _active_patchers.extend([p1, p2])
+
     rt = ReconAnalysisRuntime(mock_phase, mock_analysis, mock_store)
     return rt, mock_phase, mock_analysis, mock_store
 

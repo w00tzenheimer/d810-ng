@@ -61,7 +61,7 @@ from d810.recon.analysis import AnalysisPhase
 from d810.recon.inferences import unflattening_inference
 from d810.recon.phase import ReconPhase
 from d810.recon.runtime import ReconAnalysisRuntime
-from d810.recon.store import ReconStore
+from d810.recon.store import ReconStore, shutdown_all_writers
 
 try:
     import pyinstrument  # type: ignore
@@ -790,6 +790,7 @@ class D810Manager:
         self.instruction_optimizer.remove()
         self.block_optimizer.remove()
         self.hx_decompiler_hook.unhook()
+        shutdown_all_writers()
         self.event_emitter.clear()
         if self.profiler or self.cprofiler:
             self.stop_profiling()

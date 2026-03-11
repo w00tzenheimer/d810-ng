@@ -12,7 +12,7 @@ from d810.core.logging import getLogger
 from d810.core.typing import Any, Protocol, runtime_checkable
 
 from d810.recon.models import ReconResult
-from d810.recon.store import ReconStore
+from d810.recon.store import ReconStore, get_recon_writer
 
 logger = getLogger("D810.recon.phase")
 
@@ -121,7 +121,9 @@ class ReconPhase:
                 continue
             try:
                 result = collector.collect(target, func_ea, maturity)
-                self._store.save_recon_result(result)
+                get_recon_writer(self._store.db_path).submit(
+                    lambda store, r=result: store.save_recon_result(r)
+                )
                 results.append(result)
             except Exception:
                 logger.exception(
@@ -153,7 +155,9 @@ class ReconPhase:
                 continue
             try:
                 result = collector.collect(target, func_ea, maturity)
-                self._store.save_recon_result(result)
+                get_recon_writer(self._store.db_path).submit(
+                    lambda store, r=result: store.save_recon_result(r)
+                )
                 results.append(result)
             except Exception:
                 logger.exception(

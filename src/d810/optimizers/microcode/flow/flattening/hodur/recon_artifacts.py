@@ -30,7 +30,7 @@ from d810.recon.flow.transition_report import (
     transition_report_from_dict,
 )
 from d810.recon.models import ReconResult
-from d810.recon.store import ReconStore
+from d810.recon.store import ReconStore, get_recon_writer
 
 _HANDLER_TRANSITIONS = HandlerTransitionsCollector.name
 _RETURN_FRONTIER = ReturnFrontierCollector.name
@@ -89,8 +89,7 @@ def save_transition_report_to_store(
         func_ea=func_ea,
         maturity=maturity,
     )
-    with ReconStore(db_path) as store:
-        store.save_recon_result(result)
+    get_recon_writer(db_path).submit(lambda store: store.save_recon_result(result))
 
 
 def load_return_sites_from_store(
@@ -157,8 +156,7 @@ def save_return_frontier_audit_to_store(
         func_ea=func_ea,
         maturity=maturity,
     )
-    with ReconStore(db_path) as store:
-        store.save_recon_result(result)
+    get_recon_writer(db_path).submit(lambda store: store.save_recon_result(result))
     return result
 
 
@@ -174,43 +172,56 @@ def record_return_frontier_stage(
     stage_name: str,
 ) -> ReconResult:
     """Load-or-create the audit, record one stage, and persist it."""
-    audit = None
-    if stage_name != "pre_plan":
-        audit = load_return_frontier_audit_from_store(
+    db_path = recon_db_path(log_dir)
+
+    def _do(store: ReconStore) -> ReconResult:
+        audit = None
+        if stage_name != "pre_plan":
+            raw = store.load_latest_recon_result(
+                func_ea=func_ea,
+                collector_name=_RETURN_FRONTIER,
+                maturity=maturity,
+            )
+            if raw is None:
+                raw = store.load_latest_recon_result(
+                    func_ea=func_ea,
+                    collector_name=_RETURN_FRONTIER,
+                )
+            if raw is not None:
+                payload = raw.metrics.get("audit_report")
+                if isinstance(payload, dict):
+                    audit = return_frontier_audit_from_dict(payload)
+
+        if audit is None:
+            if not return_sites:
+                return ReconResult(
+                    collector_name=_RETURN_FRONTIER,
+                    func_ea=func_ea,
+                    maturity=maturity,
+                    timestamp=time.time(),
+                    metrics=MappingProxyType({}),
+                    candidates=(),
+                )
+            audit = ReturnFrontierAudit(return_sites=tuple(return_sites))
+
+        stage_results = tuple(
+            audit.record_stage(
+                stage_name=stage_name,
+                successors=successors,
+                entry=entry,
+                exits=exits,
+            )
+        )
+        result = ReturnFrontierCollector.build_result_from_audit(
+            audit,
             func_ea=func_ea,
             maturity=maturity,
-            log_dir=log_dir,
+            stage_results=stage_results,
         )
-    if audit is None:
-        if not return_sites:
-            return ReconResult(
-                collector_name=_RETURN_FRONTIER,
-                func_ea=func_ea,
-                maturity=maturity,
-                timestamp=time.time(),
-                metrics=MappingProxyType({}),
-                candidates=(),
-            )
-        audit = ReturnFrontierAudit(return_sites=tuple(return_sites))
-
-    stage_results = tuple(
-        audit.record_stage(
-            stage_name=stage_name,
-            successors=successors,
-            entry=entry,
-            exits=exits,
-        )
-    )
-    result = ReturnFrontierCollector.build_result_from_audit(
-        audit,
-        func_ea=func_ea,
-        maturity=maturity,
-        stage_results=stage_results,
-    )
-    db_path = recon_db_path(log_dir)
-    with ReconStore(db_path) as store:
         store.save_recon_result(result)
-    return result
+        return result
+
+    return get_recon_writer(db_path).submit_sync(_do)
 
 
 def write_return_frontier_artifact_from_store(
@@ -332,8 +343,9 @@ def save_terminal_return_audit_to_store(
         }),
         candidates=(),
     )
-    with ReconStore(db_path) as store:
-        store.save_recon_result(result)
+    writer = get_recon_writer(db_path)
+    writer.submit(lambda store: store.save_recon_result(result))
+    writer.flush()
 
 
 __all__ = [
