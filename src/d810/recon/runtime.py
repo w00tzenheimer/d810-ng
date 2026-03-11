@@ -18,6 +18,7 @@ import json
 from dataclasses import dataclass
 
 from d810.core.logging import getLogger
+from d810.recon.store import get_recon_writer
 from d810.core.typing import TYPE_CHECKING, Any
 
 from d810.recon.analysis import AnalysisPhase
@@ -103,7 +104,9 @@ class ReconAnalysisRuntime:
             self._persist_outcomes(prev_ea)
         self._current_func_ea = func_ea
         self._phase.reset(func_ea=func_ea)
-        self._store.clear_func(func_ea=func_ea)
+        get_recon_writer(self._store.db_path).submit_sync(
+            lambda store: store.clear_func(func_ea=func_ea)
+        )
         self._outcome_log.reset_for_func(func_ea)
         logger.debug("reset_for_func: func=0x%x prev=0x%x flushed=%s", func_ea, prev_ea, prev_ea != -1)
         return True
@@ -132,14 +135,23 @@ class ReconAnalysisRuntime:
                     provenance = ""
             else:
                 provenance = ""
-            self._store.save_consumer_outcome(
-                func_ea=func_ea,
-                consumer_name=report.consumer_name,
-                artifacts_available=report.source_artifacts_available,
-                summary_available=report.summary_available,
-                verdict_applied=report.consumer_verdict_applied,
-                detail=report.detail,
-                provenance_json=provenance,
+            _func_ea = func_ea
+            _consumer = report.consumer_name
+            _arts = report.source_artifacts_available
+            _summ = report.summary_available
+            _verdict = report.consumer_verdict_applied
+            _detail = report.detail
+            _prov = provenance
+            get_recon_writer(self._store.db_path).submit(
+                lambda store: store.save_consumer_outcome(
+                    func_ea=_func_ea,
+                    consumer_name=_consumer,
+                    artifacts_available=_arts,
+                    summary_available=_summ,
+                    verdict_applied=_verdict,
+                    detail=_detail,
+                    provenance_json=_prov,
+                )
             )
 
         summary = self._outcome_log.summary(func_ea)
@@ -245,15 +257,18 @@ class ReconAnalysisRuntime:
         )
 
         if persist_hints:
-            self._store.save_hints(hints)
-            self._store.save_session_summary(
+            _hints = hints
+            _n_collectors = len({r.collector_name for r in results})
+            writer = get_recon_writer(self._store.db_path)
+            writer.submit(lambda store: store.save_hints(_hints))
+            writer.submit(lambda store: store.save_session_summary(
                 func_ea=func_ea,
-                collectors_fired=len({r.collector_name for r in results}),
-                classification=hints.obfuscation_type or "",
-                confidence=hints.confidence,
-                inferences=list(hints.recommended_inferences),
-                suppress_rules=list(hints.suppress_rules),
-            )
+                collectors_fired=_n_collectors,
+                classification=_hints.obfuscation_type or "",
+                confidence=_hints.confidence,
+                inferences=list(_hints.recommended_inferences),
+                suppress_rules=list(_hints.suppress_rules),
+            ))
             logger.debug(
                 "collect_and_analyze: persisted hints for func=0x%x type=%s conf=%.2f",
                 func_ea, hints.obfuscation_type, hints.confidence,
@@ -267,23 +282,26 @@ class ReconAnalysisRuntime:
         Called eagerly after each collector pass. Returns None if no
         recon results are available yet.
         """
+        writer = get_recon_writer(self._store.db_path)
+        writer.flush()  # ensure collector writes are visible
         results = self._store.load_all_recon_results(func_ea=func_ea)
         if not results:
             return None
         hints = self._analysis.interpret(
             func_ea=func_ea, results=results, store=self._store,
         )
-        self._store.save_hints(hints)
+        writer.submit(lambda store, h=hints: store.save_hints(h))
         # Eagerly persist session summary alongside hints so it survives
         # interrupted decompilations (plugin stop, no hxe_structural).
-        self._store.save_session_summary(
+        _n = len({r.collector_name for r in results})
+        writer.submit(lambda store, h=hints: store.save_session_summary(
             func_ea=func_ea,
-            collectors_fired=len({r.collector_name for r in results}),
-            classification=hints.obfuscation_type or "",
-            confidence=hints.confidence,
-            inferences=list(hints.recommended_inferences),
-            suppress_rules=list(hints.suppress_rules),
-        )
+            collectors_fired=_n,
+            classification=h.obfuscation_type or "",
+            confidence=h.confidence,
+            inferences=list(h.recommended_inferences),
+            suppress_rules=list(h.suppress_rules),
+        ))
         logger.info(
             "analyze_and_persist: persisted hints for func=0x%x (type=%s, confidence=%.2f)",
             func_ea, hints.obfuscation_type, hints.confidence,

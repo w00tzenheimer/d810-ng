@@ -11,10 +11,14 @@ No IDA imports - fully unit-testable.
 from __future__ import annotations
 
 import json
+import queue
 import sqlite3
+import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import MappingProxyType
+from d810.core.typing import TypeVar
 
 from d810.core import logging
 from d810.recon.models import CandidateFlag, DeobfuscationHints, ReconResult
@@ -146,7 +150,7 @@ class ReconStore:
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
-        self._conn: sqlite3.Connection = sqlite3.connect(str(self.db_path), timeout=30)
+        self._conn: sqlite3.Connection = sqlite3.connect(str(self.db_path))
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.row_factory = sqlite3.Row
         # Migrate existing tables before CREATE TABLE IF NOT EXISTS (no-op
@@ -534,3 +538,99 @@ class ReconStore:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+
+_T = TypeVar("_T")
+_SENTINEL = object()
+
+
+class ReconStoreWriter:
+    """Dedicated writer thread for serialized SQLite writes.
+
+    Owns a single ``ReconStore`` connection.  Callers submit write
+    callables via :meth:`submit` (fire-and-forget) or
+    :meth:`submit_sync` (blocking, returns result).
+    """
+
+    def __init__(self, db_path: Path) -> None:
+        self._db_path = db_path
+        self._queue: queue.Queue = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name=f"recon-writer-{db_path.name}"
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        store = ReconStore(self._db_path)
+        try:
+            while True:
+                item = self._queue.get()
+                if item is _SENTINEL:
+                    break
+                try:
+                    item(store)
+                except Exception:
+                    logger.debug("ReconStoreWriter: write failed (non-critical)")
+        finally:
+            store.close()
+
+    def submit(self, fn: Callable[["ReconStore"], None]) -> None:
+        """Submit a write callable (fire-and-forget)."""
+        self._queue.put(fn)
+
+    def submit_sync(self, fn: "Callable[[ReconStore], _T]") -> "_T":
+        """Submit a callable and block until it completes, returning its result."""
+        result_box: list = []
+        exc_box: list[Exception] = []
+        done = threading.Event()
+
+        def _wrapper(store: "ReconStore") -> None:
+            try:
+                result_box.append(fn(store))
+            except Exception as e:
+                exc_box.append(e)
+            finally:
+                done.set()
+
+        self._queue.put(_wrapper)
+        done.wait()
+        if exc_box:
+            raise exc_box[0]
+        return result_box[0]
+
+    def flush(self) -> None:
+        """Block until all pending writes have been executed."""
+        done = threading.Event()
+        self._queue.put(lambda _store: done.set())
+        done.wait()
+
+    def shutdown(self) -> None:
+        """Signal the writer thread to stop and wait for it to finish."""
+        self._queue.put(_SENTINEL)
+        self._thread.join(timeout=5)
+
+
+_writers: dict[Path, ReconStoreWriter] = {}
+_writers_lock = threading.Lock()
+
+
+def get_recon_writer(db_path: Path | str) -> ReconStoreWriter:
+    """Return the singleton writer for *db_path*, creating it lazily."""
+    db_path = Path(db_path)
+    writer = _writers.get(db_path)
+    if writer is not None:
+        return writer
+    with _writers_lock:
+        writer = _writers.get(db_path)
+        if writer is None:
+            writer = ReconStoreWriter(db_path)
+            _writers[db_path] = writer
+    return writer
+
+
+def shutdown_all_writers() -> None:
+    """Shut down every writer thread.  Called on plugin unload."""
+    with _writers_lock:
+        for writer in _writers.values():
+            writer.shutdown()
+        _writers.clear()
