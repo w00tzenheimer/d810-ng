@@ -331,7 +331,10 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         # Return frontier audit: post_plan stage (mods queued but not applied)
         if self.RETURN_FRONTIER_AUDIT_ENABLED and self._audit_return_sites:
-            self._record_audit_stage("post_plan")
+            try:
+                self._record_audit_stage("post_plan")
+            except Exception:
+                unflat_logger.debug("_record_audit_stage(post_plan) failed (non-critical)")
 
         # 5. EXECUTOR_BOUNDARY: executor consumes pipeline in-order, no reordering
         executor = TransactionalExecutor(
@@ -422,7 +425,10 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         # Return frontier audit: post_apply stage
         if self.RETURN_FRONTIER_AUDIT_ENABLED and self._audit_return_sites:
-            self._record_audit_stage("post_apply")
+            try:
+                self._record_audit_stage("post_apply")
+            except Exception:
+                unflat_logger.debug("_record_audit_stage(post_apply) failed (non-critical)")
 
         # 6. Log summary
         self._log_pipeline_results(results, nb_changes)
@@ -464,20 +470,23 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         # Return frontier audit: post_pipeline stage + artifact write
         if self.RETURN_FRONTIER_AUDIT_ENABLED and self._audit_return_sites:
-            self._record_audit_stage("post_pipeline")
-            write_return_frontier_artifact_from_store(
-                func_ea=self.mba.entry_ea,
-                maturity=self.cur_maturity,
-                log_dir=self.log_dir,
-                artifact_dir=Path(f".tmp/recon/{self.cur_maturity}"),
-            )
-            audit = load_return_frontier_audit_from_store(
-                func_ea=self.mba.entry_ea,
-                maturity=self.cur_maturity,
-                log_dir=self.log_dir,
-            )
-            if audit is not None:
-                audit.summary_log()
+            try:
+                self._record_audit_stage("post_pipeline")
+                write_return_frontier_artifact_from_store(
+                    func_ea=self.mba.entry_ea,
+                    maturity=self.cur_maturity,
+                    log_dir=self.log_dir,
+                    artifact_dir=Path(f".tmp/recon/{self.cur_maturity}"),
+                )
+                audit = load_return_frontier_audit_from_store(
+                    func_ea=self.mba.entry_ea,
+                    maturity=self.cur_maturity,
+                    log_dir=self.log_dir,
+                )
+                if audit is not None:
+                    audit.summary_log()
+            except Exception:
+                unflat_logger.debug("post_pipeline audit failed (non-critical)")
 
         return nb_changes
 
