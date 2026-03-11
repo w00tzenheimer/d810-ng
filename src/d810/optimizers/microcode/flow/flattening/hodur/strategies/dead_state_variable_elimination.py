@@ -129,6 +129,12 @@ class DeadStateVariableEliminationStrategy:
         # Collect known state constants for reaching-def override check.
         state_constants = self._collect_state_constants(snapshot)
 
+        # BST check nodes read the state var as a comparison operand (m_jnz
+        # condition).  Nopping the tail of a 2WAY block causes INTERR 50860
+        # because the succset no longer matches the tail instruction type.
+        _bst = snapshot.bst_result
+        _bst_node_blocks: set[int] = set(getattr(_bst, "bst_node_blocks", set()) or set())
+
         # Find all read sites via DU chains.
         use_sites: list[UseSite] = find_all_uses_of_stkvar(
             mba, state_var_stkoff, state_var_width,
@@ -147,6 +153,34 @@ class DeadStateVariableEliminationStrategy:
         nop_count = 0
 
         for use in use_sites:
+            # Skip BST check nodes — they are state-machine infrastructure,
+            # not handler body reads.  Their tail instructions are conditional
+            # branches; nopping them causes INTERR 50860 (succset mismatch).
+            if use.block_serial in _bst_node_blocks:
+                logger.debug(
+                    "DSVE: skipping NOP in BST node blk[%d] ea=0x%x",
+                    use.block_serial, use.ins_ea,
+                )
+                continue
+
+            # Safety net: never NOP the tail instruction of a 2WAY block.
+            # Regardless of BST membership, a conditional branch tail cannot
+            # be replaced with m_nop while the block retains 2 successors —
+            # IDA's verify() raises INTERR 50860 (succset mismatch).
+            if mba is not None:
+                _blk = mba.get_mblock(use.block_serial)
+                if (
+                    _blk is not None
+                    and _blk.nsucc() > 1
+                    and _blk.tail is not None
+                    and _blk.tail.ea == use.ins_ea
+                ):
+                    logger.debug(
+                        "DSVE: skipping NOP of 2WAY tail in blk[%d] ea=0x%x",
+                        use.block_serial, use.ins_ea,
+                    )
+                    continue
+
             # Verify this is genuinely a read of the state variable as a
             # source operand (not a write destination -- those are handled by
             # DirectLinearization).
