@@ -316,7 +316,10 @@ class HodurUnflattener(GenericUnflatteningRule):
         # handler_paths from DirectLinearization strategy are available)
         if self.RETURN_FRONTIER_AUDIT_ENABLED:
             handler_paths = self._extract_handler_paths_from_fragments(pipeline)
-            self._audit_pre_plan(snapshot, handler_paths=handler_paths)
+            try:
+                self._audit_pre_plan(snapshot, handler_paths=handler_paths)
+            except Exception:
+                unflat_logger.debug("_audit_pre_plan failed (non-critical), continuing")
 
         if not pipeline:
             unflat_logger.info("No strategy produced a plan fragment")
