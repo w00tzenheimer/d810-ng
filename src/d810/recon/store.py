@@ -146,7 +146,7 @@ class ReconStore:
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
-        self._conn: sqlite3.Connection = sqlite3.connect(str(self.db_path))
+        self._conn: sqlite3.Connection = sqlite3.connect(str(self.db_path), timeout=30)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.row_factory = sqlite3.Row
         # Migrate existing tables before CREATE TABLE IF NOT EXISTS (no-op
