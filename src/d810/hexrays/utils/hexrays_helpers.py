@@ -351,6 +351,9 @@ MATURITY_TO_STRING_DICT: dict[int, str] = {
 STRING_TO_MATURITY_DICT: dict[str, int] = {
     v: k for k, v in MATURITY_TO_STRING_DICT.items()
 }
+STRING_TO_MATURITY_DICT.update({
+    v.replace("MMAT_", ""): k for k, v in MATURITY_TO_STRING_DICT.items()
+})
 
 MOP_TYPE_TO_STRING_DICT: dict[int, str] = {
     ida_hexrays.mop_z: "mop_z",
