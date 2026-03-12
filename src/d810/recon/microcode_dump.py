@@ -20,36 +20,29 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass, field
-from enum import IntEnum
+from dataclasses import dataclass, field
 
 import idaapi
-
 from d810.core.logging import getLogger
-from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from d810.core.typing import Any, Dict, List, Optional, Tuple
 from d810.evaluator.hexrays_microcode.valranges import (
     collect_block_valrange_records,
     collect_instruction_valrange_records,
 )
 from d810.hexrays.utils.hexrays_helpers import (
     MATURITY_TO_STRING_DICT,
+    STRING_TO_MATURITY_DICT,
     MOP_INFO,
     OPCODES_INFO,
 )
 from d810.recon.flow.bst_analysis import (
-    BSTAnalysisResult,
     _detect_state_var_stkoff,
     _dump_dispatcher_node,
-    _extract_state_from_block,
-    _find_pre_header,
     _find_pre_header_state,
-    _get_mop_const_value,
-    _mop_matches_stkoff,
-    _resolve_mop_value_in_block,
-    analyze_bst_dispatcher,
 )
 from d810.recon.flow.transition_report import (
     TransitionKind,
+    TransitionRow,
     build_dispatcher_transition_report,
 )
 
@@ -407,16 +400,12 @@ def dump_function_microcode(
     Returns:
         Dictionary with complete microcode information
     """
-    _ensure_ida_imports()
-    import ida_funcs
-    import ida_name
-
     # Get function
-    func = ida_funcs.get_func(func_ea)
+    func = idaapi.get_func(func_ea)
     if func is None:
         raise ValueError(f"No function found at 0x{func_ea:x}")
 
-    func_name = ida_name.get_name(func_ea) or f"sub_{func_ea:x}"
+    func_name = idaapi.get_name(func_ea) or f"sub_{func_ea:x}"
 
     # Decompile to get microcode
     if maturity is None:
@@ -699,15 +688,10 @@ def print_mba_human_readable(
             ins = ins.next
 
         # Per-instruction use/def lists
-        try:
-            import ida_hexrays as _ihr_ins
-
-            _mlist_t = _ihr_ins.mlist_t
-            _MUST_ACCESS = _ihr_ins.MUST_ACCESS
-            _MAY_ACCESS = _ihr_ins.MAY_ACCESS
-            _has_mlist = True
-        except Exception:
-            _has_mlist = False
+        _mlist_t = idaapi.mlist_t
+        _MUST_ACCESS = idaapi.MUST_ACCESS
+        _MAY_ACCESS = idaapi.MAY_ACCESS
+        _has_mlist = True
 
         for insn_idx, ins in enumerate(insns, start=1):
             ea = getattr(ins, "ea", 0)
@@ -1138,6 +1122,160 @@ def dump_linearized_dag(
 
 
 # -----------------------------------------------------------------------------
+# State Machine DOT Graph
+# -----------------------------------------------------------------------------
+
+
+def dump_state_machine_graph(
+    mba: "idaapi.mbl_array_t",
+    dispatcher_entry_serial: int,
+    state_var_stkoff: Optional[int] = None,
+) -> Tuple[str, str]:
+    """Dump the raw state machine topology as a Graphviz DOT graph.
+
+    Extracts all handlers and transitions from the BST analysis and renders
+    them as a DOT digraph.  No forward evaluation or linearization is
+    performed -- this is the raw state machine as seen by the BST walker.
+
+    Args:
+        mba: The microcode block array.
+        dispatcher_entry_serial: Block serial number of the BST root.
+        state_var_stkoff: Optional stack offset of the state variable
+            (auto-detected from the BST root when *None*).
+
+    Returns:
+        Tuple of (dot_string, summary_string) where *dot_string* is a
+        complete DOT digraph and *summary_string* is a one-line summary
+        like ``"N nodes, M edges, K self-loops, J conditionals, L exits"``.
+    """
+    report = build_dispatcher_transition_report(
+        mba=mba,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        state_var_stkoff=state_var_stkoff,
+        capture_diagnostics=False,
+    )
+
+    initial_state = report.initial_state
+
+    def _short_hex(val: int) -> str:
+        return f"0x{val:X}"
+
+    # Collect unique nodes and edges from the report rows.
+    # node_id -> (state_hex_label, handler_serial, kind)
+    nodes: Dict[str, Tuple[str, int, TransitionKind]] = {}
+    # (src_id, dst_id, label, style_attrs)
+    edges: List[Tuple[str, str, str, str]] = []
+
+    n_self_loops = 0
+    n_conditionals = 0
+    n_exits = 0
+
+    for row in report.rows:
+        if row.state_const is None:
+            continue
+
+        src_hex = _short_hex(row.state_const)
+        src_id = f'"{src_hex}"'
+
+        # Register the source node
+        nodes[src_id] = (src_hex, row.handler_serial, row.kind)
+
+        if row.kind == TransitionKind.EXIT:
+            n_exits += 1
+            # No outgoing edge for exits
+
+        elif row.kind == TransitionKind.CONDITIONAL:
+            n_conditionals += 1
+            for branch_idx, cond_state in enumerate(row.conditional_states):
+                dst_hex = _short_hex(cond_state)
+                dst_id = f'"{dst_hex}"'
+                label = "true" if branch_idx == 0 else "false"
+                if cond_state == row.state_const:
+                    n_self_loops += 1
+                    edges.append(
+                        (src_id, dst_id, "self-loop",
+                         'style=dashed color=red')
+                    )
+                else:
+                    edges.append(
+                        (src_id, dst_id, label, 'color=blue')
+                    )
+
+        elif row.kind == TransitionKind.TRANSITION:
+            if row.next_state is not None:
+                dst_hex = _short_hex(row.next_state)
+                dst_id = f'"{dst_hex}"'
+                if row.next_state == row.state_const:
+                    n_self_loops += 1
+                    edges.append(
+                        (src_id, dst_id, "self-loop",
+                         'style=dashed color=red')
+                    )
+                else:
+                    edges.append((src_id, dst_id, "", ""))
+
+        # TransitionKind.UNKNOWN -- node exists but no edge
+
+    # Build the DOT string
+    lines: List[str] = []
+    lines.append("digraph state_machine {")
+    lines.append("    rankdir=LR;")
+    lines.append('    node [shape=record];')
+    lines.append("")
+
+    # Initial state arrow
+    if initial_state is not None:
+        init_hex = _short_hex(initial_state)
+        lines.append("    // Initial state")
+        lines.append("    START [shape=point];")
+        lines.append(f'    START -> "{init_hex}";')
+        lines.append("")
+
+    # Emit nodes
+    lines.append("    // Handler nodes")
+    for node_id, (state_hex, handler_serial, kind) in sorted(nodes.items()):
+        if kind == TransitionKind.EXIT:
+            lines.append(
+                f'    {node_id} [label="{state_hex}\\nblk[{handler_serial}]'
+                f'\\nEXIT" style=filled fillcolor=lightgreen];'
+            )
+        elif kind == TransitionKind.UNKNOWN:
+            lines.append(
+                f'    {node_id} [label="{state_hex}\\nblk[{handler_serial}]'
+                f'\\nUNRESOLVED" style=filled fillcolor=lightyellow];'
+            )
+        else:
+            lines.append(
+                f'    {node_id} [label="{state_hex}\\nblk[{handler_serial}]"];'
+            )
+    lines.append("")
+
+    # Emit edges
+    lines.append("    // Transitions")
+    for src_id, dst_id, label, attrs in edges:
+        parts = []
+        if label:
+            parts.append(f'label="{label}"')
+        if attrs:
+            parts.append(attrs)
+        attr_str = f" [{' '.join(parts)}]" if parts else ""
+        lines.append(f"    {src_id} -> {dst_id}{attr_str};")
+
+    lines.append("}")
+
+    dot_string = "\n".join(lines)
+
+    n_nodes = len(nodes)
+    n_edges = len(edges)
+    summary = (
+        f"{n_nodes} nodes, {n_edges} edges, {n_self_loops} self-loops, "
+        f"{n_conditionals} conditionals, {n_exits} exits"
+    )
+
+    return dot_string, summary
+
+
+# -----------------------------------------------------------------------------
 # CLI / IDA Script Entry Point
 # -----------------------------------------------------------------------------
 
@@ -1217,19 +1355,8 @@ Examples:
         sys.exit(1)
 
     # Now import and map maturity constants (after IDA is loaded)
-    _ensure_ida_imports()
 
-    maturity_map = {
-        "GENERATED": idaapi.MMAT_GENERATED,
-        "PREOPTIMIZED": idaapi.MMAT_PREOPTIMIZED,
-        "LOCOPT": idaapi.MMAT_LOCOPT,
-        "CALLS": idaapi.MMAT_CALLS,
-        "GLBOPT1": idaapi.MMAT_GLBOPT1,
-        "GLBOPT2": idaapi.MMAT_GLBOPT2,
-        "GLBOPT3": idaapi.MMAT_GLBOPT3,
-        "LVARS": idaapi.MMAT_LVARS,
-    }
-    maturity = maturity_map[args.maturity]
+    maturity = STRING_TO_MATURITY_DICT[args.maturity]
 
     # Dump microcode
     try:
