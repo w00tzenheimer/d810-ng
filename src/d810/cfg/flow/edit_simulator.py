@@ -44,7 +44,6 @@ from d810.cfg.plan import (
     PatchRemoveEdge,
     PatchRedirectBranch,
     PatchRedirectGoto,
-    PatchReorderBlocks,
 )
 
 _BLT_NONE = int(getattr(ida_hexrays, "BLT_NONE", 0))
@@ -83,7 +82,7 @@ class SimulatedEdit:
         new_target: Block serial of the new target.
     """
 
-    kind: str  # "goto_redirect", "conditional_redirect", "convert_to_goto", "edge_split_redirect", "reorder_blocks"
+    kind: str  # "goto_redirect", "conditional_redirect", "convert_to_goto", "edge_split_redirect"
     source: int
     old_target: int
     new_target: int | None
@@ -620,18 +619,6 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
             case LegacyBlockOperation(modification=mod):
                 simulated.extend(graph_modifications_to_simulated_edits([mod]))
 
-            case PatchReorderBlocks(non_2way_serials=non_2way):
-                if non_2way:
-                    simulated.append(
-                        SimulatedEdit(
-                            kind="reorder_blocks",
-                            source=0,
-                            old_target=0,
-                            new_target=None,
-                            source_successors=non_2way,
-                        )
-                    )
-
             case _:
                 continue
 
@@ -854,32 +841,6 @@ def simulate_edits(
                 result[clone_serial] = []
             created_clones.add(clone_serial)
             clone_origins[clone_serial] = edit
-
-        elif edit.kind == "reorder_blocks":
-            non_2way = edit.source_successors or ()
-            if non_2way:
-                next_serial = max(result.keys(), default=-1) + 1
-                old_to_new: dict[int, int] = {}
-                for old_serial in non_2way:
-                    new_serial = next_serial
-                    next_serial += 1
-                    # Copy old block's adjacency to new serial
-                    old_succs = list(result.get(old_serial, []))
-                    result[new_serial] = old_succs
-                    created_clones.add(new_serial)
-                    clone_origins[new_serial] = edit
-                    old_to_new[old_serial] = new_serial
-                # Convert old handler blocks to trampolines (single succ = copy)
-                for old_serial, new_serial in old_to_new.items():
-                    result[old_serial] = [new_serial]
-                # Remap non-trampoline blocks' successor references
-                old_set = set(old_to_new.keys())
-                for serial in list(result.keys()):
-                    if serial in old_set:
-                        continue  # trampolines already handled
-                    result[serial] = [
-                        old_to_new.get(s, s) for s in result[serial]
-                    ]
 
     return SimulationResult(
         adj=result,
