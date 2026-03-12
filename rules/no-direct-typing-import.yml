@@ -25,6 +25,7 @@ files:
 ignores:
   - "src/d810/_vendor/**"
   - "src/d810/core/typing.py"
+  - "tools/scripts/**"
 
 message: |
   Direct typing imports are forbidden.

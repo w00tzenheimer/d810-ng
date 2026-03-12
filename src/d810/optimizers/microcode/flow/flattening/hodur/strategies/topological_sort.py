@@ -16,6 +16,12 @@ from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 
 from d810.cfg.graph_modification import ReorderBlocks
+
+try:
+    import ida_hexrays as _ida_hexrays
+    _BLT_2WAY: int | None = _ida_hexrays.BLT_2WAY
+except ImportError:
+    _BLT_2WAY = None
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_DIRECT,
     BenefitMetrics,
@@ -191,17 +197,18 @@ class TopologicalSortStrategy:
         # this subset to simulate copy_block allocations.
         non_2way_serials: tuple[int, ...] = ()
         mba = snapshot.mba
-        if mba is not None:
-            try:
-                import ida_hexrays
-                non_2way_serials = tuple(
-                    s for s in dfs_block_order
-                    if mba.get_mblock(s).type != ida_hexrays.BLT_2WAY
-                )
-            except Exception:
-                # Fallback: assume all blocks are non-2WAY (safe over-estimate)
-                non_2way_serials = tuple(dfs_block_order)
+        if mba is not None and _BLT_2WAY is not None:
+            non_2way_serials = tuple(
+                s for s in dfs_block_order
+                if (blk := mba.get_mblock(s)) is not None
+                and blk.type != _BLT_2WAY
+            )
         else:
+            logger.warning(
+                "TopologicalSortStrategy: cannot filter BLT_2WAY blocks (mba=%s, _BLT_2WAY=%s), "
+                "non_2way_serials will be over-estimated",
+                mba, _BLT_2WAY,
+            )
             non_2way_serials = tuple(dfs_block_order)
 
         logger.info(
