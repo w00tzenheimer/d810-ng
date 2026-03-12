@@ -23,11 +23,18 @@ import re
 from dataclasses import asdict, dataclass, field
 from enum import IntEnum
 
+import idaapi
+
 from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 from d810.evaluator.hexrays_microcode.valranges import (
     collect_block_valrange_records,
     collect_instruction_valrange_records,
+)
+from d810.hexrays.utils.hexrays_helpers import (
+    MATURITY_TO_STRING_DICT,
+    MOP_INFO,
+    OPCODES_INFO,
 )
 from d810.recon.flow.bst_analysis import (
     BSTAnalysisResult,
@@ -41,20 +48,10 @@ from d810.recon.flow.bst_analysis import (
     _resolve_mop_value_in_block,
     analyze_bst_dispatcher,
 )
-from d810.recon.flow.transition_report import build_dispatcher_transition_report
-
-# Defer IDA imports until needed - allows module to be imported for CLI --help
-idaapi = None
-
-
-def _ensure_ida_imports():
-    """Lazy import IDA modules when actually needed."""
-    global idaapi
-    if idaapi is not None:
-        return
-
-    import idaapi as _idaapi
-
+from d810.recon.flow.transition_report import (
+    TransitionKind,
+    build_dispatcher_transition_report,
+)
 
 # -----------------------------------------------------------------------------
 # Configuration & Logging
@@ -66,54 +63,10 @@ logger = getLogger(__name__)
 # -----------------------------------------------------------------------------
 
 # These will be populated when IDA is available
-MATURITY_NAMES: Dict[int, str] = {}
-OPCODE_MAP: Dict[int, str] = {}
-MOP_TYPE_MAP: Dict[int, str] = {}
-_maps_initialized = False
 
-
-def _init_constants():
-    """Initialize constant maps that require IDA imports."""
-    global MATURITY_NAMES, OPCODE_MAP, MOP_TYPE_MAP, _maps_initialized
-    if _maps_initialized:
-        return
-
-    _ensure_ida_imports()
-
-    MATURITY_NAMES.update(
-        {
-            idaapi.MMAT_GENERATED: "MMAT_GENERATED",
-            idaapi.MMAT_PREOPTIMIZED: "MMAT_PREOPTIMIZED",
-            idaapi.MMAT_LOCOPT: "MMAT_LOCOPT",
-            idaapi.MMAT_CALLS: "MMAT_CALLS",
-            idaapi.MMAT_GLBOPT1: "MMAT_GLBOPT1",
-            idaapi.MMAT_GLBOPT2: "MMAT_GLBOPT2",
-            idaapi.MMAT_GLBOPT3: "MMAT_GLBOPT3",
-            idaapi.MMAT_LVARS: "MMAT_LVARS",
-        }
-    )
-
-    # Build opcode map
-    for name in dir(idaapi):
-        if name.startswith("m_"):
-            try:
-                val = getattr(idaapi, name)
-                if isinstance(val, int):
-                    OPCODE_MAP[val] = name
-            except Exception:
-                pass
-
-    # Build mop type map
-    for name in dir(idaapi):
-        if name.startswith("mop_"):
-            try:
-                val = getattr(idaapi, name)
-                if isinstance(val, int):
-                    MOP_TYPE_MAP[val] = name
-            except Exception:
-                pass
-
-    _maps_initialized = True
+MATURITY_NAMES: Dict[int, str] = MATURITY_TO_STRING_DICT
+OPCODE_MAP: Dict[int, str] = {op: OPCODES_INFO[op]["name"] for op in OPCODES_INFO}
+MOP_TYPE_MAP: Dict[int, str] = {mop: MOP_INFO[mop]["name"] for mop in MOP_INFO}
 
 
 # -----------------------------------------------------------------------------
@@ -194,8 +147,6 @@ def mop_to_dict(
     mop: "idaapi.mop_t", depth: int = 0, max_depth: int = 10
 ) -> Optional[Dict[str, Any]]:
     """Convert a mop_t to a dictionary for JSON serialization."""
-    _init_constants()
-
     if mop is None or depth > max_depth:
         return None
 
@@ -403,7 +354,6 @@ def block_to_dict(blk: "idaapi.mblock_t") -> Dict[str, Any]:
 
 def mba_to_dict(mba: "idaapi.mbl_array_t", func_name: str = "") -> Dict[str, Any]:
     """Convert a mbl_array_t (microcode block array) to a dictionary."""
-    _init_constants()
 
     entry_ea = getattr(mba, "entry_ea", 0)
     maturity = getattr(mba, "maturity", 0)
@@ -587,8 +537,6 @@ def print_mba_human_readable(
         mba: The microcode block array to print.
         func_name: Optional function name shown in the header.
     """
-
-    _init_constants()
 
     entry_ea = getattr(mba, "entry_ea", 0)
     maturity = getattr(mba, "maturity", 0)
@@ -902,7 +850,6 @@ def dump_dispatcher_tree(
     Returns:
         Multi-section string (not printed — caller decides what to do with it).
     """
-    _init_constants()
     sections: List[str] = []
 
     # Diagnostics collected during pre-header search and first-3-handler walks
@@ -1022,6 +969,172 @@ def dump_dispatcher_tree(
         sections.extend(diag_section)
 
     return "\n".join(sections)
+
+
+# -----------------------------------------------------------------------------
+# Linearized DAG Visualization
+# -----------------------------------------------------------------------------
+
+
+def dump_linearized_dag(
+    mba: "idaapi.mbl_array_t",
+    dispatcher_entry_serial: int,
+    state_var_stkoff: Optional[int] = None,
+) -> str:
+    """Walk the BST state machine from the initial state and dump a linearized DAG.
+
+    Starting from the pre-header initial state, follows the transition chain
+    through handlers, producing a human-readable execution-order DAG.  Handles
+    conditional forks, terminal exits, unresolved transitions, and cycles.
+
+    Args:
+        mba: The microcode block array.
+        dispatcher_entry_serial: Block serial number of the BST root.
+        state_var_stkoff: Optional stack offset of the state variable
+            (auto-detected from the BST root when *None*).
+
+    Returns:
+        Multi-line string describing the linearized DAG.
+    """
+
+    # --- Build the transition report ---
+    report = build_dispatcher_transition_report(
+        mba=mba,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        state_var_stkoff=state_var_stkoff,
+        capture_diagnostics=False,
+    )
+
+    initial_state = report.initial_state
+
+    # Build lookup: state_const -> TransitionRow  (exact match only)
+    state_to_row: Dict[int, "TransitionRow"] = {}
+    for row in report.rows:
+        if row.state_const is not None:
+            state_to_row[row.state_const] = row
+
+    # --- Walk the chain via BFS (breadth-first to keep step indices stable) ---
+    lines: List[str] = []
+    # visited maps state_const -> step index (for cycle detection)
+    visited: Dict[int, int] = {}
+    # queue entries: (state_value, step_index, indent_prefix)
+    #   indent_prefix is "" for top-level steps, "  " for conditional sub-steps
+    queue: List[Tuple[int, int, str]] = []
+
+    if initial_state is None:
+        return (
+            "=== LINEARIZED DAG ===\n" "<initial state not found — cannot walk chain>\n"
+        )
+
+    lines.append(f"=== LINEARIZED DAG (starting from 0x{initial_state:08X}) ===")
+    lines.append("")
+
+    step_counter = 0
+    # Counters for summary
+    conditional_forks = 0
+    exit_count = 0
+    cycle_count = 0
+    unresolved_count = 0
+
+    queue.append((initial_state, step_counter, ""))
+    visited[initial_state] = step_counter
+    step_counter += 1
+
+    while queue:
+        state_val, step_idx, prefix = queue.pop(0)
+        row = state_to_row.get(state_val)
+
+        if row is None:
+            lines.append(
+                f"{prefix}[{step_idx}] 0x{state_val:08X} → <no handler>  [UNRESOLVED]"
+            )
+            unresolved_count += 1
+            continue
+
+        handler_serial = row.handler_serial
+
+        if row.kind == TransitionKind.EXIT:
+            lines.append(
+                f"{prefix}[{step_idx}] 0x{state_val:08X} → blk[{handler_serial}]"
+                f" → EXIT"
+            )
+            exit_count += 1
+
+        elif row.kind == TransitionKind.CONDITIONAL:
+            cond_states = row.conditional_states
+            cond_hex = ", ".join(f"0x{s:08X}" for s in cond_states)
+            lines.append(
+                f"{prefix}[{step_idx}] 0x{state_val:08X} → blk[{handler_serial}]"
+                f" → {{{cond_hex}}}  [CONDITIONAL]"
+            )
+            conditional_forks += 1
+            # Enqueue each conditional branch as a sub-step
+            for branch_idx, cond_state in enumerate(cond_states):
+                sub_label = (
+                    chr(ord("a") + branch_idx) if branch_idx < 26 else str(branch_idx)
+                )
+                sub_prefix = f"{prefix}  "
+                if cond_state in visited:
+                    lines.append(
+                        f"{sub_prefix}[{step_idx}{sub_label}] 0x{cond_state:08X}"
+                        f" → blk[{state_to_row[cond_state].handler_serial}]"
+                        f"  [CYCLE → step {visited[cond_state]}]"
+                        if cond_state in state_to_row
+                        else f"{sub_prefix}[{step_idx}{sub_label}] 0x{cond_state:08X}"
+                        f"  [CYCLE → step {visited[cond_state]}]"
+                    )
+                    cycle_count += 1
+                else:
+                    visited[cond_state] = step_counter
+                    queue.append((cond_state, step_counter, sub_prefix))
+                    step_counter += 1
+
+        elif row.kind == TransitionKind.TRANSITION:
+            next_state = row.next_state
+            if next_state is not None:
+                next_hex = f"0x{next_state:08X}"
+                annotation = ""
+                if next_state in visited:
+                    annotation = f"  [CYCLE → step {visited[next_state]}]"
+                    cycle_count += 1
+                    lines.append(
+                        f"{prefix}[{step_idx}] 0x{state_val:08X}"
+                        f" → blk[{handler_serial}] → {next_hex}{annotation}"
+                    )
+                else:
+                    lines.append(
+                        f"{prefix}[{step_idx}] 0x{state_val:08X}"
+                        f" → blk[{handler_serial}] → {next_hex}"
+                    )
+                    visited[next_state] = step_counter
+                    queue.append((next_state, step_counter, prefix))
+                    step_counter += 1
+            else:
+                lines.append(
+                    f"{prefix}[{step_idx}] 0x{state_val:08X}"
+                    f" → blk[{handler_serial}] → EXIT"
+                )
+                exit_count += 1
+
+        else:
+            # TransitionKind.UNKNOWN
+            lines.append(
+                f"{prefix}[{step_idx}] 0x{state_val:08X} → blk[{handler_serial}]"
+                f" → ???  [UNRESOLVED]"
+            )
+            unresolved_count += 1
+
+    # --- Summary ---
+    lines.append("")
+    lines.append(
+        f"Summary: {len(visited)} handlers in chain, "
+        f"{conditional_forks} conditional forks, "
+        f"{exit_count} exits, "
+        f"{cycle_count} cycles, "
+        f"{unresolved_count} unresolved"
+    )
+
+    return "\n".join(lines)
 
 
 # -----------------------------------------------------------------------------
