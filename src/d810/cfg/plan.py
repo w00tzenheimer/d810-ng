@@ -31,6 +31,7 @@ from d810.cfg.graph_modification import (
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     DirectTerminalLoweringSite,
+    ReorderBlocks,
     RedirectBranch,
     RedirectGoto,
     RemoveEdge,
@@ -307,6 +308,14 @@ class PatchDirectTerminalLoweringGroup:
     per_site_clone_assigned_serials: dict[int, tuple[VirtualBlockId, ...]]
 
 
+@dataclass(frozen=True)
+class PatchReorderBlocks:
+    """Reorder handler blocks by copying them in DFS order to end of MBA."""
+
+    dfs_block_order: tuple[int, ...]
+    non_2way_serials: tuple[int, ...]  # dfs_block_order minus BLT_2WAY blocks; for projector
+
+
 BlockCreatingGraphModification = Union[
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
@@ -348,6 +357,7 @@ PatchOperation = Union[
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
     PatchDirectTerminalLoweringGroup,
+    PatchReorderBlocks,
 ]
 
 PatchStep = Union[PatchOperation, LegacyBlockOperation]
@@ -373,7 +383,8 @@ class PatchPlan:
 
     @property
     def contains_block_creation(self) -> bool:
-        return bool(self.new_blocks or self.legacy_block_operations)
+        has_reorder = any(isinstance(s, PatchReorderBlocks) for s in self.steps)
+        return bool(self.new_blocks or self.legacy_block_operations or has_reorder)
 
     def as_graph_modifications(self) -> list[GraphModification]:
         """Reconstruct planner edits for compatibility tests and mock backends."""
@@ -992,6 +1003,9 @@ def _finalize_step(
                 per_anchor_clone_assigned_serials=tuple(per_anchor_assigned),
             )
 
+        case PatchReorderBlocks():
+            return step
+
         case LegacyBlockOperation():
             return step
 
@@ -1254,6 +1268,14 @@ def compile_patch_plan(
                     )
                 )
 
+            case ReorderBlocks(dfs_block_order=order, non_2way_serials=non_2way):
+                raw_steps.append(
+                    PatchReorderBlocks(
+                        dfs_block_order=order,
+                        non_2way_serials=non_2way,
+                    )
+                )
+
             case _:
                 raise TypeError(f"Unsupported GraphModification: {type(modification).__name__}")
 
@@ -1296,6 +1318,7 @@ __all__ = [
     "PatchPrivateTerminalSuffix",
     "PatchPrivateTerminalSuffixGroup",
     "PatchDirectTerminalLoweringGroup",
+    "PatchReorderBlocks",
     "LegacyBlockOperation",
     "PatchOperation",
     "PatchStep",
