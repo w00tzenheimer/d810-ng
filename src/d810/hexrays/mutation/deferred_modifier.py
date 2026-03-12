@@ -357,6 +357,7 @@ class ModificationType(Enum):
     PRIVATE_TERMINAL_SUFFIX = auto()  # Clone shared suffix chain per anchor
     PRIVATE_TERMINAL_SUFFIX_GROUP = auto()  # Clone shared suffix chain for multiple anchors atomically
     DIRECT_TERMINAL_LOWERING_GROUP = auto()  # Direct terminal lowering for multiple anchors
+    REORDER_BLOCKS = auto()  # Copy handler blocks in DFS order to end of MBA
 
 
 class TargetRefKind(Enum):
@@ -417,6 +418,8 @@ class GraphModification:
     per_anchor_clone_expected_serials: tuple[tuple[int, ...], ...] | None = None
     # For DIRECT_TERMINAL_LOWERING_GROUP: per-site lowering specifications
     sites: tuple | None = None
+    # For REORDER_BLOCKS: ordered block serials to copy in DFS order
+    dfs_block_order: tuple[int, ...] | None = None
 
 
 def _prepare_block_creation_instructions(
@@ -1175,6 +1178,35 @@ class DeferredGraphModifier:
             shared_entry_serial,
             return_block_serial,
             len(sites),
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_reorder_blocks(
+        self,
+        *,
+        dfs_block_order: tuple[int, ...],
+        description: str = "",
+    ) -> None:
+        """Queue block reordering in DFS order.
+
+        Must run LAST among all modifications (highest priority number).
+        Copies handler blocks to end of MBA in the given order, then remaps
+        all serial references across the entire MBA.
+        """
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.REORDER_BLOCKS,
+            block_serial=dfs_block_order[0] if dfs_block_order else 0,
+            new_target=None,
+            priority=9999,  # Must run LAST
+            dfs_block_order=dfs_block_order,
+            description=description or (
+                f"reorder {len(dfs_block_order)} blocks in DFS order"
+            ),
+        ))
+        logger.debug(
+            "Queued reorder_blocks: %d blocks in DFS order",
+            len(dfs_block_order),
         )
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
@@ -2550,6 +2582,9 @@ class DeferredGraphModifier:
 
         elif mod.mod_type == ModificationType.DIRECT_TERMINAL_LOWERING_GROUP:
             return self._apply_direct_terminal_lowering_group(mba, mod)
+
+        elif mod.mod_type == ModificationType.REORDER_BLOCKS:
+            return self._apply_reorder_blocks(mod.dfs_block_order or ())
 
         else:
             logger.warning("Unknown modification type: %s", mod.mod_type)
@@ -3979,6 +4014,270 @@ class DeferredGraphModifier:
             import traceback
             logger.error("Traceback: %s", traceback.format_exc())
             return False
+
+    def _apply_reorder_blocks(
+        self,
+        dfs_block_order: tuple[int, ...],
+    ) -> bool:
+        """Copy handler blocks to end of MBA in DFS order, remap all serial refs.
+
+        Phase A: Copy each block in *dfs_block_order* to the end of the MBA
+        (before BLT_STOP).  copy_block copies pred/succ from source.  We keep
+        the new block's succset intact (it holds old handler serials that Phase B
+        will remap) and clear only the predset.
+
+        Step 0: Convert each old handler block into a 1-way trampoline
+        (m_goto → new_serial).  External 2-way blocks (BST check nodes) have
+        the old handler serial as their fallthrough (serial+1).  IDA requires
+        serial+1 to remain in the succset of BLT_2WAY blocks, so we leave those
+        entries as-is in Phase B; the trampoline at the old serial correctly
+        redirects execution to the new copy.
+
+        Phase B: Walk every block that is NOT an old handler and remap its
+        succset entries + mop_b / m_jtbl operands through old_to_new.  For
+        BLT_2WAY blocks the fallthrough (serial+1) entry is kept verbatim; only
+        explicit non-fallthrough targets are remapped.
+
+        Phase C: Rebuild ALL predsets from scratch by walking succsets.  This
+        guarantees bidirectional consistency.
+        """
+        mba = self.mba
+        if not dfs_block_order:
+            logger.warning("reorder_blocks: empty dfs_block_order")
+            return False
+
+        old_to_new: dict[int, int] = {}
+
+        # Save BLT_STOP serial before Phase A — each copy_block(blk, qty-1) shifts
+        # BLT_STOP by +1, so any handler block whose succset contains the old BLT_STOP
+        # serial would be left pointing at whatever block now occupies that serial
+        # (a copied handler) instead of the real BLT_STOP.  We remap this explicitly.
+        old_blt_stop_serial = mba.qty - 1
+
+        # ---- Phase A: Copy blocks to end in DFS order ----
+        for old_serial in dfs_block_order:
+            old_blk = mba.get_mblock(old_serial)
+            if old_blk is None:
+                logger.warning(
+                    "reorder_blocks: blk[%d] not found, skipping",
+                    old_serial,
+                )
+                continue
+            # BLT_2WAY blocks cannot be safely reordered via copy_block: after
+            # copying, the new block's implicit fallthrough (serial+1) must equal
+            # one of its two successors, but that is only guaranteed if the DFS
+            # places the original fallthrough block immediately adjacent — which
+            # cannot be ensured for cross-handler conditional exits.  Leave
+            # BLT_2WAY blocks in place; Phase B treats them as external blocks
+            # (keeps fallthrough, remaps explicit target) and the old trampolines
+            # handle any needed redirects.
+            if old_blk.type == ida_hexrays.BLT_2WAY:
+                logger.debug(
+                    "reorder_blocks Phase A: skipping 2-way blk[%d]",
+                    old_serial,
+                )
+                continue
+            # Append before BLT_STOP — only shifts BLT_STOP, safe
+            new_blk = mba.copy_block(old_blk, mba.qty - 1)
+            old_to_new[old_serial] = new_blk.serial
+            # CRITICAL: clear only predset — succset (pointing to old handler
+            # serials) is kept; Phase B will remap those entries on the new block.
+            new_blk.predset.clear()
+            new_blk.build_lists(False)
+            logger.debug(
+                "reorder_blocks Phase A: copied blk[%d] -> blk[%d]",
+                old_serial,
+                new_blk.serial,
+            )
+
+        if not old_to_new:
+            logger.warning("reorder_blocks: no blocks copied")
+            return False
+
+        logger.info(
+            "reorder_blocks Phase A: copied %d blocks",
+            len(old_to_new),
+        )
+
+        # PRE-TRAMPOLINE diagnostic: count m_nop-with-operands BEFORE Step 0
+        _pre_nop_count = 0
+        _m_nop_pre = ida_hexrays.m_nop
+        _mop_z_pre = ida_hexrays.mop_z
+        for _pi in range(mba.qty):
+            _pblk = mba.get_mblock(_pi)
+            if _pblk is None:
+                continue
+            _pins = _pblk.head
+            while _pins is not None:
+                if _pins.opcode == _m_nop_pre:
+                    _pl = _pins.l is not None and _pins.l.t != _mop_z_pre
+                    _pr = _pins.r is not None and _pins.r.t != _mop_z_pre
+                    _pd = _pins.d is not None and _pins.d.t != _mop_z_pre
+                    if _pl or _pr or _pd:
+                        _pre_nop_count += 1
+                _pins = _pins.next
+        logger.error(
+            "DIAG PRE-TRAMPOLINE: %d m_nop-with-operands BEFORE Step 0, old_serials=%s",
+            _pre_nop_count, sorted(old_to_new.keys())[:10],
+        )
+
+        # old_serials identifies the trampoline blocks (Step 0). Compute it from
+        # the handler serials only — before adding the BLT_STOP remap entry.
+        old_serials = set(old_to_new.keys())
+
+        # Extend old_to_new with the BLT_STOP serial shift so Phase B's generic
+        # remap logic (`old_to_new.get(s, s)`) correctly updates any succset entry
+        # or mop_b operand that references the old BLT_STOP serial.  Must happen
+        # AFTER old_serials is built so Phase B does not mistakenly skip the block
+        # now occupying the old BLT_STOP serial (it is a copied handler, not a
+        # trampoline).
+        new_blt_stop_serial = mba.qty - 1
+        if new_blt_stop_serial != old_blt_stop_serial:
+            old_to_new[old_blt_stop_serial] = new_blt_stop_serial
+            logger.debug(
+                "reorder_blocks: BLT_STOP shifted %d -> %d",
+                old_blt_stop_serial,
+                new_blt_stop_serial,
+            )
+
+        # ---- Step 0: Convert old handler blocks to trampolines ----
+        # External 2-way blocks need their fallthrough (serial+1) to stay at
+        # the old handler serial — IDA requires serial+1 in succset for BLT_2WAY.
+        # Converting old handlers to m_goto trampolines lets those fallthroughs
+        # correctly redirect execution to the new copy.
+        # Iterate only over original handler serials (old_serials), NOT
+        # old_to_new — old_to_new now also contains the BLT_STOP remap entry,
+        # which must NOT be converted into a trampoline.
+        for old_serial in old_serials:
+            new_serial = old_to_new[old_serial]
+            old_blk = mba.get_mblock(old_serial)
+            if old_blk is None:
+                continue
+            tail = old_blk.tail
+            if tail is None:
+                continue
+            # NOP all intermediate instructions; tail becomes the sole insn
+            insn = old_blk.head
+            while insn is not None and insn is not tail:
+                insn.opcode = ida_hexrays.m_nop
+                insn.l.erase()
+                insn.r.erase()
+                insn.d.erase()
+                insn = insn.next
+            # Convert tail to unconditional goto → new serial
+            tail.opcode = ida_hexrays.m_goto
+            tail.l.make_blkref(new_serial)
+            # m_goto uses only l; erase r and d (handles live operands safely)
+            tail.r.erase()
+            tail.d.erase()
+            # Update block type and succset
+            old_blk.type = ida_hexrays.BLT_1WAY
+            old_blk.succset.clear()
+            old_blk.succset.push_back(new_serial)
+            old_blk.build_lists(False)
+            logger.debug(
+                "reorder_blocks Step 0: blk[%d] -> trampoline -> blk[%d]",
+                old_serial,
+                new_serial,
+            )
+
+        # ---- Phase B: Remap succsets + instruction operands ----
+        # For BLT_2WAY blocks the fallthrough is implicitly serial+1.  The IDA
+        # contract requires serial+1 to appear in succset, so we keep that entry
+        # as-is; the trampoline at that serial (if it was an old handler) handles
+        # the redirect.  New handler blocks (produced in Phase A) also get their
+        # succsets remapped here.
+        for i in range(mba.qty):
+            blk = mba.get_mblock(i)
+            if blk is None:
+                continue
+
+            if blk.serial in old_serials:
+                # Trampolines already set up in Step 0; skip.
+                continue
+
+            # Protect implicit fallthrough (serial+1) from being remapped when
+            # the tail instruction has no mop_b branch target.  In those cases
+            # IDA derives outs as {serial+1} and there is no operand to remap,
+            # so remapping the succset alone would create a CFG_50860 mismatch.
+            # Rules:
+            # - BLT_2WAY: always protect serial+1 (explicit branch uses mop_b d,
+            #   which the instruction-remap loop handles; fallthrough is separate).
+            # - null tail: no instruction → fallthrough to serial+1.
+            # - m_ret tail: IDA derives {BLT_STOP} — do NOT protect serial+1;
+            #   let the BLT_STOP serial remap in old_to_new fix the succset.
+            # - Any other tail without mop_b (m_nop, m_call, m_icall, …): IDA
+            #   derives {serial+1}; protect it.
+            tail = blk.tail
+            if tail is None or blk.type == ida_hexrays.BLT_2WAY:
+                has_implicit_fallthrough = True
+            elif tail.opcode == ida_hexrays.m_ret:
+                has_implicit_fallthrough = False
+            else:
+                # Protect when no mop_b branch target is present in l/r/d.
+                has_implicit_fallthrough = not any(
+                    mop is not None and mop.t == ida_hexrays.mop_b
+                    for mop in (tail.l, tail.r, tail.d)
+                )
+            fallthrough = (blk.serial + 1) if has_implicit_fallthrough else None
+
+            new_succs: list[int] = []
+            for s in list(blk.succset):
+                if s == fallthrough:
+                    new_succs.append(s)          # physical fallthrough: keep
+                else:
+                    new_succs.append(old_to_new.get(s, s))   # remap
+            blk.succset.clear()
+            for s in new_succs:
+                blk.succset.push_back(s)
+
+            # Remap mop_b operands in all instructions
+            insn = blk.head
+            while insn is not None:
+                for mop in (insn.l, insn.r, insn.d):
+                    if mop is not None and mop.t == ida_hexrays.mop_b:
+                        if mop.b in old_to_new:
+                            mop.make_blkref(old_to_new[mop.b])
+                # m_jtbl: targets stored in insn.r.c.targets (mcases_t / intvec_t)
+                if insn.opcode == ida_hexrays.m_jtbl:
+                    if (
+                        insn.r is not None
+                        and insn.r.t == ida_hexrays.mop_c
+                        and insn.r.c is not None
+                    ):
+                        targets = insn.r.c.targets
+                        for idx in range(targets.size()):
+                            old_val = targets[idx]
+                            if old_val in old_to_new:
+                                targets[idx] = old_to_new[old_val]
+                insn = insn.next
+
+        # ---- Phase C: Rebuild ALL predsets from current succsets ----
+        # Clears every predset then repopulates from succsets — guarantees
+        # bidirectional consistency without manually tracking every edge.
+        for i in range(mba.qty):
+            blk = mba.get_mblock(i)
+            if blk is not None:
+                blk.predset.clear()
+        for i in range(mba.qty):
+            blk = mba.get_mblock(i)
+            if blk is None:
+                continue
+            for s in list(blk.succset):
+                target = mba.get_mblock(s)
+                if target is not None:
+                    target.predset.push_back(i)
+
+        mba.mark_chains_dirty()
+
+        logger.debug("reorder_blocks: operand erase applied to all m_nop trampolines")
+
+        logger.info(
+            "reorder_blocks: completed — %d blocks remapped, mba.qty=%d",
+            len(old_to_new),
+            mba.qty,
+        )
+        return True
 
     def _apply_edge_split_trampoline(
         self,
