@@ -420,6 +420,8 @@ class GraphModification:
     sites: tuple | None = None
     # For REORDER_BLOCKS: ordered block serials to copy in DFS order
     dfs_block_order: tuple[int, ...] | None = None
+    # For REORDER_BLOCKS: pre-computed old_serial -> new_serial mapping from PatchPlan
+    old_to_new: dict[int, int] | None = None
 
 
 def _prepare_block_creation_instructions(
@@ -1186,6 +1188,7 @@ class DeferredGraphModifier:
         self,
         *,
         dfs_block_order: tuple[int, ...],
+        old_to_new: dict[int, int] | None = None,
         description: str = "",
     ) -> None:
         """Queue block reordering in DFS order.
@@ -1193,6 +1196,13 @@ class DeferredGraphModifier:
         Must run LAST among all modifications (highest priority number).
         Copies handler blocks to end of MBA in the given order, then remaps
         all serial references across the entire MBA.
+
+        Args:
+            dfs_block_order: Ordered block serials to copy.
+            old_to_new: Pre-computed old->new serial mapping from PatchPlan.
+                When provided, copy_block results are validated against these
+                expected serials. When None, serials are determined at runtime.
+            description: Logging description.
         """
         self.modifications.append(GraphModification(
             mod_type=ModificationType.REORDER_BLOCKS,
@@ -1200,6 +1210,7 @@ class DeferredGraphModifier:
             new_target=None,
             priority=9999,  # Must run LAST
             dfs_block_order=dfs_block_order,
+            old_to_new=old_to_new,
             description=description or (
                 f"reorder {len(dfs_block_order)} blocks in DFS order"
             ),
@@ -2584,7 +2595,10 @@ class DeferredGraphModifier:
             return self._apply_direct_terminal_lowering_group(mba, mod)
 
         elif mod.mod_type == ModificationType.REORDER_BLOCKS:
-            return self._apply_reorder_blocks(mod.dfs_block_order or ())
+            return self._apply_reorder_blocks(
+                mod.dfs_block_order or (),
+                expected_old_to_new=mod.old_to_new,
+            )
 
         else:
             logger.warning("Unknown modification type: %s", mod.mod_type)
@@ -4018,6 +4032,8 @@ class DeferredGraphModifier:
     def _apply_reorder_blocks(
         self,
         dfs_block_order: tuple[int, ...],
+        *,
+        expected_old_to_new: dict[int, int] | None = None,
     ) -> bool:
         """Copy handler blocks to end of MBA in DFS order, remap all serial refs.
 
@@ -4040,6 +4056,13 @@ class DeferredGraphModifier:
 
         Phase C: Rebuild ALL predsets from scratch by walking succsets.  This
         guarantees bidirectional consistency.
+
+        Args:
+            dfs_block_order: Ordered block serials to copy.
+            expected_old_to_new: Pre-computed old->new serial mapping from
+                PatchPlan compilation. When provided, copy_block results are
+                validated against these expected serials. A mismatch logs an
+                error but falls back to the runtime serial.
         """
         mba = self.mba
         if not dfs_block_order:
@@ -4079,7 +4102,20 @@ class DeferredGraphModifier:
                 continue
             # Append before BLT_STOP — only shifts BLT_STOP, safe
             new_blk = mba.copy_block(old_blk, mba.qty - 1)
-            old_to_new[old_serial] = new_blk.serial
+            actual_serial = new_blk.serial
+            # Validate against pre-computed serial from PatchPlan when available
+            if expected_old_to_new is not None and old_serial in expected_old_to_new:
+                expected_serial = expected_old_to_new[old_serial]
+                if actual_serial != expected_serial:
+                    logger.error(
+                        "reorder_blocks Phase A: copy_block returned serial %d "
+                        "for old=%d, expected %d (MBA state diverged from plan)",
+                        actual_serial,
+                        old_serial,
+                        expected_serial,
+                    )
+                    # Fall back to runtime serial — plan/simulation may be stale
+            old_to_new[old_serial] = actual_serial
             # CRITICAL: clear only predset — succset (pointing to old handler
             # serials) is kept; Phase B will remap those entries on the new block.
             new_blk.predset.clear()

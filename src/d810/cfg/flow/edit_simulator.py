@@ -41,6 +41,7 @@ from d810.cfg.plan import (
     PatchPlan,
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
+    PatchReorderBlocks,
     PatchRemoveEdge,
     PatchRedirectBranch,
     PatchRedirectGoto,
@@ -573,6 +574,39 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                         )
                     )
 
+            case PatchReorderBlocks(old_to_new=old_to_new_pairs):
+                for old_serial, new_serial in old_to_new_pairs:
+                    # Copy: new block gets old block's adjacency
+                    simulated.append(SimulatedEdit(
+                        kind="reorder_block_copy",
+                        source=old_serial,
+                        old_target=old_serial,
+                        new_target=None,
+                        created_serial=new_serial,
+                        stop_serial_before=stop_serial_before,
+                        stop_serial_after=stop_serial_after,
+                    ))
+                for old_serial, new_serial in old_to_new_pairs:
+                    # Trampoline: old block redirects to its copy
+                    simulated.append(SimulatedEdit(
+                        kind="reorder_block_trampoline",
+                        source=old_serial,
+                        old_target=-1,
+                        new_target=new_serial,
+                    ))
+                # Successor remap: emit a finalize edit with old->new mapping
+                if old_to_new_pairs:
+                    flat = tuple(
+                        x for pair in old_to_new_pairs for x in pair
+                    )  # (old0, new0, old1, new1, ...)
+                    simulated.append(SimulatedEdit(
+                        kind="reorder_block_remap",
+                        source=0,
+                        old_target=0,
+                        new_target=None,
+                        source_successors=flat,
+                    ))
+
             case LegacyBlockOperation(
                 modification=CreateConditionalRedirect(
                     source_block=src,
@@ -841,6 +875,31 @@ def simulate_edits(
                 result[clone_serial] = []
             created_clones.add(clone_serial)
             clone_origins[clone_serial] = edit
+
+        elif edit.kind == "reorder_block_copy":
+            # Create the new block with a copy of old block's adjacency
+            new_serial = edit.created_serial
+            if new_serial is None:
+                new_serial = max(result.keys(), default=-1) + 1
+            old_serial = edit.source
+            old_succs = list(result.get(old_serial, []))
+            result[new_serial] = old_succs
+            created_clones.add(new_serial)
+            clone_origins[new_serial] = edit
+
+        elif edit.kind == "reorder_block_trampoline":
+            # Convert old block to trampoline -> single successor = its copy
+            result[edit.source] = [edit.new_target]
+
+        elif edit.kind == "reorder_block_remap":
+            # Remap all non-trampoline blocks' successors through old_to_new
+            flat = list(edit.source_successors or ())
+            old_to_new = dict(zip(flat[::2], flat[1::2]))
+            old_set = set(old_to_new.keys())
+            for serial in list(result.keys()):
+                if serial in old_set:
+                    continue  # trampolines already handled
+                result[serial] = [old_to_new.get(s, s) for s in result[serial]]
 
     return SimulationResult(
         adj=result,
