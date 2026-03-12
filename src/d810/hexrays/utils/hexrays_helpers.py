@@ -3,20 +3,25 @@ Modern Pythonic representation of IDA Hex-Rays microcode primitives.
 Provides type-safe, high-performance dataclasses with IntEnum support and structural pattern matching.
 Enhanced with readable property names for operands.
 """
+
 from __future__ import annotations
 
 import dataclasses
 import enum
 
+import ida_hexrays
+
 from d810.core import typing
 from d810.core.typing import TYPE_CHECKING, Optional, Tuple, Union
-import ida_hexrays
 
 if TYPE_CHECKING:
     # Type hints for IDE support when IDA stubs are available
     from ida_hexrays import mbl_array_t, mblock_t, minsn_t, mop_t
 
 from d810.core import getLogger
+
+# Import constant tables from d810.core (IDA-independent)
+from d810.core.bits import AND_TABLE, MSB_TABLE, SUB_TABLE
 from d810.core.cymode import CythonMode
 
 # Try to import Cython hash_mop if CythonMode is enabled
@@ -34,42 +39,132 @@ OPCODES_INFO = {
     ida_hexrays.m_stx: {"name": "stx", "nb_operands": 2, "is_commutative": False},
     ida_hexrays.m_ldx: {"name": "ldx", "nb_operands": 2, "is_commutative": False},
     ida_hexrays.m_ldc: {"name": "ldc", "nb_operands": 1, "is_commutative": False},
-    ida_hexrays.m_mov: {"name": "mov", "nb_operands": 1, "is_commutative": False, "symbol": ""},
-    ida_hexrays.m_neg: {"name": "neg", "nb_operands": 1, "is_commutative": False, "symbol": "-"},
-    ida_hexrays.m_lnot: {"name": "lnot", "nb_operands": 1, "is_commutative": False, "symbol": "!"},
-    ida_hexrays.m_bnot: {"name": "bnot", "nb_operands": 1, "is_commutative": False, "symbol": "~"},
-    ida_hexrays.m_xds: {"name": "xds", "nb_operands": 1, "is_commutative": False, "symbol": "xds"},
-    ida_hexrays.m_xdu: {"name": "xdu", "nb_operands": 1, "is_commutative": False, "symbol": "xdu"},
-    ida_hexrays.m_low: {"name": "low", "nb_operands": 1, "is_commutative": False, "symbol": "low"},
+    ida_hexrays.m_mov: {
+        "name": "mov",
+        "nb_operands": 1,
+        "is_commutative": False,
+        "symbol": "",
+    },
+    ida_hexrays.m_neg: {
+        "name": "neg",
+        "nb_operands": 1,
+        "is_commutative": False,
+        "symbol": "-",
+    },
+    ida_hexrays.m_lnot: {
+        "name": "lnot",
+        "nb_operands": 1,
+        "is_commutative": False,
+        "symbol": "!",
+    },
+    ida_hexrays.m_bnot: {
+        "name": "bnot",
+        "nb_operands": 1,
+        "is_commutative": False,
+        "symbol": "~",
+    },
+    ida_hexrays.m_xds: {
+        "name": "xds",
+        "nb_operands": 1,
+        "is_commutative": False,
+        "symbol": "xds",
+    },
+    ida_hexrays.m_xdu: {
+        "name": "xdu",
+        "nb_operands": 1,
+        "is_commutative": False,
+        "symbol": "xdu",
+    },
+    ida_hexrays.m_low: {
+        "name": "low",
+        "nb_operands": 1,
+        "is_commutative": False,
+        "symbol": "low",
+    },
     ida_hexrays.m_high: {
         "name": "high",
         "nb_operands": 1,
         "is_commutative": False,
         "symbol": "high",
     },
-    ida_hexrays.m_add: {"name": "add", "nb_operands": 2, "is_commutative": True, "symbol": "+"},
-    ida_hexrays.m_sub: {"name": "sub", "nb_operands": 2, "is_commutative": False, "symbol": "-"},
-    ida_hexrays.m_mul: {"name": "mul", "nb_operands": 2, "is_commutative": True, "symbol": "*"},
+    ida_hexrays.m_add: {
+        "name": "add",
+        "nb_operands": 2,
+        "is_commutative": True,
+        "symbol": "+",
+    },
+    ida_hexrays.m_sub: {
+        "name": "sub",
+        "nb_operands": 2,
+        "is_commutative": False,
+        "symbol": "-",
+    },
+    ida_hexrays.m_mul: {
+        "name": "mul",
+        "nb_operands": 2,
+        "is_commutative": True,
+        "symbol": "*",
+    },
     ida_hexrays.m_udiv: {
         "name": "udiv",
         "nb_operands": 2,
         "is_commutative": False,
         "symbol": "UDiv",
     },
-    ida_hexrays.m_sdiv: {"name": "sdiv", "nb_operands": 2, "is_commutative": False, "symbol": "/"},
+    ida_hexrays.m_sdiv: {
+        "name": "sdiv",
+        "nb_operands": 2,
+        "is_commutative": False,
+        "symbol": "/",
+    },
     ida_hexrays.m_umod: {
         "name": "umod",
         "nb_operands": 2,
         "is_commutative": False,
         "symbol": "URem",
     },
-    ida_hexrays.m_smod: {"name": "smod", "nb_operands": 2, "is_commutative": False, "symbol": "%"},
-    ida_hexrays.m_or: {"name": "or", "nb_operands": 2, "is_commutative": True, "symbol": "|"},
-    ida_hexrays.m_and: {"name": "and", "nb_operands": 2, "is_commutative": True, "symbol": "&"},
-    ida_hexrays.m_xor: {"name": "xor", "nb_operands": 2, "is_commutative": True, "symbol": "^"},
-    ida_hexrays.m_shl: {"name": "shl", "nb_operands": 2, "is_commutative": False, "symbol": "<<"},
-    ida_hexrays.m_shr: {"name": "shr", "nb_operands": 2, "is_commutative": False, "symbol": "LShR"},
-    ida_hexrays.m_sar: {"name": "sar", "nb_operands": 2, "is_commutative": False, "symbol": ">>"},
+    ida_hexrays.m_smod: {
+        "name": "smod",
+        "nb_operands": 2,
+        "is_commutative": False,
+        "symbol": "%",
+    },
+    ida_hexrays.m_or: {
+        "name": "or",
+        "nb_operands": 2,
+        "is_commutative": True,
+        "symbol": "|",
+    },
+    ida_hexrays.m_and: {
+        "name": "and",
+        "nb_operands": 2,
+        "is_commutative": True,
+        "symbol": "&",
+    },
+    ida_hexrays.m_xor: {
+        "name": "xor",
+        "nb_operands": 2,
+        "is_commutative": True,
+        "symbol": "^",
+    },
+    ida_hexrays.m_shl: {
+        "name": "shl",
+        "nb_operands": 2,
+        "is_commutative": False,
+        "symbol": "<<",
+    },
+    ida_hexrays.m_shr: {
+        "name": "shr",
+        "nb_operands": 2,
+        "is_commutative": False,
+        "symbol": "LShR",
+    },
+    ida_hexrays.m_sar: {
+        "name": "sar",
+        "nb_operands": 2,
+        "is_commutative": False,
+        "symbol": ">>",
+    },
     ida_hexrays.m_cfadd: {"name": "cfadd", "nb_operands": 2, "is_commutative": True},
     ida_hexrays.m_ofadd: {"name": "ofadd", "nb_operands": 2, "is_commutative": True},
     ida_hexrays.m_cfshl: {"name": "cfshl", "nb_operands": 2, "is_commutative": False},
@@ -83,15 +178,30 @@ OPCODES_INFO = {
         "is_commutative": True,
         "symbol": "!=",
     },
-    ida_hexrays.m_setz: {"name": "setz", "nb_operands": 2, "is_commutative": True, "symbol": "=="},
-    ida_hexrays.m_seta: {"name": "seta", "nb_operands": 2, "is_commutative": False, "symbol": ">"},
+    ida_hexrays.m_setz: {
+        "name": "setz",
+        "nb_operands": 2,
+        "is_commutative": True,
+        "symbol": "==",
+    },
+    ida_hexrays.m_seta: {
+        "name": "seta",
+        "nb_operands": 2,
+        "is_commutative": False,
+        "symbol": ">",
+    },
     ida_hexrays.m_setae: {
         "name": "setae",
         "nb_operands": 2,
         "is_commutative": False,
         "symbol": ">=",
     },
-    ida_hexrays.m_setb: {"name": "setb", "nb_operands": 2, "is_commutative": False, "symbol": "<"},
+    ida_hexrays.m_setb: {
+        "name": "setb",
+        "nb_operands": 2,
+        "is_commutative": False,
+        "symbol": "<",
+    },
     ida_hexrays.m_setbe: {
         "name": "setbe",
         "nb_operands": 2,
@@ -155,6 +265,77 @@ OPCODES_INFO = {
     ida_hexrays.m_fdiv: {"name": "fdiv", "nb_operands": 2, "is_commutative": False},
 }
 
+MOP_INFO = {
+    ida_hexrays.mop_z: {
+        "name": "mop_z",
+        "description": "none",
+    },
+    ida_hexrays.mop_r: {
+        "name": "mop_r",
+        "description": "register (they exist until MMAT_LVARS)",
+    },
+    ida_hexrays.mop_n: {
+        "name": "mop_n",
+        "description": "immediate number constant",
+    },
+    ida_hexrays.mop_str: {
+        "name": "mop_str",
+        "description": "immediate string constant (user representation)",
+    },
+    ida_hexrays.mop_d: {
+        "name": "mop_d",
+        "description": "result of another instruction",
+    },
+    ida_hexrays.mop_S: {
+        "name": "mop_S",
+        "description": "local stack variable (they exist until MMAT_LVARS)",
+    },
+    ida_hexrays.mop_v: {
+        "name": "mop_v",
+        "description": "global variable",
+    },
+    ida_hexrays.mop_b: {
+        "name": "mop_b",
+        "description": "micro basic block (mblock_t)",
+    },
+    ida_hexrays.mop_f: {
+        "name": "mop_f",
+        "description": "list of arguments",
+    },
+    ida_hexrays.mop_l: {
+        "name": "mop_l",
+        "description": "local variable",
+    },
+    ida_hexrays.mop_a: {
+        "name": "mop_a",
+        "description": "mop_addr_t: address of operand (mop_l, mop_v, mop_S, mop_r)",
+    },
+    ida_hexrays.mop_h: {
+        "name": "mop_h",
+        "description": "helper function",
+    },
+    ida_hexrays.mop_c: {
+        "name": "mop_c",
+        "description": "mcases",
+    },
+    ida_hexrays.mop_fn: {
+        "name": "mop_fn",
+        "description": "floating point constant",
+    },
+    ida_hexrays.mop_p: {
+        "name": "mop_p",
+        "description": "operand pair",
+    },
+    ida_hexrays.mop_sc: {
+        "name": "mop_sc",
+        "description": "scattered",
+    },
+    ida_hexrays.NOSIZE: {
+        "name": "NOSIZE",
+        "description": "wrong or unexisting operand size",
+    },
+}
+
 
 MATURITY_TO_STRING_DICT: dict[int, str] = {
     ida_hexrays.MMAT_ZERO: "MMAT_ZERO",
@@ -192,7 +373,13 @@ MOP_TYPE_TO_STRING_DICT: dict[int, str] = {
 
 Z3_SPECIAL_OPERANDS: list[str] = ["UDiv", "URem", "LShR", "UGT", "UGE", "ULT", "ULE"]
 
-BOOLEAN_OPCODES: list[int] = [ida_hexrays.m_lnot, ida_hexrays.m_bnot, ida_hexrays.m_or, ida_hexrays.m_and, ida_hexrays.m_xor]
+BOOLEAN_OPCODES: list[int] = [
+    ida_hexrays.m_lnot,
+    ida_hexrays.m_bnot,
+    ida_hexrays.m_or,
+    ida_hexrays.m_and,
+    ida_hexrays.m_xor,
+]
 ARITHMETICAL_OPCODES: list[int] = [
     ida_hexrays.m_neg,
     ida_hexrays.m_add,
@@ -268,9 +455,6 @@ MINSN_TO_AST_FORBIDDEN_OPCODES: list[int] = CONTROL_FLOW_OPCODES + [
     ida_hexrays.m_ext,
 ]
 
-# Import constant tables from d810.core (IDA-independent)
-from d810.core.bits import AND_TABLE, MSB_TABLE, SUB_TABLE
-
 
 # Hex-Rays mop equality checking
 _EQUAL_BNOT_CACHE: dict[tuple[int, int], bool] = {}
@@ -331,7 +515,7 @@ def mop_quick_key_ignore_size(op: ida_hexrays.mop_t) -> str:
     within a bucket using equal_mops_ignore_size.
     """
     # Validate SWIG object before accessing attributes
-    if not hasattr(op, 't'):
+    if not hasattr(op, "t"):
         return f"invalid:{id(op)}"
     t = op.t
     if t == ida_hexrays.mop_n:
@@ -371,7 +555,7 @@ def structural_mop_hash(op: ida_hexrays.mop_t, func_entry_ea: int = 0) -> int:
     """
     # Validate mop_t object before attempting to hash it
     # Check if the object has the essential 't' attribute to detect invalid SWIG objects
-    if not hasattr(op, 't') or not hasattr(op, 'size'):
+    if not hasattr(op, "t") or not hasattr(op, "size"):
         # Invalid or freed SWIG object - return a sentinel hash
         return hash(("invalid_mop", id(op)))
 
@@ -394,7 +578,9 @@ def equal_bnot_cst(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t, mop_size=None) 
     return lo.nnn.value ^ ro.nnn.value == AND_TABLE[mop_size]
 
 
-def equal_bnot_mop(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t, test_two_sides=True) -> bool:
+def equal_bnot_mop(
+    lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t, test_two_sides=True
+) -> bool:
     # Try cache first (symmetry-aware)
     try:
         h1 = int(structural_mop_hash(lo, 0))
@@ -415,13 +601,21 @@ def equal_bnot_mop(lo: ida_hexrays.mop_t, ro: ida_hexrays.mop_t, test_two_sides=
             if equal_mops_ignore_size(lo.d.l, ro):
                 result = True
         # Hex-Rays: ~(-x) == x - 1
-        if not result and (lo.t == ida_hexrays.mop_d) and lo.d.opcode == ida_hexrays.m_neg:
+        if (
+            not result
+            and (lo.t == ida_hexrays.mop_d)
+            and lo.d.opcode == ida_hexrays.m_neg
+        ):
             if (ro.t == ida_hexrays.mop_d) and ro.d.opcode == ida_hexrays.m_sub:
                 if ro.d.r.t == ida_hexrays.mop_n and ro.d.r.nnn.value == 1:
                     if equal_mops_ignore_size(ro.d.l, lo.d.l):
                         result = True
         # Unsigned extend wrapper
-        if not result and (lo.t == ida_hexrays.mop_d) and lo.d.opcode == ida_hexrays.m_xds:
+        if (
+            not result
+            and (lo.t == ida_hexrays.mop_d)
+            and lo.d.opcode == ida_hexrays.m_xds
+        ):
             if equal_bnot_mop(lo.d.l, ro):
                 result = True
         # Symmetry
@@ -542,7 +736,9 @@ def is_check_mop(lo: ida_hexrays.mop_t) -> bool:
     return False
 
 
-def extract_num_mop(ins: ida_hexrays.minsn_t) -> tuple[ida_hexrays.mop_t, ida_hexrays.mop_t]:
+def extract_num_mop(
+    ins: ida_hexrays.minsn_t,
+) -> tuple[ida_hexrays.mop_t, ida_hexrays.mop_t]:
     num_mop = typing.cast(ida_hexrays.mop_t, None)
     other_mop = typing.cast(ida_hexrays.mop_t, None)
 
@@ -598,7 +794,12 @@ def check_ins_mop_size_are_ok(ins: ida_hexrays.minsn_t) -> bool:
                 return False
         return True
 
-    if ins.opcode in [ida_hexrays.m_xdu, ida_hexrays.m_xds, ida_hexrays.m_low, ida_hexrays.m_high]:
+    if ins.opcode in [
+        ida_hexrays.m_xdu,
+        ida_hexrays.m_xds,
+        ida_hexrays.m_low,
+        ida_hexrays.m_high,
+    ]:
         if (ins.l.t == ida_hexrays.mop_d) and (not check_ins_mop_size_are_ok(ins.l.d)):
             return False
         return True
@@ -639,7 +840,9 @@ def check_mop_is_result_of(lo: ida_hexrays.mop_t, mc) -> bool:
     return lo.d.opcode == mc
 
 
-def extract_by_opcode_type(ins: ida_hexrays.minsn_t, mc) -> tuple[ida_hexrays.mop_t, ida_hexrays.mop_t]:
+def extract_by_opcode_type(
+    ins: ida_hexrays.minsn_t, mc
+) -> tuple[ida_hexrays.mop_t, ida_hexrays.mop_t]:
     if check_mop_is_result_of(ins.l, mc):
         return (ins.l, ins.r)
     if check_mop_is_result_of(ins.r, mc):
@@ -676,7 +879,9 @@ def append_mop_if_not_in_list(mop: ida_hexrays.mop_t, mop_list) -> bool:
     return False
 
 
-def get_blk_index(searched_blk: ida_hexrays.mblock_t, blk_list: list[ida_hexrays.mblock_t]) -> int:
+def get_blk_index(
+    searched_blk: ida_hexrays.mblock_t, blk_list: list[ida_hexrays.mblock_t]
+) -> int:
     blk_serial_list = [blk.serial for blk in blk_list]
     try:
         return blk_serial_list.index(searched_blk.serial)
