@@ -4,6 +4,7 @@ import contextlib
 import enum
 import math
 import pathlib
+import sqlite3
 import time
 from collections import defaultdict
 
@@ -806,6 +807,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         except D810Exception as e:
             optimizer_logger.warning(
                 "D810Exception in block optimizer on blk %d: %s", blk.serial, e
+            )
+            self._pass_count = self._max_passes_current + 1
+        except sqlite3.DatabaseError as e:
+            optimizer_logger.warning(
+                "DatabaseError in block optimizer on blk %d: %s", blk.serial, e
             )
             self._pass_count = self._max_passes_current + 1
         return 0

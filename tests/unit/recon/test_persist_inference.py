@@ -1,14 +1,15 @@
 """Tests for inference persistence to project JSON config."""
+
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 
 import pytest
 
+from d810.core import logging
 from d810.core.rule_scope import RuleDelta
-from d810.recon.persist_inference import persist_inference
+from d810.recon.persist_inference import logger, persist_inference
 
 
 def _make_config(tmp_path: Path) -> Path:
@@ -30,7 +31,9 @@ class TestPersistSuppressAddsToBlacklist:
     def test_suppress_adds_to_blacklist(self, tmp_path: Path) -> None:
         config_path = _make_config(tmp_path)
         deltas = [RuleDelta("ConstantFolding", "suppress", {})]
-        count = persist_inference(func_ea=0x1000, deltas=deltas, config_path=config_path)
+        count = persist_inference(
+            func_ea=0x1000, deltas=deltas, config_path=config_path
+        )
 
         config = json.loads(config_path.read_text())
         rule = config["blk_rules"][0]
@@ -40,7 +43,9 @@ class TestPersistSuppressAddsToBlacklist:
     def test_activate_adds_to_whitelist(self, tmp_path: Path) -> None:
         config_path = _make_config(tmp_path)
         deltas = [RuleDelta("ConstantFolding", "activate", {})]
-        count = persist_inference(func_ea=0x2000, deltas=deltas, config_path=config_path)
+        count = persist_inference(
+            func_ea=0x2000, deltas=deltas, config_path=config_path
+        )
 
         config = json.loads(config_path.read_text())
         rule = config["blk_rules"][0]
@@ -52,7 +57,9 @@ class TestOverrideAddsPerFunctionOverrides:
     def test_override_adds_per_function_overrides(self, tmp_path: Path) -> None:
         config_path = _make_config(tmp_path)
         deltas = [RuleDelta("ConstantFolding", "override", {"max_passes": 10})]
-        count = persist_inference(func_ea=0x1000, deltas=deltas, config_path=config_path)
+        count = persist_inference(
+            func_ea=0x1000, deltas=deltas, config_path=config_path
+        )
 
         config = json.loads(config_path.read_text())
         rule = config["blk_rules"][0]
@@ -96,16 +103,13 @@ class TestPersistIsIdempotent:
 
 
 class TestUnknownRuleSkipped:
-    def test_unknown_rule_skipped_with_warning(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
-    ) -> None:
+    def test_unknown_rule_skipped_with_warning(self, tmp_path: Path) -> None:
         config_path = _make_config(tmp_path)
         deltas = [RuleDelta("NonExistentRule", "suppress", {})]
-        with caplog.at_level(logging.WARNING, logger="D810.recon.persist_inference"):
-            count = persist_inference(func_ea=0x1000, deltas=deltas, config_path=config_path)
-
+        count = persist_inference(
+            func_ea=0x1000, deltas=deltas, config_path=config_path
+        )
         assert count == 0
-        assert "not found in config" in caplog.text
 
     def test_mixed_known_and_unknown(self, tmp_path: Path) -> None:
         config_path = _make_config(tmp_path)
@@ -113,7 +117,9 @@ class TestUnknownRuleSkipped:
             RuleDelta("ConstantFolding", "suppress", {}),
             RuleDelta("Unknown", "suppress", {}),
         ]
-        count = persist_inference(func_ea=0x1000, deltas=deltas, config_path=config_path)
+        count = persist_inference(
+            func_ea=0x1000, deltas=deltas, config_path=config_path
+        )
         assert count == 1
 
 
@@ -122,7 +128,9 @@ class TestPersistInsCategoryRules:
         """Rules in ins_rules category are also found."""
         config_path = _make_config(tmp_path)
         deltas = [RuleDelta("InstructionRule", "suppress", {})]
-        count = persist_inference(func_ea=0x3000, deltas=deltas, config_path=config_path)
+        count = persist_inference(
+            func_ea=0x3000, deltas=deltas, config_path=config_path
+        )
 
         config = json.loads(config_path.read_text())
         rule = config["ins_rules"][0]

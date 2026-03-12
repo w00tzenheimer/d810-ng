@@ -10,6 +10,7 @@ No IDA imports - fully unit-testable.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import queue
 import sqlite3
@@ -544,6 +545,14 @@ _T = TypeVar("_T")
 _SENTINEL = object()
 
 
+def _shutdown_writer(writer: "ReconStoreWriter") -> None:
+    """Best-effort WAL flush on interpreter exit."""
+    try:
+        writer.shutdown()
+    except Exception:
+        pass
+
+
 class ReconStoreWriter:
     """Dedicated writer thread for serialized SQLite writes.
 
@@ -559,6 +568,7 @@ class ReconStoreWriter:
             target=self._run, daemon=True, name=f"recon-writer-{db_path.name}"
         )
         self._thread.start()
+        atexit.register(_shutdown_writer, self)
 
     def _run(self) -> None:
         store = ReconStore(self._db_path)

@@ -3,81 +3,16 @@
 from __future__ import annotations
 
 from types import MappingProxyType
-from d810.core.typing import Any, Iterable
+
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.core.logging import getLogger
+from d810.core.typing import Any, Iterable
 
-try:
-    import ida_hexrays
-except ImportError:  # pragma: no cover - exercised in unit tests without IDA.
-    class _FallbackHexRays:
-        BLT_NONE = 0
-        BLT_STOP = 1
-        BLT_0WAY = 2
-        BLT_1WAY = 3
-        BLT_2WAY = 4
-        BLT_NWAY = 5
-        BLT_XTRN = 6
+logger = getLogger(__name__)
 
-        m_nop = 0
-        m_jtbl = 1
-        m_goto = 2
-        m_jcnd = 3
-        m_jnz = 4
-        m_jz = 5
-        m_jae = 6
-        m_jb = 7
-        m_ja = 8
-        m_jbe = 9
-        m_jg = 10
-        m_jge = 11
-        m_jl = 12
-        m_jle = 13
-        m_ijmp = 14
-        m_ret = 15
-        m_ext = 16
-        m_push = 17
-        m_pop = 18
+import ida_hexrays
 
-        mop_b = 100
-        mop_c = 101
-        NORET_FORBID_ANALYSIS = 0
-
-        # Maturity levels
-        MMAT_GENERATED = 0
-        MMAT_PREOPTIMIZED = 1
-        MMAT_LOCOPT = 2
-        MMAT_CALLS = 3
-        MMAT_GLBOPT1 = 4
-        MMAT_GLBOPT2 = 5
-        MMAT_GLBOPT3 = 6
-        MMAT_LVARS = 7
-
-        # Block flags
-        MBL_FAKE = 0x10
-
-        # Known MBL_* flag bits mask (best-effort from IDA SDK)
-        _KNOWN_MBL_MASK = 0xFFFF  # conservative: treat low 16 bits as known
-
-        @staticmethod
-        def is_mcode_jcond(opcode: int) -> bool:
-            return int(opcode) in {
-                _FallbackHexRays.m_jcnd,
-                _FallbackHexRays.m_jnz,
-                _FallbackHexRays.m_jz,
-                _FallbackHexRays.m_jae,
-                _FallbackHexRays.m_jb,
-                _FallbackHexRays.m_ja,
-                _FallbackHexRays.m_jbe,
-                _FallbackHexRays.m_jg,
-                _FallbackHexRays.m_jge,
-                _FallbackHexRays.m_jl,
-                _FallbackHexRays.m_jle,
-            }
-
-    ida_hexrays = _FallbackHexRays()  # type: ignore[assignment]
-
-from d810.cfg.contracts.report import InvariantViolation
-
+from .report import InvariantViolation
 
 _COND_OPCODE_NAMES = (
     "m_jcnd",
@@ -267,7 +202,9 @@ def _jtbl_targets(tail) -> tuple[list[int] | None, str | None]:
     if tail is None:
         return None, "jtbl tail missing"
     right = getattr(tail, "r", None)
-    if right is None or int(getattr(right, "t", -1)) != int(getattr(ida_hexrays, "mop_c")):
+    if right is None or int(getattr(right, "t", -1)) != int(
+        getattr(ida_hexrays, "mop_c")
+    ):
         return None, "jtbl without case-list operand"
     cases = getattr(right, "c", None)
     if cases is None:
@@ -364,7 +301,9 @@ def block_list_consistency(
         nextb = getattr(blk, "nextb", None)
         prevb = getattr(blk, "prevb", None)
 
-        if nextb is not None and not _same_block_ref(getattr(nextb, "prevb", None), blk):
+        if nextb is not None and not _same_block_ref(
+            getattr(nextb, "prevb", None), blk
+        ):
             violations.append(
                 _violation(
                     code="CFG_50840_BLOCK_LIST_NEXT_PREV",
@@ -374,7 +313,9 @@ def block_list_consistency(
                     verify_code=50840,
                 )
             )
-        if prevb is not None and not _same_block_ref(getattr(prevb, "nextb", None), blk):
+        if prevb is not None and not _same_block_ref(
+            getattr(prevb, "nextb", None), blk
+        ):
             violations.append(
                 _violation(
                     code="CFG_50841_BLOCK_LIST_PREV_NEXT",
@@ -558,7 +499,9 @@ def block_type_vs_tail(
             continue
 
         is_nway = blk_type == int(getattr(ida_hexrays, "BLT_NWAY", -1))
-        is_jtbl = tail is not None and tail_opcode == int(getattr(ida_hexrays, "m_jtbl", -1))
+        is_jtbl = tail is not None and tail_opcode == int(
+            getattr(ida_hexrays, "m_jtbl", -1)
+        )
         if is_nway != is_jtbl:
             violations.append(
                 _violation(
@@ -575,6 +518,15 @@ def block_type_vs_tail(
             )
 
         if nsucc != expected_nsucc:
+            logger.warning(
+                "CFG_50856_BAD_NSUCC: blk[%d] type=%s expected_nsucc=%d got=%d succs=%s tail_opcode=%s",
+                serial,
+                _block_type_name(blk_type),
+                expected_nsucc,
+                nsucc,
+                succs,
+                tail_opcode,
+            )
             violations.append(
                 _violation(
                     code="CFG_50856_BAD_NSUCC",
@@ -588,7 +540,9 @@ def block_type_vs_tail(
                 )
             )
 
-        if blk_type == int(getattr(ida_hexrays, "BLT_2WAY", -1)) and not _is_conditional_jump_opcode(tail_opcode):
+        if blk_type == int(
+            getattr(ida_hexrays, "BLT_2WAY", -1)
+        ) and not _is_conditional_jump_opcode(tail_opcode):
             violations.append(
                 _violation(
                     code="CFG_BLT2WAY_NON_JCC_TAIL",
@@ -796,38 +750,6 @@ def _known_mbl_mask() -> int:
     if mask:
         return int(mask)
 
-    # Fallback for non-IDA test environments and stripped wrappers.
-    fallback_names = (
-        "MBL_PRIV",
-        "MBL_NONFAKE",
-        "MBL_FAKE",
-        "MBL_GOTO",
-        "MBL_TCAL",
-        "MBL_PUSH",
-        "MBL_DMT64",
-        "MBL_COMB",
-        "MBL_PROP",
-        "MBL_DEAD",
-        "MBL_LIST",
-        "MBL_INCONST",
-        "MBL_CALL",
-        "MBL_BACKPROP",
-        "MBL_NORET",
-        "MBL_DSLOT",
-        "MBL_VALRANGES",
-        "MBL_KEEP",
-        "MBL_INLINED",
-        "MBL_EXTFRAME",
-    )
-    for name in fallback_names:
-        val = getattr(ida_hexrays, name, None)
-        if val is not None:
-            try:
-                mask |= int(val)
-            except Exception:
-                pass
-    return int(mask) if mask else 0xFFFF
-
 
 def block_serial_range(
     mba,
@@ -890,11 +812,7 @@ def block_closing_opcode_at_tail(
             continue
 
         blk_type = int(getattr(blk, "type", 0))
-        is_special = (
-            serial == 0
-            or serial == qty - 1
-            or blk_type == blt_xtrn
-        )
+        is_special = serial == 0 or serial == qty - 1 or blk_type == blt_xtrn
         tail = getattr(blk, "tail", None)
 
         # Check 51814: special blocks must be empty
@@ -992,9 +910,7 @@ def block_address_range(
                 _violation(
                     code="CFG_50869_START_GE_END",
                     phase=phase,
-                    message=(
-                        f"Block {serial}: start=0x{start:x} >= end=0x{end:x}"
-                    ),
+                    message=(f"Block {serial}: start=0x{start:x} >= end=0x{end:x}"),
                     block_serial=serial,
                     verify_code=50869,
                 )

@@ -3,11 +3,11 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 
-from d810.core.typing import Any, Callable, Iterable, Protocol
 from d810.core.logging import getLogger
 from d810.core.registry import EventEmitter
+from d810.core.typing import Any, Callable, Iterable, Protocol
 
-logger = getLogger("D810.rule_scope")
+logger = getLogger(__name__)
 
 PIPELINE_INSTRUCTION = "instruction"
 PIPELINE_FLOW = "flow"
@@ -100,9 +100,10 @@ class RuleDelta:
     *derived from automated recon analysis*, not hand-authored presets.
     "Delta" conveys a diff from baseline behavior.
     """
+
     rule_name: str
-    action: str                 # "suppress" | "activate" | "override"
-    overrides: dict[str, Any]   # {} for suppress/activate; key:value for override
+    action: str  # "suppress" | "activate" | "override"
+    overrides: dict[str, Any]  # {} for suppress/activate; key:value for override
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +146,7 @@ class ApplyHintsResult:
         generation_before: Service generation before the hints were applied.
         generation_after: Service generation after the hints were applied.
     """
+
     func_ea: int
     inferences_applied: tuple[str, ...]
     inferences_not_found: tuple[str, ...]
@@ -152,6 +154,7 @@ class ApplyHintsResult:
     cache_invalidated: bool
     generation_before: int
     generation_after: int
+    user_overrides: list[tuple[RuleDelta, int]] = field(default_factory=list)
 
 
 class HintOverlayProvider:
@@ -270,9 +273,7 @@ class HintOverlayProvider:
         base_disabled = (
             delegate_overlay.disabled_rules if delegate_overlay else frozenset()
         )
-        base_tags = (
-            delegate_overlay.function_tags if delegate_overlay else frozenset()
-        )
+        base_tags = delegate_overlay.function_tags if delegate_overlay else frozenset()
 
         return FunctionRuleOverlay(
             enabled_rules=base_enabled,
@@ -337,7 +338,9 @@ class RuleScopeService:
         self._caches.active_by_scope.clear()
         self._overlay_cache.clear()
         if logger.debug_on:
-            logger.debug("rule-scope full invalidation -> generation=%d", self._generation)
+            logger.debug(
+                "rule-scope full invalidation -> generation=%d", self._generation
+            )
 
     def _invalidate_functions(self, func_eas: frozenset[int]) -> None:
         self._generation += 1
@@ -459,16 +462,16 @@ class RuleScopeService:
         generation_before = self._generation
         inferences_applied: list[str] = []
         inferences_not_found: list[str] = []
+        user_overrides: list[tuple[RuleDelta, int]] = []
 
         # --- 0. Clear previous hint state for this function ------------------
         # Each call is a full replace, not an append: a later call with
         # empty/different hints for the same func_ea retracts earlier decisions.
         had_previous_state = False
         if self._hint_overlay is not None:
-            had_previous_state = (
-                bool(self._hint_overlay.get_hint_inferences(func_ea))
-                or self._hint_overlay.has_suppressions(func_ea)
-            )
+            had_previous_state = bool(
+                self._hint_overlay.get_hint_inferences(func_ea)
+            ) or self._hint_overlay.has_suppressions(func_ea)
             self._hint_overlay.clear_func(func_ea)
 
         # --- 1. Apply recommended inferences ---------------------------------
@@ -481,36 +484,45 @@ class RuleScopeService:
             deltas = factory(hints)
             logger.info(
                 "rule_inference: func=0x%x inference=%r produced %d delta(s)",
-                func_ea, inference_name, len(deltas),
+                func_ea,
+                inference_name,
+                len(deltas),
             )
             enabled: set[str] = set()
             disabled: set[str] = set()
+
             for delta in deltas:
                 if delta.action == "activate":
                     if self._user_config_overrides_delta(delta, func_ea):
                         logger.warning(
                             "rule_inference: func=0x%x delta activate(%s) -> "
                             "overridden by user config (rule is blacklisted)",
-                            func_ea, delta.rule_name,
+                            func_ea,
+                            delta.rule_name,
                         )
+                        user_overrides.append((delta, func_ea))
                     else:
                         enabled.add(delta.rule_name)
                         logger.info(
                             "rule_inference: func=0x%x delta activate(%s) -> applied",
-                            func_ea, delta.rule_name,
+                            func_ea,
+                            delta.rule_name,
                         )
                 elif delta.action == "suppress":
                     if self._user_config_overrides_delta(delta, func_ea):
                         logger.warning(
                             "rule_inference: func=0x%x delta suppress(%s) -> "
                             "overridden by user config (rule is whitelisted)",
-                            func_ea, delta.rule_name,
+                            func_ea,
+                            delta.rule_name,
                         )
+                        user_overrides.append((delta, func_ea))
                     else:
                         disabled.add(delta.rule_name)
                         logger.info(
                             "rule_inference: func=0x%x delta suppress(%s) -> applied",
-                            func_ea, delta.rule_name,
+                            func_ea,
+                            delta.rule_name,
                         )
             scoped = RuleInferenceOverlay(
                 name=inference_name,
@@ -544,7 +556,9 @@ class RuleScopeService:
             rules_suppressed = list(suppress_rules)
 
         # --- 3. Invalidate caches for this function --------------------------
-        any_change = bool(inferences_applied) or bool(rules_suppressed) or had_previous_state
+        any_change = (
+            bool(inferences_applied) or bool(rules_suppressed) or had_previous_state
+        )
         if any_change:
             self.invalidate(
                 RuleScopeInvalidation(
@@ -563,15 +577,17 @@ class RuleScopeService:
             cache_invalidated=any_change,
             generation_before=generation_before,
             generation_after=generation_after,
+            user_overrides=user_overrides,
         )
         if logger.debug_on:
             logger.debug(
-                "apply_hints func_ea=0x%x: inferences=%s suppressed=%s gen=%d->%d",
+                "apply_hints func_ea=0x%x: inferences=%s suppressed=%s gen=%d->%d (user overrides=%d)",
                 func_ea,
                 result.inferences_applied,
                 result.rules_suppressed,
                 generation_before,
                 generation_after,
+                len(result.user_overrides),
             )
         return result
 
@@ -667,7 +683,9 @@ class RuleScopeService:
             tags.update(overlay.function_tags)
         effective_tags = frozenset(tags)
         rules_by_name = compiled.by_pipeline_rule_name.get(pipeline, {})
-        names = list(compiled.by_pipeline_maturity.get(pipeline, {}).get(maturity, tuple()))
+        names = list(
+            compiled.by_pipeline_maturity.get(pipeline, {}).get(maturity, tuple())
+        )
         names.extend(compiled.by_pipeline_any_maturity.get(pipeline, tuple()))
         if not names:
             return tuple()
@@ -694,7 +712,9 @@ class RuleScopeService:
                 tags=effective_tags,
             ):
                 continue
-            if not self._selector_allows(selector, func_ea=func_ea, tags=effective_tags):
+            if not self._selector_allows(
+                selector, func_ea=func_ea, tags=effective_tags
+            ):
                 continue
             rule = rules_by_name.get(rule_name)
             if rule is not None:
@@ -730,7 +750,9 @@ class RuleScopeService:
 
     @staticmethod
     def _selector_from_rule(rule_name: str, rule: Any) -> RuleSelectorCompiled:
-        maturities = frozenset(int(m) for m in getattr(rule, "maturities", []) if m is not None)
+        maturities = frozenset(
+            int(m) for m in getattr(rule, "maturities", []) if m is not None
+        )
 
         allow_eas: frozenset[int] | None = None
         if bool(getattr(rule, "use_whitelist", False)):

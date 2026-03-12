@@ -12,10 +12,11 @@ tests/
 
 ## Definitions
 
+All tests have access to IDA, but unit tests can import ida libraries but not actually run inside real IDA
+
 ### unit/
 
-- Pure Python
-- No IDA runtime required
+- No IDA database required, but idapro should be installed
 - Tests algorithms, transforms, helpers, internal logic
 - Fast and deterministic
 
@@ -23,7 +24,7 @@ tests/
 
 ### system/runtime/
 
-- Runs inside real IDA (Hex-Rays optional depending on test)
+- Runs *inside* of IDA with a database open
 - Tests API usage and semantic correctness
 - Asserts invariants, stability, shapes, no-crash behavior
 - Does NOT assert full deobfuscation outcomes
