@@ -308,6 +308,25 @@ class PrivateTerminalSuffixGroup:
     reason: str = "terminal_return_shared_epilogue"
 
 
+@dataclass(frozen=True)
+class ReorderBlocks:
+    """Copy handler blocks to end of MBA in DFS order, then remap all serial
+    references. Originals become isolated (no incoming edges) so IDA DCE
+    removes them.
+
+    dfs_block_order: tuple of block serials in desired output order (DFS traversal
+    of handlers from entry state). Applied AFTER all other modifications in the same
+    PlanFragment so goto redirects are visible in the remapping.
+
+    non_2way_serials: subset of dfs_block_order excluding BLT_2WAY blocks.
+    Pre-computed by the strategy (which has snapshot/mba access) so that downstream
+    consumers (projector, edit simulator) know which blocks will actually be copied
+    by the backend (Phase A skips BLT_2WAY).
+    """
+    dfs_block_order: tuple[int, ...]
+    non_2way_serials: tuple[int, ...] = ()
+
+
 class DirectTerminalLoweringKind(str, enum.Enum):
     """Kind of direct terminal lowering to apply per anchor."""
     RETURN_CONST = "return_const"
@@ -352,6 +371,7 @@ GraphModification = Union[
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     DirectTerminalLoweringGroup,
+    ReorderBlocks,
 ]
 
 
@@ -371,5 +391,6 @@ __all__ = [
     "DirectTerminalLoweringKind",
     "DirectTerminalLoweringSite",
     "DirectTerminalLoweringGroup",
+    "ReorderBlocks",
     "GraphModification",
 ]
