@@ -313,7 +313,7 @@ class PatchReorderBlocks:
     """Reorder handler blocks by copying them in DFS order to end of MBA."""
 
     dfs_block_order: tuple[int, ...]
-    non_2way_serials: tuple[int, ...]  # dfs_block_order minus BLT_2WAY blocks; for projector
+    non_2way_serials: tuple[int, ...] = ()  # dfs_block_order minus BLT_2WAY blocks; for projector
 
 
 BlockCreatingGraphModification = Union[
