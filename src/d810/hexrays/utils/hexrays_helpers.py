@@ -10,18 +10,13 @@ import dataclasses
 import enum
 
 import ida_hexrays
-
 from d810.core import typing
 from d810.core.typing import TYPE_CHECKING, Optional, Tuple, Union
-
-if TYPE_CHECKING:
-    # Type hints for IDE support when IDA stubs are available
-    from ida_hexrays import mbl_array_t, mblock_t, minsn_t, mop_t
 
 from d810.core import getLogger
 
 # Import constant tables from d810.core (IDA-independent)
-from d810.core.bits import AND_TABLE, MSB_TABLE, SUB_TABLE
+from d810.core.bits import AND_TABLE, MSB_TABLE
 from d810.core.cymode import CythonMode
 
 # Try to import Cython hash_mop if CythonMode is enabled
@@ -741,17 +736,17 @@ def is_check_mop(lo: ida_hexrays.mop_t) -> bool:
 
 def extract_num_mop(
     ins: ida_hexrays.minsn_t,
-) -> tuple[ida_hexrays.mop_t, ida_hexrays.mop_t]:
-    num_mop = typing.cast(ida_hexrays.mop_t, None)
-    other_mop = typing.cast(ida_hexrays.mop_t, None)
+) -> tuple[ida_hexrays.mop_t|None, ida_hexrays.mop_t|None]:
+    num_mop: ida_hexrays.mop_t|None = None
+    other_mop: ida_hexrays.mop_t|None = None
 
     if ins.l.t == ida_hexrays.mop_n:
-        num_mop = ins.l
-        other_mop = ins.r
+        num_mop : ida_hexrays.mop_t = ins.l
+        other_mop: ida_hexrays.mop_t = ins.r
     if ins.r.t == ida_hexrays.mop_n:
-        num_mop = ins.r
-        other_mop = ins.l
-    return (num_mop, other_mop)
+        num_mop: ida_hexrays.mop_t = ins.r
+        other_mop: ida_hexrays.mop_t = ins.l
+    return num_mop, other_mop
 
 
 def check_ins_mop_size_are_ok(ins: ida_hexrays.minsn_t) -> bool:
@@ -890,19 +885,6 @@ def get_blk_index(
         return blk_serial_list.index(searched_blk.serial)
     except ValueError:
         return -1
-
-
-_mmat_strs = {
-    ida_hexrays.MMAT_ZERO: "MMAT_ZERO",
-    ida_hexrays.MMAT_GENERATED: "MMAT_GENERATED",
-    ida_hexrays.MMAT_PREOPTIMIZED: "MMAT_PREOPTIMIZED",
-    ida_hexrays.MMAT_LOCOPT: "MMAT_LOCOPT",
-    ida_hexrays.MMAT_CALLS: "MMAT_CALLS",
-    ida_hexrays.MMAT_GLBOPT1: "MMAT_GLBOPT1",
-    ida_hexrays.MMAT_GLBOPT2: "MMAT_GLBOPT2",
-    ida_hexrays.MMAT_GLBOPT3: "MMAT_GLBOPT3",
-    ida_hexrays.MMAT_LVARS: "MMAT_LVARS",
-}
 
 
 class MicrocodeHelper:
