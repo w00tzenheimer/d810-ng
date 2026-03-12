@@ -50,6 +50,7 @@ class TopologicalSortStrategy:
     """
 
     prerequisites: list[str] = ["linearized_flow_graph"]
+    _applied: set[tuple[int, int]] = set()  # (func_ea, maturity) already processed
 
     @property
     def name(self) -> str:
@@ -75,6 +76,17 @@ class TopologicalSortStrategy:
         Returns:
             True if the transition graph can be traversed for DFS ordering.
         """
+        mba = snapshot.mba
+        if mba is not None:
+            func_ea = mba.entry_ea
+            maturity = mba.maturity
+            if (func_ea, maturity) in TopologicalSortStrategy._applied:
+                logger.debug(
+                    "TopologicalSort: already applied for func_ea=0x%x maturity=%d, skipping",
+                    func_ea, maturity,
+                )
+                return False
+
         sm = snapshot.state_machine
         if sm is None or not sm.handlers:
             return False
@@ -132,6 +144,7 @@ class TopologicalSortStrategy:
         # DFS from initial state through transitions
         visited_states: set[int] = set()
         dfs_block_order: list[int] = []
+        seen_blocks: set[int] = set()  # deduplicate shared handler blocks
 
         def _resolve_entry(to_state: int) -> int | None:
             """Resolve a state value to handler entry serial."""
@@ -153,7 +166,10 @@ class TopologicalSortStrategy:
                 return
             visited_states.add(state)
             handler = sm.handlers[state]
-            dfs_block_order.extend(handler.handler_blocks)
+            for blk_serial in handler.handler_blocks:
+                if blk_serial not in seen_blocks:
+                    seen_blocks.add(blk_serial)
+                    dfs_block_order.append(blk_serial)
 
             # Collect transitions from this handler, unconditional first
             handler_block_set = set(handler.handler_blocks)
@@ -192,29 +208,38 @@ class TopologicalSortStrategy:
         if not dfs_block_order:
             return None
 
-        # Pre-compute which blocks are NOT BLT_2WAY — the backend Phase A
-        # skips 2WAY blocks (they are kept in-place) and the projector needs
-        # this subset to simulate copy_block allocations.
+        # Pre-compute which blocks are NOT BLT_2WAY and which ARE BLT_2WAY.
+        # Non-2WAY blocks are copied directly in Phase A.  2WAY blocks (handler-
+        # internal conditionals) get a copy + fallthrough trampoline pair.
         non_2way_serials: tuple[int, ...] = ()
+        two_way_serials: tuple[int, ...] = ()
         mba = snapshot.mba
         if mba is not None and _BLT_2WAY is not None:
-            non_2way_serials = tuple(
-                s for s in dfs_block_order
-                if (blk := mba.get_mblock(s)) is not None
-                and blk.type != _BLT_2WAY
-            )
+            _non_2way: list[int] = []
+            _two_way: list[int] = []
+            for s in dfs_block_order:
+                blk = mba.get_mblock(s)
+                if blk is None:
+                    continue
+                if blk.type == _BLT_2WAY:
+                    _two_way.append(s)
+                else:
+                    _non_2way.append(s)
+            non_2way_serials = tuple(_non_2way)
+            two_way_serials = tuple(_two_way)
         else:
             logger.warning(
-                "TopologicalSortStrategy: cannot filter BLT_2WAY blocks (mba=%s, _BLT_2WAY=%s), "
-                "non_2way_serials will be over-estimated",
+                "TopologicalSortStrategy: cannot filter BLT_2WAY blocks "
+                "(mba=%s, _BLT_2WAY=%s), non_2way_serials over-estimated",
                 mba, _BLT_2WAY,
             )
             non_2way_serials = tuple(dfs_block_order)
 
         logger.info(
-            "TopologicalSort: %d blocks in DFS order (%d non-2WAY) for %d handlers",
+            "TopologicalSort: %d blocks in DFS order (%d non-2WAY, %d 2WAY) for %d handlers",
             len(dfs_block_order),
             len(non_2way_serials),
+            len(two_way_serials),
             len(visited_states),
         )
 
@@ -232,6 +257,16 @@ class TopologicalSortStrategy:
             blocks_freed=0,
             conflict_density=0.0,
         )
+        # Mark as applied so subsequent IDA passes at the same maturity skip.
+        if mba is not None:
+            func_ea = mba.entry_ea
+            maturity = mba.maturity
+            TopologicalSortStrategy._applied.add((func_ea, maturity))
+            logger.info(
+                "TopologicalSort: marking func_ea=0x%x maturity=%d as applied",
+                func_ea, maturity,
+            )
+
         return PlanFragment(
             strategy_name=self.name,
             family=self.family,
@@ -239,6 +274,7 @@ class TopologicalSortStrategy:
                 ReorderBlocks(
                     dfs_block_order=tuple(dfs_block_order),
                     non_2way_serials=non_2way_serials,
+                    two_way_serials=two_way_serials,
                 ),
             ],
             ownership=ownership,
