@@ -4192,18 +4192,20 @@ class DeferredGraphModifier:
             tail = old_blk.tail
             if tail is None:
                 continue
-            # NOP all intermediate instructions; tail becomes the sole insn
+            # NOP all intermediate instructions; tail becomes the sole insn.
+            # Use make_nop (not raw opcode=m_nop) to clear iprops — an
+            # is_assert flag surviving an opcode change triggers INTERR 52123.
             insn = old_blk.head
             while insn is not None and insn is not tail:
-                insn.opcode = ida_hexrays.m_nop
-                insn.l.erase()
-                insn.r.erase()
-                insn.d.erase()
-                insn = insn.next
-            # Convert tail to unconditional goto → new serial
+                next_insn = insn.next
+                old_blk.make_nop(insn)
+                insn = next_insn
+            # Convert tail to unconditional goto → new serial.
+            # make_nop first to clear iprops (avoids INTERR 52123), then
+            # set the goto opcode and operand.
+            old_blk.make_nop(tail)
             tail.opcode = ida_hexrays.m_goto
             tail.l.make_blkref(new_serial)
-            # m_goto uses only l; erase r and d (handles live operands safely)
             tail.r.erase()
             tail.d.erase()
             # Update block type and succset
