@@ -4077,44 +4077,54 @@ class DeferredGraphModifier:
         # (a copied handler) instead of the real BLT_STOP.  We remap this explicitly.
         old_blt_stop_serial = mba.qty - 1
 
-        # ---- Phase A: Copy blocks to end in DFS order ----
-        for old_serial in dfs_block_order:
-            old_blk = mba.get_mblock(old_serial)
-            if old_blk is None:
+        # Rebuild non-2WAY serials from live MBA state.  The dfs_block_order was
+        # computed at strategy/plan time when certain blocks were BLT_1WAY.  By
+        # apply time, LFG or other transforms may have converted some of those
+        # blocks to BLT_2WAY.  Filtering at runtime avoids the serial mismatch
+        # cascade that occurs when the skip-set differs from plan time (each
+        # unexpected skip shifts every subsequent copy_block serial by -1).
+        runtime_non_2way: list[int] = []
+        runtime_skipped_2way: list[int] = []
+        for s in dfs_block_order:
+            blk = mba.get_mblock(s)
+            if blk is None:
                 logger.warning(
-                    "reorder_blocks: blk[%d] not found, skipping",
-                    old_serial,
+                    "reorder_blocks: blk[%d] not found, skipping", s,
                 )
                 continue
-            # BLT_2WAY blocks cannot be safely reordered via copy_block: after
-            # copying, the new block's implicit fallthrough (serial+1) must equal
-            # one of its two successors, but that is only guaranteed if the DFS
-            # places the original fallthrough block immediately adjacent — which
-            # cannot be ensured for cross-handler conditional exits.  Leave
-            # BLT_2WAY blocks in place; Phase B treats them as external blocks
-            # (keeps fallthrough, remaps explicit target) and the old trampolines
-            # handle any needed redirects.
-            if old_blk.type == ida_hexrays.BLT_2WAY:
-                logger.debug(
-                    "reorder_blocks Phase A: skipping 2-way blk[%d]",
-                    old_serial,
-                )
+            if blk.type == ida_hexrays.BLT_2WAY:
+                runtime_skipped_2way.append(s)
+                continue
+            runtime_non_2way.append(s)
+
+        if runtime_skipped_2way:
+            logger.info(
+                "reorder_blocks: skipped %d BLT_2WAY blocks at runtime: %s",
+                len(runtime_skipped_2way),
+                runtime_skipped_2way[:20],
+            )
+
+        # ---- Phase A: Copy blocks to end in DFS order ----
+        for old_serial in runtime_non_2way:
+            old_blk = mba.get_mblock(old_serial)
+            if old_blk is None:
                 continue
             # Append before BLT_STOP — only shifts BLT_STOP, safe
             new_blk = mba.copy_block(old_blk, mba.qty - 1)
             actual_serial = new_blk.serial
-            # Validate against pre-computed serial from PatchPlan when available
+            # Diagnostic: compare against pre-computed serial from PatchPlan.
+            # Mismatches are expected when LFG changes block types between plan
+            # and apply time; the runtime serial is authoritative.
             if expected_old_to_new is not None and old_serial in expected_old_to_new:
                 expected_serial = expected_old_to_new[old_serial]
                 if actual_serial != expected_serial:
-                    logger.error(
+                    logger.debug(
                         "reorder_blocks Phase A: copy_block returned serial %d "
-                        "for old=%d, expected %d (MBA state diverged from plan)",
+                        "for old=%d, expected %d (LFG-induced drift, using runtime)",
                         actual_serial,
                         old_serial,
                         expected_serial,
                     )
-                    # Fall back to runtime serial — plan/simulation may be stale
             old_to_new[old_serial] = actual_serial
             # CRITICAL: clear only predset — succset (pointing to old handler
             # serials) is kept; Phase B will remap those entries on the new block.
