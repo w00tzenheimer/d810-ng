@@ -39,6 +39,7 @@ from d810.cfg.plan import (
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
     PatchDirectTerminalLoweringGroup,
+    PatchReorderBlocks,
     PatchRedirectBranch,
     PatchRedirectGoto,
     PatchRemoveEdge,
@@ -368,6 +369,8 @@ class IDAIRTranslator:
                     continue
                 case PatchDirectTerminalLoweringGroup():
                     continue
+                case PatchReorderBlocks():
+                    continue
                 case PatchInsertBlock() as insert_step:
                     reason = _unsupported_insert_block_reason(insert_step)
                     if reason is not None:
@@ -576,6 +579,13 @@ class IDAIRTranslator:
                     return_block_serial=return_block,
                     suffix_serials=suffix_serials,
                     sites=sites,
+                )
+
+            case PatchReorderBlocks(dfs_block_order=order, old_to_new=old_to_new_pairs):
+                modifier.queue_reorder_blocks(
+                    dfs_block_order=order,
+                    old_to_new=dict(old_to_new_pairs) if old_to_new_pairs else None,
+                    description=f"reorder {len(order)} blocks in DFS order",
                 )
 
             case LegacyBlockOperation(modification=mod):
