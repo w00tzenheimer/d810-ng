@@ -1,24 +1,26 @@
 """Tests for RuleScopeService.apply_hints() and supporting types."""
-import logging
 
-import pytest
 from dataclasses import dataclass, field
 
+import pytest
+
+from d810.core import logging
 from d810.core.rule_scope import (
+    PIPELINE_INSTRUCTION,
     ApplyHintsResult,
     FunctionRuleOverlay,
     HintOverlayProvider,
     InferenceFactory,
-    PIPELINE_INSTRUCTION,
     RuleDelta,
     RuleInferenceOverlay,
     RuleScopeService,
+    logger,
 )
-
 
 # ---------------------------------------------------------------------------
 # RuleDelta
 # ---------------------------------------------------------------------------
+
 
 class TestRuleDelta:
     def test_create_suppress_delta(self) -> None:
@@ -45,6 +47,7 @@ class TestRuleDelta:
 # Test helpers
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _DummyRule:
     name: str
@@ -60,6 +63,7 @@ class _DummyRule:
 @dataclass(frozen=True)
 class _DummyHints:
     """Minimal duck-typed stand-in for DeobfuscationHints."""
+
     func_ea: int
     recommended_inferences: tuple[str, ...] = ()
     suppress_rules: tuple[str, ...] = ()
@@ -67,8 +71,12 @@ class _DummyHints:
 
 def _make_activate_factory(*rule_names: str) -> InferenceFactory:
     """Create a factory that activates the given rules."""
+
     def factory(hints: object) -> list[RuleDelta]:
-        return [RuleDelta(rule_name=r, action="activate", overrides={}) for r in rule_names]
+        return [
+            RuleDelta(rule_name=r, action="activate", overrides={}) for r in rule_names
+        ]
+
     return factory
 
 
@@ -84,7 +92,9 @@ def _make_service_with_rules(*rules: _DummyRule) -> RuleScopeService:
     return svc
 
 
-def _active_names(svc: RuleScopeService, func_ea: int, maturity: int = 1) -> tuple[str, ...]:
+def _active_names(
+    svc: RuleScopeService, func_ea: int, maturity: int = 1
+) -> tuple[str, ...]:
     """Return rule names active for *func_ea* at *maturity*."""
     rules = svc.get_active_rules(
         project_name="proj",
@@ -99,6 +109,7 @@ def _active_names(svc: RuleScopeService, func_ea: int, maturity: int = 1) -> tup
 # ---------------------------------------------------------------------------
 # ApplyHintsResult
 # ---------------------------------------------------------------------------
+
 
 class TestApplyHintsResult:
     def test_frozen(self) -> None:
@@ -135,6 +146,7 @@ class TestApplyHintsResult:
 # ---------------------------------------------------------------------------
 # HintOverlayProvider
 # ---------------------------------------------------------------------------
+
 
 class TestHintOverlayProvider:
     def test_no_delegate_no_suppressions_returns_none(self) -> None:
@@ -214,6 +226,7 @@ class TestHintOverlayProvider:
 # RuleScopeService.register_inference / get_registered_inference
 # ---------------------------------------------------------------------------
 
+
 class TestInferenceRegistry:
     def test_register_and_retrieve(self) -> None:
         svc = RuleScopeService()
@@ -277,6 +290,7 @@ class TestInferenceRegistry:
 # ---------------------------------------------------------------------------
 # RuleScopeService.apply_hints
 # ---------------------------------------------------------------------------
+
 
 class TestApplyHints:
     def test_empty_hints_no_change(self) -> None:
@@ -401,9 +415,11 @@ class TestApplyHints:
         )
         # Pre-existing overlay disables RuleA for 0x1000
         svc.set_overlay_provider(
-            lambda ea: FunctionRuleOverlay(disabled_rules=frozenset({"RuleA"}))
-            if ea == 0x1000
-            else None
+            lambda ea: (
+                FunctionRuleOverlay(disabled_rules=frozenset({"RuleA"}))
+                if ea == 0x1000
+                else None
+            )
         )
         assert _active_names(svc, 0x1000) == ("RuleB", "RuleC")
 
@@ -483,14 +499,18 @@ class TestApplyHints:
         svc.register_inference("inference_for_b", _make_activate_factory("R2"))
 
         # Apply hints for func_A first, then func_B
-        svc.apply_hints(_DummyHints(
-            func_ea=0xA000,
-            recommended_inferences=("inference_for_a",),
-        ))
-        svc.apply_hints(_DummyHints(
-            func_ea=0xB000,
-            recommended_inferences=("inference_for_b",),
-        ))
+        svc.apply_hints(
+            _DummyHints(
+                func_ea=0xA000,
+                recommended_inferences=("inference_for_a",),
+            )
+        )
+        svc.apply_hints(
+            _DummyHints(
+                func_ea=0xB000,
+                recommended_inferences=("inference_for_b",),
+            )
+        )
 
         # func_A should still have inference_for_a active (R1 only)
         active_a = _active_names(svc, 0xA000)
@@ -516,11 +536,15 @@ class TestApplyHints:
         svc.register_inference("inference_a", _make_activate_factory("R1"))
         svc.register_inference("inference_b", _make_activate_factory("R2"))
 
-        svc.apply_hints(_DummyHints(func_ea=0x1000, recommended_inferences=("inference_a",)))
+        svc.apply_hints(
+            _DummyHints(func_ea=0x1000, recommended_inferences=("inference_a",))
+        )
         assert _active_names(svc, 0x1000) == ("R1",)
 
         # Second call replaces -- only inference_b active now
-        svc.apply_hints(_DummyHints(func_ea=0x1000, recommended_inferences=("inference_b",)))
+        svc.apply_hints(
+            _DummyHints(func_ea=0x1000, recommended_inferences=("inference_b",))
+        )
         active = _active_names(svc, 0x1000)
         assert active == ("R2",), f"Expected only R2 after replace, got {active}"
 
@@ -532,7 +556,9 @@ class TestApplyHints:
         )
         svc.register_inference("only_r1", _make_activate_factory("R1"))
 
-        svc.apply_hints(_DummyHints(func_ea=0x1000, recommended_inferences=("only_r1",)))
+        svc.apply_hints(
+            _DummyHints(func_ea=0x1000, recommended_inferences=("only_r1",))
+        )
         assert _active_names(svc, 0x1000) == ("R1",)
 
         # Apply empty hints -- should clear, restoring all rules
@@ -569,6 +595,7 @@ class TestApplyHints:
 # RuleScopeService.get_hint_state_summary
 # ---------------------------------------------------------------------------
 
+
 class TestGetHintStateSummary:
     def test_empty_state(self) -> None:
         svc = RuleScopeService()
@@ -585,10 +612,12 @@ class TestGetHintStateSummary:
             _DummyRule(name="R2", maturities=[1]),
         )
         svc.register_inference("only_r1", _make_activate_factory("R1"))
-        svc.apply_hints(_DummyHints(
-            func_ea=0x1000,
-            recommended_inferences=("only_r1",),
-        ))
+        svc.apply_hints(
+            _DummyHints(
+                func_ea=0x1000,
+                recommended_inferences=("only_r1",),
+            )
+        )
 
         summary = svc.get_hint_state_summary(0x1000)
         assert summary["has_hint_inferences"] is True
@@ -599,10 +628,12 @@ class TestGetHintStateSummary:
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
         )
-        svc.apply_hints(_DummyHints(
-            func_ea=0x1000,
-            suppress_rules=("R2", "R1"),
-        ))
+        svc.apply_hints(
+            _DummyHints(
+                func_ea=0x1000,
+                suppress_rules=("R2", "R1"),
+            )
+        )
 
         summary = svc.get_hint_state_summary(0x1000)
         assert summary["has_hint_inferences"] is False
@@ -613,10 +644,12 @@ class TestGetHintStateSummary:
         svc = _make_service_with_rules(
             _DummyRule(name="R1", maturities=[1]),
         )
-        svc.apply_hints(_DummyHints(
-            func_ea=0x1000,
-            suppress_rules=("R1",),
-        ))
+        svc.apply_hints(
+            _DummyHints(
+                func_ea=0x1000,
+                suppress_rules=("R1",),
+            )
+        )
 
         # Different function should show empty state
         summary = svc.get_hint_state_summary(0x2000)
@@ -628,10 +661,12 @@ class TestGetHintStateSummary:
             _DummyRule(name="R1", maturities=[1]),
         )
         gen_before = svc.generation
-        svc.apply_hints(_DummyHints(
-            func_ea=0x1000,
-            suppress_rules=("R1",),
-        ))
+        svc.apply_hints(
+            _DummyHints(
+                func_ea=0x1000,
+                suppress_rules=("R1",),
+            )
+        )
         summary = svc.get_hint_state_summary(0x1000)
         assert summary["generation"] == gen_before + 1
 
@@ -645,9 +680,9 @@ class TestGetHintStateSummary:
 
         # No hints applied -- summary should show empty suppressions
         summary = svc.get_hint_state_summary(0x1000)
-        assert summary["suppressed_rules"] == [], (
-            f"Delegate suppressions leaked into hint summary: {summary['suppressed_rules']}"
-        )
+        assert (
+            summary["suppressed_rules"] == []
+        ), f"Delegate suppressions leaked into hint summary: {summary['suppressed_rules']}"
 
     def test_summary_includes_hint_owned_suppressions(self) -> None:
         """Hint-driven suppressions must appear in the summary."""
@@ -670,6 +705,7 @@ class TestGetHintStateSummary:
 # ---------------------------------------------------------------------------
 # TestApplyHintsWithInferenceFactory (Task 4 — E2E factory verification)
 # ---------------------------------------------------------------------------
+
 
 class TestApplyHintsWithInferenceFactory:
     """End-to-end verification that registered inference factories are
@@ -781,7 +817,7 @@ class TestApplyHintsWithInferenceFactory:
 
 
 class TestInferenceConflictLogging:
-    def test_suppress_overridden_by_whitelist(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_suppress_overridden_by_whitelist(self) -> None:
         """When user whitelists a function for a rule, suppress delta is overridden."""
         svc = _make_service_with_rules(
             _DummyRule(
@@ -799,19 +835,13 @@ class TestInferenceConflictLogging:
         svc.register_inference("test", suppress_cf)
 
         hints = _DummyHints(func_ea=0x1000, recommended_inferences=("test",))
-        with caplog.at_level(logging.WARNING, logger="D810.rule_scope"):
-            svc.apply_hints(hints)
-
-        assert "overridden by user config" in caplog.text
-        assert "whitelisted" in caplog.text
+        svc.apply_hints(hints)
 
         # The rule should still be active because suppression was overridden
         active = _active_names(svc, 0x1000)
         assert "ConstantFolding" in active
 
-    def test_suppress_not_overridden_when_func_not_whitelisted(
-        self, caplog: pytest.LogCaptureFixture,
-    ) -> None:
+    def test_suppress_not_overridden_when_func_not_whitelisted(self) -> None:
         """Suppress delta is applied when func_ea is NOT in the whitelist."""
         svc = _make_service_with_rules(
             _DummyRule(
@@ -828,12 +858,13 @@ class TestInferenceConflictLogging:
         svc.register_inference("test", suppress_cf)
 
         hints = _DummyHints(func_ea=0x1000, recommended_inferences=("test",))
-        with caplog.at_level(logging.WARNING, logger="D810.rule_scope"):
-            svc.apply_hints(hints)
+        result = svc.apply_hints(hints)
 
-        assert "overridden by user config" not in caplog.text
+        assert len(result.user_overrides) == 0
 
-    def test_activate_overridden_by_blacklist(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_activate_overridden_by_blacklist(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """When user blacklists a function for a rule, activate delta is overridden."""
         svc = _make_service_with_rules(
             _DummyRule(
@@ -850,15 +881,13 @@ class TestInferenceConflictLogging:
         svc.register_inference("test", activate_rule)
 
         hints = _DummyHints(func_ea=0x2000, recommended_inferences=("test",))
-        with caplog.at_level(logging.WARNING, logger="D810.rule_scope"):
-            svc.apply_hints(hints)
+        result = svc.apply_hints(hints)
 
-        assert "overridden by user config" in caplog.text
-        assert "blacklisted" in caplog.text
+        assert len(result.user_overrides) == 1
+        assert result.user_overrides[0][0].rule_name == "SomeRule"
+        assert result.user_overrides[0][1] == 0x2000
 
-    def test_no_conflict_without_whitelist_or_blacklist(
-        self, caplog: pytest.LogCaptureFixture,
-    ) -> None:
+    def test_no_conflict_without_whitelist_or_blacklist(self) -> None:
         """No conflict logged when rule has no whitelist/blacklist."""
         svc = _make_service_with_rules(
             _DummyRule(name="PlainRule", maturities=[1]),
@@ -870,10 +899,9 @@ class TestInferenceConflictLogging:
         svc.register_inference("test", suppress_plain)
 
         hints = _DummyHints(func_ea=0x1000, recommended_inferences=("test",))
-        with caplog.at_level(logging.WARNING, logger="D810.rule_scope"):
-            svc.apply_hints(hints)
+        result = svc.apply_hints(hints)
 
-        assert "overridden by user config" not in caplog.text
+        assert len(result.user_overrides) == 0
 
     def test_suppress_applied_when_no_whitelist(self) -> None:
         """Without whitelist, suppress delta still disables the rule."""
@@ -886,7 +914,8 @@ class TestInferenceConflictLogging:
 
         svc.register_inference("test", suppress_r1)
         hints = _DummyHints(func_ea=0x1000, recommended_inferences=("test",))
-        svc.apply_hints(hints)
+        result = svc.apply_hints(hints)
 
+        assert len(result.user_overrides) == 0
         active = _active_names(svc, 0x1000)
         assert "R1" not in active

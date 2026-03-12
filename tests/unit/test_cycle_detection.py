@@ -6,12 +6,10 @@ Tests cover:
 3. Cycle detection logic in InstructionOptimizerManager (structural, using mocks)
 """
 
-import pytest
 from collections import defaultdict
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from d810.core.stats import OptimizationStatistics, OptimizationEvent
-
+from d810.core.stats import OptimizationEvent, OptimizationStatistics
 
 # =============================================================================
 # Tests for OptimizationStatistics cycle tracking

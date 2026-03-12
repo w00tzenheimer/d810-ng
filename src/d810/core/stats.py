@@ -9,7 +9,7 @@ from d810.core.typing import Any, Dict, List, Optional
 from .logging import getLogger
 from .registry import EventEmitter
 
-logger = getLogger("D810")
+logger = getLogger(__name__)
 
 # Lightweight maturity-int → name mapping that avoids importing ida_hexrays.
 # Values match MMAT_* constants defined in ida_hexrays (stable since IDA 7.x).

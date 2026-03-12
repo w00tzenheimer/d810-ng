@@ -47,10 +47,20 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from d810.core.typing import Any, Dict, Iterator, List, Optional, Protocol, Set, runtime_checkable
+from d810.core.typing import (
+    Any,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Protocol,
+    Set,
+    runtime_checkable,
+)
+
 from .logging import getLogger
 
-logger = getLogger("D810.persistence")
+logger = getLogger(__name__)
 
 
 @dataclass
@@ -124,7 +134,9 @@ class SupportsOptimizationStorage(Protocol):
         changes: int,
         patches: List[Dict[str, Any]],
     ) -> None: ...
-    def load_result(self, function_addr: int, maturity: int) -> Optional[CachedResult]: ...
+    def load_result(
+        self, function_addr: int, maturity: int
+    ) -> Optional[CachedResult]: ...
     def set_function_rules(
         self,
         function_addr: int,
@@ -132,10 +144,14 @@ class SupportsOptimizationStorage(Protocol):
         disabled_rules: Optional[Set[str]] = None,
         notes: str = "",
     ) -> None: ...
-    def get_function_rules(self, function_addr: int) -> Optional[FunctionRuleConfig]: ...
+    def get_function_rules(
+        self, function_addr: int
+    ) -> Optional[FunctionRuleConfig]: ...
     def set_function_tags(self, function_addr: int, tags: Set[str]) -> None: ...
     def get_function_tags(self, function_addr: int) -> Set[str]: ...
-    def set_active_rule_inference(self, inference: ActiveRuleInferenceConfig) -> None: ...
+    def set_active_rule_inference(
+        self, inference: ActiveRuleInferenceConfig
+    ) -> None: ...
     def get_active_rule_inference(self) -> Optional[ActiveRuleInferenceConfig]: ...
     def clear_active_rule_inference(self) -> None: ...
     def should_run_rule(self, function_addr: int, rule_name: str) -> bool: ...
@@ -203,8 +219,8 @@ class Netnode:
     @staticmethod
     def _import_module() -> IDA9NetnodeModuleLike:
         try:
-            import idaapi  # type: ignore
             import ida_netnode  # type: ignore
+            import idaapi  # type: ignore
         except Exception as exc:
             raise RuntimeError(
                 "Netnode backend requires IDA9+ runtime (ida_netnode)."
@@ -216,9 +232,7 @@ class Netnode:
                 "Unable to determine IDA version for netnode backend."
             ) from exc
         if major < 9:
-            raise RuntimeError(
-                f"Netnode backend requires IDA 9+, found IDA {major}."
-            )
+            raise RuntimeError(f"Netnode backend requires IDA 9+, found IDA {major}.")
         return ida_netnode  # type: ignore[return-value]
 
     def _open_node(self) -> IDA9NetnodeLike:
@@ -678,7 +692,8 @@ class NetnodeOptimizationStorage:
         self._state["functions"].pop(fkey, None)
         self._state["function_rules"].pop(fkey, None)
         stale = [
-            rkey for rkey, row in self._state["results"].items()
+            rkey
+            for rkey, row in self._state["results"].items()
             if int(row.get("function_addr", -1)) == int(function_addr)
         ]
         for rkey in stale:
@@ -727,8 +742,10 @@ def create_optimization_storage(
             raise ValueError("sqlite backend requires a database path")
         return SQLiteOptimizationStorage(storage_target)
     if name == "netnode":
-        node_name = str(storage_target) if storage_target is not None else str(
-            kwargs.get("node_name", "$ d810.optimization_storage")
+        node_name = (
+            str(storage_target)
+            if storage_target is not None
+            else str(kwargs.get("node_name", "$ d810.optimization_storage"))
         )
         return NetnodeOptimizationStorage(node_name=node_name)
     raise ValueError(
@@ -785,7 +802,8 @@ class SQLiteOptimizationStorage:
         cursor = self.conn.cursor()
 
         # Functions table: stores function metadata and fingerprints
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS functions (
                 address INTEGER PRIMARY KEY,
                 size INTEGER NOT NULL,
@@ -795,10 +813,12 @@ class SQLiteOptimizationStorage:
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             )
-        """)
+        """
+        )
 
         # Blocks table: stores block-level def/use information
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS blocks (
                 function_addr INTEGER NOT NULL,
                 block_serial INTEGER NOT NULL,
@@ -808,10 +828,12 @@ class SQLiteOptimizationStorage:
                 PRIMARY KEY (function_addr, block_serial),
                 FOREIGN KEY (function_addr) REFERENCES functions(address)
             )
-        """)
+        """
+        )
 
         # Patches table: stores optimization transformations
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS patches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 function_addr INTEGER NOT NULL,
@@ -821,10 +843,12 @@ class SQLiteOptimizationStorage:
                 created_at REAL NOT NULL,
                 FOREIGN KEY (function_addr) REFERENCES functions(address)
             )
-        """)
+        """
+        )
 
         # Function rules table: per-function rule configuration
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS function_rules (
                 function_addr INTEGER PRIMARY KEY,
                 enabled_rules TEXT,   -- JSON array of rule names
@@ -834,7 +858,8 @@ class SQLiteOptimizationStorage:
                 updated_at REAL NOT NULL,
                 FOREIGN KEY (function_addr) REFERENCES functions(address)
             )
-        """)
+        """
+        )
 
         cursor.execute("PRAGMA table_info(function_rules)")
         rule_columns = {str(row["name"]) for row in cursor.fetchall()}
@@ -844,7 +869,8 @@ class SQLiteOptimizationStorage:
             )
 
         # Results table: cached optimization results
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS results (
                 function_addr INTEGER NOT NULL,
                 maturity INTEGER NOT NULL,
@@ -854,10 +880,12 @@ class SQLiteOptimizationStorage:
                 PRIMARY KEY (function_addr, maturity),
                 FOREIGN KEY (function_addr) REFERENCES functions(address)
             )
-        """)
+        """
+        )
 
         # Active rule inference table: single persisted selector overlay
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS rule_scope_inference (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 name TEXT NOT NULL,
@@ -869,18 +897,23 @@ class SQLiteOptimizationStorage:
                 notes TEXT,
                 updated_at REAL NOT NULL
             )
-        """)
+        """
+        )
 
         # Create indices for faster lookups
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_patches_function
             ON patches(function_addr, maturity)
-        """)
+        """
+        )
 
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_results_function
             ON results(function_addr, maturity)
-        """)
+        """
+        )
 
         self.conn.commit()
         logger.debug("Database schema initialized")
@@ -900,8 +933,7 @@ class SQLiteOptimizationStorage:
 
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT bytes_hash FROM functions WHERE address = ?",
-            (function_addr,)
+            "SELECT bytes_hash FROM functions WHERE address = ?", (function_addr,)
         )
         row = cursor.fetchone()
 
@@ -909,7 +941,7 @@ class SQLiteOptimizationStorage:
             return False
 
         # Check if hash matches
-        cached_hash = row['bytes_hash']
+        cached_hash = row["bytes_hash"]
         if cached_hash != current_hash:
             logger.info(
                 f"Cache invalidated for function {function_addr:x}: "
@@ -932,19 +964,22 @@ class SQLiteOptimizationStorage:
         cursor = self.conn.cursor()
 
         # Upsert function metadata
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT OR REPLACE INTO functions
             (address, size, bytes_hash, block_count, instruction_count, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            fingerprint.address,
-            fingerprint.size,
-            fingerprint.bytes_hash,
-            fingerprint.block_count,
-            fingerprint.instruction_count,
-            timestamp,
-            timestamp
-        ))
+        """,
+            (
+                fingerprint.address,
+                fingerprint.size,
+                fingerprint.bytes_hash,
+                fingerprint.block_count,
+                fingerprint.instruction_count,
+                timestamp,
+                timestamp,
+            ),
+        )
 
         self.conn.commit()
 
@@ -954,7 +989,7 @@ class SQLiteOptimizationStorage:
         fingerprint: FunctionFingerprint,
         maturity: int,
         changes: int,
-        patches: List[Dict[str, Any]]
+        patches: List[Dict[str, Any]],
     ) -> None:
         """Save optimization result to storage.
 
@@ -975,37 +1010,37 @@ class SQLiteOptimizationStorage:
         self.save_fingerprint(fingerprint)
 
         # Save result
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT OR REPLACE INTO results
             (function_addr, maturity, changes_made, fingerprint, timestamp)
             VALUES (?, ?, ?, ?, ?)
-        """, (
-            function_addr,
-            maturity,
-            changes,
-            fingerprint.bytes_hash,
-            timestamp
-        ))
+        """,
+            (function_addr, maturity, changes, fingerprint.bytes_hash, timestamp),
+        )
 
         # Delete old patches for this function/maturity combo
         cursor.execute(
             "DELETE FROM patches WHERE function_addr = ? AND maturity = ?",
-            (function_addr, maturity)
+            (function_addr, maturity),
         )
 
         # Save new patches
         for patch in patches:
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO patches
                 (function_addr, maturity, patch_type, patch_data, created_at)
                 VALUES (?, ?, ?, ?, ?)
-            """, (
-                function_addr,
-                maturity,
-                patch.get('type', 'unknown'),
-                json.dumps(patch),
-                timestamp
-            ))
+            """,
+                (
+                    function_addr,
+                    maturity,
+                    patch.get("type", "unknown"),
+                    json.dumps(patch),
+                    timestamp,
+                ),
+            )
 
         self.conn.commit()
         logger.info(
@@ -1013,11 +1048,7 @@ class SQLiteOptimizationStorage:
             f"at maturity {maturity}: {changes} changes, {len(patches)} patches"
         )
 
-    def load_result(
-        self,
-        function_addr: int,
-        maturity: int
-    ) -> Optional[CachedResult]:
+    def load_result(self, function_addr: int, maturity: int) -> Optional[CachedResult]:
         """Load cached optimization result.
 
         Args:
@@ -1033,25 +1064,31 @@ class SQLiteOptimizationStorage:
         cursor = self.conn.cursor()
 
         # Load result
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT changes_made, fingerprint, timestamp
             FROM results
             WHERE function_addr = ? AND maturity = ?
-        """, (function_addr, maturity))
+        """,
+            (function_addr, maturity),
+        )
 
         row = cursor.fetchone()
         if not row:
             return None
 
         # Load patches
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT patch_type, patch_data
             FROM patches
             WHERE function_addr = ? AND maturity = ?
             ORDER BY id
-        """, (function_addr, maturity))
+        """,
+            (function_addr, maturity),
+        )
 
-        patches = [json.loads(r['patch_data']) for r in cursor.fetchall()]
+        patches = [json.loads(r["patch_data"]) for r in cursor.fetchall()]
 
         logger.info(
             f"Loaded cached result for {function_addr:x} "
@@ -1061,10 +1098,10 @@ class SQLiteOptimizationStorage:
         return CachedResult(
             function_addr=function_addr,
             maturity=maturity,
-            changes_made=row['changes_made'],
+            changes_made=row["changes_made"],
             patches=patches,
-            timestamp=row['timestamp'],
-            fingerprint=row['fingerprint']
+            timestamp=row["timestamp"],
+            fingerprint=row["fingerprint"],
         )
 
     def set_function_rules(
@@ -1072,7 +1109,7 @@ class SQLiteOptimizationStorage:
         function_addr: int,
         enabled_rules: Optional[Set[str]] = None,
         disabled_rules: Optional[Set[str]] = None,
-        notes: str = ""
+        notes: str = "",
     ) -> None:
         """Configure which rules should run on a specific function.
 
@@ -1108,18 +1145,21 @@ class SQLiteOptimizationStorage:
         existing = self.get_function_rules(function_addr)
         tags = set(existing.tags) if existing is not None else set()
         cursor = self.conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT OR REPLACE INTO function_rules
             (function_addr, enabled_rules, disabled_rules, tags, notes, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            function_addr,
-            json.dumps(list(enabled_rules or [])),
-            json.dumps(list(disabled_rules or [])),
-            json.dumps(list(tags)),
-            notes,
-            time.time()
-        ))
+        """,
+            (
+                function_addr,
+                json.dumps(list(enabled_rules or [])),
+                json.dumps(list(disabled_rules or [])),
+                json.dumps(list(tags)),
+                notes,
+                time.time(),
+            ),
+        )
 
         self.conn.commit()
         logger.info(f"Updated rule configuration for function {function_addr:x}")
@@ -1137,25 +1177,28 @@ class SQLiteOptimizationStorage:
             return None
 
         cursor = self.conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT enabled_rules, disabled_rules, tags, notes
             FROM function_rules
             WHERE function_addr = ?
-        """, (function_addr,))
+        """,
+            (function_addr,),
+        )
 
         row = cursor.fetchone()
         if not row:
             return None
 
-        enabled_rules = set(json.loads(row['enabled_rules'] or "[]"))
-        disabled_rules = set(json.loads(row['disabled_rules'] or "[]"))
-        tags = set(json.loads(row['tags'] or "[]"))
+        enabled_rules = set(json.loads(row["enabled_rules"] or "[]"))
+        disabled_rules = set(json.loads(row["disabled_rules"] or "[]"))
+        tags = set(json.loads(row["tags"] or "[]"))
         return FunctionRuleConfig(
             function_addr=function_addr,
             enabled_rules=enabled_rules,
             disabled_rules=disabled_rules,
             tags=tags,
-            notes=row['notes'] or "",
+            notes=row["notes"] or "",
         )
 
     def set_function_tags(self, function_addr: int, tags: Set[str]) -> None:
@@ -1165,23 +1208,24 @@ class SQLiteOptimizationStorage:
         enabled_rules = set(existing.enabled_rules) if existing is not None else set()
         disabled_rules = set(existing.disabled_rules) if existing is not None else set()
         notes = str(existing.notes) if existing is not None else ""
-        normalized_tags = {
-            str(tag).strip() for tag in tags if str(tag).strip()
-        }
+        normalized_tags = {str(tag).strip() for tag in tags if str(tag).strip()}
 
         cursor = self.conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT OR REPLACE INTO function_rules
             (function_addr, enabled_rules, disabled_rules, tags, notes, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            function_addr,
-            json.dumps(list(enabled_rules)),
-            json.dumps(list(disabled_rules)),
-            json.dumps(list(normalized_tags)),
-            notes,
-            time.time()
-        ))
+        """,
+            (
+                function_addr,
+                json.dumps(list(enabled_rules)),
+                json.dumps(list(disabled_rules)),
+                json.dumps(list(normalized_tags)),
+                notes,
+                time.time(),
+            ),
+        )
         self.conn.commit()
         logger.info(f"Updated function tags for {function_addr:x}")
 
@@ -1195,20 +1239,23 @@ class SQLiteOptimizationStorage:
         if not self.conn:
             return
         cursor = self.conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT OR REPLACE INTO rule_scope_inference
             (id, name, enabled_rules, disabled_rules, target_func_eas, target_tags_any, target_tags_all, notes, updated_at)
             VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            str(inference.name),
-            json.dumps(sorted(str(rule) for rule in inference.enabled_rules)),
-            json.dumps(sorted(str(rule) for rule in inference.disabled_rules)),
-            json.dumps(sorted(int(ea) for ea in inference.target_func_eas)),
-            json.dumps(sorted(str(tag) for tag in inference.target_tags_any)),
-            json.dumps(sorted(str(tag) for tag in inference.target_tags_all)),
-            str(inference.notes),
-            time.time(),
-        ))
+        """,
+            (
+                str(inference.name),
+                json.dumps(sorted(str(rule) for rule in inference.enabled_rules)),
+                json.dumps(sorted(str(rule) for rule in inference.disabled_rules)),
+                json.dumps(sorted(int(ea) for ea in inference.target_func_eas)),
+                json.dumps(sorted(str(tag) for tag in inference.target_tags_any)),
+                json.dumps(sorted(str(tag) for tag in inference.target_tags_all)),
+                str(inference.notes),
+                time.time(),
+            ),
+        )
         self.conn.commit()
         logger.info("Updated active rule inference: %s", inference.name)
 
@@ -1216,11 +1263,13 @@ class SQLiteOptimizationStorage:
         if not self.conn:
             return None
         cursor = self.conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT name, enabled_rules, disabled_rules, target_func_eas, target_tags_any, target_tags_all, notes
             FROM rule_scope_inference
             WHERE id = 1
-        """)
+        """
+        )
         row = cursor.fetchone()
         if not row:
             return None
@@ -1228,7 +1277,9 @@ class SQLiteOptimizationStorage:
             name=str(row["name"]),
             enabled_rules=set(json.loads(row["enabled_rules"] or "[]")),
             disabled_rules=set(json.loads(row["disabled_rules"] or "[]")),
-            target_func_eas={int(ea) for ea in json.loads(row["target_func_eas"] or "[]")},
+            target_func_eas={
+                int(ea) for ea in json.loads(row["target_func_eas"] or "[]")
+            },
             target_tags_any=set(json.loads(row["target_tags_any"] or "[]")),
             target_tags_all=set(json.loads(row["target_tags_all"] or "[]")),
             notes=str(row["notes"] or ""),
@@ -1307,16 +1358,16 @@ class SQLiteOptimizationStorage:
         stats = {}
 
         cursor.execute("SELECT COUNT(*) as count FROM functions")
-        stats['functions_cached'] = cursor.fetchone()['count']
+        stats["functions_cached"] = cursor.fetchone()["count"]
 
         cursor.execute("SELECT COUNT(*) as count FROM results")
-        stats['results_cached'] = cursor.fetchone()['count']
+        stats["results_cached"] = cursor.fetchone()["count"]
 
         cursor.execute("SELECT COUNT(*) as count FROM patches")
-        stats['patches_stored'] = cursor.fetchone()['count']
+        stats["patches_stored"] = cursor.fetchone()["count"]
 
         cursor.execute("SELECT COUNT(*) as count FROM function_rules")
-        stats['functions_with_custom_rules'] = cursor.fetchone()['count']
+        stats["functions_with_custom_rules"] = cursor.fetchone()["count"]
 
         return stats
 

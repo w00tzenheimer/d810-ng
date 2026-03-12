@@ -4,7 +4,6 @@ Shared configuration for all test suites.
 Note: Clang-related fixtures are in tests/system/conftest.py for system tests.
 """
 
-import logging
 import os
 import pathlib
 import sys
@@ -12,8 +11,11 @@ from dataclasses import dataclass
 
 import pytest
 
+import idapro
+
+from d810.core import logging
+
 # Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Add project root to path for all tests to ensure imports work
@@ -75,9 +77,12 @@ def _dotenv_candidates() -> list[pathlib.Path]:
     # Use git to discover the main repository root as a fallback.
     try:
         import subprocess
+
         result = subprocess.run(
             ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT),
         )
         if result.returncode == 0:
             # --git-common-dir returns e.g. /repo/.git or /repo/.git for worktrees
@@ -189,7 +194,13 @@ def env() -> EnvWrapper:
 def pytest_configure(config: pytest.Config) -> None:
     """Configure pytest with custom markers."""
     config.addinivalue_line("markers", "ida_required: mark test as requiring IDA Pro")
-    config.addinivalue_line("markers", "runtime: IDA runtime invariant/API/stability tests")
-    config.addinivalue_line("markers", "e2e: End-to-end pipeline tests with golden output comparison")
-    config.addinivalue_line("markers", "hexrays: Tests that require Hex-Rays decompiler")
+    config.addinivalue_line(
+        "markers", "runtime: IDA runtime invariant/API/stability tests"
+    )
+    config.addinivalue_line(
+        "markers", "e2e: End-to-end pipeline tests with golden output comparison"
+    )
+    config.addinivalue_line(
+        "markers", "hexrays: Tests that require Hex-Rays decompiler"
+    )
     config.addinivalue_line("markers", "integration: mark test as integration test")

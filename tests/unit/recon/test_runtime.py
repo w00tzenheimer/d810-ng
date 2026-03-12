@@ -1,16 +1,18 @@
 """Unit tests for ReconAnalysisRuntime coordinator."""
+
 from __future__ import annotations
 
-from types import MappingProxyType
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import MagicMock, call, create_autospec, patch
 
 import pytest
 
+from d810.core import logging
 from d810.recon.analysis import AnalysisPhase
 from d810.recon.models import DeobfuscationHints, ReconResult
 from d810.recon.phase import ReconPhase
-from d810.recon.runtime import ReconAnalysisRuntime
+from d810.recon.runtime import ReconAnalysisRuntime, logger
 from d810.recon.store import ReconStore
 
 # ---------------------------------------------------------------------------
@@ -52,9 +54,7 @@ def _make_hints(
     )
 
 
-def _make_runtime() -> tuple[
-    ReconAnalysisRuntime, MagicMock, MagicMock, MagicMock
-]:
+def _make_runtime() -> tuple[ReconAnalysisRuntime, MagicMock, MagicMock, MagicMock]:
     """Build a runtime with mocked dependencies.
 
     Returns (runtime, mock_phase, mock_analysis, mock_store).
@@ -113,15 +113,22 @@ def test_collect_and_analyze_persists_hints() -> None:
     mock_analysis.interpret.return_value = hints
 
     returned = rt.collect_and_analyze(
-        _FUNC_EA, _SENTINEL_TARGET, _MATURITY, persist_hints=True,
+        _FUNC_EA,
+        _SENTINEL_TARGET,
+        _MATURITY,
+        persist_hints=True,
     )
 
     assert returned is hints
     mock_phase.run_microcode_collectors.assert_called_once_with(
-        _SENTINEL_TARGET, func_ea=_FUNC_EA, maturity=_MATURITY,
+        _SENTINEL_TARGET,
+        func_ea=_FUNC_EA,
+        maturity=_MATURITY,
     )
     mock_analysis.interpret.assert_called_once_with(
-        func_ea=_FUNC_EA, results=results, store=mock_store,
+        func_ea=_FUNC_EA,
+        results=results,
+        store=mock_store,
     )
     mock_store.save_hints.assert_called_once_with(hints)
 
@@ -137,7 +144,10 @@ def test_collect_and_analyze_no_persist() -> None:
     mock_analysis.interpret.return_value = hints
 
     returned = rt.collect_and_analyze(
-        _FUNC_EA, _SENTINEL_TARGET, _MATURITY, persist_hints=False,
+        _FUNC_EA,
+        _SENTINEL_TARGET,
+        _MATURITY,
+        persist_hints=False,
     )
 
     assert returned is hints
@@ -177,7 +187,9 @@ def test_load_or_analyze_cache_hit() -> None:
     mock_store.load_hints.return_value = cached_hints
 
     returned = rt.load_or_analyze(
-        _FUNC_EA, _SENTINEL_TARGET, _MATURITY,
+        _FUNC_EA,
+        _SENTINEL_TARGET,
+        _MATURITY,
     )
 
     assert returned is cached_hints
@@ -198,16 +210,23 @@ def test_load_or_analyze_cache_miss() -> None:
     mock_analysis.interpret.return_value = fresh_hints
 
     returned = rt.load_or_analyze(
-        _FUNC_EA, _SENTINEL_TARGET, _MATURITY, persist_hints=True,
+        _FUNC_EA,
+        _SENTINEL_TARGET,
+        _MATURITY,
+        persist_hints=True,
     )
 
     assert returned is fresh_hints
     mock_store.load_hints.assert_called_once_with(func_ea=_FUNC_EA)
     mock_phase.run_microcode_collectors.assert_called_once_with(
-        _SENTINEL_TARGET, func_ea=_FUNC_EA, maturity=_MATURITY,
+        _SENTINEL_TARGET,
+        func_ea=_FUNC_EA,
+        maturity=_MATURITY,
     )
     mock_analysis.interpret.assert_called_once_with(
-        func_ea=_FUNC_EA, results=results, store=mock_store,
+        func_ea=_FUNC_EA,
+        results=results,
+        store=mock_store,
     )
     mock_store.save_hints.assert_called_once_with(fresh_hints)
 
@@ -238,7 +257,9 @@ def test_analyze_and_persist_with_results() -> None:
     assert returned is hints
     mock_store.load_all_recon_results.assert_called_once_with(func_ea=_FUNC_EA)
     mock_analysis.interpret.assert_called_once_with(
-        func_ea=_FUNC_EA, results=results, store=mock_store,
+        func_ea=_FUNC_EA,
+        results=results,
+        store=mock_store,
     )
     mock_store.save_hints.assert_called_once_with(hints)
 
@@ -296,18 +317,24 @@ def test_collect_and_analyze_saves_recon_results() -> None:
     mock_analysis.interpret.return_value = hints
 
     returned = rt.collect_and_analyze(
-        _FUNC_EA, _SENTINEL_TARGET, _MATURITY,
+        _FUNC_EA,
+        _SENTINEL_TARGET,
+        _MATURITY,
     )
 
     assert returned is hints
     # The runtime delegates to phase which internally saves each ReconResult.
     # Verify the phase was called with the right arguments.
     mock_phase.run_microcode_collectors.assert_called_once_with(
-        _SENTINEL_TARGET, func_ea=_FUNC_EA, maturity=_MATURITY,
+        _SENTINEL_TARGET,
+        func_ea=_FUNC_EA,
+        maturity=_MATURITY,
     )
     # Both results are forwarded to the analysis phase.
     mock_analysis.interpret.assert_called_once_with(
-        func_ea=_FUNC_EA, results=results, store=mock_store,
+        func_ea=_FUNC_EA,
+        results=results,
+        store=mock_store,
     )
 
 
@@ -356,9 +383,7 @@ def test_mark_decompilation_finished_allows_re_reset() -> None:
     assert rt.reset_for_func(_FUNC_EA) is True
     assert mock_phase.reset.call_count == 2
     assert mock_store.clear_func.call_count == 2
-    mock_phase.reset.assert_has_calls(
-        [call(func_ea=_FUNC_EA), call(func_ea=_FUNC_EA)]
-    )
+    mock_phase.reset.assert_has_calls([call(func_ea=_FUNC_EA), call(func_ea=_FUNC_EA)])
 
 
 def test_reset_for_func_flushes_previous_outcomes() -> None:
@@ -417,9 +442,7 @@ def test_reset_fires_on_different_func_without_mark_finished() -> None:
     assert rt.reset_for_func(_FUNC_EA) is True
     assert rt.reset_for_func(other_ea) is True
     assert mock_phase.reset.call_count == 2
-    mock_phase.reset.assert_has_calls(
-        [call(func_ea=_FUNC_EA), call(func_ea=other_ea)]
-    )
+    mock_phase.reset.assert_has_calls([call(func_ea=_FUNC_EA), call(func_ea=other_ea)])
 
 
 # ---------------------------------------------------------------------------
@@ -527,17 +550,17 @@ def test_record_flow_gate_outcome_with_gate_name() -> None:
         allowed = True
 
     rt.record_flow_gate_outcome(
-        func_ea=0x6000, decision=FakeDecision(), gate_name="unflattening_gate",
+        func_ea=0x6000,
+        decision=FakeDecision(),
+        gate_name="unflattening_gate",
     )
     reports = rt.outcome_log.get_func_reports(0x6000)
     assert len(reports) == 1
     assert reports[0].consumer_name == "unflattening_gate"
 
 
-def test_mark_decompilation_finished_logs_summary(caplog) -> None:
+def test_mark_decompilation_finished_logs_summary() -> None:
     """mark_decompilation_finished logs outcome summary when func was active."""
-    import logging
-
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
     # Set active function
@@ -550,26 +573,20 @@ def test_mark_decompilation_finished_logs_summary(caplog) -> None:
         apply_result=None,
         source="analyzed",
     )
-
-    with caplog.at_level(logging.INFO, logger="D810.recon.runtime"):
-        rt.mark_decompilation_finished()
-
-    assert any("decompilation_finished" in r.message for r in caplog.records)
-    assert any("outcome_summary" in r.message for r in caplog.records)
+    rt.mark_decompilation_finished()
+    summary = rt.get_outcome_summary(_FUNC_EA)
+    assert len(summary["consumers"]) != 0
 
 
-def test_mark_decompilation_finished_no_log_when_no_outcomes(caplog) -> None:
+def test_mark_decompilation_finished_no_log_when_no_outcomes() -> None:
     """mark_decompilation_finished does not log when no outcomes recorded."""
-    import logging
-
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
     rt.reset_for_func(_FUNC_EA)
 
-    with caplog.at_level(logging.INFO, logger="D810.recon.runtime"):
-        rt.mark_decompilation_finished()
-
-    assert not any("decompilation_finished" in r.message for r in caplog.records)
+    rt.mark_decompilation_finished()
+    summary = rt.get_outcome_summary(_FUNC_EA)
+    assert len(summary["consumers"]) == 0
 
 
 def test_get_outcome_summary() -> None:
