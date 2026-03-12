@@ -4099,28 +4099,6 @@ class DeferredGraphModifier:
             len(old_to_new),
         )
 
-        # PRE-TRAMPOLINE diagnostic: count m_nop-with-operands BEFORE Step 0
-        _pre_nop_count = 0
-        _m_nop_pre = ida_hexrays.m_nop
-        _mop_z_pre = ida_hexrays.mop_z
-        for _pi in range(mba.qty):
-            _pblk = mba.get_mblock(_pi)
-            if _pblk is None:
-                continue
-            _pins = _pblk.head
-            while _pins is not None:
-                if _pins.opcode == _m_nop_pre:
-                    _pl = _pins.l is not None and _pins.l.t != _mop_z_pre
-                    _pr = _pins.r is not None and _pins.r.t != _mop_z_pre
-                    _pd = _pins.d is not None and _pins.d.t != _mop_z_pre
-                    if _pl or _pr or _pd:
-                        _pre_nop_count += 1
-                _pins = _pins.next
-        logger.error(
-            "DIAG PRE-TRAMPOLINE: %d m_nop-with-operands BEFORE Step 0, old_serials=%s",
-            _pre_nop_count, sorted(old_to_new.keys())[:10],
-        )
-
         # old_serials identifies the trampoline blocks (Step 0). Compute it from
         # the handler serials only — before adding the BLT_STOP remap entry.
         old_serials = set(old_to_new.keys())
