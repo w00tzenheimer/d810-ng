@@ -77,8 +77,7 @@ class SimulatedEdit:
     """Abstract edit operation on adjacency list.
 
     Attributes:
-        kind: Type of edit - "goto_redirect", "conditional_redirect", "convert_to_goto",
-            "edge_split_redirect", "reorder_blocks", or "duplicate_block".
+        kind: Type of edit - "goto_redirect", "conditional_redirect", or "convert_to_goto".
         source: Block serial of the source block.
         old_target: Block serial of the original target being replaced.
         new_target: Block serial of the new target.
@@ -859,9 +858,6 @@ def simulate_edits(
         elif edit.kind == "reorder_blocks":
             non_2way = edit.source_successors or ()
             if non_2way:
-                # Serial allocation: PatchReorderBlocks is always standalone (priority=9999, only mod in its plan).
-                # max(result.keys())+1 == mba.qty at Phase A time because no prior block-creating edits run before us.
-                # If ever combined with other block-creating edits, use VirtualBlockId allocation instead.
                 next_serial = max(result.keys(), default=-1) + 1
                 old_to_new: dict[int, int] = {}
                 for old_serial in non_2way:
@@ -870,6 +866,7 @@ def simulate_edits(
                     # Copy old block's adjacency to new serial
                     old_succs = list(result.get(old_serial, []))
                     result[new_serial] = old_succs
+                    created_clones.add(new_serial)
                     clone_origins[new_serial] = edit
                     old_to_new[old_serial] = new_serial
                 # Convert old handler blocks to trampolines (single succ = copy)
