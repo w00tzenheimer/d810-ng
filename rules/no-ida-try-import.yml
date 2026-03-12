@@ -15,11 +15,11 @@ language: python
 severity: error
 
 files:
-  - "src/d810/ctree/**/*.py"
+  - "src/d810/**/*.py"
 
 message: |
-  Do not wrap IDA imports in try/except ImportError in ctree modules.
-  ctree code assumes IDA is available; tests requiring IDA belong in system tests.
+  Do not wrap IDA imports in try/except ImportError in D810 modules.
+  D810 code assumes IDA is available; tests requiring IDA belong in system tests.
 
 rule:
   any:
