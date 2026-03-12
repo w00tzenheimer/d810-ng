@@ -24,6 +24,8 @@
 #   -l, --logs              Mount work dir .tmp/logs at /root/.idapro/logs
 #   -o, --out FILE          (system only) Redirect stdout+stderr to WORK_DIR/.tmp/FILE. Use a relative
 #                           filename (e.g. out.txt), not an absolute path; the script prepends .tmp/.
+#   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container so getLogger uses DEBUG as
+#                           the default level instead of INFO (explicit caller levels are unaffected).
 #   --                      Remaining args passed to pytest (system only) or used as command separator (exec)
 #
 # Options (dump only):
@@ -32,6 +34,7 @@
 #   -p, --project NAME      Pass --dump-project NAME (JSON project name)
 #   -o, --out FILE          Redirect stdout+stderr to WORK_DIR/.tmp/FILE; truncated each run. Use a
 #                           relative filename (e.g. dump.txt), not an absolute path; the script prepends .tmp/.
+#   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container (see system/shell/exec above).
 #   --                      Remaining args passed to pytest (e.g. --dump-microcode-d810, --dump-terminal-return-valranges, --dump-microcode-maturity MATURITY)
 #
 # Options (exec): same as system/shell; then -- COMMAND [ARGS...] to run after SETUP (required).
@@ -103,6 +106,7 @@ DUMP_MATURITY=""
 DUMP_PROJECT=""
 DUMP_OUT=""
 MOUNT_LOGS=""
+ENABLE_DEBUG_LOGGING=""
 EXTRA_PYTEST=()
 EXEC_ARGS=()
 
@@ -130,6 +134,10 @@ while [ $# -gt 0 ]; do
       ;;
     -l|--logs)
       MOUNT_LOGS=1
+      shift
+      ;;
+    --enable-debug-logging)
+      ENABLE_DEBUG_LOGGING=1
       shift
       ;;
     --)
@@ -186,6 +194,9 @@ fi
 if [ -n "$MOUNT_LOGS" ]; then
   echo "  logs:     $LOGS_DIR -> /root/.idapro/logs in container"
 fi
+if [ -n "$ENABLE_DEBUG_LOGGING" ]; then
+  echo "  debug:    D810_DEBUG_LOGGING=1 (getLogger default level -> DEBUG)"
+fi
 case "$CMD" in
   system) echo "  run:      pytest tests/system -v${EXTRA_PYTEST[*]:+ ${EXTRA_PYTEST[*]}}" ;;
   dump)
@@ -203,6 +214,9 @@ echo ""
 ENV_IDA="IDA_PREFIX=/app/ida IDA_INSTALL_DIR=/app/ida D810_LIBCLANG_PATH=/app/ida/libclang.so"
 ENV_PYTHON="PYTHONPATH=${PYWORK}:/app/ida/python:\$PYTHONPATH"
 ENV_TEST="D810_NO_CYTHON=${D810_NO_CYTHON:-1} D810_TEST_BINARY=${D810_TEST_BINARY:-libobfuscated.dll}"
+if [ -n "$ENABLE_DEBUG_LOGGING" ]; then
+  ENV_TEST="$ENV_TEST D810_DEBUG_LOGGING=1"
+fi
 
 IDA_VENV_PIP="/app/ida/.venv/bin/pip"
 IDA_VENV_PYTHON="/app/ida/.venv/bin/python"
@@ -234,7 +248,7 @@ run_bash_it() {
 }
 
 run_bash_exec() {
-  local inner="$SETUP_CMD && exec \"\$@\""
+  local inner="export $ENV_TEST && $SETUP_CMD && exec \"\$@\""
   docker run --rm \
     $VOL_WORK \
     $VOL_LOGS \

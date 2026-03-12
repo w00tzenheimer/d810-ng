@@ -4,6 +4,7 @@ import functools
 import json
 import logging
 import logging.config
+import os
 import pathlib
 import shutil
 import sqlite3
@@ -322,11 +323,6 @@ conf: dict[str, typing.Any] = {
             "handlers": ["consoleHandler", "defaultFileHandler"],
             "propagate": False,
         },
-        "D810.unflat.hodur": {
-            "level": "INFO",
-            "handlers": ["consoleHandler", "defaultFileHandler"],
-            "propagate": False,
-        },
         "D810.tracker": {
             "level": "INFO",
             "handlers": ["defaultFileHandler"],
@@ -533,7 +529,17 @@ def getLogger(name: str, default_level: int = logging.INFO) -> D810Logger:
        **and** that has **no handlers**, the record would be lost.  We flip
        ``propagate`` back to *True* so that messages bubble to the root
        handlers configured above.
+
+    When the environment variable ``D810_DEBUG_LOGGING`` is set (to any non-empty
+    value) and the caller did **not** explicitly pass a *default_level* (i.e. it
+    still equals the built-in default of ``logging.INFO``), the effective default
+    is promoted to ``logging.DEBUG``.  Callers that pass an explicit level are
+    unaffected.
     """
+    # Honor D810_DEBUG_LOGGING env var: promote default level to DEBUG when
+    # the caller relies on the built-in default (logging.INFO).
+    if default_level == logging.INFO and os.environ.get("D810_DEBUG_LOGGING"):
+        default_level = logging.DEBUG
 
     name = name or __name__
     # grab (or create) the underlying Logger
