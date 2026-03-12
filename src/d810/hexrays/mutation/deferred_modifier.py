@@ -422,6 +422,8 @@ class GraphModification:
     dfs_block_order: tuple[int, ...] | None = None
     # For REORDER_BLOCKS: pre-computed old_serial -> new_serial mapping from PatchPlan
     old_to_new: dict[int, int] | None = None
+    # For REORDER_BLOCKS: pre-computed old_serial -> trampoline_serial for 2WAY blocks
+    old_to_trampoline: dict[int, int] | None = None
 
 
 def _prepare_block_creation_instructions(
@@ -1189,6 +1191,7 @@ class DeferredGraphModifier:
         *,
         dfs_block_order: tuple[int, ...],
         old_to_new: dict[int, int] | None = None,
+        old_to_trampoline: dict[int, int] | None = None,
         description: str = "",
     ) -> None:
         """Queue block reordering in DFS order.
@@ -1202,6 +1205,8 @@ class DeferredGraphModifier:
             old_to_new: Pre-computed old->new serial mapping from PatchPlan.
                 When provided, copy_block results are validated against these
                 expected serials. When None, serials are determined at runtime.
+            old_to_trampoline: Pre-computed old_serial -> trampoline_serial for
+                2WAY blocks. When provided, trampoline serials are validated.
             description: Logging description.
         """
         self.modifications.append(GraphModification(
@@ -1211,6 +1216,7 @@ class DeferredGraphModifier:
             priority=9999,  # Must run LAST
             dfs_block_order=dfs_block_order,
             old_to_new=old_to_new,
+            old_to_trampoline=old_to_trampoline,
             description=description or (
                 f"reorder {len(dfs_block_order)} blocks in DFS order"
             ),
@@ -2598,6 +2604,7 @@ class DeferredGraphModifier:
             return self._apply_reorder_blocks(
                 mod.dfs_block_order or (),
                 expected_old_to_new=mod.old_to_new,
+                expected_old_to_trampoline=mod.old_to_trampoline,
             )
 
         else:
@@ -4034,6 +4041,7 @@ class DeferredGraphModifier:
         dfs_block_order: tuple[int, ...],
         *,
         expected_old_to_new: dict[int, int] | None = None,
+        expected_old_to_trampoline: dict[int, int] | None = None,
     ) -> bool:
         """Copy handler blocks to end of MBA in DFS order, remap all serial refs.
 
@@ -4077,14 +4085,12 @@ class DeferredGraphModifier:
         # (a copied handler) instead of the real BLT_STOP.  We remap this explicitly.
         old_blt_stop_serial = mba.qty - 1
 
-        # Rebuild non-2WAY serials from live MBA state.  The dfs_block_order was
-        # computed at strategy/plan time when certain blocks were BLT_1WAY.  By
-        # apply time, LFG or other transforms may have converted some of those
-        # blocks to BLT_2WAY.  Filtering at runtime avoids the serial mismatch
-        # cascade that occurs when the skip-set differs from plan time (each
-        # unexpected skip shifts every subsequent copy_block serial by -1).
+        # Rebuild non-2WAY and 2WAY serials from live MBA state.  The
+        # dfs_block_order was computed at strategy/plan time when certain blocks
+        # were BLT_1WAY.  By apply time, LFG or other transforms may have
+        # converted some blocks.  Filtering at runtime avoids serial mismatch.
         runtime_non_2way: list[int] = []
-        runtime_skipped_2way: list[int] = []
+        runtime_2way: list[int] = []
         for s in dfs_block_order:
             blk = mba.get_mblock(s)
             if blk is None:
@@ -4093,15 +4099,15 @@ class DeferredGraphModifier:
                 )
                 continue
             if blk.type == ida_hexrays.BLT_2WAY:
-                runtime_skipped_2way.append(s)
+                runtime_2way.append(s)
                 continue
             runtime_non_2way.append(s)
 
-        if runtime_skipped_2way:
+        if runtime_2way:
             logger.info(
-                "reorder_blocks: skipped %d BLT_2WAY blocks at runtime: %s",
-                len(runtime_skipped_2way),
-                runtime_skipped_2way[:20],
+                "reorder_blocks: %d BLT_2WAY blocks to copy with trampolines: %s",
+                len(runtime_2way),
+                runtime_2way[:20],
             )
 
         # ---- Phase A: Copy blocks to end in DFS order ----
@@ -4136,13 +4142,138 @@ class DeferredGraphModifier:
                 new_blk.serial,
             )
 
+        # ---- Phase A (2WAY): Copy handler-internal BLT_2WAY blocks + emit fallthrough trampolines ----
+        # Track 2WAY copy info for post-copy succset fixup.
+        runtime_2way_info: dict[int, tuple[int, int]] = {}  # old_serial -> (copy_serial, tramp_serial)
+        for old_serial in runtime_2way:
+            old_blk = mba.get_mblock(old_serial)
+            if old_blk is None:
+                continue
+
+            # 1. Copy the 2WAY block (appends before BLT_STOP)
+            new_blk = mba.copy_block(old_blk, mba.qty - 1)
+            copy_serial = new_blk.serial
+            new_blk.predset.clear()
+            new_blk.build_lists(False)
+            old_to_new[old_serial] = copy_serial
+
+            if expected_old_to_new is not None and old_serial in expected_old_to_new:
+                expected_serial = expected_old_to_new[old_serial]
+                if copy_serial != expected_serial:
+                    logger.debug(
+                        "reorder_blocks Phase A (2WAY): copy serial %d for old=%d, expected %d",
+                        copy_serial, old_serial, expected_serial,
+                    )
+
+            # 2. Emit BLT_1WAY fallthrough trampoline at mba.qty-1 (= copy_serial+1).
+            # Strategy: copy a reference 1WAY block and overwrite its contents.
+            # Find any existing BLT_1WAY block to use as template.
+            ref_blk: ida_hexrays.mblock_t | None = None
+            for _i in range(mba.qty - 1):
+                _b = mba.get_mblock(_i)
+                if _b is not None and _b.type == ida_hexrays.BLT_1WAY:
+                    ref_blk = _b
+                    break
+
+            if ref_blk is None:
+                logger.error(
+                    "reorder_blocks Phase A (2WAY): no BLT_1WAY template found for "
+                    "trampoline (old=%d, copy=%d) — skipping trampoline",
+                    old_serial, copy_serial,
+                )
+                continue
+
+            tramp_blk = mba.copy_block(ref_blk, mba.qty - 1)
+            tramp_serial = tramp_blk.serial  # should be copy_serial + 1
+
+            if expected_old_to_trampoline is not None and old_serial in expected_old_to_trampoline:
+                expected_tramp = expected_old_to_trampoline[old_serial]
+                if tramp_serial != expected_tramp:
+                    logger.debug(
+                        "reorder_blocks Phase A (2WAY): trampoline serial %d for old=%d, expected %d",
+                        tramp_serial, old_serial, expected_tramp,
+                    )
+
+            runtime_2way_info[old_serial] = (copy_serial, tramp_serial)
+
+            # Overwrite trampoline content: single m_goto -> old_serial+1 (pre-remap)
+            # Phase B will remap this target through old_to_new.
+            fallthrough_target = old_serial + 1
+            # Clear all existing instructions
+            insn = tramp_blk.head
+            while insn is not None:
+                nxt = insn.next
+                tramp_blk.make_nop(insn)
+                insn = nxt
+
+            # Insert m_goto
+            goto_insn = ida_hexrays.minsn_t(old_blk.start)
+            goto_insn.opcode = ida_hexrays.m_goto
+            goto_insn.l.make_blkref(fallthrough_target)
+            goto_insn.r.erase()
+            goto_insn.d.erase()
+            tramp_blk.insert_into_block(goto_insn, tramp_blk.tail)
+            tramp_blk.type = ida_hexrays.BLT_1WAY
+            # Set trampoline address range to the source block's range so it
+            # stays within function boundaries (avoids INTERR 50870).
+            # The trampoline is copied from an arbitrary BLT_1WAY template
+            # whose address may be outside the handler's range.
+            tramp_blk.start = old_blk.start
+            tramp_blk.end = old_blk.end
+            tramp_blk.succset.clear()
+            tramp_blk.succset.push_back(fallthrough_target)
+            tramp_blk.predset.clear()
+            tramp_blk.build_lists(False)
+
+            logger.debug(
+                "reorder_blocks Phase A (2WAY): blk[%d] -> copy blk[%d], trampoline blk[%d] -> blk[%d]",
+                old_serial, copy_serial, tramp_serial, fallthrough_target,
+            )
+
+        if runtime_2way:
+            logger.info(
+                "reorder_blocks Phase A (2WAY): copied %d BLT_2WAY blocks with fallthrough trampolines",
+                len(runtime_2way),
+            )
+
+        # ---- Phase A fixup: Remap 2WAY copy succsets and mop_b operands ----
+        # copy_block copies the old block's succset verbatim.  For a BLT_2WAY
+        # block the old succset is [old_serial+1, old_conditional_target].
+        # Phase B protects the *implicit fallthrough* at copy_serial+1 but the
+        # succset still holds old_serial+1, which Phase B would incorrectly
+        # remap.  Fix: replace old_serial+1 -> tramp_serial (= copy_serial+1)
+        # in both the succset and the tail mop_b operand pointing at the old
+        # fallthrough.
+        for old_serial, (copy_serial, tramp_serial) in runtime_2way_info.items():
+            copy_blk = mba.get_mblock(copy_serial)
+            if copy_blk is None:
+                continue
+            old_fallthrough = old_serial + 1
+            # Fix succset: replace old fallthrough with trampoline serial
+            new_succs: list[int] = []
+            for _si in range(copy_blk.succset.size()):
+                s = copy_blk.succset[_si]
+                if s == old_fallthrough:
+                    new_succs.append(tramp_serial)
+                else:
+                    new_succs.append(s)
+            copy_blk.succset.clear()
+            for s in new_succs:
+                copy_blk.succset.push_back(s)
+            logger.debug(
+                "reorder_blocks Phase A fixup: blk[%d] (copy of %d) succset old_ft=%d -> tramp=%d, new_succs=%s",
+                copy_serial, old_serial, old_fallthrough, tramp_serial, new_succs,
+            )
+
         if not old_to_new:
             logger.warning("reorder_blocks: no blocks copied")
             return False
 
         logger.info(
-            "reorder_blocks Phase A: copied %d blocks",
+            "reorder_blocks Phase A: copied %d blocks (%d non-2WAY, %d 2WAY)",
             len(old_to_new),
+            len(runtime_non_2way),
+            len(runtime_2way),
         )
 
         # PRE-TRAMPOLINE diagnostic: count m_nop-with-operands BEFORE Step 0
