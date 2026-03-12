@@ -58,6 +58,7 @@ def _is_ida_gui_available() -> bool:
         return False
 
     try:
+        # ast-grep-ignore
         import idaapi
     except ImportError:
         return False

@@ -55,21 +55,6 @@ def _ensure_ida_imports():
 
     import idaapi as _idaapi
 
-    idaapi = _idaapi
-
-    # Ensure Hex-Rays definitions are available
-    if not hasattr(idaapi, "MMAT_GENERATED"):
-        try:
-            import ida_hexrays
-
-            for k, v in ida_hexrays.__dict__.items():
-                if not k.startswith("_"):
-                    setattr(idaapi, k, v)
-        except ImportError:
-            logging.warning(
-                "Could not import ida_hexrays. Hex-Rays functionality may fail."
-            )
-
 
 # -----------------------------------------------------------------------------
 # Configuration & Logging
@@ -614,42 +599,26 @@ def print_mba_human_readable(
     num_blocks = mba.qty
 
     # Block type enum: try runtime constants first, fall back to hard-coded
-    try:
-        import ida_hexrays as _ihr
 
-        _BLT_NAMES = {
-            _ihr.BLT_NONE: "BLT_NONE",
-            _ihr.BLT_STOP: "BLT_STOP",
-            _ihr.BLT_1WAY: "BLT_1WAY",
-            _ihr.BLT_2WAY: "BLT_2WAY",
-            _ihr.BLT_NWAY: "BLT_NWAY",
-            _ihr.BLT_XTRN: "BLT_XTRN",
-        }
-    except Exception:
-        _BLT_NAMES = {
-            0: "BLT_NONE",
-            1: "BLT_STOP",
-            2: "BLT_1WAY",
-            3: "BLT_2WAY",
-            4: "BLT_NWAY",
-            5: "BLT_XTRN",
-        }
+    import ida_hexrays as _ihr
+
+    _BLT_NAMES = {
+        _ihr.BLT_NONE: "BLT_NONE",
+        _ihr.BLT_STOP: "BLT_STOP",
+        _ihr.BLT_1WAY: "BLT_1WAY",
+        _ihr.BLT_2WAY: "BLT_2WAY",
+        _ihr.BLT_NWAY: "BLT_NWAY",
+        _ihr.BLT_XTRN: "BLT_XTRN",
+    }
 
     # Flag constants
-    try:
-        import ida_hexrays as _ihr2
+    import ida_hexrays as _ihr2
 
-        MBL_FAKE = getattr(_ihr2, "MBL_FAKE", 0x200)
-        MBL_INBOUNDS = getattr(_ihr2, "MBL_INBOUNDS", 0x0040)
-        SHINS_NUMADDR = getattr(_ihr2, "SHINS_NUMADDR", 0x01)
-        SHINS_VALNUM = getattr(_ihr2, "SHINS_VALNUM", 0x02)
-        SHINS_SHORT = getattr(_ihr2, "SHINS_SHORT", 0x04)
-    except Exception:
-        MBL_FAKE = 0x200
-        MBL_INBOUNDS = 0x0040
-        SHINS_NUMADDR = 0x01
-        SHINS_VALNUM = 0x02
-        SHINS_SHORT = 0x04
+    MBL_FAKE = getattr(_ihr2, "MBL_FAKE", 0x200)
+    MBL_INBOUNDS = getattr(_ihr2, "MBL_INBOUNDS", 0x0040)
+    SHINS_NUMADDR = getattr(_ihr2, "SHINS_NUMADDR", 0x01)
+    SHINS_VALNUM = getattr(_ihr2, "SHINS_VALNUM", 0x02)
+    SHINS_SHORT = getattr(_ihr2, "SHINS_SHORT", 0x04)
 
     _PRINT_FLAGS = SHINS_SHORT | SHINS_VALNUM | SHINS_NUMADDR
 
@@ -1165,21 +1134,5 @@ Examples:
 
 
 if __name__ == "__main__":
-    import sys
-
-    # Check if running inside IDA (idc module available)
-    try:
-        import idc
-
-        # Running inside IDA - dump current function
-        _ensure_ida_imports()
-        ea = idc.here()
-        func = idaapi.get_func(ea)
-        if func:
-            json_output = dump_microcode_json(func.start_ea)
-            print(json_output)
-        else:
-            print(f"No function at current address 0x{ea:x}")
-    except ImportError:
-        # Running from command line
-        main_cli()
+    # Running from command line
+    main_cli()
