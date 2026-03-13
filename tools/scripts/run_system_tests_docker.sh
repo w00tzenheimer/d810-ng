@@ -4,29 +4,31 @@
 #
 # Usage:
 #   ./run_system_tests_docker.sh system [OPTIONS] [-- PYTEST_ARGS...]
+#   ./run_system_tests_docker.sh test [OPTIONS] [-- PYTEST_ARGS...]
 #   ./run_system_tests_docker.sh dump [OPTIONS] [-- PYTEST_ARGS...]
 #   ./run_system_tests_docker.sh shell [OPTIONS]
 #   ./run_system_tests_docker.sh exec [OPTIONS] -- COMMAND [ARGS...]
 #
 # Commands:
 #   system    Run SETUP then: pytest tests/system -v [PYTEST_ARGS...]
+#   test      Run SETUP then: pytest -v [PYTEST_ARGS...] (all tests)
 #   dump      Run SETUP then: pytest -s tests/system/e2e/test_dump_function_pseudocode.py [OPTIONS]
 #   shell     Run SETUP then start an interactive bash (docker run -it)
 #   exec      Run SETUP then exec COMMAND with ARGS (e.g. exec -- python -c 'print(1)' or exec -- bash -c '...')
 #
 # SETUP (same for all commands): export IDA/PYTHONPATH env, pip install -e .[dev], python -m d810.speedups.install
 #
-# Options (system/shell/exec):
+# Options (system/test/shell/exec):
 #   -w, --worktree REL      Use worktree at REPO_ROOT/WORKTREE_ROOT/REL as /work. REL is relative to
 #                           WORKTREE_ROOT (default .worktrees). If your worktree is under a different
 #                           root (e.g. .claude/worktrees/agent-foo), set D810_WORKTREE_ROOT and pass
 #                           only the relative part: D810_WORKTREE_ROOT=.claude/worktrees -w agent-foo.
 #   -l, --logs              Mount work dir .tmp/logs at /root/.idapro/logs
-#   -o, --out FILE          (system only) Redirect stdout+stderr to WORK_DIR/.tmp/FILE. Use a relative
+#   -o, --out FILE          (system/test only) Redirect stdout+stderr to WORK_DIR/.tmp/FILE. Use a relative
 #                           filename (e.g. out.txt), not an absolute path; the script prepends .tmp/.
 #   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container so getLogger uses DEBUG as
 #                           the default level instead of INFO (explicit caller levels are unaffected).
-#   --                      Remaining args passed to pytest (system only) or used as command separator (exec)
+#   --                      Remaining args passed to pytest (system/test) or used as command separator (exec)
 #
 # Options (dump only):
 #   -f, --function NAME     Pass --dump-function-pseudocode NAME
@@ -40,7 +42,7 @@
 # Options (exec): same as system/shell; then -- COMMAND [ARGS...] to run after SETUP (required).
 #
 # Inside the container:
-#   CMD=system|dump|shell|exec   Current command (also set for shell/exec so scripts can branch)
+#   CMD=system|test|dump|shell|exec   Current command (also set for shell/exec so scripts can branch)
 #   PYTHON=/app/ida/.venv/bin/python   Venv Python interpreter
 #   PIP=/app/ida/.venv/bin/pip         Venv pip
 #   IDA_PREFIX, IDA_INSTALL_DIR, D810_LIBCLANG_PATH, PYTHONPATH, D810_NO_CYTHON, D810_TEST_BINARY  Set for tests
@@ -87,13 +89,13 @@ REPO_ROOT="$(cd "$REPO_ROOT" && pwd)"
 
 CMD="${1:-}"
 shift || true
-if [ "$CMD" != "system" ] && [ "$CMD" != "dump" ] && [ "$CMD" != "shell" ] && [ "$CMD" != "exec" ]; then
+if [ "$CMD" != "system" ] && [ "$CMD" != "test" ] && [ "$CMD" != "dump" ] && [ "$CMD" != "shell" ] && [ "$CMD" != "exec" ]; then
   if [ "$CMD" = "-h" ] || [ "$CMD" = "--help" ]; then
     sed -n '2,/^set -e$/p' "$0" | sed '$d'
     exit 0
   fi
-  echo "Usage: $0 system | dump [OPTIONS] [-- PYTEST_ARGS...] | shell | exec [OPTIONS] -- COMMAND [ARGS...]" >&2
-  echo "Commands: system | dump | shell | exec" >&2
+  echo "Usage: $0 system | test | dump [OPTIONS] [-- PYTEST_ARGS...] | shell | exec [OPTIONS] -- COMMAND [ARGS...]" >&2
+  echo "Commands: system | test | dump | shell | exec" >&2
   echo "Run with --help for full help." >&2
   exit 1
 fi
@@ -199,6 +201,7 @@ if [ -n "$ENABLE_DEBUG_LOGGING" ]; then
 fi
 case "$CMD" in
   system) echo "  run:      pytest tests/system -v${EXTRA_PYTEST[*]:+ ${EXTRA_PYTEST[*]}}" ;;
+  test)   echo "  run:      pytest -v${EXTRA_PYTEST[*]:+ ${EXTRA_PYTEST[*]}}" ;;
   dump)
     echo "  run:      pytest test_dump_function_pseudocode.py"
     [ -n "$DUMP_FUNCTION" ] && echo "  function: $DUMP_FUNCTION"
@@ -273,6 +276,21 @@ if [ "$CMD" = "system" ]; then
     SYS_REDIR="> \"$SYS_LOG\" 2>&1"
   fi
   run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest tests/system -v ${SYSTEM_ARGS[*]} $SYS_REDIR"
+  exit 0
+fi
+
+if [ "$CMD" = "test" ]; then
+  SYSTEM_ARGS=()
+  [ ${#EXTRA_PYTEST[@]} -gt 0 ] && SYSTEM_ARGS+=("${EXTRA_PYTEST[@]}")
+  SYS_REDIR=""
+  SYS_TRUNCATE=""
+  if [ -n "$DUMP_OUT" ]; then
+    mkdir -p "${WORK_DIR}/.tmp"
+    SYS_LOG="/work/.tmp/${DUMP_OUT}"
+    SYS_TRUNCATE=": > \"$SYS_LOG\"; "
+    SYS_REDIR="> \"$SYS_LOG\" 2>&1"
+  fi
+  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest -v ${SYSTEM_ARGS[*]} $SYS_REDIR"
   exit 0
 fi
 
