@@ -1866,9 +1866,13 @@ def analyze_bst_dispatcher(
         dispatcher = None
     result.dispatcher = dispatcher
 
-    # Diagnostic: compare interval dispatcher against legacy handler_state_map
+    # Diagnostic: compare interval dispatcher against legacy handler_state_map.
+    # to_handler_state_map() returns {state_const: handler_serial} (lo -> target),
+    # while handler_state_map is {handler_serial: state_const}.
+    # Invert derived_hsm so both dicts share the same {serial: state} semantics.
     if result.dispatcher is not None:
-        derived_hsm = result.dispatcher.to_handler_state_map()
+        derived_hsm_raw = result.dispatcher.to_handler_state_map()
+        derived_hsm = {serial: state for state, serial in derived_hsm_raw.items()}
         if derived_hsm != result.handler_state_map:
             logger.warning(
                 "INTERVAL_MAP_DIAG: handler_state_map mismatch: "
