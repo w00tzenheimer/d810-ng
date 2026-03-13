@@ -251,11 +251,20 @@ class MicroCodeInterpreter(object):
             cached_value = self._def_use_cache[mop]
             # Check for cycle detection sentinel (None value used as marker)
             if cached_value is None:
+                if emulator_log.debug_on:
+                    emulator_log.debug("Def-use cycle detected for %s", format_mop_t(mop))
                 return None  # Cycle detected, prevent infinite recursion
+            if emulator_log.debug_on:
+                emulator_log.debug("Def-use cache hit for %s: 0x%x", format_mop_t(mop), cached_value)
             return cached_value
+
+        if emulator_log.debug_on:
+            emulator_log.debug("Attempting def-use resolution for %s", format_mop_t(mop))
 
         # We only handle mop_r and mop_S for now
         if mop.t not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
+            if emulator_log.debug_on:
+                emulator_log.debug("Def-use resolution skipped for mop type %s", mop_type_to_string(mop.t))
             return None
 
         # Get the MBA from the environment's current instruction or block
@@ -265,6 +274,8 @@ class MicroCodeInterpreter(object):
         elif environment.cur_blk is not None:
             mba = environment.cur_blk.mba
         else:
+            if emulator_log.debug_on:
+                emulator_log.debug("No MBA available for def-use resolution")
             return None
 
         if mop.t == ida_hexrays.mop_r:
@@ -272,30 +283,44 @@ class MicroCodeInterpreter(object):
             size = mop.size
             blk_serial = environment.cur_blk.serial if environment.cur_blk is not None else 0
             defs = find_reaching_defs_for_reg(mba, blk_serial, reg_mreg, size)
+            if emulator_log.debug_on:
+                emulator_log.debug("Found %d reaching defs for reg mreg=%d size=%d", len(defs), reg_mreg, size)
         else:  # mop_S
             stkoff = mop.s.off
             size = mop.size
             blk_serial = environment.cur_blk.serial if environment.cur_blk is not None else 0
             defs = find_reaching_defs_for_stkvar(mba, blk_serial, stkoff, size)
+            if emulator_log.debug_on:
+                emulator_log.debug("Found %d reaching defs for stkvar off=0x%x size=%d", len(defs), stkoff, size)
 
         # Handle multiple definitions (phi-node situations)
         if len(defs) == 0:
+            if emulator_log.debug_on:
+                emulator_log.debug("No reaching definitions found for %s", format_mop_t(mop))
             return None
         elif len(defs) > 1:
             # Multiple reaching definitions - in symbolic mode, we could build a phi node
             # For now, in concrete mode, we conservatively give up
+            if emulator_log.debug_on:
+                emulator_log.debug("Multiple reaching definitions (%d) found for %s", len(defs), format_mop_t(mop))
             if self.symbolic_mode:
                 # In symbolic mode, return a synthetic value that represents the merge
                 value = self.synthetic_call.get(mop)
                 self._def_use_cache[mop] = value
+                if emulator_log.debug_on:
+                    emulator_log.debug("Returning synthetic value 0x%x for multiple defs in symbolic mode", value)
                 return value
             else:
+                if emulator_log.debug_on:
+                    emulator_log.debug("Giving up on multiple defs in concrete mode")
                 return None
 
         def_site = defs[0]
         # Get the defining instruction from the block
         blk = mba.get_mblock(def_site.block_serial)
         if blk is None:
+            if emulator_log.debug_on:
+                emulator_log.debug("Block %d not found for def site", def_site.block_serial)
             return None
         ins = blk.head
         def_insn = None
@@ -306,7 +331,12 @@ class MicroCodeInterpreter(object):
             ins = ins.next
 
         if def_insn is None:
+            if emulator_log.debug_on:
+                emulator_log.debug("Defining instruction not found at EA 0x%x", def_site.ins_ea)
             return None
+
+        if emulator_log.debug_on:
+            emulator_log.debug("Found defining instruction: %s", format_minsn_t(def_insn))
 
         # Insert cycle detection sentinel before recursive evaluation
         self._def_use_cache[mop] = None
@@ -323,6 +353,8 @@ class MicroCodeInterpreter(object):
             
             # Evaluate the defining instruction using the existing evaluator
             # This enables recursive constant folding through arbitrary def-use chains
+            if emulator_log.debug_on:
+                emulator_log.debug("Evaluating defining instruction: %s", format_minsn_t(def_insn))
             value = self._eval_instruction(def_insn, environment)
             
             if value is not None:
@@ -330,11 +362,15 @@ class MicroCodeInterpreter(object):
                 res_mask = AND_TABLE[def_insn.d.size] if def_insn.d and def_insn.d.size else AND_TABLE[mop.size]
                 value = value & res_mask
                 self._def_use_cache[mop] = value
+                if emulator_log.debug_on:
+                    emulator_log.debug("Def-use resolution successful for %s: 0x%x", format_mop_t(mop), value)
                 return value
             else:
                 # Evaluation failed, remove from cache
                 if mop in self._def_use_cache:
                     del self._def_use_cache[mop]
+                if emulator_log.debug_on:
+                    emulator_log.debug("Def-use evaluation returned None for %s", format_mop_t(mop))
                 return None
         except Exception as e:
             # Evaluation failed due to an exception, remove from cache
