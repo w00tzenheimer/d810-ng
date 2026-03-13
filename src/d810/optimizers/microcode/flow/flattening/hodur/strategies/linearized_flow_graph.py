@@ -198,6 +198,11 @@ class LinearizedFlowGraphStrategy:
         range_fallback_count = 0
 
         for transition in sm.transitions:
+            # Skip transitions with unresolved from_state (emitted by UD
+            # chain discovery as placeholders for future resolution).
+            if transition.from_state is None:
+                continue
+
             to_state = transition.to_state
             from_block = transition.from_block
 
@@ -493,9 +498,12 @@ class LinearizedFlowGraphStrategy:
         # -----------------------------------------------------------------
         redirected_states: set[int] = {
             t.from_state for t in sm.transitions
-            if (t.from_block, resolve_target_via_bst(bst_result, t.to_state))
-            in emitted
-            or resolve_target_via_bst(bst_result, t.to_state) is not None
+            if t.from_state is not None
+            and (
+                (t.from_block, resolve_target_via_bst(bst_result, t.to_state))
+                in emitted
+                or resolve_target_via_bst(bst_result, t.to_state) is not None
+            )
         }
         nop_mods, nop_blocks = self._nop_state_variable_writes(
             snapshot, builder, owned_blocks, redirected_states,
@@ -678,7 +686,8 @@ class LinearizedFlowGraphStrategy:
         # Group transitions by from_state
         transitions_by_from: dict[int, list] = {}
         for t in sm.transitions:
-            transitions_by_from.setdefault(t.from_state, []).append(t)
+            if t.from_state is not None:
+                transitions_by_from.setdefault(t.from_state, []).append(t)
 
         # Track per-handler resolution status
         node_states: set[int] = set()  # all handler state values
@@ -894,6 +903,7 @@ class LinearizedFlowGraphStrategy:
         # Identify states with outgoing transitions.
         states_with_outgoing: set[int] = {
             t.from_state for t in sm.transitions
+            if t.from_state is not None
         }
 
         # Also exclude self-loop-skipped states: states where the only

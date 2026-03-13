@@ -829,7 +829,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         for t in self.state_machine.transitions:
             unflat_logger.info(
                 "  %s -> %s (block %d)",
-                hex(t.from_state),
+                hex(t.from_state) if t.from_state is not None else "None",
                 hex(t.to_state),
                 t.from_block,
             )

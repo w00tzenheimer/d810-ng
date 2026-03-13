@@ -45,6 +45,7 @@ from d810.hexrays.utils.hexrays_helpers import (
     get_mop_index,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import HodurStateMachine
+from d810.recon.flow.bst_model import BSTAnalysisResult
 from d810.recon.flow.dispatcher_detection import DispatcherCache
 from d810.recon.flow.transition_builder import (
     StateHandler,
@@ -126,6 +127,7 @@ class HodurStateMachineDetector:
         self.state_machine: HodurStateMachine | None = None
         self.use_cache = use_cache
         self._cache: DispatcherCache | None = None
+        self.bst_result: BSTAnalysisResult | None = None
         self.min_state_constant = min_state_constant
         self.min_state_constants = min_state_constants
         self.max_state_constants = max_state_constants
@@ -1383,6 +1385,7 @@ class HodurStateMachineDetector:
     def _discover_transitions_via_ud_chains(
         self,
         mba: "ida_hexrays.mba_t",
+        bst_result: BSTAnalysisResult | None = None,
     ) -> "list[StateTransition]":
         """Discover uncovered handler transitions via UD chain analysis.
 
@@ -1390,6 +1393,10 @@ class HodurStateMachineDetector:
         variable, then checks uncovered def sites for literal constants that
         map to known handler states.  For non-literal sources, performs one
         level of backward UD chain lookup to resolve through temp variables.
+
+        When *bst_result* is provided and the BFS predecessor walk fails to
+        resolve ``from_state``, a BST provenance fallback is attempted via
+        :meth:`BSTNodeMap.resolve_state_for_block`.
 
         Returns a list of newly discovered :class:`StateTransition` objects.
         """
@@ -1417,7 +1424,7 @@ class HodurStateMachineDetector:
                 block_to_handler[blk_serial] = state_val
 
         # --- Build existing (from_state, to_state) pairs for dedup ---
-        existing_pairs: set[tuple[int, int]] = {
+        existing_pairs: set[tuple[int | None, int]] = {
             (t.from_state, t.to_state) for t in self.state_machine.transitions
         }
 
@@ -1553,7 +1560,45 @@ class HodurStateMachineDetector:
                             except (AttributeError, RuntimeError):
                                 pass
 
+                        if pred_from is None and bst_result is not None:
+                            # BST provenance fallback for per-pred path
+                            pred_blk = mba.get_mblock(pred_serial)
+                            pp_serials = (
+                                [int(p) for p in pred_blk.predset]
+                                if pred_blk is not None
+                                else []
+                            )
+                            pred_from = bst_result.bst_node_blocks.resolve_state_for_block(
+                                pred_serial,
+                                bst_result.handler_state_map,
+                                pred_serials=pp_serials,
+                            )
+                            if pred_from is not None and unflat_logger.debug_on:
+                                unflat_logger.debug(
+                                    "UD_CHAIN_DIAG: BST provenance resolved "
+                                    "pred_from=0x%X for pred blk[%d]",
+                                    pred_from,
+                                    pred_serial,
+                                )
+
                         if pred_from is None:
+                            # Emit with from_state=None rather than discarding
+                            transition = StateTransition(
+                                from_state=None,
+                                to_state=pred_const,
+                                from_block=def_site.block_serial,
+                                provenance_chain=[(-1, 0)],
+                            )
+                            new_transitions.append(transition)
+                            if unflat_logger.debug_on:
+                                unflat_logger.debug(
+                                    "UD_CHAIN_PER_PRED: emitting transition "
+                                    "from_state=None -> 0x%X at blk[%d] via "
+                                    "pred blk[%d]",
+                                    pred_const,
+                                    def_site.block_serial,
+                                    pred_serial,
+                                )
                             continue
                         if pred_from == pred_const:
                             continue
@@ -1636,11 +1681,40 @@ class HodurStateMachineDetector:
                 except (AttributeError, RuntimeError):
                     pass
 
+            if from_state is None and bst_result is not None:
+                # BST provenance fallback for main path
+                def_blk = mba.get_mblock(def_site.block_serial)
+                ds_pred_serials = (
+                    [int(p) for p in def_blk.predset]
+                    if def_blk is not None
+                    else []
+                )
+                from_state = bst_result.bst_node_blocks.resolve_state_for_block(
+                    def_site.block_serial,
+                    bst_result.handler_state_map,
+                    pred_serials=ds_pred_serials,
+                )
+                if from_state is not None and unflat_logger.debug_on:
+                    unflat_logger.debug(
+                        "UD_CHAIN_DIAG: BST provenance resolved "
+                        "from_state=0x%X for blk[%d]",
+                        from_state,
+                        def_site.block_serial,
+                    )
+
             if from_state is None:
+                # Emit transition with from_state=None rather than discarding
+                transition = StateTransition(
+                    from_state=None,
+                    to_state=const_val,
+                    from_block=def_site.block_serial,
+                    provenance_chain=[(-1, 0)],
+                )
+                new_transitions.append(transition)
                 if unflat_logger.debug_on:
                     unflat_logger.debug(
                         "UD_CHAIN: blk[%d] writes 0x%X — "
-                        "could not determine from_state",
+                        "emitting with from_state=None",
                         def_site.block_serial,
                         const_val,
                     )
@@ -2199,7 +2273,7 @@ class HodurStateMachineDetector:
             # duplicates while still allowing supplemental transitions that
             # share a from_state but have a different to_state (conditional
             # forks).
-            existing_pairs: set[tuple[int, int]] = {
+            existing_pairs_fwd: set[tuple[int | None, int]] = {
                 (t.from_state, t.to_state) for t in self.state_machine.transitions
             }
             added_count = 0
@@ -2207,9 +2281,9 @@ class HodurStateMachineDetector:
                 if ft.to_state not in self.state_machine.state_constants:
                     self.state_machine.state_constants.add(ft.to_state)
                 pair = (ft.from_state, ft.to_state)
-                if pair not in existing_pairs:
+                if pair not in existing_pairs_fwd:
                     self.state_machine.add_transition(ft)
-                    existing_pairs.add(pair)
+                    existing_pairs_fwd.add(pair)
                     added_count += 1
             unflat_logger.info(
                 "Forward prop: %d/%d transitions added to state machine "
@@ -2219,12 +2293,40 @@ class HodurStateMachineDetector:
                 len(forward_transitions) - added_count,
             )
 
+        # Phase 3.5: Compute BST analysis for UD chain provenance fallback
+        if self.bst_result is None and self.state_machine.handlers:
+            entry_serial = list(self.state_machine.handlers.values())[0].check_block
+            stkoff_for_bst: int | None = None
+            if self.state_machine.state_var is not None:
+                sv = self.state_machine.state_var
+                if sv.t == ida_hexrays.mop_S:
+                    stkoff_for_bst = sv.s.off
+            try:
+                from d810.recon.flow.bst_analysis import analyze_bst_dispatcher
+
+                raw_bst = analyze_bst_dispatcher(
+                    self.mba,
+                    dispatcher_entry_serial=entry_serial,
+                    state_var_stkoff=stkoff_for_bst,
+                )
+                if raw_bst is not None and len(raw_bst.handler_state_map) > 0:
+                    self.bst_result = raw_bst
+                    unflat_logger.debug(
+                        "BST analysis computed for UD chain fallback: "
+                        "%d handler mappings",
+                        len(raw_bst.handler_state_map),
+                    )
+            except Exception:
+                unflat_logger.debug(
+                    "BST analysis for UD chain fallback failed"
+                )
+
         # Phase 4: UD chain discovery with fixpoint iteration
         _UD_CHAIN_MAX_ITERATIONS = 5
         for iteration in range(_UD_CHAIN_MAX_ITERATIONS):
             try:
                 ud_transitions = self._discover_transitions_via_ud_chains(
-                    self.mba
+                    self.mba, bst_result=self.bst_result,
                 )
             except Exception:
                 unflat_logger.debug(

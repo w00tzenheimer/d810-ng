@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class StateTransition:
     """Represents a state transition in the Hodur state machine."""
 
-    from_state: int
+    from_state: int | None
     to_state: int
     from_block: int
     condition_block: Optional[int] = None
