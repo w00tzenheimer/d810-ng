@@ -1850,6 +1850,22 @@ def analyze_bst_dispatcher(
     result.handler_range_map = handler_range_map
     result.bst_node_blocks = bst_node_blocks
 
+    # Phase 1b: Build interval dispatcher (parallel to existing BST walk)
+    dispatcher = None
+    try:
+        dispatch_tree, _dispatch_bst_serials = build_dispatch_tree(
+            mba, dispatcher_entry_serial, state_var_stkoff,
+        )
+        if dispatch_tree is not None:
+            emitted = emit_dispatch_intervals(dispatch_tree)
+            dispatcher = IntervalDispatcher.from_emitted(emitted)
+    except Exception:
+        logger.warning(
+            "INTERVAL_MAP: build_dispatch_tree failed", exc_info=True
+        )
+        dispatcher = None
+    result.dispatcher = dispatcher
+
     # Default block: BST successor that is neither a BST node nor a handler
     result.default_block_serial = find_bst_default_block(
         mba, dispatcher_entry_serial, bst_node_blocks, handler_serials,

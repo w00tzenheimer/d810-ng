@@ -7,6 +7,7 @@ from d810.core.typing import Iterator
 from d810.core.typing import Optional
 from d810.core.typing import Set
 from d810.core.typing import Tuple
+from d810.recon.flow.interval_map import IntervalDispatcher
 
 
 @dataclass(frozen=True)
@@ -192,6 +193,7 @@ class BSTAnalysisResult:
     initial_state: Optional[int] = None
     bst_node_blocks: BSTNodeMap = field(default_factory=BSTNodeMap)
     default_block_serial: Optional[int] = None
+    dispatcher: IntervalDispatcher | None = None
 
 
 def resolve_target_via_bst(
