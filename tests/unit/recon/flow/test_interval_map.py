@@ -62,12 +62,9 @@ class TestInterval:
         parts = iv.subtract_point(9)
         assert parts == [Interval(0, 9)]
 
-        # Remove point outside interval → both sides non-empty → returns original interval halves
-        # x=20 is outside [0,10): left=[0,20) clipped to [0,10) logic won't apply here.
-        # The method doesn't clip — left=Interval(0,20) non-empty, right=Interval(21,10) empty.
+        # Remove point outside interval → returns [self] unchanged
         parts = iv.subtract_point(20)
-        # left = Interval(0,20) not empty; right = Interval(21,10) empty
-        assert parts == [Interval(0, 20)]
+        assert parts == [Interval(0, 10)]
 
     def test_ordering(self) -> None:
         # (0,5) < (0,10) because dataclass order compares (lo, hi) lexicographically

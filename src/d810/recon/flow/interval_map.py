@@ -71,6 +71,8 @@ class Interval:
         Returns:
             0, 1, or 2 non-empty intervals covering [lo, hi) \\ {x}.
         """
+        if not self.contains(x):
+            return [self]
         result: list[Interval] = []
         left = Interval(self.lo, x)
         if not left.empty():
