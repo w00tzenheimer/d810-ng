@@ -957,6 +957,9 @@ class MicroCodeInterpreter(object):
                 )
             )
 
+        # DEBUG: Log every call to eval
+        emulator_log.warning("DEBUG: eval called with mop type %s", mop_type_to_string(mop.t))
+
         if mop.t == ida_hexrays.mop_n:
             return mop.nnn.value
         elif mop.t in [ida_hexrays.mop_r, ida_hexrays.mop_S]:
