@@ -325,6 +325,7 @@ class ReorderBlocks:
     """
     dfs_block_order: tuple[int, ...]
     non_2way_serials: tuple[int, ...] = ()
+    two_way_serials: tuple[int, ...] = ()   # handler-internal BLT_2WAY blocks to copy with trampoline
 
 
 class DirectTerminalLoweringKind(str, enum.Enum):

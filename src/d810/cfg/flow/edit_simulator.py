@@ -1,25 +1,13 @@
 """Simulate CFG edits on an adjacency list without mutating the MBA."""
+
 from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
 
-try:
-    import ida_hexrays
-except ImportError:  # pragma: no cover - exercised in non-IDA unit tests.
-    class _FallbackHexRays:
-        BLT_NONE = 0
-        BLT_STOP = 1
-        BLT_0WAY = 2
-        BLT_1WAY = 3
-        BLT_2WAY = 4
+import ida_hexrays
 
-        m_nop = 0
-        m_goto = 2
-        m_jcnd = 3
-
-    ida_hexrays = _FallbackHexRays()  # type: ignore[assignment]
-
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
@@ -30,7 +18,6 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     RemoveEdge,
 )
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.plan import (
     LegacyBlockOperation,
     PatchConditionalRedirect,
@@ -41,11 +28,14 @@ from d810.cfg.plan import (
     PatchPlan,
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
-    PatchReorderBlocks,
-    PatchRemoveEdge,
     PatchRedirectBranch,
     PatchRedirectGoto,
+    PatchRemoveEdge,
+    PatchReorderBlocks,
 )
+from d810.core.logging import getLogger
+
+logger = getLogger(__name__)
 
 _BLT_NONE = int(getattr(ida_hexrays, "BLT_NONE", 0))
 _BLT_STOP = int(getattr(ida_hexrays, "BLT_STOP", 1))
@@ -98,6 +88,15 @@ class SimulatedEdit:
     stop_serial_after: int | None = None
 
 
+def _reorder_trampoline_serials(patch_plan: PatchPlan) -> frozenset[int]:
+    """Return the set of old block serials that become trampolines in a ReorderBlocks step."""
+    for step in patch_plan.steps:
+        match step:
+            case PatchReorderBlocks(old_to_new=old_to_new_pairs):
+                return frozenset(old for old, _new in old_to_new_pairs)
+    return frozenset()
+
+
 def _tail_opcode_for_existing_block(
     block: BlockSnapshot,
     patch_plan: PatchPlan,
@@ -115,7 +114,13 @@ def _tail_opcode_for_existing_block(
             ):
                 return _M_GOTO
             case PatchRedirectBranch(from_serial=serial) if serial == block.serial:
-                return block.tail_opcode  # tail stays as m_jcnd — only successor changes, not opcode
+                return (
+                    block.tail_opcode
+                )  # tail stays as m_jcnd — only successor changes, not opcode
+            case PatchReorderBlocks(old_to_new=old_to_new_pairs):
+                trampoline_serials = frozenset(old for old, _new in old_to_new_pairs)
+                if block.serial in trampoline_serials:
+                    return _M_GOTO
     return block.tail_opcode
 
 
@@ -126,14 +131,23 @@ def _block_type_for_projected_shape(
     succs: tuple[int, ...],
     tail_opcode: int | None,
 ) -> int:
-    if kind in {"conditional_redirect_clone", "duplicate_block_clone"} and len(succs) == 2:
+    if (
+        kind in {"conditional_redirect_clone", "duplicate_block_clone"}
+        and len(succs) == 2
+    ):
         return _BLT_2WAY
-    if kind.endswith("fallthrough") or kind in {"edge_split_trampoline", "insert_block"}:
+    if kind.endswith("fallthrough") or kind in {
+        "edge_split_trampoline",
+        "insert_block",
+    }:
         if len(succs) >= 2:
             return _BLT_2WAY
         if len(succs) == 1:
             return _BLT_1WAY
         return _BLT_0WAY
+    # 2WAY trampoline is always BLT_1WAY (single m_goto to fallthrough target)
+    if kind == "reorder_block_2way_trampoline":
+        return _BLT_1WAY
     if template_block is not None:
         return int(template_block.block_type)
     if tail_opcode == _M_JCND and len(succs) == 2:
@@ -154,12 +168,21 @@ def _tail_opcode_for_projected_block(
 ) -> int | None:
     if instructions:
         return int(instructions[-1].opcode)
-    if kind in {"conditional_redirect_clone", "duplicate_block_clone"} and len(succs) == 2:
+    if (
+        kind in {"conditional_redirect_clone", "duplicate_block_clone"}
+        and len(succs) == 2
+    ):
         if template_block is not None and template_block.tail_opcode is not None:
             return int(template_block.tail_opcode)
         return _M_JCND
-    if kind.endswith("fallthrough") or kind in {"edge_split_trampoline", "insert_block"}:
+    if kind.endswith("fallthrough") or kind in {
+        "edge_split_trampoline",
+        "insert_block",
+    }:
         return _M_GOTO if succs else _M_NOP
+    # 2WAY trampoline is always a single m_goto
+    if kind == "reorder_block_2way_trampoline":
+        return _M_GOTO
     if template_block is not None:
         return template_block.tail_opcode
     return _M_GOTO if succs else _M_NOP
@@ -171,10 +194,7 @@ def _build_pred_map(adj: dict[int, list[int]]) -> dict[int, tuple[int, ...]]:
         for succ in succs:
             if succ in preds:
                 preds[succ].append(serial)
-    return {
-        serial: tuple(pred_list)
-        for serial, pred_list in preds.items()
-    }
+    return {serial: tuple(pred_list) for serial, pred_list in preds.items()}
 
 
 def _project_existing_blocks(
@@ -183,11 +203,17 @@ def _project_existing_blocks(
     adj: dict[int, list[int]],
 ) -> dict[int, BlockSnapshot]:
     projected: dict[int, BlockSnapshot] = {}
+    trampoline_serials = _reorder_trampoline_serials(patch_plan)
     for block in pre_cfg.blocks.values():
         projected_serial = patch_plan.relocation_map.rewrite_serial(block.serial)
+        # Blocks that become trampolines in ReorderBlocks are converted to BLT_1WAY
+        if block.serial in trampoline_serials:
+            block_type = _BLT_1WAY
+        else:
+            block_type = int(block.block_type)
         projected[projected_serial] = BlockSnapshot(
             serial=projected_serial,
-            block_type=int(block.block_type),
+            block_type=block_type,
             succs=tuple(adj.get(projected_serial, ())),
             preds=(),
             flags=int(block.flags),
@@ -209,6 +235,15 @@ def _project_created_blocks(
         if assigned_serial is None:
             continue
         succs = tuple(adj.get(assigned_serial, ()))
+        if not succs and spec.kind.startswith("reorder_block_2way"):
+            logger.warning(
+                "DIAG _project_created_blocks: %s (kind=%s template=%s) assigned_serial=%d has empty succs! adj_keys_near=%s",
+                spec.block_id,
+                spec.kind,
+                spec.template_block,
+                assigned_serial,
+                sorted([k for k in adj if abs(k - assigned_serial) < 10]),
+            )
         template_block = (
             pre_cfg.get_block(spec.template_block)
             if spec.template_block is not None
@@ -233,7 +268,8 @@ def _project_created_blocks(
             preds=(),
             flags=int(getattr(template_block, "flags", 0)),
             start_ea=int(getattr(template_block, "start_ea", pre_cfg.func_ea)),
-            insn_snapshots=instructions or tuple(getattr(template_block, "insn_snapshots", ())),
+            insn_snapshots=instructions
+            or tuple(getattr(template_block, "insn_snapshots", ())),
             tail_opcode=tail_opcode,
         )
     return projected
@@ -245,6 +281,31 @@ def project_post_state(pre_cfg: FlowGraph, patch_plan: PatchPlan) -> FlowGraph:
         pre_cfg.as_adjacency_dict(),
         patch_plan_to_simulated_edits(patch_plan),
     )
+    # DIAGNOSTIC: Projected CFG adjacency dump
+    if logger.debug_on:
+        logger.debug("Projected CFG adjacency after %s:", type(patch_plan).__name__)
+        for serial, succs in sorted(simulated.adj.items()):
+            clone_marker = " [CLONE]" if serial in simulated.created_clones else ""
+            logger.debug("  block %d -> %s%s", serial, succs, clone_marker)
+    # DIAG: check if all new_blocks assigned serials are in simulated.adj
+    for spec in patch_plan.new_blocks:
+        assigned = patch_plan.relocation_map.assigned_serial_for(spec.block_id)
+        if (
+            assigned is not None
+            and assigned not in simulated.adj
+            and spec.kind.startswith("reorder_block")
+        ):
+            logger.warning(
+                "DIAG project_post_state: %s (kind=%s) assigned=%d NOT in simulated.adj (adj_max=%d, adj_len=%d, created_clones=%s)",
+                spec.block_id,
+                spec.kind,
+                assigned,
+                max(simulated.adj.keys()) if simulated.adj else -1,
+                len(simulated.adj),
+                sorted(c for c in simulated.created_clones if abs(c - assigned) < 10)[
+                    :5
+                ],
+            )
     projected_blocks = _project_existing_blocks(pre_cfg, patch_plan, simulated.adj)
     projected_blocks.update(_project_created_blocks(pre_cfg, patch_plan, simulated.adj))
     pred_map = _build_pred_map(simulated.adj)
@@ -574,38 +635,76 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                         )
                     )
 
-            case PatchReorderBlocks(old_to_new=old_to_new_pairs):
+            case PatchReorderBlocks(
+                old_to_new=old_to_new_pairs,
+                two_way_serials=two_way,
+                two_way_old_to_trampoline=two_way_trampoline_pairs,
+            ):
+                two_way_set = set(two_way)
+                two_way_copy_map = {
+                    old: new for old, new in old_to_new_pairs if old in two_way_set
+                }
+                two_way_trampoline_map = dict(two_way_trampoline_pairs)
+
+                # Non-2WAY block copy edits
                 for old_serial, new_serial in old_to_new_pairs:
-                    # Copy: new block gets old block's adjacency
-                    simulated.append(SimulatedEdit(
-                        kind="reorder_block_copy",
-                        source=old_serial,
-                        old_target=old_serial,
-                        new_target=None,
-                        created_serial=new_serial,
-                        stop_serial_before=stop_serial_before,
-                        stop_serial_after=stop_serial_after,
-                    ))
+                    if old_serial in two_way_set:
+                        continue
+                    simulated.append(
+                        SimulatedEdit(
+                            kind="reorder_block_copy",
+                            source=old_serial,
+                            old_target=old_serial,
+                            new_target=None,
+                            created_serial=new_serial,
+                            stop_serial_before=stop_serial_before,
+                            stop_serial_after=stop_serial_after,
+                        )
+                    )
+
+                # 2WAY block copy + trampoline edits
+                for old_serial in two_way:
+                    copy_serial = two_way_copy_map.get(old_serial)
+                    tramp_serial = two_way_trampoline_map.get(old_serial)
+                    if copy_serial is None or tramp_serial is None:
+                        continue
+                    simulated.append(
+                        SimulatedEdit(
+                            kind="reorder_block_2way_copy",
+                            source=old_serial,
+                            old_target=old_serial,
+                            new_target=None,
+                            created_serial=copy_serial,
+                            secondary_created_serial=tramp_serial,
+                            stop_serial_before=stop_serial_before,
+                            stop_serial_after=stop_serial_after,
+                        )
+                    )
+
+                # Trampolines: all old blocks (1WAY and 2WAY) redirect to their copies
                 for old_serial, new_serial in old_to_new_pairs:
-                    # Trampoline: old block redirects to its copy
-                    simulated.append(SimulatedEdit(
-                        kind="reorder_block_trampoline",
-                        source=old_serial,
-                        old_target=-1,
-                        new_target=new_serial,
-                    ))
-                # Successor remap: emit a finalize edit with old->new mapping
-                if old_to_new_pairs:
-                    flat = tuple(
-                        x for pair in old_to_new_pairs for x in pair
-                    )  # (old0, new0, old1, new1, ...)
-                    simulated.append(SimulatedEdit(
-                        kind="reorder_block_remap",
-                        source=0,
-                        old_target=0,
-                        new_target=None,
-                        source_successors=flat,
-                    ))
+                    simulated.append(
+                        SimulatedEdit(
+                            kind="reorder_block_trampoline",
+                            source=old_serial,
+                            old_target=-1,
+                            new_target=new_serial,
+                        )
+                    )
+
+                # Successor remap across all copies
+                all_old_to_new = dict(old_to_new_pairs)
+                if all_old_to_new:
+                    flat = tuple(x for pair in all_old_to_new.items() for x in pair)
+                    simulated.append(
+                        SimulatedEdit(
+                            kind="reorder_block_remap",
+                            source=0,
+                            old_target=0,
+                            new_target=None,
+                            source_successors=flat,
+                        )
+                    )
 
             case LegacyBlockOperation(
                 modification=CreateConditionalRedirect(
@@ -622,7 +721,9 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                         kind="create_conditional_redirect",
                         source=src,
                         old_target=patch_plan.relocation_map.rewrite_serial(ref),
-                        new_target=patch_plan.relocation_map.rewrite_serial(conditional),
+                        new_target=patch_plan.relocation_map.rewrite_serial(
+                            conditional
+                        ),
                         fallthrough_target=patch_plan.relocation_map.rewrite_serial(
                             fallthrough
                         ),
@@ -824,7 +925,9 @@ def simulate_edits(
             clone_succs: list[int]
 
             fallthrough_serial = edit.secondary_created_serial
-            needs_fallthrough_clone = len(source_successors) == 2 or fallthrough_serial is not None
+            needs_fallthrough_clone = (
+                len(source_successors) == 2 or fallthrough_serial is not None
+            )
             if needs_fallthrough_clone and fallthrough_serial is None:
                 fallthrough_serial = max({*result.keys(), clone_serial}, default=-1) + 1
                 if fallthrough_serial == clone_serial:
@@ -886,6 +989,48 @@ def simulate_edits(
             result[new_serial] = old_succs
             created_clones.add(new_serial)
             clone_origins[new_serial] = edit
+
+        elif edit.kind == "reorder_block_2way_copy":
+            copy_serial = edit.created_serial
+            tramp_serial = getattr(edit, "secondary_created_serial", None)
+            if copy_serial is None:
+                copy_serial = max(result.keys(), default=-1) + 1
+            if tramp_serial is None:
+                tramp_serial = copy_serial + 1
+
+            old_serial = edit.source
+            old_succs = list(result.get(old_serial, []))
+            # BLT_2WAY: succset = [fallthrough(index 0), conditional(index 1)].
+            # The copy replaces the fallthrough (index 0) with the trampoline.
+            # The conditional target (index 1+) stays for remap.
+            if len(old_succs) >= 2:
+                # Replace first entry (fallthrough) with trampoline
+                original_fallthrough = old_succs[0]
+                copy_succs = [tramp_serial] + old_succs[1:]
+            elif len(old_succs) == 1:
+                # Degenerate: single successor, prepend trampoline
+                original_fallthrough = old_succs[0]
+                copy_succs = [tramp_serial, old_succs[0]]
+            else:
+                original_fallthrough = old_serial + 1
+                copy_succs = [tramp_serial]
+            logger.warning(
+                "DIAG sim 2WAY_COPY: old=%d copy=%d tramp=%d old_succs=%s copy_succs=%s ft=%d in_result=%s",
+                old_serial,
+                copy_serial,
+                tramp_serial,
+                old_succs,
+                copy_succs,
+                original_fallthrough,
+                copy_serial in result,
+            )
+            result[copy_serial] = copy_succs
+            created_clones.add(copy_serial)
+
+            # Trampoline: single successor = original fallthrough target.
+            # The reorder_block_remap step will remap it if needed.
+            result[tramp_serial] = [original_fallthrough]
+            created_clones.add(tramp_serial)
 
         elif edit.kind == "reorder_block_trampoline":
             # Convert old block to trampoline -> single successor = its copy

@@ -1,4 +1,5 @@
 """Unit tests for edit simulator (no IDA dependency)."""
+
 import pytest
 
 from d810.cfg.flow import edit_simulator as _edit_simulator
@@ -24,7 +25,9 @@ from d810.cfg.graph_modification import (
 from d810.cfg.plan import compile_patch_plan
 
 
-def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
+def _block(
+    serial: int, succs: tuple[int, ...], preds: tuple[int, ...]
+) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
         block_type=1 if succs else 0,
@@ -40,7 +43,9 @@ class TestSimulateEdits:
     def test_goto_redirect(self):
         """Single edge replacement via goto_redirect."""
         adj = {0: [1], 1: [2], 2: []}
-        edits = [SimulatedEdit(kind="goto_redirect", source=0, old_target=1, new_target=2)]
+        edits = [
+            SimulatedEdit(kind="goto_redirect", source=0, old_target=1, new_target=2)
+        ]
         sim = simulate_edits(adj, edits)
         assert isinstance(sim, SimulationResult)
         assert sim.adj[0] == [2]
@@ -49,14 +54,20 @@ class TestSimulateEdits:
     def test_conditional_redirect(self):
         """One of two edges replaced via conditional_redirect."""
         adj = {0: [1, 2], 1: [], 2: []}
-        edits = [SimulatedEdit(kind="conditional_redirect", source=0, old_target=2, new_target=3)]
+        edits = [
+            SimulatedEdit(
+                kind="conditional_redirect", source=0, old_target=2, new_target=3
+            )
+        ]
         sim = simulate_edits(adj, edits)
         assert sim.adj[0] == [1, 3]
 
     def test_convert_to_goto(self):
         """Both edges become single target via convert_to_goto."""
         adj = {0: [1, 2], 1: [], 2: []}
-        edits = [SimulatedEdit(kind="convert_to_goto", source=0, old_target=1, new_target=3)]
+        edits = [
+            SimulatedEdit(kind="convert_to_goto", source=0, old_target=1, new_target=3)
+        ]
         sim = simulate_edits(adj, edits)
         assert sim.adj[0] == [3]
 
@@ -64,7 +75,9 @@ class TestSimulateEdits:
         """Original adj unchanged after simulate."""
         adj = {0: [1], 1: [2], 2: []}
         original_copy = {0: [1], 1: [2], 2: []}
-        edits = [SimulatedEdit(kind="goto_redirect", source=0, old_target=1, new_target=2)]
+        edits = [
+            SimulatedEdit(kind="goto_redirect", source=0, old_target=1, new_target=2)
+        ]
         simulate_edits(adj, edits)
         assert adj == original_copy
 
@@ -82,7 +95,11 @@ class TestSimulateEdits:
     def test_edge_split_redirect_no_via_pred(self):
         """edge_split_redirect without via_pred uses conservative fallback (append)."""
         adj = {0: [1, 2], 1: [], 2: []}
-        edits = [SimulatedEdit(kind="edge_split_redirect", source=0, old_target=1, new_target=3)]
+        edits = [
+            SimulatedEdit(
+                kind="edge_split_redirect", source=0, old_target=1, new_target=3
+            )
+        ]
         sim = simulate_edits(adj, edits)
         assert 3 in sim.adj[0]
         # Original successors preserved, new_target appended
@@ -92,7 +109,11 @@ class TestSimulateEdits:
     def test_edge_split_redirect_no_via_pred_dedup(self):
         """edge_split_redirect fallback does not duplicate existing target."""
         adj = {0: [1, 3], 1: [], 3: []}
-        edits = [SimulatedEdit(kind="edge_split_redirect", source=0, old_target=1, new_target=3)]
+        edits = [
+            SimulatedEdit(
+                kind="edge_split_redirect", source=0, old_target=1, new_target=3
+            )
+        ]
         sim = simulate_edits(adj, edits)
         assert sim.adj[0].count(3) == 1  # no duplicate
 
@@ -100,11 +121,15 @@ class TestSimulateEdits:
         """Edge split creates virtual clone node."""
         # Original: 0->1->2, via_pred=0
         adj = {0: [1], 1: [2], 2: []}
-        edits = [SimulatedEdit(
-            kind="edge_split_redirect",
-            source=1, old_target=2, new_target=5,
-            via_pred=0,
-        )]
+        edits = [
+            SimulatedEdit(
+                kind="edge_split_redirect",
+                source=1,
+                old_target=2,
+                new_target=5,
+                via_pred=0,
+            )
+        ]
         sim = simulate_edits(adj, edits)
         # Clone node created (serial 3 = max(2)+1)
         clone = max(sim.adj.keys())
@@ -118,11 +143,15 @@ class TestSimulateEdits:
         """Edge split only rewires the source edge in via_pred, not others."""
         # via_pred 0 has two successors: [1, 3]
         adj = {0: [1, 3], 1: [2], 2: [], 3: []}
-        edits = [SimulatedEdit(
-            kind="edge_split_redirect",
-            source=1, old_target=2, new_target=5,
-            via_pred=0,
-        )]
+        edits = [
+            SimulatedEdit(
+                kind="edge_split_redirect",
+                source=1,
+                old_target=2,
+                new_target=5,
+                via_pred=0,
+            )
+        ]
         sim = simulate_edits(adj, edits)
         clone = max(sim.adj.keys())
         # via_pred[0] should have [clone, 3] — only source=1 replaced
@@ -135,17 +164,22 @@ class TestSimulateEdits:
         # 0(disp)->1(handler)->2(exit)->3(stop, nsucc=0)
         # Edge split: src=2, via_pred=1, old=3, new=1 (back to handler!)
         adj = {0: [1], 1: [2], 2: [3], 3: []}
-        edits = [SimulatedEdit(
-            kind="edge_split_redirect",
-            source=2, old_target=3, new_target=1,
-            via_pred=1,
-        )]
+        edits = [
+            SimulatedEdit(
+                kind="edge_split_redirect",
+                source=2,
+                old_target=3,
+                new_target=1,
+                via_pred=1,
+            )
+        ]
         sim = simulate_edits(adj, edits)
         clone = next(iter(sim.created_clones))
         # Clone -> 1 (handler), creating cycle
         assert sim.adj[clone] == [1]
         # detect_terminal_cycles should find this
         from d810.cfg.flow.graph_checks import detect_terminal_cycles
+
         cycle_result = detect_terminal_cycles(
             sim.adj, terminal_exits={clone}, handler_entries={1}, dispatcher=0
         )
@@ -162,19 +196,23 @@ class TestSimulateEdits:
         - detect_terminal_cycles from {219, 220} catches it
         """
         adj = {
-            0: [45],      # dispatcher
-            45: [2],      # source block
-            122: [45],    # via_pred -> source
-            2: [219],     # path to terminal
-            219: [],      # terminal (nsucc=0)
-            180: [181],   # handler entry
-            181: [],      # handler body
+            0: [45],  # dispatcher
+            45: [2],  # source block
+            122: [45],  # via_pred -> source
+            2: [219],  # path to terminal
+            219: [],  # terminal (nsucc=0)
+            180: [181],  # handler entry
+            181: [],  # handler body
         }
-        edits = [SimulatedEdit(
-            kind="edge_split_redirect",
-            source=45, old_target=2, new_target=180,
-            via_pred=122,
-        )]
+        edits = [
+            SimulatedEdit(
+                kind="edge_split_redirect",
+                source=45,
+                old_target=2,
+                new_target=180,
+                via_pred=122,
+            )
+        ]
         sim_result = simulate_edits(adj, edits)
 
         # Clone was created
@@ -186,23 +224,28 @@ class TestSimulateEdits:
 
         # Without clone as seed: MISS
         from d810.cfg.flow.graph_checks import detect_terminal_cycles
+
         miss = detect_terminal_cycles(sim_result.adj, {219}, {180}, dispatcher=0)
         assert miss.passed  # wrongly passes - 219 has no succs
 
         # With clone as seed: CATCH
-        catch = detect_terminal_cycles(sim_result.adj, {219, clone}, {180}, dispatcher=0)
+        catch = detect_terminal_cycles(
+            sim_result.adj, {219, clone}, {180}, dispatcher=0
+        )
         assert not catch.passed
         assert any(c.reentry_target == 180 for c in catch.cycles)
 
     def test_create_conditional_redirect_creates_virtual_conditional_clone(self):
         adj = {0: [1], 1: [2], 2: []}
-        edits = [SimulatedEdit(
-            kind="create_conditional_redirect",
-            source=0,
-            old_target=1,
-            new_target=10,
-            fallthrough_target=11,
-        )]
+        edits = [
+            SimulatedEdit(
+                kind="create_conditional_redirect",
+                source=0,
+                old_target=1,
+                new_target=10,
+                fallthrough_target=11,
+            )
+        ]
         sim = simulate_edits(adj, edits)
         assert len(sim.created_clones) == 2
         clone = min(sim.created_clones)
@@ -374,7 +417,9 @@ class TestModificationProjection:
         mods = [
             RedirectGoto(from_serial=1, old_target=2, new_target=3),
             ConvertToGoto(block_serial=4, goto_target=5),
-            EdgeRedirectViaPredSplit(src_block=6, old_target=7, new_target=8, via_pred=9),
+            EdgeRedirectViaPredSplit(
+                src_block=6, old_target=7, new_target=8, via_pred=9
+            ),
             InsertBlock(
                 pred_serial=14,
                 succ_serial=15,
@@ -424,7 +469,9 @@ class TestModificationProjection:
             cfg,
         )
 
-        sim = simulate_edits(cfg.as_adjacency_dict(), patch_plan_to_simulated_edits(patch_plan))
+        sim = simulate_edits(
+            cfg.as_adjacency_dict(), patch_plan_to_simulated_edits(patch_plan)
+        )
 
         assert sim.adj[122] == [219]
         assert sim.adj[45] == [2]
@@ -453,7 +500,9 @@ class TestModificationProjection:
             cfg,
         )
 
-        sim = simulate_edits(cfg.as_adjacency_dict(), patch_plan_to_simulated_edits(patch_plan))
+        sim = simulate_edits(
+            cfg.as_adjacency_dict(), patch_plan_to_simulated_edits(patch_plan)
+        )
 
         assert sim.adj[1] == [2]
         assert sim.adj[2] == [3]
@@ -484,7 +533,9 @@ class TestModificationProjection:
             cfg,
         )
 
-        sim = simulate_edits(cfg.as_adjacency_dict(), patch_plan_to_simulated_edits(patch_plan))
+        sim = simulate_edits(
+            cfg.as_adjacency_dict(), patch_plan_to_simulated_edits(patch_plan)
+        )
 
         assert sim.adj[0] == [5]
         assert sim.adj[5] == [7, 6]

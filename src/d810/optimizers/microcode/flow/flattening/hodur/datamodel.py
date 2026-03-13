@@ -118,15 +118,23 @@ class HandlerPathResult:
 
 @dataclass
 class ConditionalTransition:
-    """An intra-handler conditional branch where one arm is a state transition."""
+    """An intra-handler conditional branch where one arm is a state transition.
 
-    handler_entry: int          # handler that contains this conditional
-    branch_block: int           # block serial with the m_jnz
-    target_state: int           # state constant written on the redirectable arm
-    target_handler: int | None  # resolved handler entry (filled during linearization)
-    state_write_block: int      # block that writes the state constant
-    state_write_ea: int         # instruction EA of the state write
-    branch_arm: int             # which successor arm (0=fall-through, 1=taken)
+    When ``is_terminal_no_write`` is True, this entry represents the *sibling*
+    arm of a detected state-transition conditional — the arm that does NOT
+    write a new state constant.  The stale incoming state passes through
+    unchanged, so this arm must be redirected to the terminal exit target
+    to prevent the leaked constant from reaching return slots.
+    """
+
+    handler_entry: int               # handler that contains this conditional
+    branch_block: int                # block serial with the m_jnz
+    target_state: int                # state constant written on the redirectable arm
+    target_handler: int | None       # resolved handler entry (filled during linearization)
+    state_write_block: int | None    # block that writes the state constant (None for no-write arms)
+    state_write_ea: int | None       # instruction EA of the state write (None for no-write arms)
+    branch_arm: int                  # which successor arm (0=fall-through, 1=taken)
+    is_terminal_no_write: bool = False  # True for sibling arms with no state write
 
 
 @dataclass
