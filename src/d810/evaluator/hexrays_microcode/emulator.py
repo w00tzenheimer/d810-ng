@@ -1064,6 +1064,8 @@ class MicroCodeInterpreter(object):
         try:
             if environment is None:
                 environment = self.global_environment
+            # Clear def-use cache at the start of each mop evaluation to avoid stale values
+            self._clear_def_use_cache()
             res = self.eval(mop, environment)
             return res
         except EmulationException as e:
