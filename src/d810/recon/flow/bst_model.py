@@ -21,6 +21,7 @@ class BSTNodeEntry:
     depth: int  # depth in BST tree (0 = root)
     opcode: Optional[int]  # tail opcode of this block (m_jnz, m_jbe, etc.)
     is_equality_branch: bool  # True when this is the equality path (m_jnz fall-through or m_jz taken)
+    is_handler_entry: bool = False  # True for handler entry blocks (provenance-only, excluded from set-like interface)
 
 
 class BSTNodeMap:
@@ -35,24 +36,31 @@ class BSTNodeMap:
         self._entries: Dict[int, BSTNodeEntry] = {}
 
     # --- backward compat with Set[int] ---
+    # Handler entries are provenance-only: excluded from set-like interface
+    # so that ``serial in bst_node_blocks`` checks don't match handler blocks.
     def __contains__(self, serial: object) -> bool:
-        return serial in self._entries
+        entry = self._entries.get(serial)
+        return entry is not None and not entry.is_handler_entry
 
     def __iter__(self) -> Iterator[int]:
-        return iter(self._entries)
+        return (s for s, e in self._entries.items() if not e.is_handler_entry)
 
     def __len__(self) -> int:
-        return len(self._entries)
+        return sum(1 for e in self._entries.values() if not e.is_handler_entry)
 
     def __bool__(self) -> bool:
-        return bool(self._entries)
+        return any(not e.is_handler_entry for e in self._entries.values())
+
+    def _bst_keys(self) -> set[int]:
+        """Return the set of serials excluding handler entries."""
+        return {s for s, e in self._entries.items() if not e.is_handler_entry}
 
     def __eq__(self, other: object) -> bool:
         """Allow comparison with plain sets for backward compat / tests."""
         if isinstance(other, set):
-            return set(self._entries.keys()) == other
+            return self._bst_keys() == other
         if isinstance(other, BSTNodeMap):
-            return set(self._entries.keys()) == set(other._entries.keys())
+            return self._bst_keys() == other._bst_keys()
         return NotImplemented
 
     def __hash__(self) -> int:  # type: ignore[override]
@@ -61,17 +69,17 @@ class BSTNodeMap:
 
     def __or__(self, other: set[int] | BSTNodeMap) -> set[int]:
         """Union with a plain set -- returns a plain set (used by find_bst_default_block)."""
-        keys = set(self._entries.keys())
+        keys = self._bst_keys()
         if isinstance(other, BSTNodeMap):
-            return keys | set(other._entries.keys())
+            return keys | other._bst_keys()
         return keys | other
 
     def __ror__(self, other: set[int]) -> set[int]:
         """Reverse union (set | BSTNodeMap)."""
-        return other | set(self._entries.keys())
+        return other | self._bst_keys()
 
     def __repr__(self) -> str:
-        return f"BSTNodeMap({set(self._entries.keys())})"
+        return f"BSTNodeMap({self._bst_keys()})"
 
     # --- registration ---
     def add(self, serial: int, *,
@@ -81,8 +89,16 @@ class BSTNodeMap:
             branch: str = "",
             depth: int = 0,
             opcode: Optional[int] = None,
-            is_equality_branch: bool = False) -> None:
-        """Register a BST node with its routing provenance."""
+            is_equality_branch: bool = False,
+            is_handler_entry: bool = False) -> None:
+        """Register a BST node with its routing provenance.
+
+        When *is_handler_entry* is True the entry is stored for provenance
+        queries (``get_entry``, ``resolve_state``) but is **excluded** from
+        set-like iteration (``__contains__``, ``__iter__``, ``__len__``,
+        ``__or__``) so that ``serial in bst_node_blocks`` checks do not
+        match handler blocks.
+        """
         self._entries[serial] = BSTNodeEntry(
             serial=serial,
             value_range=value_range,
@@ -92,6 +108,7 @@ class BSTNodeMap:
             depth=depth,
             opcode=opcode,
             is_equality_branch=is_equality_branch,
+            is_handler_entry=is_handler_entry,
         )
 
     # --- queries ---

@@ -603,8 +603,6 @@ def _dump_dispatcher_node(
                         handler_state_map[fall_blk] = fall_state
                     if handler_range_map is not None:
                         handler_range_map[fall_blk] = (value_lo, value_hi)
-                    # Register handler entry in BSTNodeMap with provenance
-                    # m_jnz fall-through = equality branch (state == V)
                     if bst_node_blocks is not None:
                         bst_node_blocks.add(fall_blk,
                             value_range=(value_lo, value_hi),
@@ -614,6 +612,7 @@ def _dump_dispatcher_node(
                             depth=depth + 1,
                             opcode=None,
                             is_equality_branch=True,
+                            is_handler_entry=True,
                         )
 
             # jump target (succs[1]) is state != V → recurse if BST node, else handler.
@@ -648,16 +647,16 @@ def _dump_dispatcher_node(
                             handler_state_map[jump_blk] = jump_state
                         if handler_range_map is not None:
                             handler_range_map[jump_blk] = (value_lo, value_hi)
-                        # Register handler entry in BSTNodeMap with provenance
                         if bst_node_blocks is not None:
                             bst_node_blocks.add(jump_blk,
                                 value_range=(value_lo, value_hi),
                                 parent_serial=serial,
-                                comparison_const=cmp_val,
+                                comparison_const=jump_state,
                                 branch="taken",
                                 depth=depth + 1,
                                 opcode=None,
                                 is_equality_branch=False,
+                                is_handler_entry=True,
                             )
                     # When jump_state is None, the range has >2 values but the
                     # continuation is not a BST node — this is the BST default/
@@ -681,8 +680,6 @@ def _dump_dispatcher_node(
                         handler_state_map[jump_blk] = jump_state
                     if handler_range_map is not None:
                         handler_range_map[jump_blk] = (value_lo, value_hi)
-                    # Register handler entry in BSTNodeMap with provenance
-                    # m_jz taken = equality branch (state == V)
                     if bst_node_blocks is not None:
                         bst_node_blocks.add(jump_blk,
                             value_range=(value_lo, value_hi),
@@ -692,6 +689,7 @@ def _dump_dispatcher_node(
                             depth=depth + 1,
                             opcode=None,
                             is_equality_branch=True,
+                            is_handler_entry=True,
                         )
 
             # fall-through (succs[0]) is state != V → recurse if BST node, else handler.
@@ -726,16 +724,16 @@ def _dump_dispatcher_node(
                             handler_state_map[fall_blk] = fall_state
                         if handler_range_map is not None:
                             handler_range_map[fall_blk] = (value_lo, value_hi)
-                        # Register handler entry in BSTNodeMap with provenance
                         if bst_node_blocks is not None:
                             bst_node_blocks.add(fall_blk,
                                 value_range=(value_lo, value_hi),
                                 parent_serial=serial,
-                                comparison_const=cmp_val,
+                                comparison_const=fall_state,
                                 branch="fallthrough",
                                 depth=depth + 1,
                                 opcode=None,
                                 is_equality_branch=False,
+                                is_handler_entry=True,
                             )
 
     else:

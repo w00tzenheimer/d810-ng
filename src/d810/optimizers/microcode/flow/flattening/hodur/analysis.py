@@ -1561,24 +1561,46 @@ class HodurStateMachineDetector:
                                 pass
 
                         if pred_from is None and bst_result is not None:
-                            # BST provenance fallback for per-pred path
-                            pred_blk = mba.get_mblock(pred_serial)
-                            pp_serials = (
-                                [int(p) for p in pred_blk.predset]
-                                if pred_blk is not None
-                                else []
-                            )
-                            pred_from = bst_result.bst_node_blocks.resolve_state_for_block(
-                                pred_serial,
-                                bst_result.handler_state_map,
-                                pred_serials=pp_serials,
-                            )
+                            # BFS backward walk through BST provenance (depth 4)
+                            pp_bst_node_map = bst_result.bst_node_blocks
+                            pp_bst_hsm = bst_result.handler_state_map
+                            pp_bst_frontier: set[int] = {pred_serial}
+                            pp_visited_bst: set[int] = set()
+                            pp_bst_resolved = False
+                            _pp_bst_depth = 0
+                            for _pp_bst_depth in range(4):
+                                pp_next_bst_frontier: set[int] = set()
+                                for pp_blk_serial in pp_bst_frontier:
+                                    if pp_blk_serial in pp_visited_bst:
+                                        continue
+                                    pp_visited_bst.add(pp_blk_serial)
+                                    pp_resolved = pp_bst_node_map.resolve_state(
+                                        pp_blk_serial, pp_bst_hsm,
+                                    )
+                                    if pp_resolved is not None:
+                                        pred_from = pp_resolved
+                                        pp_bst_resolved = True
+                                        break
+                                    # Expand predecessors
+                                    try:
+                                        pp_blk_obj = mba.get_mblock(pp_blk_serial)
+                                        if pp_blk_obj is not None:
+                                            for pp_p_raw in pp_blk_obj.predset:
+                                                pp_p_int = int(pp_p_raw)
+                                                if pp_p_int not in pp_visited_bst:
+                                                    pp_next_bst_frontier.add(pp_p_int)
+                                    except (AttributeError, RuntimeError):
+                                        pass
+                                if pp_bst_resolved:
+                                    break
+                                pp_bst_frontier = pp_next_bst_frontier
                             if pred_from is not None and unflat_logger.debug_on:
                                 unflat_logger.debug(
                                     "UD_CHAIN_DIAG: BST provenance resolved "
-                                    "pred_from=0x%X for pred blk[%d]",
+                                    "pred_from=0x%X for pred blk[%d] (depth %d)",
                                     pred_from,
                                     pred_serial,
+                                    _pp_bst_depth,
                                 )
 
                         if pred_from is None:
@@ -1682,24 +1704,46 @@ class HodurStateMachineDetector:
                     pass
 
             if from_state is None and bst_result is not None:
-                # BST provenance fallback for main path
-                def_blk = mba.get_mblock(def_site.block_serial)
-                ds_pred_serials = (
-                    [int(p) for p in def_blk.predset]
-                    if def_blk is not None
-                    else []
-                )
-                from_state = bst_result.bst_node_blocks.resolve_state_for_block(
-                    def_site.block_serial,
-                    bst_result.handler_state_map,
-                    pred_serials=ds_pred_serials,
-                )
+                # BFS backward walk through BST provenance (depth 4)
+                bst_node_map = bst_result.bst_node_blocks
+                bst_hsm = bst_result.handler_state_map
+                bst_frontier: set[int] = {def_site.block_serial}
+                visited_bst: set[int] = set()
+                bst_resolved = False
+                _bst_depth = 0
+                for _bst_depth in range(4):
+                    next_bst_frontier: set[int] = set()
+                    for blk_serial in bst_frontier:
+                        if blk_serial in visited_bst:
+                            continue
+                        visited_bst.add(blk_serial)
+                        resolved = bst_node_map.resolve_state(
+                            blk_serial, bst_hsm,
+                        )
+                        if resolved is not None:
+                            from_state = resolved
+                            bst_resolved = True
+                            break
+                        # Expand predecessors
+                        try:
+                            blk_obj = mba.get_mblock(blk_serial)
+                            if blk_obj is not None:
+                                for p_raw in blk_obj.predset:
+                                    p_int = int(p_raw)
+                                    if p_int not in visited_bst:
+                                        next_bst_frontier.add(p_int)
+                        except (AttributeError, RuntimeError):
+                            pass
+                    if bst_resolved:
+                        break
+                    bst_frontier = next_bst_frontier
                 if from_state is not None and unflat_logger.debug_on:
                     unflat_logger.debug(
                         "UD_CHAIN_DIAG: BST provenance resolved "
-                        "from_state=0x%X for blk[%d]",
+                        "from_state=0x%X for block %d (depth %d)",
                         from_state,
                         def_site.block_serial,
+                        _bst_depth,
                     )
 
             if from_state is None:
