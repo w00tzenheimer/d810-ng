@@ -17,6 +17,8 @@ Typical usage::
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from d810.core.logging import getLogger
 from d810.core.typing import (
     Any,
@@ -29,6 +31,7 @@ from d810.core.typing import (
 from d810.recon.flow.bst_model import BSTAnalysisResult
 from d810.recon.flow.bst_model import BSTNodeMap
 from d810.recon.flow.bst_model import resolve_target_via_bst
+from d810.recon.flow.interval_map import Node, NodeKind, emit_dispatch_intervals, IntervalDispatcher
 
 logger = getLogger(__name__)
 
@@ -1882,6 +1885,164 @@ def analyze_bst_dispatcher(
                 result.conditional_transitions[state_const] = walk["conditional_states"]
 
     return result
+
+
+# -----------------------------------------------------------------------------
+# Dispatch tree builder (decode / build / emit)
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DecodedCond:
+    """Decoded BST comparison from an mblock_t tail instruction."""
+
+    kind: NodeKind
+    imm: int
+    taken_serial: int
+    fall_serial: int
+
+
+_MCODE_TO_KIND: dict[int, NodeKind] | None = None
+
+
+def _get_mcode_to_kind() -> dict[int, NodeKind]:
+    global _MCODE_TO_KIND
+    if _MCODE_TO_KIND is None:
+        _ensure_ida_imports()
+        import ida_hexrays as ihr
+
+        _MCODE_TO_KIND = {
+            ihr.m_jbe: NodeKind.JBE,
+            ihr.m_ja: NodeKind.JA,
+            ihr.m_jb: NodeKind.JB,
+            ihr.m_jae: NodeKind.JAE,
+            ihr.m_jnz: NodeKind.JNZ,
+            ihr.m_jz: NodeKind.JZ,
+        }
+    return _MCODE_TO_KIND
+
+
+def extract_cmp_imm_from_jcnd(
+    tail_insn,
+    state_var_stkoff: int,
+) -> int | None:
+    """Extract comparison immediate from a jcnd tail instruction.
+
+    Returns the immediate constant if the comparison involves the state
+    variable, or None if unrecognized.
+    """
+    l_mop = getattr(tail_insn, "l", None)
+    r_mop = getattr(tail_insn, "r", None)
+    if not (
+        _mop_matches_stkoff(l_mop, state_var_stkoff)
+        or _mop_matches_stkoff(r_mop, state_var_stkoff)
+    ):
+        return None
+    l_val = _get_mop_const_value(l_mop)
+    r_val = _get_mop_const_value(r_mop)
+    return l_val if l_val is not None else r_val
+
+
+def decode_dispatch_cond(
+    mba,
+    blk_serial: int,
+    state_var_stkoff: int,
+) -> DecodedCond | None:
+    """Decode a BST comparison node from an MBA block.
+
+    Returns DecodedCond if the block is a 2-way conditional comparing
+    the state variable against a constant. Returns None otherwise.
+    """
+    blk = mba.get_mblock(blk_serial)
+    if blk.nsucc() != 2:
+        return None
+    tail = blk.tail
+    if tail is None:
+        return None
+    mcode_to_kind = _get_mcode_to_kind()
+    kind = mcode_to_kind.get(tail.opcode)
+    if kind is None:
+        return None
+    imm = extract_cmp_imm_from_jcnd(tail, state_var_stkoff)
+    if imm is None:
+        return None
+    fall_serial = blk.succ(0)
+    taken_serial = blk.succ(1)
+    return DecodedCond(
+        kind=kind,
+        imm=imm,
+        taken_serial=taken_serial,
+        fall_serial=fall_serial,
+    )
+
+
+def build_dispatch_tree(
+    mba,
+    root_serial: int,
+    state_var_stkoff: int,
+    *,
+    max_depth: int = 40,
+) -> tuple[Node | None, set[int]]:
+    """Walk MBA blocks to build a Node tree for interval emission.
+
+    Returns:
+        (root_node, bst_block_serials): The Node tree and set of
+        BST comparison block serials visited during construction.
+    """
+    bst_serials: set[int] = set()
+    memo: dict[int, Node] = {}
+
+    def _build(serial: int, depth: int) -> Node | None:
+        if serial in memo:
+            return memo[serial]
+        if depth > max_depth or serial < 0 or serial >= mba.qty:
+            return None
+        dc = decode_dispatch_cond(mba, serial, state_var_stkoff)
+        if dc is None:
+            node = Node(
+                kind=NodeKind.TARGET,
+                target=serial,
+                block_serial=serial,
+            )
+            memo[serial] = node
+            return node
+        bst_serials.add(serial)
+        match dc.kind:
+            case NodeKind.JBE | NodeKind.JA | NodeKind.JB | NodeKind.JAE:
+                node = Node(
+                    kind=dc.kind,
+                    imm=dc.imm,
+                    yes=_build(dc.taken_serial, depth + 1),
+                    no=_build(dc.fall_serial, depth + 1),
+                    block_serial=serial,
+                )
+            case NodeKind.JNZ:
+                node = Node(
+                    kind=NodeKind.JNZ,
+                    imm=dc.imm,
+                    target=dc.fall_serial,
+                    yes=_build(dc.taken_serial, depth + 1),
+                    block_serial=serial,
+                )
+            case NodeKind.JZ:
+                node = Node(
+                    kind=NodeKind.JZ,
+                    imm=dc.imm,
+                    target=dc.taken_serial,
+                    no=_build(dc.fall_serial, depth + 1),
+                    block_serial=serial,
+                )
+            case _:
+                node = Node(
+                    kind=NodeKind.TARGET,
+                    target=serial,
+                    block_serial=serial,
+                )
+        memo[serial] = node
+        return node
+
+    root = _build(root_serial, 0)
+    return root, bst_serials
 
 
 # -----------------------------------------------------------------------------
