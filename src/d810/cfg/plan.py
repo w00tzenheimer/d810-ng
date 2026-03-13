@@ -314,6 +314,17 @@ class PatchReorderBlocks:
 
     dfs_block_order: tuple[int, ...]
     non_2way_serials: tuple[int, ...] = ()  # dfs_block_order minus BLT_2WAY blocks; for projector
+    two_way_serials: tuple[int, ...] = ()
+    # old_serial -> new_concrete_serial mapping, populated after relocation
+    old_to_new: tuple[tuple[int, int], ...] = ()
+    two_way_old_to_trampoline: tuple[tuple[int, int], ...] = ()
+
+    def to_graph_modification(self) -> ReorderBlocks:
+        return ReorderBlocks(
+            dfs_block_order=self.dfs_block_order,
+            non_2way_serials=self.non_2way_serials,
+            two_way_serials=self.two_way_serials,
+        )
 
 
 BlockCreatingGraphModification = Union[
@@ -457,6 +468,16 @@ class _PendingPrivateTerminalSuffix:
 class _PendingPrivateTerminalSuffixGroup:
     modification: PrivateTerminalSuffixGroup
     per_anchor_clone_block_ids: tuple[tuple[VirtualBlockId, ...], ...]
+
+
+@dataclass(frozen=True)
+class _PendingReorderBlocks:
+    """Pre-resolution ReorderBlocks with virtual block IDs (not yet concrete serials)."""
+    dfs_block_order: tuple[int, ...]
+    non_2way_serials: tuple[int, ...]
+    virtual_ids: tuple[VirtualBlockId, ...]  # one per block in non_2way_serials, in order
+    two_way_serials: tuple[int, ...] = ()
+    two_way_virtual_id_pairs: tuple[tuple[VirtualBlockId, VirtualBlockId], ...] = ()
 
 
 def is_block_creating_modification(modification: GraphModification) -> bool:
@@ -802,7 +823,7 @@ def _compile_duplicate_block_step(
 
 
 def _finalize_step(
-    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup,
+    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingReorderBlocks,
     relocation_map: PatchRelocationMap,
 ) -> PatchStep:
     match step:
@@ -1002,6 +1023,49 @@ def _finalize_step(
                 per_anchor_clone_block_ids=per_anchor_ids,
                 per_anchor_clone_assigned_serials=tuple(per_anchor_assigned),
             )
+
+        case _PendingReorderBlocks(
+            dfs_block_order=order,
+            non_2way_serials=non_2way,
+            virtual_ids=vids,
+            two_way_serials=two_way,
+            two_way_virtual_id_pairs=two_way_pairs,
+        ):
+            old_to_new_pairs: list[tuple[int, int]] = []
+            for old_serial, vid in zip(non_2way, vids):
+                serial = relocation_map.assigned_serial_for(vid)
+                if serial is None:
+                    raise ValueError(f"Missing assigned serial for {vid}")
+                old_to_new_pairs.append((old_serial, serial))
+
+            two_way_old_to_trampoline: list[tuple[int, int]] = []
+            for old_serial, (copy_vid, tramp_vid) in zip(two_way, two_way_pairs):
+                copy_serial = relocation_map.assigned_serial_for(copy_vid)
+                tramp_serial = relocation_map.assigned_serial_for(tramp_vid)
+                if copy_serial is None:
+                    raise ValueError(f"Missing copy serial for 2WAY {copy_vid}")
+                if tramp_serial is None:
+                    raise ValueError(f"Missing trampoline serial for 2WAY {tramp_vid}")
+                old_to_new_pairs.append((old_serial, copy_serial))
+                two_way_old_to_trampoline.append((old_serial, tramp_serial))
+
+            _result = PatchReorderBlocks(
+                dfs_block_order=order,
+                non_2way_serials=non_2way,
+                two_way_serials=two_way,
+                old_to_new=tuple(old_to_new_pairs),
+                two_way_old_to_trampoline=tuple(two_way_old_to_trampoline),
+            )
+            # DIAG: verify 2WAY serials match relocation map
+            import logging as _diag_logging
+            _diag_lg = _diag_logging.getLogger("D810.diag.plan")
+            for _old, _new in old_to_new_pairs:
+                if _old in set(two_way):
+                    _diag_lg.warning(
+                        "DIAG _finalize 2WAY old=%d copy_serial=%d stop_before=%s",
+                        _old, _new, relocation_map.stop_serial_before,
+                    )
+            return _result
 
         case PatchReorderBlocks():
             return step
@@ -1268,13 +1332,47 @@ def compile_patch_plan(
                     )
                 )
 
-            case ReorderBlocks(dfs_block_order=order, non_2way_serials=non_2way):
-                raw_steps.append(
-                    PatchReorderBlocks(
-                        dfs_block_order=order,
-                        non_2way_serials=non_2way,
-                    )
+            case ReorderBlocks(
+                dfs_block_order=order,
+                non_2way_serials=non_2way,
+                two_way_serials=two_way,
+            ):
+                # Allocate one VirtualBlockId per non-2way block that will be copied
+                virtual_ids = tuple(
+                    allocator.alloc(f"reorder_copy_{old}")
+                    for old in non_2way
                 )
+                # Register PatchBlockSpec entries so _build_relocation_map assigns concrete serials
+                for vid, old_serial in zip(virtual_ids, non_2way):
+                    new_blocks.append(PatchBlockSpec(
+                        block_id=vid,
+                        kind="reorder_block_copy",
+                        template_block=old_serial,
+                    ))
+
+                two_way_pairs: list[tuple[VirtualBlockId, VirtualBlockId]] = []
+                for old_serial in two_way:
+                    copy_vid = allocator.alloc(f"reorder_2way_copy_{old_serial}")
+                    tramp_vid = allocator.alloc(f"reorder_2way_tramp_{old_serial}")
+                    new_blocks.append(PatchBlockSpec(
+                        block_id=copy_vid,
+                        kind="reorder_block_2way_copy",
+                        template_block=old_serial,
+                    ))
+                    new_blocks.append(PatchBlockSpec(
+                        block_id=tramp_vid,
+                        kind="reorder_block_2way_trampoline",
+                        template_block=old_serial,
+                    ))
+                    two_way_pairs.append((copy_vid, tramp_vid))
+
+                raw_steps.append(_PendingReorderBlocks(
+                    dfs_block_order=order,
+                    non_2way_serials=non_2way,
+                    virtual_ids=virtual_ids,
+                    two_way_serials=two_way,
+                    two_way_virtual_id_pairs=tuple(two_way_pairs),
+                ))
 
             case _:
                 raise TypeError(f"Unsupported GraphModification: {type(modification).__name__}")

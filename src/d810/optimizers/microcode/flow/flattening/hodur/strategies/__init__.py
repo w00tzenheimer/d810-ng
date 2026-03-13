@@ -75,6 +75,12 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.inner_merge_dupl
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.state_constant_return_fixup import (
     StateConstantReturnFixupStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph import (
+    LinearizedFlowGraphStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort import (
+    TopologicalSortStrategy,
+)
 
 __all__ = [
     "DirectHandlerLinearizationStrategy",
@@ -90,10 +96,23 @@ __all__ = [
     "DeadStateVariableEliminationStrategy",
     "InnerMergeDuplicationStrategy",
     "StateConstantReturnFixupStrategy",
+    "LinearizedFlowGraphStrategy",
+    "TopologicalSortStrategy",
     "ALL_STRATEGIES",
+    "LEGACY_STRATEGIES",
 ]
 
+# Experimental pipeline: LFG + Valrange + HiddenHandlerClosure + TopologicalSort.
+# ValrangeResolutionStrategy resolves additional handler exits via IDA valranges
+# (85/88 exits resolved vs LFG-only ~45), killing more of the BST dispatcher.
 ALL_STRATEGIES: list[type] = [
+    LinearizedFlowGraphStrategy,
+    HiddenHandlerClosureStrategy,
+    TopologicalSortStrategy,
+]
+
+# Legacy pipeline preserved for reference/fallback.
+LEGACY_STRATEGIES: list[type] = [
     DirectHandlerLinearizationStrategy,
     ValrangeResolutionStrategy,
     HiddenHandlerClosureStrategy,

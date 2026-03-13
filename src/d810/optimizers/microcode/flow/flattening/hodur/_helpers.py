@@ -451,6 +451,7 @@ def evaluate_handler_paths(
     incoming_state: int,
     bst_node_blocks: set[int],
     state_var_stkoff: int,
+    handler_entry_blocks: set[int] | None = None,
 ) -> list[HandlerPathResult]:
     """DFS forward eval of a handler, forking state at conditional branches.
 
@@ -465,6 +466,8 @@ def evaluate_handler_paths(
         incoming_state: Initial state value entering this handler.
         bst_node_blocks: Set of block serials belonging to the BST/dispatcher.
         state_var_stkoff: Stack offset of the state variable.
+        handler_entry_blocks: Optional set of handler entry block serials.
+            When provided, prevents DFS from entering another handler's body.
 
     Returns:
         List of HandlerPathResult, one per exit path found.
@@ -519,7 +522,8 @@ def evaluate_handler_paths(
             continue
 
         for succ_serial in succs:
-            if succ_serial in bst_node_blocks:
+            if handler_entry_blocks and succ_serial in handler_entry_blocks and succ_serial != entry_serial:
+                # Reached another handler's entry — record transition, don't enter
                 final_val = stk_map.get(state_var_stkoff)
                 if final_val is not None:
                     results.append(
@@ -530,6 +534,30 @@ def evaluate_handler_paths(
                             ordered_path=list(ordered_path),
                         )
                     )
+            elif succ_serial in bst_node_blocks:
+                # Record exit (backward compat) AND continue through BST
+                final_val = stk_map.get(state_var_stkoff)
+                if final_val is not None:
+                    results.append(
+                        HandlerPathResult(
+                            exit_block=curr_serial,
+                            final_state=final_val & 0xFFFFFFFF,
+                            state_writes=cur_writes,
+                            ordered_path=list(ordered_path),
+                        )
+                    )
+                # Also continue DFS into BST node to find default branch transitions
+                new_ordered = ordered_path + [succ_serial]
+                queue.append(
+                    (
+                        succ_serial,
+                        dict(reg_map),
+                        dict(stk_map),
+                        path_visited,
+                        list(cur_writes),
+                        new_ordered,
+                    )
+                )
             else:
                 new_ordered = ordered_path + [succ_serial]
                 queue.append(

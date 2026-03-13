@@ -30,6 +30,8 @@ import idc
 
 from d810.recon.microcode_dump import (
     dump_dispatcher_tree,
+    dump_linearized_dag,
+    dump_state_machine_graph,
     dump_function_microcode,
     print_mba_human_readable,
 )
@@ -389,6 +391,37 @@ class TestDumpFunctionPseudocode:
                             )
                             print(tree_str)
                             print("=" * 88)
+                            try:
+                                dag_str = dump_linearized_dag(
+                                    mba,
+                                    dispatcher_serial,
+                                    state_var_stkoff=hodur_stkoff,
+                                )
+                                print(f"\n--- LINEARIZED DAG ({mba_source}) ---")
+                                print(dag_str)
+                                print("=" * 88)
+                            except Exception as e:
+                                print(f"\n[linearized DAG dump failed: {e}]")
+                            try:
+                                dot_str, graph_summary = dump_state_machine_graph(
+                                    mba, dispatcher_serial, state_var_stkoff=hodur_stkoff,
+                                )
+                                print(f"\n--- STATE MACHINE GRAPH ({mba_source}) ---")
+                                print(graph_summary)
+                                # Write DOT to file alongside the dump output
+                                dot_path = os.path.join(
+                                    os.environ.get("D810_DUMP_DIR", "/tmp"),
+                                    "state_machine.dot",
+                                )
+                                with open(dot_path, "w") as f:
+                                    f.write(dot_str)
+                                print(f"DOT graph written to: {dot_path}")
+                                print("--- DOT START ---")
+                                print(dot_str)
+                                print("--- DOT END ---")
+                                print("=" * 88)
+                            except Exception as e:
+                                print(f"\n[state machine graph failed: {e}]")
                 except Exception as e:
                     print(f"\n[dispatcher tree dump failed: {e}]")
 

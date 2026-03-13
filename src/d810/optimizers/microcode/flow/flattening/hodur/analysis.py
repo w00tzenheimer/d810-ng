@@ -76,6 +76,8 @@ HODUR_STATE_UPDATE_OPCODES = {
     ida_hexrays.m_xor,
     ida_hexrays.m_or,
     ida_hexrays.m_and,
+    ida_hexrays.m_xdu,
+    ida_hexrays.m_xds,
 }
 
 from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
@@ -982,6 +984,26 @@ class HodurStateMachineDetector:
                 if computed is not None:
                     _update_dst(dst, computed)
                     result = computed
+            elif unflat_logger.debug_on:
+                # Diagnostic: log when a binop operand fails to resolve
+                l_type = insn.l.t if insn.l else -1
+                r_type = insn.r.t if insn.r else -1
+                unflat_logger.debug(
+                    "BINOP_RESOLVE_FAIL: ea=0x%x opcode=%d "
+                    "l_type=%d l_val=%s r_type=%d r_val=%s "
+                    "stk_map={%s} reg_map={%s}",
+                    insn.ea, opcode,
+                    l_type, "None" if lv is None else hex(lv),
+                    r_type, "None" if rv is None else hex(rv),
+                    ", ".join(
+                        "%s: %s" % (hex(k), hex(v))
+                        for k, v in stk_map.items()
+                    ),
+                    ", ".join(
+                        "%s: %s" % (hex(k), hex(v))
+                        for k, v in reg_map.items()
+                    ),
+                )
 
         if result is not None and self._mops_match_state_var(dst, state_var):
             return result
@@ -1036,6 +1058,7 @@ class HodurStateMachineDetector:
 
             to_state: "int | None" = None
             found_block: "int | None" = None
+            provenance: "list[tuple[int, int]]" = []
 
             for blk_serial in handler.handler_blocks:
                 if mba is None:
@@ -1049,6 +1072,7 @@ class HodurStateMachineDetector:
                         insn, stk_map, reg_map, state_var
                     )
                     if val is not None and val != K:
+                        provenance.append((blk_serial, val))
                         if val in state_constants or val >= self.min_state_constant:
                             to_state = val
                             found_block = blk_serial
@@ -1056,6 +1080,91 @@ class HodurStateMachineDetector:
                     insn = insn.next
                 if to_state is not None:
                     break
+
+            # --- Tail chase: walk into shared successor blocks ---
+            if to_state is None and mba is not None:
+                handler_block_set = set(handler.handler_blocks)
+
+                # Start from the last walked block, or check_block if
+                # handler_blocks is empty
+                last_serial = (
+                    handler.handler_blocks[-1]
+                    if handler.handler_blocks
+                    else handler.check_block
+                )
+
+                # BFS chase up to depth 5
+                chase_frontier: list[tuple[int, int]] = [
+                    (last_serial, 0)
+                ]  # (serial, depth)
+                chased_visited: set[int] = set(handler_block_set)
+                chased_visited.add(last_serial)
+                chased_blocks: list[int] = []
+                _MAX_TAIL_CHASE_DEPTH = 5
+
+                while chase_frontier and to_state is None:
+                    cur_serial, cur_depth = chase_frontier.pop(0)
+                    cur_blk = mba.get_mblock(cur_serial)
+                    if cur_blk is None:
+                        continue
+
+                    for succ_serial_raw in cur_blk.succset:
+                        succ_serial = int(succ_serial_raw)
+                        if succ_serial in chased_visited:
+                            continue
+                        if succ_serial in handler_block_set:
+                            continue
+                        chased_visited.add(succ_serial)
+                        chased_blocks.append(succ_serial)
+
+                        succ_blk = mba.get_mblock(succ_serial)
+                        if succ_blk is None:
+                            continue
+
+                        insn = succ_blk.head
+                        while insn is not None:
+                            val = self._forward_eval_instruction(
+                                insn, stk_map, reg_map, state_var
+                            )
+                            if val is not None and val != K:
+                                provenance.append((succ_serial, val))
+                                if (
+                                    val in state_constants
+                                    or val >= self.min_state_constant
+                                ):
+                                    to_state = val
+                                    found_block = succ_serial
+                                    break
+                            insn = insn.next
+                        if to_state is not None:
+                            unflat_logger.info(
+                                "TAIL_CHASE: state=0x%X resolved via "
+                                "successor blk[%d] -> 0x%X",
+                                K,
+                                succ_serial,
+                                to_state,
+                            )
+                            break
+
+                        # Enqueue deeper successors if within depth limit
+                        if cur_depth + 1 < _MAX_TAIL_CHASE_DEPTH:
+                            chase_frontier.append(
+                                (succ_serial, cur_depth + 1)
+                            )
+
+                if to_state is None and chased_blocks:
+                    handler_entry = (
+                        handler.handler_blocks[0]
+                        if handler.handler_blocks
+                        else -1
+                    )
+                    unflat_logger.info(
+                        "TAIL_CHASE_FAILED: state=0x%X entry_blk=%d "
+                        "chased_blocks=%s",
+                        K,
+                        handler_entry,
+                        chased_blocks,
+                    )
 
             if to_state is not None and found_block is not None:
                 unflat_logger.debug(
@@ -1069,13 +1178,196 @@ class HodurStateMachineDetector:
                         from_state=K,
                         to_state=to_state,
                         from_block=found_block,
+                        provenance_chain=list(provenance),
                     )
                 )
+                # Emit additional transitions for intermediate values
+                # that match known handler states but differ from the
+                # final resolved state.
+                for prov_blk, prov_val in provenance:
+                    if prov_val in state_constants and prov_val != to_state:
+                        unflat_logger.info(
+                            "PROVENANCE_INTERMEDIATE: state=0x%X "
+                            "intermediate_state=0x%X at blk[%d] "
+                            "(final=0x%X)",
+                            K,
+                            prov_val,
+                            prov_blk,
+                            to_state,
+                        )
+                        new_transitions.append(
+                            StateTransition(
+                                from_state=K,
+                                to_state=prov_val,
+                                from_block=prov_blk,
+                            )
+                        )
+            else:
+                # Diagnostic: why did forward prop fail for this handler?
+                sv_stkoff = (
+                    hex(state_var.s.off)
+                    if state_var.t == ida_hexrays.mop_S
+                    else "reg=%d" % state_var.r
+                    if state_var.t == ida_hexrays.mop_r
+                    else "type=%d" % state_var.t
+                )
+                handler_entry = (
+                    handler.handler_blocks[0]
+                    if handler.handler_blocks
+                    else -1
+                )
+                unflat_logger.info(
+                    "UNRESOLVED_DIAG: state=0x%X entry_blk=%d "
+                    "handler_blocks=%s state_var_loc=%s\n"
+                    "  stk_map={%s}\n"
+                    "  reg_map={%s}",
+                    K,
+                    handler_entry,
+                    [s for s in handler.handler_blocks],
+                    sv_stkoff,
+                    ", ".join(
+                        "0x%X: 0x%X" % (k, v) for k, v in stk_map.items()
+                    ),
+                    ", ".join(
+                        "%d: 0x%X" % (k, v) for k, v in reg_map.items()
+                    ),
+                )
+
+        # --- Supplemental provenance pass for already-resolved handlers ---
+        # These handlers were resolved by BFS but may have intermediate state
+        # values hidden in temp variables that BFS couldn't capture.  We run
+        # the same handler-block walk (without tail chase) and record ALL
+        # intermediate values that match known state constants.
+        handlers = state_machine.handlers
+        supplemental_count = 0
+
+        for K in resolved_from_states:
+            if K not in handlers:
+                continue
+            handler = handlers[K]
+            handler_blks = handler.handler_blocks
+            if not handler_blks:
+                continue
+
+            stk_map: dict[int, int] = {}
+            reg_map: dict[int, int] = {}
+
+            if state_var.t == ida_hexrays.mop_S:
+                stk_map[state_var.s.off] = K
+            elif state_var.t == ida_hexrays.mop_r:
+                reg_map[state_var.r] = K
+
+            # Find the BFS-resolved to_state for this handler
+            bfs_to_state: "int | None" = None
+            for t in state_machine.transitions:
+                if t.from_state == K:
+                    bfs_to_state = t.to_state
+                    break
+
+            provenance: "list[tuple[int, int]]" = []
+
+            for blk_serial in handler_blks:
+                if mba is None:
+                    break
+                blk = mba.get_mblock(blk_serial)
+                if blk is None:
+                    continue
+                insn = blk.head
+                while insn is not None:
+                    val = self._forward_eval_instruction(
+                        insn, stk_map, reg_map, state_var
+                    )
+                    if val is not None and val != K:
+                        provenance.append((blk_serial, val))
+                    insn = insn.next
+
+            # --- Supplemental tail chase: walk into successor blocks ---
+            # Unlike the main loop tail chase which breaks on first match,
+            # we continue exploring to find ALL intermediate state_var values.
+            if mba is not None:
+                handler_block_set = set(handler_blks)
+                last_serial = (
+                    handler_blks[-1]
+                    if handler_blks
+                    else handler.check_block
+                )
+
+                sup_chase_frontier: list[tuple[int, int]] = [
+                    (last_serial, 0)
+                ]
+                sup_chased_visited: set[int] = set(handler_block_set)
+                sup_chased_visited.add(last_serial)
+                _MAX_SUP_TAIL_CHASE_DEPTH = 5
+
+                while sup_chase_frontier:
+                    cur_serial, cur_depth = sup_chase_frontier.pop(0)
+                    cur_blk = mba.get_mblock(cur_serial)
+                    if cur_blk is None:
+                        continue
+
+                    for succ_serial_raw in cur_blk.succset:
+                        succ_serial = int(succ_serial_raw)
+                        if succ_serial in sup_chased_visited:
+                            continue
+                        if succ_serial in handler_block_set:
+                            continue
+                        sup_chased_visited.add(succ_serial)
+
+                        succ_blk = mba.get_mblock(succ_serial)
+                        if succ_blk is None:
+                            continue
+
+                        insn = succ_blk.head
+                        while insn is not None:
+                            val = self._forward_eval_instruction(
+                                insn, stk_map, reg_map, state_var
+                            )
+                            if val is not None and val != K:
+                                provenance.append((succ_serial, val))
+                            insn = insn.next
+
+                        # Enqueue deeper successors if within depth
+                        if cur_depth + 1 < _MAX_SUP_TAIL_CHASE_DEPTH:
+                            sup_chase_frontier.append(
+                                (succ_serial, cur_depth + 1)
+                            )
+
+            # Emit supplemental transitions for intermediate values that
+            # match a known handler state but differ from the BFS result.
+            for prov_blk, prov_val in provenance:
+                if (
+                    prov_val in state_constants
+                    and prov_val != bfs_to_state
+                    and prov_val != K
+                ):
+                    new_transitions.append(
+                        StateTransition(
+                            from_state=K,
+                            to_state=prov_val,
+                            from_block=prov_blk,
+                            provenance_chain=list(provenance),
+                        )
+                    )
+                    supplemental_count += 1
+                    unflat_logger.info(
+                        "PROVENANCE_SUPPLEMENTAL: handler 0x%X "
+                        "intermediate 0x%X at blk[%d] "
+                        "(BFS resolved to 0x%X)",
+                        K,
+                        prov_val,
+                        prov_blk,
+                        bfs_to_state,
+                    )
 
         unflat_logger.info(
-            "Forward prop: resolved %d new transitions from %d unresolved states",
-            len(new_transitions),
+            "Forward prop: resolved %d new transitions from %d unresolved "
+            "states, %d supplemental from %d resolved states "
+            "(total returning: %d)",
+            len(new_transitions) - supplemental_count,
             len(unresolved_states),
+            supplemental_count,
+            len(resolved_from_states),
+            len(new_transitions),
         )
         return new_transitions
 
@@ -1100,6 +1392,7 @@ class HodurStateMachineDetector:
             self.state_machine.assignment_map = assignment_map
 
         check_map = {const: blk_serial for blk_serial, _, const in state_check_blocks}
+        check_serials = set(check_map.values())
 
         try:
             successors = {
@@ -1116,6 +1409,8 @@ class HodurStateMachineDetector:
 
             visited = set()
             to_visit = []
+            # Collect all (block_serial, resolved_value) pairs for provenance
+            provenance_steps: list[tuple[int, int]] = []
 
             handler_entry_serial: int | None = None
             for succ_serial in check_blk.succset:
@@ -1131,7 +1426,13 @@ class HodurStateMachineDetector:
                 if curr_serial in visited:
                     continue
                 visited.add(curr_serial)
-                handler.handler_blocks.append(curr_serial)
+
+                # Skip check blocks for other states -- they are BST
+                # comparison nodes the BFS entered via fall-through.
+                # Don't add them to handler_blocks but still expand
+                # through them to reach the real handler body.
+                if curr_serial not in check_serials:
+                    handler.handler_blocks.append(curr_serial)
 
                 if curr_serial in assignment_map:
                     curr_blk = self.mba.get_mblock(curr_serial)
@@ -1146,6 +1447,9 @@ class HodurStateMachineDetector:
                             continue
                         if next_state == state_val:
                             continue
+                        # Record every resolved value for provenance, even
+                        # values that are not valid state constants.
+                        provenance_steps.append((curr_serial, next_state))
                         if next_state not in self.state_machine.state_constants:
                             unflat_logger.debug(
                                 "BFS: skipping invalid transition %s -> %s (not a state constant)",
@@ -1157,6 +1461,7 @@ class HodurStateMachineDetector:
                             from_state=state_val,
                             to_state=next_state,
                             from_block=curr_serial,
+                            provenance_chain=list(provenance_steps),
                         )
                         self.state_machine.add_transition(transition)
 
@@ -1173,6 +1478,23 @@ class HodurStateMachineDetector:
                     ):
                         continue
                     to_visit.append(succ_serial)
+
+            # Log provenance summary when multiple state writes were seen
+            if len(provenance_steps) > 1:
+                emitted_targets = {
+                    v for _, v in provenance_steps
+                    if v in self.state_machine.state_constants and v != state_val
+                }
+                unflat_logger.debug(
+                    "BFS provenance for handler 0x%X: %d steps, %d emitted targets %s",
+                    state_val,
+                    len(provenance_steps),
+                    len(emitted_targets),
+                    [
+                        "(blk[%d]=0x%X)" % (bs, val)
+                        for bs, val in provenance_steps
+                    ],
+                )
 
         unflat_logger.info(
             "BFS found %d transitions; running scan to fill gaps",
@@ -1206,13 +1528,29 @@ class HodurStateMachineDetector:
                 "Forward propagation resolved %d additional transitions",
                 len(forward_transitions),
             )
-            covered_from_states = {t.from_state for t in self.state_machine.transitions}
+            # Track existing (from_state, to_state) pairs to avoid exact
+            # duplicates while still allowing supplemental transitions that
+            # share a from_state but have a different to_state (conditional
+            # forks).
+            existing_pairs: set[tuple[int, int]] = {
+                (t.from_state, t.to_state) for t in self.state_machine.transitions
+            }
+            added_count = 0
             for ft in forward_transitions:
                 if ft.to_state not in self.state_machine.state_constants:
                     self.state_machine.state_constants.add(ft.to_state)
-                if ft.from_state not in covered_from_states:
+                pair = (ft.from_state, ft.to_state)
+                if pair not in existing_pairs:
                     self.state_machine.add_transition(ft)
-                    covered_from_states.add(ft.from_state)
+                    existing_pairs.add(pair)
+                    added_count += 1
+            unflat_logger.info(
+                "Forward prop: %d/%d transitions added to state machine "
+                "(duplicates filtered: %d)",
+                added_count,
+                len(forward_transitions),
+                len(forward_transitions) - added_count,
+            )
 
         from_block_groups: dict[int, list[StateTransition]] = {}
         for t in self.state_machine.transitions:

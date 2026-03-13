@@ -17,6 +17,15 @@ from d810.core.bits import (
     unsigned_to_signed,
 )
 from d810.core.cymode import CythonMode
+from .chains import (
+    find_reaching_defs_for_reg,
+    find_reaching_defs_for_stkvar,
+)
+
+from .chains import (
+    find_reaching_defs_for_reg,
+    find_reaching_defs_for_stkvar,
+)
 
 # Try to import Cython speedups if CythonMode is enabled
 get_stack_or_reg_name = None
@@ -233,6 +242,113 @@ class MicroCodeInterpreter(object):
         self.synthetic_call = SyntheticCallReturnCache()
         # Enable symbolic fallback for unresolved variables
         self.symbolic_mode: bool = symbolic_mode
+        # Cache for def-use chain resolutions during the current emulation pass
+        self._def_use_cache: dict[ida_hexrays.mop_t, int] = {}
+
+    def _resolve_mop_via_def_use(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int | None:
+        # Use cached value if available
+        if mop in self._def_use_cache:
+            cached_value = self._def_use_cache[mop]
+            # Check for cycle detection sentinel (None value used as marker)
+            if cached_value is None:
+                return None  # Cycle detected, prevent infinite recursion
+            return cached_value
+
+        # We only handle mop_r and mop_S for now
+        if mop.t not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
+            return None
+
+        # Get the MBA from the environment's current instruction or block
+        mba = None
+        if environment.cur_ins is not None:
+            mba = environment.cur_ins.mba
+        elif environment.cur_blk is not None:
+            mba = environment.cur_blk.mba
+        else:
+            return None
+
+        if mop.t == ida_hexrays.mop_r:
+            reg_mreg = mop.r
+            size = mop.size
+            blk_serial = environment.cur_blk.serial if environment.cur_blk is not None else 0
+            defs = find_reaching_defs_for_reg(mba, blk_serial, reg_mreg, size)
+        else:  # mop_S
+            stkoff = mop.s.off
+            size = mop.size
+            blk_serial = environment.cur_blk.serial if environment.cur_blk is not None else 0
+            defs = find_reaching_defs_for_stkvar(mba, blk_serial, stkoff, size)
+
+        # Handle multiple definitions (phi-node situations)
+        if len(defs) == 0:
+            return None
+        elif len(defs) > 1:
+            # Multiple reaching definitions - in symbolic mode, we could build a phi node
+            # For now, in concrete mode, we conservatively give up
+            if self.symbolic_mode:
+                # In symbolic mode, return a synthetic value that represents the merge
+                value = self.synthetic_call.get(mop)
+                self._def_use_cache[mop] = value
+                return value
+            else:
+                return None
+
+        def_site = defs[0]
+        # Get the defining instruction from the block
+        blk = mba.get_mblock(def_site.block_serial)
+        if blk is None:
+            return None
+        ins = blk.head
+        def_insn = None
+        while ins is not None:
+            if ins.ea == def_site.ins_ea:
+                def_insn = ins
+                break
+            ins = ins.next
+
+        if def_insn is None:
+            return None
+
+        # Insert cycle detection sentinel before recursive evaluation
+        self._def_use_cache[mop] = None
+        
+        # Save current environment flow context to restore later
+        saved_cur_blk = environment.cur_blk
+        saved_cur_ins = environment.cur_ins
+        saved_next_blk = environment.next_blk
+        saved_next_ins = environment.next_ins
+
+        try:
+            # Set the environment context to the defining instruction's block
+            environment.set_cur_flow(blk, def_insn)
+            
+            # Evaluate the defining instruction using the existing evaluator
+            # This enables recursive constant folding through arbitrary def-use chains
+            value = self._eval_instruction(def_insn, environment)
+            
+            if value is not None:
+                # Mask the result to the destination size
+                res_mask = AND_TABLE[def_insn.d.size] if def_insn.d and def_insn.d.size else AND_TABLE[mop.size]
+                value = value & res_mask
+                self._def_use_cache[mop] = value
+                return value
+            else:
+                # Evaluation failed, remove from cache
+                if mop in self._def_use_cache:
+                    del self._def_use_cache[mop]
+                return None
+        except Exception as e:
+            # Evaluation failed due to an exception, remove from cache
+            if emulator_log.debug_on:
+                emulator_log.debug("Def-use resolution failed for %s: %s", format_mop_t(mop), e)
+            if mop in self._def_use_cache:
+                del self._def_use_cache[mop]
+            return None
+        finally:
+            # Restore environment flow context
+            environment.cur_blk = saved_cur_blk
+            environment.cur_ins = saved_cur_ins
+            environment.next_blk = saved_next_blk
+            environment.next_ins = saved_next_ins
 
     def _eval_instruction_and_update_environment(
         self,
@@ -804,10 +920,17 @@ class MicroCodeInterpreter(object):
         if mop.t == ida_hexrays.mop_n:
             return mop.nnn.value
         elif mop.t in [ida_hexrays.mop_r, ida_hexrays.mop_S]:
-            if (
-                value := environment.lookup(mop, raise_exception=not self.symbolic_mode)
-            ) is not None:
+            # First, try the environment (values assigned during this emulation run)
+            value = environment.lookup(mop, raise_exception=False)
+            if value is not None:
                 return value
+
+            # Second, try to resolve via def-use chains (static dataflow)
+            value = self._resolve_mop_via_def_use(mop, environment)
+            if value is not None:
+                return value
+
+            # Finally, fall back to symbolic or error
             if self.symbolic_mode:
                 value = self.synthetic_call.get(mop)
                 environment.define(mop, value)
@@ -894,6 +1017,10 @@ class MicroCodeInterpreter(object):
             "Unsupported mop type '{0}'".format(mop_type_to_string(mop.t))
         )
 
+    def _clear_def_use_cache(self):
+        """Clear the def-use chain resolution cache at the start of each emulation pass."""
+        self._def_use_cache.clear()
+
     def eval_instruction(
         self,
         blk: ida_hexrays.mblock_t,
@@ -909,6 +1036,8 @@ class MicroCodeInterpreter(object):
             emulator_log.debug(
                 "Evaluating microcode instruction : '%s'", format_minsn_t(ins)
             )
+        # Clear def-use cache at the start of each emulation pass to avoid stale values
+        self._clear_def_use_cache()
         try:
             self._eval_instruction_and_update_environment(blk, ins, environment)
             return True

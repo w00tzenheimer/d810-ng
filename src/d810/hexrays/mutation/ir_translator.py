@@ -581,10 +581,15 @@ class IDAIRTranslator:
                     sites=sites,
                 )
 
-            case PatchReorderBlocks(dfs_block_order=order, old_to_new=old_to_new_pairs):
+            case PatchReorderBlocks(
+                dfs_block_order=order,
+                old_to_new=old_to_new_pairs,
+                two_way_old_to_trampoline=two_way_tramp_pairs,
+            ):
                 modifier.queue_reorder_blocks(
                     dfs_block_order=order,
                     old_to_new=dict(old_to_new_pairs) if old_to_new_pairs else None,
+                    old_to_trampoline=dict(two_way_tramp_pairs) if two_way_tramp_pairs else None,
                     description=f"reorder {len(order)} blocks in DFS order",
                 )
 

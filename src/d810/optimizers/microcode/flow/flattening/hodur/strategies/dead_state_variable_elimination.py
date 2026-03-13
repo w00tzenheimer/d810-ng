@@ -181,6 +181,21 @@ class DeadStateVariableEliminationStrategy:
                     )
                     continue
 
+            # Guard: skip NOP when the instruction WRITES to state_var
+            # with a non-constant (dynamic) source.  OLLVM reuses state_var
+            # as a return-value carrier on early-exit paths (e.g.,
+            # ``state_var = v51``).  NOPing such writes destroys the value
+            # before it reaches the return slot via ``m_xdu``.
+            if self._is_dynamic_state_var_write(
+                mba, use, state_var_stkoff, state_constants,
+            ):
+                logger.debug(
+                    "DSVE: skipping NOP of state_var write with non-const"
+                    " source in blk[%d] ea=0x%x",
+                    use.block_serial, use.ins_ea,
+                )
+                continue
+
             # Verify this is genuinely a read of the state variable as a
             # source operand (not a write destination -- those are handled by
             # DirectLinearization).
@@ -356,6 +371,101 @@ class DeadStateVariableEliminationStrategy:
                     and cur_ins.r.s.off == stkoff
                 )
                 return l_is_stkvar or r_is_stkvar
+            cur_ins = cur_ins.next
+
+        return False
+
+    @staticmethod
+    def _is_dynamic_state_var_write(
+        mba: object,
+        use: UseSite,
+        stkoff: int,
+        state_constants: frozenset[int],
+    ) -> bool:
+        """Check if the instruction writes a non-constant value TO state_var.
+
+        OLLVM reuses the state variable as a return-value carrier on
+        early-exit paths.  For example::
+
+            m_mov %var_XX, %state_var     ; state_var = v51
+
+        If we NOP this write, the state variable retains its stale
+        dispatcher constant, which then leaks into the return slot via
+        a downstream ``m_xdu %return_slot = %state_var``.
+
+        Only state-constant writes (``mop_n`` source whose value is in
+        *state_constants*) are safe to NOP — those are pure BST dispatch
+        assignments.  All other writes (register, stack variable,
+        expression sources, or constants not in state_constants) must
+        be preserved.
+
+        Args:
+            mba: An ``ida_hexrays.mba_t`` instance.
+            use: The use site to inspect.
+            stkoff: Stack offset of the state variable.
+            state_constants: Known dispatcher state constant values.
+
+        Returns:
+            ``True`` if the instruction writes a non-constant (dynamic)
+            value to state_var and should NOT be NOPed.
+        """
+        try:
+            blk = mba.get_mblock(use.block_serial)  # type: ignore[attr-defined]
+        except (AttributeError, IndexError):
+            return False
+
+        if blk is None:
+            return False
+
+        cur_ins = blk.head
+        while cur_ins is not None:
+            if cur_ins.ea == use.ins_ea:
+                # Check if state_var is the destination operand.
+                d = cur_ins.d
+                d_is_state_var = (
+                    d is not None
+                    and d.t == ida_hexrays.mop_S
+                    and d.s is not None
+                    and d.s.off == stkoff
+                )
+                if not d_is_state_var:
+                    return False
+
+                # State_var IS the destination.  Inspect source operands.
+                # For unary ops (m_mov, m_xdu, m_xds): source is ``l``.
+                # For binary ops (m_sub, m_xor, etc.): sources are
+                # ``l`` and ``r`` — if either is non-constant, the
+                # result flowing into state_var is dynamic.
+                source_ops = []
+                if cur_ins.l is not None:
+                    source_ops.append(cur_ins.l)
+                if cur_ins.r is not None:
+                    source_ops.append(cur_ins.r)
+
+                if not source_ops:
+                    # No source operands at all (unexpected); be
+                    # conservative and allow NOP.
+                    return False
+
+                for src in source_ops:
+                    if src.t == ida_hexrays.mop_n:
+                        # Immediate constant — check if it's a known
+                        # state constant.
+                        try:
+                            val = src.nnn.value
+                        except (AttributeError, TypeError):
+                            # Can't read value; treat as dynamic.
+                            return True
+                        # Mask to 32 bits for OLLVM state comparison.
+                        if (val & 0xFFFFFFFF) not in state_constants:
+                            return True
+                    else:
+                        # Non-immediate source (mop_r, mop_S, mop_d,
+                        # etc.) — this is a dynamic value.
+                        return True
+
+                # All source operands are state constants — safe to NOP.
+                return False
             cur_ins = cur_ins.next
 
         return False

@@ -5,10 +5,15 @@ This module keeps store I/O separate from the unflattener orchestration logic.
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 from pathlib import Path
 from types import MappingProxyType
 import time
+
+from d810.core import logging
+
+logger = logging.getLogger(__name__)
 
 from d810.cfg.flow.return_frontier import (
     ReturnFrontierAudit,
@@ -44,6 +49,16 @@ def recon_db_path(log_dir: Path | str | None) -> Path:
     return Path(tempfile.gettempdir()) / "d810_recon.db"
 
 
+def _delete_corrupt_db(db_path: Path) -> None:
+    """Remove corrupt SQLite DB and its WAL/SHM sidecar files."""
+    for suffix in ("", "-wal", "-shm"):
+        p = Path(str(db_path) + suffix)
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def load_transition_report_from_store(
     *,
     func_ea: int,
@@ -55,17 +70,25 @@ def load_transition_report_from_store(
     if not db_path.exists():
         return None
 
-    with ReconStore(db_path) as store:
-        result = store.load_latest_recon_result(
-            func_ea=func_ea,
-            collector_name=_HANDLER_TRANSITIONS,
-            maturity=maturity,
-        )
-        if result is None and maturity is not None:
+    try:
+        with ReconStore(db_path) as store:
             result = store.load_latest_recon_result(
                 func_ea=func_ea,
                 collector_name=_HANDLER_TRANSITIONS,
+                maturity=maturity,
             )
+            if result is None and maturity is not None:
+                result = store.load_latest_recon_result(
+                    func_ea=func_ea,
+                    collector_name=_HANDLER_TRANSITIONS,
+                )
+    except sqlite3.DatabaseError as exc:
+        logger.warning(
+            "recon DB corrupt or unreadable (%s), deleting and returning None: %s",
+            db_path, exc,
+        )
+        _delete_corrupt_db(db_path)
+        return None
 
     if result is None:
         return None
@@ -122,17 +145,25 @@ def load_return_frontier_audit_from_store(
     if not db_path.exists():
         return None
 
-    with ReconStore(db_path) as store:
-        result = store.load_latest_recon_result(
-            func_ea=func_ea,
-            collector_name=_RETURN_FRONTIER,
-            maturity=maturity,
-        )
-        if result is None and maturity is not None:
+    try:
+        with ReconStore(db_path) as store:
             result = store.load_latest_recon_result(
                 func_ea=func_ea,
                 collector_name=_RETURN_FRONTIER,
+                maturity=maturity,
             )
+            if result is None and maturity is not None:
+                result = store.load_latest_recon_result(
+                    func_ea=func_ea,
+                    collector_name=_RETURN_FRONTIER,
+                )
+    except sqlite3.DatabaseError as exc:
+        logger.warning(
+            "recon DB corrupt or unreadable (%s), deleting and returning None: %s",
+            db_path, exc,
+        )
+        _delete_corrupt_db(db_path)
+        return None
 
     if result is None:
         return None
@@ -301,17 +332,25 @@ def load_terminal_return_audit_from_store(
     if not db_path.exists():
         return None
 
-    with ReconStore(db_path) as store:
-        result = store.load_latest_recon_result(
-            func_ea=func_ea,
-            collector_name=_TERMINAL_RETURN_COLLECTOR,
-            maturity=maturity,
-        )
-        if result is None and maturity is not None:
+    try:
+        with ReconStore(db_path) as store:
             result = store.load_latest_recon_result(
                 func_ea=func_ea,
                 collector_name=_TERMINAL_RETURN_COLLECTOR,
+                maturity=maturity,
             )
+            if result is None and maturity is not None:
+                result = store.load_latest_recon_result(
+                    func_ea=func_ea,
+                    collector_name=_TERMINAL_RETURN_COLLECTOR,
+                )
+    except sqlite3.DatabaseError as exc:
+        logger.warning(
+            "recon DB corrupt or unreadable (%s), deleting and returning None: %s",
+            db_path, exc,
+        )
+        _delete_corrupt_db(db_path)
+        return None
 
     if result is None:
         return None

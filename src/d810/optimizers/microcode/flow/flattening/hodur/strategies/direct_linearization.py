@@ -1422,6 +1422,9 @@ class DirectHandlerLinearizationStrategy:
             fg, dispatcher_serial, sm_blocks
         )
 
+        # Pre-compute handler entry blocks for DFS boundary detection
+        handler_entry_blocks: set[int] = set(handler_state_map.values())
+
         # ---- Main handler loop ----
         for handler_serial, incoming_state in all_handlers.items():
             if handler_serial in bst_node_blocks:
@@ -1434,6 +1437,7 @@ class DirectHandlerLinearizationStrategy:
                 incoming_state=incoming_state,
                 bst_node_blocks=bst_node_blocks,
                 state_var_stkoff=state_var_stkoff,
+                handler_entry_blocks=handler_entry_blocks,
             )
 
             if not paths:
@@ -2054,6 +2058,7 @@ class DirectHandlerLinearizationStrategy:
                     incoming_state=0,
                     bst_node_blocks=bst_node_blocks,
                     state_var_stkoff=state_var_stkoff,
+                    handler_entry_blocks=handler_entry_blocks,
                 )
             except Exception:
                 continue

@@ -22,6 +22,7 @@ class BSTAnalysisResult:
     pre_header_serial: Optional[int] = None
     initial_state: Optional[int] = None
     bst_node_blocks: Set[int] = field(default_factory=set)
+    default_block_serial: Optional[int] = None
 
 
 def resolve_target_via_bst(
@@ -48,6 +49,10 @@ def resolve_target_via_bst(
         if high is not None and state_value > high:
             continue
         return handler_serial
+
+    default_serial = getattr(bst_result, 'default_block_serial', None)
+    if default_serial is not None:
+        return default_serial
 
     return None
 

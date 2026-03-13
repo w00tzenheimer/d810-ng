@@ -163,6 +163,109 @@ def find_bst_default_block_snapshot(
     return None
 
 
+def resolve_via_bst_walk(
+    mba: "idaapi.mbl_array_t",
+    bst_root_serial: int,
+    state_value: int,
+    bst_node_blocks: set[int],
+    max_depth: int = 30,
+) -> Optional[int]:
+    """Walk the BST comparison chain for a specific state value.
+
+    Starting from *bst_root_serial*, follow the comparison at each BST node
+    block for *state_value*.  Return the first block serial that is **not** in
+    *bst_node_blocks* (i.e. the handler / default block this value reaches).
+
+    Returns ``None`` if the walk exceeds *max_depth* or cannot resolve.
+
+    >>> resolve_via_bst_walk(None, 0, 0x1234, set()) is None
+    True
+    """
+    _ensure_ida_imports()
+    _init_constants()
+
+    if mba is None:
+        return None
+
+    current_serial = bst_root_serial
+
+    for _ in range(max_depth):
+        if current_serial not in bst_node_blocks:
+            # Reached a non-BST block — this is the target.
+            return current_serial
+
+        blk = mba.get_mblock(current_serial)
+        if blk is None:
+            return None
+
+        tail = blk.tail
+        if tail is None:
+            return None
+
+        opcode = getattr(tail, "opcode", None)
+        if opcode is None:
+            return None
+
+        # Extract comparison constant (may be in .l or .r).
+        cmp_val = _get_mop_const_value(getattr(tail, "l", None))
+        if cmp_val is None:
+            cmp_val = _get_mop_const_value(getattr(tail, "r", None))
+        if cmp_val is None:
+            return None
+
+        # Determine branch target and fall-through successor.
+        # Convention: succs[0] = fall-through, succs[1] = jump/taken.
+        # Branch target = tail.d.b
+        branch_target: Optional[int] = None
+        d_operand = getattr(tail, "d", None)
+        if d_operand is not None:
+            branch_target = getattr(d_operand, "b", None)
+
+        if branch_target is None:
+            return None
+
+        # Fall-through is the other successor.
+        succs = [blk.succ(i) for i in range(blk.nsucc())]
+        fall_through: Optional[int] = None
+        for s in succs:
+            if s != branch_target:
+                fall_through = s
+                break
+        if fall_through is None:
+            return None
+
+        # Evaluate the comparison to choose which path to follow.
+        # Condition TRUE  → branch_target (taken)
+        # Condition FALSE → fall_through
+        take_branch: bool
+        if opcode == idaapi.m_jbe:
+            # jump if state_var <= cmp_val
+            take_branch = state_value <= cmp_val
+        elif opcode == idaapi.m_ja:
+            # jump if state_var > cmp_val
+            take_branch = state_value > cmp_val
+        elif opcode == idaapi.m_jb:
+            # jump if state_var < cmp_val
+            take_branch = state_value < cmp_val
+        elif opcode == idaapi.m_jae:
+            # jump if state_var >= cmp_val
+            take_branch = state_value >= cmp_val
+        elif opcode == idaapi.m_jnz:
+            # jump if state_var != cmp_val
+            take_branch = state_value != cmp_val
+        elif opcode == idaapi.m_jz:
+            # jump if state_var == cmp_val
+            take_branch = state_value == cmp_val
+        else:
+            # Unknown conditional opcode — cannot decide.
+            return None
+
+        current_serial = branch_target if take_branch else fall_through
+
+    # Exhausted max_depth.
+    return None
+
+
 # -----------------------------------------------------------------------------
 # Internal helpers
 # -----------------------------------------------------------------------------
@@ -962,6 +1065,8 @@ def _forward_eval_insn(
     m_xor = getattr(idaapi, "m_xor", 31)
     m_mul = getattr(idaapi, "m_mul", 30)
     binary_ops = {m_add, m_sub, m_and, m_or, m_xor, m_mul}
+    m_xdu_op = getattr(idaapi, "m_xdu", None)
+    m_xds_op = getattr(idaapi, "m_xds", None)
 
     mop_S_type = getattr(idaapi, "mop_S", None)
     mop_r_type = getattr(idaapi, "mop_r", 1)
@@ -1010,6 +1115,27 @@ def _forward_eval_insn(
         val = _resolve_mop_from_maps(
             src, stk_map, reg_map, mba, state_var_lvar_idx, diag_lines
         )
+    elif m_xdu_op is not None and op == m_xdu_op:
+        # Zero-extend: value stays the same, just widens the register
+        src = getattr(insn, "l", None)
+        val = _resolve_mop_from_maps(
+            src, stk_map, reg_map, mba, state_var_lvar_idx, diag_lines
+        )
+    elif m_xds_op is not None and op == m_xds_op:
+        # Sign-extend: check high bit of source width, extend if set
+        src = getattr(insn, "l", None)
+        src_val = _resolve_mop_from_maps(
+            src, stk_map, reg_map, mba, state_var_lvar_idx, diag_lines
+        )
+        if src_val is not None:
+            src_size = getattr(src, "size", 4)  # source operand size in bytes
+            dst_size = getattr(dest, "size", 8)  # dest operand size in bytes
+            sign_bit = 1 << (src_size * 8 - 1)
+            if src_val & sign_bit:
+                # Negative: fill upper bits with 1s
+                mask = (1 << (dst_size * 8)) - (1 << (src_size * 8))
+                src_val = src_val | mask
+            val = src_val
     elif op in binary_ops:
         l_mop = getattr(insn, "l", None)
         r_mop = getattr(insn, "r", None)
@@ -1647,6 +1773,11 @@ def analyze_bst_dispatcher(
     result.handler_state_map = handler_state_map
     result.handler_range_map = handler_range_map
     result.bst_node_blocks = bst_node_blocks
+
+    # Default block: BST successor that is neither a BST node nor a handler
+    result.default_block_serial = find_bst_default_block(
+        mba, dispatcher_entry_serial, bst_node_blocks, handler_serials,
+    )
 
     # Phase 2: Walk each handler chain
     for h_serial in sorted(handler_serials):

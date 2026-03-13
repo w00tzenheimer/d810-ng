@@ -20,6 +20,7 @@ class StateTransition:
     from_block: int
     condition_block: Optional[int] = None
     is_conditional: bool = False
+    provenance_chain: List["tuple[int, int]"] = field(default_factory=list)
 
 
 @dataclass
