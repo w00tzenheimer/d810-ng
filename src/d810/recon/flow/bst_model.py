@@ -201,6 +201,12 @@ def resolve_target_via_bst(
     state_value: int,
 ) -> Optional[int]:
     """Resolve a concrete state value to a handler block serial."""
+    # Fast path: interval dispatcher (O(log n) bisect)
+    if bst_result.dispatcher is not None:
+        result = bst_result.dispatcher.lookup(state_value)
+        if result is not None:
+            return result
+
     for handler_serial, state_const in bst_result.handler_state_map.items():
         if state_const == state_value:
             return handler_serial
