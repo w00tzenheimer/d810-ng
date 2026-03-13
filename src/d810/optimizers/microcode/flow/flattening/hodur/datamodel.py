@@ -102,7 +102,7 @@ class HodurStateMachine:
 
     def add_transition(self, transition: StateTransition) -> None:
         self.transitions.append(transition)
-        if transition.from_state in self.handlers:
+        if transition.from_state is not None and transition.from_state in self.handlers:
             self.handlers[transition.from_state].transitions.append(transition)
 
 

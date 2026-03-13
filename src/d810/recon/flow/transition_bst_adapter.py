@@ -13,6 +13,7 @@ from d810.recon.flow.bst_analysis import (
     _find_pre_header_state,
     _walk_handler_chain,
 )
+from d810.recon.flow.bst_model import BSTNodeMap
 from d810.recon.flow.transition_analysis import (
     DispatcherTransitionAnalysis,
     HandlerTransitionObservation,
@@ -60,7 +61,7 @@ def analyze_bst_dispatcher(
     handler_state_map: dict[int, int] = {}
     handler_serials: set[int] = set()
     handler_range_map: dict[int, tuple[Optional[int], Optional[int]]] = {}
-    bst_node_blocks: set[int] = set()
+    bst_node_blocks: BSTNodeMap = BSTNodeMap()
     _dump_dispatcher_node(
         mba,
         dispatcher_entry_serial,

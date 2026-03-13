@@ -27,6 +27,7 @@ from d810.core.typing import (
     Tuple,
 )
 from d810.recon.flow.bst_model import BSTAnalysisResult
+from d810.recon.flow.bst_model import BSTNodeMap
 from d810.recon.flow.bst_model import resolve_target_via_bst
 
 logger = getLogger(__name__)
@@ -298,8 +299,10 @@ def _dump_dispatcher_node(
     handler_serials: Optional[set] = None,
     handler_range_map: Optional[Dict[int, Tuple[Optional[int], Optional[int]]]] = None,
     chain_depth: int = 0,
-    bst_node_blocks: Optional[Set[int]] = None,
+    bst_node_blocks: Optional[BSTNodeMap] = None,
     allow_revisit: bool = False,
+    parent_serial: Optional[int] = None,
+    branch: str = "",
 ) -> None:
     """Recursive helper for dump_dispatcher_tree.
 
@@ -314,6 +317,8 @@ def _dump_dispatcher_node(
         chain_depth: Current depth of m_jnz chain recursion (max 10).
         bst_node_blocks: If provided, collects all BST internal/comparison block serials
             (blocks to NOP after m_jtbl conversion).
+        parent_serial: Serial of the BST parent node that routes to this node.
+        branch: Which branch of the parent leads here ("taken" or "fallthrough").
     """
     _init_constants()
 
@@ -360,7 +365,15 @@ def _dump_dispatcher_node(
 
     if is_jbe or is_ja or is_jb or is_jae:
         if bst_node_blocks is not None:
-            bst_node_blocks.add(serial)  # Track BST node for later NOP
+            bst_node_blocks.add(serial,
+                value_range=(value_lo, value_hi),
+                parent_serial=parent_serial,
+                comparison_const=cmp_val,
+                branch=branch,
+                depth=depth,
+                opcode=opcode,
+                is_equality_branch=False,
+            )
         cmp_str = f"<= 0x{cmp_val:x}" if cmp_val is not None else "<= ?"
         lines.append(f"{prefix}blk[{serial}] {opcode_name} {cmp_str} (succs: {succs})")
 
@@ -402,8 +415,10 @@ def _dump_dispatcher_node(
             taken_hi = value_hi
 
         child_ranges = [(fall_lo, fall_hi), (taken_lo, taken_hi)]
+        child_branches = ["fallthrough", "taken"]
         for idx, s in enumerate(succs):
             c_lo, c_hi = child_ranges[idx] if idx < len(child_ranges) else (None, None)
+            c_branch = child_branches[idx] if idx < len(child_branches) else ""
             _dump_dispatcher_node(
                 mba, s, indent + 1, visited, lines, depth + 1, max_depth,
                 value_lo=c_lo,
@@ -413,11 +428,21 @@ def _dump_dispatcher_node(
                 handler_range_map=handler_range_map,
                 chain_depth=chain_depth,
                 bst_node_blocks=bst_node_blocks,
+                parent_serial=serial,
+                branch=c_branch,
             )
 
     elif is_jnz or is_jz:
         if bst_node_blocks is not None:
-            bst_node_blocks.add(serial)  # Track BST node for later NOP
+            bst_node_blocks.add(serial,
+                value_range=(value_lo, value_hi),
+                parent_serial=parent_serial,
+                comparison_const=cmp_val,
+                branch=branch,
+                depth=depth,
+                opcode=opcode,
+                is_equality_branch=False,  # The leaf node itself is not an equality branch
+            )
         op_sym = "==" if is_jz else "!="
         cmp_str = f"0x{cmp_val:x}" if cmp_val is not None else "?"
         # succs[0] = fall-through, succs[1] = jump target
@@ -578,6 +603,18 @@ def _dump_dispatcher_node(
                         handler_state_map[fall_blk] = fall_state
                     if handler_range_map is not None:
                         handler_range_map[fall_blk] = (value_lo, value_hi)
+                    # Register handler entry in BSTNodeMap with provenance
+                    # m_jnz fall-through = equality branch (state == V)
+                    if bst_node_blocks is not None:
+                        bst_node_blocks.add(fall_blk,
+                            value_range=(value_lo, value_hi),
+                            parent_serial=serial,
+                            comparison_const=cmp_val,
+                            branch="fallthrough",
+                            depth=depth + 1,
+                            opcode=None,
+                            is_equality_branch=True,
+                        )
 
             # jump target (succs[1]) is state != V → recurse if BST node, else handler.
             # For the chain path: bypass visited check; guard by chain_depth instead.
@@ -599,6 +636,8 @@ def _dump_dispatcher_node(
                         chain_depth=chain_depth + 1,
                         bst_node_blocks=bst_node_blocks,
                         allow_revisit=True,
+                        parent_serial=serial,
+                        branch="taken",
                     )
                 elif not already_resolved and not _is_bst_node_chain(jump_blk):
                     if cmp_val is None:
@@ -609,6 +648,17 @@ def _dump_dispatcher_node(
                             handler_state_map[jump_blk] = jump_state
                         if handler_range_map is not None:
                             handler_range_map[jump_blk] = (value_lo, value_hi)
+                        # Register handler entry in BSTNodeMap with provenance
+                        if bst_node_blocks is not None:
+                            bst_node_blocks.add(jump_blk,
+                                value_range=(value_lo, value_hi),
+                                parent_serial=serial,
+                                comparison_const=cmp_val,
+                                branch="taken",
+                                depth=depth + 1,
+                                opcode=None,
+                                is_equality_branch=False,
+                            )
                     # When jump_state is None, the range has >2 values but the
                     # continuation is not a BST node — this is the BST default/
                     # exit block (reached when no comparison matches). Do NOT
@@ -631,6 +681,18 @@ def _dump_dispatcher_node(
                         handler_state_map[jump_blk] = jump_state
                     if handler_range_map is not None:
                         handler_range_map[jump_blk] = (value_lo, value_hi)
+                    # Register handler entry in BSTNodeMap with provenance
+                    # m_jz taken = equality branch (state == V)
+                    if bst_node_blocks is not None:
+                        bst_node_blocks.add(jump_blk,
+                            value_range=(value_lo, value_hi),
+                            parent_serial=serial,
+                            comparison_const=cmp_val,
+                            branch="taken",
+                            depth=depth + 1,
+                            opcode=None,
+                            is_equality_branch=True,
+                        )
 
             # fall-through (succs[0]) is state != V → recurse if BST node, else handler.
             # For the chain path: bypass visited check; guard by chain_depth instead.
@@ -652,6 +714,8 @@ def _dump_dispatcher_node(
                         chain_depth=chain_depth + 1,
                         bst_node_blocks=bst_node_blocks,
                         allow_revisit=True,
+                        parent_serial=serial,
+                        branch="fallthrough",
                     )
                 elif not already_resolved and not _is_bst_node_chain(fall_blk):
                     if cmp_val is None:
@@ -662,6 +726,17 @@ def _dump_dispatcher_node(
                             handler_state_map[fall_blk] = fall_state
                         if handler_range_map is not None:
                             handler_range_map[fall_blk] = (value_lo, value_hi)
+                        # Register handler entry in BSTNodeMap with provenance
+                        if bst_node_blocks is not None:
+                            bst_node_blocks.add(fall_blk,
+                                value_range=(value_lo, value_hi),
+                                parent_serial=serial,
+                                comparison_const=cmp_val,
+                                branch="fallthrough",
+                                depth=depth + 1,
+                                opcode=None,
+                                is_equality_branch=False,
+                            )
 
     else:
         cmp_str = f"0x{cmp_val:x}" if cmp_val is not None else "?"
@@ -1752,7 +1827,7 @@ def analyze_bst_dispatcher(
     handler_state_map: Dict[int, int] = {}
     handler_serials: set = set()
     handler_range_map: Dict[int, Tuple[Optional[int], Optional[int]]] = {}
-    bst_node_blocks: Set[int] = set()
+    bst_node_blocks: BSTNodeMap = BSTNodeMap()
 
     _dump_dispatcher_node(
         mba,
