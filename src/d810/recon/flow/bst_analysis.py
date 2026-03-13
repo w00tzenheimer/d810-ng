@@ -1866,6 +1866,33 @@ def analyze_bst_dispatcher(
         dispatcher = None
     result.dispatcher = dispatcher
 
+    # Back-fill handler_state_map from IntervalDispatcher for handlers
+    # missed by legacy walk (e.g., JNZ taken branches with range_is_pair=False)
+    if dispatcher is not None:
+        backfill_point = 0
+        backfill_range = 0
+        for row in dispatcher._rows:
+            if row.target is None or row.target in handler_state_map:
+                continue
+            handler_serials.add(row.target)
+            if row.hi - row.lo == 1:
+                # Width-1 interval = exact state match
+                handler_state_map[row.target] = row.lo
+                backfill_point += 1
+            else:
+                # Wider interval — register in range map only
+                # IntervalRow uses exclusive hi; handler_range_map uses inclusive
+                handler_range_map[row.target] = (row.lo, row.hi - 1)
+                backfill_range += 1
+        if backfill_point or backfill_range:
+            logger.info(
+                "INTERVAL_BACKFILL: %d point + %d range handlers added",
+                backfill_point, backfill_range,
+            )
+            # Update result after back-fill
+            result.handler_state_map = handler_state_map
+            result.handler_range_map = handler_range_map
+
     # Diagnostic: compare interval dispatcher against legacy handler_state_map.
     # to_handler_state_map() returns {state_const: handler_serial} (lo -> target),
     # while handler_state_map is {handler_serial: state_const}.
