@@ -22,6 +22,15 @@ from d810.evaluator.hexrays_microcode.emulator import (
     MicroCodeEnvironment,
     MicroCodeInterpreter,
 )
+from d810.evaluator.hexrays_microcode.chains import (
+    DefSite,
+    _scan_block_for_reg_defs,
+    _scan_block_for_stkvar_defs,
+    collect_pred_defs_for_block,
+    ensure_graph_and_lists_ready,
+    find_reaching_defs_for_reg,
+    find_reaching_defs_for_stkvar,
+)
 from d810.evaluator.hexrays_microcode.tracker import (
     MopTracker,
     get_all_possibles_values,
@@ -1371,6 +1380,664 @@ class HodurStateMachineDetector:
         )
         return new_transitions
 
+    def _discover_transitions_via_ud_chains(
+        self,
+        mba: "ida_hexrays.mba_t",
+    ) -> "list[StateTransition]":
+        """Discover uncovered handler transitions via UD chain analysis.
+
+        Uses IDA's use-def chains to find ALL blocks that define the state
+        variable, then checks uncovered def sites for literal constants that
+        map to known handler states.  For non-literal sources, performs one
+        level of backward UD chain lookup to resolve through temp variables.
+
+        Returns a list of newly discovered :class:`StateTransition` objects.
+        """
+        if self.state_machine is None or self.state_machine.state_var is None:
+            return []
+
+        state_var = self.state_machine.state_var
+        state_constants = self.state_machine.state_constants
+
+        # --- Extract state variable location ---
+        if state_var.t == ida_hexrays.mop_S:
+            stkoff = state_var.s.off
+            width = state_var.size
+        else:
+            unflat_logger.debug(
+                "UD_CHAIN: state_var is not mop_S (type=%d), skipping",
+                state_var.t,
+            )
+            return []
+
+        # --- Build block-to-handler reverse map ---
+        block_to_handler: dict[int, int] = {}
+        for state_val, handler in self.state_machine.handlers.items():
+            for blk_serial in handler.handler_blocks:
+                block_to_handler[blk_serial] = state_val
+
+        # --- Build existing (from_state, to_state) pairs for dedup ---
+        existing_pairs: set[tuple[int, int]] = {
+            (t.from_state, t.to_state) for t in self.state_machine.transitions
+        }
+
+        # --- Prepare graph and lists for chain queries ---
+        try:
+            ensure_graph_and_lists_ready(mba)
+        except Exception:
+            unflat_logger.debug(
+                "UD_CHAIN: ensure_graph_and_lists_ready failed, skipping"
+            )
+            return []
+
+        # --- Find all blocks that define the state variable ---
+        # Query UD chains at the dispatcher entry (block 0 or first BST node)
+        # to find all reaching defs.  But we actually want ALL defs globally,
+        # so we scan every block for state var defs via the scan helper.
+        all_def_sites: list[DefSite] = []
+        for blk_idx in range(mba.qty):
+            defs = _scan_block_for_stkvar_defs(mba, blk_idx, stkoff, width)
+            all_def_sites.extend(defs)
+
+        if not all_def_sites:
+            unflat_logger.debug(
+                "UD_CHAIN: no def sites found for stkoff=0x%X width=%d",
+                stkoff,
+                width,
+            )
+            return []
+
+        unflat_logger.info(
+            "UD_CHAIN: %d total def sites for stkoff=0x%X",
+            len(all_def_sites),
+            stkoff,
+        )
+
+        new_transitions: list[StateTransition] = []
+
+        for def_site in all_def_sites:
+            blk = mba.get_mblock(def_site.block_serial)
+            if blk is None:
+                continue
+
+            # --- Find the instruction at this def site ---
+            insn = blk.head
+            target_insn = None
+            while insn is not None:
+                if insn.ea == def_site.ins_ea:
+                    target_insn = insn
+                    break
+                insn = insn.next
+
+            if target_insn is None:
+                continue
+
+            # --- Try to extract the constant being written ---
+            const_val: int | None = None
+
+            # Case 1: Direct literal constant (m_mov #imm, state_var)
+            if (
+                target_insn.l is not None
+                and target_insn.l.t == ida_hexrays.mop_n
+            ):
+                const_val = int(target_insn.l.nnn.value) & 0xFFFFFFFF
+
+            # Case 2: Binary op with two resolvable operands
+            elif target_insn.opcode in (
+                ida_hexrays.m_add,
+                ida_hexrays.m_sub,
+                ida_hexrays.m_xor,
+                ida_hexrays.m_and,
+                ida_hexrays.m_or,
+            ):
+                lv = self._try_resolve_operand_constant(
+                    mba, def_site.block_serial, target_insn.l
+                )
+                rv = self._try_resolve_operand_constant(
+                    mba, def_site.block_serial, target_insn.r
+                )
+                if lv is not None and rv is not None:
+                    const_val = self._eval_binop(target_insn.opcode, lv, rv)
+
+            # Case 3: Non-literal source — one level backward UD chain lookup
+            elif target_insn.opcode == ida_hexrays.m_mov:
+                const_val = self._try_resolve_operand_constant(
+                    mba, def_site.block_serial, target_insn.l
+                )
+
+            if const_val is None:
+                # --- Per-predecessor resolution for shared merge blocks ---
+                # When a merge block reads a temp defined differently by each
+                # predecessor, create one transition per predecessor.
+                if (
+                    target_insn.opcode == ida_hexrays.m_mov
+                    and target_insn.l is not None
+                    and target_insn.l.t != ida_hexrays.mop_n
+                ):
+                    per_pred = self._resolve_operand_constants_per_pred(
+                        mba, def_site.block_serial, target_insn.l
+                    )
+                    for pred_serial, pred_const in per_pred.items():
+                        if pred_const not in state_constants:
+                            continue
+
+                        # Determine from_state from the predecessor block
+                        pred_from: int | None = None
+                        if pred_serial in block_to_handler:
+                            pred_from = block_to_handler[pred_serial]
+                        else:
+                            # BFS walk backward up to depth 4
+                            try:
+                                visited_pp = {pred_serial}
+                                frontier_pp = [pred_serial]
+                                for _depth in range(4):
+                                    next_frontier_pp: list[int] = []
+                                    for cur_pp in frontier_pp:
+                                        cur_pp_blk = mba.get_mblock(cur_pp)
+                                        if cur_pp_blk is None:
+                                            continue
+                                        for pp_raw in cur_pp_blk.predset:
+                                            pp = int(pp_raw)
+                                            if pp in visited_pp:
+                                                continue
+                                            visited_pp.add(pp)
+                                            if pp in block_to_handler:
+                                                pred_from = block_to_handler[pp]
+                                                break
+                                            next_frontier_pp.append(pp)
+                                        if pred_from is not None:
+                                            break
+                                    if pred_from is not None:
+                                        break
+                                    frontier_pp = next_frontier_pp
+                            except (AttributeError, RuntimeError):
+                                pass
+
+                        if pred_from is None:
+                            continue
+                        if pred_from == pred_const:
+                            continue
+                        pair = (pred_from, pred_const)
+                        if pair in existing_pairs:
+                            continue
+
+                        transition = StateTransition(
+                            from_state=pred_from,
+                            to_state=pred_const,
+                            from_block=def_site.block_serial,
+                            provenance_chain=[
+                                (pred_serial, pred_const),
+                                (def_site.block_serial, pred_const),
+                            ],
+                        )
+                        new_transitions.append(transition)
+                        existing_pairs.add(pair)
+
+                        unflat_logger.info(
+                            "UD_CHAIN_PER_PRED: discovered transition "
+                            "0x%X -> 0x%X at blk[%d] via pred blk[%d]",
+                            pred_from,
+                            pred_const,
+                            def_site.block_serial,
+                            pred_serial,
+                        )
+
+                elif unflat_logger.debug_on:
+                    unflat_logger.debug(
+                        "UD_CHAIN: blk[%d] ea=0x%X opcode=%d — "
+                        "could not resolve constant",
+                        def_site.block_serial,
+                        def_site.ins_ea,
+                        def_site.ins_opcode,
+                    )
+                continue
+
+            # --- Check if resolved constant is a valid state ---
+            if const_val not in state_constants:
+                if unflat_logger.debug_on:
+                    unflat_logger.debug(
+                        "UD_CHAIN: blk[%d] writes 0x%X — not a state constant",
+                        def_site.block_serial,
+                        const_val,
+                    )
+                continue
+
+            # --- Determine from_state ---
+            from_state: int | None = None
+
+            # Check if def block is in a handler's blocks
+            if def_site.block_serial in block_to_handler:
+                from_state = block_to_handler[def_site.block_serial]
+            else:
+                # BFS walk backward up to depth 4 to find owning handler
+                try:
+                    visited = {def_site.block_serial}
+                    frontier = [def_site.block_serial]
+                    for _depth in range(4):
+                        next_frontier: list[int] = []
+                        for cur in frontier:
+                            cur_blk = mba.get_mblock(cur)
+                            if cur_blk is None:
+                                continue
+                            for pred_raw in cur_blk.predset:
+                                pred = int(pred_raw)
+                                if pred in visited:
+                                    continue
+                                visited.add(pred)
+                                if pred in block_to_handler:
+                                    from_state = block_to_handler[pred]
+                                    break
+                                next_frontier.append(pred)
+                            if from_state is not None:
+                                break
+                        if from_state is not None:
+                            break
+                        frontier = next_frontier
+                except (AttributeError, RuntimeError):
+                    pass
+
+            if from_state is None:
+                if unflat_logger.debug_on:
+                    unflat_logger.debug(
+                        "UD_CHAIN: blk[%d] writes 0x%X — "
+                        "could not determine from_state",
+                        def_site.block_serial,
+                        const_val,
+                    )
+                continue
+
+            # Skip self-transitions
+            if from_state == const_val:
+                continue
+
+            # Skip duplicates
+            pair = (from_state, const_val)
+            if pair in existing_pairs:
+                continue
+
+            # --- Create the transition ---
+            transition = StateTransition(
+                from_state=from_state,
+                to_state=const_val,
+                from_block=def_site.block_serial,
+                provenance_chain=[(def_site.block_serial, const_val)],
+            )
+            new_transitions.append(transition)
+            existing_pairs.add(pair)
+
+            unflat_logger.info(
+                "UD_CHAIN: discovered transition 0x%X -> 0x%X at blk[%d]",
+                from_state,
+                const_val,
+                def_site.block_serial,
+            )
+
+        # --- Diagnostic: why are uncovered handler targets still uncovered? ---
+        covered_targets: set[int] = {
+            t.to_state for t in self.state_machine.transitions
+        }
+        for t in new_transitions:
+            covered_targets.add(t.to_state)
+
+        uncovered_targets = state_constants - covered_targets
+        if uncovered_targets:
+            unflat_logger.info(
+                "UD_CHAIN_DIAG: %d uncovered target states: %s",
+                len(uncovered_targets),
+                [hex(s) for s in sorted(uncovered_targets)],
+            )
+
+            for target_state in sorted(uncovered_targets):
+                found = False
+                # Pass 1: check direct literal defs
+                for ds in all_def_sites:
+                    ds_blk = mba.get_mblock(ds.block_serial)
+                    if ds_blk is None:
+                        continue
+                    ds_insn = ds_blk.head
+                    while ds_insn is not None:
+                        if ds_insn.ea == ds.ins_ea:
+                            if (
+                                ds_insn.l is not None
+                                and ds_insn.l.t == ida_hexrays.mop_n
+                            ):
+                                val = int(ds_insn.l.nnn.value) & 0xFFFFFFFF
+                                if val == target_state:
+                                    fs: int | None = block_to_handler.get(
+                                        ds.block_serial
+                                    )
+                                    if fs is None:
+                                        visited_d = {ds.block_serial}
+                                        frontier_d = [ds.block_serial]
+                                        for _dd in range(4):
+                                            next_fd: list[int] = []
+                                            for cd in frontier_d:
+                                                cd_blk = mba.get_mblock(cd)
+                                                if cd_blk is None:
+                                                    continue
+                                                for p_raw in cd_blk.predset:
+                                                    p = int(p_raw)
+                                                    if p in visited_d:
+                                                        continue
+                                                    visited_d.add(p)
+                                                    if p in block_to_handler:
+                                                        fs = block_to_handler[p]
+                                                        break
+                                                    next_fd.append(p)
+                                                if fs is not None:
+                                                    break
+                                            if fs is not None:
+                                                break
+                                            frontier_d = next_fd
+                                    if fs is None:
+                                        reason = "from_state=None"
+                                    elif fs == target_state:
+                                        reason = "self_transition"
+                                    elif (fs, target_state) in existing_pairs:
+                                        reason = "already_existing"
+                                    else:
+                                        reason = "SUCCESS"
+                                    unflat_logger.info(
+                                        "UD_CHAIN_DIAG: state 0x%X written at "
+                                        "blk[%d] opcode=%d from_state=%s "
+                                        "reason=%s",
+                                        target_state,
+                                        ds.block_serial,
+                                        ds.ins_opcode,
+                                        hex(fs) if fs is not None else "None",
+                                        reason,
+                                    )
+                                    found = True
+                            break
+                        ds_insn = ds_insn.next
+
+                if not found:
+                    # Pass 2: check per-pred resolution potential
+                    for ds in all_def_sites:
+                        ds_blk2 = mba.get_mblock(ds.block_serial)
+                        if ds_blk2 is None:
+                            continue
+                        ds_insn2 = ds_blk2.head
+                        while ds_insn2 is not None:
+                            if ds_insn2.ea == ds.ins_ea:
+                                if (
+                                    ds_insn2.opcode == ida_hexrays.m_mov
+                                    and ds_insn2.l is not None
+                                    and ds_insn2.l.t != ida_hexrays.mop_n
+                                ):
+                                    per_pred = (
+                                        self._resolve_operand_constants_per_pred(
+                                            mba,
+                                            ds.block_serial,
+                                            ds_insn2.l,
+                                        )
+                                    )
+                                    for ps, pc in per_pred.items():
+                                        if pc == target_state:
+                                            fs2: int | None = (
+                                                block_to_handler.get(ps)
+                                            )
+                                            if fs2 is None:
+                                                try:
+                                                    visited_d2 = {ps}
+                                                    frontier_d2 = [ps]
+                                                    for _dd2 in range(4):
+                                                        next_fd2: list[int] = []
+                                                        for cd2 in frontier_d2:
+                                                            cd2_blk = (
+                                                                mba.get_mblock(cd2)
+                                                            )
+                                                            if cd2_blk is None:
+                                                                continue
+                                                            for pp_raw in (
+                                                                cd2_blk.predset
+                                                            ):
+                                                                pp = int(pp_raw)
+                                                                if (
+                                                                    pp in visited_d2
+                                                                ):
+                                                                    continue
+                                                                visited_d2.add(pp)
+                                                                if (
+                                                                    pp
+                                                                    in block_to_handler
+                                                                ):
+                                                                    fs2 = (
+                                                                        block_to_handler[
+                                                                            pp
+                                                                        ]
+                                                                    )
+                                                                    break
+                                                                next_fd2.append(pp)
+                                                            if fs2 is not None:
+                                                                break
+                                                        if fs2 is not None:
+                                                            break
+                                                        frontier_d2 = next_fd2
+                                                except (
+                                                    AttributeError,
+                                                    RuntimeError,
+                                                ):
+                                                    pass
+                                            if fs2 is None:
+                                                reason2 = "from_state=None"
+                                            elif fs2 == target_state:
+                                                reason2 = "self_transition"
+                                            elif (
+                                                fs2,
+                                                target_state,
+                                            ) in existing_pairs:
+                                                reason2 = "already_existing"
+                                            else:
+                                                reason2 = "SUCCESS"
+                                            unflat_logger.info(
+                                                "UD_CHAIN_DIAG: state 0x%X "
+                                                "via per-pred blk[%d]->blk[%d]"
+                                                " from_state=%s reason=%s",
+                                                target_state,
+                                                ps,
+                                                ds.block_serial,
+                                                hex(fs2)
+                                                if fs2 is not None
+                                                else "None",
+                                                reason2,
+                                            )
+                                            found = True
+                                break
+                            ds_insn2 = ds_insn2.next
+
+                    if not found:
+                        unflat_logger.info(
+                            "UD_CHAIN_DIAG: state 0x%X — no def site found "
+                            "(direct or per-pred)",
+                            target_state,
+                        )
+
+        return new_transitions
+
+    def _try_resolve_operand_constant(
+        self,
+        mba: "ida_hexrays.mba_t",
+        blk_serial: int,
+        mop: "ida_hexrays.mop_t | None",
+    ) -> "int | None":
+        """Try to resolve a micro-operand to a constant.
+
+        First checks if the operand is a literal constant.  If not, performs
+        one level of backward UD chain lookup to find a reaching definition
+        with a literal constant source.
+
+        Args:
+            mba: The MBA instance.
+            blk_serial: Block serial where the operand is used.
+            mop: The micro-operand to resolve.
+
+        Returns:
+            The resolved constant value (masked to 32 bits), or ``None`` if
+            resolution fails or is ambiguous.
+        """
+        if mop is None:
+            return None
+
+        # Direct literal
+        if mop.t == ida_hexrays.mop_n:
+            return int(mop.nnn.value) & 0xFFFFFFFF
+
+        # One-level backward UD chain lookup
+        try:
+            reaching_defs: list[DefSite] = []
+            if mop.t == ida_hexrays.mop_r:
+                reaching_defs = find_reaching_defs_for_reg(
+                    mba, blk_serial, mop.r, mop.size
+                )
+            elif mop.t == ida_hexrays.mop_S:
+                reaching_defs = find_reaching_defs_for_stkvar(
+                    mba, blk_serial, mop.s.off, mop.size
+                )
+            else:
+                return None
+
+            if not reaching_defs:
+                return None
+
+            # Check if all reaching defs agree on the same constant
+            resolved_constants: set[int] = set()
+            for rd in reaching_defs:
+                rd_blk = mba.get_mblock(rd.block_serial)
+                if rd_blk is None:
+                    continue
+                rd_insn = rd_blk.head
+                while rd_insn is not None:
+                    if rd_insn.ea == rd.ins_ea:
+                        if (
+                            rd_insn.l is not None
+                            and rd_insn.l.t == ida_hexrays.mop_n
+                        ):
+                            val = int(rd_insn.l.nnn.value) & 0xFFFFFFFF
+                            resolved_constants.add(val)
+                        break
+                    rd_insn = rd_insn.next
+
+            # Ambiguous — multiple different constants
+            if len(resolved_constants) != 1:
+                return None
+
+            return next(iter(resolved_constants))
+
+        except Exception:
+            unflat_logger.debug(
+                "UD_CHAIN: backward resolve failed for blk[%d] mop_type=%d",
+                blk_serial,
+                mop.t if mop else -1,
+            )
+            return None
+
+    def _resolve_operand_constants_per_pred(
+        self,
+        mba: "ida_hexrays.mba_t",
+        blk_serial: int,
+        mop: "ida_hexrays.mop_t | None",
+    ) -> "dict[int, int]":
+        """Resolve a temp operand to per-predecessor constants.
+
+        When a merge block reads a temp variable that different predecessors
+        define with different constants, this method returns one constant per
+        predecessor instead of giving up.
+
+        Scans each predecessor of *blk_serial* for definitions of the temp
+        variable described by *mop*.  For each predecessor where the last
+        definition has a literal source, records ``{pred_serial: constant}``.
+
+        Args:
+            mba: The MBA instance.
+            blk_serial: Serial of the merge block where *mop* is read.
+            mop: The micro-operand (must be ``mop_r`` or ``mop_S``).
+
+        Returns:
+            ``{pred_serial: constant_value}`` for each predecessor that
+            writes a resolvable literal.  Empty dict on failure.
+        """
+        if mop is None:
+            return {}
+
+        try:
+            blk = mba.get_mblock(blk_serial)
+            if blk is None:
+                return {}
+            pred_serials: list[int] = [int(p) for p in blk.predset]
+        except (AttributeError, RuntimeError):
+            return {}
+
+        if len(pred_serials) < 2:
+            return {}
+
+        result: dict[int, int] = {}
+
+        for pred_serial in pred_serials:
+            # Scan predecessor for defs of the temp variable
+            defs: list[DefSite] = []
+            if mop.t == ida_hexrays.mop_r:
+                defs = _scan_block_for_reg_defs(
+                    mba, pred_serial, mop.r, mop.size
+                )
+            elif mop.t == ida_hexrays.mop_S:
+                defs = _scan_block_for_stkvar_defs(
+                    mba, pred_serial, mop.s.off, mop.size
+                )
+            else:
+                continue
+
+            if not defs:
+                # No def in this predecessor — try one level deeper
+                # (single-pred chain walk)
+                pred_blk = mba.get_mblock(pred_serial)
+                if pred_blk is None:
+                    continue
+                inner_preds = [int(p) for p in pred_blk.predset]
+                if len(inner_preds) != 1:
+                    continue
+                inner_pred = inner_preds[0]
+                if mop.t == ida_hexrays.mop_r:
+                    defs = _scan_block_for_reg_defs(
+                        mba, inner_pred, mop.r, mop.size
+                    )
+                elif mop.t == ida_hexrays.mop_S:
+                    defs = _scan_block_for_stkvar_defs(
+                        mba, inner_pred, mop.s.off, mop.size
+                    )
+
+            if not defs:
+                continue
+
+            # Use the LAST def in the block (final write wins)
+            last_def = defs[-1]
+            rd_blk = mba.get_mblock(last_def.block_serial)
+            if rd_blk is None:
+                continue
+
+            # Find the instruction and extract the literal source
+            rd_insn = rd_blk.head
+            while rd_insn is not None:
+                if rd_insn.ea == last_def.ins_ea:
+                    if (
+                        rd_insn.l is not None
+                        and rd_insn.l.t == ida_hexrays.mop_n
+                    ):
+                        val = int(rd_insn.l.nnn.value) & 0xFFFFFFFF
+                        result[pred_serial] = val
+                    break
+                rd_insn = rd_insn.next
+
+        if result and unflat_logger.debug_on:
+            unflat_logger.debug(
+                "UD_CHAIN_PER_PRED: blk[%d] preds=%s resolved=%s",
+                blk_serial,
+                pred_serials,
+                {p: hex(v) for p, v in result.items()},
+            )
+
+        return result
+
     def _build_transitions(
         self,
         state_assignments: list[StateUpdateSite],
@@ -1550,6 +2217,30 @@ class HodurStateMachineDetector:
                 added_count,
                 len(forward_transitions),
                 len(forward_transitions) - added_count,
+            )
+
+        # Phase 4: UD chain discovery with fixpoint iteration
+        _UD_CHAIN_MAX_ITERATIONS = 5
+        for iteration in range(_UD_CHAIN_MAX_ITERATIONS):
+            try:
+                ud_transitions = self._discover_transitions_via_ud_chains(
+                    self.mba
+                )
+            except Exception:
+                unflat_logger.debug(
+                    "UD chain discovery failed at iteration %d", iteration
+                )
+                break
+            if not ud_transitions:
+                break
+            for ut in ud_transitions:
+                self.state_machine.add_transition(ut)
+            unflat_logger.info(
+                "UD chain discovery iteration %d: found %d new transitions "
+                "(total %d)",
+                iteration,
+                len(ud_transitions),
+                len(self.state_machine.transitions),
             )
 
         from_block_groups: dict[int, list[StateTransition]] = {}
