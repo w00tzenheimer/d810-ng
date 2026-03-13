@@ -1866,6 +1866,24 @@ def analyze_bst_dispatcher(
         dispatcher = None
     result.dispatcher = dispatcher
 
+    # Diagnostic: compare interval dispatcher against legacy handler_state_map
+    if result.dispatcher is not None:
+        derived_hsm = result.dispatcher.to_handler_state_map()
+        if derived_hsm != result.handler_state_map:
+            logger.warning(
+                "INTERVAL_MAP_DIAG: handler_state_map mismatch: "
+                "interval=%d entries, legacy=%d entries, "
+                "missing_in_interval=%s, extra_in_interval=%s",
+                len(derived_hsm), len(result.handler_state_map),
+                set(result.handler_state_map.items()) - set(derived_hsm.items()),
+                set(derived_hsm.items()) - set(result.handler_state_map.items()),
+            )
+        else:
+            logger.info(
+                "INTERVAL_MAP_DIAG: perfect agreement, %d entries",
+                len(derived_hsm),
+            )
+
     # Default block: BST successor that is neither a BST node nor a handler
     result.default_block_serial = find_bst_default_block(
         mba, dispatcher_entry_serial, bst_node_blocks, handler_serials,
