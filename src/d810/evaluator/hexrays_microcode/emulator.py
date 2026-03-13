@@ -246,6 +246,10 @@ class MicroCodeInterpreter(object):
         self._def_use_cache: dict[ida_hexrays.mop_t, int] = {}
 
     def _resolve_mop_via_def_use(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int | None:
+        # Always log entry for debugging
+        if emulator_log.debug_on:
+            emulator_log.debug("ENTERING _resolve_mop_via_def_use for %s", format_mop_t(mop))
+        
         # Use cached value if available
         if mop in self._def_use_cache:
             cached_value = self._def_use_cache[mop]
