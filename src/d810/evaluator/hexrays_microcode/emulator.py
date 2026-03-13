@@ -966,11 +966,12 @@ class MicroCodeInterpreter(object):
                 return value
 
             # Log that we're attempting def-use resolution
-            emulator_log.warning("Attempting def-use resolution for %s (type %s)", format_mop_t(mop), mop_type_to_string(mop.t))
+            emulator_log.warning("DEF-USE: Attempting def-use resolution for %s (type %s)", format_mop_t(mop), mop_type_to_string(mop.t))
 
             # Second, try to resolve via def-use chains (static dataflow)
             value = self._resolve_mop_via_def_use(mop, environment)
             if value is not None:
+                emulator_log.warning("DEF-USE: Successfully resolved %s to 0x%x", format_mop_t(mop), value)
                 return value
 
             # Finally, fall back to symbolic or error
@@ -991,6 +992,7 @@ class MicroCodeInterpreter(object):
                 # Dump environment for debugging
                 if emulator_log.debug_on and environment is not None:
                     environment.dump(f"Environment when looking up {_name}")
+                emulator_log.warning("DEF-USE: Failed to resolve %s, raising exception", format_mop_t(mop))
                 raise EmulationException(
                     "Variable {0} is not defined for mop_r or mop_S".format(_name)
                 )
