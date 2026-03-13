@@ -2027,20 +2027,33 @@ def build_dispatch_tree(
     memo: dict[int, Node] = {}
 
     def _build(serial: int, depth: int) -> Node | None:
-        if serial in memo:
-            return memo[serial]
         if depth > max_depth or serial < 0 or serial >= mba.qty:
             return None
+
         dc = decode_dispatch_cond(mba, serial, state_var_stkoff)
+
+        # Only memoize interior range-split nodes (safe to share).
+        # JZ/JNZ chain nodes and TARGET nodes are path-sensitive —
+        # memoizing by block serial causes overlapping intervals when
+        # the same block is reachable from multiple BST paths.
+        memoable = (
+            dc is not None
+            and dc.kind in (NodeKind.JBE, NodeKind.JA, NodeKind.JB, NodeKind.JAE)
+        )
+
+        if memoable and serial in memo:
+            return memo[serial]
+
         if dc is None:
-            node = Node(
+            # TARGET — always fresh, never memoized
+            return Node(
                 kind=NodeKind.TARGET,
                 target=serial,
                 block_serial=serial,
             )
-            memo[serial] = node
-            return node
+
         bst_serials.add(serial)
+
         match dc.kind:
             case NodeKind.JBE | NodeKind.JA | NodeKind.JB | NodeKind.JAE:
                 node = Node(
@@ -2072,7 +2085,10 @@ def build_dispatch_tree(
                     target=serial,
                     block_serial=serial,
                 )
-        memo[serial] = node
+
+        if memoable:
+            memo[serial] = node
+
         return node
 
     root = _build(root_serial, 0)
