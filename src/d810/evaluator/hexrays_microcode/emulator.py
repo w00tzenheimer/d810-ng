@@ -247,7 +247,8 @@ class MicroCodeInterpreter(object):
 
     def _resolve_mop_via_def_use(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int | None:
         # Always log entry for debugging
-        emulator_log.warning("ENTERING _resolve_mop_via_def_use for %s", format_mop_t(mop))
+        if emulator_log.debug_on:
+            emulator_log.debug("ENTERING _resolve_mop_via_def_use for %s", format_mop_t(mop))
         
         # Use cached value if available
         if mop in self._def_use_cache:
@@ -964,6 +965,9 @@ class MicroCodeInterpreter(object):
             if value is not None:
                 return value
 
+            # Log that we're attempting def-use resolution
+            emulator_log.warning("Attempting def-use resolution for %s (type %s)", format_mop_t(mop), mop_type_to_string(mop.t))
+
             # Second, try to resolve via def-use chains (static dataflow)
             value = self._resolve_mop_via_def_use(mop, environment)
             if value is not None:
@@ -985,7 +989,7 @@ class MicroCodeInterpreter(object):
                 # Avoid dstr/format_mop_t in exception text (hot path)
                 _name = get_stack_or_reg_name(mop)
                 # Dump environment for debugging
-                if emulator_log.debug_on:
+                if emulator_log.debug_on and environment is not None:
                     environment.dump(f"Environment when looking up {_name}")
                 raise EmulationException(
                     "Variable {0} is not defined for mop_r or mop_S".format(_name)
