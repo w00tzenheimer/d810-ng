@@ -957,8 +957,8 @@ class MicroCodeInterpreter(object):
                 )
             )
 
-        # DEBUG: Log every call to eval
-        emulator_log.warning("DEBUG: eval called with mop type %s", mop_type_to_string(mop.t))
+        # DEBUG: Throw an exception to see if this code is being executed
+        raise Exception("DEBUG: eval method is being called!")
 
         if mop.t == ida_hexrays.mop_n:
             return mop.nnn.value
