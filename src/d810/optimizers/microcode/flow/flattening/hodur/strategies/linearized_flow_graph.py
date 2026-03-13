@@ -393,6 +393,19 @@ class LinearizedFlowGraphStrategy:
         )
         resolved_count += exit_resolved_count
 
+        # Mark as applied BEFORE BST-default discovery so that a crash
+        # inside _discover_bst_default_transitions does not cause
+        # redundant retries on subsequent IDA callbacks.
+        mba = snapshot.mba
+        if mba is not None:
+            func_ea = mba.entry_ea
+            maturity = mba.maturity
+            type(self)._applied.add((func_ea, maturity))
+            logger.info(
+                "LFG: marking func 0x%X maturity=%d as applied",
+                func_ea, maturity,
+            )
+
         # -----------------------------------------------------------------
         # 1c. Discover transitions through BST default blocks via DFS
         #     forward evaluation.
@@ -405,21 +418,28 @@ class LinearizedFlowGraphStrategy:
         #     concrete exit state, which is then resolved via the BST
         #     to find the target handler entry.
         # -----------------------------------------------------------------
-        bst_default_count = self._discover_bst_default_transitions(
-            snapshot=snapshot,
-            sm=sm,
-            bst_result=bst_result,
-            handler_state_map=handler_state_map,
-            bst_node_blocks=bst_node_blocks,
-            dispatcher_region=dispatcher_region,
-            builder=builder,
-            modifications=modifications,
-            owned_blocks=owned_blocks,
-            owned_edges=owned_edges,
-            owned_transitions=owned_transitions,
-            emitted=emitted,
-            claimed_1way=claimed_1way,
-        )
+        try:
+            bst_default_count = self._discover_bst_default_transitions(
+                snapshot=snapshot,
+                sm=sm,
+                bst_result=bst_result,
+                handler_state_map=handler_state_map,
+                bst_node_blocks=bst_node_blocks,
+                dispatcher_region=dispatcher_region,
+                builder=builder,
+                modifications=modifications,
+                owned_blocks=owned_blocks,
+                owned_edges=owned_edges,
+                owned_transitions=owned_transitions,
+                emitted=emitted,
+                claimed_1way=claimed_1way,
+            )
+        except Exception:
+            logger.warning(
+                "LFG: BST-default discovery failed, continuing with "
+                "%d main redirects", resolved_count, exc_info=True,
+            )
+            bst_default_count = 0
         resolved_count += bst_default_count
 
         # -----------------------------------------------------------------
@@ -579,17 +599,6 @@ class LinearizedFlowGraphStrategy:
                         succs,
                         has_trans,
                     )
-
-        # Mark as applied so subsequent IDA passes at the same maturity skip.
-        mba = snapshot.mba
-        if mba is not None:
-            func_ea = mba.entry_ea
-            maturity = mba.maturity
-            type(self)._applied.add((func_ea, maturity))
-            logger.info(
-                "LFG: marking func 0x%X maturity=%d as applied",
-                func_ea, maturity,
-            )
 
         handlers_visited = len(sm.handlers)
         ownership = OwnershipScope(
@@ -1345,9 +1354,9 @@ class LinearizedFlowGraphStrategy:
         # to justify the risk. Small numbers indicate the main loop + exit resolver
         # already handled the function well.
         uncovered_ratio = len(uncovered_entries) / len(handler_state_map) if handler_state_map else 0
-        if len(uncovered_entries) < 3 or uncovered_ratio < 0.15:
+        if len(uncovered_entries) < 3 and uncovered_ratio < 0.15:
             logger.info(
-                "LFG BST-default: skipping, %d uncovered (%.0f%%) below threshold",
+                "LFG BST-default: skipping, %d uncovered (%.0f%%) below both thresholds",
                 len(uncovered_entries), uncovered_ratio * 100,
             )
             return 0
