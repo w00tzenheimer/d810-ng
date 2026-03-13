@@ -957,9 +957,6 @@ class MicroCodeInterpreter(object):
                 )
             )
 
-        # DEBUG: Throw an exception to see if this code is being executed
-        raise Exception("DEBUG: eval method is being called!")
-
         if mop.t == ida_hexrays.mop_n:
             return mop.nnn.value
         elif mop.t in [ida_hexrays.mop_r, ida_hexrays.mop_S]:
