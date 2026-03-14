@@ -1095,13 +1095,40 @@ class HodurUnflattener(GenericUnflatteningRule):
         if disp_blk is None:
             return 0
 
+        # --- Diagnostic: dispatcher predecessors BEFORE cleanup ---
+        unflat_logger.info(
+            "Dispatcher blk[%d] npred=%d BEFORE cleanup",
+            dispatcher_serial, disp_blk.npred(),
+        )
+        for i in range(disp_blk.npred()):
+            pred_serial = disp_blk.pred(i)
+            pred_blk = mba.get_mblock(pred_serial)
+            in_bst = pred_serial in bst_serials
+            nsucc = pred_blk.nsucc() if pred_blk else -1
+            succ_info: list[str] = []
+            if pred_blk and nsucc > 0:
+                for si in range(nsucc):
+                    succ_info.append(str(pred_blk.succ(si)))
+            tail_op = "none"
+            if pred_blk and pred_blk.tail:
+                tail_op = pred_blk.tail.dstr()
+            unflat_logger.info(
+                "  pred blk[%d] nsucc=%d in_bst=%s succs=[%s] tail=%s",
+                pred_serial, nsucc, in_bst,
+                ",".join(succ_info), tail_op,
+            )
+
         severed = 0
+        skipped_2way: list[int] = []
         for serial in range(mba.qty):
             if serial in bst_serials:
                 continue  # Skip BST/dispatcher blocks
             blk = mba.get_mblock(serial)
             if blk is None:
                 continue
+            # Log blocks going to dispatcher but skipped
+            if blk.nsucc() == 2 and dispatcher_serial in (blk.succ(0), blk.succ(1)):
+                skipped_2way.append(serial)
             if blk.nsucc() != 1:
                 continue  # Only handle 1-way blocks
             if blk.succ(0) != dispatcher_serial:
@@ -1115,6 +1142,31 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         if severed > 0:
             disp_blk.mark_lists_dirty()
+
+        # --- Diagnostic: dispatcher predecessors AFTER cleanup ---
+        unflat_logger.info(
+            "Dispatcher blk[%d] npred=%d AFTER cleanup (severed %d)",
+            dispatcher_serial, disp_blk.npred(), severed,
+        )
+        if skipped_2way:
+            unflat_logger.info(
+                "  SKIPPED 2-way blocks with dispatcher edge: %s",
+                skipped_2way,
+            )
+        for i in range(disp_blk.npred()):
+            pred_serial = disp_blk.pred(i)
+            pred_blk = mba.get_mblock(pred_serial)
+            in_bst = pred_serial in bst_serials
+            nsucc = pred_blk.nsucc() if pred_blk else -1
+            succ_info_after: list[str] = []
+            if pred_blk and nsucc > 0:
+                for si in range(nsucc):
+                    succ_info_after.append(str(pred_blk.succ(si)))
+            unflat_logger.info(
+                "  remaining pred blk[%d] nsucc=%d in_bst=%s succs=[%s]",
+                pred_serial, nsucc, in_bst,
+                ",".join(succ_info_after),
+            )
 
         unflat_logger.info(
             "BST cleanup: severed %d handler->dispatcher back-edges", severed
