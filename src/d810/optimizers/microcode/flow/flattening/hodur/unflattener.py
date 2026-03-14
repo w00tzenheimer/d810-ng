@@ -1064,13 +1064,13 @@ class HodurUnflattener(GenericUnflatteningRule):
         bst_node_blocks: "BSTNodeMap",
         dispatcher_serial: int,
     ) -> int:
-        """Clear all edges from BST comparison nodes and dispatcher after linearization.
+        """Remove BST->handler_entry edges where handler has alternative reachability.
 
-        After linearization modifications are applied, handler entries have both
-        BST predecessors (from the original BST tree) and linearized predecessors
-        (from handler chaining). This method removes all BST/dispatcher edges,
-        leaving only the linearized handler chain. Handler entries with ONLY BST
-        predecessors (unchained handlers) will become unreachable.
+        Only removes edges where the handler entry has >=2 predecessors on the
+        live MBA, confirming it has a linearized predecessor in addition to
+        the BST predecessor.  BST internal edges and dispatcher->BST root edges
+        are kept intact.  No instruction NOP'ing or block removal is performed
+        to avoid corrupting IDA internal caches at GLBOPT1.
 
         Args:
             bst_node_blocks: BSTNodeMap of BST comparison nodes (iteration
@@ -1083,7 +1083,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         mba = self.mba
         removed_edges = 0
 
-        # Collect all BST comparison node serials + dispatcher
+        # Collect BST comparison node serials + dispatcher
         bst_serials: set[int] = set(bst_node_blocks)
         bst_serials.add(dispatcher_serial)
 
@@ -1092,33 +1092,34 @@ class HodurUnflattener(GenericUnflatteningRule):
             if blk is None:
                 continue
 
-            # Collect current successors before mutating
-            current_succs = [blk.succ(i) for i in range(blk.nsucc())]
-
-            # Clear all successor edges
-            for succ_serial in current_succs:
+            # Check each successor
+            succs_to_remove: list[int] = []
+            for i in range(blk.nsucc()):
+                succ_serial = blk.succ(i)
+                # Skip successors that are OTHER BST/dispatcher blocks
+                if succ_serial in bst_serials:
+                    continue
+                # This successor is a handler entry (or non-BST block)
                 succ_blk = mba.get_mblock(succ_serial)
-                if succ_blk is not None:
-                    blk.succset._del(succ_serial)
-                    succ_blk.predset._del(serial)
-                    succ_blk.mark_lists_dirty()
-                    removed_edges += 1
+                if succ_blk is None:
+                    continue
+                # Only remove if handler has alternative reachability (>1 pred)
+                if succ_blk.npred() > 1:
+                    succs_to_remove.append(succ_serial)
 
-            # NOP all instructions in the block
-            insn = blk.head
-            while insn is not None:
-                next_insn = insn.next
-                blk.make_nop(insn)
-                insn = next_insn
+            # Remove the identified edges
+            for succ_serial in succs_to_remove:
+                succ_blk = mba.get_mblock(succ_serial)
+                blk.succset._del(succ_serial)
+                succ_blk.predset._del(serial)
+                succ_blk.mark_lists_dirty()
+                removed_edges += 1
 
-            blk.mark_lists_dirty()
-
-        # Clean up orphaned/empty blocks
-        if removed_edges > 0:
-            mba.remove_empty_and_unreachable_blocks()
+            if succs_to_remove:
+                blk.mark_lists_dirty()
 
         unflat_logger.info(
-            "BST cleanup: cleared %d edges from %d BST/dispatcher blocks",
+            "BST cleanup: removed %d BST->handler edges from %d blocks",
             removed_edges,
             len(bst_serials),
         )
