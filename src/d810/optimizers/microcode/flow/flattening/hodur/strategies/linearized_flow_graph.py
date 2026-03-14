@@ -1744,9 +1744,8 @@ class LinearizedFlowGraphStrategy:
         Safety: only NOPs gotos in blocks where:
 
         1. Block is 1-way (``nsucc==1``) with sole successor == dispatcher.
-        2. Block has ``npred <= 1`` (single owner, no shared-block risk).
-        3. Block is NOT a BST comparison node.
-        4. Block is NOT the dispatcher itself.
+        2. Block is NOT a BST comparison node.
+        3. Block is NOT the dispatcher itself.
 
         Args:
             snapshot: Immutable analysis snapshot for the current function.
@@ -1790,15 +1789,6 @@ class LinearizedFlowGraphStrategy:
             if blk.succ(0) != dispatcher_serial:
                 continue
 
-            # Safety: only NOP if single-owner (npred <= 1).
-            if blk.npred() > 1:
-                logger.info(
-                    "BST_GOTO_NOP: skipping blk[%d] (npred=%d, shared)",
-                    serial, blk.npred(),
-                )
-                skip_count += 1
-                continue
-
             # Find the tail instruction — must be m_goto.
             tail = blk.tail
             if tail is None:
@@ -1825,7 +1815,7 @@ class LinearizedFlowGraphStrategy:
             )
 
         logger.info(
-            "BST_GOTO_NOP: NOP'd %d dispatcher gotos, skipped %d shared blocks",
+            "BST_GOTO_NOP: NOP'd %d dispatcher gotos (incl. shared blocks), skipped %d",
             nop_count, skip_count,
         )
         return modifications, nop_count, skip_count
