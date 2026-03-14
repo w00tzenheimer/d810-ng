@@ -67,7 +67,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     PlannerInputs,
 )
 from d810.cfg.flow.graph_checks import SemanticGate
-from d810.hexrays.mutation.cfg_mutations import change_1way_block_successor
+
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     StageResult,
     VerificationGate,
@@ -1077,98 +1077,49 @@ class HodurUnflattener(GenericUnflatteningRule):
         bst_node_blocks: "BSTNodeMap",
         dispatcher_serial: int,
     ) -> int:
-        """Remove BST->handler_entry edges where handler has alternative reachability.
+        """Sever handler->dispatcher back-edges to eliminate the dispatcher as loop header.
 
-        Only removes edges where the handler entry has >=2 predecessors on the
-        live MBA, confirming it has a linearized predecessor in addition to
-        the BST predecessor.  BST internal edges and dispatcher->BST root edges
-        are kept intact.  No instruction NOP'ing or block removal is performed
-        to avoid corrupting IDA internal caches at GLBOPT1.
+        After linearization, handler exits that couldn't be resolved still have
+        edges to the dispatcher (despite NOP'd goto instructions). These edges
+        keep the dispatcher as a loop header, creating while loops.
 
-        Args:
-            bst_node_blocks: BSTNodeMap of BST comparison nodes (iteration
-                excludes handler entries).
-            dispatcher_serial: Serial of the dispatcher block.
-
-        Returns:
-            Number of edges removed.
+        This method removes these edges by making the blocks 0-way (no successors).
+        Handler entries keep their BST predecessors for reachability.
+        No blocks are removed or redirected.
         """
         mba = self.mba
-        removed_edges = 0
-
-        # Collect BST comparison node serials + dispatcher
         bst_serials: set[int] = set(bst_node_blocks)
         bst_serials.add(dispatcher_serial)
 
-        for serial in bst_serials:
+        disp_blk = mba.get_mblock(dispatcher_serial)
+        if disp_blk is None:
+            return 0
+
+        severed = 0
+        for serial in range(mba.qty):
+            if serial in bst_serials:
+                continue  # Skip BST/dispatcher blocks
             blk = mba.get_mblock(serial)
             if blk is None:
                 continue
+            if blk.nsucc() != 1:
+                continue  # Only handle 1-way blocks
+            if blk.succ(0) != dispatcher_serial:
+                continue  # Only handle blocks going to dispatcher
 
-            # Check each successor
-            succs_to_remove: list[int] = []
-            for i in range(blk.nsucc()):
-                succ_serial = blk.succ(i)
-                # Skip successors that are OTHER BST/dispatcher blocks
-                if succ_serial in bst_serials:
-                    continue
-                # This successor is a handler entry (or non-BST block)
-                succ_blk = mba.get_mblock(succ_serial)
-                if succ_blk is None:
-                    continue
-                # Only remove if handler has alternative reachability (>1 pred)
-                if succ_blk.npred() > 1:
-                    succs_to_remove.append(succ_serial)
+            # Sever the edge: make this block 0-way
+            blk.succset._del(dispatcher_serial)
+            disp_blk.predset._del(serial)
+            blk.mark_lists_dirty()
+            severed += 1
 
-            # Remove the identified edges
-            for succ_serial in succs_to_remove:
-                succ_blk = mba.get_mblock(succ_serial)
-                blk.succset._del(succ_serial)
-                succ_blk.predset._del(serial)
-                succ_blk.mark_lists_dirty()
-                removed_edges += 1
-
-            if succs_to_remove:
-                blk.mark_lists_dirty()
+        if severed > 0:
+            disp_blk.mark_lists_dirty()
 
         unflat_logger.info(
-            "BST cleanup: removed %d BST->handler edges from %d blocks",
-            removed_edges,
-            len(bst_serials),
+            "BST cleanup: severed %d handler->dispatcher back-edges", severed
         )
-
-        # Phase 2: Redirect all remaining handler->dispatcher back-edges to BLT_STOP
-        # At this point, the live MBA reflects all linearization modifications.
-        # Blocks that were successfully redirected by linearization have succ != dispatcher.
-        # Only unresolved exits still point to the dispatcher.
-
-        # Find BLT_STOP serial (last block with type == 1/BLT_STOP)
-        stop_serial = -1
-        for s in range(mba.qty - 1, -1, -1):
-            blk_s = mba.get_mblock(s)
-            if blk_s is not None and blk_s.type == 1:  # BLT_STOP
-                stop_serial = s
-                break
-
-        if stop_serial >= 0:
-            redirected_count = 0
-            for serial in range(mba.qty):
-                if serial in bst_serials:
-                    continue  # Skip BST/dispatcher blocks
-                blk = mba.get_mblock(serial)
-                if blk is None:
-                    continue
-                if blk.nsucc() == 1 and blk.succ(0) == dispatcher_serial:
-                    # This block still goes to dispatcher -- redirect to BLT_STOP
-                    change_1way_block_successor(blk, stop_serial, verify=False)
-                    redirected_count += 1
-
-            unflat_logger.info(
-                "BST cleanup phase 2: redirected %d dispatcher back-edges to BLT_STOP",
-                redirected_count,
-            )
-
-        return removed_edges
+        return severed
 
     def _build_state_machine_from_cache(
         self, analysis: object
