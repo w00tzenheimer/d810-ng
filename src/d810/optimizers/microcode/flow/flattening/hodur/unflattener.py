@@ -1169,6 +1169,17 @@ class HodurUnflattener(GenericUnflatteningRule):
         if severed > 0 or severed_2way > 0:
             disp_blk.mark_lists_dirty()
 
+        # Phase 3 (DISABLED): NOP'ing BST/dispatcher block instructions to
+        # prevent IDA from regenerating conditional branches at later
+        # maturities was attempted but all variants fail:
+        #   - NOP BST blocks + sever edges -> INTERR 52719 (orphaned blocks)
+        #   - NOP BST blocks, keep edges -> segfault (2-way with no jcc)
+        #   - NOP BST body only (keep tail jcc) -> segfault (broken DU chains)
+        #   - NOP dispatcher only -> massive handler DCE (state var defs lost)
+        #   - NOP tail goto on severed handler blocks -> DCE (0-way dead-ends)
+        # IDA's def-use chains depend on BST variable definitions; any NOP
+        # in these blocks cascades into handler body elimination.
+
         # --- Diagnostic: dispatcher predecessors AFTER cleanup ---
         unflat_logger.info(
             "Dispatcher blk[%d] npred=%d AFTER cleanup (severed_1way=%d, severed_2way=%d)",
