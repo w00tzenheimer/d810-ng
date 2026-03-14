@@ -112,7 +112,9 @@ def save_transition_report_to_store(
         func_ea=func_ea,
         maturity=maturity,
     )
-    get_recon_writer(db_path).submit(lambda store: store.save_recon_result(result))
+    writer = get_recon_writer(db_path)
+    writer.submit(lambda store: store.save_recon_result(result))
+    writer.flush()
 
 
 def load_return_sites_from_store(

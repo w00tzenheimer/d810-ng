@@ -67,7 +67,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     PlannerInputs,
 )
 from d810.cfg.flow.graph_checks import SemanticGate
-from d810.hexrays.mutation.cfg_mutations import make_2way_block_goto
+from d810.hexrays.mutation.cfg_mutations import (
+    make_2way_block_goto,
+)
 
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     StageResult,
@@ -444,6 +446,21 @@ class HodurUnflattener(GenericUnflatteningRule):
             if bst_cleanup_edges > 0:
                 nb_changes += bst_cleanup_edges
                 bst_cleanup_ran = True
+
+            # Diagnostic: backward dispatcher-predecessor scan
+            state_var = getattr(snapshot.state_machine, "state_var", None)
+            if state_var is not None and state_var.t == ida_hexrays.mop_S:
+                self._diagnostic_backward_scan(
+                    dispatcher_serial=snapshot.bst_dispatcher_serial,
+                    bst_node_blocks=snapshot.bst_result.bst_node_blocks,
+                    state_var_stkoff=state_var.s.off,
+                    bst_result=snapshot.bst_result,
+                    state_var_mop=state_var,
+                )
+
+            # Diagnostic: log unreachable BST/dispatcher block counts
+            bst_serials = set(snapshot.bst_result.bst_node_blocks) | {snapshot.bst_dispatcher_serial}
+            self._diagnostic_bfs_reachability(bst_serials)
 
         # 6. Log summary
         self._log_pipeline_results(results, nb_changes)
@@ -1132,11 +1149,16 @@ class HodurUnflattener(GenericUnflatteningRule):
             if blk.succ(0) != dispatcher_serial:
                 continue  # Only handle blocks going to dispatcher
 
-            # Sever the edge: make this block 0-way
+            # Sever the edge: remove dispatcher from this block's
+            # successor list and this block from dispatcher's predecessor list.
             blk.succset._del(dispatcher_serial)
-            disp_blk.predset._del(serial)
+            disp_blk.predset._del(blk.serial)
             blk.mark_lists_dirty()
             severed += 1
+            unflat_logger.info(
+                "BST cleanup: severed 1-way blk[%d] -> dispatcher edge",
+                serial,
+            )
 
         # Handle 2-way blocks with one arm going to dispatcher.
         # Convert them to 1-way gotos keeping the non-dispatcher successor.
@@ -1169,7 +1191,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         if severed > 0 or severed_2way > 0:
             disp_blk.mark_lists_dirty()
 
-        # Phase 3 (DISABLED): NOP'ing BST/dispatcher block instructions to
+        # Phase 3 (old, DISABLED): NOP'ing BST/dispatcher block instructions to
         # prevent IDA from regenerating conditional branches at later
         # maturities was attempted but all variants fail:
         #   - NOP BST blocks + sever edges -> INTERR 52719 (orphaned blocks)
@@ -1182,7 +1204,8 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         # --- Diagnostic: dispatcher predecessors AFTER cleanup ---
         unflat_logger.info(
-            "Dispatcher blk[%d] npred=%d AFTER cleanup (severed_1way=%d, severed_2way=%d)",
+            "Dispatcher blk[%d] npred=%d AFTER cleanup "
+            "(severed_1way=%d, severed_2way=%d)",
             dispatcher_serial, disp_blk.npred(), severed, severed_2way,
         )
         for i in range(disp_blk.npred()):
@@ -1206,7 +1229,278 @@ class HodurUnflattener(GenericUnflatteningRule):
             "(%d 1-way, %d 2-way converted to goto)",
             total_severed, severed, severed_2way,
         )
+
         return total_severed
+
+    def _diagnostic_bfs_reachability(self, bst_serials: set[int]) -> int:
+        """Diagnostic: log unreachable BST/dispatcher block counts.
+
+        Performs a forward BFS from block 0, computes the set of unreachable
+        BST blocks, and logs the counts.  No mutation is performed.
+
+        Args:
+            bst_serials: Set of BST comparison block serials + dispatcher serial.
+
+        Returns:
+            Always 0 (diagnostic only, no changes made).
+        """
+        from collections import deque
+
+        mba = self.mba
+
+        # Forward BFS from block 0
+        visited: set[int] = set()
+        queue: deque[int] = deque([0])
+        while queue:
+            serial = queue.popleft()
+            if serial in visited:
+                continue
+            visited.add(serial)
+            blk = mba.get_mblock(serial)
+            if blk is None:
+                continue
+            for si in range(blk.nsucc()):
+                succ = blk.succ(si)
+                if succ not in visited:
+                    queue.append(succ)
+
+        # Identify unreachable BST blocks
+        all_serials = set(range(mba.qty))
+        unreachable = all_serials - visited
+        unreachable_bst = unreachable & bst_serials
+
+        unflat_logger.info(
+            "DiagnosticBFS: %d/%d blocks reachable, %d unreachable total, "
+            "%d unreachable BST blocks",
+            len(visited), mba.qty, len(unreachable), len(unreachable_bst),
+        )
+
+        return 0
+
+    def _diagnostic_backward_scan(
+        self,
+        dispatcher_serial: int,
+        bst_node_blocks: "BSTNodeMap",
+        state_var_stkoff: int,
+        bst_result: object,
+        state_var_mop: object,
+    ) -> None:
+        """Diagnostic: backward-resolve state constants from dispatcher predecessors.
+
+        Iterates all remaining dispatcher predecessors AFTER linearization +
+        BST cleanup, tries to backward-resolve the state constant each one
+        writes, and logs coverage.  This tells us how many unresolved handler
+        exits could potentially be chained via a backward-scan approach.
+
+        **This is diagnostic only — no CFG modifications are emitted.**
+
+        Args:
+            dispatcher_serial: Serial of the dispatcher block.
+            bst_node_blocks: BST node block map from analysis.
+            state_var_stkoff: Stack offset of the state variable.
+            bst_result: ``BSTAnalysisResult`` for BST target resolution.
+            state_var_mop: ``mop_t`` for the state variable (``mop_S``).
+        """
+        from d810.evaluator.hexrays_microcode.valranges import (
+            resolve_state_via_valranges,
+        )
+        from d810.recon.flow.bst_model import resolve_target_via_bst
+
+        mba = self.mba
+        disp_blk = mba.get_mblock(dispatcher_serial)
+        if disp_blk is None:
+            return
+
+        bst_serials: set[int] = set(bst_node_blocks)
+        bst_serials.add(dispatcher_serial)
+
+        pred_serials = [disp_blk.pred(i) for i in range(disp_blk.npred())]
+
+        # Counters
+        already_redirected = 0
+        literal_count = 0
+        copy_chain_count = 0
+        valrange_count = 0
+        unresolved_count = 0
+        target_found = 0
+        unresolved_details: list[str] = []
+
+        for pred_serial in pred_serials:
+            pred_blk = mba.get_mblock(pred_serial)
+            if pred_blk is None:
+                unresolved_count += 1
+                unresolved_details.append(
+                    f"blk[{pred_serial}]: block is None"
+                )
+                continue
+
+            # Check if already redirected (successor is NOT dispatcher and
+            # NOT in BST node set)
+            is_redirected = True
+            for si in range(pred_blk.nsucc()):
+                s = pred_blk.succ(si)
+                if s == dispatcher_serial or s in bst_serials:
+                    is_redirected = False
+                    break
+            if pred_blk.nsucc() == 0:
+                # 0-way blocks (severed) — check if they were BST nodes
+                is_redirected = pred_serial not in bst_serials
+
+            if is_redirected:
+                already_redirected += 1
+                continue
+
+            # Skip BST-internal nodes — they are part of the comparison tree,
+            # not handler exits.
+            if pred_serial in bst_serials:
+                already_redirected += 1
+                continue
+
+            # Try backward resolution: walk instructions backward from tail
+            resolved_value: int | None = None
+            resolution_method: str = "UNRESOLVED"
+
+            cur_ins = pred_blk.tail
+            while cur_ins is not None:
+                # Check if this instruction writes to the state variable
+                if (
+                    cur_ins.d is not None
+                    and cur_ins.d.t == ida_hexrays.mop_S
+                    and cur_ins.d.s is not None
+                    and cur_ins.d.s.off == state_var_stkoff
+                ):
+                    # Found a write to the state variable
+                    if cur_ins.l is not None and cur_ins.l.t == ida_hexrays.mop_n:
+                        # Source is a literal constant
+                        resolved_value = cur_ins.l.nnn.value
+                        resolution_method = "LITERAL"
+                        break
+                    elif cur_ins.l is not None and cur_ins.l.t in (
+                        ida_hexrays.mop_r, ida_hexrays.mop_S,
+                    ):
+                        # Source is a register or stack copy — try depth-1
+                        src_op = cur_ins.l
+                        resolved_value = self._backward_scan_depth1(
+                            pred_blk, src_op,
+                        )
+                        if resolved_value is not None:
+                            resolution_method = "COPY_CHAIN"
+                            break
+                    # Write found but source not resolvable here
+                    break
+                cur_ins = cur_ins.prev
+
+            # Fallback: try valrange resolution
+            if resolved_value is None and pred_blk.tail is not None:
+                try:
+                    val = resolve_state_via_valranges(
+                        pred_blk, state_var_mop, pred_blk.tail,
+                    )
+                    if val is not None:
+                        resolved_value = val
+                        resolution_method = "VALRANGE"
+                except Exception:
+                    pass
+
+            # Tally results
+            if resolved_value is not None:
+                if resolution_method == "LITERAL":
+                    literal_count += 1
+                elif resolution_method == "COPY_CHAIN":
+                    copy_chain_count += 1
+                elif resolution_method == "VALRANGE":
+                    valrange_count += 1
+
+                # Try BST lookup
+                try:
+                    target = resolve_target_via_bst(bst_result, resolved_value)
+                    if target is not None:
+                        target_found += 1
+                        unflat_logger.debug(
+                            "BACKWARD_SCAN: blk[%d] %s value=0x%X -> target blk[%d]",
+                            pred_serial, resolution_method,
+                            resolved_value & 0xFFFFFFFF, target,
+                        )
+                    else:
+                        unflat_logger.debug(
+                            "BACKWARD_SCAN: blk[%d] %s value=0x%X -> NO BST target",
+                            pred_serial, resolution_method,
+                            resolved_value & 0xFFFFFFFF,
+                        )
+                except Exception:
+                    unflat_logger.debug(
+                        "BACKWARD_SCAN: blk[%d] %s value=0x%X -> BST lookup error",
+                        pred_serial, resolution_method,
+                        resolved_value & 0xFFFFFFFF,
+                    )
+            else:
+                unresolved_count += 1
+                # Gather detail for debug
+                tail_str = pred_blk.tail.dstr() if pred_blk.tail else "none"
+                unresolved_details.append(
+                    f"blk[{pred_serial}]: nsucc={pred_blk.nsucc()} tail={tail_str}"
+                )
+
+        # Summary log
+        total_preds = len(pred_serials)
+        resolved_total = literal_count + copy_chain_count + valrange_count
+        unflat_logger.info(
+            "BACKWARD_SCAN: dispatcher has %d predecessors: "
+            "%d already redirected, %d literal, %d copy-chain, "
+            "%d valrange, %d unresolved. %d with valid BST targets.",
+            total_preds, already_redirected, literal_count,
+            copy_chain_count, valrange_count, unresolved_count,
+            target_found,
+        )
+
+        # Log unresolved details at DEBUG
+        for detail in unresolved_details:
+            unflat_logger.debug("BACKWARD_SCAN unresolved: %s", detail)
+
+    def _backward_scan_depth1(
+        self,
+        origin_blk: object,
+        src_op: object,
+    ) -> int | None:
+        """Try one level of copy-chain resolution for a register/stack source.
+
+        If *origin_blk* has exactly one predecessor, walk that predecessor's
+        instructions backward looking for a write to *src_op* with an ``mop_n``
+        (literal) source.
+
+        Args:
+            origin_blk: The block whose tail writes src_op to state var.
+            src_op: The source operand (``mop_r`` or ``mop_S``) to trace.
+
+        Returns:
+            Concrete integer value if found, otherwise ``None``.
+        """
+        if origin_blk.npred() != 1:
+            return None
+
+        pred_serial = origin_blk.pred(0)
+        pred_blk = self.mba.get_mblock(pred_serial)
+        if pred_blk is None:
+            return None
+
+        cur_ins = pred_blk.tail
+        while cur_ins is not None:
+            if cur_ins.d is not None and cur_ins.d.t == src_op.t:
+                # Match by type-specific identity
+                match = False
+                if src_op.t == ida_hexrays.mop_r:
+                    match = cur_ins.d.r == src_op.r
+                elif src_op.t == ida_hexrays.mop_S:
+                    match = (
+                        cur_ins.d.s is not None
+                        and src_op.s is not None
+                        and cur_ins.d.s.off == src_op.s.off
+                    )
+                if match and cur_ins.l is not None and cur_ins.l.t == ida_hexrays.mop_n:
+                    return cur_ins.l.nnn.value
+            cur_ins = cur_ins.prev
+
+        return None
 
     def _build_state_machine_from_cache(
         self, analysis: object
