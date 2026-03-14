@@ -540,14 +540,17 @@ class LinearizedFlowGraphStrategy:
         owned_blocks.update(nop_blocks)
 
         # -----------------------------------------------------------------
-        # 4. Disconnect BST leaf -> handler entry edges.
-        #    After linearization, handler entries are reachable via goto
-        #    chains.  BST leaf edges are redundant and keep the dispatcher
-        #    comparison tree alive in the decompiled output.
+        # 4. Disconnect 2-way blocks with dispatcher back-edges.
+        #    After linearization, some 2-way blocks (BST comparison nodes
+        #    or handler conditionals) still have the dispatcher as one
+        #    successor.  These back-edges create while loops in the
+        #    decompiled output.  Convert such blocks from 2-way to 1-way
+        #    via ConvertToGoto, keeping the non-dispatcher successor.
         # -----------------------------------------------------------------
-        # BST leaf disconnection disabled — causes handler DCE when not
-        # all handlers have linearized predecessors.  Kept as dormant code.
-        disconnect_count = 0
+        dispatcher_serial = snapshot.bst_dispatcher_serial
+        disconnect_count = self._disconnect_bst_comparison_nodes(
+            bst_node_blocks, dispatcher_serial, builder, modifications, emitted,
+        )
 
         logger.info(
             "LFG: emitted %d redirects (%d exit-resolved, %d bst-default) "
@@ -1699,6 +1702,90 @@ class LinearizedFlowGraphStrategy:
         )
 
         return modifications, nop_blocks
+
+    @staticmethod
+    def _disconnect_bst_comparison_nodes(
+        bst_node_blocks: set[int],
+        dispatcher_serial: int,
+        builder: ModificationBuilder,
+        modifications: list,
+        emitted: set[tuple[int, int]],
+    ) -> int:
+        """Convert 2-way blocks with dispatcher back-edges to 1-way.
+
+        After linearization, handler exits have been redirected to their
+        target handler entries and state variable writes have been NOP'd.
+        However, some 2-way blocks (BST comparison nodes or handler
+        conditionals) may still have the dispatcher as one successor.
+        These back-edges create ``while`` loops in the decompiled output.
+
+        Emits :class:`ConvertToGoto` keeping the non-dispatcher successor.
+
+        Args:
+            bst_node_blocks: Set of BST comparison block serials.
+            dispatcher_serial: Serial of the dispatcher entry block.
+            builder: Modification builder for emitting graph edits.
+            modifications: List to append new modifications to.
+            emitted: Set of ``(from, to)`` pairs for dedup.
+
+        Returns:
+            Number of blocks disconnected from the dispatcher.
+        """
+        if dispatcher_serial < 0:
+            return 0
+
+        # Build set of block serials that already have a redirect from
+        # the main handler-linearization pass.  These blocks must NOT
+        # receive a second conflicting redirect.
+        already_redirected: set[int] = {src for src, _ in emitted}
+
+        disconnect_count = 0
+        # Scan ALL blocks in the flow graph, not just BST nodes.
+        for serial in sorted(builder.block_nsucc_map):
+            # Skip the dispatcher itself.
+            if serial == dispatcher_serial:
+                continue
+            # Skip blocks already handled by the main redirect pass.
+            if serial in already_redirected:
+                continue
+
+            nsucc = builder.block_nsucc_map.get(serial, 0)
+            if nsucc != 2:
+                continue
+
+            succs = list(builder.block_succ_map.get(serial, ()))
+            if len(succs) != 2:
+                continue
+
+            succ0, succ1 = succs[0], succs[1]
+
+            # Check if either successor is the dispatcher.
+            if succ0 != dispatcher_serial and succ1 != dispatcher_serial:
+                continue
+
+            # Keep the non-dispatcher successor.
+            keep_serial = succ1 if succ0 == dispatcher_serial else succ0
+
+            emit_key = (serial, keep_serial)
+            if emit_key in emitted:
+                continue
+            emitted.add(emit_key)
+
+            mod = builder.convert_to_goto(serial, keep_serial)
+            modifications.append(mod)
+            disconnect_count += 1
+
+            is_bst = serial in bst_node_blocks
+            logger.info(
+                "BST_DISCONNECT: blk[%d] (%s) 2-way -> 1-way goto "
+                "blk[%d] (removed dispatcher back-edge to blk[%d])",
+                serial,
+                "BST" if is_bst else "handler",
+                keep_serial,
+                dispatcher_serial,
+            )
+
+        return disconnect_count
 
     @staticmethod
     def _disconnect_bst_entries(
