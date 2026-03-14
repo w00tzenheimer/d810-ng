@@ -121,9 +121,11 @@ class ReconPhase:
                 continue
             try:
                 result = collector.collect(target, func_ea, maturity)
-                get_recon_writer(self._store.db_path).submit(
+                writer = get_recon_writer(self._store.db_path)
+                writer.submit(
                     lambda store, r=result: store.save_recon_result(r)
                 )
+                writer.flush()
                 results.append(result)
             except Exception:
                 logger.exception(
