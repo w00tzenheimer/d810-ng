@@ -548,7 +548,7 @@ class LinearizedFlowGraphStrategy:
         #     updates, unlike NOP which only changes the opcode.
         # -----------------------------------------------------------------
         dispatcher_serial = snapshot.bst_dispatcher_serial
-        goto_nop_mods, goto_nop_count, goto_skip_count, stop_serial = (
+        goto_nop_mods, goto_nop_count, goto_skip_count = (
             self._nop_dispatcher_gotos(
                 snapshot, dispatcher_serial, bst_node_blocks, builder,
                 emitted,
@@ -568,24 +568,10 @@ class LinearizedFlowGraphStrategy:
             bst_node_blocks, dispatcher_serial, builder, modifications, emitted,
         )
 
-        # -----------------------------------------------------------------
-        # 5. Disconnect BST leaf -> handler entry edges.
-        #    After linearization, handler entries are reachable via goto
-        #    chains.  BST leaf comparison nodes still have edges pointing
-        #    to handler entries, keeping the BST tree alive.  Redirect
-        #    those edges to BLT_STOP so handler entries are ONLY reachable
-        #    via the linearized goto chain.
-        # -----------------------------------------------------------------
-        bst_entry_disconnect_count = self._disconnect_bst_entries(
-            bst_node_blocks, builder, owned_edges, modifications, emitted,
-            stop_serial,
-        )
-
         logger.info(
             "LFG: emitted %d redirects (%d exit-resolved, %d bst-default) "
             "+ %d chain redirects, %d stvar NOPs across %d blocks, "
-            "%d goto redirects (%d already-emitted), %d BST disconnects, "
-            "%d BST entry disconnects "
+            "%d goto redirects (%d already-emitted), %d BST disconnects "
             "(%d raw transitions, %d skipped, %d range-fallback)",
             resolved_count,
             exit_resolved_count,
@@ -596,7 +582,6 @@ class LinearizedFlowGraphStrategy:
             goto_nop_count,
             goto_skip_count,
             disconnect_count,
-            bst_entry_disconnect_count,
             raw_transition_count,
             skipped_count,
             range_fallback_count,
@@ -1746,7 +1731,7 @@ class LinearizedFlowGraphStrategy:
         bst_node_blocks: set[int],
         builder: ModificationBuilder,
         emitted: set[tuple[int, int]],
-    ) -> tuple[list, int, int, int]:
+    ) -> tuple[list, int, int]:
         """Redirect ``m_goto @dispatcher`` to BLT_STOP in handler blocks.
 
         After handler exits have been redirected and state variable writes
@@ -1782,14 +1767,14 @@ class LinearizedFlowGraphStrategy:
 
         Returns:
             A tuple of ``(list_of_modifications, redirect_count,
-            skip_count, stop_serial)``.
+            skip_count)``.
         """
         if dispatcher_serial < 0:
-            return [], 0, 0, -1
+            return [], 0, 0
 
         mba = snapshot.mba
         if mba is None:
-            return [], 0, 0, -1
+            return [], 0, 0
 
         # Find BLT_STOP serial — the function exit block.
         # BLT_STOP (type == 1) is typically the last block in the MBA.
@@ -1809,7 +1794,7 @@ class LinearizedFlowGraphStrategy:
                 "BST_GOTO_REDIRECT: BLT_STOP not found, cannot redirect "
                 "dispatcher gotos",
             )
-            return [], 0, 0, -1
+            return [], 0, 0
 
         # Collect from_block serials already scheduled for redirect.
         already_redirected: set[int] = {src for src, _ in emitted}
@@ -1871,7 +1856,7 @@ class LinearizedFlowGraphStrategy:
             "skipped %d (already emitted)",
             redirect_count, skip_count,
         )
-        return modifications, redirect_count, skip_count, stop_serial
+        return modifications, redirect_count, skip_count
 
     @staticmethod
     def _disconnect_bst_comparison_nodes(
