@@ -67,6 +67,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     PlannerInputs,
 )
 from d810.cfg.flow.graph_checks import SemanticGate
+from d810.hexrays.mutation.cfg_mutations import change_1way_block_successor
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     StageResult,
     VerificationGate,
@@ -1123,6 +1124,37 @@ class HodurUnflattener(GenericUnflatteningRule):
             removed_edges,
             len(bst_serials),
         )
+
+        # Phase 2: Redirect all remaining handler->dispatcher back-edges to BLT_STOP
+        # At this point, the live MBA reflects all linearization modifications.
+        # Blocks that were successfully redirected by linearization have succ != dispatcher.
+        # Only unresolved exits still point to the dispatcher.
+
+        # Find BLT_STOP serial (last block with type == 1/BLT_STOP)
+        stop_serial = -1
+        for s in range(mba.qty - 1, -1, -1):
+            blk_s = mba.get_mblock(s)
+            if blk_s is not None and blk_s.type == 1:  # BLT_STOP
+                stop_serial = s
+                break
+
+        if stop_serial >= 0:
+            redirected_count = 0
+            for serial in range(mba.qty):
+                if serial in bst_serials:
+                    continue  # Skip BST/dispatcher blocks
+                blk = mba.get_mblock(serial)
+                if blk is None:
+                    continue
+                if blk.nsucc() == 1 and blk.succ(0) == dispatcher_serial:
+                    # This block still goes to dispatcher -- redirect to BLT_STOP
+                    change_1way_block_successor(blk, stop_serial, verify=False)
+                    redirected_count += 1
+
+            unflat_logger.info(
+                "BST cleanup phase 2: redirected %d dispatcher back-edges to BLT_STOP",
+                redirected_count,
+            )
 
         return removed_edges
 
