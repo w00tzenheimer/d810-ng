@@ -540,17 +540,18 @@ class LinearizedFlowGraphStrategy:
         owned_blocks.update(nop_blocks)
 
         # -----------------------------------------------------------------
-        # 3b. NOP m_goto @dispatcher in single-owner handler blocks.
+        # 3b. Redirect m_goto @dispatcher to BLT_STOP in handler blocks.
         #     After state variable writes are NOP'd, explicit m_goto
         #     instructions targeting the dispatcher still keep it
-        #     reachable.  NOP these gotos (turning the block into a
-        #     dead-end) instead of redirecting to avoid shared-block DCE.
-        #     Only safe for blocks with npred<=1.
+        #     reachable.  Redirect these gotos to BLT_STOP (function
+        #     exit) which properly severs CFG edges via succset/predset
+        #     updates, unlike NOP which only changes the opcode.
         # -----------------------------------------------------------------
         dispatcher_serial = snapshot.bst_dispatcher_serial
         goto_nop_mods, goto_nop_count, goto_skip_count = (
             self._nop_dispatcher_gotos(
                 snapshot, dispatcher_serial, bst_node_blocks, builder,
+                emitted,
             )
         )
         modifications.extend(goto_nop_mods)
@@ -570,7 +571,7 @@ class LinearizedFlowGraphStrategy:
         logger.info(
             "LFG: emitted %d redirects (%d exit-resolved, %d bst-default) "
             "+ %d chain redirects, %d stvar NOPs across %d blocks, "
-            "%d goto NOPs (%d shared-skipped), %d BST disconnects "
+            "%d goto redirects (%d already-emitted), %d BST disconnects "
             "(%d raw transitions, %d skipped, %d range-fallback)",
             resolved_count,
             exit_resolved_count,
@@ -1729,32 +1730,44 @@ class LinearizedFlowGraphStrategy:
         dispatcher_serial: int,
         bst_node_blocks: set[int],
         builder: ModificationBuilder,
+        emitted: set[tuple[int, int]],
     ) -> tuple[list, int, int]:
-        """NOP ``m_goto @dispatcher`` in handler blocks that are fully owned.
+        """Redirect ``m_goto @dispatcher`` to BLT_STOP in handler blocks.
 
         After handler exits have been redirected and state variable writes
         NOP'd, some 1-way blocks still have an explicit ``m_goto`` targeting
         the dispatcher.  These back-edges keep the dispatcher reachable and
         create spurious ``while`` loops in the decompiled output.
 
-        This pass NOPs the ``m_goto`` instruction (turning the block into a
-        dead-end) instead of redirecting it, which avoids the shared-block
-        reachability problems seen with redirect-based approaches.
+        This pass redirects the goto to BLT_STOP (the function exit block)
+        instead of merely NOPing the instruction.  A NOP only changes the
+        opcode but does NOT update ``succset``/``predset``, so the CFG edge
+        from the block to the dispatcher remains intact.  A redirect via
+        ``builder.goto_redirect`` emits a ``RedirectGoto`` that properly
+        updates the CFG edges, severing the dispatcher back-edge.
 
-        Safety: only NOPs gotos in blocks where:
+        Blocks already scheduled for redirect by the main linearization pass
+        (present in *emitted*) are skipped to avoid conflicting
+        ``BLOCK_GOTO_CHANGE`` operations on the same block.
+
+        Safety: only redirects gotos in blocks where:
 
         1. Block is 1-way (``nsucc==1``) with sole successor == dispatcher.
         2. Block is NOT a BST comparison node.
         3. Block is NOT the dispatcher itself.
+        4. Block is NOT already in *emitted* (already has a redirect).
 
         Args:
             snapshot: Immutable analysis snapshot for the current function.
             dispatcher_serial: Serial of the BST dispatcher entry block.
             bst_node_blocks: Set of BST node block serials to exclude.
-            builder: Modification builder for emitting NOP edits.
+            builder: Modification builder for emitting redirect edits.
+            emitted: Set of ``(from_block, to_block)`` pairs already
+                scheduled by the main linearization pass.
 
         Returns:
-            A tuple of ``(list_of_modifications, nop_count, skip_count)``.
+            A tuple of ``(list_of_modifications, redirect_count,
+            skip_count)``.
         """
         if dispatcher_serial < 0:
             return [], 0, 0
@@ -1763,11 +1776,34 @@ class LinearizedFlowGraphStrategy:
         if mba is None:
             return [], 0, 0
 
+        # Find BLT_STOP serial — the function exit block.
+        # BLT_STOP (type == 1) is typically the last block in the MBA.
+        _BLT_STOP_TYPE: int = 1
+        stop_serial: int = -1
+        qty = mba.qty  # type: ignore[attr-defined]
+        for i in range(qty - 1, -1, -1):
+            try:
+                blk_i = mba.get_mblock(i)  # type: ignore[attr-defined]
+            except (AttributeError, IndexError):
+                continue
+            if blk_i is not None and int(blk_i.type) == _BLT_STOP_TYPE:
+                stop_serial = i
+                break
+        if stop_serial < 0:
+            logger.warning(
+                "BST_GOTO_REDIRECT: BLT_STOP not found, cannot redirect "
+                "dispatcher gotos",
+            )
+            return [], 0, 0
+
+        # Collect from_block serials already scheduled for redirect.
+        already_redirected: set[int] = {src for src, _ in emitted}
+
         modifications: list = []
-        nop_count = 0
+        redirect_count = 0
         skip_count = 0
 
-        for blk_idx in range(mba.qty):  # type: ignore[attr-defined]
+        for blk_idx in range(qty):
             try:
                 blk = mba.get_mblock(blk_idx)  # type: ignore[attr-defined]
             except (AttributeError, IndexError):
@@ -1783,6 +1819,11 @@ class LinearizedFlowGraphStrategy:
             if serial in bst_node_blocks:
                 continue
 
+            # Skip blocks already scheduled for redirect.
+            if serial in already_redirected:
+                skip_count += 1
+                continue
+
             # Only 1-way blocks whose sole successor is the dispatcher.
             if blk.nsucc() != 1:
                 continue
@@ -1796,29 +1837,26 @@ class LinearizedFlowGraphStrategy:
             if tail.opcode != ida_hexrays.m_goto:
                 continue
 
-            # Use the instruction EA for the NOP target.
-            insn_ea = tail.ea
-            if insn_ea == 0 or insn_ea == 0xFFFFFFFFFFFFFFFF:
-                # Synthetic instruction with no valid EA — skip.
-                continue
-
-            modifications.append(
-                builder.nop_instruction(
-                    source_block=serial,
-                    instruction_ea=insn_ea,
-                )
+            mod = builder.goto_redirect(
+                source_block=serial,
+                target_block=stop_serial,
+                old_target=dispatcher_serial,
             )
-            nop_count += 1
+            modifications.append(mod)
+            emitted.add((serial, stop_serial))
+            redirect_count += 1
             logger.info(
-                "BST_GOTO_NOP: NOP'd m_goto @%d in blk[%d] (npred=%d)",
-                dispatcher_serial, serial, blk.npred(),
+                "BST_GOTO_REDIRECT: blk[%d] m_goto @%d -> BLT_STOP blk[%d] "
+                "(npred=%d)",
+                serial, dispatcher_serial, stop_serial, blk.npred(),
             )
 
         logger.info(
-            "BST_GOTO_NOP: NOP'd %d dispatcher gotos (incl. shared blocks), skipped %d",
-            nop_count, skip_count,
+            "BST_GOTO_REDIRECT: redirected %d dispatcher gotos to BLT_STOP, "
+            "skipped %d (already emitted)",
+            redirect_count, skip_count,
         )
-        return modifications, nop_count, skip_count
+        return modifications, redirect_count, skip_count
 
     @staticmethod
     def _disconnect_bst_comparison_nodes(
