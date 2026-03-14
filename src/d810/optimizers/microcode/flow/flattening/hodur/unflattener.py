@@ -430,6 +430,15 @@ class HodurUnflattener(GenericUnflatteningRule):
             except Exception:
                 unflat_logger.debug("_record_audit_stage(post_apply) failed (non-critical)")
 
+        # 5c. Post-apply: disconnect BST comparison nodes and dispatcher
+        if nb_changes > 0 and snapshot.bst_result is not None:
+            bst_cleanup_edges = self._post_apply_bst_cleanup(
+                snapshot.bst_result.bst_node_blocks,
+                snapshot.bst_dispatcher_serial,
+            )
+            if bst_cleanup_edges > 0:
+                nb_changes += bst_cleanup_edges
+
         # 6. Log summary
         self._log_pipeline_results(results, nb_changes)
         unflat_logger.info("Provenance: %s", provenance.phase_summary())
@@ -1049,6 +1058,72 @@ class HodurUnflattener(GenericUnflatteningRule):
             "target": target,
         }
         return True
+
+    def _post_apply_bst_cleanup(
+        self,
+        bst_node_blocks: "BSTNodeMap",
+        dispatcher_serial: int,
+    ) -> int:
+        """Clear all edges from BST comparison nodes and dispatcher after linearization.
+
+        After linearization modifications are applied, handler entries have both
+        BST predecessors (from the original BST tree) and linearized predecessors
+        (from handler chaining). This method removes all BST/dispatcher edges,
+        leaving only the linearized handler chain. Handler entries with ONLY BST
+        predecessors (unchained handlers) will become unreachable.
+
+        Args:
+            bst_node_blocks: BSTNodeMap of BST comparison nodes (iteration
+                excludes handler entries).
+            dispatcher_serial: Serial of the dispatcher block.
+
+        Returns:
+            Number of edges removed.
+        """
+        mba = self.mba
+        removed_edges = 0
+
+        # Collect all BST comparison node serials + dispatcher
+        bst_serials: set[int] = set(bst_node_blocks)
+        bst_serials.add(dispatcher_serial)
+
+        for serial in bst_serials:
+            blk = mba.get_mblock(serial)
+            if blk is None:
+                continue
+
+            # Collect current successors before mutating
+            current_succs = [blk.succ(i) for i in range(blk.nsucc())]
+
+            # Clear all successor edges
+            for succ_serial in current_succs:
+                succ_blk = mba.get_mblock(succ_serial)
+                if succ_blk is not None:
+                    blk.succset._del(succ_serial)
+                    succ_blk.predset._del(serial)
+                    succ_blk.mark_lists_dirty()
+                    removed_edges += 1
+
+            # NOP all instructions in the block
+            insn = blk.head
+            while insn is not None:
+                next_insn = insn.next
+                blk.make_nop(insn)
+                insn = next_insn
+
+            blk.mark_lists_dirty()
+
+        # Clean up orphaned/empty blocks
+        if removed_edges > 0:
+            mba.remove_empty_and_unreachable_blocks()
+
+        unflat_logger.info(
+            "BST cleanup: cleared %d edges from %d BST/dispatcher blocks",
+            removed_edges,
+            len(bst_serials),
+        )
+
+        return removed_edges
 
     def _build_state_machine_from_cache(
         self, analysis: object
