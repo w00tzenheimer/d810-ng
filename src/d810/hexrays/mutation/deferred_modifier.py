@@ -2333,11 +2333,6 @@ class DeferredGraphModifier:
                 # cleanup so deferred CFG rewrites don't leave transient orphans.
                 mba_deep_cleaning(self.mba, call_mba_combine_block=False)
 
-            # At low maturities (e.g. GLBOPT1), mba_deep_cleaning is gated off.
-            # Explicitly remove blocks that became unreachable from NOP'd dispatcher gotos.
-            if self.mba.maturity < ida_hexrays.MMAT_CALLS:
-                self.mba.remove_empty_and_unreachable_blocks()
-
             try:
                 safe_verify(
                     self.mba,
