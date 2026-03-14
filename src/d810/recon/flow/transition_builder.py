@@ -78,12 +78,42 @@ def _get_state_var_stkoff(detector) -> Optional[int]:
 
 
 def _convert_bst_to_result(bst: BSTAnalysisResult) -> TransitionResult:
-    """Convert a BSTAnalysisResult into a TransitionResult."""
+    """Convert a BSTAnalysisResult into a TransitionResult.
+
+    Uses the IntervalDispatcher (when available) as the primary source
+    for state-to-handler resolution, falling back to handler_state_map
+    for backward compatibility.  This ensures that handlers reachable
+    only through wide BST range intervals are included.
+    """
     state_to_handler_blk: Dict[int, int] = {
         state: blk
         for blk, state in bst.handler_state_map.items()
         if blk not in bst.bst_node_blocks
     }
+
+    # Backfill from IntervalDispatcher: wide-range intervals that map
+    # to handler blocks not already present in handler_state_map are
+    # added so that the resulting TransitionResult covers ALL handlers
+    # the BST can route to.  Targets appearing in multiple dispatcher
+    # rows are catch-all / default blocks and are excluded.
+    if bst.dispatcher is not None:
+        from collections import Counter as _Counter
+        _target_freq: dict[int, int] = _Counter(
+            r.target for r in bst.dispatcher._rows
+        )
+        for row in bst.dispatcher._rows:
+            target = row.target
+            if target in bst.bst_node_blocks:
+                continue
+            if _target_freq[target] > 1:
+                continue  # catch-all / default block
+            # Only add if this target block has no entry yet (avoid
+            # overwriting point-match entries with a range representative).
+            if target not in {blk for blk in state_to_handler_blk.values()}:
+                # Use the interval lo as a representative state value
+                # that the dispatcher will resolve back to this target.
+                representative_state = row.lo
+                state_to_handler_blk[representative_state] = target
 
     handlers: Dict[int, StateHandler] = {}
     for state, handler_serial in state_to_handler_blk.items():

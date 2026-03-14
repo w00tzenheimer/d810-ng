@@ -141,9 +141,36 @@ class LinearizedFlowGraphStrategy:
         bst_result = snapshot.bst_result
         assert bst_result is not None
 
-        handler_state_map: dict[int, int] = getattr(
-            bst_result, "handler_state_map", {}
-        ) or {}
+        handler_state_map: dict[int, int] = dict(
+            getattr(bst_result, "handler_state_map", {}) or {}
+        )
+        # Backfill handler_state_map from IntervalDispatcher so that
+        # handlers reachable only via wide BST range intervals are
+        # included in all downstream resolution (exit states, BST
+        # default discovery, DOT graph, coverage checks).
+        # handler_state_map shape: {handler_serial: state_value}
+        _dispatcher = getattr(bst_result, "dispatcher", None)
+        if _dispatcher is not None:
+            _existing_handler_serials = set(handler_state_map.keys())
+            # Count how many rows map to each target.  Targets that
+            # appear in multiple disjoint intervals are catch-all /
+            # default blocks, NOT real handlers -- skip them.
+            from collections import Counter as _Counter
+            _target_freq: dict[int, int] = _Counter(
+                r.target for r in _dispatcher._rows
+            )
+            for _row in _dispatcher._rows:
+                if _row.target in _existing_handler_serials:
+                    continue
+                if _target_freq[_row.target] > 1:
+                    continue  # catch-all / default block
+                # Use lo as representative state value for this range.
+                handler_state_map[_row.target] = _row.lo
+                logger.info(
+                    "LFG: INTERVAL_BACKFILL blk[%d] <- state 0x%X "
+                    "(range [0x%X, 0x%X))",
+                    _row.target, _row.lo, _row.lo, _row.hi,
+                )
         pre_header_serial: int | None = getattr(
             bst_result, "pre_header_serial", None
         )
@@ -875,9 +902,13 @@ class LinearizedFlowGraphStrategy:
             return 0
 
         # Build inverted map: state_value -> correct handler entry serial.
+        # handler_state_map shape: {handler_serial: state_value}
         state_to_entry: dict[int, int] = {
             v: k for k, v in handler_state_map.items()
         }
+        # Also store the dispatcher reference for fallback lookup on
+        # states that are only reachable via wide BST range intervals.
+        _exit_dispatcher = getattr(bst_result, "dispatcher", None)
 
         # Resolve state variable stkoff (same logic as _nop_state_variable_writes).
         stkoff: int | None = None
@@ -949,6 +980,16 @@ class LinearizedFlowGraphStrategy:
         for state_val in exit_states:
             handler = sm.handlers[state_val]
             correct_entry = state_to_entry.get(state_val)
+            # Fallback: use IntervalDispatcher for range-matched states.
+            if correct_entry is None and _exit_dispatcher is not None:
+                correct_entry = _exit_dispatcher.lookup(state_val)
+                if correct_entry is not None:
+                    logger.info(
+                        "LFG EXIT: DISP_LOOKUP state 0x%X -> blk[%d] "
+                        "(via IntervalDispatcher)",
+                        state_val,
+                        correct_entry,
+                    )
             if correct_entry is None:
                 if state_val in self_loop_only:
                     logger.info(
