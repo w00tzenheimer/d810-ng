@@ -67,6 +67,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     PlannerInputs,
 )
 from d810.cfg.flow.graph_checks import SemanticGate
+from d810.hexrays.mutation.cfg_mutations import make_2way_block_goto
 
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     StageResult,
@@ -1119,16 +1120,13 @@ class HodurUnflattener(GenericUnflatteningRule):
             )
 
         severed = 0
-        skipped_2way: list[int] = []
+        severed_2way = 0
         for serial in range(mba.qty):
             if serial in bst_serials:
                 continue  # Skip BST/dispatcher blocks
             blk = mba.get_mblock(serial)
             if blk is None:
                 continue
-            # Log blocks going to dispatcher but skipped
-            if blk.nsucc() == 2 and dispatcher_serial in (blk.succ(0), blk.succ(1)):
-                skipped_2way.append(serial)
             if blk.nsucc() != 1:
                 continue  # Only handle 1-way blocks
             if blk.succ(0) != dispatcher_serial:
@@ -1140,19 +1138,42 @@ class HodurUnflattener(GenericUnflatteningRule):
             blk.mark_lists_dirty()
             severed += 1
 
-        if severed > 0:
+        # Handle 2-way blocks with one arm going to dispatcher.
+        # Convert them to 1-way gotos keeping the non-dispatcher successor.
+        for serial in range(mba.qty):
+            if serial in bst_serials:
+                continue
+            blk = mba.get_mblock(serial)
+            if blk is None or blk.nsucc() != 2:
+                continue
+            succ0, succ1 = blk.succ(0), blk.succ(1)
+            if succ0 == dispatcher_serial:
+                keep_serial = succ1
+            elif succ1 == dispatcher_serial:
+                keep_serial = succ0
+            else:
+                continue  # Neither successor is dispatcher
+            unflat_logger.info(
+                "BST cleanup: converting 2-way blk[%d] (succs=%d,%d) to goto blk[%d]",
+                serial, succ0, succ1, keep_serial,
+            )
+            try:
+                make_2way_block_goto(blk, keep_serial, verify=False)
+                severed_2way += 1
+            except Exception as exc:
+                unflat_logger.warning(
+                    "BST cleanup: failed to convert 2-way blk[%d]: %s",
+                    serial, exc,
+                )
+
+        if severed > 0 or severed_2way > 0:
             disp_blk.mark_lists_dirty()
 
         # --- Diagnostic: dispatcher predecessors AFTER cleanup ---
         unflat_logger.info(
-            "Dispatcher blk[%d] npred=%d AFTER cleanup (severed %d)",
-            dispatcher_serial, disp_blk.npred(), severed,
+            "Dispatcher blk[%d] npred=%d AFTER cleanup (severed_1way=%d, severed_2way=%d)",
+            dispatcher_serial, disp_blk.npred(), severed, severed_2way,
         )
-        if skipped_2way:
-            unflat_logger.info(
-                "  SKIPPED 2-way blocks with dispatcher edge: %s",
-                skipped_2way,
-            )
         for i in range(disp_blk.npred()):
             pred_serial = disp_blk.pred(i)
             pred_blk = mba.get_mblock(pred_serial)
@@ -1168,10 +1189,13 @@ class HodurUnflattener(GenericUnflatteningRule):
                 ",".join(succ_info_after),
             )
 
+        total_severed = severed + severed_2way
         unflat_logger.info(
-            "BST cleanup: severed %d handler->dispatcher back-edges", severed
+            "BST cleanup: severed %d handler->dispatcher back-edges "
+            "(%d 1-way, %d 2-way converted to goto)",
+            total_severed, severed, severed_2way,
         )
-        return severed
+        return total_severed
 
     def _build_state_machine_from_cache(
         self, analysis: object
