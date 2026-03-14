@@ -567,42 +567,10 @@ class LinearizedFlowGraphStrategy:
             bst_node_blocks, dispatcher_serial, builder, modifications, emitted,
         )
 
-        # -----------------------------------------------------------------
-        # 5. Selectively disconnect BST leaf -> handler entry edges.
-        #    After linearization, handler entries are reachable via goto
-        #    chains.  BST leaf comparison nodes still have edges pointing
-        #    to handler entries, keeping the BST tree alive.  Redirect
-        #    those edges to BLT_STOP so handler entries are ONLY reachable
-        #    via the linearized goto chain.
-        #    SELECTIVE: only disconnects edges to handler entries that
-        #    have a linearized predecessor (appear as a redirect target
-        #    in owned_edges).  Handlers only reachable via BST keep
-        #    their BST edges for reachability.
-        # -----------------------------------------------------------------
-        _BLT_STOP_TYPE: int = 1
-        stop_serial: int = -1
-        mba = snapshot.mba
-        if mba is not None:
-            qty = mba.qty  # type: ignore[attr-defined]
-            for i in range(qty - 1, -1, -1):
-                try:
-                    blk_i = mba.get_mblock(i)  # type: ignore[attr-defined]
-                except (AttributeError, IndexError):
-                    continue
-                if blk_i is not None and int(blk_i.type) == _BLT_STOP_TYPE:
-                    stop_serial = i
-                    break
-
-        bst_entry_disconnect_count = self._disconnect_bst_entries(
-            bst_node_blocks, builder, owned_edges, modifications, emitted,
-            stop_serial,
-        )
-
         logger.info(
             "LFG: emitted %d redirects (%d exit-resolved, %d bst-default) "
             "+ %d chain redirects, %d stvar NOPs across %d blocks, "
-            "%d goto NOPs (%d shared-skipped), %d BST disconnects, "
-            "%d BST entry disconnects "
+            "%d goto NOPs (%d shared-skipped), %d BST disconnects "
             "(%d raw transitions, %d skipped, %d range-fallback)",
             resolved_count,
             exit_resolved_count,
@@ -613,7 +581,6 @@ class LinearizedFlowGraphStrategy:
             goto_nop_count,
             goto_skip_count,
             disconnect_count,
-            bst_entry_disconnect_count,
             raw_transition_count,
             skipped_count,
             range_fallback_count,
