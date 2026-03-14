@@ -432,13 +432,17 @@ class HodurUnflattener(GenericUnflatteningRule):
                 unflat_logger.debug("_record_audit_stage(post_apply) failed (non-critical)")
 
         # 5c. Post-apply: disconnect BST comparison nodes and dispatcher
-        if nb_changes > 0 and snapshot.bst_result is not None:
+        # Gate to first pass only — BST cleanup invalidates state analysis,
+        # so a second Hodur pass would crash (RuntimeError 52719).
+        bst_cleanup_ran = False
+        if nb_changes > 0 and self._actual_pass_count == 0 and snapshot.bst_result is not None:
             bst_cleanup_edges = self._post_apply_bst_cleanup(
                 snapshot.bst_result.bst_node_blocks,
                 snapshot.bst_dispatcher_serial,
             )
             if bst_cleanup_edges > 0:
                 nb_changes += bst_cleanup_edges
+                bst_cleanup_ran = True
 
         # 6. Log summary
         self._log_pipeline_results(results, nb_changes)
@@ -497,6 +501,14 @@ class HodurUnflattener(GenericUnflatteningRule):
                     audit.summary_log()
             except Exception:
                 unflat_logger.debug("post_pipeline audit failed (non-critical)")
+
+        # BST cleanup invalidates dispatcher/BST state — suppress re-iteration
+        # so IDA does not invoke Hodur again on the cleaned CFG.
+        if bst_cleanup_ran:
+            unflat_logger.info(
+                "BST cleanup modified CFG — suppressing Hodur re-iteration"
+            )
+            nb_changes = 0
 
         return nb_changes
 
