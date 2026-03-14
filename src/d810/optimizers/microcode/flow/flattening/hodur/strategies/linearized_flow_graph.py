@@ -552,13 +552,40 @@ class LinearizedFlowGraphStrategy:
             bst_node_blocks, dispatcher_serial, builder, modifications, emitted,
         )
 
+        # -----------------------------------------------------------------
+        # 5. Redirect 1-way blocks with dispatcher back-edges.
+        #    After linearization and BST disconnect, some 1-way handler body
+        #    blocks still have goto @dispatcher.  Their state variable writes
+        #    were NOP'd (step 3) but the goto was not redirected because the
+        #    block was not a from_block in sm.transitions.  Scan such blocks,
+        #    read the state value they write, resolve it via BST, and emit a
+        #    goto_redirect to the target handler entry.
+        # -----------------------------------------------------------------
+        oneway_redirect_count = self._redirect_1way_dispatcher_backedges(
+            snapshot=snapshot,
+            bst_result=bst_result,
+            handler_state_map=handler_state_map,
+            bst_node_blocks=bst_node_blocks,
+            range_map=range_map,
+            dispatcher_serial=dispatcher_serial,
+            builder=builder,
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            emitted=emitted,
+            claimed_1way=claimed_1way,
+        )
+        resolved_count += oneway_redirect_count
+
         logger.info(
-            "LFG: emitted %d redirects (%d exit-resolved, %d bst-default) "
+            "LFG: emitted %d redirects (%d exit-resolved, %d bst-default, "
+            "%d 1way-backedge) "
             "+ %d chain redirects, %d NOPs across %d blocks, %d BST "
             "disconnects (%d raw transitions, %d skipped, %d range-fallback)",
             resolved_count,
             exit_resolved_count,
             bst_default_count,
+            oneway_redirect_count,
             chain_redirect_count,
             len(nop_mods),
             len(nop_blocks),
@@ -664,6 +691,7 @@ class LinearizedFlowGraphStrategy:
                 "chain_redirect_count": chain_redirect_count,
                 "exit_resolved_count": exit_resolved_count,
                 "bst_default_count": bst_default_count,
+                "oneway_redirect_count": oneway_redirect_count,
                 "raw_transitions": raw_transition_count,
                 "skipped_count": skipped_count,
                 "range_fallback_count": range_fallback_count,
@@ -1786,6 +1814,191 @@ class LinearizedFlowGraphStrategy:
             )
 
         return disconnect_count
+
+    @staticmethod
+    def _redirect_1way_dispatcher_backedges(
+        snapshot: AnalysisSnapshot,
+        bst_result: object,
+        handler_state_map: dict[int, int],
+        bst_node_blocks: set[int],
+        range_map: dict[int, tuple[int | None, int | None]],
+        dispatcher_serial: int,
+        builder: ModificationBuilder,
+        modifications: list,
+        owned_blocks: set[int],
+        owned_edges: set[tuple[int, int]],
+        emitted: set[tuple[int, int]],
+        claimed_1way: dict[int, int],
+    ) -> int:
+        """Redirect 1-way blocks whose sole successor is the dispatcher.
+
+        After linearization and NOP passes, some handler body blocks still
+        have ``goto @dispatcher``.  Their state variable writes were NOP'd
+        but the goto was never redirected because the block wasn't a
+        ``from_block`` in any transition.
+
+        For each such block, read the state variable write instruction
+        (still live in the microcode — NOP modifications are batched, not
+        yet applied), resolve the written state value via the BST, and
+        emit a ``goto_redirect`` to the resolved handler entry.
+
+        Args:
+            snapshot: Immutable analysis snapshot.
+            bst_result: BST analysis result.
+            handler_state_map: handler_serial -> state_value mapping.
+            bst_node_blocks: BST comparison block serials.
+            range_map: handler_serial -> (lo, hi) range mapping.
+            dispatcher_serial: Serial of the dispatcher entry block.
+            builder: Modification builder for emitting redirects.
+            modifications: List to append new modifications to.
+            owned_blocks: Blocks claimed by this strategy.
+            owned_edges: Edges claimed by this strategy.
+            emitted: ``(from, to)`` dedup set.
+            claimed_1way: ``from_block -> target`` for 1-way conflict check.
+
+        Returns:
+            Number of redirects emitted.
+        """
+        if dispatcher_serial < 0:
+            return 0
+
+        mba = snapshot.mba
+        if mba is None:
+            return 0
+
+        # Resolve state variable stkoff.
+        sm = snapshot.state_machine
+        if sm is None:
+            return 0
+
+        stkoff: int | None = None
+        detector = snapshot.detector
+        if detector is not None:
+            try:
+                stkoff = _get_state_var_stkoff(detector)
+            except Exception:
+                pass
+        if stkoff is None and sm.state_var is not None:
+            try:
+                if sm.state_var.t == ida_hexrays.mop_S:
+                    stkoff = sm.state_var.s.off
+            except Exception:
+                pass
+
+        if stkoff is None:
+            return 0
+
+        # Collect blocks already handled by a redirect.
+        already_redirected: set[int] = {src for src, _ in emitted}
+
+        redirect_count = 0
+
+        for serial in sorted(builder.block_nsucc_map):
+            if serial == dispatcher_serial:
+                continue
+            if serial in already_redirected:
+                continue
+            if serial in bst_node_blocks:
+                continue
+
+            nsucc = builder.block_nsucc_map.get(serial, 0)
+            if nsucc != 1:
+                continue
+
+            succs = list(builder.block_succ_map.get(serial, ()))
+            if not succs or succs[0] != dispatcher_serial:
+                continue
+
+            # This is a 1-way block going to the dispatcher.  Read the
+            # state variable write from the live microcode.
+            try:
+                blk = mba.get_mblock(serial)
+            except (AttributeError, IndexError):
+                continue
+            if blk is None:
+                continue
+
+            written_state: int | None = None
+            insn = blk.head
+            while insn is not None:
+                d = insn.d
+                if (
+                    d is not None
+                    and d.t == ida_hexrays.mop_S
+                    and d.s is not None
+                    and d.s.off == stkoff
+                    and insn.l is not None
+                    and insn.l.t == ida_hexrays.mop_n
+                ):
+                    written_state = insn.l.nnn.value & 0xFFFFFFFF
+                insn = insn.next
+
+            if written_state is None:
+                continue
+
+            # Resolve the written state to a handler entry.
+            target_entry = resolve_target_via_bst(bst_result, written_state)
+            if target_entry is None:
+                # Fallback: check range_map including catch-all ranges.
+                for rserial, (low, high) in range_map.items():
+                    lo = low if low is not None else 0
+                    hi = high if high is not None else 0xFFFFFFFF
+                    if lo <= written_state <= hi:
+                        target_entry = rserial
+                        break
+
+            if target_entry is None:
+                logger.info(
+                    "LFG 1WAY_BACKEDGE: blk[%d] writes state 0x%X but "
+                    "cannot resolve target, skipping",
+                    serial, written_state,
+                )
+                continue
+
+            # Skip self-loop redirects.
+            if serial == target_entry:
+                continue
+
+            emit_key = (serial, target_entry)
+            if emit_key in emitted:
+                continue
+
+            # Check for 1-way conflict.
+            if serial in claimed_1way:
+                first_target = claimed_1way[serial]
+                if first_target != target_entry:
+                    logger.info(
+                        "LFG 1WAY_BACKEDGE: CONFLICT on blk[%d]: "
+                        "already -> blk[%d], skipping -> blk[%d]",
+                        serial, first_target, target_entry,
+                    )
+                    continue
+                else:
+                    continue  # already emitted
+
+            emitted.add(emit_key)
+            mod = builder.goto_redirect(
+                source_block=serial,
+                target_block=target_entry,
+            )
+            claimed_1way[serial] = target_entry
+            modifications.append(mod)
+            owned_blocks.add(serial)
+            owned_edges.add((serial, target_entry))
+            redirect_count += 1
+
+            logger.info(
+                "LFG 1WAY_BACKEDGE: blk[%d] -> blk[%d] "
+                "(written state 0x%X)",
+                serial, target_entry, written_state,
+            )
+
+        if redirect_count > 0:
+            logger.info(
+                "LFG: redirected %d 1-way dispatcher back-edges",
+                redirect_count,
+            )
+        return redirect_count
 
     @staticmethod
     def _disconnect_bst_entries(
