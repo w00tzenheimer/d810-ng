@@ -492,6 +492,10 @@ def evaluate_handler_paths(
             continue
         path_visited = path_visited | {curr_serial}
 
+        # Guard against stale serials from a previous maturity level
+        if curr_serial >= mba.qty:
+            break
+
         blk = mba.get_mblock(curr_serial)
 
         cur_writes = list(state_writes)

@@ -1330,6 +1330,208 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Keeping diagnostic BFS only for now.
         return 0
 
+    def _eval_mba_expression(
+        self,
+        mop: "ida_hexrays.mop_t",
+        blk: "ida_hexrays.mblock_t",
+        mba: "ida_hexrays.mbl_array_t",
+        bst_serials: set[int],
+        depth: int = 0,
+    ) -> int | None:
+        """Recursively evaluate a microcode operand to a constant.
+
+        Handles: ``mop_n`` (literal), ``mop_S``/``mop_r`` (resolve from
+        predecessor blocks), ``mop_d`` (sub-expression with binary ops).
+
+        Args:
+            mop: The operand to evaluate.
+            blk: The block containing the instruction that uses *mop*.
+            mba: The microcode block array.
+            bst_serials: Set of BST-internal block serials to avoid walking into.
+            depth: Recursion depth guard (max 8).
+
+        Returns:
+            Resolved 32-bit constant value, or ``None`` if unresolvable.
+        """
+        if depth > 8:
+            return None
+        if mop is None:
+            return None
+
+        # --- Literal constant -------------------------------------------------
+        if mop.t == ida_hexrays.mop_n:
+            return mop.nnn.value
+
+        # --- Stack variable or register — backward-scan for literal def -------
+        if mop.t in (ida_hexrays.mop_S, ida_hexrays.mop_r):
+            target_stkoff = mop.s.off if mop.t == ida_hexrays.mop_S else None
+            target_reg = mop.r if mop.t == ida_hexrays.mop_r else None
+
+            search_blk = blk
+            for _ in range(8):
+                insn = search_blk.tail
+                while insn is not None:
+                    if insn.d is not None:
+                        match = False
+                        if (
+                            target_stkoff is not None
+                            and insn.d.t == ida_hexrays.mop_S
+                            and insn.d.s is not None
+                            and insn.d.s.off == target_stkoff
+                        ):
+                            match = True
+                        elif (
+                            target_reg is not None
+                            and insn.d.t == ida_hexrays.mop_r
+                            and insn.d.r == target_reg
+                        ):
+                            match = True
+
+                        if match and insn.l is not None:
+                            if insn.l.t == ida_hexrays.mop_n:
+                                return insn.l.nnn.value
+                            # Recurse for non-literal source
+                            return self._eval_mba_expression(
+                                insn.l, search_blk, mba, bst_serials,
+                                depth + 1,
+                            )
+                    insn = insn.prev
+
+                # Walk to single predecessor
+                if search_blk.npred() != 1:
+                    break
+                pred_serial = search_blk.pred(0)
+                if pred_serial in bst_serials:
+                    break
+                search_blk = mba.get_mblock(pred_serial)
+                if search_blk is None:
+                    break
+
+            return None
+
+        # --- Sub-expression (result of another instruction) -------------------
+        if mop.t == ida_hexrays.mop_d:
+            sub_insn = mop.d
+            if sub_insn is None:
+                return None
+
+            # Binary operations
+            _BINARY_OPS = {
+                ida_hexrays.m_xor, ida_hexrays.m_sub, ida_hexrays.m_add,
+                ida_hexrays.m_and, ida_hexrays.m_or, ida_hexrays.m_mul,
+            }
+            if sub_insn.opcode in _BINARY_OPS:
+                left = self._eval_mba_expression(
+                    sub_insn.l, blk, mba, bst_serials, depth + 1,
+                )
+                right = self._eval_mba_expression(
+                    sub_insn.r, blk, mba, bst_serials, depth + 1,
+                )
+                if left is not None and right is not None:
+                    mask = 0xFFFFFFFF  # 32-bit state variable
+                    if sub_insn.opcode == ida_hexrays.m_xor:
+                        return (left ^ right) & mask
+                    elif sub_insn.opcode == ida_hexrays.m_sub:
+                        return (left - right) & mask
+                    elif sub_insn.opcode == ida_hexrays.m_add:
+                        return (left + right) & mask
+                    elif sub_insn.opcode == ida_hexrays.m_and:
+                        return (left & right) & mask
+                    elif sub_insn.opcode == ida_hexrays.m_or:
+                        return (left | right) & mask
+                    elif sub_insn.opcode == ida_hexrays.m_mul:
+                        return (left * right) & mask
+
+            # Unary: m_xdu (zero-extend), m_xds (sign-extend)
+            m_xdu = getattr(ida_hexrays, "m_xdu", -1)
+            m_xds = getattr(ida_hexrays, "m_xds", -1)
+            if sub_insn.opcode in (m_xdu, m_xds):
+                return self._eval_mba_expression(
+                    sub_insn.l, blk, mba, bst_serials, depth + 1,
+                )
+
+            return None
+
+        return None
+
+    # Binary opcodes for 3-operand state var writes (d = op(l, r))
+    _STATE_WRITE_BINARY_OPS: frozenset[int] = frozenset()  # populated at import
+
+    @staticmethod
+    def _init_binary_ops() -> frozenset[int]:
+        """Lazily initialize binary op set (ida_hexrays may not be loaded)."""
+        return frozenset({
+            ida_hexrays.m_xor, ida_hexrays.m_sub, ida_hexrays.m_add,
+            ida_hexrays.m_and, ida_hexrays.m_or, ida_hexrays.m_mul,
+        })
+
+    def _resolve_state_write_insn(
+        self,
+        insn: "ida_hexrays.minsn_t",
+        blk: "ida_hexrays.mblock_t",
+        mba: "ida_hexrays.mbl_array_t",
+        bst_serials: set[int],
+    ) -> int | None:
+        """Resolve the value written by *insn* to the state variable.
+
+        Handles:
+        - ``m_mov d = l``: simple copy, resolve ``l``.
+        - 3-operand binary ops (``m_sub``, ``m_xor``, ``m_add``, etc.):
+          resolve both ``l`` and ``r``, apply the operation.
+        - Fallback: try ``_eval_mba_expression`` on ``l`` alone (legacy).
+
+        Returns:
+            Resolved 32-bit constant, or ``None`` if unresolvable.
+        """
+        # Lazy-init the binary ops frozenset
+        if not self._STATE_WRITE_BINARY_OPS:
+            HodurUnflattener._STATE_WRITE_BINARY_OPS = self._init_binary_ops()
+
+        mask = 0xFFFFFFFF  # 32-bit state variable
+
+        # --- m_mov: d = l ---
+        if insn.opcode == ida_hexrays.m_mov:
+            if insn.l is not None and insn.l.t == ida_hexrays.mop_n:
+                return insn.l.nnn.value
+            # Try recursive MBA eval on source operand
+            return self._eval_mba_expression(
+                insn.l, blk, mba, bst_serials,
+            )
+
+        # --- 3-operand binary ops: d = op(l, r) ---
+        if insn.opcode in self._STATE_WRITE_BINARY_OPS:
+            left = self._eval_mba_expression(
+                insn.l, blk, mba, bst_serials,
+            )
+            right = self._eval_mba_expression(
+                insn.r, blk, mba, bst_serials,
+            )
+            if left is not None and right is not None:
+                if insn.opcode == ida_hexrays.m_xor:
+                    return (left ^ right) & mask
+                elif insn.opcode == ida_hexrays.m_sub:
+                    return (left - right) & mask
+                elif insn.opcode == ida_hexrays.m_add:
+                    return (left + right) & mask
+                elif insn.opcode == ida_hexrays.m_and:
+                    return (left & right) & mask
+                elif insn.opcode == ida_hexrays.m_or:
+                    return (left | right) & mask
+                elif insn.opcode == ida_hexrays.m_mul:
+                    return (left * right) & mask
+                unflat_logger.info(
+                    "BACKWARD_RESOLVE: 3-op %d(0x%X, 0x%X) -> resolved",
+                    insn.opcode, left, right,
+                )
+            return None
+
+        # --- Fallback: try MBA eval on l only (covers mop_d sub-expressions) ---
+        if insn.l is not None and insn.l.t == ida_hexrays.mop_n:
+            return insn.l.nnn.value
+        return self._eval_mba_expression(
+            insn.l, blk, mba, bst_serials,
+        )
+
     def _backward_resolve_dispatcher_preds(
         self,
         dispatcher_serial: int,
@@ -1370,15 +1572,26 @@ class HodurUnflattener(GenericUnflatteningRule):
         if disp_blk is None:
             return 0
 
+        unflat_logger.info(
+            "BACKWARD_RESOLVE: mop_S=%d mop_n=%d mop_r=%d mop_d=%d",
+            ida_hexrays.mop_S, ida_hexrays.mop_n,
+            ida_hexrays.mop_r, ida_hexrays.mop_d,
+        )
+
         bst_serials: set[int] = set(bst_node_blocks)
         bst_serials.add(dispatcher_serial)
 
         pred_serials = [disp_blk.pred(i) for i in range(disp_blk.npred())]
 
         redirected = 0
+        _diag_pred_count = 0  # counter for per-insn diagnostic (first 3 preds)
         for pred_serial in pred_serials:
             # Skip BST-internal nodes
             if pred_serial in bst_serials:
+                unflat_logger.info(
+                    "BACKWARD_RESOLVE: skipping blk[%d] — in bst_serials",
+                    pred_serial,
+                )
                 continue
 
             pred_blk = mba.get_mblock(pred_serial)
@@ -1389,12 +1602,32 @@ class HodurUnflattener(GenericUnflatteningRule):
             if pred_blk.nsucc() != 1 or pred_blk.succ(0) != dispatcher_serial:
                 continue
 
+            _diag_pred_count += 1
+            _diag_verbose = _diag_pred_count <= 3
+
             # Try backward resolution: walk instructions backward from tail
             resolved_value: int | None = None
             _diag_found_write = False
 
             cur_ins = pred_blk.tail
             while cur_ins is not None:
+                # Per-instruction destination diagnostic (first 3 preds only)
+                if _diag_verbose:
+                    unflat_logger.info(
+                        "BACKWARD_RESOLVE: blk[%d] insn opcode=%d d.t=%d "
+                        "d.s.off=0x%X (looking for 0x%X)",
+                        pred_serial,
+                        cur_ins.opcode,
+                        cur_ins.d.t if cur_ins.d else -1,
+                        cur_ins.d.s.off
+                        if (
+                            cur_ins.d
+                            and cur_ins.d.t == ida_hexrays.mop_S
+                            and cur_ins.d.s
+                        )
+                        else 0,
+                        state_var_stkoff,
+                    )
                 if (
                     cur_ins.d is not None
                     and cur_ins.d.t == ida_hexrays.mop_S
@@ -1402,10 +1635,19 @@ class HodurUnflattener(GenericUnflatteningRule):
                     and cur_ins.d.s.off == state_var_stkoff
                 ):
                     _diag_found_write = True
-                    # Found a write to the state variable
-                    if cur_ins.l is not None and cur_ins.l.t == ida_hexrays.mop_n:
-                        resolved_value = cur_ins.l.nnn.value
-                        break
+                    # Found a write to the state variable — evaluate
+                    # using full instruction semantics
+                    resolved_value = self._resolve_state_write_insn(
+                        cur_ins, pred_blk, mba, bst_serials,
+                    )
+                    if resolved_value is not None:
+                        unflat_logger.info(
+                            "BACKWARD_RESOLVE: blk[%d] resolved state write "
+                            "-> 0x%X (opcode=%d)",
+                            pred_serial,
+                            resolved_value & 0xFFFFFFFF,
+                            cur_ins.opcode,
+                        )
                     elif cur_ins.l is not None and cur_ins.l.t in (
                         ida_hexrays.mop_r, ida_hexrays.mop_S,
                     ):
@@ -1431,30 +1673,15 @@ class HodurUnflattener(GenericUnflatteningRule):
                                 "FAILED to resolve",
                                 pred_serial,
                             )
-                        break
-                    # Write found but source not resolvable
-                    _MOP_TYPE_NAMES_FULL = {
-                        1: "mop_r(reg)", 2: "mop_n(number)",
-                        6: "mop_d(result_of_insn)", 8: "mop_n(number)",
-                        12: "mop_S(stkvar)", 3: "mop_b(block)",
-                        4: "mop_v(global)", 5: "mop_f(float)",
-                        7: "mop_l(local)", 9: "mop_a(addr)",
-                        10: "mop_h(helper)", 11: "mop_str(string)",
-                        13: "mop_c(case)", 14: "mop_fn(funcinfo)",
-                        15: "mop_p(pair)",
-                    }
-                    _src_t = cur_ins.l.t if cur_ins.l is not None else -1
-                    _src_desc = _MOP_TYPE_NAMES_FULL.get(
-                        _src_t, "mop_%d" % _src_t,
-                    )
-                    _src_str = str(cur_ins.l) if cur_ins.l is not None else "None"
-                    unflat_logger.info(
-                        "BACKWARD_RESOLVE: blk[%d] state_var_write: "
-                        "opcode=%d src_type=%d(%s) src=%s "
-                        "-> NOT resolvable (unhandled src type)",
-                        pred_serial, cur_ins.opcode, _src_t,
-                        _src_desc, _src_str,
-                    )
+                    else:
+                        _src_t = cur_ins.l.t if cur_ins.l is not None else -1
+                        _src_str = str(cur_ins.l) if cur_ins.l is not None else "None"
+                        unflat_logger.info(
+                            "BACKWARD_RESOLVE: blk[%d] state_var_write: "
+                            "opcode=%d src_type=%d src=%s "
+                            "-> NOT resolvable (unhandled)",
+                            pred_serial, cur_ins.opcode, _src_t, _src_str,
+                        )
                     break
                 cur_ins = cur_ins.prev
 
@@ -1470,11 +1697,151 @@ class HodurUnflattener(GenericUnflatteningRule):
                 # for the state variable write in an ancestor block.
                 walk_blk = pred_blk
                 for _xb_depth in range(1, 9):
-                    if walk_blk.npred() != 1:
+                    if walk_blk.npred() > 1:
+                        # Multi-predecessor: resolve each arm independently
+                        # (hrtng Tier 3 pattern)
+                        if _diag_verbose:
+                            pred_list = [walk_blk.pred(i) for i in range(walk_blk.npred())]
+                            unflat_logger.info(
+                                "BACKWARD_RESOLVE: blk[%d] xblock-depth-%d: multi-pred blk[%d] "
+                                "npred=%d preds=%s, trying per-arm",
+                                pred_serial, _xb_depth, walk_blk.serial,
+                                walk_blk.npred(), pred_list,
+                            )
+                        per_pred_results: list[tuple[int, int]] = []
+                        for _arm_idx in range(walk_blk.npred()):
+                            arm_pred_serial = walk_blk.pred(_arm_idx)
+                            if arm_pred_serial in bst_serials:
+                                continue
+                            arm_blk = mba.get_mblock(arm_pred_serial)
+                            if arm_blk is None:
+                                continue
+
+                            if _diag_verbose:
+                                arm_insn_summary = []
+                                _tmp = arm_blk.tail
+                                for _ in range(3):
+                                    if _tmp is None:
+                                        break
+                                    arm_insn_summary.append(
+                                        f"op={_tmp.opcode} d.t={_tmp.d.t if _tmp.d else -1}"
+                                    )
+                                    _tmp = _tmp.prev
+                                unflat_logger.info(
+                                    "BACKWARD_RESOLVE: blk[%d] arm blk[%d] npred=%d insns=[%s]",
+                                    pred_serial, arm_pred_serial, arm_blk.npred(),
+                                    ", ".join(arm_insn_summary),
+                                )
+
+                            # Walk this arm backward looking for state var write
+                            arm_value: int | None = None
+                            arm_walk = arm_blk
+                            for _arm_depth in range(8):
+                                _arm_insn = arm_walk.tail
+                                while _arm_insn is not None:
+                                    if _diag_verbose:
+                                        unflat_logger.info(
+                                            "BACKWARD_RESOLVE: blk[%d] arm blk[%d] "
+                                            "depth-%d insn op=%d d.t=%d d.s.off=0x%X",
+                                            pred_serial, arm_walk.serial,
+                                            _arm_depth, _arm_insn.opcode,
+                                            _arm_insn.d.t if _arm_insn.d else -1,
+                                            _arm_insn.d.s.off
+                                            if (
+                                                _arm_insn.d
+                                                and _arm_insn.d.t == ida_hexrays.mop_S
+                                                and _arm_insn.d.s
+                                            )
+                                            else 0,
+                                        )
+                                    # Same state_var_write check as existing code
+                                    if (
+                                        _arm_insn.d is not None
+                                        and _arm_insn.d.t == ida_hexrays.mop_S
+                                        and _arm_insn.d.s is not None
+                                        and _arm_insn.d.s.off == state_var_stkoff
+                                    ):
+                                        arm_value = self._resolve_state_write_insn(
+                                            _arm_insn, arm_walk, mba,
+                                            bst_serials,
+                                        )
+                                        if arm_value is not None:
+                                            unflat_logger.info(
+                                                "BACKWARD_RESOLVE: blk[%d] "
+                                                "arm blk[%d] resolved "
+                                                "-> 0x%X (opcode=%d)",
+                                                pred_serial,
+                                                arm_pred_serial,
+                                                arm_value & 0xFFFFFFFF,
+                                                _arm_insn.opcode,
+                                            )
+                                        break  # found write
+                                    _arm_insn = _arm_insn.prev
+
+                                if arm_value is not None:
+                                    break
+                                # Continue if single-pred
+                                if arm_walk.npred() != 1:
+                                    break
+                                _next = arm_walk.pred(0)
+                                if _next in bst_serials:
+                                    break
+                                arm_walk = mba.get_mblock(_next)
+                                if arm_walk is None:
+                                    break
+
+                            if arm_value is not None:
+                                per_pred_results.append(
+                                    (arm_pred_serial, arm_value),
+                                )
+                                unflat_logger.info(
+                                    "BACKWARD_RESOLVE: blk[%d] arm blk[%d] "
+                                    "-> literal 0x%X",
+                                    pred_serial, arm_pred_serial, arm_value,
+                                )
+                            else:
+                                unflat_logger.info(
+                                    "BACKWARD_RESOLVE: blk[%d] arm blk[%d] "
+                                    "-> UNRESOLVED",
+                                    pred_serial, arm_pred_serial,
+                                )
+
+                        # Check if all arms agree on one BST target
+                        if per_pred_results:
+                            targets: set[int] = set()
+                            for _, val in per_pred_results:
+                                t = resolve_target_via_bst(bst_result, val)
+                                if t is not None:
+                                    targets.add(t)
+
+                            if len(targets) == 1:
+                                target_serial = next(iter(targets))
+                                if change_1way_block_successor(
+                                    pred_blk, target_serial, verify=False,
+                                ):
+                                    redirected += 1
+                                    unflat_logger.info(
+                                        "BACKWARD_RESOLVE: blk[%d] RESOLVED "
+                                        "-> blk[%d] (all %d arms agree)",
+                                        pred_serial,
+                                        target_serial,
+                                        len(per_pred_results),
+                                    )
+                                    break  # resolved — exit xblock loop
+                            elif len(targets) > 1:
+                                unflat_logger.info(
+                                    "BACKWARD_RESOLVE: blk[%d] arms DISAGREE: "
+                                    "targets=%s (needs block duplication "
+                                    "— not yet implemented)",
+                                    pred_serial,
+                                    {hex(t) for t in targets},
+                                )
+                        break  # multi-pred — done with this xblock walk
+                    if walk_blk.npred() == 0:
                         unflat_logger.info(
                             "BACKWARD_RESOLVE: blk[%d] xblock-depth-%d: "
-                            "npred=%d, stopping walk",
-                            pred_serial, _xb_depth, walk_blk.npred(),
+                            "npred=0, stopping walk",
+                            pred_serial, _xb_depth,
                         )
                         break
                     _xb_pred_serial = walk_blk.pred(0)
@@ -1505,18 +1872,19 @@ class HodurUnflattener(GenericUnflatteningRule):
                             and _xb_insn.d.s.off == state_var_stkoff
                         ):
                             _diag_found_write = True
-                            # Found state var write — check source operand
-                            if (
-                                _xb_insn.l is not None
-                                and _xb_insn.l.t == ida_hexrays.mop_n
-                            ):
-                                resolved_value = _xb_insn.l.nnn.value
+                            # Found state var write — evaluate full
+                            # instruction semantics
+                            _xb_resolved = self._resolve_state_write_insn(
+                                _xb_insn, _xb_pred_blk, mba, bst_serials,
+                            )
+                            if _xb_resolved is not None:
+                                resolved_value = _xb_resolved
                                 unflat_logger.info(
                                     "BACKWARD_RESOLVE: blk[%d] xblock-depth-%d: "
-                                    "found literal 0x%X in pred blk[%d]",
+                                    "resolved 0x%X in pred blk[%d] (opcode=%d)",
                                     pred_serial, _xb_depth,
                                     resolved_value & 0xFFFFFFFF,
-                                    _xb_pred_serial,
+                                    _xb_pred_serial, _xb_insn.opcode,
                                 )
                             elif _xb_insn.l is not None and _xb_insn.l.t in (
                                 ida_hexrays.mop_r, ida_hexrays.mop_S,
@@ -1538,7 +1906,8 @@ class HodurUnflattener(GenericUnflatteningRule):
                                     else -1
                                 )
                                 unflat_logger.info(
-                                    "BACKWARD_RESOLVE: blk[%d] xblock-depth-%d: "
+                                    "BACKWARD_RESOLVE: blk[%d] "
+                                    "xblock-depth-%d: "
                                     "state_var_write in pred blk[%d] "
                                     "src_type=%d opcode=%d (unhandled)",
                                     pred_serial, _xb_depth,
