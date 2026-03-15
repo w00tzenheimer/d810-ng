@@ -1572,6 +1572,22 @@ class HodurUnflattener(GenericUnflatteningRule):
         if disp_blk is None:
             return 0
 
+        for pi in range(disp_blk.npred()):
+            ps = disp_blk.pred(pi)
+            pb = mba.get_mblock(ps)
+            if pb is None:
+                continue
+            # Count instructions
+            ic = 0
+            ins = pb.head
+            while ins:
+                ic += 1
+                ins = ins.next
+            unflat_logger.info(
+                "BACKWARD_RESOLVE: dispatcher pred blk[%d] start_ea=0x%X ninsn=%d npred=%d nsucc=%d",
+                ps, pb.start, ic, pb.npred(), pb.nsucc(),
+            )
+
         unflat_logger.info(
             "BACKWARD_RESOLVE: mop_S=%d mop_n=%d mop_r=%d mop_d=%d",
             ida_hexrays.mop_S, ida_hexrays.mop_n,
@@ -1697,6 +1713,24 @@ class HodurUnflattener(GenericUnflatteningRule):
                 # for the state variable write in an ancestor block.
                 walk_blk = pred_blk
                 for _xb_depth in range(1, 9):
+                    # Per-depth diagnostic: log each block visited
+                    if _diag_verbose:
+                        _insn_count = 0
+                        _cnt_ins = walk_blk.head
+                        while _cnt_ins:
+                            _insn_count += 1
+                            _cnt_ins = _cnt_ins.next
+                        unflat_logger.info(
+                            "BACKWARD_RESOLVE: blk[%d] xblock-depth-%d: visiting blk[%d] "
+                            "start_ea=0x%X ninsn=%d npred=%d",
+                            pred_serial, _xb_depth, walk_blk.serial,
+                            walk_blk.start, _insn_count, walk_blk.npred(),
+                        )
+                        if walk_blk.serial in bst_serials:
+                            unflat_logger.info(
+                                "BACKWARD_RESOLVE: blk[%d] xblock-depth-%d: blk[%d] is BST — skipping",
+                                pred_serial, _xb_depth, walk_blk.serial,
+                            )
                     if walk_blk.npred() > 1:
                         # Multi-predecessor: resolve each arm independently
                         # (hrtng Tier 3 pattern)

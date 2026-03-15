@@ -33,6 +33,8 @@ Available strategies (in dependency order):
     in BLT_STOP predecessor return paths, family ``cleanup``.
 13. :class:`DeadStateVariableEliminationStrategy` — NOP remaining reads of
     the dead state variable after linearization, family ``cleanup``.
+14. :class:`BackwardPredResolutionStrategy` — backward-walk from dispatcher
+    predecessors to resolve TAIL_CHASE_FAILED exits, family ``direct``.
 """
 from __future__ import annotations
 
@@ -81,6 +83,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort import (
     TopologicalSortStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.backward_pred_resolution import (
+    BackwardPredResolutionStrategy,
+)
 
 __all__ = [
     "DirectHandlerLinearizationStrategy",
@@ -98,6 +103,7 @@ __all__ = [
     "StateConstantReturnFixupStrategy",
     "LinearizedFlowGraphStrategy",
     "TopologicalSortStrategy",
+    "BackwardPredResolutionStrategy",
     "ALL_STRATEGIES",
     "LEGACY_STRATEGIES",
 ]
@@ -109,6 +115,7 @@ ALL_STRATEGIES: list[type] = [
     LinearizedFlowGraphStrategy,
     HiddenHandlerClosureStrategy,
     TopologicalSortStrategy,
+    BackwardPredResolutionStrategy,
 ]
 
 # Legacy pipeline preserved for reference/fallback.
