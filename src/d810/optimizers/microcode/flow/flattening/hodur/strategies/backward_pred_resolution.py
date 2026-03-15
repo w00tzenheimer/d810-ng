@@ -157,7 +157,7 @@ class BackwardPredResolutionStrategy:
             family=self.family,
             modifications=modifications,
             ownership=OwnershipScope(
-                blocks=frozenset(owned_blocks),
+                blocks=frozenset(),  # Don't claim blocks — avoid conflict with LFG
                 edges=frozenset(),
                 transitions=frozenset(),
             ),
