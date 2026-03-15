@@ -175,6 +175,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._last_bst_serials: set[int] | None = None
         self._last_dispatcher_serial: int = -1
         self._last_func_ea: int = 0
+        # EA-based identification (serials drift between maturities)
+        self._last_bst_block_eas: set[int] = set()
+        self._last_dispatcher_ea: int = 0
 
         # Strategy pipeline components — disable fallback strategies until
         # rollback infrastructure is reliable (see semantic-gate-replacement plan).
@@ -472,6 +475,18 @@ class HodurUnflattener(GenericUnflatteningRule):
             self._last_bst_serials = bst_serials
             self._last_dispatcher_serial = snapshot.bst_dispatcher_serial
             self._last_func_ea = self.mba.entry_ea
+            # Persist BST block start_ea values (serials drift between maturities)
+            self._last_bst_block_eas = set()
+            for s in bst_serials:
+                blk = self.mba.get_mblock(s)
+                if blk is not None:
+                    self._last_bst_block_eas.add(blk.start)
+            self._last_dispatcher_ea = (
+                self.mba.get_mblock(snapshot.bst_dispatcher_serial).start
+                if snapshot.bst_dispatcher_serial >= 0
+                and self.mba.get_mblock(snapshot.bst_dispatcher_serial) is not None
+                else 0
+            )
 
         # 6. Log summary
         self._log_pipeline_results(results, nb_changes)
