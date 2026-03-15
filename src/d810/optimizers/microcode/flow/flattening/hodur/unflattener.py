@@ -1391,6 +1391,7 @@ class HodurUnflattener(GenericUnflatteningRule):
 
             # Try backward resolution: walk instructions backward from tail
             resolved_value: int | None = None
+            _diag_found_write = False
 
             cur_ins = pred_blk.tail
             while cur_ins is not None:
@@ -1400,6 +1401,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     and cur_ins.d.s is not None
                     and cur_ins.d.s.off == state_var_stkoff
                 ):
+                    _diag_found_write = True
                     # Found a write to the state variable
                     if cur_ins.l is not None and cur_ins.l.t == ida_hexrays.mop_n:
                         resolved_value = cur_ins.l.nnn.value
@@ -1407,13 +1409,158 @@ class HodurUnflattener(GenericUnflatteningRule):
                     elif cur_ins.l is not None and cur_ins.l.t in (
                         ida_hexrays.mop_r, ida_hexrays.mop_S,
                     ):
+                        _MOP_TYPE_NAMES = {
+                            1: "mop_r(reg)", 12: "mop_S(stkvar)",
+                        }
+                        _src_desc = _MOP_TYPE_NAMES.get(
+                            cur_ins.l.t, "mop_%d" % cur_ins.l.t,
+                        )
+                        unflat_logger.info(
+                            "BACKWARD_RESOLVE: blk[%d] state_var_write: "
+                            "opcode=%d src_type=%d(%s) src=%s "
+                            "-> trying depth-1 copy chain",
+                            pred_serial, cur_ins.opcode, cur_ins.l.t,
+                            _src_desc, str(cur_ins.l),
+                        )
                         resolved_value = self._backward_scan_depth1(
                             pred_blk, cur_ins.l,
                         )
+                        if resolved_value is None:
+                            unflat_logger.info(
+                                "BACKWARD_RESOLVE: blk[%d] depth-1 copy chain "
+                                "FAILED to resolve",
+                                pred_serial,
+                            )
                         break
                     # Write found but source not resolvable
+                    _MOP_TYPE_NAMES_FULL = {
+                        1: "mop_r(reg)", 2: "mop_n(number)",
+                        6: "mop_d(result_of_insn)", 8: "mop_n(number)",
+                        12: "mop_S(stkvar)", 3: "mop_b(block)",
+                        4: "mop_v(global)", 5: "mop_f(float)",
+                        7: "mop_l(local)", 9: "mop_a(addr)",
+                        10: "mop_h(helper)", 11: "mop_str(string)",
+                        13: "mop_c(case)", 14: "mop_fn(funcinfo)",
+                        15: "mop_p(pair)",
+                    }
+                    _src_t = cur_ins.l.t if cur_ins.l is not None else -1
+                    _src_desc = _MOP_TYPE_NAMES_FULL.get(
+                        _src_t, "mop_%d" % _src_t,
+                    )
+                    _src_str = str(cur_ins.l) if cur_ins.l is not None else "None"
+                    unflat_logger.info(
+                        "BACKWARD_RESOLVE: blk[%d] state_var_write: "
+                        "opcode=%d src_type=%d(%s) src=%s "
+                        "-> NOT resolvable (unhandled src type)",
+                        pred_serial, cur_ins.opcode, _src_t,
+                        _src_desc, _src_str,
+                    )
                     break
                 cur_ins = cur_ins.prev
+
+            if not _diag_found_write:
+                unflat_logger.info(
+                    "BACKWARD_RESOLVE: blk[%d] NO state_var_write found "
+                    "(stkoff=0x%X) in any instruction — trying cross-block walk",
+                    pred_serial, state_var_stkoff,
+                )
+                # Cross-block predecessor walking: when the current dispatcher
+                # predecessor has no state_var write (OLLVM shared-tail pattern),
+                # walk the single-predecessor chain up to 8 blocks deep looking
+                # for the state variable write in an ancestor block.
+                walk_blk = pred_blk
+                for _xb_depth in range(1, 9):
+                    if walk_blk.npred() != 1:
+                        unflat_logger.info(
+                            "BACKWARD_RESOLVE: blk[%d] xblock-depth-%d: "
+                            "npred=%d, stopping walk",
+                            pred_serial, _xb_depth, walk_blk.npred(),
+                        )
+                        break
+                    _xb_pred_serial = walk_blk.pred(0)
+                    if _xb_pred_serial in bst_serials:
+                        unflat_logger.info(
+                            "BACKWARD_RESOLVE: blk[%d] xblock-depth-%d: "
+                            "reached BST blk[%d], stopping",
+                            pred_serial, _xb_depth, _xb_pred_serial,
+                        )
+                        break
+                    _xb_pred_blk = mba.get_mblock(_xb_pred_serial)
+                    if _xb_pred_blk is None:
+                        unflat_logger.info(
+                            "BACKWARD_RESOLVE: blk[%d] xblock-depth-%d: "
+                            "pred blk[%d] is None, stopping",
+                            pred_serial, _xb_depth, _xb_pred_serial,
+                        )
+                        break
+
+                    # Walk instructions backward in predecessor looking for
+                    # state var write (same pattern as the current-block scan)
+                    _xb_insn = _xb_pred_blk.tail
+                    while _xb_insn is not None:
+                        if (
+                            _xb_insn.d is not None
+                            and _xb_insn.d.t == ida_hexrays.mop_S
+                            and _xb_insn.d.s is not None
+                            and _xb_insn.d.s.off == state_var_stkoff
+                        ):
+                            _diag_found_write = True
+                            # Found state var write — check source operand
+                            if (
+                                _xb_insn.l is not None
+                                and _xb_insn.l.t == ida_hexrays.mop_n
+                            ):
+                                resolved_value = _xb_insn.l.nnn.value
+                                unflat_logger.info(
+                                    "BACKWARD_RESOLVE: blk[%d] xblock-depth-%d: "
+                                    "found literal 0x%X in pred blk[%d]",
+                                    pred_serial, _xb_depth,
+                                    resolved_value & 0xFFFFFFFF,
+                                    _xb_pred_serial,
+                                )
+                            elif _xb_insn.l is not None and _xb_insn.l.t in (
+                                ida_hexrays.mop_r, ida_hexrays.mop_S,
+                            ):
+                                unflat_logger.info(
+                                    "BACKWARD_RESOLVE: blk[%d] xblock-depth-%d: "
+                                    "state_var_write in pred blk[%d] "
+                                    "src_type=%d (reg/stkvar copy — continue walk)",
+                                    pred_serial, _xb_depth,
+                                    _xb_pred_serial, _xb_insn.l.t,
+                                )
+                                # Reset flag so we continue walking from this
+                                # predecessor to resolve the copy chain
+                                _diag_found_write = False
+                            else:
+                                _xb_src_t = (
+                                    _xb_insn.l.t
+                                    if _xb_insn.l is not None
+                                    else -1
+                                )
+                                unflat_logger.info(
+                                    "BACKWARD_RESOLVE: blk[%d] xblock-depth-%d: "
+                                    "state_var_write in pred blk[%d] "
+                                    "src_type=%d opcode=%d (unhandled)",
+                                    pred_serial, _xb_depth,
+                                    _xb_pred_serial, _xb_src_t,
+                                    _xb_insn.opcode,
+                                )
+                            break
+                        _xb_insn = _xb_insn.prev
+
+                    if _diag_found_write:
+                        # Either resolved a literal or hit an unhandled type
+                        break
+
+                    # No write in this predecessor — continue walking
+                    walk_blk = _xb_pred_blk
+                else:
+                    # Exhausted max depth without finding write
+                    unflat_logger.info(
+                        "BACKWARD_RESOLVE: blk[%d] xblock walk exhausted "
+                        "max depth (8) without finding state_var_write",
+                        pred_serial,
+                    )
 
             # Fallback: valrange resolution
             if resolved_value is None and pred_blk.tail is not None and state_var_mop is not None:
@@ -1423,10 +1570,19 @@ class HodurUnflattener(GenericUnflatteningRule):
                     )
                     if val is not None:
                         resolved_value = val
+                        unflat_logger.info(
+                            "BACKWARD_RESOLVE: blk[%d] valrange fallback "
+                            "resolved state=0x%X",
+                            pred_serial, val & 0xFFFFFFFF,
+                        )
                 except Exception:
                     pass
 
             if resolved_value is None:
+                unflat_logger.info(
+                    "BACKWARD_RESOLVE: blk[%d] UNRESOLVED after all attempts",
+                    pred_serial,
+                )
                 continue
 
             # Look up target handler via BST
