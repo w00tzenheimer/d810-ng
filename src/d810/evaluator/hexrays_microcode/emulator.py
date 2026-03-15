@@ -242,10 +242,113 @@ class MicroCodeInterpreter(object):
         self.synthetic_call = SyntheticCallReturnCache()
         # Enable symbolic fallback for unresolved variables
         self.symbolic_mode: bool = symbolic_mode
-        # Per-pass memoization cache for def-use resolved values. Cleared at eval_instruction entry.
-        self._def_use_cache: dict = {}
-        # Sentinel value used for cycle detection in recursive def-use resolution.
-        self._DEF_USE_RESOLVING: object = object()
+        # Cache for def-use chain resolutions during the current emulation pass
+        self._def_use_cache: dict[ida_hexrays.mop_t, int] = {}
+
+    def _resolve_mop_via_def_use(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int | None:
+        # Use cached value if available
+        if mop in self._def_use_cache:
+            cached_value = self._def_use_cache[mop]
+            # Check for cycle detection sentinel (None value used as marker)
+            if cached_value is None:
+                return None  # Cycle detected, prevent infinite recursion
+            return cached_value
+
+        # We only handle mop_r and mop_S for now
+        if mop.t not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
+            return None
+
+        # Get the MBA from the environment's current instruction or block
+        mba = None
+        if environment.cur_ins is not None:
+            mba = environment.cur_ins.mba
+        elif environment.cur_blk is not None:
+            mba = environment.cur_blk.mba
+        else:
+            return None
+
+        if mop.t == ida_hexrays.mop_r:
+            reg_mreg = mop.r
+            size = mop.size
+            blk_serial = environment.cur_blk.serial if environment.cur_blk is not None else 0
+            defs = find_reaching_defs_for_reg(mba, blk_serial, reg_mreg, size)
+        else:  # mop_S
+            stkoff = mop.s.off
+            size = mop.size
+            blk_serial = environment.cur_blk.serial if environment.cur_blk is not None else 0
+            defs = find_reaching_defs_for_stkvar(mba, blk_serial, stkoff, size)
+
+        # Handle multiple definitions (phi-node situations)
+        if len(defs) == 0:
+            return None
+        elif len(defs) > 1:
+            # Multiple reaching definitions - in symbolic mode, we could build a phi node
+            # For now, in concrete mode, we conservatively give up
+            if self.symbolic_mode:
+                # In symbolic mode, return a synthetic value that represents the merge
+                value = self.synthetic_call.get(mop)
+                self._def_use_cache[mop] = value
+                return value
+            else:
+                return None
+
+        def_site = defs[0]
+        # Get the defining instruction from the block
+        blk = mba.get_mblock(def_site.block_serial)
+        if blk is None:
+            return None
+        ins = blk.head
+        def_insn = None
+        while ins is not None:
+            if ins.ea == def_site.ins_ea:
+                def_insn = ins
+                break
+            ins = ins.next
+
+        if def_insn is None:
+            return None
+
+        # Insert cycle detection sentinel before recursive evaluation
+        self._def_use_cache[mop] = None
+        
+        # Save current environment flow context to restore later
+        saved_cur_blk = environment.cur_blk
+        saved_cur_ins = environment.cur_ins
+        saved_next_blk = environment.next_blk
+        saved_next_ins = environment.next_ins
+
+        try:
+            # Set the environment context to the defining instruction's block
+            environment.set_cur_flow(blk, def_insn)
+            
+            # Evaluate the defining instruction using the existing evaluator
+            # This enables recursive constant folding through arbitrary def-use chains
+            value = self._eval_instruction(def_insn, environment)
+            
+            if value is not None:
+                # Mask the result to the destination size
+                res_mask = AND_TABLE[def_insn.d.size] if def_insn.d and def_insn.d.size else AND_TABLE[mop.size]
+                value = value & res_mask
+                self._def_use_cache[mop] = value
+                return value
+            else:
+                # Evaluation failed, remove from cache
+                if mop in self._def_use_cache:
+                    del self._def_use_cache[mop]
+                return None
+        except Exception as e:
+            # Evaluation failed due to an exception, remove from cache
+            if emulator_log.debug_on:
+                emulator_log.debug("Def-use resolution failed for %s: %s", format_mop_t(mop), e)
+            if mop in self._def_use_cache:
+                del self._def_use_cache[mop]
+            return None
+        finally:
+            # Restore environment flow context
+            environment.cur_blk = saved_cur_blk
+            environment.cur_ins = saved_cur_ins
+            environment.next_blk = saved_next_blk
+            environment.next_ins = saved_next_ins
 
     def _eval_instruction_and_update_environment(
         self,
@@ -805,261 +908,6 @@ class MicroCodeInterpreter(object):
         )
         return
 
-    def _resolve_mop_via_def_use(
-        self,
-        mop: ida_hexrays.mop_t,
-        environment: MicroCodeEnvironment,
-    ) -> int | None:
-        """Attempt to resolve a mop_r or mop_S value via IDA's def-use chains.
-
-        Falls back gracefully — returns None when chains are unavailable,
-        maturity is insufficient, or multiple definitions reach the block.
-
-        READ-ONLY: does not mutate instructions, blocks, or CFG.
-        """
-        from d810.evaluator.hexrays_microcode.chains import (
-            find_reaching_defs_for_reg,
-            find_reaching_defs_for_stkvar,
-        )
-
-        cur_blk = environment.cur_blk
-        if cur_blk is None:
-            return None
-
-        mba = cur_blk.mba
-        if mba is None:
-            return None
-
-        # Chains are only valid at MMAT_GLBOPT1 (5) and later.
-        try:
-            if mba.maturity < ida_hexrays.MMAT_GLBOPT1:
-                return None
-        except AttributeError:
-            return None
-
-        blk_serial: int = cur_blk.serial
-
-        # Build a cache key: (type, identifier, size)
-        try:
-            if mop.t == ida_hexrays.mop_r:
-                cache_key = (ida_hexrays.mop_r, mop.r, mop.size)
-                if cache_key in self._def_use_cache:
-                    cached = self._def_use_cache[cache_key]
-                    # Sentinel means we're in a recursive cycle — bail out.
-                    return None if cached is self._DEF_USE_RESOLVING else cached
-                defs = find_reaching_defs_for_reg(mba, blk_serial, mop.r, mop.size)
-            elif mop.t == ida_hexrays.mop_S:
-                cache_key = (ida_hexrays.mop_S, mop.s.off, mop.size)
-                if cache_key in self._def_use_cache:
-                    cached = self._def_use_cache[cache_key]
-                    return None if cached is self._DEF_USE_RESOLVING else cached
-                defs = find_reaching_defs_for_stkvar(mba, blk_serial, mop.s.off, mop.size)
-            else:
-                return None
-        except (AttributeError, RuntimeError):
-            return None
-
-        if not defs:
-            self._def_use_cache[cache_key] = None
-            return None
-
-        # Cycle protection: place sentinel before recursing into defs.
-        self._def_use_cache[cache_key] = self._DEF_USE_RESOLVING
-
-        # Multiple reaching definitions → try unanimous phi resolution.
-        if len(defs) != 1:
-            if len(defs) > 8:
-                # Too many defs — skip to avoid pathological explosion.
-                if emulator_log.debug_on:
-                    emulator_log.debug(
-                        "_resolve_mop_via_def_use: %d reaching defs for %s — too many, skipping",
-                        len(defs),
-                        get_stack_or_reg_name(mop),
-                    )
-                self._def_use_cache[cache_key] = None
-                return None
-
-            # Unanimous phi: resolve each def; if all agree, use the value.
-            # Self-referential defs (e.g., `add %var_C.4, #1, %var_C.4`)
-            # are skipped — they cannot resolve to a constant and represent
-            # loop back-edges.  If only non-self-ref defs remain and all
-            # agree, the unanimous value is the loop entry constant.
-            resolved_values: list[int] = []
-            all_resolved = True
-            self_ref_count = 0
-            for def_site in defs:
-                if self._is_self_referential_def(def_site, mop, mba):
-                    self_ref_count += 1
-                    if emulator_log.debug_on:
-                        emulator_log.debug(
-                            "DEF-USE-PHI: skipping self-referential def at blk %d ea 0x%x for %s",
-                            def_site.block_serial,
-                            def_site.ins_ea,
-                            get_stack_or_reg_name(mop),
-                        )
-                    continue
-                val = self._try_resolve_single_def(def_site, mop, mba, environment)
-                if val is None:
-                    all_resolved = False
-                    break
-                resolved_values.append(val)
-
-            if all_resolved and resolved_values and len(set(resolved_values)) == 1:
-                result = resolved_values[0]
-                self._def_use_cache[cache_key] = result
-                if emulator_log.debug_on:
-                    emulator_log.debug(
-                        "DEF-USE-PHI: %s resolved via unanimous phi (%d defs, %d self-ref skipped) = 0x%x",
-                        get_stack_or_reg_name(mop),
-                        len(defs),
-                        self_ref_count,
-                        result,
-                    )
-                return result
-
-            if emulator_log.debug_on:
-                emulator_log.debug(
-                    "_resolve_mop_via_def_use: %d reaching defs for %s — %s, skipping",
-                    len(defs),
-                    get_stack_or_reg_name(mop),
-                    "not unanimous" if all_resolved else "unresolvable",
-                )
-            self._def_use_cache[cache_key] = None
-            return None
-
-        # Single reaching definition.
-        value = self._try_resolve_single_def(defs[0], mop, mba, environment)
-        if value is None:
-            self._def_use_cache[cache_key] = None
-            return None
-
-        self._def_use_cache[cache_key] = value
-        if emulator_log.debug_on:
-            emulator_log.debug(
-                "_resolve_mop_via_def_use: resolved %s -> 0x%x (via block %d insn @ 0x%x)",
-                get_stack_or_reg_name(mop),
-                value,
-                defs[0].block_serial,
-                defs[0].ins_ea,
-            )
-        return value
-
-    @staticmethod
-    def _is_self_referential_def(
-        def_site: "DefSite",
-        mop: ida_hexrays.mop_t,
-        mba: ida_hexrays.mba_t,
-    ) -> bool:
-        """Return True if the defining instruction reads the same variable it writes.
-
-        Self-referential definitions (e.g., ``add %var_C.4, #1, %var_C.4``)
-        represent loop counter increments and can never resolve to a constant.
-        Detecting them here lets the unanimous-phi loop skip them rather than
-        failing the entire resolution.
-        """
-        def_blk = mba.get_mblock(def_site.block_serial)
-        if def_blk is None:
-            return False
-        # Walk to the defining instruction.
-        def_ins = def_blk.head
-        while def_ins is not None:
-            if def_ins.ea == def_site.ins_ea:
-                break
-            def_ins = def_ins.next
-        if def_ins is None:
-            return False
-
-        # Check whether any source operand (l or r) matches *mop*.
-        # We use ``equal_mops`` with EQ_IGNSIZE so that a 4-byte source
-        # still matches the 4-byte dest even when IDA promotes sizes.
-        try:
-            if def_ins.l.t == mop.t and def_ins.l.equal_mops(mop, ida_hexrays.EQ_IGNSIZE):
-                return True
-            if def_ins.r.t == mop.t and def_ins.r.equal_mops(mop, ida_hexrays.EQ_IGNSIZE):
-                return True
-        except (AttributeError, RuntimeError):
-            pass
-        return False
-
-    def _try_resolve_single_def(
-        self,
-        def_site: "DefSite",
-        mop: ida_hexrays.mop_t,
-        mba: ida_hexrays.mba_t,
-        environment: MicroCodeEnvironment,
-    ) -> int | None:
-        """Try to resolve a single def-use definition site to a concrete value.
-
-        Returns the masked integer value or ``None`` on failure.
-        """
-        def_blk = mba.get_mblock(def_site.block_serial)
-        if def_blk is None:
-            return None
-
-        # Walk the defining block to find the exact instruction at def_site.ins_ea.
-        def_ins = def_blk.head
-        while def_ins is not None:
-            if def_ins.ea == def_site.ins_ea:
-                break
-            def_ins = def_ins.next
-
-        if def_ins is None:
-            return None
-
-        # Only handle side-effect-free opcodes (copies and arithmetic).
-        SAFE_OPCODES = {
-            ida_hexrays.m_mov,
-            ida_hexrays.m_neg,
-            ida_hexrays.m_lnot,
-            ida_hexrays.m_bnot,
-            ida_hexrays.m_xds,
-            ida_hexrays.m_xdu,
-            ida_hexrays.m_low,
-            ida_hexrays.m_high,
-            ida_hexrays.m_add,
-            ida_hexrays.m_sub,
-            ida_hexrays.m_mul,
-            ida_hexrays.m_udiv,
-            ida_hexrays.m_sdiv,
-            ida_hexrays.m_umod,
-            ida_hexrays.m_smod,
-            ida_hexrays.m_or,
-            ida_hexrays.m_and,
-            ida_hexrays.m_xor,
-            ida_hexrays.m_shl,
-            ida_hexrays.m_shr,
-            ida_hexrays.m_sar,
-            ida_hexrays.m_cfadd,
-            ida_hexrays.m_ofadd,
-            ida_hexrays.m_cfshl,
-            ida_hexrays.m_cfshr,
-        }
-
-        if def_ins.opcode not in SAFE_OPCODES:
-            if emulator_log.debug_on:
-                emulator_log.debug(
-                    "_try_resolve_single_def: def opcode %s not in SAFE_OPCODES, skipping",
-                    opcode_to_string(def_ins.opcode),
-                )
-            return None
-
-        # Evaluate the RHS of the defining instruction in a snapshot environment.
-        # We temporarily point cur_blk at the defining block to allow recursive
-        # chain resolution.
-        try:
-            snap_env = environment.get_copy(copy_parent=True)
-            snap_env.set_cur_flow(def_blk, def_ins)
-            value = self._eval_instruction(def_ins, snap_env)
-        except EmulationException:
-            return None
-        except Exception:
-            return None
-
-        if value is None:
-            return None
-
-        return value & AND_TABLE[mop.size]
-
     def eval(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int:
         # Check for invalid mop sizes (e.g., function references have size=-1)
         if mop.size < 0:
@@ -1072,14 +920,17 @@ class MicroCodeInterpreter(object):
         if mop.t == ida_hexrays.mop_n:
             return mop.nnn.value
         elif mop.t in [ida_hexrays.mop_r, ida_hexrays.mop_S]:
-            if (
-                value := environment.lookup(mop, raise_exception=False)
-            ) is not None:
+            # First, try the environment (values assigned during this emulation run)
+            value = environment.lookup(mop, raise_exception=False)
+            if value is not None:
                 return value
-            du_value = self._resolve_mop_via_def_use(mop, environment)
-            if du_value is not None:
-                environment.define(mop, du_value)
-                return du_value
+
+            # Second, try to resolve via def-use chains (static dataflow)
+            value = self._resolve_mop_via_def_use(mop, environment)
+            if value is not None:
+                return value
+
+            # Finally, fall back to symbolic or error
             if self.symbolic_mode:
                 value = self.synthetic_call.get(mop)
                 environment.define(mop, value)
@@ -1095,9 +946,8 @@ class MicroCodeInterpreter(object):
                 # Avoid dstr/format_mop_t in exception text (hot path)
                 _name = get_stack_or_reg_name(mop)
                 # Dump environment for debugging
-                if emulator_log.debug_on and environment is not None:
+                if emulator_log.debug_on:
                     environment.dump(f"Environment when looking up {_name}")
-                emulator_log.info("DEF-USE-EVAL: Failed to resolve %s, raising exception", format_mop_t(mop))
                 raise EmulationException(
                     "Variable {0} is not defined for mop_r or mop_S".format(_name)
                 )
@@ -1182,7 +1032,6 @@ class MicroCodeInterpreter(object):
             environment = self.global_environment
         if ins is None:
             return False
-        self._def_use_cache.clear()
         if emulator_log.debug_on:
             emulator_log.debug(
                 "Evaluating microcode instruction : '%s'", format_minsn_t(ins)
@@ -1215,8 +1064,6 @@ class MicroCodeInterpreter(object):
         try:
             if environment is None:
                 environment = self.global_environment
-            # Clear def-use cache at the start of each mop evaluation to avoid stale values
-            self._clear_def_use_cache()
             res = self.eval(mop, environment)
             return res
         except EmulationException as e:
