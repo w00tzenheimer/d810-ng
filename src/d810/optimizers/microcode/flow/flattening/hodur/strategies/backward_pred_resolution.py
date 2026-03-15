@@ -182,7 +182,8 @@ class BackwardPredResolutionStrategy:
 
         Scans instructions backward in each block looking for a write to
         the state variable (stack slot at ``state_var_stkoff``).  Follows
-        single-predecessor chains up to depth 8, skipping BST blocks.
+        single-predecessor chains up to depth 8, walking through BST
+        blocks (which may contain real state var writes in default paths).
 
         Args:
             mba: The ``mbl_array_t`` microcode array.
@@ -214,8 +215,8 @@ class BackwardPredResolutionStrategy:
             if walk_blk.npred() != 1:
                 break
             pred_serial = walk_blk.pred(0)
-            if pred_serial in bst_serials:
-                break
+            # NOTE: Do NOT skip BST blocks here -- BST default blocks
+            # contain real state var writes that we need to reach.
             walk_blk = mba.get_mblock(pred_serial)
             if walk_blk is None:
                 break
@@ -393,8 +394,7 @@ class BackwardPredResolutionStrategy:
             if search_blk.npred() != 1:
                 break
             ps = search_blk.pred(0)
-            if ps in bst_serials:
-                break
+            # NOTE: Do NOT skip BST blocks -- they contain real state var writes.
             search_blk = mba.get_mblock(ps)
             if search_blk is None:
                 break
@@ -436,8 +436,7 @@ class BackwardPredResolutionStrategy:
             if search_blk.npred() != 1:
                 break
             ps = search_blk.pred(0)
-            if ps in bst_serials:
-                break
+            # NOTE: Do NOT skip BST blocks -- they contain real state var writes.
             search_blk = mba.get_mblock(ps)
             if search_blk is None:
                 break
