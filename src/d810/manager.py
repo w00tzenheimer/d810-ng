@@ -392,6 +392,7 @@ class D810Manager:
         self.hx_decompiler_hook = HexraysDecompilationHook(
             self.event_emitter.emit,
             ctree_optimizer_manager=self.ctree_optimizer,
+            block_optimizer=self.block_optimizer,
         )
         self._compile_rule_scope()
         self._install_hooks()
