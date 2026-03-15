@@ -1174,10 +1174,12 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         self,
         callback: typing.Callable,
         ctree_optimizer_manager: CtreeOptimizerManager | None = None,
+        block_optimizer: BlockOptimizerManager | None = None,
     ):
         super().__init__()
         self.callback = callback
         self.ctree_optimizer_manager = ctree_optimizer_manager
+        self._block_optimizer = block_optimizer
 
     def prolog(
         self, mba: ida_hexrays.mbl_array_t, fc, reachable_blocks, decomp_flags
@@ -1202,7 +1204,163 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
     def glbopt(self, mba: ida_hexrays.mbl_array_t) -> "int":
         main_logger.info("glbopt finished for function at %s", hex(mba.entry_ea))
         main_logger.reset_maturity()
+
+        # PruneUnreachable: remove BST blocks that Hodur proved unreachable.
+        # This runs from hxe_glbopt (post-optimization, MBA stable) where
+        # remove_block is safe — unlike optblock_t (mid-optimization) where
+        # it fails with INTERR 51920. Mirrors hrtng's architecture.
+        pruned = self._prune_unreachable_bst(mba)
+        if pruned > 0:
+            return -36  # MERR_LOOP: restart optimization
         return 0
+
+    def _prune_unreachable_bst(self, mba: ida_hexrays.mbl_array_t) -> int:
+        """Remove BST blocks proven unreachable by Hodur.
+
+        Called from hxe_glbopt where mba.remove_block() is safe.
+        Reads BST serials persisted by HodurUnflattener during optblock pass.
+        """
+        if self._block_optimizer is None:
+            main_logger.debug("PruneUnreachable: no block_optimizer")
+            return 0
+
+        # Find HodurUnflattener instance(s) with stored BST serials
+        bst_serials = None
+        dispatcher_serial: int = -1
+        for rule in self._block_optimizer.cfg_rules:
+            has_attr = hasattr(rule, '_last_bst_serials')
+            if has_attr:
+                main_logger.info(
+                    "PruneUnreachable: found rule %s, _last_bst_serials=%s, "
+                    "_last_func_ea=%s, mba.entry_ea=%s",
+                    type(rule).__name__,
+                    rule._last_bst_serials is not None,
+                    hex(getattr(rule, '_last_func_ea', 0)),
+                    hex(mba.entry_ea),
+                )
+            if (
+                has_attr
+                and rule._last_bst_serials is not None
+                and hasattr(rule, '_last_func_ea')
+                and rule._last_func_ea == mba.entry_ea
+            ):
+                bst_serials = rule._last_bst_serials
+                dispatcher_serial = getattr(rule, '_last_dispatcher_serial', -1)
+                # Clear after use (one-shot)
+                rule._last_bst_serials = None
+                rule._last_dispatcher_serial = -1
+                break
+
+        if not bst_serials:
+            main_logger.info("PruneUnreachable: no pending BST serials for %s", hex(mba.entry_ea))
+            return 0
+
+        # Re-sever handler→dispatcher edges. Phase 1's edge-only severing
+        # was undone by IDA between optblock and glbopt (IDA rebuilds edges
+        # from instruction operands). Re-sever here so BST becomes unreachable
+        # for the BFS that follows.
+        if dispatcher_serial >= 0:
+            disp_blk = mba.get_mblock(dispatcher_serial)
+            if disp_blk is not None:
+                severed = 0
+                for pi in range(disp_blk.npred() - 1, -1, -1):
+                    pred_serial = disp_blk.pred(pi)
+                    if pred_serial not in bst_serials:
+                        pred_blk = mba.get_mblock(pred_serial)
+                        if pred_blk is not None:
+                            pred_blk.succset._del(dispatcher_serial)
+                            disp_blk.predset._del(pred_serial)
+                            pred_blk.mark_lists_dirty()
+                            severed += 1
+                if severed > 0:
+                    disp_blk.mark_lists_dirty()
+                    main_logger.info(
+                        "PruneUnreachable[glbopt]: re-severed %d handler->dispatcher edges",
+                        severed,
+                    )
+
+        # Forward BFS from block 0 to find reachable blocks
+        from collections import deque
+        visited: set[int] = set()
+        queue = deque([0])
+        while queue:
+            serial = queue.popleft()
+            if serial in visited:
+                continue
+            visited.add(serial)
+            blk = mba.get_mblock(serial)
+            if blk is None:
+                continue
+            for si in range(blk.nsucc()):
+                succ = blk.succ(si)
+                if succ not in visited:
+                    queue.append(succ)
+
+        # Intersect unreachable with BST serials
+        all_serials = set(range(mba.qty))
+        unreachable_bst = (all_serials - visited) & bst_serials
+
+        if not unreachable_bst:
+            main_logger.info(
+                "PruneUnreachable[glbopt]: no unreachable BST blocks for %s (dispatcher=%s)",
+                hex(mba.entry_ea),
+                hex(dispatcher_serial) if dispatcher_serial >= 0 else "None",
+            )
+            return 0
+
+        main_logger.info(
+            "PruneUnreachable[glbopt]: %d/%d blocks reachable, "
+            "%d unreachable BST blocks to prune for %s",
+            len(visited), mba.qty, len(unreachable_bst), hex(mba.entry_ea),
+        )
+
+        # hrtng-style DeleteBlock: forward serial order (parents before children)
+        removed = 0
+        for serial in sorted(unreachable_bst):
+            blk = mba.get_mblock(serial)
+            if blk is None:
+                continue
+
+            # Sever outgoing edges
+            for si in range(blk.nsucc() - 1, -1, -1):
+                succ_serial = blk.succ(si)
+                succ_blk = mba.get_mblock(succ_serial)
+                if succ_blk is not None:
+                    succ_blk.predset._del(blk.serial)
+                    succ_blk.mark_lists_dirty()
+            while blk.nsucc() > 0:
+                blk.succset._del(blk.succ(0))
+
+            # Set block type to BLT_NONE
+            blk.type = 0
+
+            # Unlink instructions (NOT make_nop — avoids def-use chain corruption)
+            insn = blk.head
+            while insn is not None:
+                next_insn = insn.next
+                blk.remove_from_block(insn)
+                insn = next_insn
+            blk.head = None
+            blk.tail = None
+
+            # Remove the block
+            try:
+                mba.remove_block(blk)
+                removed += 1
+            except Exception as exc:
+                main_logger.warning(
+                    "PruneUnreachable[glbopt]: failed to remove blk[%d]: %s",
+                    serial, exc,
+                )
+
+        if removed > 0:
+            mba.mark_chains_dirty()
+
+        main_logger.info(
+            "PruneUnreachable[glbopt]: removed %d/%d unreachable BST blocks",
+            removed, len(unreachable_bst),
+        )
+        return removed
 
     def structural(self, ct: "control_graph_t") -> int:  # type: ignore
         """Structural analysis has been finished.

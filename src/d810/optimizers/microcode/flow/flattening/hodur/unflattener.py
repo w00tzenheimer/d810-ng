@@ -172,6 +172,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._pass0_handler_entries: set[int] = set()
         self._last_redirect_meta: dict | None = None
         self._last_provenance: PipelineProvenance | None = None
+        self._last_bst_serials: set[int] | None = None
+        self._last_dispatcher_serial: int = -1
+        self._last_func_ea: int = 0
 
         # Strategy pipeline components — disable fallback strategies until
         # rollback infrastructure is reliable (see semantic-gate-replacement plan).
@@ -458,9 +461,17 @@ class HodurUnflattener(GenericUnflatteningRule):
                     state_var_mop=state_var,
                 )
 
-            # Diagnostic: log unreachable BST/dispatcher block counts
+            # Phase 3: diagnostic — log unreachable BST block count
+            # (PruneUnreachable disabled: remove_block fails at GLBOPT1
+            # with INTERR 51920 regardless of preparation. Keeping
+            # diagnostic BFS to track unreachability.)
             bst_serials = set(snapshot.bst_result.bst_node_blocks) | {snapshot.bst_dispatcher_serial}
-            self._diagnostic_bfs_reachability(bst_serials)
+            self._prune_unreachable_bst_blocks(bst_serials)
+
+            # Persist BST serials + dispatcher serial for hxe_glbopt PruneUnreachable
+            self._last_bst_serials = bst_serials
+            self._last_dispatcher_serial = snapshot.bst_dispatcher_serial
+            self._last_func_ea = self.mba.entry_ea
 
         # 6. Log summary
         self._log_pipeline_results(results, nb_changes)
@@ -1101,9 +1112,13 @@ class HodurUnflattener(GenericUnflatteningRule):
         edges to the dispatcher (despite NOP'd goto instructions). These edges
         keep the dispatcher as a loop header, creating while loops.
 
-        This method removes these edges by making the blocks 0-way (no successors).
+        Phase 1 severs 1-way handler->dispatcher edges (edge-only: removes from
+        succset/predset, marks dirty).
+
+        Phase 2 converts 2-way blocks with one arm going to dispatcher into 1-way
+        gotos keeping the non-dispatcher successor.
+
         Handler entries keep their BST predecessors for reachability.
-        No blocks are removed or redirected.
         """
         mba = self.mba
         bst_serials: set[int] = set(bst_node_blocks)
@@ -1149,15 +1164,13 @@ class HodurUnflattener(GenericUnflatteningRule):
             if blk.succ(0) != dispatcher_serial:
                 continue  # Only handle blocks going to dispatcher
 
-            # Sever the edge: remove dispatcher from this block's
-            # successor list and this block from dispatcher's predecessor list.
             blk.succset._del(dispatcher_serial)
             disp_blk.predset._del(blk.serial)
             blk.mark_lists_dirty()
             severed += 1
             unflat_logger.info(
                 "BST cleanup: severed 1-way blk[%d] -> dispatcher edge",
-                serial,
+                blk.serial,
             )
 
         # Handle 2-way blocks with one arm going to dispatcher.
@@ -1232,17 +1245,19 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         return total_severed
 
-    def _diagnostic_bfs_reachability(self, bst_serials: set[int]) -> int:
-        """Diagnostic: log unreachable BST/dispatcher block counts.
+    def _prune_unreachable_bst_blocks(self, bst_serials: set[int]) -> int:
+        """Remove unreachable BST/dispatcher blocks after linearization.
 
-        Performs a forward BFS from block 0, computes the set of unreachable
-        BST blocks, and logs the counts.  No mutation is performed.
+        Performs a forward BFS from block 0, identifies unreachable BST blocks,
+        and removes them using hrtng's DeleteBlock pattern: sever outgoing edges,
+        remove instructions via ``remove_from_block`` (NOT ``make_nop``!), set
+        block type to ``BLT_NONE``, then ``remove_block``.
 
         Args:
             bst_serials: Set of BST comparison block serials + dispatcher serial.
 
         Returns:
-            Always 0 (diagnostic only, no changes made).
+            Number of blocks successfully removed.
         """
         from collections import deque
 
@@ -1270,11 +1285,15 @@ class HodurUnflattener(GenericUnflatteningRule):
         unreachable_bst = unreachable & bst_serials
 
         unflat_logger.info(
-            "DiagnosticBFS: %d/%d blocks reachable, %d unreachable total, "
+            "PruneUnreachable: %d/%d blocks reachable, %d unreachable total, "
             "%d unreachable BST blocks",
             len(visited), mba.qty, len(unreachable), len(unreachable_bst),
         )
 
+        # NOTE: remove_block at GLBOPT1 fails with INTERR 51920 regardless
+        # of preparation (edge severing, remove_from_block, forward order).
+        # Block removal requires MMAT_LOCOPT maturity (see hrtng).
+        # Keeping diagnostic BFS only for now.
         return 0
 
     def _diagnostic_backward_scan(
