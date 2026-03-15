@@ -53,6 +53,7 @@
 #   D810_WORKTREE_ROOT     Dir under repo root for worktrees (default: .worktrees)
 #   D810_NO_CYTHON         Passed into container (default: 1)
 #   D810_TEST_BINARY       Passed into container (default: libobfuscated.dll)
+#   D810_DOCKER_MEMORY      Memory limit for container (default: 20g). OOM-kills if exceeded.
 #
 # Examples:
 #   ./run_system_tests_docker.sh system
@@ -74,6 +75,7 @@
 set -e
 
 DOCKER_IMAGE="${D810_DOCKER_IMAGE:-idapro-9.3}"
+DOCKER_MEMORY="${D810_DOCKER_MEMORY:-20g}"
 
 # Repo root: env or git from current dir (script may be run from repo root or tools/scripts)
 if [ -n "${D810_REPO_ROOT}" ]; then
@@ -230,6 +232,7 @@ SETUP_CMD="export $ENV_IDA $ENV_PYTHON && $IDA_VENV_PIP install -e .[dev] -q && 
 run_bash() {
   local inner="$1"
   docker run --rm \
+    --memory "$DOCKER_MEMORY" \
     $VOL_WORK \
     $VOL_LOGS \
     -w /work \
@@ -239,6 +242,7 @@ run_bash() {
 run_bash_it() {
   local inner="$1"
   docker run -it --rm \
+    --memory "$DOCKER_MEMORY" \
     $VOL_WORK \
     $VOL_LOGS \
     -w /work \
@@ -253,6 +257,7 @@ run_bash_it() {
 run_bash_exec() {
   local inner="export $ENV_TEST && $SETUP_CMD && exec \"\$@\""
   docker run --rm \
+    --memory "$DOCKER_MEMORY" \
     $VOL_WORK \
     $VOL_LOGS \
     -w /work \
