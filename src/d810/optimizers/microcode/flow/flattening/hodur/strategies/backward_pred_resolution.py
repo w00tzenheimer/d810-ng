@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
+from d810.cfg.graph_modification import DuplicateAndRedirect
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
     ModificationBuilder,
 )
@@ -67,19 +68,25 @@ class BackwardPredResolutionStrategy:
             and snapshot.bst_dispatcher_serial >= 0
         )
 
-    def plan(self, snapshot: "AnalysisSnapshot") -> PlanFragment | None:
-        """Produce a PlanFragment for backward-pred-based exit resolution.
+    def plan(
+        self, snapshot: "AnalysisSnapshot",
+    ) -> PlanFragment | list[PlanFragment] | None:
+        """Produce PlanFragments for backward-pred-based exit resolution.
 
         For each non-BST predecessor of the dispatcher block, use MopTracker
         to backward-walk and resolve the state variable value, then emit a
         redirect if BST lookup succeeds.
 
+        Single-target ``RedirectGoto`` modifications are placed in a separate
+        fragment from multi-target ``DuplicateAndRedirect`` modifications so
+        that a failure in the latter does not abort the former.
+
         Args:
             snapshot: Immutable analysis snapshot for the current function.
 
         Returns:
-            A PlanFragment with redirect modifications, or None when no
-            exits could be resolved.
+            One or two PlanFragments (single-target first, multi-target
+            second), or None when no exits could be resolved.
         """
         import ida_hexrays
 
@@ -364,22 +371,60 @@ class BackwardPredResolutionStrategy:
             len(modifications),
         )
 
-        return PlanFragment(
-            strategy_name=self.name,
-            family=self.family,
-            modifications=modifications,
-            ownership=OwnershipScope(
-                blocks=frozenset(),  # Don't claim blocks — avoid conflict with LFG
-                edges=frozenset(),
-                transitions=frozenset(),
-            ),
-            prerequisites=["direct_handler_linearization"],
-            expected_benefit=BenefitMetrics(
-                handlers_resolved=0,
-                transitions_resolved=len(modifications),
-                blocks_freed=0,
-                conflict_density=0.0,
-            ),
-            risk_score=0.3,
-            metadata={"safeguard_min_required": 1},
-        )
+        # Split: single-target RedirectGoto vs multi-target DuplicateAndRedirect
+        single_target_mods = [
+            m for m in modifications
+            if not isinstance(m, DuplicateAndRedirect)
+        ]
+        multi_target_mods = [
+            m for m in modifications
+            if isinstance(m, DuplicateAndRedirect)
+        ]
+
+        fragments: list[PlanFragment] = []
+
+        if single_target_mods:
+            fragments.append(PlanFragment(
+                strategy_name=self.name,
+                family=self.family,
+                modifications=single_target_mods,
+                ownership=OwnershipScope(
+                    blocks=frozenset(),
+                    edges=frozenset(),
+                    transitions=frozenset(),
+                ),
+                prerequisites=["direct_handler_linearization"],
+                expected_benefit=BenefitMetrics(
+                    handlers_resolved=0,
+                    transitions_resolved=len(single_target_mods),
+                    blocks_freed=0,
+                    conflict_density=0.0,
+                ),
+                risk_score=0.3,
+                metadata={"safeguard_min_required": 1},
+            ))
+
+        if multi_target_mods:
+            fragments.append(PlanFragment(
+                strategy_name=self.name,
+                family=self.family,
+                modifications=multi_target_mods,
+                ownership=OwnershipScope(
+                    blocks=frozenset(),
+                    edges=frozenset(),
+                    transitions=frozenset(),
+                ),
+                prerequisites=["direct_handler_linearization"],
+                expected_benefit=BenefitMetrics(
+                    handlers_resolved=0,
+                    transitions_resolved=len(multi_target_mods),
+                    blocks_freed=0,
+                    conflict_density=0.0,
+                ),
+                risk_score=0.4,
+                metadata={"safeguard_min_required": 1},
+            ))
+
+        if len(fragments) == 1:
+            return fragments[0]
+        return fragments

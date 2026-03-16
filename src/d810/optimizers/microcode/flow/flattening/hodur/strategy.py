@@ -212,15 +212,18 @@ class UnflatteningStrategy(Protocol):
         """
         ...
 
-    def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
-        """Produce a :class:`PlanFragment` describing desired modifications.
+    def plan(
+        self, snapshot: AnalysisSnapshot,
+    ) -> PlanFragment | list[PlanFragment] | None:
+        """Produce one or more :class:`PlanFragment` instances.
 
         Args:
             snapshot: Read-only view of the current function's analysis state.
 
         Returns:
-            A :class:`PlanFragment` with at least one modification, or ``None``
-            when the strategy has nothing to contribute.
+            A single :class:`PlanFragment`, a list of fragments (when the
+            strategy needs to isolate independent modification groups), or
+            ``None`` when the strategy has nothing to contribute.
         """
         ...
 
