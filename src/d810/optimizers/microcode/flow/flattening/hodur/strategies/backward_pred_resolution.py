@@ -277,6 +277,15 @@ class BackwardPredResolutionStrategy:
                         resolved_targets.add(target)
                         resolved_values.append((value, target))
 
+            # TEMPORARY: configurable allowlist for individual redirect testing
+            import os
+            _allowlist_str = os.environ.get("BACKWARD_PRED_ALLOWLIST", "")
+            if _allowlist_str:
+                _allowlist = {int(x) for x in _allowlist_str.split(",") if x.strip()}
+                if pred_serial not in _allowlist:
+                    logger.info("BACKWARD_PRED: blk[%d] SKIPPED (not in env allowlist)", pred_serial)
+                    continue
+
             if len(resolved_targets) == 1:
                 # All paths agree on the same target — safe to redirect
                 target = next(iter(resolved_targets))
