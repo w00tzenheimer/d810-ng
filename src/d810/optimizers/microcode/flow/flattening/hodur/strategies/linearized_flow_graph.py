@@ -551,6 +551,7 @@ class LinearizedFlowGraphStrategy:
         goto_nop_mods, goto_nop_count, goto_skip_count = (
             self._nop_dispatcher_gotos(
                 snapshot, dispatcher_serial, bst_node_blocks, builder,
+                redirected_blocks=set(claimed_1way.keys()),
             )
         )
         modifications.extend(goto_nop_mods)
@@ -1729,6 +1730,7 @@ class LinearizedFlowGraphStrategy:
         dispatcher_serial: int,
         bst_node_blocks: set[int],
         builder: ModificationBuilder,
+        redirected_blocks: set[int] | None = None,
     ) -> tuple[list, int, int]:
         """NOP ``m_goto @dispatcher`` in handler blocks that are fully owned.
 
@@ -1746,12 +1748,17 @@ class LinearizedFlowGraphStrategy:
         1. Block is 1-way (``nsucc==1``) with sole successor == dispatcher.
         2. Block is NOT a BST comparison node.
         3. Block is NOT the dispatcher itself.
+        4. Block has a redirect emitted in the same plan (i.e. is in
+           *redirected_blocks*).
 
         Args:
             snapshot: Immutable analysis snapshot for the current function.
             dispatcher_serial: Serial of the BST dispatcher entry block.
             bst_node_blocks: Set of BST node block serials to exclude.
             builder: Modification builder for emitting NOP edits.
+            redirected_blocks: Set of block serials that have a redirect
+                emitted in the current plan.  Blocks not in this set are
+                skipped to preserve reachability.
 
         Returns:
             A tuple of ``(list_of_modifications, nop_count, skip_count)``.
@@ -1787,6 +1794,17 @@ class LinearizedFlowGraphStrategy:
             if blk.nsucc() != 1:
                 continue
             if blk.succ(0) != dispatcher_serial:
+                continue
+
+            # Only NOP gotos on blocks that have a redirect emitted in the
+            # same plan.  Blocks without a redirect still need the goto to
+            # remain reachable through the dispatcher.
+            if redirected_blocks is not None and serial not in redirected_blocks:
+                logger.info(
+                    "BST_GOTO_NOP: skipping blk[%d] (no redirect emitted)",
+                    serial,
+                )
+                skip_count += 1
                 continue
 
             # Find the tail instruction — must be m_goto.
