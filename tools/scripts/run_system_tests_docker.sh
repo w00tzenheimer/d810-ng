@@ -53,7 +53,7 @@
 #   D810_WORKTREE_ROOT     Dir under repo root for worktrees (default: .worktrees)
 #   D810_NO_CYTHON         Passed into container (default: 1)
 #   D810_TEST_BINARY       Passed into container (default: libobfuscated.dll)
-#   D810_DOCKER_MEMORY      Memory limit for container (default: 20g). OOM-kills if exceeded.
+#   D810_DOCKER_MEMORY      Memory limit for container (default: 4g). OOM-kills if exceeded.
 #
 # Examples:
 #   ./run_system_tests_docker.sh system
@@ -75,7 +75,7 @@
 set -e
 
 DOCKER_IMAGE="${D810_DOCKER_IMAGE:-idapro-9.3}"
-DOCKER_MEMORY="${D810_DOCKER_MEMORY:-20g}"
+DOCKER_MEMORY="${D810_DOCKER_MEMORY:-4g}"
 
 # Convert memory string (e.g., "20g", "4G", "512m") to bytes for RLIMIT_DATA enforcement.
 # Docker --memory is NOT enforced on macOS Docker Desktop; resource.setrlimit IS enforced
