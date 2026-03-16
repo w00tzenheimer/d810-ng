@@ -467,7 +467,9 @@ class UnflatteningPlanner:
                     notes=str(e),
                 ))
                 continue
-            if fragment is not None:
+            if isinstance(fragment, list):
+                fragments.extend(fragment)
+            elif fragment is not None:
                 fragments.append(fragment)
             else:
                 pre_planner_records.append(DecisionRecord(
