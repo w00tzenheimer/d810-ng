@@ -221,13 +221,12 @@ class DeadStateVariableEliminationStrategy:
                     )
                     continue
 
-                # DISABLED: State var NOPs destroy evidence needed by backward_pred
-                # modifications.append(
-                #     builder.nop_instruction(
-                #         source_block=use.block_serial,
-                #         instruction_ea=use.ins_ea,
-                #     )
-                # )
+                modifications.append(
+                    builder.nop_instruction(
+                        source_block=use.block_serial,
+                        instruction_ea=use.ins_ea,
+                    )
+                )
                 owned_blocks.add(use.block_serial)
                 nop_count += 1
                 logger.debug(

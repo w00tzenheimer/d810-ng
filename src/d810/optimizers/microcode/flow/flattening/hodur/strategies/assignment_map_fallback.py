@@ -341,14 +341,13 @@ class AssignmentMapFallbackStrategy:
                         hit_serial,
                         hit_ea,
                     )
-                    # DISABLED: State var NOPs destroy evidence needed by backward_pred
-                    # if builder is not None:
-                    #     edits.append(
-                    #         builder.nop_instruction(
-                    #             source_block=hit_serial,
-                    #             instruction_ea=hit_ea,
-                    #         )
-                    #     )
+                    if builder is not None:
+                        edits.append(
+                            builder.nop_instruction(
+                                source_block=hit_serial,
+                                instruction_ea=hit_ea,
+                            )
+                        )
                     owned_blocks.add(hit_serial)
 
     def _resolve_remaining_via_assignment_map(
