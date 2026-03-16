@@ -21,7 +21,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.recon.flow.bst_model import resolve_target_via_bst
+from d810.recon.flow.bst_model import resolve_redirectable_handler_target
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import AnalysisSnapshot
@@ -255,19 +255,10 @@ class BackwardPredResolutionStrategy:
             for history in histories:
                 value = history.get_mop_constant_value(state_var)
                 if value is not None:
-                    target = resolve_target_via_bst(bst_result, value)
+                    target = resolve_redirectable_handler_target(
+                        bst_result, value,
+                    )
                     if target is not None:
-                        # Skip exit/return transitions — these state values
-                        # route through the BST to the function epilogue, not
-                        # to another handler.  Redirecting them to a handler
-                        # entry causes catastrophic DCE.
-                        if value in bst_result.exits:
-                            logger.info(
-                                "BACKWARD_PRED: blk[%d] state=0x%X -> blk[%d] "
-                                "SKIPPED (exit/return transition)",
-                                pred_serial, value, target,
-                            )
-                            continue
                         resolved_targets.add(target)
                         resolved_values.append((value, target))
 

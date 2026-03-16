@@ -234,9 +234,57 @@ def resolve_target_via_bst(
     return None
 
 
+@dataclass(frozen=True)
+class BSTTargetResolution:
+    """Result of resolving a state value through the BST."""
+
+    serial: int
+    kind: str  # "handler", "exit", "default", "range", "unknown"
+    state_value: int
+
+
+def resolve_redirectable_handler_target(
+    bst_result: BSTAnalysisResult,
+    state_value: int,
+    augmented_exits: Set[int] | None = None,
+) -> Optional[int]:
+    """Resolve a state value to a redirectable handler target.
+
+    Unlike resolve_target_via_bst() which is a raw BST lookup,
+    this function checks whether the resolved target represents
+    a handler entry (safe to redirect to) vs an exit/return path
+    (unsafe to redirect to).
+
+    Args:
+        bst_result: BST analysis result with exits set
+        state_value: concrete state value to resolve
+        augmented_exits: additional exit states discovered by
+            fallback strategies (e.g., backward-pred, valrange)
+
+    Returns:
+        Handler serial if safe to redirect, None if exit/default/unknown
+    """
+    # Check primary exits
+    if state_value in bst_result.exits:
+        return None
+
+    # Check augmented exits
+    if augmented_exits is not None and state_value in augmented_exits:
+        return None
+
+    # Raw BST lookup
+    target = resolve_target_via_bst(bst_result, state_value)
+    if target is None:
+        return None
+
+    return target
+
+
 __all__ = [
     "BSTNodeEntry",
     "BSTNodeMap",
     "BSTAnalysisResult",
+    "BSTTargetResolution",
     "resolve_target_via_bst",
+    "resolve_redirectable_handler_target",
 ]
