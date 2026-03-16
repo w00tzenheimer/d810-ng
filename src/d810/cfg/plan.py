@@ -22,6 +22,7 @@ from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
+    DuplicateAndRedirect,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     GraphModification,
@@ -331,6 +332,7 @@ BlockCreatingGraphModification = Union[
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
     DuplicateBlock,
+    DuplicateAndRedirect,
     InsertBlock,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
@@ -488,6 +490,7 @@ def is_block_creating_modification(modification: GraphModification) -> bool:
             EdgeRedirectViaPredSplit,
             CreateConditionalRedirect,
             DuplicateBlock,
+            DuplicateAndRedirect,
             InsertBlock,
             PrivateTerminalSuffix,
             PrivateTerminalSuffixGroup,
@@ -1247,6 +1250,51 @@ def compile_patch_plan(
                         pending_step, duplicate_specs = compiled_duplicate
                         raw_steps.append(pending_step)
                         new_blocks.extend(duplicate_specs)
+
+            case DuplicateAndRedirect(
+                source_serial=src,
+                per_pred_targets=per_pred,
+            ):
+                # Decompose multi-pred duplication into individual
+                # DuplicateBlock steps.  The first predecessor keeps the
+                # original block (just a redirect); subsequent predecessors
+                # each get a freshly duplicated copy.
+                for idx, (pred, target) in enumerate(per_pred):
+                    if idx == 0:
+                        # First pred: redirect original block, no duplication
+                        raw_steps.append(
+                            PatchRedirectGoto(
+                                from_serial=src,
+                                old_target=0,
+                                new_target=target,
+                            )
+                        )
+                    else:
+                        dup_mod = DuplicateBlock(
+                            source_block=src,
+                            target_block=target,
+                            pred_serial=pred,
+                        )
+                        if cfg is None:
+                            legacy_step, spec = _compile_legacy_block_step(
+                                dup_mod, allocator,
+                            )
+                            raw_steps.append(legacy_step)
+                            new_blocks.append(spec)
+                        else:
+                            compiled_duplicate = _compile_duplicate_block_step(
+                                dup_mod, cfg, allocator,
+                            )
+                            if compiled_duplicate is None:
+                                legacy_step, spec = _compile_legacy_block_step(
+                                    dup_mod, allocator,
+                                )
+                                raw_steps.append(legacy_step)
+                                new_blocks.append(spec)
+                            else:
+                                pending_step, duplicate_specs = compiled_duplicate
+                                raw_steps.append(pending_step)
+                                new_blocks.extend(duplicate_specs)
 
             case PrivateTerminalSuffix(
                 anchor_serial=anchor,
