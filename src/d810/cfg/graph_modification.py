@@ -22,6 +22,7 @@ These frozen types map to DeferredGraphModifier modification types:
 - EdgeRedirectViaPredSplit -> EDGE_REDIRECT_VIA_PRED_SPLIT
 - CreateConditionalRedirect -> BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT
 - DuplicateBlock     -> (future use, backend currently warns/skips)
+- DuplicateAndRedirect -> (multi-pred duplication, maps to N x BLOCK_DUPLICATE_AND_REDIRECT)
 - InsertBlock        -> BLOCK_CREATE_WITH_REDIRECT
 - RemoveEdge         -> (future use, not yet in DeferredGraphModifier)
 - NopInstructions    -> BLOCK_NOP_INSNS
@@ -328,6 +329,38 @@ class ReorderBlocks:
     two_way_serials: tuple[int, ...] = ()   # handler-internal BLT_2WAY blocks to copy with trampoline
 
 
+@dataclass(frozen=True)
+class DuplicateAndRedirect:
+    """Duplicate a shared block and redirect each predecessor to its copy.
+
+    Used when a block has multiple predecessors that each need different
+    redirect targets (e.g., multi-pred dispatcher exit blocks where each
+    incoming path writes a different state value).
+
+    The block is duplicated once per (pred_serial, target) pair. Each
+    copy is redirected to its own target. The original block keeps the
+    first predecessor.
+
+    Attributes:
+        source_serial: Block to duplicate.
+        per_pred_targets: Ordered pairs of (pred_serial, target_serial).
+            The first entry keeps the original block; subsequent entries
+            get freshly duplicated copies.
+
+    Example:
+        >>> mod = DuplicateAndRedirect(
+        ...     source_serial=42,
+        ...     per_pred_targets=((10, 50), (20, 60)),
+        ... )
+        >>> mod.source_serial
+        42
+        >>> len(mod.per_pred_targets)
+        2
+    """
+    source_serial: int
+    per_pred_targets: tuple[tuple[int, int], ...]
+
+
 class DirectTerminalLoweringKind(str, enum.Enum):
     """Kind of direct terminal lowering to apply per anchor."""
     RETURN_CONST = "return_const"
@@ -365,6 +398,7 @@ GraphModification = Union[
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
     DuplicateBlock,
+    DuplicateAndRedirect,
     InsertBlock,
     RemoveEdge,
     NopInstructions,
@@ -383,6 +417,7 @@ __all__ = [
     "EdgeRedirectViaPredSplit",
     "CreateConditionalRedirect",
     "DuplicateBlock",
+    "DuplicateAndRedirect",
     "InsertBlock",
     "RemoveEdge",
     "NopInstructions",

@@ -19,6 +19,7 @@ from d810.cfg.graph_modification import (
     ConvertToGoto,
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
+    DuplicateAndRedirect,
     DuplicateBlock,
     InsertBlock,
     RemoveEdge,
@@ -645,6 +646,35 @@ class IDAIRTranslator:
                     target,
                     pred,
                 )
+
+            case DuplicateAndRedirect(
+                source_serial=src,
+                per_pred_targets=per_pred,
+            ):
+                # Decompose multi-pred duplication into individual
+                # queue_duplicate_block calls.  First pred keeps the
+                # original block (redirect only); subsequent preds each
+                # get a freshly duplicated copy.
+                for idx, (pred, target) in enumerate(per_pred):
+                    if idx == 0:
+                        modifier.queue_goto_change(
+                            src,
+                            target,
+                            description=(
+                                f"duplicate_and_redirect: redirect original "
+                                f"blk[{src}] -> {target} (keep pred={pred})"
+                            ),
+                        )
+                    else:
+                        modifier.queue_duplicate_block(
+                            source_block_serial=src,
+                            pred_serial=pred,
+                            target_serial=target,
+                            description=(
+                                f"duplicate_and_redirect: clone blk[{src}] "
+                                f"for pred={pred} -> {target}"
+                            ),
+                        )
 
             case InsertBlock(pred_serial=pred, succ_serial=succ, instructions=insns):
                 logger.warning(
