@@ -418,6 +418,8 @@ class GraphModification:
     per_anchor_clone_expected_serials: tuple[tuple[int, ...], ...] | None = None
     # For DIRECT_TERMINAL_LOWERING_GROUP: per-site lowering specifications
     sites: tuple | None = None
+    # For BLOCK_DUPLICATE_AND_REDIRECT: also redirect the original block's successor
+    original_redirect_target: int | None = None
     # For REORDER_BLOCKS: ordered block serials to copy in DFS order
     dfs_block_order: tuple[int, ...] | None = None
     # For REORDER_BLOCKS: pre-computed old_serial -> new_serial mapping from PatchPlan
@@ -906,10 +908,17 @@ class DeferredGraphModifier:
         target_serial: int | None = None,
         expected_serial: int | None = None,
         expected_secondary_serial: int | None = None,
+        original_redirect_target: int | None = None,
         description: str = "",
         rule_priority: int = 0,
     ) -> None:
-        """Queue duplication of ``source_block_serial`` and redirect ``pred_serial`` to the clone."""
+        """Queue duplication of ``source_block_serial`` and redirect ``pred_serial`` to the clone.
+
+        If *original_redirect_target* is given, the **original** block's
+        successor is also redirected to that serial after the clone is wired,
+        making the operation fully atomic (clone + redirect clone + redirect
+        original).
+        """
         self.modifications.append(GraphModification(
             mod_type=ModificationType.BLOCK_DUPLICATE_AND_REDIRECT,
             block_serial=source_block_serial,
@@ -917,6 +926,7 @@ class DeferredGraphModifier:
             via_pred=pred_serial,
             expected_serial=expected_serial,
             expected_secondary_serial=expected_secondary_serial,
+            original_redirect_target=original_redirect_target,
             priority=5,
             rule_priority=rule_priority,
             description=description or (
@@ -2562,6 +2572,7 @@ class DeferredGraphModifier:
                 target_serial=mod.new_target,
                 expected_serial=mod.expected_serial,
                 expected_secondary_serial=mod.expected_secondary_serial,
+                original_redirect_target=mod.original_redirect_target,
             )
 
         elif mod.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
@@ -3005,8 +3016,14 @@ class DeferredGraphModifier:
         target_serial: int | None,
         expected_serial: int | None,
         expected_secondary_serial: int | None,
+        original_redirect_target: int | None = None,
     ) -> bool:
-        """Duplicate ``source_blk`` and redirect ``pred_serial`` to the clone."""
+        """Duplicate ``source_blk`` and redirect ``pred_serial`` to the clone.
+
+        When *original_redirect_target* is not ``None``, the original block's
+        1-way successor is also redirected to that serial after the clone is
+        wired up — making the whole operation atomic.
+        """
         if not self._check_duplicate_block_preconditions(
             source_block_serial=source_blk.serial,
             pred_serial=pred_serial,
@@ -3213,6 +3230,34 @@ class DeferredGraphModifier:
                     duplicated_blk.serial,
                 )
                 return False
+
+            # Optionally redirect the original block's successor (atomic
+            # DuplicateAndRedirect: clone + redirect clone + redirect original).
+            if original_redirect_target is not None:
+                if source_blk.nsucc() != 1:
+                    logger.warning(
+                        "duplicate_block: cannot redirect original blk[%d] "
+                        "(nsucc=%d, expected 1)",
+                        source_blk.serial,
+                        source_blk.nsucc(),
+                    )
+                    return False
+                if not change_1way_block_successor(
+                    source_blk,
+                    original_redirect_target,
+                    verify=False,
+                ):
+                    logger.warning(
+                        "duplicate_block: failed to redirect original blk[%d] -> %d",
+                        source_blk.serial,
+                        original_redirect_target,
+                    )
+                    return False
+                logger.debug(
+                    "duplicate_block: also redirected original blk[%d] -> %d",
+                    source_blk.serial,
+                    original_redirect_target,
+                )
 
             logger.debug(
                 "duplicate_block: pred=%d -> clone=%d (source=%d target=%s secondary=%s)",
