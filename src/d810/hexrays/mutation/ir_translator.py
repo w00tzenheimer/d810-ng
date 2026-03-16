@@ -386,6 +386,8 @@ class IDAIRTranslator:
                     continue
                 case LegacyBlockOperation(modification=EdgeRedirectViaPredSplit()):
                     continue
+                case LegacyBlockOperation(modification=DuplicateAndRedirect()):
+                    continue
                 case LegacyBlockOperation(
                     modification=InsertBlock(pred_serial=pred, succ_serial=succ)
                 ):
@@ -651,25 +653,38 @@ class IDAIRTranslator:
                 source_serial=src,
                 per_pred_targets=per_pred,
             ):
-                # Decompose multi-pred duplication into individual
-                # queue_duplicate_block calls.  First pred keeps the
-                # original block (redirect only); subsequent preds each
-                # get a freshly duplicated copy.
-                for idx, (pred, target) in enumerate(per_pred):
-                    if idx == 0:
-                        modifier.queue_goto_change(
-                            src,
-                            target,
-                            description=(
-                                f"duplicate_and_redirect: redirect original "
-                                f"blk[{src}] -> {target} (keep pred={pred})"
-                            ),
-                        )
-                    else:
+                # Emit a single atomic queue_duplicate_block that clones
+                # the source for pred[1] AND redirects the original for
+                # pred[0], avoiding the coalescer conflict between a
+                # separate GOTO_CHANGE and DUPLICATE on the same serial.
+                if len(per_pred) == 2:
+                    keep_pred, keep_target = per_pred[0]
+                    clone_pred, clone_target = per_pred[1]
+                    modifier.queue_duplicate_block(
+                        source_block_serial=src,
+                        pred_serial=clone_pred,
+                        target_serial=clone_target,
+                        original_redirect_target=keep_target,
+                        description=(
+                            f"duplicate_and_redirect: clone blk[{src}] "
+                            f"for pred={clone_pred} -> {clone_target}, "
+                            f"redirect original -> {keep_target}"
+                        ),
+                    )
+                else:
+                    # Fallback for >2 preds: first gets original redirect,
+                    # rest get clones.
+                    original_target = per_pred[0][1] if per_pred else None
+                    for idx, (pred, target) in enumerate(per_pred):
+                        if idx == 0:
+                            continue  # handled via original_redirect_target
                         modifier.queue_duplicate_block(
                             source_block_serial=src,
                             pred_serial=pred,
                             target_serial=target,
+                            original_redirect_target=(
+                                original_target if idx == 1 else None
+                            ),
                             description=(
                                 f"duplicate_and_redirect: clone blk[{src}] "
                                 f"for pred={pred} -> {target}"
