@@ -101,6 +101,20 @@ class BackwardPredResolutionStrategy:
         if disp_blk is None:
             return None
 
+        # Build set of dispatcher predecessor blocks that earlier strategies
+        # already resolved.  resolved_transitions is a frozenset of
+        # (from_state, to_state) pairs; cross-ref with the state machine's
+        # transition list to recover the corresponding from_block serials.
+        already_redirected_blocks: set[int] = set()
+        resolved_trans = snapshot.resolved_transitions
+        if resolved_trans:
+            sm = snapshot.state_machine
+            if sm is not None:
+                for t in sm.transitions:
+                    key = (t.from_state, t.to_state)
+                    if key in resolved_trans:
+                        already_redirected_blocks.add(t.from_block)
+
         builder = ModificationBuilder.from_snapshot(snapshot)
         modifications = []
         owned_blocks: set[int] = set()
@@ -109,6 +123,15 @@ class BackwardPredResolutionStrategy:
         for pi in range(disp_blk.npred()):
             pred_serial = disp_blk.pred(pi)
             if pred_serial in bst_serials:
+                continue
+
+            # Skip predecessors whose transitions were already resolved
+            # by earlier strategies (e.g. direct_handler_linearization).
+            if pred_serial in already_redirected_blocks:
+                logger.info(
+                    "BACKWARD_PRED: skipping blk[%d] — already resolved",
+                    pred_serial,
+                )
                 continue
 
             pred_blk = mba.get_mblock(pred_serial)
