@@ -257,6 +257,17 @@ class BackwardPredResolutionStrategy:
                 if value is not None:
                     target = resolve_target_via_bst(bst_result, value)
                     if target is not None:
+                        # Skip exit/return transitions — these state values
+                        # route through the BST to the function epilogue, not
+                        # to another handler.  Redirecting them to a handler
+                        # entry causes catastrophic DCE.
+                        if value in bst_result.exits:
+                            logger.info(
+                                "BACKWARD_PRED: blk[%d] state=0x%X -> blk[%d] "
+                                "SKIPPED (exit/return transition)",
+                                pred_serial, value, target,
+                            )
+                            continue
                         resolved_targets.add(target)
                         resolved_values.append((value, target))
 
