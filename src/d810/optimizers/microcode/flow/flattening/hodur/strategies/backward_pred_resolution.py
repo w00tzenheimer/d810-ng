@@ -255,7 +255,24 @@ class BackwardPredResolutionStrategy:
             for history in histories:
                 value = history.get_mop_constant_value(state_var)
                 if value is not None:
-                    target = resolve_target_via_bst(bst_result, value)
+                    # Use IntervalDispatcher ONLY (exact + interval-backfilled
+                    # ranges). Skip handler_range_map fallback which maps MBA
+                    # gap values to wrong handlers via loose bounds.
+                    if bst_result.dispatcher is not None:
+                        target = bst_result.dispatcher.lookup(value)
+                    else:
+                        target = resolve_target_via_bst(bst_result, value)
+                    if target is not None:
+                        # Double-check: also try resolve_target_via_bst and
+                        # log if they disagree (diagnostic)
+                        full_target = resolve_target_via_bst(bst_result, value)
+                        if full_target != target:
+                            logger.info(
+                                "BACKWARD_PRED: blk[%d] state=0x%X dispatcher->blk[%d] "
+                                "vs resolve_target->blk[%s] (DIVERGENCE)",
+                                pred_serial, value, target,
+                                full_target if full_target is not None else "None",
+                            )
                     if target is not None:
                         resolved_targets.add(target)
                         resolved_values.append((value, target))
