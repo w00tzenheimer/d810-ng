@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from enum import Enum
 
 from d810.core.typing import Dict, Iterable, List, Optional
+from d810.core import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ValrangeLocationKind(str, Enum):
@@ -305,6 +308,81 @@ def resolve_state_via_valranges(blk, stkoff_mop, ins) -> int | None:
     return None
 
 
+def resolve_state_via_valrange_probe(
+    blk,
+    stkoff: int,
+    interval_dispatcher,
+    insn=None,
+) -> int | None:
+    """Probe IntervalDispatcher targets against a block's incoming state var valrange.
+
+    For each row in the interval dispatcher, tests whether the row's
+    representative value (``row.lo``) falls within the block's incoming
+    valrange for the state variable at *stkoff*.  If exactly one target
+    matches, returns that target block serial.
+
+    This is a fallback for when MopTracker backward-walk fails to resolve
+    a concrete state constant.
+
+    Args:
+        blk: ``ida_hexrays.mblock_t`` block to query.
+        stkoff: Stack offset of the state variable.
+        interval_dispatcher: :class:`IntervalDispatcher` with handler rows.
+        insn: Optional instruction anchor (defaults to ``blk.head``).
+
+    Returns:
+        Target block serial if exactly one handler interval overlaps
+        with the valrange, or ``None``.
+    """
+    try:
+        import ida_hexrays
+    except ImportError:
+        return None
+    try:
+        vivl = ida_hexrays.vivl_t()
+        vivl.set_stkoff(stkoff, 4)
+        vr = ida_hexrays.valrng_t(4)
+        target_insn = insn if insn is not None else blk.head
+        got_vr = blk.get_valranges(vr, vivl, target_insn, ida_hexrays.VR_AT_START)
+        if not got_vr:
+            logger.info(
+                "VALRANGE_PROBE: blk[%d] stkoff=0x%X get_valranges returned False",
+                blk.serial, stkoff,
+            )
+            return None
+        vr_str = vr.dstr() if hasattr(vr, "dstr") else "?"
+        if vr.empty():
+            logger.info("VALRANGE_PROBE: blk[%d] empty valrange", blk.serial)
+            return None
+        if vr.all_values():
+            logger.info("VALRANGE_PROBE: blk[%d] all_values valrange", blk.serial)
+            return None
+        # Singleton → direct lookup
+        ok, single_val = vr.cvt_to_single_value()
+        if ok:
+            target = interval_dispatcher.lookup(int(single_val))
+            logger.info(
+                "VALRANGE_PROBE: blk[%d] singleton 0x%X -> target=%s",
+                blk.serial, single_val, target,
+            )
+            return target
+        # Non-singleton: probe each interval row's lo value
+        matching_targets: set[int] = set()
+        for row in interval_dispatcher._rows:
+            if vr.has(row.lo):
+                matching_targets.add(row.target)
+        logger.info(
+            "VALRANGE_PROBE: blk[%d] vr=%s matched %d targets: %s",
+            blk.serial, vr_str, len(matching_targets), matching_targets,
+        )
+        if len(matching_targets) == 1:
+            return matching_targets.pop()
+        return None
+    except Exception as exc:
+        logger.info("VALRANGE_PROBE: blk[%d] exception: %s", blk.serial, exc)
+        return None
+
+
 __all__ = [
     "ValrangeLocationKind",
     "ValrangeLocation",
@@ -318,4 +396,5 @@ __all__ = [
     "collect_instruction_valranges",
     "collect_mba_valranges",
     "resolve_state_via_valranges",
+    "resolve_state_via_valrange_probe",
 ]
