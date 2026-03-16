@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import importlib
+import weakref
 from d810.core import typing
 import ida_hexrays
 import idaapi
@@ -66,7 +67,12 @@ from d810.hexrays.utils.ida_utils import is_never_written_var, fetch_idb_value
 
 emulator_log = getLogger(__name__)
 
-
+# Per-MBA SCCP cache — WeakKeyDictionary so entries are freed when MBA is
+# garbage-collected.  Falls back to a plain dict if mba_t (SWIG object) is
+# not weakly referenceable; the TypeError is caught on first insertion and
+# the inner dict is replaced with a plain dict.
+# Wrapped in a mutable list to allow replacement without ``global``.
+_sccp_cache_holder: list[weakref.WeakKeyDictionary | dict] = [weakref.WeakKeyDictionary()]
 
 
 
@@ -952,27 +958,50 @@ class MicroCodeInterpreter(object):
             # Strategy 2+3: debug-only advanced cross-block resolvers
             if emulator_log.debug_on:
                 cur_blk = environment.cur_blk
-                # Topo-eval block environments (Algorithm 1)
-                if self._const_in_states is None:
+                # SCCP (Algorithm 3) — per-MBA cached
+                if cur_blk is not None and cur_blk.mba is not None:
+                    mba = cur_blk.mba
+                    _cache = _sccp_cache_holder[0]
                     try:
-                        _topo = importlib.import_module(
-                            "d810.evaluator.hexrays_microcode.topo_eval"
-                        )
-                        if cur_blk is not None and cur_blk.mba is not None:
-                            self._const_in_states = (
-                                _topo.compute_block_environments(cur_blk.mba)
+                        _in_cache = mba in _cache
+                    except TypeError:
+                        # mba_t not weakly referenceable — downgrade to plain dict
+                        _cache = {}
+                        _sccp_cache_holder[0] = _cache
+                        _in_cache = False
+                    if not _in_cache:
+                        try:
+                            _sccp_mod = importlib.import_module(
+                                "d810.evaluator.hexrays_microcode.sccp"
                             )
-                        else:
-                            self._const_in_states = {}
-                    except Exception:
-                        self._const_in_states = {}
-                if self._const_in_states and cur_blk is not None:
-                    blk_env = self._const_in_states.get(cur_blk.serial)
-                    if blk_env:
+                            _cache[mba] = _sccp_mod.run_sccp(mba)
+                            if emulator_log.debug_on:
+                                emulator_log.debug(
+                                    "SCCP: computed %d lattice entries for mba",
+                                    len(_cache[mba]),
+                                )
+                        except TypeError:
+                            # Still can't store — fall back to plain dict
+                            _cache = {}
+                            _sccp_cache_holder[0] = _cache
+                        except Exception:
+                            try:
+                                _cache[mba] = {}
+                            except TypeError:
+                                _cache = {}
+                                _sccp_cache_holder[0] = _cache
+
+                    sccp_result = _cache.get(mba, {})
+                    if sccp_result:
                         mop_key = get_mop_key(mop)
-                        if mop_key in blk_env:
-                            val = blk_env[mop_key]
+                        val = sccp_result.get(mop_key)
+                        if val is not None:
                             environment.define(mop, val)
+                            if emulator_log.debug_on:
+                                emulator_log.debug(
+                                    "SCCP-HIT: blk=%d var=%s -> 0x%x",
+                                    cur_blk.serial, mop_key, val,
+                                )
                             return val
 
                 # Demand-driven worklist (Algorithm 2)
