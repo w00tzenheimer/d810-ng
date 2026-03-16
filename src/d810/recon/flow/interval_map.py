@@ -423,6 +423,29 @@ class IntervalDispatcher:
             return row
         return None
 
+    def lookup_range(self, lo: int, hi: int) -> Any | None:
+        """Return the target if ALL intervals overlapping [lo, hi] share the same target.
+
+        Returns None if no intervals overlap or if multiple targets are found.
+        """
+        if not self._rows:
+            return None
+        # Convert to half-open [lo, hi_open) for comparison
+        hi_open = hi + 1
+        target: Any | None = None
+        for row in self._rows:
+            # row uses half-open [row.lo, row.hi)
+            if row.hi <= lo:
+                continue  # row ends before our range starts
+            if row.lo >= hi_open:
+                break  # row starts after our range ends (sorted)
+            # Overlap
+            if target is None:
+                target = row.target
+            elif row.target != target:
+                return None  # Multiple targets
+        return target
+
     @classmethod
     def from_emitted(cls, emitted: list[EmittedRange]) -> IntervalDispatcher:
         """Build an IntervalDispatcher from DFS output, skipping None targets.

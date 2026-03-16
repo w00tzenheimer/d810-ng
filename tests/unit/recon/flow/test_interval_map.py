@@ -367,3 +367,45 @@ class TestIntervalDispatcher:
         range_map = d.to_handler_range_map()
         assert range_map[100] == (10, 10)
         assert range_map[200] == (20, 29)
+
+
+# ---------------------------------------------------------------------------
+# TestIntervalDispatcherLookupRange
+# ---------------------------------------------------------------------------
+
+
+class TestIntervalDispatcherLookupRange:
+    """Tests for IntervalDispatcher.lookup_range()."""
+
+    def _make_dispatcher(self, rows):
+        d = IntervalDispatcher.__new__(IntervalDispatcher)
+        d._rows = [IntervalRow(*r) for r in rows]
+        return d
+
+    def test_single_interval_fully_inside(self):
+        d = self._make_dispatcher([(10, 20, 42)])
+        assert d.lookup_range(12, 15) == 42
+
+    def test_range_spans_two_same_target(self):
+        d = self._make_dispatcher([(10, 20, 42), (20, 30, 42)])
+        assert d.lookup_range(15, 25) == 42
+
+    def test_range_spans_two_different_targets(self):
+        d = self._make_dispatcher([(10, 20, 42), (20, 30, 99)])
+        assert d.lookup_range(15, 25) is None
+
+    def test_no_overlap(self):
+        d = self._make_dispatcher([(10, 20, 42)])
+        assert d.lookup_range(30, 40) is None
+
+    def test_empty_dispatcher(self):
+        d = self._make_dispatcher([])
+        assert d.lookup_range(0, 100) is None
+
+    def test_exact_interval_match(self):
+        d = self._make_dispatcher([(10, 20, 42)])
+        assert d.lookup_range(10, 19) == 42
+
+    def test_single_point_range(self):
+        d = self._make_dispatcher([(10, 20, 42)])
+        assert d.lookup_range(15, 15) == 42
