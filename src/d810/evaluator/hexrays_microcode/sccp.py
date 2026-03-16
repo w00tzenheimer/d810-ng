@@ -5,9 +5,9 @@ with CFG reachability analysis.  Uses IDA's DU chains (``mba.get_du``)
 for SSA-like use-def information.
 
 **Status: DORMANT** -- not wired into the emulator or any pass.  Created
-as a skeleton for future activation.
+as a complete solver for future activation.
 
-The lattice is: ``BOTTOM`` (unknown) < ``Const(v)`` < ``TOP`` (overdefined).
+The lattice is: ``BOTTOM`` (unknown) < ``Const(v, sz)`` < ``TOP`` (overdefined).
 Two worklists drive the analysis:
 
 * **CFG worklist** -- edges ``(from_blk, to_blk)`` that become executable.
@@ -16,13 +16,14 @@ Two worklists drive the analysis:
 
 References:
     Wegman & Zadeck, "Constant Propagation with Conditional Branches", 1991.
+    LLVM SparsePropagation.h
     docs/plans/2026-03-16-emulator-cross-block-resolution.md  (Algorithm 3)
 """
 from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from enum import Enum, auto
+from d810.core.typing import Any
 
 from d810.core.logging import getLogger
 
@@ -32,36 +33,60 @@ logger = getLogger(__name__)
 # Lattice
 # ---------------------------------------------------------------------------
 
-class _LatticeKind(Enum):
-    BOTTOM = auto()   # Not yet known
-    CONST = auto()    # Known constant
-    TOP = auto()      # Overdefined (multiple distinct values)
+
+class _Sentinel:
+    """Singleton sentinel for BOTTOM / TOP lattice endpoints."""
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __repr__(self) -> str:
+        return self.name
+
+    def __eq__(self, other: object) -> bool:
+        return self is other
+
+    def __hash__(self) -> int:
+        return id(self)
+
+
+BOTTOM = _Sentinel("BOTTOM")  # Undetermined
+TOP = _Sentinel("TOP")  # Overdefined
 
 
 @dataclass(frozen=True, slots=True)
-class LatticeValue:
-    kind: _LatticeKind
-    value: int | None = None  # Only meaningful when kind == CONST
+class Const:
+    """A known constant value in the lattice."""
+
+    value: int
+    size: int
+
+    def __repr__(self) -> str:
+        return f"Const(0x{self.value:x}, {self.size})"
 
 
-BOTTOM = LatticeValue(_LatticeKind.BOTTOM)
-TOP = LatticeValue(_LatticeKind.TOP)
+LatticeVal = _Sentinel | Const
+MopKey = tuple  # from get_mop_key
+CfgEdge = tuple[int, int]  # (from_serial, to_serial)
+
+# ---------------------------------------------------------------------------
+# Lattice meet
+# ---------------------------------------------------------------------------
 
 
-def _const(v: int) -> LatticeValue:
-    return LatticeValue(_LatticeKind.CONST, v)
-
-
-def _meet(a: LatticeValue, b: LatticeValue) -> LatticeValue:
-    """Lattice meet: BOTTOM /\\ x = x, TOP /\\ x = TOP, Const(a) /\\ Const(b) = TOP if a!=b."""
-    if a.kind is _LatticeKind.BOTTOM:
+def _meet(a: LatticeVal, b: LatticeVal) -> LatticeVal:
+    """Lattice meet: BOTTOM /\\ x = x, TOP /\\ x = TOP, same Const = Const, else TOP."""
+    if a is BOTTOM:
         return b
-    if b.kind is _LatticeKind.BOTTOM:
+    if b is BOTTOM:
         return a
-    if a.kind is _LatticeKind.TOP or b.kind is _LatticeKind.TOP:
+    if a is TOP or b is TOP:
         return TOP
-    # Both CONST
-    if a.value == b.value:
+    # Both are Const
+    assert isinstance(a, Const) and isinstance(b, Const)
+    if a.value == b.value and a.size == b.size:
         return a
     return TOP
 
@@ -70,14 +95,54 @@ def _meet(a: LatticeValue, b: LatticeValue) -> LatticeValue:
 # Bounds
 # ---------------------------------------------------------------------------
 
-_MAX_CFG_ITERATIONS = 2000
-_MAX_SSA_ITERATIONS = 2000
 _MAX_BLOCKS = 500
+
+# ---------------------------------------------------------------------------
+# Internal opcode sets (lazily initialized to avoid module-level IDA import)
+# ---------------------------------------------------------------------------
+
+_UNARY_OPCODES: frozenset[int] | None = None
+_BINARY_OPCODES: frozenset[int] | None = None
+_CMP_OPCODES: frozenset[int] | None = None
+_COND_BRANCH_OPCODES: frozenset[int] | None = None
+
+
+def _init_opcode_sets(hx: Any) -> None:
+    """Lazily populate opcode classification sets."""
+    global _UNARY_OPCODES, _BINARY_OPCODES, _CMP_OPCODES, _COND_BRANCH_OPCODES
+
+    if _UNARY_OPCODES is not None:
+        return
+
+    _UNARY_OPCODES = frozenset([
+        hx.m_mov, hx.m_neg, hx.m_lnot, hx.m_bnot,
+        hx.m_xds, hx.m_xdu, hx.m_low, hx.m_high,
+    ])
+
+    _BINARY_OPCODES = frozenset([
+        hx.m_add, hx.m_sub, hx.m_mul,
+        hx.m_udiv, hx.m_sdiv, hx.m_umod, hx.m_smod,
+        hx.m_or, hx.m_and, hx.m_xor,
+        hx.m_shl, hx.m_shr, hx.m_sar,
+    ])
+
+    _CMP_OPCODES = frozenset([
+        hx.m_setz, hx.m_setnz, hx.m_setae, hx.m_setb,
+        hx.m_seta, hx.m_setbe, hx.m_setg, hx.m_setge,
+        hx.m_setl, hx.m_setle,
+    ])
+
+    _COND_BRANCH_OPCODES = frozenset([
+        hx.m_jcnd, hx.m_jnz, hx.m_jz,
+        hx.m_jae, hx.m_jb, hx.m_ja, hx.m_jbe,
+        hx.m_jg, hx.m_jge, hx.m_jl, hx.m_jle,
+    ])
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def run_sccp(mba: object) -> dict[tuple, int | None]:
     """Run Sparse Conditional Constant Propagation on the MBA.
@@ -105,90 +170,515 @@ def run_sccp(mba: object) -> dict[tuple, int | None]:
         return {}
 
 
+# ---------------------------------------------------------------------------
+# Core solver
+# ---------------------------------------------------------------------------
+
+
 def _run_sccp_impl(
     mba: object,
-    ida_hexrays: object,
+    hx: Any,
 ) -> dict[tuple, int | None]:
-    """Core SCCP implementation."""
+    """Core SCCP implementation.
+
+    1. Initialize: all variables = BOTTOM, entry block edges executable.
+    2. Main loop: drain CFG worklist then SSA worklist until both empty.
+    3. visit_cfg_edge: mark edge executable; if block newly reachable,
+       visit all its instructions.
+    4. visit_ssa_edge: re-evaluate instructions that use the changed variable.
+    5. eval_phi: for passthru variables, meet values from executable preds.
+    6. eval_insn: evaluate instruction, update dest lattice value.
+    7. eval_branch: if condition is Const, only add taken successor.
+    8. update_value: on lattice change, add all DU uses to SSA worklist.
+    """
     from d810.hexrays.expr.p_ast import get_mop_key
+    from d810.core.bits import (
+        AND_TABLE,
+        get_add_cf,
+        get_add_of,
+        get_parity_flag,
+        get_sub_of,
+        signed_to_unsigned,
+        unsigned_to_signed,
+    )
+
+    _init_opcode_sets(hx)
+    assert _UNARY_OPCODES is not None  # guaranteed by _init_opcode_sets
 
     qty: int = mba.qty  # type: ignore[attr-defined]
     if qty > _MAX_BLOCKS:
         logger.info("sccp: skipping (%d blocks > %d limit)", qty, _MAX_BLOCKS)
         return {}
 
-    # ------------------------------------------------------------------ init
-    lattice: dict[tuple, LatticeValue] = defaultdict(lambda: BOTTOM)
-    executable: set[tuple[int, int]] = set()
+    max_iterations = qty * 10
 
-    cfg_worklist: deque[tuple[int, int]] = deque()
-    ssa_worklist: deque[tuple] = deque()  # mop_keys whose value changed
+    # ------------------------------------------------------------------ state
+    lattice: dict[MopKey, LatticeVal] = defaultdict(lambda: BOTTOM)
+    executable: set[CfgEdge] = set()
+    block_visited: set[int] = set()  # blocks whose instructions were evaluated
 
-    # Seed: entry block's outgoing edges
+    cfg_wl: deque[CfgEdge] = deque()
+    ssa_wl: deque[MopKey] = deque()
+
+    # Build DU chains once up front.
+    du_index = _build_du_index(mba, hx, qty, get_mop_key)
+
+    # ------------------------------------------------------------------ seed
+    # Entry block (serial 0) is always executable.
     entry_blk = mba.get_mblock(0)  # type: ignore[attr-defined]
     if entry_blk is None:
         return {}
-    for i in range(entry_blk.nsucc()):  # type: ignore[attr-defined]
-        cfg_worklist.append((0, entry_blk.succ(i)))  # type: ignore[attr-defined]
 
-    # ------------------------------------------------------------------ main
-    cfg_iters = 0
-    ssa_iters = 0
+    # Seed: a virtual edge (-1, 0) to mark the entry block reachable.
+    cfg_wl.append((-1, 0))
 
-    while cfg_worklist or ssa_worklist:
-        # ---- CFG worklist ----
-        while cfg_worklist and cfg_iters < _MAX_CFG_ITERATIONS:
-            cfg_iters += 1
-            from_blk, to_blk = cfg_worklist.popleft()
-            if (from_blk, to_blk) in executable:
+    # -------------------------------------------------------------- helpers
+
+    def _resolve_operand(mop: Any) -> LatticeVal:
+        """Resolve a source operand to its lattice value."""
+        if mop is None:
+            return TOP
+        t = mop.t
+        if t == hx.mop_n:
+            nnn = mop.nnn
+            val = nnn.value if nnn is not None else 0
+            return Const(val, mop.size)
+        if t in (hx.mop_r, hx.mop_S):
+            try:
+                key = get_mop_key(mop)
+            except Exception:
+                return TOP
+            return lattice[key]
+        # mop_d (nested instruction result), mop_v (global), etc. -> TOP
+        return TOP
+
+    def _mask(size: int) -> int:
+        return AND_TABLE.get(size, AND_TABLE[8])
+
+    def _short_circuit(opcode: int, lv: LatticeVal, rv: LatticeVal, dest_size: int) -> LatticeVal | None:
+        """Apply short-circuit evaluation rules from Rust SCCP.
+
+        Returns a LatticeVal if the result can be determined without both
+        operands being Const, or None to fall through to normal evaluation.
+        """
+        mask = _mask(dest_size)
+
+        # x * 0 = 0 (either side)
+        if opcode == hx.m_mul:
+            zero = Const(0, dest_size)
+            if isinstance(lv, Const) and lv.value == 0:
+                return zero
+            if isinstance(rv, Const) and rv.value == 0:
+                return zero
+
+        # x & 0 = 0 (either side)
+        if opcode == hx.m_and:
+            zero = Const(0, dest_size)
+            if isinstance(lv, Const) and lv.value == 0:
+                return zero
+            if isinstance(rv, Const) and rv.value == 0:
+                return zero
+
+        # x | all_ones = all_ones (either side)
+        if opcode == hx.m_or:
+            if isinstance(lv, Const) and lv.value == mask:
+                return Const(mask, dest_size)
+            if isinstance(rv, Const) and rv.value == mask:
+                return Const(mask, dest_size)
+
+        return None
+
+    def _eval_insn_value(ins: Any) -> LatticeVal:
+        """Evaluate one instruction and return the lattice value for dest."""
+        opcode = ins.opcode
+        d = ins.d
+        if d is None or d.t == hx.mop_z:
+            return TOP
+
+        dest_size = d.size
+        if dest_size <= 0:
+            return TOP
+
+        mask = _mask(dest_size)
+
+        l_mop = ins.l
+        r_mop = ins.r
+
+        lv = _resolve_operand(l_mop)
+        rv = _resolve_operand(r_mop) if r_mop is not None else None
+
+        # ---- Unary opcodes ----
+        if opcode in _UNARY_OPCODES:
+            if lv is BOTTOM:
+                return BOTTOM
+            if lv is TOP:
+                return TOP
+            assert isinstance(lv, Const)
+            v = lv.value
+            ls = l_mop.size if l_mop is not None else dest_size
+
+            if opcode == hx.m_mov:
+                return Const(v & mask, dest_size)
+            if opcode == hx.m_neg:
+                return Const((-v) & mask, dest_size)
+            if opcode == hx.m_lnot:
+                return Const(int(v == 0) & mask, dest_size)
+            if opcode == hx.m_bnot:
+                return Const((v ^ mask) & mask, dest_size)
+            if opcode == hx.m_xds:
+                left_signed = unsigned_to_signed(v, ls)
+                return Const(signed_to_unsigned(left_signed, dest_size) & mask, dest_size)
+            if opcode == hx.m_xdu:
+                return Const(v & mask, dest_size)
+            if opcode == hx.m_low:
+                return Const(v & mask, dest_size)
+            if opcode == hx.m_high:
+                shift_bits = dest_size * 8 if dest_size else 0
+                return Const((v >> shift_bits) & mask, dest_size)
+            return TOP
+
+        # ---- Binary / comparison opcodes ----
+        if opcode in _BINARY_OPCODES or opcode in _CMP_OPCODES:
+            if rv is None:
+                return TOP
+
+            # Short-circuit evaluation (Rust SCCP rules)
+            sc = _short_circuit(opcode, lv, rv, dest_size)
+            if sc is not None:
+                return sc
+
+            # If either operand is BOTTOM, result is BOTTOM (unless short-circuited above)
+            if lv is BOTTOM or rv is BOTTOM:
+                return BOTTOM
+            # If either operand is TOP, result is TOP
+            if lv is TOP or rv is TOP:
+                return TOP
+
+            assert isinstance(lv, Const) and isinstance(rv, Const)
+            a = lv.value
+            b = rv.value
+            ls = l_mop.size if l_mop is not None else dest_size
+            rs = r_mop.size if r_mop is not None else dest_size
+
+            result: int | None = None
+
+            # Binary arithmetic
+            if opcode == hx.m_add:
+                result = (a + b) & mask
+            elif opcode == hx.m_sub:
+                result = (a - b) & mask
+            elif opcode == hx.m_mul:
+                result = (a * b) & mask
+            elif opcode == hx.m_udiv:
+                result = (a // b) & mask if b != 0 else None
+            elif opcode == hx.m_sdiv:
+                if b == 0:
+                    result = None
+                else:
+                    la = unsigned_to_signed(a, ls)
+                    rb = unsigned_to_signed(b, rs)
+                    if rb == 0:
+                        result = None
+                    else:
+                        q = (abs(la) // abs(rb)) * (-1 if (la < 0) ^ (rb < 0) else 1)
+                        result = signed_to_unsigned(q, dest_size) & mask
+            elif opcode == hx.m_umod:
+                result = (a % b) & mask if b != 0 else None
+            elif opcode == hx.m_smod:
+                if b == 0:
+                    result = None
+                else:
+                    la = unsigned_to_signed(a, ls)
+                    rb = unsigned_to_signed(b, rs)
+                    if rb == 0:
+                        result = None
+                    else:
+                        q = (abs(la) // abs(rb)) * (-1 if (la < 0) ^ (rb < 0) else 1)
+                        result = signed_to_unsigned(la - (q * rb), dest_size) & mask
+            elif opcode == hx.m_or:
+                result = (a | b) & mask
+            elif opcode == hx.m_and:
+                result = (a & b) & mask
+            elif opcode == hx.m_xor:
+                result = (a ^ b) & mask
+            elif opcode == hx.m_shl:
+                result = (a << b) & mask
+            elif opcode == hx.m_shr:
+                result = (a >> b) & mask
+            elif opcode == hx.m_sar:
+                result = signed_to_unsigned(unsigned_to_signed(a, ls) >> b, dest_size) & mask
+
+            # Comparison ops
+            elif opcode == hx.m_setz:
+                result = (1 if a == b else 0) & mask
+            elif opcode == hx.m_setnz:
+                result = (1 if a != b else 0) & mask
+            elif opcode == hx.m_setae:
+                result = (1 if a >= b else 0) & mask
+            elif opcode == hx.m_setb:
+                result = (1 if a < b else 0) & mask
+            elif opcode == hx.m_seta:
+                result = (1 if a > b else 0) & mask
+            elif opcode == hx.m_setbe:
+                result = (1 if a <= b else 0) & mask
+            elif opcode == hx.m_setg:
+                result = (1 if unsigned_to_signed(a, ls) > unsigned_to_signed(b, rs) else 0) & mask
+            elif opcode == hx.m_setge:
+                result = (1 if unsigned_to_signed(a, ls) >= unsigned_to_signed(b, rs) else 0) & mask
+            elif opcode == hx.m_setl:
+                result = (1 if unsigned_to_signed(a, ls) < unsigned_to_signed(b, rs) else 0) & mask
+            elif opcode == hx.m_setle:
+                result = (1 if unsigned_to_signed(a, ls) <= unsigned_to_signed(b, rs) else 0) & mask
+
+            if result is not None:
+                return Const(result, dest_size)
+            return TOP
+
+        # ---- Conditional branches (m_jz, m_jnz, etc.) ----
+        # These write to the dest operand as a side-effect in some maturity
+        # levels (condition result), but more importantly we handle branching
+        # separately via _eval_branch.  For the dest lattice, treat as TOP.
+        if opcode in _COND_BRANCH_OPCODES:
+            return TOP
+
+        # Unknown/side-effecting opcode -> TOP
+        return TOP
+
+    def _eval_branch(ins: Any, blk: Any) -> None:
+        """Evaluate branch instruction and add appropriate successor edges.
+
+        If the branch condition resolves to a Const, add only the taken
+        (or fall-through) edge.  Otherwise add both successors.
+        """
+        opcode = ins.opcode
+        blk_serial: int = blk.serial
+
+        if opcode == hx.m_goto:
+            # Unconditional goto -- single successor.
+            for i in range(blk.nsucc()):
+                s = blk.succ(i)
+                if (blk_serial, s) not in executable:
+                    cfg_wl.append((blk_serial, s))
+            return
+
+        if opcode not in _COND_BRANCH_OPCODES:
+            # Non-branching tail -- add all successors.
+            for i in range(blk.nsucc()):
+                s = blk.succ(i)
+                if (blk_serial, s) not in executable:
+                    cfg_wl.append((blk_serial, s))
+            return
+
+        # Conditional branch: try to resolve condition.
+        cond_val = _eval_condition(ins)
+
+        if cond_val is BOTTOM:
+            # Condition not yet known -- don't add any edges yet.
+            # They will be added when the condition's dependencies resolve.
+            return
+
+        if cond_val is TOP:
+            # Overdefined -- both branches feasible.
+            for i in range(blk.nsucc()):
+                s = blk.succ(i)
+                if (blk_serial, s) not in executable:
+                    cfg_wl.append((blk_serial, s))
+            return
+
+        # Condition is Const: determine taken vs fall-through.
+        assert isinstance(cond_val, Const)
+        nsucc = blk.nsucc()
+        if nsucc < 2:
+            # Degenerate: only one successor, add it.
+            for i in range(nsucc):
+                s = blk.succ(i)
+                if (blk_serial, s) not in executable:
+                    cfg_wl.append((blk_serial, s))
+            return
+
+        # IDA convention: succ(0) = fall-through, succ(1) = taken branch.
+        fall_through = blk.succ(0)
+        taken = blk.succ(1)
+
+        if cond_val.value != 0:
+            # Condition is true -> taken branch only.
+            if (blk_serial, taken) not in executable:
+                cfg_wl.append((blk_serial, taken))
+        else:
+            # Condition is false -> fall-through only.
+            if (blk_serial, fall_through) not in executable:
+                cfg_wl.append((blk_serial, fall_through))
+
+    def _eval_condition(ins: Any) -> LatticeVal:
+        """Evaluate the condition of a conditional branch instruction.
+
+        For m_jcnd: condition is in ins.l (nested instruction result).
+        For m_jz/m_jnz/m_jae/etc.: compare ins.l vs ins.r.
+        """
+        opcode = ins.opcode
+
+        if opcode == hx.m_jcnd:
+            # m_jcnd condition is in ins.l
+            return _resolve_operand(ins.l)
+
+        # Binary conditional jumps: compare l vs r.
+        lv = _resolve_operand(ins.l)
+        rv = _resolve_operand(ins.r)
+
+        if lv is BOTTOM or rv is BOTTOM:
+            return BOTTOM
+        if lv is TOP or rv is TOP:
+            return TOP
+
+        assert isinstance(lv, Const) and isinstance(rv, Const)
+        a = lv.value
+        b = rv.value
+        ls = ins.l.size if ins.l is not None else 4
+        rs = ins.r.size if ins.r is not None else 4
+
+        result: int | None = None
+        if opcode == hx.m_jz:
+            result = 1 if a == b else 0
+        elif opcode == hx.m_jnz:
+            result = 1 if a != b else 0
+        elif opcode == hx.m_jae:
+            result = 1 if a >= b else 0
+        elif opcode == hx.m_jb:
+            result = 1 if a < b else 0
+        elif opcode == hx.m_ja:
+            result = 1 if a > b else 0
+        elif opcode == hx.m_jbe:
+            result = 1 if a <= b else 0
+        elif opcode == hx.m_jg:
+            result = 1 if unsigned_to_signed(a, ls) > unsigned_to_signed(b, rs) else 0
+        elif opcode == hx.m_jge:
+            result = 1 if unsigned_to_signed(a, ls) >= unsigned_to_signed(b, rs) else 0
+        elif opcode == hx.m_jl:
+            result = 1 if unsigned_to_signed(a, ls) < unsigned_to_signed(b, rs) else 0
+        elif opcode == hx.m_jle:
+            result = 1 if unsigned_to_signed(a, ls) <= unsigned_to_signed(b, rs) else 0
+
+        if result is not None:
+            return Const(result, 1)
+        return TOP
+
+    def _update_lattice(dest_key: MopKey, new_val: LatticeVal) -> bool:
+        """Monotone lattice update.  Returns True if value changed."""
+        old_val = lattice[dest_key]
+        merged = _meet(old_val, new_val)
+        if merged is old_val or merged == old_val:
+            return False
+        lattice[dest_key] = merged
+        return True
+
+    def _visit_insn(ins: Any, blk_serial: int) -> None:
+        """Visit a single instruction: eval, update lattice, propagate."""
+        d = ins.d
+        if d is None or d.t == hx.mop_z:
+            return
+
+        try:
+            dest_key = get_mop_key(d)
+        except Exception:
+            return
+
+        new_val = _eval_insn_value(ins)
+        if _update_lattice(dest_key, new_val):
+            # Value changed -- add all uses to SSA worklist.
+            ssa_wl.append(dest_key)
+
+    def _visit_block(blk_serial: int) -> None:
+        """Visit all instructions in a block."""
+        blk = mba.get_mblock(blk_serial)  # type: ignore[attr-defined]
+        if blk is None:
+            return
+
+        ins = blk.head
+        while ins is not None:
+            _visit_insn(ins, blk_serial)
+            ins = ins.next
+
+        # Evaluate branch at the tail to determine successor edges.
+        tail = blk.tail
+        if tail is not None:
+            _eval_branch(tail, blk)
+        else:
+            # No tail instruction -- add all successors.
+            for i in range(blk.nsucc()):
+                s = blk.succ(i)
+                if (blk_serial, s) not in executable:
+                    cfg_wl.append((blk_serial, s))
+
+    def _block_is_executable(blk_serial: int) -> bool:
+        """Check if any incoming edge to blk_serial is executable."""
+        return blk_serial in block_visited
+
+    # ------------------------------------------------------------------ main loop
+    iteration = 0
+
+    while (cfg_wl or ssa_wl) and iteration < max_iterations:
+        iteration += 1
+
+        # ---- CFG worklist: process one edge ----
+        if cfg_wl:
+            from_blk, to_blk = cfg_wl.popleft()
+            edge = (from_blk, to_blk)
+
+            if edge in executable:
                 continue
-            executable.add((from_blk, to_blk))
 
-            blk = mba.get_mblock(to_blk)  # type: ignore[attr-defined]
-            if blk is None:
-                continue
+            executable.add(edge)
 
-            # Evaluate all instructions in the block
-            ins = blk.head  # type: ignore[attr-defined]
-            while ins is not None:
-                _evaluate_insn(ins, lattice, ssa_worklist, get_mop_key, ida_hexrays)
-                ins = ins.next  # type: ignore[attr-defined]
+            first_visit = to_blk not in block_visited
+            block_visited.add(to_blk)
 
-            # Add successor edges
-            for i in range(blk.nsucc()):  # type: ignore[attr-defined]
-                succ = blk.succ(i)  # type: ignore[attr-defined]
-                if (to_blk, succ) not in executable:
-                    cfg_worklist.append((to_blk, succ))
+            if first_visit:
+                # Block newly reachable: visit all instructions.
+                _visit_block(to_blk)
+            else:
+                # Block already visited but new edge arrived.
+                # Re-evaluate phi-like variables at block entry
+                # (values from new predecessor may change lattice).
+                _revisit_phi_inputs(mba, hx, to_blk, lattice, ssa_wl, get_mop_key)
 
-        # ---- SSA worklist ----
-        while ssa_worklist and ssa_iters < _MAX_SSA_ITERATIONS:
-            ssa_iters += 1
-            changed_key = ssa_worklist.popleft()
+            continue
 
-            # TODO: Find all USE sites of changed_key via mba.get_du(GC_REGS_AND_STKVARS)
-            # For each use site in an executable block, re-evaluate the instruction.
-            # If the instruction's destination lattice value changes, add it to ssa_worklist.
-            #
-            # Skeleton:
-            #   use_blocks = _find_use_blocks(mba, changed_key, ida_hexrays)
-            #   for use_blk_serial in use_blocks:
-            #       if not _block_is_executable(use_blk_serial, executable):
-            #           continue
-            #       blk = mba.get_mblock(use_blk_serial)
-            #       ins = blk.head
-            #       while ins is not None:
-            #           if _uses_variable(ins, changed_key, get_mop_key, ida_hexrays):
-            #               _evaluate_insn(ins, lattice, ssa_worklist, get_mop_key, ida_hexrays)
-            #               # If dest changed and is a conditional branch, update cfg_worklist
-            #               if _is_conditional_branch(ins, ida_hexrays):
-            #                   _update_cfg_edges(ins, lattice, cfg_worklist, blk, ida_hexrays)
-            #           ins = ins.next
-            pass  # SSA propagation not yet implemented
+        # ---- SSA worklist: process one variable change ----
+        if ssa_wl:
+            changed_key = ssa_wl.popleft()
+
+            # Find all USE sites of changed_key via DU index.
+            use_sites = du_index.get(changed_key, [])
+
+            for use_blk_serial, use_ea in use_sites:
+                if not _block_is_executable(use_blk_serial):
+                    continue
+
+                blk = mba.get_mblock(use_blk_serial)  # type: ignore[attr-defined]
+                if blk is None:
+                    continue
+
+                # Re-evaluate all instructions in the block that use this variable.
+                ins = blk.head
+                while ins is not None:
+                    if _insn_uses_key(ins, changed_key, get_mop_key, hx):
+                        _visit_insn(ins, use_blk_serial)
+                    ins = ins.next
+
+                # If the tail is a conditional branch and it uses the changed var,
+                # re-evaluate branch edges.
+                tail = blk.tail
+                if tail is not None and tail.opcode in _COND_BRANCH_OPCODES:
+                    if _insn_uses_key(tail, changed_key, get_mop_key, hx):
+                        _eval_branch(tail, blk)
+
+    if iteration >= max_iterations:
+        logger.info("sccp: hit iteration limit (%d)", max_iterations)
 
     # ------------------------------------------------------------------ extract
     result: dict[tuple, int | None] = {}
     for key, lv in lattice.items():
-        if lv.kind is _LatticeKind.CONST:
+        if isinstance(lv, Const):
             result[key] = lv.value
         else:
             result[key] = None
@@ -196,198 +686,134 @@ def _run_sccp_impl(
 
 
 # ---------------------------------------------------------------------------
-# Instruction evaluation
+# DU index builder
 # ---------------------------------------------------------------------------
 
-def _evaluate_insn(
-    ins: object,
-    lattice: dict[tuple, LatticeValue],
-    ssa_worklist: deque[tuple],
-    get_mop_key: object,
-    ida_hexrays: object,
+
+def _build_du_index(
+    mba: Any,
+    hx: Any,
+    qty: int,
+    get_mop_key: Any,
+) -> dict[MopKey, list[tuple[int, int]]]:
+    """Build a mapping: mop_key -> list of (blk_serial, insn_ea) use sites.
+
+    Walks every instruction in the MBA and records which mop_keys appear
+    as source operands.  This is a lightweight alternative to IDA's DU chains
+    that works without requiring ``mba.build_graph()`` (which may not be
+    available at all maturity levels).
+    """
+    index: dict[MopKey, list[tuple[int, int]]] = defaultdict(list)
+
+    for blk_idx in range(qty):
+        blk = mba.get_mblock(blk_idx)  # type: ignore[attr-defined]
+        if blk is None:
+            continue
+
+        ins = blk.head
+        while ins is not None:
+            _collect_source_keys(ins, blk_idx, ins.ea, index, get_mop_key, hx)
+            ins = ins.next
+
+    return dict(index)
+
+
+def _collect_source_keys(
+    ins: Any,
+    blk_serial: int,
+    ea: int,
+    index: dict[MopKey, list[tuple[int, int]]],
+    get_mop_key: Any,
+    hx: Any,
 ) -> None:
-    """Evaluate a single instruction and update the lattice.
-
-    If the destination's lattice value changes, append its key to *ssa_worklist*.
-    """
-    d = ins.d  # type: ignore[attr-defined]
-    if d is None:
-        return
-    if d.t == ida_hexrays.mop_z:  # type: ignore[attr-defined]
-        return  # No destination (e.g. conditional jumps write flags, not a variable)
-
-    try:
-        dest_key = get_mop_key(d)  # type: ignore[misc]
-    except Exception:
-        return
-
-    old_val = lattice[dest_key]
-
-    # Compute new value from source operands
-    new_val = _eval_sources(ins, lattice, get_mop_key, ida_hexrays)
-
-    # Monotone update: value can only go up (BOTTOM -> Const -> TOP)
-    merged = _meet(old_val, new_val)
-    if merged != old_val:
-        lattice[dest_key] = merged
-        ssa_worklist.append(dest_key)
-
-
-def _eval_sources(
-    ins: object,
-    lattice: dict[tuple, LatticeValue],
-    get_mop_key: object,
-    ida_hexrays: object,
-) -> LatticeValue:
-    """Evaluate an instruction given current lattice values for operands.
-
-    Returns the resulting LatticeValue for the destination.
-    """
-    # Resolve source operand lattice values
-    l_mop = ins.l  # type: ignore[attr-defined]
-    r_mop = ins.r  # type: ignore[attr-defined]
-
-    lv = _resolve_operand(l_mop, lattice, get_mop_key, ida_hexrays) if l_mop is not None else None
-    # For unary ops, r is not used
-    rv = _resolve_operand(r_mop, lattice, get_mop_key, ida_hexrays) if r_mop is not None else None
-
-    # If left source is BOTTOM, result is BOTTOM (not yet known)
-    if lv is not None and lv.kind is _LatticeKind.BOTTOM:
-        return BOTTOM
-    # If left source is TOP, result is TOP (overdefined)
-    if lv is not None and lv.kind is _LatticeKind.TOP:
-        return TOP
-
-    # For binary ops, check right operand too
-    opcode = ins.opcode  # type: ignore[attr-defined]
-    if rv is not None:
-        if rv.kind is _LatticeKind.BOTTOM:
-            return BOTTOM
-        if rv.kind is _LatticeKind.TOP:
-            return TOP
-
-    # All sources are Const (or immediate) -- evaluate the operation
-    # TODO: Bridge to demand_eval._eval_with_constants or implement inline
-    # For now, delegate to the arithmetic evaluator from demand_eval
-    try:
-        _demand = __import__(
-            "d810.evaluator.hexrays_microcode.demand_eval",
-            fromlist=["_eval_with_constants"],
-        )
-        # Build a minimal memo dict from lattice const values
-        memo: dict[tuple, int | None] = {}
-        for src_mop in [l_mop, r_mop]:
-            if src_mop is None:
-                continue
-            if src_mop.t == ida_hexrays.mop_n:  # type: ignore[attr-defined]
-                continue  # _eval_with_constants reads immediates directly
-            try:
-                src_key = get_mop_key(src_mop)  # type: ignore[misc]
-            except Exception:
-                return TOP
-            src_lv = lattice.get(src_key, BOTTOM)
-            if src_lv.kind is _LatticeKind.CONST:
-                memo[src_key] = src_lv.value
-            else:
-                return BOTTOM if src_lv.kind is _LatticeKind.BOTTOM else TOP
-
-        result = _demand._eval_with_constants(ins, memo)
-        if result is not None:
-            return _const(result)
-        return TOP
-    except Exception:
-        return TOP
-
-
-def _resolve_operand(
-    mop: object,
-    lattice: dict[tuple, LatticeValue],
-    get_mop_key: object,
-    ida_hexrays: object,
-) -> LatticeValue | None:
-    """Resolve a source operand to a LatticeValue."""
-    if mop is None:
-        return None
-    t = mop.t  # type: ignore[attr-defined]
-    if t == ida_hexrays.mop_n:  # type: ignore[attr-defined]
-        nnn = mop.nnn  # type: ignore[attr-defined]
-        val = nnn.value if nnn is not None else 0
-        return _const(val)
-    if t in (ida_hexrays.mop_r, ida_hexrays.mop_S):  # type: ignore[attr-defined]
+    """Record all source mop_keys in an instruction into the DU index."""
+    for mop in _iter_source_mops(ins, hx):
         try:
-            key = get_mop_key(mop)  # type: ignore[misc]
+            key = get_mop_key(mop)
         except Exception:
-            return TOP
-        return lattice.get(key, BOTTOM)
-    # Unsupported operand type -> overdefined
-    return TOP
+            continue
+        index[key].append((blk_serial, ea))
+
+
+def _iter_source_mops(ins: Any, hx: Any) -> list[Any]:
+    """Return a list of source operands from an instruction."""
+    result: list[Any] = []
+    if ins.l is not None and ins.l.t != hx.mop_z:
+        result.append(ins.l)
+    if ins.r is not None and ins.r.t != hx.mop_z:
+        result.append(ins.r)
+    return result
 
 
 # ---------------------------------------------------------------------------
-# Helpers (stubs for future implementation)
+# Instruction source matching
 # ---------------------------------------------------------------------------
 
-def _find_use_blocks(
-    mba: object,
-    mop_key: tuple,
-    ida_hexrays: object,
-) -> list[int]:
-    """Find all block serials that USE a variable identified by mop_key.
 
-    TODO: Use ``mba.get_du(GC_REGS_AND_STKVARS)`` to find use sites.
-    The DU chains provide ``block_chains_t`` per block with reg and stkvar
-    chain accessors.
-    """
-    return []  # Stub
-
-
-def _block_is_executable(blk_serial: int, executable: set[tuple[int, int]]) -> bool:
-    """Check if any incoming edge to blk_serial is in the executable set."""
-    return any(to == blk_serial for _, to in executable)
-
-
-def _uses_variable(
-    ins: object,
-    mop_key: tuple,
-    get_mop_key: object,
-    ida_hexrays: object,
+def _insn_uses_key(
+    ins: Any,
+    key: MopKey,
+    get_mop_key: Any,
+    hx: Any,
 ) -> bool:
-    """Check if an instruction uses a variable identified by mop_key.
-
-    TODO: Inspect ins.l, ins.r, and sub-operands for matching mop_key.
-    """
-    return False  # Stub
-
-
-def _is_conditional_branch(ins: object, ida_hexrays: object) -> bool:
-    """Check if an instruction is a conditional branch."""
-    opcode = ins.opcode  # type: ignore[attr-defined]
-    return opcode in (
-        ida_hexrays.m_jcnd,  # type: ignore[attr-defined]
-        ida_hexrays.m_jnz,  # type: ignore[attr-defined]
-        ida_hexrays.m_jz,  # type: ignore[attr-defined]
-        ida_hexrays.m_jae,  # type: ignore[attr-defined]
-        ida_hexrays.m_jb,  # type: ignore[attr-defined]
-        ida_hexrays.m_ja,  # type: ignore[attr-defined]
-        ida_hexrays.m_jbe,  # type: ignore[attr-defined]
-        ida_hexrays.m_jg,  # type: ignore[attr-defined]
-        ida_hexrays.m_jge,  # type: ignore[attr-defined]
-        ida_hexrays.m_jl,  # type: ignore[attr-defined]
-        ida_hexrays.m_jle,  # type: ignore[attr-defined]
-    )
+    """Check if an instruction reads a variable identified by mop_key."""
+    for mop in _iter_source_mops(ins, hx):
+        try:
+            if get_mop_key(mop) == key:
+                return True
+        except Exception:
+            continue
+    return False
 
 
-def _update_cfg_edges(
-    ins: object,
-    lattice: dict[tuple, LatticeValue],
-    cfg_worklist: deque[tuple[int, int]],
-    blk: object,
-    ida_hexrays: object,
+# ---------------------------------------------------------------------------
+# PHI-like re-evaluation on new executable edge
+# ---------------------------------------------------------------------------
+
+
+def _revisit_phi_inputs(
+    mba: Any,
+    hx: Any,
+    blk_serial: int,
+    lattice: dict[MopKey, LatticeVal],
+    ssa_wl: deque[MopKey],
+    get_mop_key: Any,
 ) -> None:
-    """If a conditional branch resolves to a constant, add only the taken edge.
+    """When a new edge into *blk_serial* becomes executable, re-evaluate
+    all instructions in the block whose source operands may have new values
+    flowing in from the newly-executable predecessor.
 
-    TODO: Evaluate the branch condition from the lattice. If the condition
-    is Const(0), add only the fall-through edge. If Const(nonzero), add
-    only the taken edge. If TOP/BOTTOM, add both edges (conservative).
+    Without explicit PHI nodes we conservatively re-visit the entire block.
     """
-    pass  # Stub
+    blk = mba.get_mblock(blk_serial)  # type: ignore[attr-defined]
+    if blk is None:
+        return
+
+    ins = blk.head
+    while ins is not None:
+        d = ins.d
+        if d is not None and d.t != hx.mop_z:
+            try:
+                dest_key = get_mop_key(d)
+            except Exception:
+                ins = ins.next
+                continue
+
+            # Re-add to SSA worklist so downstream uses get re-evaluated.
+            ssa_wl.append(dest_key)
+        ins = ins.next
+
+
+# ---------------------------------------------------------------------------
+# Module-level exports
+# ---------------------------------------------------------------------------
+
+__all__ = [
+    "BOTTOM",
+    "TOP",
+    "Const",
+    "LatticeVal",
+    "MopKey",
+    "CfgEdge",
+    "run_sccp",
+]
