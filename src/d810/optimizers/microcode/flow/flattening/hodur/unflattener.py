@@ -1118,6 +1118,66 @@ class HodurUnflattener(GenericUnflatteningRule):
         }
         return True
 
+    def _dump_post_apply_cfg_dot(
+        self,
+        dispatcher_serial: int,
+        bst_node_blocks: "BSTNodeMap",
+    ) -> None:
+        """Dump post-apply CFG as DOT graph for linearization verification."""
+        mba = self.mba
+        bst_serials = set(bst_node_blocks) | {dispatcher_serial}
+
+        lines: list[str] = ["--- POST_APPLY_CFG_DOT_START ---"]
+        lines.append("digraph post_apply_cfg {")
+        lines.append("  rankdir=TB;")
+
+        dispatcher_preds: list[int] = []
+        for i in range(mba.qty):
+            blk = mba.get_mblock(i)
+            if blk is None:
+                continue
+
+            # Color: BST=red, handler=lightblue, dispatcher=orange
+            if i == dispatcher_serial:
+                color = "orange"
+                label = f"DISPATCHER\\nblk[{i}]"
+            elif i in bst_serials:
+                color = "lightcoral"
+                label = f"BST\\nblk[{i}]"
+            else:
+                color = "lightblue"
+                label = f"blk[{i}]"
+
+            # Check if any successor is dispatcher
+            goes_to_disp = False
+            for si in range(blk.nsucc()):
+                if blk.succ(si) == dispatcher_serial:
+                    goes_to_disp = True
+
+            if goes_to_disp and i not in bst_serials:
+                color = "yellow"  # handler block still pointing to dispatcher
+                dispatcher_preds.append(i)
+
+            lines.append(
+                f'  blk{i} [label="{label}" style=filled fillcolor={color}];'
+            )
+
+            for si in range(blk.nsucc()):
+                succ = blk.succ(si)
+                edge_color = "red" if succ == dispatcher_serial else "black"
+                lines.append(f"  blk{i} -> blk{succ} [color={edge_color}];")
+
+        lines.append("}")
+        lines.append("--- POST_APPLY_CFG_DOT_END ---")
+
+        for line in lines:
+            unflat_logger.info(line)
+
+        unflat_logger.info(
+            "POST_APPLY_CFG: %d blocks, %d BST, %d still->dispatcher: %s",
+            mba.qty, len(bst_serials), len(dispatcher_preds), dispatcher_preds,
+        )
+
     def _post_apply_bst_cleanup(
         self,
         bst_node_blocks: "BSTNodeMap",
@@ -1145,6 +1205,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         mba = self.mba
         bst_serials: set[int] = set(bst_node_blocks)
         bst_serials.add(dispatcher_serial)
+
+        # --- DOT dump: post-apply CFG before any edge severing ---
+        self._dump_post_apply_cfg_dot(dispatcher_serial, bst_node_blocks)
 
         disp_blk = mba.get_mblock(dispatcher_serial)
         if disp_blk is None:
