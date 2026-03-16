@@ -387,7 +387,13 @@ class MicroCodeInterpreter(object):
         # Cache for def-use chain resolutions during the current emulation pass
         self._def_use_cache: dict[tuple, int | None] = {}
         # Resolution strategies (tried in order after env lookup, before def-use chains)
-        self._strategies: list[MopResolutionStrategy] = strategies or []
+        # When debug logging is on and no strategies provided, auto-enable SCCP
+        if strategies is not None:
+            self._strategies: list[MopResolutionStrategy] = strategies
+        elif emulator_log.debug_on:
+            self._strategies = [SCCPStrategy()]
+        else:
+            self._strategies = []
 
     def _resolve_mop_via_def_use(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int | None:
         # Use cached value if available
