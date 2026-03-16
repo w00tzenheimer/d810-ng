@@ -122,6 +122,74 @@ class BackwardPredResolutionStrategy:
                 if key in resolved_trans:
                     lfg_handled.add(t.from_block)
 
+        # LFG also redirects blocks discovered via exit state resolution
+        # (BFS from handler entries) and BST default block discovery (DFS
+        # forward evaluation).  These redirect sources are NOT in
+        # sm.transitions, so the filter above misses them.  Any dispatcher
+        # predecessor inside a handler's block set will be reached by
+        # LFG's forward evaluation — add all handler-owned blocks to the
+        # exclusion set to prevent duplicate redirects that cause
+        # CFG_50860_SUCC_MISMATCH.
+        if sm is not None:
+            for handler in sm.handlers.values():
+                lfg_handled.add(handler.check_block)
+                for blk_serial in handler.handler_blocks:
+                    lfg_handled.add(blk_serial)
+
+        # LFG's _resolve_exit_states performs BFS from handler entries for
+        # EXIT states (handlers with no outgoing transition) and redirects
+        # any block it discovers that writes a state constant.  These
+        # BFS-discovered blocks may NOT appear in handler_blocks (e.g.
+        # blk[48] for handler 0x6D207773).  Replicate the EXIT state
+        # identification and BFS to exclude those blocks.
+        if sm is not None and bst_result is not None:
+            handler_state_map = getattr(bst_result, "handler_state_map", None) or {}
+            if handler_state_map:
+                # Inverted map: state_value -> handler entry serial
+                state_to_entry: dict[int, int] = {
+                    v: k for k, v in handler_state_map.items()
+                }
+                states_with_outgoing: set[int] = {
+                    t.from_state for t in sm.transitions
+                    if t.from_state is not None
+                }
+                for state_val, handler in sm.handlers.items():
+                    if state_val in states_with_outgoing:
+                        continue
+                    # This is an EXIT state — LFG will BFS from its entry.
+                    correct_entry = state_to_entry.get(state_val)
+                    if correct_entry is None:
+                        _exit_dispatcher = getattr(bst_result, "dispatcher", None)
+                        if _exit_dispatcher is not None:
+                            correct_entry = _exit_dispatcher.lookup(state_val)
+                    if correct_entry is None:
+                        continue
+                    # BFS from correct_entry (mirrors LFG depth=6)
+                    bfs_visited: set[int] = set()
+                    bfs_queue: list[tuple[int, int]] = [(correct_entry, 0)]
+                    while bfs_queue:
+                        blk_serial, depth = bfs_queue.pop(0)
+                        if blk_serial in bfs_visited:
+                            continue
+                        bfs_visited.add(blk_serial)
+                        if blk_serial in bst_serials:
+                            continue
+                        try:
+                            blk = mba.get_mblock(blk_serial)
+                        except (AttributeError, IndexError):
+                            continue
+                        if blk is None:
+                            continue
+                        if depth < 6:
+                            try:
+                                for si in range(blk.nsucc()):
+                                    succ_s = blk.succ(si)
+                                    if succ_s not in bfs_visited:
+                                        bfs_queue.append((succ_s, depth + 1))
+                            except Exception:
+                                pass
+                    lfg_handled.update(bfs_visited)
+
         builder = ModificationBuilder.from_snapshot(snapshot)
         modifications = []
         owned_blocks: set[int] = set()
@@ -157,6 +225,14 @@ class BackwardPredResolutionStrategy:
 
             pred_blk = mba.get_mblock(pred_serial)
             if pred_blk is None or pred_blk.nsucc() != 1:
+                continue
+
+            # Only redirect blocks still pointing at the dispatcher.
+            # If the successor is already something else (redirected by
+            # an earlier strategy in the same decompilation pass), emitting
+            # a second redirect would create a duplicate-successor
+            # violation (CFG_50860_SUCC_MISMATCH).
+            if pred_blk.succ(0) != dispatcher_serial:
                 continue
 
             # Backward walk to find state var write
