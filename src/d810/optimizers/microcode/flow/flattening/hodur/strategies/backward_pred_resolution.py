@@ -293,14 +293,58 @@ class BackwardPredResolutionStrategy:
                         len(resolved_values),
                     )
             elif len(resolved_targets) > 1:
-                # Paths disagree — needs block duplication (not yet implemented)
-                logger.info(
-                    "BACKWARD_PRED: blk[%d] MopTracker MULTI-TARGET: "
-                    "%d paths -> %d targets %s (needs duplication)",
-                    pred_serial, len(resolved_values),
-                    len(resolved_targets),
-                    {hex(t) for t in resolved_targets},
-                )
+                # Paths disagree — duplicate the block per predecessor arm.
+                # Build per-predecessor target mapping by matching each
+                # history's path against pred_serial's predecessors.
+                per_pred_targets: list[tuple[int, int]] = []
+                seen_preds: set[int] = set()
+
+                for history in histories:
+                    value = history.get_mop_constant_value(state_var)
+                    if value is None:
+                        continue
+                    target = resolve_redirectable_handler_target(
+                        bst_result, value,
+                        augmented_exits=augmented_exits,
+                        mba=mba,
+                        dispatcher_serial=dispatcher_serial,
+                    )
+                    if target is None:
+                        continue
+
+                    # The history's path traces back through predecessors.
+                    # The first block in the path is the furthest predecessor.
+                    # We need the IMMEDIATE predecessor of pred_serial (the
+                    # dispatcher predecessor being duplicated).
+                    # Check pred_serial's predecessors and match against
+                    # history path.
+                    for arm_idx in range(pred_blk.npred()):
+                        arm_serial = pred_blk.pred(arm_idx)
+                        if arm_serial in seen_preds:
+                            continue
+                        if history.contains_block_serial(arm_serial):
+                            per_pred_targets.append((arm_serial, target))
+                            seen_preds.add(arm_serial)
+                            break
+
+                if len(per_pred_targets) >= 2:
+                    mod = builder.duplicate_and_redirect(
+                        source_block=pred_serial,
+                        per_pred_targets=per_pred_targets,
+                    )
+                    modifications.append(mod)
+                    owned_blocks.add(pred_serial)
+                    logger.info(
+                        "BACKWARD_PRED: blk[%d] DUPLICATE_AND_REDIRECT: %s",
+                        pred_serial,
+                        [(f"pred={p} -> blk[{t}]") for p, t in per_pred_targets],
+                    )
+                else:
+                    logger.info(
+                        "BACKWARD_PRED: blk[%d] MULTI-TARGET but couldn't map "
+                        "%d targets to predecessors",
+                        pred_serial, len(resolved_targets),
+                    )
             elif len(histories) > 0:
                 logger.debug(
                     "BACKWARD_PRED: blk[%d] %d histories, none resolved",
