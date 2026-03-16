@@ -268,9 +268,9 @@ class BackwardPredResolutionStrategy:
                         dispatcher_serial=dispatcher_serial,
                     )
                     if target is None and value not in bst_result.exits:
-                        logger.info(
-                            "BACKWARD_PRED: blk[%d] state=0x%X SKIPPED "
-                            "(terminal handler -- forward proof)",
+                        logger.debug(
+                            "BACKWARD_PRED: blk[%d] state=0x%X skipped "
+                            "(terminal handler — forward proof)",
                             pred_serial, value,
                         )
                     if target is not None:
@@ -302,15 +302,13 @@ class BackwardPredResolutionStrategy:
                     {hex(t) for t in resolved_targets},
                 )
             elif len(histories) > 0:
-                # Histories exist but none resolved to a BST target
-                logger.info(
-                    "BACKWARD_PRED: blk[%d] MopTracker returned %d histories, "
-                    "none resolved",
+                logger.debug(
+                    "BACKWARD_PRED: blk[%d] %d histories, none resolved",
                     pred_serial, len(histories),
                 )
             else:
-                logger.info(
-                    "BACKWARD_PRED: blk[%d] MopTracker returned 0 histories",
+                logger.debug(
+                    "BACKWARD_PRED: blk[%d] 0 histories",
                     pred_serial,
                 )
 
