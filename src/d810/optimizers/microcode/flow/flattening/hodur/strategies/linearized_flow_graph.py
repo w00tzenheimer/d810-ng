@@ -1695,12 +1695,13 @@ class LinearizedFlowGraphStrategy:
                         and d.s is not None
                         and d.s.off == stkoff
                     ):
-                        modifications.append(
-                            builder.nop_instruction(
-                                source_block=serial,
-                                instruction_ea=insn.ea,
-                            )
-                        )
+                        # DISABLED: State var NOPs destroy evidence needed by backward_pred
+                        # modifications.append(
+                        #     builder.nop_instruction(
+                        #         source_block=serial,
+                        #         instruction_ea=insn.ea,
+                        #     )
+                        # )
                         nop_blocks.add(serial)
                         nop_count += 1
                     insn = insn.next

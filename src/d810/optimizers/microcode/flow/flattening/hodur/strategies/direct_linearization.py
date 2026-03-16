@@ -1300,12 +1300,8 @@ class DirectHandlerLinearizationStrategy:
             }
 
         def _append_nop(source_block: int, instruction_ea: int) -> None:
-            modifications.append(
-                builder.nop_instruction(
-                    source_block=source_block,
-                    instruction_ea=instruction_ea,
-                )
-            )
+            # DISABLED: State var NOPs destroy evidence needed by backward_pred
+            return
 
         # Track already-NOPed two-step temp defs to avoid duplicate NOPs.
         _two_step_nopped: set[tuple[int, int]] = set()
