@@ -129,13 +129,12 @@ class StateConstantReturnFixupStrategy:
             walked = 0
             while insn is not None and walked < walk_limit:
                 if self._is_state_const_mov(insn, known_consts):
-                    # DISABLED: State var NOPs destroy evidence needed by backward_pred
-                    # modifications.append(
-                    #     builder.nop_instruction(
-                    #         source_block=pred_serial,
-                    #         instruction_ea=insn.ea,
-                    #     )
-                    # )
+                    modifications.append(
+                        builder.nop_instruction(
+                            source_block=pred_serial,
+                            instruction_ea=insn.ea,
+                        )
+                    )
                     owned_blocks.add(pred_serial)
                     nop_count += 1
                     logger.info(
