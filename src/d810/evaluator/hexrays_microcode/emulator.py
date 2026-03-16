@@ -245,52 +245,6 @@ class MicroCodeInterpreter(object):
         self.symbolic_mode: bool = symbolic_mode
         # Cache for def-use chain resolutions during the current emulation pass
         self._def_use_cache: dict[tuple, int | None] = {}
-        # Lazily-computed topo_eval block environments (Algorithm 1)
-        self._const_in_states: dict[int, dict[tuple, int]] | None = None
-        # Demand-driven worklist memo (Algorithm 2), shared across calls
-        self._demand_memo: dict[tuple, int | None] = {}
-
-    def _resolve_via_const_map(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int | None:
-        """Strategy 2: look up a variable in the topo_eval block environments.
-
-        Lazily computes the per-block constant environments on first access
-        (requires MMAT_GLBOPT1 or later for meaningful UD chains).
-        """
-        if environment.cur_blk is None:
-            return None
-        mba = environment.cur_blk.mba
-        if mba is None:
-            return None
-
-        # Only compute at GLBOPT1+ where UD chains are reliable
-        if mba.maturity < ida_hexrays.MMAT_GLBOPT1:
-            return None
-
-        # Lazy computation of topo_eval block environments.
-        # Uses importlib to avoid a static dependency that the cycle checker
-        # would flag (topo_eval imports emulator for MicroCodeInterpreter).
-        if self._const_in_states is None:
-            try:
-                import importlib
-                _topo = importlib.import_module(
-                    "d810.evaluator.hexrays_microcode.topo_eval"
-                )
-                self._const_in_states = _topo.compute_block_environments(mba)
-                if emulator_log.debug_on:
-                    emulator_log.debug(
-                        "TOPO-EVAL: computed %d block environments",
-                        len(self._const_in_states),
-                    )
-            except Exception:
-                self._const_in_states = {}
-
-        blk_serial = environment.cur_blk.serial
-        blk_env = self._const_in_states.get(blk_serial)
-        if blk_env is None:
-            return None
-
-        mop_key = get_mop_key(mop)
-        return blk_env.get(mop_key)
 
     def _resolve_mop_via_def_use(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int | None:
         # Use cached value if available
@@ -990,33 +944,7 @@ class MicroCodeInterpreter(object):
             if value is not None:
                 return value
 
-            # Second, try the topo_eval block environments (Strategy 2)
-            value = self._resolve_via_const_map(mop, environment)
-            if value is not None:
-                return value
-
-            # Third, try demand-driven worklist resolution (Algorithm 2).
-            # Uses importlib to avoid a static dependency cycle.
-            if environment.cur_blk is not None:
-                mop_key = get_mop_key(mop)
-                try:
-                    import importlib
-                    _demand = importlib.import_module(
-                        "d810.evaluator.hexrays_microcode.demand_eval"
-                    )
-                    mba = environment.cur_blk.mba
-                    if mba is not None:
-                        blk_serial = environment.cur_blk.serial
-                        identifier = mop.r if mop.t == ida_hexrays.mop_r else (mop.s.off if mop.t == ida_hexrays.mop_S and mop.s is not None else None)
-                        if identifier is not None:
-                            result = _demand.resolve_variable_demand(mba, blk_serial, mop.t, identifier, mop.size, self._demand_memo)
-                            if result is not None:
-                                self._def_use_cache[mop_key] = result
-                                return result
-                except Exception:
-                    pass
-
-            # Fourth, try to resolve via def-use chains (static dataflow)
+            # Second, try to resolve via def-use chains (static dataflow)
             value = self._resolve_mop_via_def_use(mop, environment)
             if value is not None:
                 return value
@@ -1132,7 +1060,6 @@ class MicroCodeInterpreter(object):
     def _clear_def_use_cache(self):
         """Clear the def-use chain resolution cache at the start of each emulation pass."""
         self._def_use_cache.clear()
-        self._demand_memo.clear()
 
     def eval_instruction(
         self,
