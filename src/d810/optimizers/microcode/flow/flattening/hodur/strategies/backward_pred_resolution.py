@@ -101,23 +101,48 @@ class BackwardPredResolutionStrategy:
         if disp_blk is None:
             return None
 
-        # Build set of dispatcher predecessor blocks that earlier strategies
-        # already resolved.  resolved_transitions is a frozenset of
-        # (from_state, to_state) pairs; cross-ref with the state machine's
-        # transition list to recover the corresponding from_block serials.
-        already_redirected_blocks: set[int] = set()
+        # Build set of blocks already handled by LFG transitions.
+        # On the first pass, resolved_transitions is empty, so we also
+        # check the state machine's transition list directly -- these are
+        # the from_block serials that LFG's direct_handler_linearization
+        # will redirect.  Emitting duplicates causes GATE_FAILED.
+        lfg_handled: set[int] = set()
+        sm = snapshot.state_machine
+        if sm is not None:
+            for trans in sm.transitions:
+                if trans.from_block is not None:
+                    lfg_handled.add(trans.from_block)
+
+        # Also include blocks whose transitions were explicitly resolved
+        # by earlier strategies (belt-and-suspenders for later passes).
         resolved_trans = snapshot.resolved_transitions
-        if resolved_trans:
-            sm = snapshot.state_machine
-            if sm is not None:
-                for t in sm.transitions:
-                    key = (t.from_state, t.to_state)
-                    if key in resolved_trans:
-                        already_redirected_blocks.add(t.from_block)
+        if resolved_trans and sm is not None:
+            for t in sm.transitions:
+                key = (t.from_state, t.to_state)
+                if key in resolved_trans:
+                    lfg_handled.add(t.from_block)
 
         builder = ModificationBuilder.from_snapshot(snapshot)
         modifications = []
         owned_blocks: set[int] = set()
+
+        # Count non-BST dispatcher preds for the log summary
+        total_preds = sum(
+            1 for pi in range(disp_blk.npred())
+            if disp_blk.pred(pi) not in bst_serials
+        )
+        skipped = sum(
+            1 for pi in range(disp_blk.npred())
+            if disp_blk.pred(pi) not in bst_serials
+            and disp_blk.pred(pi) in lfg_handled
+        )
+        remaining = total_preds - skipped
+        if skipped:
+            logger.info(
+                "BACKWARD_PRED: skipping %d LFG-handled predecessors, "
+                "processing %d remaining",
+                skipped, remaining,
+            )
 
         # Iterate dispatcher predecessors
         for pi in range(disp_blk.npred()):
@@ -125,13 +150,9 @@ class BackwardPredResolutionStrategy:
             if pred_serial in bst_serials:
                 continue
 
-            # Skip predecessors whose transitions were already resolved
-            # by earlier strategies (e.g. direct_handler_linearization).
-            if pred_serial in already_redirected_blocks:
-                logger.info(
-                    "BACKWARD_PRED: skipping blk[%d] — already resolved",
-                    pred_serial,
-                )
+            # Skip predecessors whose transitions are handled by LFG
+            # or were already resolved by earlier strategies.
+            if pred_serial in lfg_handled:
                 continue
 
             pred_blk = mba.get_mblock(pred_serial)
@@ -192,6 +213,7 @@ class BackwardPredResolutionStrategy:
                 conflict_density=0.0,
             ),
             risk_score=0.3,
+            metadata={"safeguard_min_required": 1},
         )
 
     def _resolve_exit_state(
