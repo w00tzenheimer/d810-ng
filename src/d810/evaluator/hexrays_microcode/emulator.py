@@ -281,6 +281,11 @@ class MicroCodeInterpreter(object):
 
         # Handle multiple definitions (phi-node situations)
         if len(defs) == 0:
+            if emulator_log.debug_on:
+                emulator_log.debug(
+                    "DEF-USE-DIAG: blk=%d var=%s ndefs=0 (no reaching defs)",
+                    blk_serial, get_mop_key(mop),
+                )
             return None
         elif len(defs) > 1:
             # Multiple reaching definitions - in symbolic mode, we could build a phi node
@@ -291,6 +296,11 @@ class MicroCodeInterpreter(object):
                 self._def_use_cache[mop_key] = value
                 return value
             else:
+                if emulator_log.debug_on:
+                    emulator_log.debug(
+                        "DEF-USE-DIAG: blk=%d var=%s ndefs=%d defs=%s (phi, giving up)",
+                        blk_serial, get_mop_key(mop), len(defs), defs[:3],
+                    )
                 return None
 
         def_site = defs[0]
@@ -334,13 +344,21 @@ class MicroCodeInterpreter(object):
                 return value
             else:
                 # Evaluation failed, remove from cache
+                if emulator_log.debug_on:
+                    emulator_log.debug(
+                        "DEF-USE-DIAG: blk=%d var=%s ndefs=1 def_site=blk%d@%#x eval=None (single def eval failed)",
+                        blk_serial, get_mop_key(mop), def_site.block_serial, def_site.ins_ea,
+                    )
                 if mop_key in self._def_use_cache:
                     del self._def_use_cache[mop_key]
                 return None
         except Exception as e:
             # Evaluation failed due to an exception, remove from cache
             if emulator_log.debug_on:
-                emulator_log.debug("Def-use resolution failed for %s: %s", format_mop_t(mop), e)
+                emulator_log.debug(
+                    "DEF-USE-DIAG: blk=%d var=%s ndefs=1 def_site=blk%d@%#x exc=%s",
+                    blk_serial, get_mop_key(mop), def_site.block_serial, def_site.ins_ea, e,
+                )
             if mop_key in self._def_use_cache:
                 del self._def_use_cache[mop_key]
             return None
@@ -949,6 +967,27 @@ class MicroCodeInterpreter(object):
                 # Dump environment for debugging
                 if emulator_log.debug_on:
                     environment.dump(f"Environment when looking up {_name}")
+                    try:
+                        blk_serial = environment.cur_blk.serial if environment.cur_blk is not None else -1
+                        mba = environment.cur_blk.mba if environment.cur_blk is not None else None
+                        if mba is not None and blk_serial >= 0:
+                            if mop.t == ida_hexrays.mop_r:
+                                defs = find_reaching_defs_for_reg(mba, blk_serial, mop.r, mop.size)
+                            elif mop.t == ida_hexrays.mop_S and mop.s is not None:
+                                defs = find_reaching_defs_for_stkvar(mba, blk_serial, mop.s.off, mop.size)
+                            else:
+                                defs = []
+                            emulator_log.debug(
+                                "DEF-USE-DIAG: blk=%d var=%s ndefs=%d defs=%s",
+                                blk_serial, get_mop_key(mop), len(defs), defs[:3],
+                            )
+                        else:
+                            emulator_log.debug(
+                                "DEF-USE-DIAG: var=%s no mba/blk available for chain query",
+                                get_mop_key(mop),
+                            )
+                    except Exception as exc:
+                        emulator_log.debug("DEF-USE-DIAG: failed to query chains: %s", exc)
                 raise EmulationException(
                     "Variable {0} is not defined for mop_r or mop_S".format(_name)
                 )
