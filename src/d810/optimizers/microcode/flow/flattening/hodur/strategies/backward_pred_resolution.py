@@ -193,6 +193,12 @@ class BackwardPredResolutionStrategy:
         modifications = []
         owned_blocks: set[int] = set()
 
+        # Build augmented exits set (shared across all histories).
+        # If the forward terminal proof discovers an exit state for one
+        # predecessor, subsequent predecessors with the same state value
+        # are filtered by the augmented set without re-running the BFS.
+        augmented_exits: set[int] = set()
+
         # Count non-BST dispatcher preds for the log summary
         total_preds = sum(
             1 for pi in range(disp_blk.npred())
@@ -257,7 +263,16 @@ class BackwardPredResolutionStrategy:
                 if value is not None:
                     target = resolve_redirectable_handler_target(
                         bst_result, value,
+                        augmented_exits=augmented_exits,
+                        mba=mba,
+                        dispatcher_serial=dispatcher_serial,
                     )
+                    if target is None and value not in bst_result.exits:
+                        logger.info(
+                            "BACKWARD_PRED: blk[%d] state=0x%X SKIPPED "
+                            "(terminal handler -- forward proof)",
+                            pred_serial, value,
+                        )
                     if target is not None:
                         resolved_targets.add(target)
                         resolved_values.append((value, target))

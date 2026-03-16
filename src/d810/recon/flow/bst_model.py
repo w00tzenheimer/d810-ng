@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
+from d810.core.typing import TYPE_CHECKING
 from d810.core.typing import Dict
 from d810.core.typing import Iterator
 from d810.core.typing import Optional
 from d810.core.typing import Set
 from d810.core.typing import Tuple
 from d810.recon.flow.interval_map import IntervalDispatcher
+
+if TYPE_CHECKING:
+    import ida_hexrays
 
 
 @dataclass(frozen=True)
@@ -247,6 +251,8 @@ def resolve_redirectable_handler_target(
     bst_result: BSTAnalysisResult,
     state_value: int,
     augmented_exits: Set[int] | None = None,
+    mba: "ida_hexrays.mbl_array_t | None" = None,
+    dispatcher_serial: int = -1,
 ) -> Optional[int]:
     """Resolve a state value to a redirectable handler target.
 
@@ -255,11 +261,21 @@ def resolve_redirectable_handler_target(
     a handler entry (safe to redirect to) vs an exit/return path
     (unsafe to redirect to).
 
+    When *mba* and *dispatcher_serial* are provided, a forward BFS
+    terminal proof is applied: if the resolved target handler
+    inevitably reaches return/epilogue without re-entering the
+    dispatcher or BST, the state is classified as an exit and
+    ``None`` is returned.
+
     Args:
         bst_result: BST analysis result with exits set
         state_value: concrete state value to resolve
         augmented_exits: additional exit states discovered by
             fallback strategies (e.g., backward-pred, valrange)
+        mba: microcode block array for forward terminal proof
+            (optional; skipped when ``None``)
+        dispatcher_serial: serial of the dispatcher block
+            (required when *mba* is provided, ignored otherwise)
 
     Returns:
         Handler serial if safe to redirect, None if exit/default/unknown
@@ -277,7 +293,58 @@ def resolve_redirectable_handler_target(
     if target is None:
         return None
 
+    # Forward terminal proof: if the resolved target handler
+    # inevitably reaches return/epilogue, it's an exit — don't redirect
+    if mba is not None and dispatcher_serial >= 0:
+        bst_blocks = set(bst_result.bst_node_blocks) if bst_result.bst_node_blocks else set()
+        if is_terminal_handler(mba, target, dispatcher_serial, bst_blocks):
+            # Augment exits with this discovery for future lookups
+            if augmented_exits is not None:
+                augmented_exits.add(state_value)
+            return None
+
     return target
+
+
+def is_terminal_handler(
+    mba: "ida_hexrays.mbl_array_t",
+    entry_serial: int,
+    dispatcher_serial: int,
+    bst_blocks: set[int],
+    max_depth: int = 50,
+) -> bool:
+    """Forward BFS proof that a handler inevitably reaches return/epilogue.
+
+    Returns True if ALL paths from entry_serial lead to BLT_STOP or
+    nsucc==0 blocks without going through the dispatcher or BST.
+    """
+    from collections import deque
+
+    BLT_STOP = 1  # ida_hexrays.BLT_STOP
+
+    queue: deque[int] = deque([entry_serial])
+    visited: set[int] = {entry_serial}
+    depth = 0
+
+    while queue and depth < max_depth:
+        depth += 1
+        s = queue.popleft()
+        if s >= mba.qty:
+            continue
+        blk = mba.get_mblock(s)
+        if blk is None:
+            continue
+        if blk.nsucc() == 0 or blk.type == BLT_STOP:
+            continue  # terminal leaf — OK
+        for i in range(blk.nsucc()):
+            succ = blk.succ(i)
+            if succ == dispatcher_serial or succ in bst_blocks:
+                return False  # reaches dispatcher/BST — NOT terminal
+            if succ not in visited:
+                visited.add(succ)
+                queue.append(succ)
+
+    return True  # all paths end at BLT_STOP/no-succ
 
 
 __all__ = [
@@ -287,4 +354,5 @@ __all__ = [
     "BSTTargetResolution",
     "resolve_target_via_bst",
     "resolve_redirectable_handler_target",
+    "is_terminal_handler",
 ]
