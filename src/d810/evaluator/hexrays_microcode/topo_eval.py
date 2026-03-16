@@ -112,7 +112,8 @@ def _compute_block_environments_impl(
         # ----- Seed MicroCodeEnvironment with IN values -----
         env = MicroCodeEnvironment()
         interpreter = MicroCodeInterpreter(
-            global_environment=env, symbolic_mode=False
+            global_environment=env, symbolic_mode=False,
+            const_in_states={},  # empty to prevent recursive topo_eval
         )
         _seed_environment(env, clean_in, blk, ida_hexrays)
 
