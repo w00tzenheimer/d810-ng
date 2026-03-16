@@ -22,73 +22,20 @@ References:
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from dataclasses import dataclass
-from d810.core.typing import Any
 
+from d810.cfg.lattice import BOTTOM, TOP, Const, LatticeValue, lattice_meet
 from d810.core.logging import getLogger
+from d810.core.typing import Any
 
 logger = getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Lattice
+# Type aliases (re-export canonical lattice types under SCCP-local names)
 # ---------------------------------------------------------------------------
 
-
-class _Sentinel:
-    """Singleton sentinel for BOTTOM / TOP lattice endpoints."""
-
-    __slots__ = ("name",)
-
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    def __repr__(self) -> str:
-        return self.name
-
-    def __eq__(self, other: object) -> bool:
-        return self is other
-
-    def __hash__(self) -> int:
-        return id(self)
-
-
-BOTTOM = _Sentinel("BOTTOM")  # Undetermined
-TOP = _Sentinel("TOP")  # Overdefined
-
-
-@dataclass(frozen=True, slots=True)
-class Const:
-    """A known constant value in the lattice."""
-
-    value: int
-    size: int
-
-    def __repr__(self) -> str:
-        return f"Const(0x{self.value:x}, {self.size})"
-
-
-LatticeVal = _Sentinel | Const
+LatticeVal = LatticeValue
 MopKey = tuple  # from get_mop_key
 CfgEdge = tuple[int, int]  # (from_serial, to_serial)
-
-# ---------------------------------------------------------------------------
-# Lattice meet
-# ---------------------------------------------------------------------------
-
-
-def _meet(a: LatticeVal, b: LatticeVal) -> LatticeVal:
-    """Lattice meet: BOTTOM /\\ x = x, TOP /\\ x = TOP, same Const = Const, else TOP."""
-    if a is BOTTOM:
-        return b
-    if b is BOTTOM:
-        return a
-    if a is TOP or b is TOP:
-        return TOP
-    # Both are Const
-    assert isinstance(a, Const) and isinstance(b, Const)
-    if a.value == b.value and a.size == b.size:
-        return a
-    return TOP
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +512,7 @@ def _run_sccp_impl(
     def _update_lattice(dest_key: MopKey, new_val: LatticeVal) -> bool:
         """Monotone lattice update.  Returns True if value changed."""
         old_val = lattice[dest_key]
-        merged = _meet(old_val, new_val)
+        merged = lattice_meet(old_val, new_val)
         if merged is old_val or merged == old_val:
             return False
         lattice[dest_key] = merged
@@ -809,9 +756,6 @@ def _revisit_phi_inputs(
 # ---------------------------------------------------------------------------
 
 __all__ = [
-    "BOTTOM",
-    "TOP",
-    "Const",
     "LatticeVal",
     "MopKey",
     "CfgEdge",
