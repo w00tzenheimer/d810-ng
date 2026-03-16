@@ -1730,95 +1730,17 @@ class LinearizedFlowGraphStrategy:
         bst_node_blocks: set[int],
         builder: ModificationBuilder,
     ) -> tuple[list, int, int]:
-        """NOP ``m_goto @dispatcher`` in handler blocks that are fully owned.
+        """Disabled -- dispatcher goto NOPs are no longer emitted.
 
-        After handler exits have been redirected and state variable writes
-        NOP'd, some 1-way blocks still have an explicit ``m_goto`` targeting
-        the dispatcher.  These back-edges keep the dispatcher reachable and
-        create spurious ``while`` loops in the decompiled output.
-
-        This pass NOPs the ``m_goto`` instruction (turning the block into a
-        dead-end) instead of redirecting it, which avoids the shared-block
-        reachability problems seen with redirect-based approaches.
-
-        Safety: only NOPs gotos in blocks where:
-
-        1. Block is 1-way (``nsucc==1``) with sole successor == dispatcher.
-        2. Block is NOT a BST comparison node.
-        3. Block is NOT the dispatcher itself.
-
-        Args:
-            snapshot: Immutable analysis snapshot for the current function.
-            dispatcher_serial: Serial of the BST dispatcher entry block.
-            bst_node_blocks: Set of BST node block serials to exclude.
-            builder: Modification builder for emitting NOP edits.
+        Previously NOP'd ``m_goto @dispatcher`` instructions in handler blocks.
+        This caused issues with blocks becoming unreachable dead-ends before
+        the dispatcher was fully disconnected.  The BST disconnect pass
+        (step 4) handles dispatcher back-edge removal more safely.
 
         Returns:
-            A tuple of ``(list_of_modifications, nop_count, skip_count)``.
+            An empty tuple of ``([], 0, 0)``.
         """
-        if dispatcher_serial < 0:
-            return [], 0, 0
-
-        mba = snapshot.mba
-        if mba is None:
-            return [], 0, 0
-
-        modifications: list = []
-        nop_count = 0
-        skip_count = 0
-
-        for blk_idx in range(mba.qty):  # type: ignore[attr-defined]
-            try:
-                blk = mba.get_mblock(blk_idx)  # type: ignore[attr-defined]
-            except (AttributeError, IndexError):
-                continue
-            if blk is None:
-                continue
-
-            serial = blk.serial
-
-            # Skip dispatcher itself and BST comparison nodes.
-            if serial == dispatcher_serial:
-                continue
-            if serial in bst_node_blocks:
-                continue
-
-            # Only 1-way blocks whose sole successor is the dispatcher.
-            if blk.nsucc() != 1:
-                continue
-            if blk.succ(0) != dispatcher_serial:
-                continue
-
-            # Find the tail instruction — must be m_goto.
-            tail = blk.tail
-            if tail is None:
-                continue
-            if tail.opcode != ida_hexrays.m_goto:
-                continue
-
-            # Use the instruction EA for the NOP target.
-            insn_ea = tail.ea
-            if insn_ea == 0 or insn_ea == 0xFFFFFFFFFFFFFFFF:
-                # Synthetic instruction with no valid EA — skip.
-                continue
-
-            modifications.append(
-                builder.nop_instruction(
-                    source_block=serial,
-                    instruction_ea=insn_ea,
-                )
-            )
-            nop_count += 1
-            logger.info(
-                "BST_GOTO_NOP: NOP'd m_goto @%d in blk[%d] (npred=%d)",
-                dispatcher_serial, serial, blk.npred(),
-            )
-
-        logger.info(
-            "BST_GOTO_NOP: NOP'd %d dispatcher gotos (incl. shared blocks), skipped %d",
-            nop_count, skip_count,
-        )
-        return modifications, nop_count, skip_count
+        return [], 0, 0
 
     @staticmethod
     def _disconnect_bst_comparison_nodes(

@@ -255,36 +255,10 @@ class BackwardPredResolutionStrategy:
             for history in histories:
                 value = history.get_mop_constant_value(state_var)
                 if value is not None:
-                    # Use IntervalDispatcher ONLY (exact + interval-backfilled
-                    # ranges). Skip handler_range_map fallback which maps MBA
-                    # gap values to wrong handlers via loose bounds.
-                    if bst_result.dispatcher is not None:
-                        target = bst_result.dispatcher.lookup(value)
-                    else:
-                        target = resolve_target_via_bst(bst_result, value)
-                    if target is not None:
-                        # Double-check: also try resolve_target_via_bst and
-                        # log if they disagree (diagnostic)
-                        full_target = resolve_target_via_bst(bst_result, value)
-                        if full_target != target:
-                            logger.info(
-                                "BACKWARD_PRED: blk[%d] state=0x%X dispatcher->blk[%d] "
-                                "vs resolve_target->blk[%s] (DIVERGENCE)",
-                                pred_serial, value, target,
-                                full_target if full_target is not None else "None",
-                            )
+                    target = resolve_target_via_bst(bst_result, value)
                     if target is not None:
                         resolved_targets.add(target)
                         resolved_values.append((value, target))
-
-            # TEMPORARY: configurable allowlist for individual redirect testing
-            import os
-            _allowlist_str = os.environ.get("BACKWARD_PRED_ALLOWLIST", "")
-            if _allowlist_str:
-                _allowlist = {int(x) for x in _allowlist_str.split(",") if x.strip()}
-                if pred_serial not in _allowlist:
-                    logger.info("BACKWARD_PRED: blk[%d] SKIPPED (not in env allowlist)", pred_serial)
-                    continue
 
             if len(resolved_targets) == 1:
                 # All paths agree on the same target — safe to redirect
