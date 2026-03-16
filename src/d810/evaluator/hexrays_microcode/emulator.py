@@ -260,13 +260,12 @@ class MicroCodeInterpreter(object):
         if mop.t not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
             return None
 
-        # Get the MBA from the environment's current instruction or block
-        mba = None
-        if environment.cur_ins is not None:
-            mba = environment.cur_ins.mba
-        elif environment.cur_blk is not None:
-            mba = environment.cur_blk.mba
-        else:
+        # Get the MBA from the environment's current block
+        # (minsn_t does not have .mba — only mblock_t does)
+        if environment.cur_blk is None:
+            return None
+        mba = environment.cur_blk.mba
+        if mba is None:
             return None
 
         if mop.t == ida_hexrays.mop_r:
