@@ -46,6 +46,7 @@ from d810.errors import (
     UnresolvedMopException,
     WritableMemoryReadException,
 )
+from d810.hexrays.expr.p_ast import get_mop_key
 from d810.hexrays.ir.cfg_queries import get_block_serials_by_address
 from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
@@ -243,12 +244,13 @@ class MicroCodeInterpreter(object):
         # Enable symbolic fallback for unresolved variables
         self.symbolic_mode: bool = symbolic_mode
         # Cache for def-use chain resolutions during the current emulation pass
-        self._def_use_cache: dict[ida_hexrays.mop_t, int] = {}
+        self._def_use_cache: dict[tuple, int | None] = {}
 
     def _resolve_mop_via_def_use(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int | None:
         # Use cached value if available
-        if mop in self._def_use_cache:
-            cached_value = self._def_use_cache[mop]
+        mop_key = get_mop_key(mop)
+        if mop_key in self._def_use_cache:
+            cached_value = self._def_use_cache[mop_key]
             # Check for cycle detection sentinel (None value used as marker)
             if cached_value is None:
                 return None  # Cycle detected, prevent infinite recursion
@@ -287,7 +289,7 @@ class MicroCodeInterpreter(object):
             if self.symbolic_mode:
                 # In symbolic mode, return a synthetic value that represents the merge
                 value = self.synthetic_call.get(mop)
-                self._def_use_cache[mop] = value
+                self._def_use_cache[mop_key] = value
                 return value
             else:
                 return None
@@ -309,7 +311,7 @@ class MicroCodeInterpreter(object):
             return None
 
         # Insert cycle detection sentinel before recursive evaluation
-        self._def_use_cache[mop] = None
+        self._def_use_cache[mop_key] = None
         
         # Save current environment flow context to restore later
         saved_cur_blk = environment.cur_blk
@@ -329,19 +331,19 @@ class MicroCodeInterpreter(object):
                 # Mask the result to the destination size
                 res_mask = AND_TABLE[def_insn.d.size] if def_insn.d and def_insn.d.size else AND_TABLE[mop.size]
                 value = value & res_mask
-                self._def_use_cache[mop] = value
+                self._def_use_cache[mop_key] = value
                 return value
             else:
                 # Evaluation failed, remove from cache
-                if mop in self._def_use_cache:
-                    del self._def_use_cache[mop]
+                if mop_key in self._def_use_cache:
+                    del self._def_use_cache[mop_key]
                 return None
         except Exception as e:
             # Evaluation failed due to an exception, remove from cache
             if emulator_log.debug_on:
                 emulator_log.debug("Def-use resolution failed for %s: %s", format_mop_t(mop), e)
-            if mop in self._def_use_cache:
-                del self._def_use_cache[mop]
+            if mop_key in self._def_use_cache:
+                del self._def_use_cache[mop_key]
             return None
         finally:
             # Restore environment flow context
