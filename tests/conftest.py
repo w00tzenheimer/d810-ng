@@ -4,6 +4,37 @@ Shared configuration for all test suites.
 Note: Clang-related fixtures are in tests/system/conftest.py for system tests.
 """
 
+# -- Memory limit enforcement (must run before heavy imports) --
+# Docker --memory is NOT enforced on macOS Docker Desktop.
+# resource.setrlimit(RLIMIT_DATA) IS enforced inside Linux containers.
+# The env var is injected by tools/scripts/run_system_tests_docker.sh.
+import os as _os
+
+_mem_limit_str = _os.environ.get("D810_MEMORY_LIMIT_BYTES", "0")
+try:
+    _mem_limit = int(_mem_limit_str)
+except (ValueError, TypeError):
+    _mem_limit = 0
+
+if _mem_limit > 0:
+    try:
+        import resource as _resource
+
+        _resource.setrlimit(
+            _resource.RLIMIT_DATA, (_mem_limit, _mem_limit)
+        )
+        print(
+            f"[d810] RLIMIT_DATA set to "
+            f"{_mem_limit / (1024 ** 3):.1f}GB "
+            f"({_mem_limit} bytes)"
+        )
+    except (ImportError, ValueError, OSError) as _exc:
+        # resource module unavailable (Windows) or limit rejected by OS
+        print(f"[d810] RLIMIT_DATA enforcement skipped: {_exc}")
+
+del _mem_limit_str, _mem_limit
+# -- End memory limit enforcement --
+
 import os
 import pathlib
 import sys

@@ -77,6 +77,21 @@ set -e
 DOCKER_IMAGE="${D810_DOCKER_IMAGE:-idapro-9.3}"
 DOCKER_MEMORY="${D810_DOCKER_MEMORY:-20g}"
 
+# Convert memory string (e.g., "20g", "4G", "512m") to bytes for RLIMIT_DATA enforcement.
+# Docker --memory is NOT enforced on macOS Docker Desktop; resource.setrlimit IS enforced
+# inside the container.
+_mem_to_bytes() {
+  local val="${1%[gGmMkK]}"
+  local unit="${1: -1}"
+  case "$unit" in
+    g|G) echo $(( val * 1073741824 )) ;;
+    m|M) echo $(( val * 1048576 )) ;;
+    k|K) echo $(( val * 1024 )) ;;
+    *)   echo "$1" ;;
+  esac
+}
+MEMORY_BYTES=$(_mem_to_bytes "$DOCKER_MEMORY")
+
 # Repo root: env or git from current dir (script may be run from repo root or tools/scripts)
 if [ -n "${D810_REPO_ROOT}" ]; then
   REPO_ROOT="${D810_REPO_ROOT}"
@@ -233,6 +248,7 @@ run_bash() {
   local inner="$1"
   docker run --rm \
     --memory "$DOCKER_MEMORY" \
+    -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
     $VOL_WORK \
     $VOL_LOGS \
     -w /work \
@@ -243,6 +259,7 @@ run_bash_it() {
   local inner="$1"
   docker run -it --rm \
     --memory "$DOCKER_MEMORY" \
+    -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
     $VOL_WORK \
     $VOL_LOGS \
     -w /work \
@@ -258,6 +275,7 @@ run_bash_exec() {
   local inner="export $ENV_TEST && $SETUP_CMD && exec \"\$@\""
   docker run --rm \
     --memory "$DOCKER_MEMORY" \
+    -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
     $VOL_WORK \
     $VOL_LOGS \
     -w /work \
