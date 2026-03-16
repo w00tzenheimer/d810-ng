@@ -5,6 +5,7 @@ import functools
 import importlib
 import weakref
 from d810.core import typing
+from d810.core.typing import Protocol, runtime_checkable
 import ida_hexrays
 import idaapi
 
@@ -67,13 +68,140 @@ from d810.hexrays.utils.ida_utils import is_never_written_var, fetch_idb_value
 
 emulator_log = getLogger(__name__)
 
-# Per-MBA SCCP cache — WeakKeyDictionary so entries are freed when MBA is
-# garbage-collected.  Falls back to a plain dict if mba_t (SWIG object) is
-# not weakly referenceable; the TypeError is caught on first insertion and
-# the inner dict is replaced with a plain dict.
-# Wrapped in a mutable list to allow replacement without ``global``.
-_sccp_cache_holder: list[weakref.WeakKeyDictionary | dict] = [weakref.WeakKeyDictionary()]
 
+@runtime_checkable
+class MopResolutionStrategy(Protocol):
+    """Strategy for resolving undefined mop_r/mop_S operands.
+
+    Strategies are tried in order after environment lookup fails and before
+    def-use chain resolution.  Each strategy receives the operand, the MBA,
+    the current block serial, and the emulator environment.  It must return
+    a concrete integer constant or ``None`` to defer to the next strategy.
+    """
+
+    def resolve(self, mop: object, mba: object, blk_serial: int, environment: object) -> int | None:
+        """Return constant value or None."""
+        ...
+
+
+class SCCPStrategy:
+    """Resolve via SCCP lattice (per-MBA cached)."""
+
+    def __init__(self) -> None:
+        self._cache: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+        # Fallback plain dict when mba_t is not weakly referenceable.
+        self._plain_fallback: dict | None = None
+
+    def _get_cache(self) -> weakref.WeakKeyDictionary | dict:
+        if self._plain_fallback is not None:
+            return self._plain_fallback
+        return self._cache
+
+    def resolve(self, mop: object, mba: object, blk_serial: int, environment: object) -> int | None:
+        cache = self._get_cache()
+        try:
+            in_cache = mba in cache
+        except TypeError:
+            # mba_t not weakly referenceable — downgrade to plain dict
+            cache = {}
+            self._plain_fallback = cache
+            in_cache = False
+
+        if not in_cache:
+            try:
+                _mod = importlib.import_module("d810.evaluator.hexrays_microcode.sccp")
+                cache[mba] = _mod.run_sccp(mba)
+                if emulator_log.debug_on:
+                    emulator_log.debug(
+                        "SCCP: computed %d lattice entries for mba",
+                        len(cache[mba]),
+                    )
+            except TypeError:
+                cache = {}
+                self._plain_fallback = cache
+            except Exception:
+                try:
+                    cache[mba] = {}
+                except TypeError:
+                    cache = {}
+                    self._plain_fallback = cache
+
+        result = cache.get(mba, {})
+        if result:
+            from d810.hexrays.expr.p_ast import get_mop_key
+            val = result.get(get_mop_key(mop))
+            if val is not None:
+                if emulator_log.debug_on:
+                    emulator_log.debug(
+                        "SCCP-HIT: blk=%d var=%s -> 0x%x",
+                        blk_serial, get_mop_key(mop), val,
+                    )
+                return val
+        return None
+
+
+class DemandDrivenStrategy:
+    """Resolve via demand-driven worklist."""
+
+    def __init__(self) -> None:
+        self._memo: dict[tuple, int | None] = {}
+
+    def resolve(self, mop: object, mba: object, blk_serial: int, environment: object) -> int | None:
+        try:
+            _mod = importlib.import_module("d810.evaluator.hexrays_microcode.demand_eval")
+            import ida_hexrays as _ihr
+            if mop.t == _ihr.mop_r:
+                return _mod.resolve_variable_demand(mba, blk_serial, mop.t, mop.r, mop.size, self._memo)
+            elif mop.t == _ihr.mop_S and mop.s is not None:
+                return _mod.resolve_variable_demand(mba, blk_serial, mop.t, mop.s.off, mop.size, self._memo)
+        except Exception:
+            pass
+        return None
+
+    def clear(self) -> None:
+        self._memo.clear()
+
+
+class TopoEvalStrategy:
+    """Resolve via topological block environment pre-pass."""
+
+    def __init__(self) -> None:
+        self._cache: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+        self._plain_fallback: dict | None = None
+
+    def _get_cache(self) -> weakref.WeakKeyDictionary | dict:
+        if self._plain_fallback is not None:
+            return self._plain_fallback
+        return self._cache
+
+    def resolve(self, mop: object, mba: object, blk_serial: int, environment: object) -> int | None:
+        cache = self._get_cache()
+        try:
+            in_cache = mba in cache
+        except TypeError:
+            cache = {}
+            self._plain_fallback = cache
+            in_cache = False
+
+        if not in_cache:
+            try:
+                _mod = importlib.import_module("d810.evaluator.hexrays_microcode.topo_eval")
+                cache[mba] = _mod.compute_block_environments(mba)
+            except TypeError:
+                cache = {}
+                self._plain_fallback = cache
+            except Exception:
+                try:
+                    cache[mba] = {}
+                except TypeError:
+                    cache = {}
+                    self._plain_fallback = cache
+
+        block_env = cache.get(mba, {}).get(blk_serial)
+        if block_env:
+            from d810.hexrays.expr.p_ast import get_mop_key
+            return block_env.get(get_mop_key(mop))
+        return None
 
 
 # Extracted class
@@ -242,7 +370,13 @@ class MicroCodeInterpreter(object):
     concrete states are not interchangeable.
     """
 
-    def __init__(self, global_environment=None, symbolic_mode=False, const_in_states=None):
+    def __init__(
+        self,
+        global_environment=None,
+        symbolic_mode=False,
+        const_in_states=None,
+        strategies: list[MopResolutionStrategy] | None = None,
+    ):
         self.global_environment = (
             MicroCodeEnvironment() if global_environment is None else global_environment
         )
@@ -252,10 +386,8 @@ class MicroCodeInterpreter(object):
         self.symbolic_mode: bool = symbolic_mode
         # Cache for def-use chain resolutions during the current emulation pass
         self._def_use_cache: dict[tuple, int | None] = {}
-        # Topo-eval block environments (populated lazily in debug mode)
-        self._const_in_states: dict[int, dict[tuple, int]] | None = const_in_states
-        # Demand-eval memo (shared across calls within a pass, debug-only)
-        self._demand_memo: dict[tuple, int | None] = {}
+        # Resolution strategies (tried in order after env lookup, before def-use chains)
+        self._strategies: list[MopResolutionStrategy] = strategies or []
 
     def _resolve_mop_via_def_use(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int | None:
         # Use cached value if available
@@ -955,80 +1087,20 @@ class MicroCodeInterpreter(object):
             if value is not None:
                 return value
 
-            # Strategy 2+3: debug-only advanced cross-block resolvers
-            if emulator_log.debug_on:
+            # Try configured resolution strategies
+            if self._strategies:
                 cur_blk = environment.cur_blk
-                # SCCP (Algorithm 3) — per-MBA cached
                 if cur_blk is not None and cur_blk.mba is not None:
-                    mba = cur_blk.mba
-                    _cache = _sccp_cache_holder[0]
-                    try:
-                        _in_cache = mba in _cache
-                    except TypeError:
-                        # mba_t not weakly referenceable — downgrade to plain dict
-                        _cache = {}
-                        _sccp_cache_holder[0] = _cache
-                        _in_cache = False
-                    if not _in_cache:
+                    mba_ref = cur_blk.mba
+                    blk_serial = cur_blk.serial
+                    for strategy in self._strategies:
                         try:
-                            _sccp_mod = importlib.import_module(
-                                "d810.evaluator.hexrays_microcode.sccp"
-                            )
-                            _cache[mba] = _sccp_mod.run_sccp(mba)
-                            if emulator_log.debug_on:
-                                emulator_log.debug(
-                                    "SCCP: computed %d lattice entries for mba",
-                                    len(_cache[mba]),
-                                )
-                        except TypeError:
-                            # Still can't store — fall back to plain dict
-                            _cache = {}
-                            _sccp_cache_holder[0] = _cache
+                            value = strategy.resolve(mop, mba_ref, blk_serial, environment)
+                            if value is not None:
+                                environment.define(mop, value)
+                                return value
                         except Exception:
-                            try:
-                                _cache[mba] = {}
-                            except TypeError:
-                                _cache = {}
-                                _sccp_cache_holder[0] = _cache
-
-                    sccp_result = _cache.get(mba, {})
-                    if sccp_result:
-                        mop_key = get_mop_key(mop)
-                        val = sccp_result.get(mop_key)
-                        if val is not None:
-                            environment.define(mop, val)
-                            if emulator_log.debug_on:
-                                emulator_log.debug(
-                                    "SCCP-HIT: blk=%d var=%s -> 0x%x",
-                                    cur_blk.serial, mop_key, val,
-                                )
-                            return val
-
-                # Demand-driven worklist (Algorithm 2)
-                if cur_blk is not None and cur_blk.mba is not None:
-                    try:
-                        _demand = importlib.import_module(
-                            "d810.evaluator.hexrays_microcode.demand_eval"
-                        )
-                        mba = cur_blk.mba
-                        blk_serial = cur_blk.serial
-                        if mop.t == ida_hexrays.mop_r:
-                            result = _demand.resolve_variable_demand(
-                                mba, blk_serial, mop.t, mop.r, mop.size,
-                                self._demand_memo,
-                            )
-                        elif mop.t == ida_hexrays.mop_S and mop.s is not None:
-                            result = _demand.resolve_variable_demand(
-                                mba, blk_serial, mop.t, mop.s.off, mop.size,
-                                self._demand_memo,
-                            )
-                        else:
-                            result = None
-                        if result is not None:
-                            environment.define(mop, result)
-                            return result
-                    except Exception:
-                        pass
+                            pass
 
             # Next, try to resolve via def-use chains (static dataflow)
             value = self._resolve_mop_via_def_use(mop, environment)
@@ -1146,7 +1218,10 @@ class MicroCodeInterpreter(object):
     def _clear_def_use_cache(self):
         """Clear the def-use chain resolution cache at the start of each emulation pass."""
         self._def_use_cache.clear()
-        self._demand_memo.clear()
+        for strategy in self._strategies:
+            _clear = getattr(strategy, "clear", None)
+            if _clear is not None:
+                _clear()
 
     def eval_instruction(
         self,
