@@ -246,35 +246,55 @@ class BackwardPredResolutionStrategy:
                 )
                 continue
 
-            resolved_value = None
+            # Collect ALL resolved targets across histories.
+            # When a block has multiple predecessors, different paths may
+            # write different state values.  We must only redirect when
+            # every resolved path agrees on the same target handler.
+            resolved_targets: set[int] = set()
+            resolved_values: list[tuple[int, int]] = []
             for history in histories:
                 value = history.get_mop_constant_value(state_var)
                 if value is not None:
-                    resolved_value = value
-                    break  # first valid resolution wins
+                    target = resolve_target_via_bst(bst_result, value)
+                    if target is not None:
+                        resolved_targets.add(target)
+                        resolved_values.append((value, target))
 
-            if resolved_value is None:
-                continue
-
-            # BST lookup
-            target = resolve_target_via_bst(bst_result, resolved_value)
-            if target is None:
-                logger.info(
-                    "BACKWARD_PRED: blk[%d] state=0x%X no BST target",
-                    pred_serial, resolved_value,
+            if len(resolved_targets) == 1:
+                # All paths agree on the same target — safe to redirect
+                target = next(iter(resolved_targets))
+                mod = builder.goto_redirect(
+                    source_block=pred_serial, target_block=target,
                 )
-                continue
-
-            # Emit redirect
-            mod = builder.goto_redirect(
-                source_block=pred_serial, target_block=target,
-            )
-            if mod is not None:
-                modifications.append(mod)
-                owned_blocks.add(pred_serial)
+                if mod is not None:
+                    modifications.append(mod)
+                    owned_blocks.add(pred_serial)
+                    logger.info(
+                        "BACKWARD_PRED: blk[%d] MopTracker resolved state=0x%X "
+                        "-> handler blk[%d] (%d paths agree)",
+                        pred_serial, resolved_values[0][0], target,
+                        len(resolved_values),
+                    )
+            elif len(resolved_targets) > 1:
+                # Paths disagree — needs block duplication (not yet implemented)
                 logger.info(
-                    "BACKWARD_PRED: blk[%d] MopTracker resolved state=0x%X -> handler blk[%d]",
-                    pred_serial, resolved_value, target,
+                    "BACKWARD_PRED: blk[%d] MopTracker MULTI-TARGET: "
+                    "%d paths -> %d targets %s (needs duplication)",
+                    pred_serial, len(resolved_values),
+                    len(resolved_targets),
+                    {hex(t) for t in resolved_targets},
+                )
+            elif len(histories) > 0:
+                # Histories exist but none resolved to a BST target
+                logger.info(
+                    "BACKWARD_PRED: blk[%d] MopTracker returned %d histories, "
+                    "none resolved",
+                    pred_serial, len(histories),
+                )
+            else:
+                logger.info(
+                    "BACKWARD_PRED: blk[%d] MopTracker returned 0 histories",
+                    pred_serial,
                 )
 
         if not modifications:

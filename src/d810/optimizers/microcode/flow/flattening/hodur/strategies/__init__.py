@@ -115,7 +115,8 @@ ALL_STRATEGIES: list[type] = [
     LinearizedFlowGraphStrategy,
     HiddenHandlerClosureStrategy,
     TopologicalSortStrategy,
-    BackwardPredResolutionStrategy,
+    # BackwardPredResolutionStrategy,  # DISABLED: redirects cause DCE (58 lines)
+    # Needs multi-pred block duplication before re-enabling.
 ]
 
 # Legacy pipeline preserved for reference/fallback.
