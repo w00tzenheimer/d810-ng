@@ -396,6 +396,15 @@ class MicroCodeInterpreter(object):
             self._strategies = []
 
     def _resolve_mop_via_def_use(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int | None:
+        # Use cached value if available
+        mop_key = get_mop_key(mop)
+        if mop_key in self._def_use_cache:
+            cached_value = self._def_use_cache[mop_key]
+            # Check for cycle detection sentinel (None value used as marker)
+            if cached_value is None:
+                return None  # Cycle detected, prevent infinite recursion
+            return cached_value
+
         # We only handle mop_r and mop_S for now
         if mop.t not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
             return None
@@ -408,26 +417,15 @@ class MicroCodeInterpreter(object):
         if mba is None:
             return None
 
-        # Cache key includes block serial to distinguish different SSA versions
-        # of the same stack variable at different program points.
-        blk_serial = environment.cur_blk.serial
-        mop_key = (blk_serial, *get_mop_key(mop))
-
-        # Use cached value if available
-        if mop_key in self._def_use_cache:
-            cached_value = self._def_use_cache[mop_key]
-            # Check for cycle detection sentinel (None value used as marker)
-            if cached_value is None:
-                return None  # Cycle detected, prevent infinite recursion
-            return cached_value
-
         if mop.t == ida_hexrays.mop_r:
             reg_mreg = mop.r
             size = mop.size
+            blk_serial = environment.cur_blk.serial if environment.cur_blk is not None else 0
             defs = find_reaching_defs_for_reg(mba, blk_serial, reg_mreg, size)
         else:  # mop_S
             stkoff = mop.s.off
             size = mop.size
+            blk_serial = environment.cur_blk.serial if environment.cur_blk is not None else 0
             defs = find_reaching_defs_for_stkvar(mba, blk_serial, stkoff, size)
 
         # Handle multiple definitions (phi-node situations)
@@ -531,13 +529,6 @@ class MicroCodeInterpreter(object):
         if res is not None:
             if (ins.d is not None) and ins.d.t != ida_hexrays.mop_z:
                 environment.assign(ins.d, res, auto_define=True)
-                # Trace state variable defines
-                if emulator_log.debug_on and ins.d.t == ida_hexrays.mop_S and ins.d.s is not None:
-                    if ins.d.s.off == 0x7BC:
-                        emulator_log.debug(
-                            "STATE-VAR-TRACE: DEFINE blk=%d key=%s val=0x%x ins=%s",
-                            blk.serial, get_mop_key(ins.d), res, format_minsn_t(ins),
-                        )
         return res
 
     def _eval_instruction(
@@ -1097,14 +1088,6 @@ class MicroCodeInterpreter(object):
         if mop.t == ida_hexrays.mop_n:
             return mop.nnn.value
         elif mop.t in [ida_hexrays.mop_r, ida_hexrays.mop_S]:
-            # Trace state variable lookups
-            if emulator_log.debug_on and mop.t == ida_hexrays.mop_S and mop.s is not None and mop.s.off == 0x7BC:
-                emulator_log.debug(
-                    "STATE-VAR-TRACE: LOOKUP blk=%d key=%s env_keys=%s",
-                    environment.cur_blk.serial if environment.cur_blk else -1,
-                    get_mop_key(mop),
-                    [get_mop_key(m) for m in environment.mop_S_record.mops[:min(5, len(environment.mop_S_record.mops))]],
-                )
             # First, try the environment (values assigned during this emulation run)
             value = environment.lookup(mop, raise_exception=False)
             if value is not None:
