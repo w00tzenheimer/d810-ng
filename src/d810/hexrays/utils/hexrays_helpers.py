@@ -10,14 +10,14 @@ import dataclasses
 import enum
 
 import ida_hexrays
-from d810.core import typing
-from d810.core.typing import TYPE_CHECKING, Optional, Tuple, Union
+import idaapi
 
-from d810.core import getLogger
+from d810.core import getLogger, typing
 
 # Import constant tables from d810.core (IDA-independent)
 from d810.core.bits import AND_TABLE, MSB_TABLE
 from d810.core.cymode import CythonMode
+from d810.core.typing import TYPE_CHECKING, Optional, Tuple, Union
 
 # Try to import Cython hash_mop if CythonMode is enabled
 cy_hash_mop = None
@@ -346,9 +346,9 @@ MATURITY_TO_STRING_DICT: dict[int, str] = {
 STRING_TO_MATURITY_DICT: dict[str, int] = {
     v: k for k, v in MATURITY_TO_STRING_DICT.items()
 }
-STRING_TO_MATURITY_DICT.update({
-    v.replace("MMAT_", ""): k for k, v in MATURITY_TO_STRING_DICT.items()
-})
+STRING_TO_MATURITY_DICT.update(
+    {v.replace("MMAT_", ""): k for k, v in MATURITY_TO_STRING_DICT.items()}
+)
 
 MOP_TYPE_TO_STRING_DICT: dict[int, str] = {
     ida_hexrays.mop_z: "mop_z",
@@ -452,6 +452,254 @@ MINSN_TO_AST_FORBIDDEN_OPCODES: list[int] = CONTROL_FLOW_OPCODES + [
     ida_hexrays.m_und,
     ida_hexrays.m_ext,
 ]
+
+
+class BlockType(enum.IntEnum):
+    """Basic block type constants for Hex-Rays decompiler."""
+
+    NONE = ida_hexrays.BLT_NONE
+    """unknown block type"""
+
+    STOP = ida_hexrays.BLT_STOP
+    """stops execution regularly (must be the last block)"""
+
+    WAY0 = ida_hexrays.BLT_0WAY
+    """does not have successors (tail is a noret function)"""
+
+    WAY1 = ida_hexrays.BLT_1WAY
+    """passes execution to one block (regular or goto block)"""
+
+    WAY2 = ida_hexrays.BLT_2WAY
+    """passes execution to two blocks (conditional jump)"""
+
+    NWAY = ida_hexrays.BLT_NWAY
+    """passes execution to many blocks (switch idiom)"""
+
+    XTRN = ida_hexrays.BLT_XTRN
+    """external block (out of function address)"""
+
+
+BLT_NAMES: dict[int, str] = {
+    BlockType.NONE: "BLT_NONE",
+    BlockType.STOP: "BLT_STOP",
+    BlockType.WAY0: "BLT_0WAY",
+    BlockType.WAY1: "BLT_1WAY",
+    BlockType.WAY2: "BLT_2WAY",
+    BlockType.NWAY: "BLT_NWAY",
+    BlockType.XTRN: "BLT_XTRN",
+}
+STRING_TO_BLT_DICT: dict[str, int] = {v: k for k, v in BLT_NAMES.items()}
+STRING_TO_BLT_DICT.update({v.replace("BLT_", ""): k for k, v in BLT_NAMES.items()})
+
+
+class ShowInstructionsFlags(enum.IntEnum):
+    """Flags for showing instructions in the microcode dump."""
+
+    SHINS_NUMADDR = idaapi.SHINS_NUMADDR
+    """display definition addresses for numbers"""
+
+    SHINS_VALNUM = idaapi.SHINS_VALNUM
+    """display value numbers"""
+
+    SHINS_SHORT = idaapi.SHINS_SHORT
+    """do not display use-def chains and other attrs"""
+
+    SHINS_LDXEA = idaapi.SHINS_LDXEA
+    """display address of ldx expressions (not used)"""
+
+
+class SideEffectFlags(enum.IntEnum):
+    """Flags for side effects in the microcode dump.
+
+    These enums are used during the Microcode transformation phase, specifically
+    when you are using functions like handle_new_size() or modifying the width
+    of an operand (e.g., changing a 32-bit mov to an 8-bit mov).
+
+    Side Effect Handling - When you change the size of an operation, it might affect other things
+                           (like CPU flags or high bits of a register). These flags tell Hex-Rays
+                           how to manage those "side effects."
+
+        - NO_SIDEFF: You are changing the size, but you're telling the engine:
+                     "Ignore any consequences for now." If you use this, you are responsible for
+                     manually calling handle_new_size() later to clean up the logic.
+
+        - WITH_SIDEFF: This is the "standard" way. It changes the size and immediately
+                       instructs the engine to update all related logic (like zero-extensions
+                       or sign-extensions) caused by that change.
+
+        - ONLY_SIDEFF: This doesn't change the size of the operand itself; it only triggers the logic
+                       that handles the consequences of a size change that presumably already happened.
+
+    Permissive Sizing - used during the Type Recovery or De-optimization phases when the decompiler is trying
+                        to decide if a specific micro-instruction is valid.
+        - ANY_REGSIZE: Normally, instructions have strict requirements (e.g., a 4-byte addition needs 4-byte registers).
+                       This flag tells the decompiler to relax and allow any register size for that specific operation.
+        - ANY_FPSIZE: Similar to the above, but specifically for Floating Point operations. It allows
+                      the engine to be flexible with float/double/long double widths during analysis.
+    """
+
+    NO_SIDEFF = idaapi.NO_SIDEFF
+    """change operand size but ignore side effects if you decide to keep the changed operand, handle_new_size() must be called"""
+
+    WITH_SIDEFF = idaapi.WITH_SIDEFF
+    """change operand size and handle side effects"""
+
+    ONLY_SIDEFF = idaapi.ONLY_SIDEFF
+    """only handle side effects"""
+
+    ANY_REGSIZE = idaapi.ANY_REGSIZE
+    """any register size is permitted"""
+
+    ANY_FPSIZE = idaapi.ANY_FPSIZE
+    """any size of floating operand is permitted"""
+
+
+class MicrocodeBasicBlockFlag(enum.IntEnum):
+    """Flags for microcode basic blocks (mblock_t).
+
+    These flags describe the state and type of a microcode basic block during
+    decompilation phases in Hex-Rays. Each bit flag corresponds to a particular
+    property, transformation requirement, or role of the basic block.
+
+    """
+
+    PRIV = idaapi.MBL_PRIV
+    """private block - no instructions except the specified are accepted (used in patterns)"""
+
+    NONFAKE = idaapi.MBL_NONFAKE
+    """regular block"""
+
+    FAKE = idaapi.MBL_FAKE
+    """fake block"""
+
+    GOTO = idaapi.MBL_GOTO
+    """this block is a goto target"""
+
+    TCAL = idaapi.MBL_TCAL
+    """artificial call block for tail calls"""
+
+    PUSH = idaapi.MBL_PUSH
+    """needs 'convert push/pop instructions'"""
+
+    DMT64 = idaapi.MBL_DMT64
+    """needs 'demote 64bits'"""
+
+    COMB = idaapi.MBL_COMB
+    """needs 'combine' pass"""
+
+    PROP = idaapi.MBL_PROP
+    """needs 'propagation' pass"""
+
+    DEAD = idaapi.MBL_DEAD
+    """needs 'eliminate deads' pass"""
+
+    LIST = idaapi.MBL_LIST
+    """use/def lists are ready (not dirty)"""
+
+    INCONST = idaapi.MBL_INCONST
+    """inconsistent lists: we are building them"""
+
+    CALL = idaapi.MBL_CALL
+    """call information has been built"""
+
+    BACKPROP = idaapi.MBL_BACKPROP
+    """performed backprop_cc"""
+
+    NORET = idaapi.MBL_NORET
+    """dead end block: doesn't return execution control"""
+
+    DSLOT = idaapi.MBL_DSLOT
+    """block for delay slot"""
+
+    VALRANGES = idaapi.MBL_VALRANGES
+    """should optimize using value ranges"""
+
+    KEEP = idaapi.MBL_KEEP
+    """do not remove even if unreachable"""
+
+    INLINED = idaapi.MBL_INLINED
+    """block was inlined, not originally part of mbr"""
+
+    EXTFRAME = idaapi.MBL_EXTFRAME
+    """an inlined block with an external frame"""
+
+
+class FuncFlags(enum.IntFlag):
+    """
+    Flags used to describe properties of functions.
+    """
+    NORET = 0x00000001
+    """Function doesn't return"""
+
+    FAR = 0x00000002
+    """Far function"""
+
+    LIB = 0x00000004
+    """Library function"""
+
+    STATICDEF = 0x00000008
+    """Static function"""
+
+    FRAME = 0x00000010
+    """Function uses frame pointer (BP)"""
+
+    USERFAR = 0x00000020
+    """User has specified far-ness of the function"""
+
+    HIDDEN = 0x00000040
+    """A hidden function chunk"""
+
+    THUNK = 0x00000080
+    """Thunk (jump) function"""
+
+    BOTTOMBP = 0x00000100
+    """BP points to the bottom of the stack frame"""
+
+    NORET_PENDING = 0x00000200
+    """Function 'non-return' analysis must be performed.
+    This flag is verified upon func_does_return()
+    """
+
+    SP_READY = 0x00000400
+    """SP-analysis has been performed.
+    If this flag is on, the stack change points should not be modified anymore.
+    Currently this analysis is performed only for PC.
+    """
+
+    FUZZY_SP = 0x00000800
+    """Function changes SP in untraceable way, for example: and esp, 0FFFFFFF0h"""
+
+    PROLOG_OK = 0x00001000
+    """Prolog analysis has been performed by last SP-analysis"""
+
+    PURGED_OK = 0x00004000
+    """'argsize' field has been validated.
+    If this bit is clear and 'argsize' is 0, then we do not know the real number
+    of bytes removed from the stack. This bit is handled by the processor module.
+    """
+
+    TAIL = 0x00008000
+    """This is a function tail.
+    Other bits must be clear (except FUNC_HIDDEN).
+    """
+
+    LUMINA = 0x00010000
+    """Function info is provided by Lumina."""
+
+    OUTLINE = 0x00020000
+    """Outlined code, not a real function."""
+
+    REANALYZE = 0x00040000
+    """Function frame changed, request to reanalyze the function after the last insn is analyzed."""
+
+    UNWIND = 0x00080000
+    """Function is an exception unwind handler"""
+
+    CATCH = 0x00100000
+    """Function is an exception catch handler"""
+
+    RESERVED = 0x8000000000000000
+    """Reserved (for internal usage)"""
 
 
 # Hex-Rays mop equality checking
@@ -736,12 +984,12 @@ def is_check_mop(lo: ida_hexrays.mop_t) -> bool:
 
 def extract_num_mop(
     ins: ida_hexrays.minsn_t,
-) -> tuple[ida_hexrays.mop_t|None, ida_hexrays.mop_t|None]:
-    num_mop: ida_hexrays.mop_t|None = None
-    other_mop: ida_hexrays.mop_t|None = None
+) -> tuple[ida_hexrays.mop_t | None, ida_hexrays.mop_t | None]:
+    num_mop: ida_hexrays.mop_t | None = None
+    other_mop: ida_hexrays.mop_t | None = None
 
     if ins.l.t == ida_hexrays.mop_n:
-        num_mop : ida_hexrays.mop_t = ins.l
+        num_mop: ida_hexrays.mop_t = ins.l
         other_mop: ida_hexrays.mop_t = ins.r
     if ins.r.t == ida_hexrays.mop_n:
         num_mop: ida_hexrays.mop_t = ins.r

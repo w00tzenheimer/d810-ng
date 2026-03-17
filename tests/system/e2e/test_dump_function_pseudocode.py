@@ -28,15 +28,15 @@ import ida_hexrays
 import idaapi
 import idc
 
-from d810.recon.microcode_dump import (
-    dump_dispatcher_tree,
-    dump_linearized_dag,
-    dump_state_machine_graph,
-    dump_function_microcode,
-    print_mba_human_readable,
-)
 from d810.optimizers.microcode.flow.flattening.hodur.diagnostics import (
     build_terminal_return_valrange_report_from_store,
+)
+from d810.recon.microcode_dump import (
+    dump_dispatcher_tree,
+    dump_function_microcode,
+    dump_linearized_dag,
+    dump_state_machine_graph,
+    mba_to_human_readable,
 )
 from d810.testing.runner import _resolve_test_project_index
 from d810.testing.skip_controls import unskip_cases_enabled
@@ -68,51 +68,54 @@ def _extract_pseudocode_stats(text: str) -> dict:
         True
     """
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    returns = len(re.findall(r'\breturn\b', text))
-    whiles = len(re.findall(r'\bwhile\s*\(', text))
-    gotos = len(re.findall(r'\bgoto\b', text))
-    ifs = len(re.findall(r'\bif\s*\(', text))
+    returns = len(re.findall(r"\breturn\b", text))
+    whiles = len(re.findall(r"\bwhile\s*\(", text))
+    gotos = len(re.findall(r"\bgoto\b", text))
+    ifs = len(re.findall(r"\bif\s*\(", text))
     # Count sub_XXXX style calls explicitly, plus identifier(...) patterns
-    sub_calls = len(re.findall(r'\bsub_[0-9A-Fa-f]+\s*\(', text))
+    sub_calls = len(re.findall(r"\bsub_[0-9A-Fa-f]+\s*\(", text))
     # identifier( where identifier is a word not a keyword and not alone on a
     # continuation line — approximate function-call detection
-    kw = {'if', 'while', 'for', 'switch', 'return', 'sizeof', 'typeof', 'goto'}
-    ident_calls = len([
-        m for m in re.finditer(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\(', text)
-        if m.group(1) not in kw
-    ])
+    kw = {"if", "while", "for", "switch", "return", "sizeof", "typeof", "goto"}
+    ident_calls = len(
+        [
+            m
+            for m in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", text)
+            if m.group(1) not in kw
+        ]
+    )
     calls = max(sub_calls, ident_calls)
     return {
-        'lines': len(lines),
-        'returns': returns,
-        'whiles': whiles,
-        'gotos': gotos,
-        'calls': calls,
-        'ifs': ifs,
+        "lines": len(lines),
+        "returns": returns,
+        "whiles": whiles,
+        "gotos": gotos,
+        "calls": calls,
+        "ifs": ifs,
     }
 
 
 def _format_stats_block(function_name: str, before: dict, after: dict) -> str:
     """Format a BEFORE/AFTER/DELTA stats block for a function."""
-    keys = ('lines', 'returns', 'whiles', 'gotos', 'calls', 'ifs')
+    keys = ("lines", "returns", "whiles", "gotos", "calls", "ifs")
 
     def _fmt(d: dict) -> str:
-        return ' '.join(f'{k}={d[k]}' for k in keys)
+        return " ".join(f"{k}={d[k]}" for k in keys)
 
     def _delta(b: dict, a: dict) -> str:
         parts = []
         for k in keys:
             diff = a[k] - b[k]
-            parts.append(f'{k}={diff:+d}')
-        return ' '.join(parts)
+            parts.append(f"{k}={diff:+d}")
+        return " ".join(parts)
 
     lines = [
-        f'=== STATS: {function_name} ===',
-        f'BEFORE: {_fmt(before)}',
-        f'AFTER:  {_fmt(after)}',
-        f'DELTA:  {_delta(before, after)}',
+        f"=== STATS: {function_name} ===",
+        f"BEFORE: {_fmt(before)}",
+        f"AFTER:  {_fmt(after)}",
+        f"DELTA:  {_delta(before, after)}",
     ]
-    return '\n'.join(lines)
+    return "\n".join(lines)
 
 
 def _print_terminal_return_valranges(mba, func_ea: int) -> None:
@@ -222,13 +225,18 @@ class TestDumpFunctionPseudocode:
                 if func_ea == idaapi.BADADDR:
                     raise AssertionError(f"Function '{function_name}' not found")
 
-                force_rettype = request.config.getoption("--dump-force-rettype", default=None)
+                force_rettype = request.config.getoption(
+                    "--dump-force-rettype", default=None
+                )
                 if force_rettype:
                     import ida_typeinf
+
                     tif = ida_typeinf.tinfo_t()
                     decl_str = f"{force_rettype} __fastcall {function_name}(void);"
                     if ida_typeinf.parse_decl(tif, None, decl_str, ida_typeinf.PT_SIL):
-                        ida_typeinf.apply_tinfo(func_ea, tif, ida_typeinf.TINFO_DEFINITE)
+                        ida_typeinf.apply_tinfo(
+                            func_ea, tif, ida_typeinf.TINFO_DEFINITE
+                        )
                         print(f"[FORCE-RETTYPE] Applied: {decl_str}")
                     else:
                         print(f"[FORCE-RETTYPE] FAILED to parse: {decl_str}")
@@ -404,7 +412,9 @@ class TestDumpFunctionPseudocode:
                                 print(f"\n[linearized DAG dump failed: {e}]")
                             try:
                                 dot_str, graph_summary = dump_state_machine_graph(
-                                    mba, dispatcher_serial, state_var_stkoff=hodur_stkoff,
+                                    mba,
+                                    dispatcher_serial,
+                                    state_var_stkoff=hodur_stkoff,
                                 )
                                 print(f"\n--- STATE MACHINE GRAPH ({mba_source}) ---")
                                 print(graph_summary)
@@ -683,10 +693,14 @@ class TestDumpFunctionPseudocode:
                             mbr, hf, None, idaapi.DECOMP_NO_WAIT, maturity
                         )
                         if mba is not None:
+                            print(f"\n--- HUMAN MICROCODE ({maturity_name}) ---")
+                            header = func_name or f"sub_{entry_ea:x}"
                             print(
-                                f"\n--- HUMAN MICROCODE ({maturity_name}) ---"
+                                f"; ===== Microcode: {header} @ 0x{entry_ea:x}  maturity={maturity_name}  blocks={num_blocks} ====="
                             )
-                            print_mba_human_readable(mba, func_name=function_name)
+                            human_readable = mba_to_human_readable(mba)
+                            print("\n".join(human_readable))
+                            print(f"\n; ===== End microcode: {header} =====")
                             if dump_terminal_valranges:
                                 _print_terminal_return_valranges(mba, func_ea)
                     print("=" * 88)
