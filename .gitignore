@@ -59,3 +59,5 @@ _indexable
 # docs
 docs/
 .tmp/
+
+pyrefly.toml
