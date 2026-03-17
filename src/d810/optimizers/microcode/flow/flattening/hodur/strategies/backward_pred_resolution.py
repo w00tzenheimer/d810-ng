@@ -35,6 +35,66 @@ logger = logging.getLogger("D810.hodur.strategy.backward_pred_resolution")
 __all__ = ["BackwardPredResolutionStrategy"]
 
 
+def _nop_value_lookup(
+    pred_blk,
+    pred_serial: int,
+    nop_state_values: dict[int, int],
+    bst_result: "BSTAnalysisResult",
+    mba: object,
+) -> int | None:
+    """Resolve a dispatcher predecessor via NOP'd state value lookup.
+
+    When a block wrote a state constant that was NOP'd by the LFG strategy,
+    we can look up the original constant value and resolve the target handler
+    via the BST dispatcher.
+
+    Also checks predecessors of pred_serial, because trampolines (block
+    copies) may not have the NOP'd value directly, but their predecessor
+    (the original block) does.
+
+    Args:
+        pred_blk: ``ida_hexrays.mblock_t`` dispatcher predecessor block.
+        pred_serial: Block serial of the dispatcher predecessor.
+        nop_state_values: Mapping of block_serial to NOP'd constant value.
+        bst_result: BST analysis result containing the IntervalDispatcher.
+        mba: The mba_t object for blk_label logging.
+
+    Returns:
+        Handler block serial if resolved, or ``None``.
+    """
+    # Direct lookup on the predecessor itself.
+    nop_value = nop_state_values.get(pred_serial)
+    if nop_value is None:
+        # Check predecessors -- the NOP'd block might be a pred of this
+        # trampoline (e.g., blk[269] is a copy of blk[123], NOP was on 123).
+        try:
+            for pi in range(pred_blk.npred()):
+                pred_of_pred = pred_blk.pred(pi)
+                nop_value = nop_state_values.get(pred_of_pred)
+                if nop_value is not None:
+                    break
+        except Exception:
+            pass
+
+    if nop_value is None:
+        return None
+
+    dispatcher = getattr(bst_result, "dispatcher", None)
+    if dispatcher is None:
+        return None
+
+    target = dispatcher.lookup(nop_value)
+    if target is not None and target != pred_serial:
+        logger.info(
+            "BACKWARD_PRED: %s resolved via NOP'd value 0x%X -> %s",
+            blk_label(mba, pred_serial),
+            nop_value,
+            blk_label(mba, target),
+        )
+        return target
+    return None
+
+
 def _valrange_probe_fallback(
     pred_blk,
     state_var,
@@ -387,7 +447,60 @@ class BackwardPredResolutionStrategy:
                         [(f"pred={p} -> {blk_label(mba, t)}") for p, t in per_pred_targets],
                     )
                 else:
-                    # Per-arm mapping failed — try valrange as last resort
+                    # Per-arm mapping failed — try NOP'd value, then valrange
+                    nop_target = _nop_value_lookup(
+                        pred_blk, pred_serial,
+                        snapshot.nop_state_values, bst_result, mba,
+                    )
+                    if nop_target is not None:
+                        mod = builder.goto_redirect(
+                            source_block=pred_serial,
+                            target_block=nop_target,
+                        )
+                        if mod is not None:
+                            modifications.append(mod)
+                            owned_blocks.add(pred_serial)
+                    else:
+                        vr_target = _valrange_probe_fallback(
+                            pred_blk, state_var, bst_result,
+                        )
+                        if vr_target is not None and vr_target != pred_serial:
+                            mod = builder.goto_redirect(
+                                source_block=pred_serial,
+                                target_block=vr_target,
+                            )
+                            if mod is not None:
+                                modifications.append(mod)
+                                owned_blocks.add(pred_serial)
+                                logger.info(
+                                    "BACKWARD_PRED: %s multi-target resolved "
+                                    "via valrange probe -> %s",
+                                    blk_label(mba, pred_serial),
+                                    blk_label(mba, vr_target),
+                                )
+                        else:
+                            logger.info(
+                                "BACKWARD_PRED: %s MULTI-TARGET but couldn't "
+                                "map %d targets to predecessors",
+                                blk_label(mba, pred_serial), len(resolved_targets),
+                            )
+            else:
+                # MopTracker failed — try NOP'd value lookup first, then
+                # valrange probe as final fallback.
+                nop_target = _nop_value_lookup(
+                    pred_blk, pred_serial,
+                    snapshot.nop_state_values, bst_result, mba,
+                )
+                if nop_target is not None:
+                    mod = builder.goto_redirect(
+                        source_block=pred_serial,
+                        target_block=nop_target,
+                    )
+                    if mod is not None:
+                        modifications.append(mod)
+                        owned_blocks.add(pred_serial)
+                else:
+                    # NOP'd value lookup failed — try valrange probe
                     vr_target = _valrange_probe_fallback(
                         pred_blk, state_var, bst_result,
                     )
@@ -399,55 +512,30 @@ class BackwardPredResolutionStrategy:
                         if mod is not None:
                             modifications.append(mod)
                             owned_blocks.add(pred_serial)
-                            logger.info(
-                                "BACKWARD_PRED: %s multi-target resolved "
-                                "via valrange probe -> %s",
-                                blk_label(mba, pred_serial),
-                                blk_label(mba, vr_target),
-                            )
-                    else:
-                        logger.info(
-                            "BACKWARD_PRED: %s MULTI-TARGET but couldn't "
-                            "map %d targets to predecessors",
-                            blk_label(mba, pred_serial), len(resolved_targets),
+                            if vr_target in bst_result.exits:
+                                logger.info(
+                                    "BACKWARD_PRED: %s resolved via "
+                                    "valrange probe -> exit handler %s",
+                                    blk_label(mba, pred_serial),
+                                    blk_label(mba, vr_target),
+                                )
+                            else:
+                                logger.info(
+                                    "BACKWARD_PRED: %s resolved via "
+                                    "valrange probe -> handler %s",
+                                    blk_label(mba, pred_serial),
+                                    blk_label(mba, vr_target),
+                                )
+                    elif len(histories) > 0:
+                        logger.debug(
+                            "BACKWARD_PRED: %s %d histories, none resolved",
+                            blk_label(mba, pred_serial), len(histories),
                         )
-            else:
-                # MopTracker failed — try valrange probe as fallback
-                vr_target = _valrange_probe_fallback(
-                    pred_blk, state_var, bst_result,
-                )
-                if vr_target is not None and vr_target != pred_serial:
-                    mod = builder.goto_redirect(
-                        source_block=pred_serial,
-                        target_block=vr_target,
-                    )
-                    if mod is not None:
-                        modifications.append(mod)
-                        owned_blocks.add(pred_serial)
-                        if vr_target in bst_result.exits:
-                            logger.info(
-                                "BACKWARD_PRED: %s resolved via "
-                                "valrange probe -> exit handler %s",
-                                blk_label(mba, pred_serial),
-                                blk_label(mba, vr_target),
-                            )
-                        else:
-                            logger.info(
-                                "BACKWARD_PRED: %s resolved via "
-                                "valrange probe -> handler %s",
-                                blk_label(mba, pred_serial),
-                                blk_label(mba, vr_target),
-                            )
-                elif len(histories) > 0:
-                    logger.debug(
-                        "BACKWARD_PRED: %s %d histories, none resolved",
-                        blk_label(mba, pred_serial), len(histories),
-                    )
-                else:
-                    logger.debug(
-                        "BACKWARD_PRED: %s 0 histories",
-                        blk_label(mba, pred_serial),
-                    )
+                    else:
+                        logger.debug(
+                            "BACKWARD_PRED: %s 0 histories",
+                            blk_label(mba, pred_serial),
+                        )
 
         if not modifications:
             return None

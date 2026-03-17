@@ -534,7 +534,7 @@ class LinearizedFlowGraphStrategy:
                 or resolve_target_via_bst(bst_result, t.to_state) is not None
             )
         }
-        nop_mods, nop_blocks = self._nop_state_variable_writes(
+        nop_mods, nop_blocks, nop_state_values = self._nop_state_variable_writes(
             snapshot, builder, owned_blocks, redirected_states,
             bst_node_blocks,
         )
@@ -719,6 +719,7 @@ class LinearizedFlowGraphStrategy:
                 "bst_convert_count": bst_convert_count,
                 "goto_nop_count": goto_nop_count,
                 "goto_skip_count": goto_skip_count,
+                "nop_state_values": nop_state_values,
             },
         )
 
@@ -1629,7 +1630,7 @@ class LinearizedFlowGraphStrategy:
         handler_blocks: set[int],
         redirected_states: set[int],
         bst_node_blocks: set[int],
-    ) -> tuple[list, set[int]]:
+    ) -> tuple[list, set[int], dict[int, int]]:
         """NOP instructions that write to the state variable in ALL mba blocks.
 
         After handler exits are redirected away from the BST dispatcher, ALL
@@ -1653,7 +1654,9 @@ class LinearizedFlowGraphStrategy:
                 NOPing (these READ the state variable).
 
         Returns:
-            A tuple of (list of NOP modifications, set of block serials touched).
+            A tuple of (list of NOP modifications, set of block serials
+            touched, dict mapping block_serial to NOP'd constant value for
+            blocks where the source operand was mop_n).
         """
         logger.info(
             "LFG NOP: entering _nop_state_variable_writes "
@@ -1695,6 +1698,7 @@ class LinearizedFlowGraphStrategy:
 
         modifications: list = []
         nop_blocks: set[int] = set()
+        nop_state_values: dict[int, int] = {}
         nop_count = 0
         blocks_scanned = 0
         serial = -1
@@ -1734,6 +1738,16 @@ class LinearizedFlowGraphStrategy:
                         )
                         nop_blocks.add(serial)
                         nop_count += 1
+                        # Record the NOP'd constant value when the source
+                        # operand is a numeric constant (mop_n).
+                        l = insn.l
+                        if l is not None and l.t == ida_hexrays.mop_n:
+                            nop_state_values[serial] = l.nnn.value
+                            logger.info(
+                                "LFG NOP: %s recorded NOP'd state value 0x%X",
+                                blk_label(mba, serial),
+                                nop_state_values[serial],
+                            )
                     insn = insn.next
         except Exception as exc:
             logger.info(
@@ -1744,15 +1758,17 @@ class LinearizedFlowGraphStrategy:
 
         logger.info(
             "LFG: NOP'd %d state variable writes across %d blocks "
-            "(scanned %d of %d total, excluded %d BST node blocks)",
+            "(scanned %d of %d total, excluded %d BST node blocks, "
+            "%d constant values recorded)",
             nop_count,
             len(nop_blocks),
             blocks_scanned,
             mba.qty,
             len(bst_node_blocks),
+            len(nop_state_values),
         )
 
-        return modifications, nop_blocks
+        return modifications, nop_blocks, nop_state_values
 
     @staticmethod
     def _nop_dispatcher_gotos(
