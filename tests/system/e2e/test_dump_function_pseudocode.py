@@ -534,7 +534,8 @@ class TestDumpFunctionPseudocode:
                             print(" ".join(parts))
                     if dump_human:
                         print("\n--- HUMAN MICROCODE (with d810) ---")
-                        print_mba_human_readable(mba, func_name=function_name)
+                        human_readable = mba_to_human_readable(mba)
+                        print("\n\n".join(human_readable))
                     if dump_terminal_valranges:
                         _print_terminal_return_valranges(mba, func_ea)
                     print("=" * 88)
@@ -699,7 +700,7 @@ class TestDumpFunctionPseudocode:
                                 f"; ===== Microcode: {header} @ 0x{entry_ea:x}  maturity={maturity_name}  blocks={num_blocks} ====="
                             )
                             human_readable = mba_to_human_readable(mba)
-                            print("\n".join(human_readable))
+                            print("\n\n".join(human_readable))
                             print(f"\n; ===== End microcode: {header} =====")
                             if dump_terminal_valranges:
                                 _print_terminal_return_valranges(mba, func_ea)

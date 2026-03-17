@@ -4,13 +4,16 @@ This module wraps IDA's native ``mblock_t.get_valranges()`` API for use in
 live microcode diagnostics. It is intentionally read-only: it collects value
 ranges for register and stack-variable operands without mutating the MBA.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
 
-from d810.core.typing import Dict, Iterable, List, Optional
+import ida_hexrays
+
 from d810.core import logging
+from d810.core.typing import Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -57,16 +60,8 @@ class _ValrangeOperand:
     location: ValrangeLocation
 
 
-def _ida_hexrays():
-    """Import ``ida_hexrays`` lazily so the module remains importable in tests."""
-    import ida_hexrays
-
-    return ida_hexrays
-
-
 def _iter_operand_specs(ins) -> Iterable[_ValrangeOperand]:
     """Yield structured operand specs for register/stack operands in *ins*."""
-    ida_hexrays = _ida_hexrays()
     for mop in (ins.l, ins.r, ins.d):
         if mop is None:
             continue
@@ -113,7 +108,6 @@ def _collect_valrange_records_for_operands(
     ins=None,
 ) -> List[ValrangeRecord]:
     """Collect non-trivial structured ranges for the given operand intervals."""
-    ida_hexrays = _ida_hexrays()
     seen: set[tuple[str, int, int]] = set()
     results: List[ValrangeRecord] = []
 
@@ -168,7 +162,6 @@ def collect_block_valrange_record_for_location(
         A :class:`ValrangeRecord` if IDA reports a non-trivial range for the
         location at block start, otherwise ``None``.
     """
-    ida_hexrays = _ida_hexrays()
     vivl = ida_hexrays.vivl_t()
     if location.kind == ValrangeLocationKind.REGISTER:
         vivl.set_reg(location.identifier, location.width)
@@ -198,7 +191,6 @@ def collect_instruction_valrange_record_for_location(
         A :class:`ValrangeRecord` if IDA reports a non-trivial range at the
         instruction point, otherwise ``None``.
     """
-    ida_hexrays = _ida_hexrays()
     vivl = ida_hexrays.vivl_t()
     if location.kind == ValrangeLocationKind.REGISTER:
         vivl.set_reg(location.identifier, location.width)
@@ -278,7 +270,6 @@ def resolve_state_via_valranges(blk, stkoff_mop, ins) -> int | None:
         A single concrete integer value if the valrange collapses to one value,
         otherwise ``None``.
     """
-    ida_hexrays = _ida_hexrays()
 
     try:
         vivl = ida_hexrays.vivl_t()
@@ -295,17 +286,17 @@ def resolve_state_via_valranges(blk, stkoff_mop, ins) -> int | None:
     vr = ida_hexrays.valrng_t(stkoff_mop.size)
 
     # Priority 1: VR_EXACT — only provably-exact values
-    for vr_flag in (ida_hexrays.VR_EXACT, ida_hexrays.VR_AT_START, ida_hexrays.VR_AT_END):
-        try:
-            ok = blk.get_valranges(vr, vivl, ins, vr_flag)
-            if ok and not vr.empty() and not vr.all_values():
-                ok_single, val = vr.cvt_to_single_value()
-                if ok_single:
-                    return int(val)
-        except Exception:
-            continue
+    for vr_flag in (
+        ida_hexrays.VR_EXACT,
+        ida_hexrays.VR_AT_START,
+        ida_hexrays.VR_AT_END,
+    ):
 
-    return None
+        ok = blk.get_valranges(vr, vivl, ins, vr_flag)
+        if ok and not vr.empty() and not vr.all_values():
+            ok_single, val = vr.cvt_to_single_value()
+            if ok_single:
+                return int(val)
 
 
 def resolve_state_via_valrange_probe(
@@ -313,6 +304,7 @@ def resolve_state_via_valrange_probe(
     stkoff: int,
     interval_dispatcher,
     insn=None,
+    stkoff_size=4,
 ) -> int | None:
     """Probe IntervalDispatcher targets against a block's incoming state var valrange.
 
@@ -334,20 +326,18 @@ def resolve_state_via_valrange_probe(
         Target block serial if exactly one handler interval overlaps
         with the valrange, or ``None``.
     """
-    try:
-        import ida_hexrays
-    except ImportError:
-        return None
+
     try:
         vivl = ida_hexrays.vivl_t()
-        vivl.set_stkoff(stkoff, 4)
-        vr = ida_hexrays.valrng_t(4)
+        vivl.set_stkoff(stkoff, stkoff_size)
+        vr = ida_hexrays.valrng_t(stkoff_size)
         target_insn = insn if insn is not None else blk.head
         got_vr = blk.get_valranges(vr, vivl, target_insn, ida_hexrays.VR_AT_START)
         if not got_vr:
             logger.info(
                 "VALRANGE_PROBE: blk[%d] stkoff=0x%X get_valranges returned False",
-                blk.serial, stkoff,
+                blk.serial,
+                stkoff,
             )
             return None
         vr_str = vr.dstr() if hasattr(vr, "dstr") else "?"
@@ -363,7 +353,9 @@ def resolve_state_via_valrange_probe(
             target = interval_dispatcher.lookup(int(single_val))
             logger.info(
                 "VALRANGE_PROBE: blk[%d] singleton 0x%X -> target=%s",
-                blk.serial, single_val, target,
+                blk.serial,
+                single_val,
+                target,
             )
             return target
         # Non-singleton: probe each interval row's lo value
@@ -373,14 +365,15 @@ def resolve_state_via_valrange_probe(
                 matching_targets.add(row.target)
         logger.info(
             "VALRANGE_PROBE: blk[%d] vr=%s matched %d targets: %s",
-            blk.serial, vr_str, len(matching_targets), matching_targets,
+            blk.serial,
+            vr_str,
+            len(matching_targets),
+            matching_targets,
         )
         if len(matching_targets) == 1:
             return matching_targets.pop()
-        return None
     except Exception as exc:
         logger.info("VALRANGE_PROBE: blk[%d] exception: %s", blk.serial, exc)
-        return None
 
 
 __all__ = [
