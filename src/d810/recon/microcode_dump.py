@@ -23,6 +23,7 @@ import re
 from dataclasses import dataclass, field
 
 import idaapi
+
 from d810.core.logging import getLogger
 from d810.core.typing import Any, Dict, List, Optional, Tuple
 from d810.evaluator.hexrays_microcode.valranges import (
@@ -30,10 +31,15 @@ from d810.evaluator.hexrays_microcode.valranges import (
     collect_instruction_valrange_records,
 )
 from d810.hexrays.utils.hexrays_helpers import (
+    BLT_NAMES,
     MATURITY_TO_STRING_DICT,
-    STRING_TO_MATURITY_DICT,
     MOP_INFO,
     OPCODES_INFO,
+    STRING_TO_MATURITY_DICT,
+    BlockType,
+    MicrocodeBasicBlockFlag,
+    ShowInstructionsFlags,
+    SideEffectFlags,
 )
 from d810.recon.flow.bst_analysis import (
     _detect_state_var_stkoff,
@@ -508,11 +514,36 @@ def _fix_var_names(s: str, frsize: int) -> str:
     return re.sub(r"%var_([0-9A-Fa-f]+)\.(\d+)", _repl, s)
 
 
-def print_mba_human_readable(
-    mba: "idaapi.mbl_array_t",
-    func_name: str = "",
-) -> None:
-    """Print an mbl_array_t in IDA's native human-readable microcode format.
+def _mlist_dstr(ml) -> str:
+    if ml is None:
+        return ""
+    try:
+        s = ml.dstr()
+        return s if s else ""
+    except Exception:
+        return ""
+
+
+def _collect_bitset(bs) -> list:
+    try:
+        return list(bs)
+    except Exception:
+        try:
+            return [bs[j] for j in range(bs.size())]
+        except Exception:
+            return []
+
+
+def _clean_insn_str(raw) -> str:
+    if raw is None:
+        return "<none>"
+    return "".join(
+        c if c == "\t" or 0x20 <= ord(c) <= 0x7E else " " for c in str(raw)
+    ).rstrip()
+
+
+def mba_to_human_readable(mba: "idaapi.mbl_array_t") -> List[str]:
+    """Convert an mbl_array_t to a list of strings in IDA's native human-readable microcode format.
 
     Produces output similar to IDA's own microcode listing, including:
     - Block headers with type, predecessor/successor sets, EA range
@@ -524,7 +555,9 @@ def print_mba_human_readable(
 
     Args:
         mba: The microcode block array to print.
-        func_name: Optional function name shown in the header.
+
+    Returns:
+        A list of strings in IDA's native human-readable microcode format.
     """
 
     entry_ea = getattr(mba, "entry_ea", 0)
@@ -532,119 +565,111 @@ def print_mba_human_readable(
 
     # frsize is needed to convert %var_XX.N -> sp+0xOFF.N
     _frsize: int = getattr(mba, "stacksize", 0) or getattr(mba, "frsize", 0) or 0
-    maturity_name = MATURITY_NAMES.get(maturity, f"MMAT_UNKNOWN_{maturity}")
+    maturity_name = MATURITY_NAMES[maturity]
     num_blocks = mba.qty
 
     # Block type enum: try runtime constants first, fall back to hard-coded
 
-    import ida_hexrays as _ihr
-
-    _BLT_NAMES = {
-        _ihr.BLT_NONE: "BLT_NONE",
-        _ihr.BLT_STOP: "BLT_STOP",
-        _ihr.BLT_1WAY: "BLT_1WAY",
-        _ihr.BLT_2WAY: "BLT_2WAY",
-        _ihr.BLT_NWAY: "BLT_NWAY",
-        _ihr.BLT_XTRN: "BLT_XTRN",
-    }
-
     # Flag constants
-    import ida_hexrays as _ihr2
 
-    MBL_FAKE = getattr(_ihr2, "MBL_FAKE", 0x200)
-    MBL_INBOUNDS = getattr(_ihr2, "MBL_INBOUNDS", 0x0040)
-    SHINS_NUMADDR = getattr(_ihr2, "SHINS_NUMADDR", 0x01)
-    SHINS_VALNUM = getattr(_ihr2, "SHINS_VALNUM", 0x02)
-    SHINS_SHORT = getattr(_ihr2, "SHINS_SHORT", 0x04)
-
-    _PRINT_FLAGS = SHINS_SHORT | SHINS_VALNUM | SHINS_NUMADDR
-
-    def _mlist_dstr(ml) -> str:
-        if ml is None:
-            return ""
-        try:
-            s = ml.dstr()
-            return s if s else ""
-        except Exception:
-            return ""
-
-    def _collect_bitset(bs) -> list:
-        try:
-            return list(bs)
-        except Exception:
-            try:
-                return [bs[j] for j in range(bs.size())]
-            except Exception:
-                return []
-
-    def _clean_insn_str(raw) -> str:
-        if raw is None:
-            return "<none>"
-        return "".join(
-            c if c == "\t" or 0x20 <= ord(c) <= 0x7E else " " for c in str(raw)
-        ).rstrip()
-
-    header = func_name or f"sub_{entry_ea:x}"
-    print(
-        f"; ===== Microcode: {header} @ 0x{entry_ea:x}  maturity={maturity_name}  blocks={num_blocks} ====="
+    _PRINT_FLAGS = (
+        ShowInstructionsFlags.SHINS_SHORT
+        | ShowInstructionsFlags.SHINS_VALNUM
+        | ShowInstructionsFlags.SHINS_NUMADDR
     )
+    """
+        
+    0.BLT_1WAY                                                            ; Successors: 1
+    ; STKD=0 MINREF=7F8/END=7F8 ARGS: OFF=820/MINREF=A00/END=A00/SHADOW=20
+    ; 1WAY-BLOCK 0 FAKE OUTBOUNDS: 1 [START=180012B60 END=180012B60] MINREFS: STK=7F8/ARG=A00, MAXBSP: 0
+    ; DEF: (rax.8,r8.8,ds.2,sp+30.8,sp+3C..A1,sp+A8.1,sp+B0.1,sp+B8.1,sp+C0.1,sp+C8.1,sp+D0.1,sp+D8.1,sp+E0.1,sp+E8..F9,sp+100.1,sp+108.1,sp+110.1,sp+118.1,sp+120.1,sp+128..139,sp+140.1,sp+148.1,sp+150.1,sp+158.1,sp+160.1,sp+168..1B9,sp+1C0.1,sp+1C8.1,sp+1D0..200,sp+208..260,sp+2D0..331,sp+338.1,sp+340.1,sp+348.1,sp+350.1,sp+358..3D8,sp+3E0.8,sp+3F0..400,sp+408.8,sp+418..481,sp+488.1,sp+490..4A9,sp+4B0..4E1,sp+4E8..4F9,sp+508..519,sp+520..534,sp+538.4,sp+540.4,sp+548.4,sp+550.4,sp+558.4,sp+560.4,sp+568.4,sp+570.4,sp+578.4,sp+580.4,sp+588.4,sp+590.4,sp+598..5B1,sp+5B8.1,sp+5C0.1,sp+5C8..5D9,sp+5E0..619,sp+620.1,sp+628.1,sp+630..67C,sp+680..690,sp+6D0..6EC,sp+6F0.4,sp+728.4,sp+730.4,sp+738.1,sp+748.4,sp+750.4,sp+758.4,sp+760.8,sp+770.4,sp+778.4,sp+780.C,sp+790.4,sp+798.4,sp+7C0.4,sp+7C8.4,sp+7E0.8,sp+7F0..,arg+0.8)
 
+    
+    32.BLT_1WAY                                                           ; Predecessors: 24, 31
+    ; 1WAY-BLOCK 32 INBOUNDS: 24 31 OUTBOUNDS: 2 [START=180013274 END=18001340F] MINREFS: STK=7F8/ARG=A00, MAXBSP: 0
+    ; USE: ds.2,sp+3E0.8,sp+3F0.8,sp+680.8,arg+0.8,(GLBLOW,GLBHIGH)
+    ; DEF: sp+3C.4,sp+1E0..200,sp+4B0.8,sp+5D8.8,sp+668..678,(cf.1,zf.1,sf.1,of.1,pf.1,rax.16,rcx.8,r8.8,r9.8,r10.8,r11.8,fps.2,fl.1,c0.1,c2.1,c3.1,df.1,if.1,xmm4.16,xmm5.16,GLBLOW,sp+0..20,GLBHIGH)
+    ; DNU: sp+3C.4,sp+1E0..1F8,sp+4B0.8,sp+668..678
+    ; VALRANGES: %0x3C.4:(258ED456..296F2451|==6465D165|==64AFC49D)
+    32. 1 18001327C  mov    %var_408.8{37}, %var_348.8{37} ; 18001327C u=sp+3F0.8   d=sp+4B0.8
+    32. 2 180013290  add    %arg_20.8{38}, #0x50@18001328C.8, %var_188.8 ; 180013290 u=arg+0.8    d=sp+670.8
+    32. 3 1800132BD  call   $__ImageBase <std:"HINSTANCE hinstDLL" #0x2E@1800132B8.8,"DWORD fdwReason" %fdwReason.4,"LPVOID lpReserved" (%arg_20.8{38}+#0x50@1800132AC.8)> => BOOL .0 ; 1800132BD u=sp+3E0.4,arg+0.8,(GLBLOW,GLBHIGH) d=(cf.1,zf.1,sf.1,of.1,pf.1,rax.16,rcx.8,r8.8,r9.8,r10.8,r11.8,fps.2,fl.1,c0.1,c2.1,c3.1,df.1,if.1,xmm4.16,xmm5.16,GLBLOW,sp+0..20,GLBHIGH)
+    32. 4 1800132E1  ldx    ds.2{39}, %var_178.8{40}, %var_220.8{41} ; 1800132E1 u=ds.2,sp+680.8,(GLBLOW,GLBHIGH) d=sp+5D8.8
+    32. 5 18001339C  add    (#0x11@180013395.8*bnot((%var_220.8{41} | xdu.8((%var_408.1{44} & #0x78@1800132CA.1){43}){42}))), ((#7@18001337A.8*bnot(([ds.2{39}:%var_178.8{40}].8{46} | bnot(xdu.8((%var_408.1{44} & #0x78@1800132CA.1){43}){42}){47}){45}))+((((#0xC@18001331B.8*(bnot(xdu.8((%var_408.1{44} & #0x78@1800132CA.1){43}){42}){47} & %var_220.8{41}){48})+(#0x13@180013300.8*xdu.8((low.4([ds.2{39}:%var_178.8{40}].8{46}) & xdu.4((%var_408.1{44} & #0x78@1800132CA.1){43}){42}))))-(#0xB@180013339.8*([ds.2{39}:%var_178.8{40}].8{46} | bnot(xdu.8((%var_408.1{44} & #0x78@1800132CA.1){43}){42}){47}){45}))-(#6@180013358.8*bnot((%var_220.8{41} & bnot(xdu.8((%var_408.1{44} & #0x78@1800132CA.1){43}){42}){47}){48})))), %var_600.8{49} ; 18001339C u=ds.2,sp+3F0.1,sp+5D8.8,sp+680.8,(GLBLOW,GLBHIGH) d=sp+1F8.8
+    32. 6 1800133B4  stx    %var_600.8{49}, ds.2{39}, %var_178.8{40} ; 1800133B4 u=ds.2,sp+1F8.8,sp+680.8 d=(GLBLOW,GLBHIGH)
+    32. 7 1800133C7  add    %fdwReason.8, xdu.8((%var_408.1{44} & #0x78@1800132CA.1){43}){42}, %var_190.8 ; 1800133C7 u=sp+3E0.8,sp+3F0.1 d=sp+668.8
+    32. 8 1800133D9  mov    #-0x38FBF21084F0EF3B@1800133CF.8, %var_608.8 ; 1800133D9 u=           d=sp+1F0.8
+    32. 9 1800133EB  mov    #-0x768CA3E4B0983C4@1800133E1.8, %var_610.8 ; 1800133EB u=           d=sp+1E8.8
+    32.10 1800133FD  mov    #-0x319327D239E76B70@1800133F3.8, %var_618.8 ; 1800133FD u=           d=sp+1E0.8
+    32.11 180013405  mov    #0x432DC789@180013405.4, %var_7BC.4 ; 180013405 u=           d=sp+3C.4
+    32.12 18001340D  goto   @2     ; 18001340D u=                         ; Successors: 2
+    """
+    as_str = [f"; Maturity: {maturity_name}"]
     for i in range(num_blocks):
-        blk = mba.get_mblock(i)
+        blk: idaapi.mblock_t = mba.get_mblock(i)
         if blk is None:
             continue
 
         serial = blk.serial
-        start_ea = getattr(blk, "start", 0)
-        end_ea = getattr(blk, "end", 0)
-        block_type = getattr(blk, "type", 0)
-        type_name = _BLT_NAMES.get(block_type, f"BLT_UNKNOWN_{block_type}")
+        start_ea = blk.start
+        end_ea = blk.end
+        block_type = blk.type
+        type_name = BLT_NAMES[block_type]
+        flags: MicrocodeBasicBlockFlag = MicrocodeBasicBlockFlag(int(blk.flags))
 
         preds = _collect_bitset(blk.predset)
         succs = _collect_bitset(blk.succset)
 
-        preds_str = ", ".join(str(p) for p in sorted(preds)) if preds else ""
-        succs_str = ", ".join(str(s) for s in sorted(succs)) if succs else ""
+        preds_sorted = [str(p) for p in sorted(preds)] if preds else []
+        succs_sorted = [str(s) for s in sorted(succs)] if succs else []
 
-        flags = getattr(blk, "flags", 0)
-        is_inbounds = bool(flags & MBL_INBOUNDS)
+        # Stack frame info on block 0
+        label = "Successors" if serial == 0 else "Predecessors"
+        items = succs_sorted if serial == 0 else preds_sorted
+
+        line = [f"{i}.{type_name:<60} ; {label}: {', '.join(items)}"]
 
         # Block header line
-        inbounds_tag = " (INBOUNDS)" if is_inbounds else ""
-        print(
-            f"\nblock {serial}{inbounds_tag}: ; preds: {preds_str}; succs: {succs_str}"
-        )
 
         # Stack frame info on block 0
         if serial == 0:
+            # ; STKD=0 MINREF=7F8/END=7F8 ARGS: OFF=820/MINREF=A00/END=A00/SHADOW=20
             _stkd_parts = []
+            _inargoff = mba.inargoff
+            _minargref = mba.minargref
+            _minstkref = mba.minstkref
+            _shadow_args = mba.shadow_args
+            _pfn_flags = mba.pfn_flags
+            _stkd_extra = []
+            if _inargoff is not None:
+                _stkd_extra.append(f"ARGS: OFF={_inargoff:#X}/")
+            if _minstkref is not None:
+                _stkd_extra.append(f"MINREF={_minstkref:#X}/")
+                _stkd_extra.append(f"MINREF_EA={mba.minstkref_ea:#X}/")
+            if _minargref is not None:
+                _stkd_extra.append(f"MINARGREF={_minargref:#X}/")
+                _stkd_extra.append(f"SPD_ADJUST={mba.spd_adjust:#X}/")
+                _stkd_extra.append(f"FULLSIZE={mba.fullsize:#X}/")
+                _stkd_extra.append(f"RETSIZE={mba.retsize:#X}/")
+            if _shadow_args is not None:
+                _stkd_extra.append(f"SHADOW={_shadow_args:#X}/")
+            if _pfn_flags is not None:
+                _stkd_extra.append(f"FLAGS={_pfn_flags:#X}/")
             for _attr in ("stacksize", "frsize", "argsize", "tmpstk_size"):
                 _val = getattr(mba, _attr, None)
                 if _val is not None:
-                    _stkd_parts.append(f"{_attr}={_val}")
-            _minargref = getattr(mba, "minargref", None)
-            _minstkref = getattr(mba, "minstkref", None)
-            _shadow_args = getattr(mba, "shadow_args", None)
-            _pfn_flags = getattr(mba, "pfn_flags", None)
-            _stkd_extra = []
-            if _minargref is not None:
-                _stkd_extra.append(f"MINARGREF={_minargref:#x}")
-            if _minstkref is not None:
-                _stkd_extra.append(f"MINSTKREF={_minstkref:#x}")
-            if _shadow_args is not None:
-                _stkd_extra.append(f"SHADOW={_shadow_args:#x}")
-            if _pfn_flags is not None:
-                _stkd_extra.append(f"FLAGS={_pfn_flags:#x}")
-            _stkd_str = " ".join(_stkd_parts + _stkd_extra)
-            if _stkd_str:
-                print(f"; STKD: {_stkd_str}")
+                    _stkd_parts.append(f"{_attr}={_val:#X}/")
+            line.append(f"; STKD=0 {" ".join(_stkd_extra + _stkd_parts)}")
 
-        # MAXBSP
-        try:
-            maxbsp = blk.maxbsp
-            print(f"; MAXBSP: 0x{maxbsp:X}")
-        except AttributeError:
-            pass
+        inbounds = (
+            "FAKE"
+            if flags & MicrocodeBasicBlockFlag.FAKE
+            else f"INBOUNDS: {' '.join(preds_sorted)}"
+        )
+
+        line.append(
+            f"; {type_name} {serial} {inbounds} OUTBOUNDS: {' '.join(succs_sorted)} [START={start_ea:X} END={end_ea:X}] MINREFS: STK={blk.minstkref:X}/ARG={blk.minargref:X}, MAXBSP: {blk.maxbsp:X}"
+        )
 
         # USE / DEF / DNU liveness sets
         def_must = _mlist_dstr(getattr(blk, "mustbdef", None))
@@ -668,17 +693,16 @@ def print_mba_human_readable(
             def_parts.append(f"(may:{def_may})")
         def_str = ", ".join(def_parts)
 
-        print(
-            f"; USE: {_paren_if_multi(use_str)} ; DEF: {_paren_if_multi(def_str)} ; DNU: {_paren_if_multi(dnu)}"
-        )
+        line.append(f"; USE: {_paren_if_multi(use_str)}")
+        line.append(f"; DEF: {_paren_if_multi(def_str)}")
+        line.append(f"; DNU: {_paren_if_multi(dnu)}")
 
         # VALRANGES
-        try:
-            vr_records = collect_block_valrange_records(blk)
-            if vr_records:
-                print(f"; VALRANGES: {', '.join(str(record) for record in vr_records)}")
-        except Exception:
-            pass
+        vr_records = collect_block_valrange_records(blk)
+        if vr_records:
+            line.append(
+                f"; VALRANGES: {', '.join(str(record) for record in vr_records)}"
+            )
 
         # Collect instructions
         insns = []
@@ -763,9 +787,9 @@ def print_mba_human_readable(
             ea_str = f"{ea:016X}"
             suffix = f" ; {ea_str} u={ins_use} d={ins_def}{ins_vr}"
 
-            print(f"  {serial}.{insn_idx - 1:<4} {insn_str:<50}{suffix}")
-
-    print(f"\n; ===== End microcode: {header} =====")
+            line.append(f"  {serial}.{insn_idx - 1:<4} {insn_str:<50}{suffix}")
+        as_str.append("\n".join(line))
+    return as_str
 
 
 def dump_mba_json(
@@ -1193,13 +1217,10 @@ def dump_state_machine_graph(
                 if cond_state == row.state_const:
                     n_self_loops += 1
                     edges.append(
-                        (src_id, dst_id, "self-loop",
-                         'style=dashed color=red')
+                        (src_id, dst_id, "self-loop", "style=dashed color=red")
                     )
                 else:
-                    edges.append(
-                        (src_id, dst_id, label, 'color=blue')
-                    )
+                    edges.append((src_id, dst_id, label, "color=blue"))
 
         elif row.kind == TransitionKind.TRANSITION:
             if row.next_state is not None:
@@ -1208,8 +1229,7 @@ def dump_state_machine_graph(
                 if row.next_state == row.state_const:
                     n_self_loops += 1
                     edges.append(
-                        (src_id, dst_id, "self-loop",
-                         'style=dashed color=red')
+                        (src_id, dst_id, "self-loop", "style=dashed color=red")
                     )
                 else:
                     edges.append((src_id, dst_id, "", ""))
@@ -1220,7 +1240,7 @@ def dump_state_machine_graph(
     lines: List[str] = []
     lines.append("digraph state_machine {")
     lines.append("    rankdir=LR;")
-    lines.append('    node [shape=record];')
+    lines.append("    node [shape=record];")
     lines.append("")
 
     # Initial state arrow
