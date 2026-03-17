@@ -1306,6 +1306,8 @@ class DirectHandlerLinearizationStrategy:
             }
 
         def _append_nop(source_block: int, instruction_ea: int) -> None:
+            # EXPERIMENT: NOPs disabled
+            return
             modifications.append(
                 builder.nop_instruction(
                     source_block=source_block,

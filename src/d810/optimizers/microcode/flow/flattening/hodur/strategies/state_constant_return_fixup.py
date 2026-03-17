@@ -129,14 +129,16 @@ class StateConstantReturnFixupStrategy:
             walked = 0
             while insn is not None and walked < walk_limit:
                 if self._is_state_const_mov(insn, known_consts):
-                    modifications.append(
-                        builder.nop_instruction(
-                            source_block=pred_serial,
-                            instruction_ea=insn.ea,
-                        )
-                    )
-                    owned_blocks.add(pred_serial)
-                    nop_count += 1
+                    # EXPERIMENT: NOPs disabled
+                    # modifications.append(
+                    #     builder.nop_instruction(
+                    #         source_block=pred_serial,
+                    #         instruction_ea=insn.ea,
+                    #     )
+                    # )
+                    # owned_blocks.add(pred_serial)
+                    # nop_count += 1
+                    pass
                     logger.info(
                         "StateConstReturnFixup: NOP m_mov #0x%x at"
                         " blk[%d]:0x%x",
