@@ -585,10 +585,15 @@ class LinearizedFlowGraphStrategy:
         #     node) that don't directly reference the dispatcher.
         # -----------------------------------------------------------------
         flow_graph = snapshot.flow_graph
-        bst_convert_count = self._convert_bst_nodes_to_goto(
-            bst_node_blocks, flow_graph, builder, modifications, emitted,
-            mba=mba,
-        )
+        # DISABLED: BST convert_to_goto routes all BST blocks to fallthrough,
+        # disconnecting handler entries that are only reachable via BST branch
+        # targets. 203/221 blocks become unreachable. Needs BST-aware target
+        # selection (route each BST leaf to its handler entry).
+        # bst_convert_count = self._convert_bst_nodes_to_goto(
+        #     bst_node_blocks, flow_graph, builder, modifications, emitted,
+        #     mba=mba,
+        # )
+        bst_convert_count = 0
 
         logger.info(
             "LFG: emitted %d redirects (%d exit-resolved, %d bst-default) "
