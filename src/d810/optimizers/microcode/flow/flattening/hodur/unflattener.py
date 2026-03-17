@@ -1340,6 +1340,26 @@ class HodurUnflattener(GenericUnflatteningRule):
             total_severed, backward_resolved, severed, severed_2way,
         )
 
+        # --- Phase 3: sever dispatcher OUTGOING edges to BST comparison blocks ---
+        # When the dispatcher has no remaining predecessors, its outgoing edges
+        # to BST comparison blocks keep the BST tree reachable.  IDA follows
+        # these edges and reconstructs the comparison tree, generating while
+        # loops.  Severing them disconnects the BST entirely.
+        if disp_blk.npred() == 0:
+            succ_serials = [disp_blk.succ(i) for i in range(disp_blk.nsucc())]
+            for succ_serial in succ_serials:
+                succ_blk = mba.get_mblock(succ_serial)
+                if succ_blk is not None:
+                    succ_blk.predset._del(dispatcher_serial)
+                    succ_blk.mark_lists_dirty()
+            disp_blk.succset.clear()
+            disp_blk.mark_lists_dirty()
+            if succ_serials:
+                unflat_logger.info(
+                    "BST cleanup: severed %d outgoing dispatcher edges to %s",
+                    len(succ_serials), succ_serials,
+                )
+
         return total_severed
 
     def _prune_unreachable_bst_blocks(self, bst_serials: set[int]) -> int:

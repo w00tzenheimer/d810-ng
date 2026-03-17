@@ -509,13 +509,18 @@ def _run_sccp_impl(
             return Const(result, 1)
         return TOP
 
-    def _update_lattice(dest_key: MopKey, new_val: LatticeVal) -> bool:
+    def _update_lattice(dest_key: MopKey, new_val: LatticeVal, ins_ea: int = 0) -> bool:
         """Monotone lattice update.  Returns True if value changed."""
         old_val = lattice[dest_key]
         merged = lattice_meet(old_val, new_val)
         if merged is old_val or merged == old_val:
             return False
         lattice[dest_key] = merged
+        if logger.debug_on and isinstance(merged, Const):
+            logger.debug(
+                "SCCP-LATTICE: key=%s -> Const(0x%x, %d) from_ea=0x%x",
+                dest_key, merged.value, merged.size, ins_ea,
+            )
         return True
 
     def _visit_insn(ins: Any, blk_serial: int) -> None:
@@ -530,7 +535,7 @@ def _run_sccp_impl(
             return
 
         new_val = _eval_insn_value(ins)
-        if _update_lattice(dest_key, new_val):
+        if _update_lattice(dest_key, new_val, ins_ea=ins.ea):
             # Value changed -- add all uses to SSA worklist.
             ssa_wl.append(dest_key)
 

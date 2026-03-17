@@ -302,6 +302,14 @@ class TransactionalExecutor:
         changes = tx_result.applied_count
         self._total_changes += changes
 
+        # Dump full microcode after successful apply for diagnostic correlation
+        from d810.recon.microcode_dump import mba_to_human_readable
+        executor_logger.info(
+            "POST-APPLY microcode dump (stage=%s, applied=%d):\n%s",
+            fragment.strategy_name, changes,
+            "\n".join(mba_to_human_readable(self.mba)),
+        )
+
         post_cfg = self.translator.lift(self.mba)
         reachable_blocks = self._compute_reachability_from_cfg(post_cfg)
         qty = len(post_cfg.blocks)
