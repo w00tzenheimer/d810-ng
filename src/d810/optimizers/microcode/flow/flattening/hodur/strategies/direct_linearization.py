@@ -21,6 +21,7 @@ from d810.recon.flow.bst_analysis import (
 )
 from d810.recon.flow.bst_model import resolve_target_via_bst
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+    blk_label,
     collect_state_machine_blocks,
     detect_conditional_transitions,
     evaluate_handler_paths,
@@ -902,8 +903,9 @@ def _classify_carrier_source_rich(
             if mba_resolution is not None:
                 state_const_written = mba_resolution.const_value
                 logger.info(
-                    "[carrier] blk[%d] resolved indirect state write via def-search: %#x",
-                    candidate_serial, state_const_written,
+                    "[carrier] %s resolved indirect state write via def-search: %#x",
+                    blk_label(mba, candidate_serial) if mba else f"blk[{candidate_serial}]",
+                    state_const_written,
                 )
         except Exception:
             pass
@@ -918,8 +920,9 @@ def _classify_carrier_source_rich(
                     state_const_written = vr_resolution.const_value
                     mba_resolution = vr_resolution
                     logger.info(
-                        "[carrier] blk[%d] resolved indirect state write via valranges: %#x",
-                        candidate_serial, state_const_written,
+                        "[carrier] %s resolved indirect state write via valranges: %#x",
+                        blk_label(mba, candidate_serial) if mba else f"blk[{candidate_serial}]",
+                        state_const_written,
                     )
             except Exception:
                 pass
@@ -1210,9 +1213,10 @@ class DirectHandlerLinearizationStrategy:
                 via_pred = path.ordered_path[-2]
             else:
                 logger.warning(
-                    "EDGE_REDIRECT: no via_pred for exit blk[%d] -> target %d "
+                    "EDGE_REDIRECT: no via_pred for exit %s -> target %s "
                     "(ordered_path too short: %s)",
-                    path.exit_block, target, path.ordered_path,
+                    blk_label(mba, path.exit_block), blk_label(mba, target),
+                    path.ordered_path,
                 )
                 return None
 
@@ -1260,9 +1264,9 @@ class DirectHandlerLinearizationStrategy:
                         break
                 if found_src is None or found_pred is None:
                     logger.warning(
-                        "EDGE_REDIRECT: all path segments claimed for exit blk[%d] -> target %d, "
+                        "EDGE_REDIRECT: all path segments claimed for exit %s -> target %s, "
                         "cannot queue redirect",
-                        path.exit_block, target,
+                        blk_label(mba, path.exit_block), blk_label(mba, target),
                     )
                     return None
                 src_block = found_src
@@ -1285,10 +1289,12 @@ class DirectHandlerLinearizationStrategy:
                 )
 
             logger.info(
-                "EDGE_REDIRECT: exit blk[%d] -> target %d conflicts with claimed=%d; "
-                "using edge_redirect(src=%d, old=%d, new=%d, via_pred=%d)",
-                path.exit_block, target, claimed_exits[path.exit_block],
-                src_block, old_target, target, use_pred,
+                "EDGE_REDIRECT: exit %s -> target %s conflicts with claimed=%s; "
+                "using edge_redirect(src=%s, old=%s, new=%s, via_pred=%s)",
+                blk_label(mba, path.exit_block), blk_label(mba, target),
+                blk_label(mba, claimed_exits[path.exit_block]),
+                blk_label(mba, src_block), blk_label(mba, old_target),
+                blk_label(mba, target), blk_label(mba, use_pred),
             )
             claimed_edges[(src_block, use_pred)] = target
             return {
@@ -1344,8 +1350,9 @@ class DirectHandlerLinearizationStrategy:
             _two_step_nopped.add(key)
             _append_nop(source_block=result.def_blk_serial, instruction_ea=result.def_insn_ea)
             logger.info(
-                "TWO_STEP_NOP: handler=blk[%d] temp_def=blk[%d]@0x%X const=0x%X method=%s",
-                handler_serial, result.def_blk_serial, result.def_insn_ea,
+                "TWO_STEP_NOP: handler=%s temp_def=%s@0x%X const=0x%X method=%s",
+                blk_label(mba, handler_serial),
+                blk_label(mba, result.def_blk_serial), result.def_insn_ea,
                 result.const_value if result.const_value is not None else 0,
                 result.method.value,
             )
@@ -1442,8 +1449,8 @@ class DirectHandlerLinearizationStrategy:
 
             if not paths:
                 logger.debug(
-                    "Handler blk[%d] (state 0x%x): no exit paths found, deferring to legacy",
-                    handler_serial,
+                    "Handler %s (state 0x%x): no exit paths found, deferring to legacy",
+                    blk_label(mba, handler_serial),
                     incoming_state,
                 )
                 continue
@@ -1465,10 +1472,12 @@ class DirectHandlerLinearizationStrategy:
             if conditional_transitions:
                 for ct in conditional_transitions:
                     logger.info(
-                        "CONDITIONAL_TRANSITION: handler=blk[%d] branch=blk[%d] "
-                        "arm=%d target_state=0x%X write=blk[%d]@0x%X",
-                        ct.handler_entry, ct.branch_block, ct.branch_arm,
-                        ct.target_state, ct.state_write_block, ct.state_write_ea,
+                        "CONDITIONAL_TRANSITION: handler=%s branch=%s "
+                        "arm=%d target_state=0x%X write=%s@0x%X",
+                        blk_label(mba, ct.handler_entry),
+                        blk_label(mba, ct.branch_block), ct.branch_arm,
+                        ct.target_state,
+                        blk_label(mba, ct.state_write_block), ct.state_write_ea,
                     )
 
                 # Phase 2: redirect conditional transition arms to resolved targets
@@ -1498,13 +1507,15 @@ class DirectHandlerLinearizationStrategy:
                             )
                         ):
                             logger.info(
-                                "MBA_TERMINAL_RETURN: handler=blk[%d] "
-                                "branch=blk[%d] arm=%d state=0x%X "
-                                "resolved_to_bst_default=blk[%d] -> "
-                                "redirect to terminal_exit=blk[%d]",
-                                ct.handler_entry, ct.branch_block,
+                                "MBA_TERMINAL_RETURN: handler=%s "
+                                "branch=%s arm=%d state=0x%X "
+                                "resolved_to_bst_default=%s -> "
+                                "redirect to terminal_exit=%s",
+                                blk_label(mba, ct.handler_entry),
+                                blk_label(mba, ct.branch_block),
                                 ct.branch_arm, ct.target_state,
-                                _ct_bst_resolved, _terminal_exit_target,
+                                blk_label(mba, _ct_bst_resolved),
+                                blk_label(mba, _terminal_exit_target),
                             )
                             # Override ct_target with terminal exit
                             ct_target = _terminal_exit_target
@@ -1512,10 +1523,10 @@ class DirectHandlerLinearizationStrategy:
                             # (arm=1 emits RedirectBranch, arm=0 defers)
                         else:
                             logger.info(
-                                "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
+                                "CONDITIONAL_TRANSITION_SKIP: handler=%s "
                                 "target_state=0x%X no BST resolution "
                                 "(bst_resolved=%s, is_default=%s)",
-                                ct.handler_entry, ct.target_state,
+                                blk_label(mba, ct.handler_entry), ct.target_state,
                                 _ct_bst_resolved,
                                 _ct_bst_resolved == _bst_default_serial
                                 if _ct_bst_resolved is not None else "N/A",
@@ -1527,9 +1538,10 @@ class DirectHandlerLinearizationStrategy:
                     branch_snap = fg.get_block(ct.branch_block)
                     if branch_snap is None or len(branch_snap.succs) != 2:
                         logger.info(
-                            "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
-                            "branch=blk[%d] not a 2-way block (succs=%s)",
-                            ct.handler_entry, ct.branch_block,
+                            "CONDITIONAL_TRANSITION_SKIP: handler=%s "
+                            "branch=%s not a 2-way block (succs=%s)",
+                            blk_label(mba, ct.handler_entry),
+                            blk_label(mba, ct.branch_block),
                             branch_snap.succs if branch_snap else "None",
                         )
                         continue
@@ -1540,20 +1552,23 @@ class DirectHandlerLinearizationStrategy:
                     edge_key = (ct.branch_block, old_target)
                     if edge_key in claimed_edges:
                         logger.info(
-                            "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
-                            "edge (%d->%d) already claimed by %d",
-                            ct.handler_entry, ct.branch_block,
-                            old_target, claimed_edges[edge_key],
+                            "CONDITIONAL_TRANSITION_SKIP: handler=%s "
+                            "edge (%s->%s) already claimed by %s",
+                            blk_label(mba, ct.handler_entry),
+                            blk_label(mba, ct.branch_block),
+                            blk_label(mba, old_target),
+                            blk_label(mba, claimed_edges[edge_key]),
                         )
                         continue
 
                     # Guard: skip if target is the same as old (no-op)
                     if old_target == ct_target:
                         logger.info(
-                            "CONDITIONAL_TRANSITION_SKIP: handler=blk[%d] "
-                            "branch=blk[%d] arm=%d already points to target blk[%d]",
-                            ct.handler_entry, ct.branch_block,
-                            ct.branch_arm, ct_target,
+                            "CONDITIONAL_TRANSITION_SKIP: handler=%s "
+                            "branch=%s arm=%d already points to target %s",
+                            blk_label(mba, ct.handler_entry),
+                            blk_label(mba, ct.branch_block),
+                            ct.branch_arm, blk_label(mba, ct_target),
                         )
                         continue
 
@@ -1564,10 +1579,11 @@ class DirectHandlerLinearizationStrategy:
                         other_arm = next(iter(prev))
                         if prev[other_arm] == ct_target:
                             logger.info(
-                                "CONDITIONAL_TRANSITION_SKIP_DUPLICATE: handler=blk[%d] "
-                                "branch=blk[%d] both arms -> blk[%d], skipping arm=%d",
-                                ct.handler_entry, ct.branch_block,
-                                ct_target, ct.branch_arm,
+                                "CONDITIONAL_TRANSITION_SKIP_DUPLICATE: handler=%s "
+                                "branch=%s both arms -> %s, skipping arm=%d",
+                                blk_label(mba, ct.handler_entry),
+                                blk_label(mba, ct.branch_block),
+                                blk_label(mba, ct_target), ct.branch_arm,
                             )
                             continue
 
@@ -1596,10 +1612,11 @@ class DirectHandlerLinearizationStrategy:
                         # redirect is needed here.  We still NOP the state
                         # write below.
                         logger.info(
-                            "CONDITIONAL_TRANSITION_ARM0_SKIP: handler=blk[%d] "
-                            "branch=blk[%d] arm=0 -> state 0x%x defers to "
+                            "CONDITIONAL_TRANSITION_ARM0_SKIP: handler=%s "
+                            "branch=%s arm=0 -> state 0x%x defers to "
                             "exit-block RedirectGoto",
-                            ct.handler_entry, ct.branch_block, ct.target_state,
+                            blk_label(mba, ct.handler_entry),
+                            blk_label(mba, ct.branch_block), ct.target_state,
                         )
 
                     # 4. NOP the dead state write (skip multi-pred blocks)
@@ -1623,12 +1640,14 @@ class DirectHandlerLinearizationStrategy:
                     # here would double-count.
                     if ct.branch_arm != 0:
                         logger.info(
-                            "CONDITIONAL_TRANSITION_REDIRECT: handler=blk[%d] "
-                            "branch=blk[%d] arm=%d old_target=blk[%d] -> "
-                            "new_target=blk[%d] (state=0x%X) write_nop=blk[%d]@0x%X",
-                            ct.handler_entry, ct.branch_block, ct.branch_arm,
-                            old_target, ct_target, ct.target_state,
-                            ct.state_write_block, ct.state_write_ea,
+                            "CONDITIONAL_TRANSITION_REDIRECT: handler=%s "
+                            "branch=%s arm=%d old_target=%s -> "
+                            "new_target=%s (state=0x%X) write_nop=%s@0x%X",
+                            blk_label(mba, ct.handler_entry),
+                            blk_label(mba, ct.branch_block), ct.branch_arm,
+                            blk_label(mba, old_target),
+                            blk_label(mba, ct_target), ct.target_state,
+                            blk_label(mba, ct.state_write_block), ct.state_write_ea,
                         )
 
                         resolved_count += 1
@@ -1656,10 +1675,10 @@ class DirectHandlerLinearizationStrategy:
                     if _exit_nsucc is not None and _exit_nsucc == 0:
                         # Block already has no successors (true terminal) — nothing to do.
                         logger.info(
-                            "Handler blk[%d] (state=0x%x): true terminal exit via blk[%d] (0 succs)",
-                            handler_serial,
+                            "Handler %s (state=0x%x): true terminal exit via %s (0 succs)",
+                            blk_label(mba, handler_serial),
                             incoming_state,
-                            path.exit_block,
+                            blk_label(mba, path.exit_block),
                         )
                         # Collect terminal path keyed by handler entry
                         _terminal_paths_total += 1
@@ -1681,17 +1700,18 @@ class DirectHandlerLinearizationStrategy:
                         )
                         if not sink_proof.ok:
                             logger.warning(
-                                "Handler blk[%d] (state=0x%x): terminal redirect "
-                                "blk[%d] -> blk[%d] REJECTED: %s (witness: %s)",
-                                handler_serial, incoming_state,
-                                path.exit_block, terminal_target,
+                                "Handler %s (state=0x%x): terminal redirect "
+                                "%s -> %s REJECTED: %s (witness: %s)",
+                                blk_label(mba, handler_serial), incoming_state,
+                                blk_label(mba, path.exit_block),
+                                blk_label(mba, terminal_target),
                                 sink_proof.reason, sink_proof.witness_path,
                             )
                             continue
 
                         _reason = (
-                            f"hodur-linear: blk[{handler_serial}] "
-                            f"terminal exit blk[{path.exit_block}] -> exit blk[{terminal_target}]"
+                            f"hodur-linear: {blk_label(mba, handler_serial)} "
+                            f"terminal exit {blk_label(mba, path.exit_block)} -> exit {blk_label(mba, terminal_target)}"
                         )
                         meta = _queue_redirect(path, terminal_target, _reason)
                         if meta is not None and meta["kind"] not in ("already_claimed", "already_claimed_edge"):
@@ -1713,19 +1733,19 @@ class DirectHandlerLinearizationStrategy:
                                     )
                                     _nop_temp_def_if_resolved(write_blk, write_ea, handler_serial)
                                 logger.info(
-                                    "Handler blk[%d] (state=0x%x): terminal exit blk[%d] -> exit blk[%d]",
-                                    handler_serial,
+                                    "Handler %s (state=0x%x): terminal exit %s -> exit %s",
+                                    blk_label(mba, handler_serial),
                                     incoming_state,
-                                    path.exit_block,
-                                    terminal_target,
+                                    blk_label(mba, path.exit_block),
+                                    blk_label(mba, terminal_target),
                                 )
                         resolved_count += 1
                     else:
                         logger.info(
-                            "Handler blk[%d] (state=0x%x): terminal exit via blk[%d] (no redirect target found)",
-                            handler_serial,
+                            "Handler %s (state=0x%x): terminal exit via %s (no redirect target found)",
+                            blk_label(mba, handler_serial),
                             incoming_state,
-                            path.exit_block,
+                            blk_label(mba, path.exit_block),
                         )
                         resolved_count += 1
                     continue
@@ -1749,7 +1769,7 @@ class DirectHandlerLinearizationStrategy:
                             fg, bst_default, path.final_state
                         )
                         if exit_target is not None:
-                            resolve_label = f"BST default blk[{bst_default}]"
+                            resolve_label = f"BST default {blk_label(mba, bst_default)}"
                     if exit_target is None and path.final_state is not None:
                         # K3: use flow_graph snapshot for BST root-walk
                         exit_target = resolve_exit_via_bst_default_snapshot(
@@ -1760,10 +1780,10 @@ class DirectHandlerLinearizationStrategy:
                             bst_rootwalk_targets.add(exit_target)
                         if exit_target is not None and exit_target in bst_node_blocks:
                             logger.info(
-                                "hodur-linear: handler %d exit state 0x%x resolved to BST internal node blk[%d], skipping",
-                                handler_serial,
+                                "hodur-linear: handler %s exit state 0x%x resolved to BST internal node %s, skipping",
+                                blk_label(mba, handler_serial),
                                 path.final_state,
-                                exit_target,
+                                blk_label(mba, exit_target),
                             )
                             exit_target = None
 
@@ -1783,16 +1803,17 @@ class DirectHandlerLinearizationStrategy:
                             )
                         ):
                             logger.info(
-                                "MBA_TERMINAL_RETURN_PASS1: handler=blk[%d] "
-                                "state=0x%X bst_default=blk[%d] -> "
-                                "terminal_exit=blk[%d]",
-                                handler_serial, path.final_state,
-                                exit_target, _terminal_exit_target,
+                                "MBA_TERMINAL_RETURN_PASS1: handler=%s "
+                                "state=0x%X bst_default=%s -> "
+                                "terminal_exit=%s",
+                                blk_label(mba, handler_serial), path.final_state,
+                                blk_label(mba, exit_target),
+                                blk_label(mba, _terminal_exit_target),
                             )
                             exit_target = _terminal_exit_target
                         _reason = (
-                            f"hodur-linear: blk[{handler_serial}] "
-                            f"exit 0x{path.final_state:x} -> {resolve_label} -> blk[{exit_target}]"
+                            f"hodur-linear: {blk_label(mba, handler_serial)} "
+                            f"exit 0x{path.final_state:x} -> {resolve_label} -> {blk_label(mba, exit_target)}"
                         )
                         meta = _queue_redirect(path, exit_target, _reason)
                         if meta is not None and meta["kind"] not in ("already_claimed", "already_claimed_edge"):
@@ -1824,8 +1845,8 @@ class DirectHandlerLinearizationStrategy:
                                         ):
                                             logger.info(
                                                 "  NOP dead state_var write in exit target"
-                                                " blk[%d] ea=%#x",
-                                                exit_target,
+                                                " %s ea=%#x",
+                                                blk_label(mba, exit_target),
                                                 _scan_insn.ea,
                                             )
                                             _append_nop(
@@ -1858,8 +1879,8 @@ class DirectHandlerLinearizationStrategy:
                         )
                     if bst_default is not None:
                         _reason = (
-                            f"hodur-linear: blk[{handler_serial}] "
-                            f"exit state 0x{path.final_state:x} -> bst_default blk[{bst_default}]"
+                            f"hodur-linear: {blk_label(mba, handler_serial)} "
+                            f"exit state 0x{path.final_state:x} -> bst_default {blk_label(mba, bst_default)}"
                         )
                         meta = _queue_redirect(path, bst_default, _reason)
                         if meta is not None and meta["kind"] not in ("already_claimed", "already_claimed_edge"):
@@ -1871,8 +1892,8 @@ class DirectHandlerLinearizationStrategy:
                                 owned_transitions.add((incoming_state, path.final_state))
                     else:
                         logger.debug(
-                            "Handler blk[%d]: exit state 0x%x -> no bst_default found, leaving intact",
-                            handler_serial,
+                            "Handler %s: exit state 0x%x -> no bst_default found, leaving intact",
+                            blk_label(mba, handler_serial),
                             path.final_state,
                         )
                     continue
@@ -1884,7 +1905,7 @@ class DirectHandlerLinearizationStrategy:
                 # misses MBA self-loops — see ticket d81-b6yj.
                 is_self_loop = target_serial == handler_serial
                 _reason = (
-                    f"hodur-linear: blk[{handler_serial}] "
+                    f"hodur-linear: {blk_label(mba, handler_serial)} "
                     f"0x{incoming_state:x}->0x{path.final_state:x} "
                     f"{'(loop)' if is_self_loop else ''}"
                 )
@@ -1899,8 +1920,8 @@ class DirectHandlerLinearizationStrategy:
                             # the state write would destroy the loop iteration.
                             logger.info(
                                 "Self-loop detected: preserving state writes for "
-                                "loop back-edge blk[%d] (state 0x%x)",
-                                handler_serial,
+                                "loop back-edge %s (state 0x%x)",
+                                blk_label(mba, handler_serial),
                                 incoming_state,
                             )
                         else:
@@ -1985,10 +2006,10 @@ class DirectHandlerLinearizationStrategy:
                     continue
 
                 logger.info(
-                    "  BST default back-edge: blk[%d] state %#x -> resolved blk[%d]",
-                    serial,
+                    "  BST default back-edge: %s state %#x -> resolved %s",
+                    blk_label(mba, serial),
                     written_state,
-                    target,
+                    blk_label(mba, target),
                 )
 
                 _synthetic_path = HandlerPathResult(
@@ -1998,7 +2019,7 @@ class DirectHandlerLinearizationStrategy:
                     ordered_path=[serial],
                 )
                 _reason = (
-                    f"hodur-linear: BST default blk[{serial}] {written_state:#x}->blk[{target}]"
+                    f"hodur-linear: BST default {blk_label(mba, serial)} {written_state:#x}->{blk_label(mba, target)}"
                 )
                 meta = _queue_redirect(_synthetic_path, target, _reason)
                 if meta is not None and meta["kind"] not in ("already_claimed", "already_claimed_edge"):
@@ -2090,18 +2111,19 @@ class DirectHandlerLinearizationStrategy:
                         )
                         if not sink_proof.ok:
                             logger.warning(
-                                "Hidden blk[%d]: terminal redirect "
-                                "blk[%d] -> blk[%d] REJECTED: %s (witness: %s)",
-                                rootwalk_blk,
-                                path.exit_block, terminal_target,
+                                "Hidden %s: terminal redirect "
+                                "%s -> %s REJECTED: %s (witness: %s)",
+                                blk_label(mba, rootwalk_blk),
+                                blk_label(mba, path.exit_block),
+                                blk_label(mba, terminal_target),
                                 sink_proof.reason, sink_proof.witness_path,
                             )
                             resolved_count += 1
                             continue
 
                         _reason = (
-                            f"hodur-linear: hidden blk[{rootwalk_blk}] "
-                            f"terminal exit blk[{path.exit_block}] -> exit blk[{terminal_target}]"
+                            f"hodur-linear: hidden {blk_label(mba, rootwalk_blk)} "
+                            f"terminal exit {blk_label(mba, path.exit_block)} -> exit {blk_label(mba, terminal_target)}"
                         )
                         meta = _queue_redirect(path, terminal_target, _reason)
                         if meta is not None and meta["kind"] not in ("already_claimed", "already_claimed_edge"):
@@ -2122,10 +2144,10 @@ class DirectHandlerLinearizationStrategy:
                                     )
                                     _nop_temp_def_if_resolved(write_blk, write_ea, rootwalk_blk)
                                 logger.info(
-                                    "hodur-linear: hidden blk[%d] terminal exit blk[%d] -> exit blk[%d]",
-                                    rootwalk_blk,
-                                    path.exit_block,
-                                    terminal_target,
+                                    "hodur-linear: hidden %s terminal exit %s -> exit %s",
+                                    blk_label(mba, rootwalk_blk),
+                                    blk_label(mba, path.exit_block),
+                                    blk_label(mba, terminal_target),
                                 )
                         resolved_count += 1
                     else:
@@ -2146,10 +2168,10 @@ class DirectHandlerLinearizationStrategy:
                         and target not in all_handlers
                     ):
                         logger.info(
-                            "Chain candidate: hidden blk[%d] exit -> blk[%d] "
+                            "Chain candidate: hidden %s exit -> %s "
                             "(not a known handler, potential chained hidden handler)",
-                            rootwalk_blk,
-                            target,
+                            blk_label(mba, rootwalk_blk),
+                            blk_label(mba, target),
                         )
                 if target is None:
                     continue
@@ -2157,9 +2179,9 @@ class DirectHandlerLinearizationStrategy:
                     continue  # Don't redirect to BST internal nodes
                 if target == path.exit_block:
                     logger.info(
-                        "hodur-linear: hidden-handler blk[%d] exit_blk=%d resolved to itself, skipping",
-                        rootwalk_blk,
-                        path.exit_block,
+                        "hodur-linear: hidden-handler %s exit_blk=%s resolved to itself, skipping",
+                        blk_label(mba, rootwalk_blk),
+                        blk_label(mba, path.exit_block),
                     )
                     continue
 
@@ -2167,9 +2189,9 @@ class DirectHandlerLinearizationStrategy:
                     hidden_seen.add(target)
                     hidden_worklist.append(target)
                     logger.info(
-                        "Queued chained hidden handler: blk[%d] from hidden blk[%d] state=0x%x",
-                        target,
-                        rootwalk_blk,
+                        "Queued chained hidden handler: %s from hidden %s state=0x%x",
+                        blk_label(mba, target),
+                        blk_label(mba, rootwalk_blk),
                         path.final_state,
                     )
 
@@ -2177,18 +2199,18 @@ class DirectHandlerLinearizationStrategy:
                 if hidden_key in hidden_redirects_seen:
                     logger.info(
                         "hodur-linear: hidden-handler duplicate redirect skipped "
-                        "blk[%d] exit_blk=%d state=0x%x target=%d",
-                        rootwalk_blk,
-                        path.exit_block,
+                        "%s exit_blk=%s state=0x%x target=%s",
+                        blk_label(mba, rootwalk_blk),
+                        blk_label(mba, path.exit_block),
                         path.final_state,
-                        target,
+                        blk_label(mba, target),
                     )
                     continue
                 hidden_redirects_seen.add(hidden_key)
 
                 _reason = (
-                    f"hodur-linear: hidden-handler blk[{rootwalk_blk}]"
-                    f" exit 0x{path.final_state:x} -> blk[{target}]"
+                    f"hodur-linear: hidden-handler {blk_label(mba, rootwalk_blk)}"
+                    f" exit 0x{path.final_state:x} -> {blk_label(mba, target)}"
                 )
                 meta = _queue_redirect(path, target, _reason)
                 if meta is not None and meta["kind"] not in ("already_claimed", "already_claimed_edge"):
@@ -2196,10 +2218,10 @@ class DirectHandlerLinearizationStrategy:
                     if ok:
                         linearized_blocks.add(path.exit_block)
                         logger.info(
-                            "hodur-linear: hidden-handler blk[%d] exit_blk=%d -> target blk[%d] (state 0x%x)",
-                            rootwalk_blk,
-                            path.exit_block,
-                            target,
+                            "hodur-linear: hidden-handler %s exit_blk=%s -> target %s (state 0x%x)",
+                            blk_label(mba, rootwalk_blk),
+                            blk_label(mba, path.exit_block),
+                            blk_label(mba, target),
                             path.final_state,
                         )
                         for write_blk, write_ea in path.state_writes:
@@ -2264,14 +2286,14 @@ class DirectHandlerLinearizationStrategy:
                 continue
             if bst_snap.block_type != _BLT_2WAY_VAL:
                 logger.debug(
-                    "BST_CONVERT: skip blk[%d] — not BLT_2WAY (type=%d)",
-                    bst_serial, bst_snap.block_type,
+                    "BST_CONVERT: skip %s — not BLT_2WAY (type=%d)",
+                    blk_label(mba, bst_serial), bst_snap.block_type,
                 )
                 continue
             if len(bst_snap.succs) < 1:
                 logger.debug(
-                    "BST_CONVERT: skip blk[%d] — no successors",
-                    bst_serial,
+                    "BST_CONVERT: skip %s — no successors",
+                    blk_label(mba, bst_serial),
                 )
                 continue
             # Use fallthrough successor (succs[0]) as the goto target.
@@ -2285,8 +2307,8 @@ class DirectHandlerLinearizationStrategy:
             owned_blocks.add(bst_serial)
             bst_converted += 1
             logger.info(
-                "BST_CONVERT: blk[%d] 2-way -> goto blk[%d]",
-                bst_serial, fallthrough_target,
+                "BST_CONVERT: %s 2-way -> goto %s",
+                blk_label(mba, bst_serial), blk_label(mba, fallthrough_target),
             )
         if bst_converted > 0:
             logger.info(
@@ -2437,23 +2459,23 @@ class DirectHandlerLinearizationStrategy:
 
                 logger.info(
                     "PTS forward-frontier: %d handler entries, %d resolved, %d unresolved, "
-                    "suffix=blk[%d]->blk[%d] (%d blocks), semantic=%s",
+                    "suffix=%s->%s (%d blocks), semantic=%s",
                     len(forward_frontier_entries),
                     len(resolved_entries),
                     len(unresolved_entries),
-                    shared_entry,
-                    return_block,
+                    blk_label(mba, shared_entry),
+                    blk_label(mba, return_block),
                     len(suffix_serials_tuple),
                     semantic_frontier.action.value,
                 )
 
                 for entry in forward_frontier_entries:
                     logger.info(
-                        "PTS forward-frontier entry: handler=blk[%d] candidate=blk[%s] "
-                        "succ=blk[%s] carrier=%s proof=%s semantic=%s notes=%s",
-                        entry.handler_entry,
-                        entry.forward_candidate,
-                        entry.candidate_succ,
+                        "PTS forward-frontier entry: handler=%s candidate=%s "
+                        "succ=%s carrier=%s proof=%s semantic=%s notes=%s",
+                        blk_label(mba, entry.handler_entry),
+                        blk_label(mba, entry.forward_candidate) if entry.forward_candidate is not None else "None",
+                        blk_label(mba, entry.candidate_succ) if entry.candidate_succ is not None else "None",
                         entry.carrier_source_kind.value,
                         entry.proof_status,
                         entry.semantic_action.value,
@@ -2517,10 +2539,10 @@ class DirectHandlerLinearizationStrategy:
 
                     # INFO-level summary
                     logger.info(
-                        "[corridor-diag] shared_entry=blk[%d] corridor=%s shape=%s "
+                        "[corridor-diag] shared_entry=%s corridor=%s shape=%s "
                         "len=%d handlers=%d clonable=%s rec=%s",
-                        corridor_info.shared_entry,
-                        [("blk[%d]" % s) for s in corridor_info.corridor_blocks],
+                        blk_label(mba, corridor_info.shared_entry),
+                        [blk_label(mba, s) for s in corridor_info.corridor_blocks],
                         corridor_info.corridor_shape.value,
                         corridor_info.corridor_length,
                         corridor_info.handler_count,
@@ -2539,11 +2561,11 @@ class DirectHandlerLinearizationStrategy:
                     suffix_group_decisions.append(decision)
 
                     logger.info(
-                        "[decision-table] shared_entry=blk[%d] handlers=%d "
+                        "[decision-table] shared_entry=%s handlers=%d "
                         "bucket=%s carriers=%s state_const=%s "
                         "resolved=%d unresolved=%d "
                         "clonable=%s should_emit=%s reasons=%s",
-                        decision.shared_entry,
+                        blk_label(mba, decision.shared_entry),
                         decision.handler_count,
                         decision.carrier_bucket.value,
                         decision.carrier_source_kinds,

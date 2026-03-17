@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 _helpers_logger = logging.getLogger("D810.hodur.strategy.helpers")
 
 __all__ = [
+    "blk_label",
     "collect_state_machine_blocks",
     "detect_conditional_transitions",
     "find_terminal_exit_target_snapshot",
@@ -33,6 +34,15 @@ __all__ = [
     "eval_bst_condition",
     "resolve_exit_via_bst_default_snapshot",
 ]
+
+
+def blk_label(mba: object, serial: int) -> str:
+    """Format block serial with EA for log messages: blk[N]@0xEA."""
+    try:
+        blk = mba.get_mblock(serial)
+        return f"blk[{serial}]@{blk.start:#x}"
+    except Exception:
+        return f"blk[{serial}]@?"
 
 
 def collect_state_machine_blocks(state_machine: object) -> set[int]:
