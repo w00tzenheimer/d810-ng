@@ -534,12 +534,14 @@ class LinearizedFlowGraphStrategy:
                 or resolve_target_via_bst(bst_result, t.to_state) is not None
             )
         }
-        nop_mods, nop_blocks, nop_state_values = self._nop_state_variable_writes(
-            snapshot, builder, owned_blocks, redirected_states,
-            bst_node_blocks,
-        )
-        modifications.extend(nop_mods)
-        owned_blocks.update(nop_blocks)
+        # EXPERIMENT: NOPs disabled
+        # nop_mods, nop_blocks, nop_state_values = self._nop_state_variable_writes(
+        #     snapshot, builder, owned_blocks, redirected_states,
+        #     bst_node_blocks,
+        # )
+        # modifications.extend(nop_mods)
+        # owned_blocks.update(nop_blocks)
+        nop_mods, nop_blocks, nop_state_values = [], set(), {}
 
         # -----------------------------------------------------------------
         # 3b. NOP m_goto @dispatcher in single-owner handler blocks.
@@ -550,12 +552,14 @@ class LinearizedFlowGraphStrategy:
         #     Only safe for blocks with npred<=1.
         # -----------------------------------------------------------------
         dispatcher_serial = snapshot.bst_dispatcher_serial
-        goto_nop_mods, goto_nop_count, goto_skip_count = (
-            self._nop_dispatcher_gotos(
-                snapshot, dispatcher_serial, bst_node_blocks, builder,
-            )
-        )
-        modifications.extend(goto_nop_mods)
+        # EXPERIMENT: NOPs disabled (dispatcher gotos)
+        # goto_nop_mods, goto_nop_count, goto_skip_count = (
+        #     self._nop_dispatcher_gotos(
+        #         snapshot, dispatcher_serial, bst_node_blocks, builder,
+        #     )
+        # )
+        # modifications.extend(goto_nop_mods)
+        goto_nop_mods, goto_nop_count, goto_skip_count = [], 0, 0
 
         # -----------------------------------------------------------------
         # 4. Disconnect 2-way blocks with dispatcher back-edges.
@@ -585,14 +589,11 @@ class LinearizedFlowGraphStrategy:
         #     node) that don't directly reference the dispatcher.
         # -----------------------------------------------------------------
         flow_graph = snapshot.flow_graph
-        # DISABLED: BST convert_to_goto routes all BST blocks to fallthrough,
-        # disconnecting handler entries that are only reachable via BST branch
-        # targets. 203/221 blocks become unreachable. Needs BST-aware target
-        # selection (route each BST leaf to its handler entry).
-        # bst_convert_count = self._convert_bst_nodes_to_goto(
-        #     bst_node_blocks, flow_graph, builder, modifications, emitted,
-        #     mba=mba,
-        # )
+        # EXPERIMENT: Re-enabled with NOPs OFF to test BST read-side kill
+        bst_convert_count = self._convert_bst_nodes_to_goto(
+            bst_node_blocks, flow_graph, builder, modifications, emitted,
+            mba=mba,
+        )
         bst_convert_count = 0
 
         logger.info(

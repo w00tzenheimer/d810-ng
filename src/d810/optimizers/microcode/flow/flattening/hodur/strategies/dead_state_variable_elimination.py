@@ -221,14 +221,15 @@ class DeadStateVariableEliminationStrategy:
                     )
                     continue
 
-                modifications.append(
-                    builder.nop_instruction(
-                        source_block=use.block_serial,
-                        instruction_ea=use.ins_ea,
-                    )
-                )
-                owned_blocks.add(use.block_serial)
-                nop_count += 1
+                # EXPERIMENT: NOPs disabled
+                # modifications.append(
+                #     builder.nop_instruction(
+                #         source_block=use.block_serial,
+                #         instruction_ea=use.ins_ea,
+                #     )
+                # )
+                # owned_blocks.add(use.block_serial)
+                # nop_count += 1
                 logger.debug(
                     "DeadStateVarElim: NOP read site blk[%d] ea=0x%x opcode=%d",
                     use.block_serial,
