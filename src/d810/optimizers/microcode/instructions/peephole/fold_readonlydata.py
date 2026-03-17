@@ -297,6 +297,12 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             ea = self._ea_from_simple_mov_load(ins)
 
         if ea is None:
+            # Fallback: use the microcode emulator to evaluate complex address
+            # expressions that pattern-based resolvers can't match, e.g.,
+            # ldx ds, add(&byte_TABLE, xds(xdu(const & 0xF) + 0x60))
+            ea = self._try_emulator_eval_address(ins, blk)
+
+        if ea is None:
             # Quick pre-check: skip instructions that cannot possibly contain
             # a readonly global reference (pure register/constant operands).
             if not _has_potential_readonly_operand(ins):
@@ -481,6 +487,61 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                 return start_ea
             return None
 
+        return None
+
+    # ------------------------------------------------------------------ #
+    # Emulator-based address resolution fallback                        #
+    # ------------------------------------------------------------------ #
+    def _try_emulator_eval_address(
+        self, ins: ida_hexrays.minsn_t, blk: ida_hexrays.mblock_t | None
+    ) -> int | None:
+        """Try to evaluate the address operand using the microcode emulator.
+
+        This handles MBA-computed constant indices that pattern-based
+        resolvers cannot match, e.g.,
+        ``ldx ds, add(&byte_TABLE, xds(xdu(const & 0xF) + 0x60))``.
+
+        The emulator's ``_resolve_segment_register`` handles ``ds.2``
+        automatically, so no special setup is needed for segment registers.
+        """
+        if blk is None:
+            return None
+
+        # Only attempt for memory load/store opcodes where we have an
+        # address operand to evaluate.
+        if ins.opcode == ida_hexrays.m_ldx:
+            addr_mop = ins.r
+        elif ins.opcode == ida_hexrays.m_stx:
+            addr_mop = ins.d
+        else:
+            return None
+
+        if addr_mop is None or addr_mop.t not in (
+            ida_hexrays.mop_d,
+            ida_hexrays.mop_b,
+        ):
+            # Only try the emulator for computed expressions (mop_d) or
+            # memory operands (mop_b) — simple constants / symbols are
+            # already handled by the pattern-based resolvers.
+            return None
+
+        try:
+            from d810.evaluator.hexrays_microcode.emulator import (
+                MicroCodeEnvironment,
+                MicroCodeInterpreter,
+            )
+
+            env = MicroCodeEnvironment()
+            env.set_cur_flow(blk, ins)
+            interpreter = MicroCodeInterpreter(symbolic_mode=False)
+
+            result = interpreter.eval(addr_mop, env)
+
+            # Validate: result must be a plausible virtual address.
+            if result is not None and result > 0x10000:
+                return result
+        except Exception:
+            pass
         return None
 
     # ------------------------------------------------------------------ #
