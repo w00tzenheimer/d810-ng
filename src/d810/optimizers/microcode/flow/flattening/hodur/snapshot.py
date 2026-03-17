@@ -65,6 +65,7 @@ class AnalysisSnapshot:
     resolved_transitions: frozenset = field(default_factory=frozenset)
     initial_transitions: tuple = ()
     flow_graph: FlowGraph | None = None
+    nop_state_values: dict[int, int] = field(default_factory=dict)
 
     @property
     def state_constants(self) -> set:

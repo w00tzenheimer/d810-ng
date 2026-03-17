@@ -31,7 +31,7 @@ for the flow-context consumer.
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from d810.core.typing import TYPE_CHECKING
 
 from d810.cfg.flow.terminal_return import TerminalReturnSourceKind
@@ -469,8 +469,29 @@ class UnflatteningPlanner:
                 continue
             if isinstance(fragment, list):
                 fragments.extend(fragment)
+                # Extract nop_state_values from any fragment metadata
+                # and inject into snapshot for subsequent strategies.
+                for frag in fragment:
+                    nsv = frag.metadata.get("nop_state_values")
+                    if nsv and not snapshot.nop_state_values:
+                        snapshot = replace(snapshot, nop_state_values=nsv)
+                        logger.info(
+                            "Planner: injected %d NOP'd state values from "
+                            "strategy '%s' into snapshot",
+                            len(nsv), frag.strategy_name,
+                        )
             elif fragment is not None:
                 fragments.append(fragment)
+                # Extract nop_state_values from fragment metadata
+                # and inject into snapshot for subsequent strategies.
+                nsv = fragment.metadata.get("nop_state_values")
+                if nsv and not snapshot.nop_state_values:
+                    snapshot = replace(snapshot, nop_state_values=nsv)
+                    logger.info(
+                        "Planner: injected %d NOP'd state values from "
+                        "strategy '%s' into snapshot",
+                        len(nsv), fragment.strategy_name,
+                    )
             else:
                 pre_planner_records.append(DecisionRecord(
                     strategy_name=strategy.name,
