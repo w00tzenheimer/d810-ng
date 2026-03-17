@@ -2250,6 +2250,50 @@ class DirectHandlerLinearizationStrategy:
             len(all_handlers),
         )
 
+        # ---- PASS 3: Convert BST comparison blocks to unconditional gotos ----
+        # After linearization, handler exits bypass the dispatcher/BST entirely.
+        # However, IDA rebuilds edges from instruction operands, so the BST
+        # comparison tree (m_jae/m_jnz testing the state var) survives as
+        # while-loop nesting.  Converting each BST 2-way block to a 1-way goto
+        # destroys the comparison instruction, making the BST dead code.
+        _BLT_2WAY_VAL = 4  # ida_hexrays.BLT_2WAY
+        bst_converted = 0
+        for bst_serial in sorted(bst_node_blocks):
+            bst_snap = fg.get_block(bst_serial)
+            if bst_snap is None:
+                continue
+            if bst_snap.block_type != _BLT_2WAY_VAL:
+                logger.debug(
+                    "BST_CONVERT: skip blk[%d] — not BLT_2WAY (type=%d)",
+                    bst_serial, bst_snap.block_type,
+                )
+                continue
+            if len(bst_snap.succs) < 1:
+                logger.debug(
+                    "BST_CONVERT: skip blk[%d] — no successors",
+                    bst_serial,
+                )
+                continue
+            # Use fallthrough successor (succs[0]) as the goto target.
+            fallthrough_target = bst_snap.succs[0]
+            modifications.append(
+                builder.convert_to_goto(
+                    source_block=bst_serial,
+                    target_block=fallthrough_target,
+                )
+            )
+            owned_blocks.add(bst_serial)
+            bst_converted += 1
+            logger.info(
+                "BST_CONVERT: blk[%d] 2-way -> goto blk[%d]",
+                bst_serial, fallthrough_target,
+            )
+        if bst_converted > 0:
+            logger.info(
+                "BST comparison elimination: %d/%d BST blocks converted to goto",
+                bst_converted, len(bst_node_blocks),
+            )
+
         # --- Forward ownership-frontier analysis (DIAGNOSTIC ONLY) ---
         # Replaces the backward-walk _recover_handler_body_exit approach which
         # collapsed distinct terminal paths to shared blocks.  For each terminal

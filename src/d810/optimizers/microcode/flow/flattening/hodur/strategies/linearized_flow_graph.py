@@ -567,10 +567,30 @@ class LinearizedFlowGraphStrategy:
             bst_node_blocks, dispatcher_serial, builder, modifications, emitted,
         )
 
+        # -----------------------------------------------------------------
+        # 4b. Convert remaining BST comparison blocks to unconditional gotos.
+        #     After linearization, handler exits bypass the dispatcher/BST
+        #     entirely.  However, IDA rebuilds edges from instruction
+        #     operands, so the BST comparison tree (m_jae/m_jnz testing the
+        #     state var) survives as while-loop nesting.  Converting each
+        #     remaining BST 2-way block to a 1-way goto destroys the
+        #     comparison instruction, making the BST dead code.
+        #
+        #     This is complementary to _disconnect_bst_comparison_nodes
+        #     which only handles blocks with the dispatcher as a successor.
+        #     This pass catches BST-internal nodes (e.g., BST node -> BST
+        #     node) that don't directly reference the dispatcher.
+        # -----------------------------------------------------------------
+        flow_graph = snapshot.flow_graph
+        bst_convert_count = self._convert_bst_nodes_to_goto(
+            bst_node_blocks, flow_graph, builder, modifications, emitted,
+        )
+
         logger.info(
             "LFG: emitted %d redirects (%d exit-resolved, %d bst-default) "
             "+ %d chain redirects, %d stvar NOPs across %d blocks, "
-            "%d goto NOPs (%d shared-skipped), %d BST disconnects "
+            "%d goto NOPs (%d shared-skipped), %d BST disconnects, "
+            "%d BST-node conversions "
             "(%d raw transitions, %d skipped, %d range-fallback)",
             resolved_count,
             exit_resolved_count,
@@ -581,6 +601,7 @@ class LinearizedFlowGraphStrategy:
             goto_nop_count,
             goto_skip_count,
             disconnect_count,
+            bst_convert_count,
             raw_transition_count,
             skipped_count,
             range_fallback_count,
@@ -686,6 +707,7 @@ class LinearizedFlowGraphStrategy:
                 "skipped_count": skipped_count,
                 "range_fallback_count": range_fallback_count,
                 "disconnect_count": disconnect_count,
+                "bst_convert_count": bst_convert_count,
                 "goto_nop_count": goto_nop_count,
                 "goto_skip_count": goto_skip_count,
             },
@@ -1825,6 +1847,91 @@ class LinearizedFlowGraphStrategy:
             )
 
         return disconnect_count
+
+    @staticmethod
+    def _convert_bst_nodes_to_goto(
+        bst_node_blocks: set[int],
+        flow_graph: object | None,
+        builder: ModificationBuilder,
+        modifications: list,
+        emitted: set[tuple[int, int]],
+    ) -> int:
+        """Convert BST comparison blocks from 2-way to unconditional goto.
+
+        After linearization, handler exits bypass the dispatcher/BST
+        entirely.  However, IDA rebuilds edges from instruction operands,
+        so the BST comparison tree (``m_jae``/``m_jnz`` testing the state
+        var) survives as ``while``-loop nesting.  Converting each BST
+        2-way block to a 1-way goto destroys the comparison instruction,
+        making the BST dead code.
+
+        This is complementary to :meth:`_disconnect_bst_comparison_nodes`
+        which only handles blocks with the dispatcher as a direct
+        successor.  This pass catches BST-internal nodes (BST node to
+        BST node edges) that were not covered.
+
+        Args:
+            bst_node_blocks: Set of BST comparison block serials.
+            flow_graph: The flow graph snapshot (``snapshot.flow_graph``).
+            builder: Modification builder for emitting graph edits.
+            modifications: List to append new modifications to.
+            emitted: Set of ``(from, to)`` pairs for dedup.
+
+        Returns:
+            Number of BST blocks converted to goto.
+        """
+        if flow_graph is None or not bst_node_blocks:
+            return 0
+
+        _BLT_2WAY = ida_hexrays.BLT_2WAY
+        already_redirected: set[int] = {src for src, _ in emitted}
+        bst_converted = 0
+
+        for bst_serial in sorted(bst_node_blocks):
+            # Skip blocks already handled by disconnect or redirect passes.
+            if bst_serial in already_redirected:
+                continue
+
+            bst_snap = flow_graph.get_block(bst_serial)
+            if bst_snap is None:
+                continue
+            if bst_snap.block_type != _BLT_2WAY:
+                logger.debug(
+                    "BST_CONVERT: skip blk[%d] -- not BLT_2WAY (type=%d)",
+                    bst_serial, bst_snap.block_type,
+                )
+                continue
+            if len(bst_snap.succs) < 1:
+                logger.debug(
+                    "BST_CONVERT: skip blk[%d] -- no successors",
+                    bst_serial,
+                )
+                continue
+
+            # Use fallthrough successor (succs[0]) as the goto target.
+            fallthrough_target = bst_snap.succs[0]
+
+            emit_key = (bst_serial, fallthrough_target)
+            if emit_key in emitted:
+                continue
+            emitted.add(emit_key)
+
+            modifications.append(
+                builder.convert_to_goto(bst_serial, fallthrough_target),
+            )
+            bst_converted += 1
+            logger.info(
+                "BST_CONVERT: blk[%d] 2-way -> goto blk[%d]",
+                bst_serial, fallthrough_target,
+            )
+
+        if bst_converted > 0:
+            logger.info(
+                "BST comparison elimination: %d/%d BST blocks converted "
+                "to goto",
+                bst_converted, len(bst_node_blocks),
+            )
+        return bst_converted
 
     @staticmethod
     def _disconnect_bst_entries(
