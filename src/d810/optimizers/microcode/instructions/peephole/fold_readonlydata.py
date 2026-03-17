@@ -525,6 +525,12 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             # already handled by the pattern-based resolvers.
             return None
 
+        # Performance guard: only attempt emulator when the address expression
+        # contains a mop_v (global reference like $byte_TABLE). Without a
+        # global base address, the expression can't resolve to a foldable EA.
+        if not self._contains_mop_v(addr_mop):
+            return None
+
         try:
             from d810.evaluator.hexrays_microcode.emulator import (
                 MicroCodeEnvironment,
@@ -543,6 +549,28 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _contains_mop_v(mop: ida_hexrays.mop_t, depth: int = 0) -> bool:
+        """Check if an operand tree contains a mop_v (global address reference).
+
+        Bounded depth-first walk to avoid deep recursion on complex trees.
+        """
+        if depth > 8:
+            return False
+        if mop.t == ida_hexrays.mop_v:
+            return True
+        if mop.t == ida_hexrays.mop_a and mop.a is not None:
+            # mop_a wraps another operand (address-of)
+            return FoldReadonlyDataRule._contains_mop_v(mop.a, depth + 1)
+        if mop.t == ida_hexrays.mop_d and mop.d is not None:
+            # mop_d is a sub-instruction — check l, r, d operands
+            sub = mop.d
+            for attr in ('l', 'r', 'd'):
+                op = getattr(sub, attr, None)
+                if op is not None and FoldReadonlyDataRule._contains_mop_v(op, depth + 1):
+                    return True
+        return False
 
     # ------------------------------------------------------------------ #
     # Expression tree folding                                            #
