@@ -615,7 +615,7 @@ def mba_to_human_readable(mba: "idaapi.mbl_array_t") -> List[str]:
         end_ea = blk.end
         block_type = blk.type
         type_name = BLT_NAMES[block_type]
-        flags: MicrocodeBasicBlockFlag = MicrocodeBasicBlockFlag(int(blk.flags))
+        flags = blk.flags
 
         preds = _collect_bitset(blk.predset)
         succs = _collect_bitset(blk.succset)
