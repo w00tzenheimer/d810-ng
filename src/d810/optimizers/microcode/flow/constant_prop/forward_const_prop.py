@@ -321,6 +321,9 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         if not IN:
             return 0
 
+        # Try SCCP for MBA-aware constants (optional enhancement)
+        sccp_overlay = self._get_sccp_overlay(mba)
+
         total_changes = 0
         # Phase B: Iterate over each block and apply optimizations until the
         # block is stable (reaches a fixed point).
@@ -333,6 +336,11 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                 # fixed-point loop. A destructive rewrite invalidates the
                 # previous local dataflow analysis, so we must start fresh.
                 consts: ConstMap = IN[curr_blk.serial].copy()
+
+                # Merge SCCP-discovered constants into the local const map
+                if sccp_overlay:
+                    self._merge_sccp_into_constmap(consts, sccp_overlay, curr_blk)
+
                 if logger.debug_on and consts:
                     logger.debug(
                         "[forward-cprop] constant map before blk %d: %s",
@@ -464,6 +472,89 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             transfer=transfer,
         )
         return result.in_states, result.out_states
+
+    def _get_sccp_overlay(self, mba: ida_hexrays.mba_t) -> typing.Optional[dict]:
+        """Run SCCP and return flat lattice, or None if unavailable."""
+        try:
+            from d810.evaluator.hexrays_microcode.sccp import run_sccp
+
+            result = run_sccp(mba)
+            if result:
+                n_consts = sum(1 for v in result.values() if v is not None)
+                if logger.debug_on:
+                    logger.debug(
+                        "[FCP] SCCP overlay: %d constants discovered", n_consts
+                    )
+                return result if n_consts > 0 else None
+            return None
+        except Exception:
+            return None
+
+    def _merge_sccp_into_constmap(
+        self,
+        consts: ConstMap,
+        sccp_overlay: dict,
+        blk: ida_hexrays.mblock_t,
+    ) -> None:
+        """Merge SCCP-discovered constants into a block's const map.
+
+        For each operand used in *blk* that SCCP resolved to a constant,
+        add the constant to *consts* if the variable is not already ``Const``
+        there (i.e. SCCP can only *add* knowledge, never override what the
+        simple GEN/KILL dataflow already found).
+
+        The merge scans the block's instructions to find ``mop_S`` / ``mop_r``
+        operands, builds the ``mop_key`` for each, and checks the SCCP overlay.
+        """
+        from d810.hexrays.expr.p_ast import get_mop_key
+
+        ins = blk.head
+        while ins:
+            for attr in ("l", "r", "d"):
+                op = getattr(ins, attr, None)
+                if op is None:
+                    continue
+                if op.t in (ida_hexrays.mop_S, ida_hexrays.mop_r):
+                    self._try_sccp_merge_op(consts, sccp_overlay, op, get_mop_key)
+                # Also check sub-operands inside mop_d (sub-instruction) and
+                # mop_f (call args) at one level of nesting.
+                elif op.t == ida_hexrays.mop_d and op.d is not None:
+                    for sub_attr in ("l", "r", "d"):
+                        sub = getattr(op.d, sub_attr, None)
+                        if sub is not None and sub.t in (
+                            ida_hexrays.mop_S,
+                            ida_hexrays.mop_r,
+                        ):
+                            self._try_sccp_merge_op(
+                                consts, sccp_overlay, sub, get_mop_key
+                            )
+                elif op.t == ida_hexrays.mop_f and op.f is not None:
+                    for a in op.f.args:
+                        if a and a.t in (ida_hexrays.mop_S, ida_hexrays.mop_r):
+                            self._try_sccp_merge_op(
+                                consts, sccp_overlay, a, get_mop_key
+                            )
+            ins = ins.next
+
+    @staticmethod
+    def _try_sccp_merge_op(
+        consts: ConstMap,
+        sccp_overlay: dict,
+        op: ida_hexrays.mop_t,
+        get_mop_key: typing.Callable,
+    ) -> None:
+        """Merge a single SCCP-resolved operand into *consts* if beneficial."""
+        key = get_mop_key(op)
+        sccp_val = sccp_overlay.get(key)
+        if sccp_val is None:
+            return  # SCCP has TOP/BOTTOM for this var — nothing to add
+        name = get_stack_var_name(op)
+        if not name:
+            return
+        existing = consts.get(name, BOTTOM)
+        if isinstance(existing, Const):
+            return  # Simple dataflow already found a constant — keep it
+        consts[name] = Const(sccp_val, op.size)
 
     # meet delegates to the injected MeetStrategy
     def _meet(self, pred_outs: list[ConstMap]) -> ConstMap:
