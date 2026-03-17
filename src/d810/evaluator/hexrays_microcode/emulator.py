@@ -1152,8 +1152,18 @@ class MicroCodeInterpreter(object):
                             )
                     except Exception as exc:
                         emulator_log.debug("DEF-USE-DIAG: failed to query chains: %s", exc)
+                # Include vd stkoff and IDA stkoff for cross-referencing with disassembly
+                _detail = _name
+                if mop.t == ida_hexrays.mop_S and mop.s is not None:
+                    vd_off = mop.s.off
+                    try:
+                        mba_ref = environment.cur_blk.mba if environment.cur_blk else None
+                        ida_off = mba_ref.stkoff_vd2ida(vd_off) if mba_ref else "?"
+                        _detail = f"{_name} (vd_stkoff=0x{vd_off:X}, ida_stkoff=0x{ida_off:X})"
+                    except Exception:
+                        _detail = f"{_name} (vd_stkoff=0x{vd_off:X})"
                 raise EmulationException(
-                    "Variable {0} is not defined for mop_r or mop_S".format(_name)
+                    "Variable {0} is not defined for mop_r or mop_S".format(_detail)
                 )
         elif mop.t == ida_hexrays.mop_d:
             res = self._eval_instruction(mop.d, environment)
