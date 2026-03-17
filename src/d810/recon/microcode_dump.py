@@ -542,7 +542,7 @@ def _clean_insn_str(raw) -> str:
     ).rstrip()
 
 
-def mba_to_human_readable(mba: "idaapi.mbl_array_t") -> List[str]:
+def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
     """Convert an mbl_array_t to a list of strings in IDA's native human-readable microcode format.
 
     Produces output similar to IDA's own microcode listing, including:
@@ -668,15 +668,15 @@ def mba_to_human_readable(mba: "idaapi.mbl_array_t") -> List[str]:
         )
 
         line.append(
-            f"; {type_name} {serial} {inbounds} OUTBOUNDS: {' '.join(succs_sorted)} [START={start_ea:X} END={end_ea:X}] MINREFS: STK={blk.minstkref:X}/ARG={blk.minargref:X}, MAXBSP: {blk.maxbsp:X}"
+            f"; {type_name} {serial} {inbounds} OUTBOUNDS: {' '.join(succs_sorted)} [START={start_ea:X} END={end_ea:X}] MINREFS: STK={blk.minbstkref:X}/ARG={blk.minbargref:X}, MAXBSP: {blk.maxbsp:X}"
         )
 
         # USE / DEF / DNU liveness sets
-        def_must = _mlist_dstr(getattr(blk, "mustbdef", None))
-        dnu = _mlist_dstr(getattr(blk, "dnu", None))
-        use_must = _mlist_dstr(getattr(blk, "mustbuse", None))
-        use_may = _mlist_dstr(getattr(blk, "maybuse", None))
-        def_may = _mlist_dstr(getattr(blk, "maybdef", None))
+        def_must = _mlist_dstr(blk.mustbdef)
+        dnu = _mlist_dstr(blk.dnu)
+        use_must = _mlist_dstr(blk.mustbuse)
+        use_may = _mlist_dstr(blk.maybuse)
+        def_may = _mlist_dstr(blk.maybdef)
 
         def _paren_if_multi(s: str) -> str:
             return f"({s})" if "," in s else s
@@ -706,19 +706,15 @@ def mba_to_human_readable(mba: "idaapi.mbl_array_t") -> List[str]:
 
         # Collect instructions
         insns = []
-        ins = blk.head
+        ins: idaapi.minsn_t = blk.head
         while ins is not None:
             insns.append(ins)
             ins = ins.next
 
         # Per-instruction use/def lists
-        _mlist_t = idaapi.mlist_t
-        _MUST_ACCESS = idaapi.MUST_ACCESS
-        _MAY_ACCESS = idaapi.MAY_ACCESS
-        _has_mlist = True
 
         for insn_idx, ins in enumerate(insns, start=1):
-            ea = getattr(ins, "ea", 0)
+            ea = ins.ea
             try:
                 insn_str = _clean_insn_str(ins._print(_PRINT_FLAGS))
             except Exception:
@@ -732,44 +728,11 @@ def mba_to_human_readable(mba: "idaapi.mbl_array_t") -> List[str]:
 
             ins_use = ""
             ins_def = ""
-            if _has_mlist:
-                try:
-                    must_use_ml = _mlist_t()
-                    blk.build_use_list(must_use_ml, ins, _MUST_ACCESS)
-                    ins_use = must_use_ml.dstr() if not must_use_ml.empty() else ""
-                except Exception:
-                    try:
-                        ul = ins.build_use_list(0)
-                        ins_use = ul.dstr() if ul is not None else ""
-                    except Exception:
-                        pass
-                try:
-                    must_def_ml = _mlist_t()
-                    blk.build_def_list(must_def_ml, ins, _MUST_ACCESS)
-                    ins_def = must_def_ml.dstr() if not must_def_ml.empty() else ""
-                except Exception:
-                    try:
-                        dl = ins.build_def_list(0)
-                        ins_def = dl.dstr() if dl is not None else ""
-                    except Exception:
-                        try:
-                            ins_def = ins.d.dstr()
-                        except Exception:
-                            pass
-            else:
-                try:
-                    ul = ins.build_use_list(0)
-                    ins_use = ul.dstr() if ul is not None else ""
-                except Exception:
-                    pass
-                try:
-                    dl = ins.build_def_list(0)
-                    ins_def = dl.dstr() if dl is not None else ""
-                except Exception:
-                    try:
-                        ins_def = ins.d.dstr()
-                    except Exception:
-                        pass
+            must_use_ml = blk.build_use_list(ins, idaapi.MUST_ACCESS)
+            ins_use = must_use_ml.dstr() if not must_use_ml.empty() else ""
+
+            must_def_ml = blk.build_def_list(ins, idaapi.MUST_ACCESS)
+            ins_def = must_def_ml.dstr() if not must_def_ml.empty() else ""
 
             ins_use = _fix_var_names(ins_use, _frsize)
             ins_def = _fix_var_names(ins_def, _frsize)

@@ -17,7 +17,7 @@ from d810.core import getLogger, typing
 # Import constant tables from d810.core (IDA-independent)
 from d810.core.bits import AND_TABLE, MSB_TABLE
 from d810.core.cymode import CythonMode
-from d810.core.typing import TYPE_CHECKING, Optional, Tuple, Union
+from d810.core.typing import TYPE_CHECKING, Optional, Tuple, TypedDict, Union
 
 # Try to import Cython hash_mop if CythonMode is enabled
 cy_hash_mop = None
@@ -29,235 +29,150 @@ if CythonMode().is_enabled():
 
 logger = getLogger(__name__)
 
-OPCODES_INFO = {
-    ida_hexrays.m_nop: {"name": "nop", "nb_operands": 0, "is_commutative": True},
-    ida_hexrays.m_stx: {"name": "stx", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_ldx: {"name": "ldx", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_ldc: {"name": "ldc", "nb_operands": 1, "is_commutative": False},
-    ida_hexrays.m_mov: {
-        "name": "mov",
-        "nb_operands": 1,
-        "is_commutative": False,
-        "symbol": "",
-    },
-    ida_hexrays.m_neg: {
-        "name": "neg",
-        "nb_operands": 1,
-        "is_commutative": False,
-        "symbol": "-",
-    },
-    ida_hexrays.m_lnot: {
-        "name": "lnot",
-        "nb_operands": 1,
-        "is_commutative": False,
-        "symbol": "!",
-    },
-    ida_hexrays.m_bnot: {
-        "name": "bnot",
-        "nb_operands": 1,
-        "is_commutative": False,
-        "symbol": "~",
-    },
-    ida_hexrays.m_xds: {
-        "name": "xds",
-        "nb_operands": 1,
-        "is_commutative": False,
-        "symbol": "xds",
-    },
-    ida_hexrays.m_xdu: {
-        "name": "xdu",
-        "nb_operands": 1,
-        "is_commutative": False,
-        "symbol": "xdu",
-    },
-    ida_hexrays.m_low: {
-        "name": "low",
-        "nb_operands": 1,
-        "is_commutative": False,
-        "symbol": "low",
-    },
-    ida_hexrays.m_high: {
-        "name": "high",
-        "nb_operands": 1,
-        "is_commutative": False,
-        "symbol": "high",
-    },
-    ida_hexrays.m_add: {
-        "name": "add",
-        "nb_operands": 2,
-        "is_commutative": True,
-        "symbol": "+",
-    },
-    ida_hexrays.m_sub: {
-        "name": "sub",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": "-",
-    },
-    ida_hexrays.m_mul: {
-        "name": "mul",
-        "nb_operands": 2,
-        "is_commutative": True,
-        "symbol": "*",
-    },
-    ida_hexrays.m_udiv: {
-        "name": "udiv",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": "UDiv",
-    },
-    ida_hexrays.m_sdiv: {
-        "name": "sdiv",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": "/",
-    },
-    ida_hexrays.m_umod: {
-        "name": "umod",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": "URem",
-    },
-    ida_hexrays.m_smod: {
-        "name": "smod",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": "%",
-    },
-    ida_hexrays.m_or: {
-        "name": "or",
-        "nb_operands": 2,
-        "is_commutative": True,
-        "symbol": "|",
-    },
-    ida_hexrays.m_and: {
-        "name": "and",
-        "nb_operands": 2,
-        "is_commutative": True,
-        "symbol": "&",
-    },
-    ida_hexrays.m_xor: {
-        "name": "xor",
-        "nb_operands": 2,
-        "is_commutative": True,
-        "symbol": "^",
-    },
-    ida_hexrays.m_shl: {
-        "name": "shl",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": "<<",
-    },
-    ida_hexrays.m_shr: {
-        "name": "shr",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": "LShR",
-    },
-    ida_hexrays.m_sar: {
-        "name": "sar",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": ">>",
-    },
-    ida_hexrays.m_cfadd: {"name": "cfadd", "nb_operands": 2, "is_commutative": True},
-    ida_hexrays.m_ofadd: {"name": "ofadd", "nb_operands": 2, "is_commutative": True},
-    ida_hexrays.m_cfshl: {"name": "cfshl", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_cfshr: {"name": "cfshr", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_sets: {"name": "sets", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_seto: {"name": "seto", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_setp: {"name": "setp", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_setnz: {
-        "name": "setnz",
-        "nb_operands": 2,
-        "is_commutative": True,
-        "symbol": "!=",
-    },
-    ida_hexrays.m_setz: {
-        "name": "setz",
-        "nb_operands": 2,
-        "is_commutative": True,
-        "symbol": "==",
-    },
-    ida_hexrays.m_seta: {
-        "name": "seta",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": ">",
-    },
-    ida_hexrays.m_setae: {
-        "name": "setae",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": ">=",
-    },
-    ida_hexrays.m_setb: {
-        "name": "setb",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": "<",
-    },
-    ida_hexrays.m_setbe: {
-        "name": "setbe",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": "<=",
-    },
-    ida_hexrays.m_setg: {
-        "name": "setg",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": "UGT",
-    },
-    ida_hexrays.m_setge: {
-        "name": "setge",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": "UGE",
-    },
-    ida_hexrays.m_setl: {
-        "name": "setl",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": "ULT",
-    },
-    ida_hexrays.m_setle: {
-        "name": "setle",
-        "nb_operands": 2,
-        "is_commutative": False,
-        "symbol": "ULE",
-    },
-    ida_hexrays.m_jcnd: {"name": "jcnd", "nb_operands": 1, "is_commutative": False},
-    ida_hexrays.m_jnz: {"name": "jnz", "nb_operands": 2, "is_commutative": True},
-    ida_hexrays.m_jz: {"name": "jz", "nb_operands": 2, "is_commutative": True},
-    ida_hexrays.m_jae: {"name": "jae", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_jb: {"name": "jb", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_ja: {"name": "ja", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_jbe: {"name": "jbe", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_jg: {"name": "jg", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_jge: {"name": "jge", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_jl: {"name": "jl", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_jle: {"name": "jle", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_jtbl: {"name": "jtbl", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_ijmp: {"name": "ijmp", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_goto: {"name": "goto", "nb_operands": 1, "is_commutative": False},
-    ida_hexrays.m_call: {"name": "call", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_icall: {"name": "icall", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_ret: {"name": "ret", "nb_operands": 0, "is_commutative": False},
-    ida_hexrays.m_push: {"name": "push", "nb_operands": 0, "is_commutative": False},
-    ida_hexrays.m_pop: {"name": "pop", "nb_operands": 0, "is_commutative": False},
-    ida_hexrays.m_und: {"name": "und", "nb_operands": 0, "is_commutative": False},
-    ida_hexrays.m_ext: {"name": "ext", "nb_operands": 0, "is_commutative": False},
-    ida_hexrays.m_f2i: {"name": "f2i", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_f2u: {"name": "f2u", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_i2f: {"name": "i2f", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_u2f: {"name": "u2f", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_f2f: {"name": "f2f", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_fneg: {"name": "fneg", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_fadd: {"name": "fadd", "nb_operands": 2, "is_commutative": True},
-    ida_hexrays.m_fsub: {"name": "fsub", "nb_operands": 2, "is_commutative": False},
-    ida_hexrays.m_fmul: {"name": "fmul", "nb_operands": 2, "is_commutative": True},
-    ida_hexrays.m_fdiv: {"name": "fdiv", "nb_operands": 2, "is_commutative": False},
+
+class OpcodeInfo(TypedDict, total=False):
+    name: str
+    nb_operands: int
+    is_commutative: bool
+    symbol: Optional[str]
+
+
+OPCODES_INFO: dict[int, OpcodeInfo] = {
+    ida_hexrays.m_nop: OpcodeInfo(name="nop", nb_operands=0, is_commutative=True),
+    ida_hexrays.m_stx: OpcodeInfo(name="stx", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_ldx: OpcodeInfo(name="ldx", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_ldc: OpcodeInfo(name="ldc", nb_operands=1, is_commutative=False),
+    ida_hexrays.m_mov: OpcodeInfo(
+        name="mov", nb_operands=1, is_commutative=False, symbol=""
+    ),
+    ida_hexrays.m_neg: OpcodeInfo(
+        name="neg", nb_operands=1, is_commutative=False, symbol="-"
+    ),
+    ida_hexrays.m_lnot: OpcodeInfo(
+        name="lnot", nb_operands=1, is_commutative=False, symbol="!"
+    ),
+    ida_hexrays.m_bnot: OpcodeInfo(
+        name="bnot", nb_operands=1, is_commutative=False, symbol="~"
+    ),
+    ida_hexrays.m_xds: OpcodeInfo(
+        name="xds", nb_operands=1, is_commutative=False, symbol="xds"
+    ),
+    ida_hexrays.m_xdu: OpcodeInfo(
+        name="xdu", nb_operands=1, is_commutative=False, symbol="xdu"
+    ),
+    ida_hexrays.m_low: OpcodeInfo(
+        name="low", nb_operands=1, is_commutative=False, symbol="low"
+    ),
+    ida_hexrays.m_high: OpcodeInfo(
+        name="high", nb_operands=1, is_commutative=False, symbol="high"
+    ),
+    ida_hexrays.m_add: OpcodeInfo(
+        name="add", nb_operands=2, is_commutative=True, symbol="+"
+    ),
+    ida_hexrays.m_sub: OpcodeInfo(
+        name="sub", nb_operands=2, is_commutative=False, symbol="-"
+    ),
+    ida_hexrays.m_mul: OpcodeInfo(
+        name="mul", nb_operands=2, is_commutative=True, symbol="*"
+    ),
+    ida_hexrays.m_udiv: OpcodeInfo(
+        name="udiv", nb_operands=2, is_commutative=False, symbol="UDiv"
+    ),
+    ida_hexrays.m_sdiv: OpcodeInfo(
+        name="sdiv", nb_operands=2, is_commutative=False, symbol="/"
+    ),
+    ida_hexrays.m_umod: OpcodeInfo(
+        name="umod", nb_operands=2, is_commutative=False, symbol="URem"
+    ),
+    ida_hexrays.m_smod: OpcodeInfo(
+        name="smod", nb_operands=2, is_commutative=False, symbol="%"
+    ),
+    ida_hexrays.m_or: OpcodeInfo(
+        name="or", nb_operands=2, is_commutative=True, symbol="|"
+    ),
+    ida_hexrays.m_and: OpcodeInfo(
+        name="and", nb_operands=2, is_commutative=True, symbol="&"
+    ),
+    ida_hexrays.m_xor: OpcodeInfo(
+        name="xor", nb_operands=2, is_commutative=True, symbol="^"
+    ),
+    ida_hexrays.m_shl: OpcodeInfo(
+        name="shl", nb_operands=2, is_commutative=False, symbol="<<"
+    ),
+    ida_hexrays.m_shr: OpcodeInfo(
+        name="shr", nb_operands=2, is_commutative=False, symbol="LShR"
+    ),
+    ida_hexrays.m_sar: OpcodeInfo(
+        name="sar", nb_operands=2, is_commutative=False, symbol=">>"
+    ),
+    ida_hexrays.m_cfadd: OpcodeInfo(name="cfadd", nb_operands=2, is_commutative=True),
+    ida_hexrays.m_ofadd: OpcodeInfo(name="ofadd", nb_operands=2, is_commutative=True),
+    ida_hexrays.m_cfshl: OpcodeInfo(name="cfshl", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_cfshr: OpcodeInfo(name="cfshr", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_sets: OpcodeInfo(name="sets", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_seto: OpcodeInfo(name="seto", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_setp: OpcodeInfo(name="setp", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_setnz: OpcodeInfo(
+        name="setnz", nb_operands=2, is_commutative=True, symbol="!="
+    ),
+    ida_hexrays.m_setz: OpcodeInfo(
+        name="setz", nb_operands=2, is_commutative=True, symbol="=="
+    ),
+    ida_hexrays.m_seta: OpcodeInfo(
+        name="seta", nb_operands=2, is_commutative=False, symbol=">"
+    ),
+    ida_hexrays.m_setae: OpcodeInfo(
+        name="setae", nb_operands=2, is_commutative=False, symbol=">="
+    ),
+    ida_hexrays.m_setb: OpcodeInfo(
+        name="setb", nb_operands=2, is_commutative=False, symbol="<"
+    ),
+    ida_hexrays.m_setbe: OpcodeInfo(
+        name="setbe", nb_operands=2, is_commutative=False, symbol="<="
+    ),
+    ida_hexrays.m_setg: OpcodeInfo(
+        name="setg", nb_operands=2, is_commutative=False, symbol="UGT"
+    ),
+    ida_hexrays.m_setge: OpcodeInfo(
+        name="setge", nb_operands=2, is_commutative=False, symbol="UGE"
+    ),
+    ida_hexrays.m_setl: OpcodeInfo(
+        name="setl", nb_operands=2, is_commutative=False, symbol="ULT"
+    ),
+    ida_hexrays.m_setle: OpcodeInfo(
+        name="setle", nb_operands=2, is_commutative=False, symbol="ULE"
+    ),
+    ida_hexrays.m_jcnd: OpcodeInfo(name="jcnd", nb_operands=1, is_commutative=False),
+    ida_hexrays.m_jnz: OpcodeInfo(name="jnz", nb_operands=2, is_commutative=True),
+    ida_hexrays.m_jz: OpcodeInfo(name="jz", nb_operands=2, is_commutative=True),
+    ida_hexrays.m_jae: OpcodeInfo(name="jae", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_jb: OpcodeInfo(name="jb", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_ja: OpcodeInfo(name="ja", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_jbe: OpcodeInfo(name="jbe", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_jg: OpcodeInfo(name="jg", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_jge: OpcodeInfo(name="jge", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_jl: OpcodeInfo(name="jl", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_jle: OpcodeInfo(name="jle", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_jtbl: OpcodeInfo(name="jtbl", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_ijmp: OpcodeInfo(name="ijmp", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_goto: OpcodeInfo(name="goto", nb_operands=1, is_commutative=False),
+    ida_hexrays.m_call: OpcodeInfo(name="call", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_icall: OpcodeInfo(name="icall", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_ret: OpcodeInfo(name="ret", nb_operands=0, is_commutative=False),
+    ida_hexrays.m_push: OpcodeInfo(name="push", nb_operands=0, is_commutative=False),
+    ida_hexrays.m_pop: OpcodeInfo(name="pop", nb_operands=0, is_commutative=False),
+    ida_hexrays.m_und: OpcodeInfo(name="und", nb_operands=0, is_commutative=False),
+    ida_hexrays.m_ext: OpcodeInfo(name="ext", nb_operands=0, is_commutative=False),
+    ida_hexrays.m_f2i: OpcodeInfo(name="f2i", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_f2u: OpcodeInfo(name="f2u", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_i2f: OpcodeInfo(name="i2f", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_u2f: OpcodeInfo(name="u2f", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_f2f: OpcodeInfo(name="f2f", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_fneg: OpcodeInfo(name="fneg", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_fadd: OpcodeInfo(name="fadd", nb_operands=2, is_commutative=True),
+    ida_hexrays.m_fsub: OpcodeInfo(name="fsub", nb_operands=2, is_commutative=False),
+    ida_hexrays.m_fmul: OpcodeInfo(name="fmul", nb_operands=2, is_commutative=True),
+    ida_hexrays.m_fdiv: OpcodeInfo(name="fdiv", nb_operands=2, is_commutative=False),
 }
 
 MOP_INFO = {
@@ -628,6 +543,7 @@ class FuncFlags(enum.IntFlag):
     """
     Flags used to describe properties of functions.
     """
+
     NORET = 0x00000001
     """Function doesn't return"""
 
