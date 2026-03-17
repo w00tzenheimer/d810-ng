@@ -197,6 +197,16 @@ def _build_pred_map(adj: dict[int, list[int]]) -> dict[int, tuple[int, ...]]:
     return {serial: tuple(pred_list) for serial, pred_list in preds.items()}
 
 
+def _convert_to_goto_serials(patch_plan: PatchPlan) -> frozenset[int]:
+    """Return the set of block serials targeted by PatchConvertToGoto steps."""
+    serials: set[int] = set()
+    for step in patch_plan.steps:
+        match step:
+            case PatchConvertToGoto(block_serial=serial):
+                serials.add(serial)
+    return frozenset(serials)
+
+
 def _project_existing_blocks(
     pre_cfg: FlowGraph,
     patch_plan: PatchPlan,
@@ -204,10 +214,14 @@ def _project_existing_blocks(
 ) -> dict[int, BlockSnapshot]:
     projected: dict[int, BlockSnapshot] = {}
     trampoline_serials = _reorder_trampoline_serials(patch_plan)
+    goto_converted_serials = _convert_to_goto_serials(patch_plan)
     for block in pre_cfg.blocks.values():
         projected_serial = patch_plan.relocation_map.rewrite_serial(block.serial)
         # Blocks that become trampolines in ReorderBlocks are converted to BLT_1WAY
         if block.serial in trampoline_serials:
+            block_type = _BLT_1WAY
+        # Blocks converted from 2-way conditional to 1-way goto
+        elif block.serial in goto_converted_serials:
             block_type = _BLT_1WAY
         else:
             block_type = int(block.block_type)
