@@ -613,8 +613,8 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
         serial = blk.serial
         start_ea = blk.start
         end_ea = blk.end
-        block_type = blk.type
-        type_name = BLT_NAMES[block_type]
+        block_type = BlockType(blk.type)
+        type_name = BLT_NAMES[block_type.value]
         flags = blk.flags
 
         preds = _collect_bitset(blk.predset)
@@ -637,38 +637,27 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
             _stkd_parts = []
             _inargoff = mba.inargoff
             _minargref = mba.minargref
-            _minstkref = mba.minstkref
             _shadow_args = mba.shadow_args
-            _pfn_flags = mba.pfn_flags
             _stkd_extra = []
             if _inargoff is not None:
-                _stkd_extra.append(f"ARGS: OFF={_inargoff:#X}/")
-            if _minstkref is not None:
-                _stkd_extra.append(f"MINREF={_minstkref:#X}/")
-                _stkd_extra.append(f"MINREF_EA={mba.minstkref_ea:#X}/")
+                _stkd_extra.append(f"ARGS: OFF={_inargoff:X}/")
             if _minargref is not None:
-                _stkd_extra.append(f"MINARGREF={_minargref:#X}/")
-                _stkd_extra.append(f"SPD_ADJUST={mba.spd_adjust:#X}/")
-                _stkd_extra.append(f"FULLSIZE={mba.fullsize:#X}/")
-                _stkd_extra.append(f"RETSIZE={mba.retsize:#X}/")
+                _stkd_extra.append(f"MINREF={_minargref:X}/")
+                _stkd_extra.append(f"END={mba.fullsize:X}/")
             if _shadow_args is not None:
-                _stkd_extra.append(f"SHADOW={_shadow_args:#X}/")
-            if _pfn_flags is not None:
-                _stkd_extra.append(f"FLAGS={_pfn_flags:#X}/")
-            for _attr in ("stacksize", "frsize", "argsize", "tmpstk_size"):
+                _stkd_extra.append(f"SHADOW={_shadow_args:X}/")
+            for _attr in ("pfn_flags", "stacksize", "frsize", "argsize", "tmpstk_size"):
                 _val = getattr(mba, _attr, None)
                 if _val is not None:
-                    _stkd_parts.append(f"{_attr}={_val:#X}/")
+                    _stkd_parts.append(f"{_attr}={_val:X} ")
             line.append(f"; STKD=0 {" ".join(_stkd_extra + _stkd_parts)}")
 
-        inbounds = (
-            "FAKE"
-            if flags & MicrocodeBasicBlockFlag.FAKE
-            else f"INBOUNDS: {' '.join(preds_sorted)}"
-        )
+        is_fake = "FAKE" if flags & MicrocodeBasicBlockFlag.FAKE else ""
+        inbounds = f"INBOUNDS: {' '.join(preds_sorted)}" if preds_sorted else ""
+        outbounds = f"OUTBOUNDS: {' '.join(succs_sorted)}" if succs_sorted else ""
 
         line.append(
-            f"; {type_name} {serial} {inbounds} OUTBOUNDS: {' '.join(succs_sorted)} [START={start_ea:X} END={end_ea:X}] MINREFS: STK={blk.minbstkref:X}/ARG={blk.minbargref:X}, MAXBSP: {blk.maxbsp:X}"
+            f"; {block_type.name}-BLOCK {serial} {is_fake} {inbounds} {outbounds} [START={start_ea:X} END={end_ea:X}] MINREFS: STK={blk.minbstkref:X}/ARG={blk.minbargref:X}, MAXBSP: {blk.maxbsp:X}"
         )
 
         # USE / DEF / DNU liveness sets
@@ -685,12 +674,12 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
         if use_must:
             use_parts.append(use_must)
         if use_may and use_may != use_must:
-            use_parts.append(f"(may:{use_may})")
+            use_parts.append(use_may)
         use_str = ", ".join(use_parts)
 
         def_parts = [def_must] if def_must else []
         if def_may and def_may != def_must:
-            def_parts.append(f"(may:{def_may})")
+            def_parts.append(def_may)
         def_str = ", ".join(def_parts)
 
         line.append(f"; USE: {_paren_if_multi(use_str)}")

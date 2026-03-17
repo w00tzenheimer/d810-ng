@@ -16,12 +16,15 @@
 # that the planner cannot predict at planning time (they depend on live
 # MBA state and IDA backend preconditions).
 """
+
 from __future__ import annotations
 
 from collections import Counter
 
-from d810.core import logging
+import ida_hexrays
 
+from d810.cfg.contracts import IDACfgContract
+from d810.cfg.contracts.transaction_engine import CfgTransactionEngine
 from d810.cfg.flow.edit_simulator import (
     SimulatedEdit,
     graph_modifications_to_simulated_edits,
@@ -35,8 +38,6 @@ from d810.cfg.flow.graph_checks import (
     prove_terminal_sink,
 )
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.contracts import IDACfgContract
-from d810.cfg.contracts.transaction_engine import CfgTransactionEngine
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
@@ -46,6 +47,10 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
 )
 from d810.cfg.plan import PatchEdgeSplitTrampoline, PatchPlan, compile_patch_plan
+from d810.core import logging
+from d810.evaluator.hexrays_microcode.terminal_return_proof import (
+    prove_terminal_returns,
+)
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     GateAccounting,
@@ -61,7 +66,9 @@ from d810.optimizers.microcode.flow.flattening.safeguards import (
     should_apply_bulk_cfg_modifications,
 )
 from d810.recon.flow.terminal_return_audit import build_terminal_return_audit
-from d810.evaluator.hexrays_microcode.terminal_return_proof import prove_terminal_returns
+
+# Dump full microcode after successful apply for diagnostic correlation
+from d810.recon.microcode_dump import mba_to_human_readable
 
 executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 
@@ -109,7 +116,7 @@ class TransactionalExecutor:
 
     def __init__(
         self,
-        mba: object,
+        mba: ida_hexrays.mba_t,
         gate: VerificationGate | SemanticGate | None = None,
         translator: IDAIRTranslator | None = None,
         allow_legacy_block_creation: bool = True,
@@ -152,14 +159,16 @@ class TransactionalExecutor:
                 min_required_override=safeguard_override,
             )
             if not safeguard_ok:
-                gate_accounting = GateAccounting().add(GateDecision(
-                    gate_name="safeguard",
-                    verdict=GateVerdict.FAILED,
-                    reason=(
-                        f"insufficient modifications ({num_modifications}) "
-                        f"for {total_handlers} handlers"
-                    ),
-                ))
+                gate_accounting = GateAccounting().add(
+                    GateDecision(
+                        gate_name="safeguard",
+                        verdict=GateVerdict.FAILED,
+                        reason=(
+                            f"insufficient modifications ({num_modifications}) "
+                            f"for {total_handlers} handlers"
+                        ),
+                    )
+                )
                 result = StageResult(
                     strategy_name=fragment.strategy_name,
                     success=False,
@@ -199,10 +208,12 @@ class TransactionalExecutor:
         pre_cfg = self.translator.lift(self.mba)
 
         patch_plan_preview = compile_patch_plan(modifications, pre_cfg)
-        modifications, patch_plan_preview, backend_removed = self._filter_backend_unsupported_modifications(
-            pre_cfg,
-            modifications,
-            patch_plan_preview,
+        modifications, patch_plan_preview, backend_removed = (
+            self._filter_backend_unsupported_modifications(
+                pre_cfg,
+                modifications,
+                patch_plan_preview,
+            )
         )
         if backend_removed:
             gate_accounting = gate_accounting.with_backend_filter(backend_removed)
@@ -218,7 +229,10 @@ class TransactionalExecutor:
             result.metadata["gate_accounting"] = gate_accounting
             return result
 
-        if patch_plan_preview.legacy_block_operations and not self.allow_legacy_block_creation:
+        if (
+            patch_plan_preview.legacy_block_operations
+            and not self.allow_legacy_block_creation
+        ):
             return StageResult(
                 strategy_name=fragment.strategy_name,
                 success=False,
@@ -265,20 +279,24 @@ class TransactionalExecutor:
 
         # Wire CfgTransactionEngine for projected -> pre -> lower/apply sequence
         contract = self._get_cfg_contract()
-        self.translator.contract = contract  # ensure translator has it for post-apply hook
+        self.translator.contract = (
+            contract  # ensure translator has it for post-apply hook
+        )
         engine = CfgTransactionEngine(translator=self.translator, contract=contract)
 
         tx_result = engine.apply(patch_plan, pre_cfg=pre_cfg, mba=self.mba)
 
-        gate_accounting = gate_accounting.add(GateDecision(
-            gate_name="transaction_engine",
-            verdict=GateVerdict.PASSED if tx_result.success else GateVerdict.FAILED,
-            reason=(
-                f"applied={tx_result.applied_count}"
-                if tx_result.success
-                else f"rejected at {tx_result.failure_phase}: {tx_result.error}"
-            ),
-        ))
+        gate_accounting = gate_accounting.add(
+            GateDecision(
+                gate_name="transaction_engine",
+                verdict=GateVerdict.PASSED if tx_result.success else GateVerdict.FAILED,
+                reason=(
+                    f"applied={tx_result.applied_count}"
+                    if tx_result.success
+                    else f"rejected at {tx_result.failure_phase}: {tx_result.error}"
+                ),
+            )
+        )
         if not tx_result.success:
             classification = tx_result.classification
             executor_logger.warning(
@@ -290,9 +308,13 @@ class TransactionalExecutor:
             result = StageResult(
                 strategy_name=fragment.strategy_name,
                 success=False,
-                rollback_needed=classification.rollback_needed if classification else False,
+                rollback_needed=(
+                    classification.rollback_needed if classification else False
+                ),
                 quarantine=classification.quarantine if classification else False,
-                error=str(tx_result.error) if tx_result.error else tx_result.failure_phase,
+                error=(
+                    str(tx_result.error) if tx_result.error else tx_result.failure_phase
+                ),
                 failure_phase=tx_result.failure_phase or "lowering",
             )
             result.metadata["gate_accounting"] = gate_accounting
@@ -302,12 +324,11 @@ class TransactionalExecutor:
         changes = tx_result.applied_count
         self._total_changes += changes
 
-        # Dump full microcode after successful apply for diagnostic correlation
-        from d810.recon.microcode_dump import mba_to_human_readable
         executor_logger.info(
             "POST-APPLY microcode dump (stage=%s, applied=%d):\n%s",
-            fragment.strategy_name, changes,
-            "\n".join(mba_to_human_readable(self.mba)),
+            fragment.strategy_name,
+            changes,
+            "\n\n".join(mba_to_human_readable(self.mba)),
         )
 
         post_cfg = self.translator.lift(self.mba)
@@ -315,7 +336,9 @@ class TransactionalExecutor:
         qty = len(post_cfg.blocks)
         block_reachability = len(reachable_blocks) / qty if qty > 0 else 0.0
 
-        handler_entry_serials: set[int] = set(fragment.metadata.get("handler_entry_serials", set()))
+        handler_entry_serials: set[int] = set(
+            fragment.metadata.get("handler_entry_serials", set())
+        )
         if handler_entry_serials:
             reachable_handlers = handler_entry_serials & reachable_blocks
             handler_reachability = len(reachable_handlers) / len(handler_entry_serials)
@@ -330,7 +353,9 @@ class TransactionalExecutor:
         )
 
         adj = post_cfg.as_adjacency_dict()
-        terminal_exits: set[int] = set(fragment.metadata.get("terminal_exit_blocks", set()))
+        terminal_exits: set[int] = set(
+            fragment.metadata.get("terminal_exit_blocks", set())
+        )
         terminal_exits |= self._derive_terminal_targets(
             patch_plan_to_simulated_edits(patch_plan),
             terminal_exits,
@@ -364,15 +389,17 @@ class TransactionalExecutor:
         self._run_terminal_return_audit(fragment, pre_cfg, result)
 
         gate_ok = self.gate.check(result)
-        gate_accounting = gate_accounting.add(GateDecision(
-            gate_name="semantic_gate",
-            verdict=GateVerdict.PASSED if gate_ok else GateVerdict.FAILED,
-            reason=(
-                f"reachability={result.reachability_after:.2f}, "
-                f"handler_reachability={result.handler_reachability:.2f}, "
-                f"conflicts={result.conflict_count_after}"
-            ),
-        ))
+        gate_accounting = gate_accounting.add(
+            GateDecision(
+                gate_name="semantic_gate",
+                verdict=GateVerdict.PASSED if gate_ok else GateVerdict.FAILED,
+                reason=(
+                    f"reachability={result.reachability_after:.2f}, "
+                    f"handler_reachability={result.handler_reachability:.2f}, "
+                    f"conflicts={result.conflict_count_after}"
+                ),
+            )
+        )
 
         if isinstance(self.gate, VerificationGate):
             flow_ok = self.gate.check_flow_graph(
@@ -380,14 +407,16 @@ class TransactionalExecutor:
                 handler_entry_serials=handler_entry_serials,
                 conflict_count_after=result.conflict_count_after,
             )
-            gate_accounting = gate_accounting.add(GateDecision(
-                gate_name="verification_flow_graph",
-                verdict=GateVerdict.PASSED if flow_ok else GateVerdict.FAILED,
-                reason=(
-                    f"flow_graph reachability check "
-                    f"({'passed' if flow_ok else 'failed'})"
-                ),
-            ))
+            gate_accounting = gate_accounting.add(
+                GateDecision(
+                    gate_name="verification_flow_graph",
+                    verdict=GateVerdict.PASSED if flow_ok else GateVerdict.FAILED,
+                    reason=(
+                        f"flow_graph reachability check "
+                        f"({'passed' if flow_ok else 'failed'})"
+                    ),
+                )
+            )
             # Combine both results: both must pass (fixes overwrite bug)
             gate_ok = gate_ok and flow_ok
 
@@ -462,12 +491,16 @@ class TransactionalExecutor:
 
         filtered_modifications: list[GraphModification] = []
         for mod in patch_plan.planner_modifications:
-            if isinstance(mod, EdgeRedirectViaPredSplit) and (
-                mod.src_block,
-                mod.old_target,
-                mod.via_pred,
-                mod.new_target,
-            ) in rejected_edges:
+            if (
+                isinstance(mod, EdgeRedirectViaPredSplit)
+                and (
+                    mod.src_block,
+                    mod.old_target,
+                    mod.via_pred,
+                    mod.new_target,
+                )
+                in rejected_edges
+            ):
                 continue
             filtered_modifications.append(mod)
 
@@ -478,7 +511,11 @@ class TransactionalExecutor:
             removed_count,
             remaining_count,
         )
-        return filtered_modifications, compile_patch_plan(filtered_modifications, pre_cfg), removed_count
+        return (
+            filtered_modifications,
+            compile_patch_plan(filtered_modifications, pre_cfg),
+            removed_count,
+        )
 
     @property
     def total_changes(self) -> int:
@@ -512,18 +549,25 @@ class TransactionalExecutor:
                 structural.reason,
                 structural.diagnostics,
             )
-            return modifications, patch_plan, StageResult(
-                strategy_name=fragment.strategy_name,
-                success=False,
-                error=f"structural preflight: {structural.reason}",
-                failure_phase="preflight",
-            ), 0
+            return (
+                modifications,
+                patch_plan,
+                StageResult(
+                    strategy_name=fragment.strategy_name,
+                    success=False,
+                    error=f"structural preflight: {structural.reason}",
+                    failure_phase="preflight",
+                ),
+                0,
+            )
 
         sim_result = simulate_edits(pre_adj, simulated_edits)
         sim_adj = sim_result.adj
 
         kind_counts = Counter(e.kind for e in simulated_edits)
-        kind_summary = ", ".join("%s=%d" % (k, v) for k, v in sorted(kind_counts.items()))
+        kind_summary = ", ".join(
+            "%s=%d" % (k, v) for k, v in sorted(kind_counts.items())
+        )
         executor_logger.info(
             "Preflight: %d edits (%s)",
             len(simulated_edits),
@@ -537,9 +581,13 @@ class TransactionalExecutor:
         forbidden_blocks = set(fragment.metadata.get("forbidden_blocks", set()))
         exit_blocks = set(fragment.metadata.get("exit_blocks", set()))
 
-        terminal_targets = self._derive_terminal_targets(simulated_edits, terminal_exits)
+        terminal_targets = self._derive_terminal_targets(
+            simulated_edits, terminal_exits
+        )
         for target in sorted(terminal_targets):
-            sink_result = prove_terminal_sink(target, sim_adj, exit_blocks, forbidden_blocks)
+            sink_result = prove_terminal_sink(
+                target, sim_adj, exit_blocks, forbidden_blocks
+            )
             if not sink_result.ok:
                 executor_logger.warning(
                     "Preflight REJECT: terminal target %d failed sink proof: %s (witness=%s)",
@@ -547,12 +595,17 @@ class TransactionalExecutor:
                     sink_result.reason,
                     sink_result.witness_path,
                 )
-                return modifications, patch_plan, StageResult(
-                    strategy_name=fragment.strategy_name,
-                    success=False,
-                    error=f"semantic preflight: {sink_result.reason}",
-                    failure_phase="preflight",
-                ), 0
+                return (
+                    modifications,
+                    patch_plan,
+                    StageResult(
+                        strategy_name=fragment.strategy_name,
+                        success=False,
+                        error=f"semantic preflight: {sink_result.reason}",
+                        failure_phase="preflight",
+                    ),
+                    0,
+                )
 
         filtered_modifications, cycle_removed = self._filter_cycle_modifications(
             fragment,
@@ -566,12 +619,17 @@ class TransactionalExecutor:
             executor_logger.warning(
                 "Preflight REJECT: terminal cycles persist after filtering"
             )
-            return modifications, patch_plan, StageResult(
-                strategy_name=fragment.strategy_name,
-                success=False,
-                error="semantic preflight: terminal cycles detected",
-                failure_phase="preflight",
-            ), cycle_removed
+            return (
+                modifications,
+                patch_plan,
+                StageResult(
+                    strategy_name=fragment.strategy_name,
+                    success=False,
+                    error="semantic preflight: terminal cycles detected",
+                    failure_phase="preflight",
+                ),
+                cycle_removed,
+            )
         if filtered_modifications != modifications:
             modifications = filtered_modifications
             patch_plan = compile_patch_plan(modifications, pre_cfg)
@@ -581,7 +639,9 @@ class TransactionalExecutor:
             )
             sim_result = simulate_edits(pre_adj, simulated_edits)
             sim_adj = sim_result.adj
-            terminal_targets = self._derive_terminal_targets(simulated_edits, terminal_exits)
+            terminal_targets = self._derive_terminal_targets(
+                simulated_edits, terminal_exits
+            )
 
         preflight_cycle_seeds = set(terminal_exits)
         preflight_cycle_seeds |= terminal_targets
@@ -600,12 +660,17 @@ class TransactionalExecutor:
                 "Preflight REJECT: terminal cycles detected (%d cycles)",
                 len(cycle_result.cycles),
             )
-            return modifications, patch_plan, StageResult(
-                strategy_name=fragment.strategy_name,
-                success=False,
-                error="semantic preflight: terminal cycles detected",
-                failure_phase="preflight",
-            ), cycle_removed
+            return (
+                modifications,
+                patch_plan,
+                StageResult(
+                    strategy_name=fragment.strategy_name,
+                    success=False,
+                    error="semantic preflight: terminal cycles detected",
+                    failure_phase="preflight",
+                ),
+                cycle_removed,
+            )
 
         return modifications, patch_plan, None, cycle_removed
 
@@ -663,7 +728,8 @@ class TransactionalExecutor:
         terminal_redirects = [
             simulated
             for _, simulated in current_pairs
-            if simulated.source in terminal_exits or simulated.via_pred in terminal_exits
+            if simulated.source in terminal_exits
+            or simulated.via_pred in terminal_exits
         ]
         total_removed = 0
 
@@ -731,7 +797,9 @@ class TransactionalExecutor:
 
             total_removed += len(edits_to_remove)
             current_pairs = [
-                pair for idx, pair in enumerate(current_pairs) if idx not in edits_to_remove
+                pair
+                for idx, pair in enumerate(current_pairs)
+                if idx not in edits_to_remove
             ]
             executor_logger.info(
                 "Preflight filter round %d: removed %d edits, %d remaining",
@@ -767,7 +835,11 @@ class TransactionalExecutor:
     ) -> set[int]:
         targets: set[int] = set()
         for edit in edits:
-            if edit.kind in {"goto_redirect", "conditional_redirect", "convert_to_goto"}:
+            if edit.kind in {
+                "goto_redirect",
+                "conditional_redirect",
+                "convert_to_goto",
+            }:
                 if edit.source in terminal_exits:
                     targets.add(edit.new_target)
             elif edit.kind == "edge_split_redirect":
@@ -847,9 +919,7 @@ class TransactionalExecutor:
             result.metadata["terminal_return_audit"] = audit
             executor_logger.info("Terminal return audit: %s", audit.summary())
         except Exception:
-            executor_logger.debug(
-                "Terminal return audit failed", exc_info=True
-            )
+            executor_logger.debug("Terminal return audit failed", exc_info=True)
             return
 
         if not audit.sites:
