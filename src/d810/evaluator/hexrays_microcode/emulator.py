@@ -1047,17 +1047,17 @@ class MicroCodeInterpreter(object):
             return None
 
         try:
-            # Pre-seed segment register from ins.d if present (stx format: l=source, d=segment, r=address)
-            if ins.d is not None and ins.d.t == ida_hexrays.mop_r and ins.d.size == 2:
-                seg_val = self._resolve_segment_register(ins.d.r)
+            # Pre-seed segment register from ins.r (stx SDK format: l=data, r=segment, d=address)
+            if ins.r is not None and ins.r.t == ida_hexrays.mop_r and ins.r.size == 2:
+                seg_val = self._resolve_segment_register(ins.r.r)
                 if seg_val is not None:
-                    environment.define(ins.d, seg_val)
+                    environment.define(ins.r, seg_val)
 
             # Evaluate the value to store
             store_value = self.eval(ins.l, environment)
 
-            # Evaluate the address
-            store_address = self.eval(ins.r, environment)
+            # Evaluate the address (ins.d for stx, NOT ins.r which is the segment)
+            store_address = self.eval(ins.d, environment)
         except EmulationException as e:
             # If we can't evaluate operands and symbolic mode is off, bypass
             if not self.symbolic_mode:
@@ -1066,7 +1066,8 @@ class MicroCodeInterpreter(object):
             raise
 
         # Get segment register (formatted like "ss.2" or "ds.2")
-        formatted_seg_register = format_mop_t(ins.d)
+        # stx SDK format: l=data, r=segment, d=address
+        formatted_seg_register = format_mop_t(ins.r)
 
         if formatted_seg_register == "ss.2":
             # Stack store - create a stack mop and store the value in the environment
