@@ -943,6 +943,12 @@ class MicroCodeInterpreter(object):
         if ins.opcode != ida_hexrays.m_ldx or environment.cur_blk is None:
             return None
 
+        # Pre-seed segment register from ins.l if present (ldx format: l=segment, r=address, d=dest)
+        if ins.l is not None and ins.l.t == ida_hexrays.mop_r and ins.l.size == 2:
+            seg_val = self._resolve_segment_register(ins.l.r)
+            if seg_val is not None:
+                environment.define(ins.l, seg_val)
+
         load_address = self.eval(ins.r, environment)
         formatted_seg_register = format_mop_t(ins.l)
         # formatted segment register: <mop_t type=mop_r size=2 dstr=ds.2>
@@ -1041,6 +1047,12 @@ class MicroCodeInterpreter(object):
             return None
 
         try:
+            # Pre-seed segment register from ins.d if present (stx format: l=source, d=segment, r=address)
+            if ins.d is not None and ins.d.t == ida_hexrays.mop_r and ins.d.size == 2:
+                seg_val = self._resolve_segment_register(ins.d.r)
+                if seg_val is not None:
+                    environment.define(ins.d, seg_val)
+
             # Evaluate the value to store
             store_value = self.eval(ins.l, environment)
 
