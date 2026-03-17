@@ -33,6 +33,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+    blk_label,
     evaluate_handler_paths,
 )
 from d810.recon.flow.bst_analysis import resolve_via_bst_walk
@@ -140,6 +141,7 @@ class LinearizedFlowGraphStrategy:
         assert sm is not None  # guaranteed by is_applicable
         bst_result = snapshot.bst_result
         assert bst_result is not None
+        mba = snapshot.mba
 
         handler_state_map: dict[int, int] = dict(
             getattr(bst_result, "handler_state_map", {}) or {}
@@ -167,9 +169,9 @@ class LinearizedFlowGraphStrategy:
                 # Use lo as representative state value for this range.
                 handler_state_map[_row.target] = _row.lo
                 logger.info(
-                    "LFG: INTERVAL_BACKFILL blk[%d] <- state 0x%X "
+                    "LFG: INTERVAL_BACKFILL %s <- state 0x%X "
                     "(range [0x%X, 0x%X))",
-                    _row.target, _row.lo, _row.lo, _row.hi,
+                    blk_label(mba, _row.target), _row.lo, _row.lo, _row.hi,
                 )
         pre_header_serial: int | None = getattr(
             bst_result, "pre_header_serial", None
@@ -246,9 +248,9 @@ class LinearizedFlowGraphStrategy:
                         target_entry = serial
                         range_fallback_count += 1
                         logger.info(
-                            "LFG: range-fallback resolved 0x%X -> blk[%d]",
+                            "LFG: range-fallback resolved 0x%X -> %s",
                             to_state,
-                            serial,
+                            blk_label(mba, serial),
                         )
                         break
 
@@ -270,9 +272,9 @@ class LinearizedFlowGraphStrategy:
             # Skip self-loop redirects (MBA fake self-loops).
             if from_block == target_entry:
                 logger.info(
-                    "LFG: skipping self-loop redirect blk[%d] -> blk[%d] "
+                    "LFG: skipping self-loop redirect %s -> %s "
                     "(state 0x%X -> 0x%X)",
-                    from_block, target_entry,
+                    blk_label(mba, from_block), blk_label(mba, target_entry),
                     transition.from_state, to_state,
                 )
                 skipped_count += 1
@@ -324,11 +326,11 @@ class LinearizedFlowGraphStrategy:
 
                 if bst_old_target is None:
                     logger.debug(
-                        "LFG: skipping 2-way transition blk[%d] -> "
-                        "blk[%d] (state 0x%X -> 0x%X, conditional=%s): "
+                        "LFG: skipping 2-way transition %s -> "
+                        "%s (state 0x%X -> 0x%X, conditional=%s): "
                         "cannot determine old_target among succs %s",
-                        from_block,
-                        target_entry,
+                        blk_label(mba, from_block),
+                        blk_label(mba, target_entry),
                         transition.from_state,
                         to_state,
                         transition.is_conditional,
@@ -356,12 +358,12 @@ class LinearizedFlowGraphStrategy:
                         # block once handler-aware predecessor walk is
                         # implemented.
                         logger.info(
-                            "LFG: CONFLICT on 1-way blk[%d]: already "
-                            "-> blk[%d], skipping -> blk[%d] "
+                            "LFG: CONFLICT on 1-way %s: already "
+                            "-> %s, skipping -> %s "
                             "(state 0x%X -> 0x%X)",
-                            from_block,
-                            first_target,
-                            target_entry,
+                            blk_label(mba, from_block),
+                            blk_label(mba, first_target),
+                            blk_label(mba, target_entry),
                             transition.from_state,
                             to_state,
                         )
@@ -383,10 +385,10 @@ class LinearizedFlowGraphStrategy:
             resolved_count += 1
 
             logger.info(
-                "LFG: redirect blk[%d] -> blk[%d]  "
+                "LFG: redirect %s -> %s  "
                 "(state 0x%X -> 0x%X, conditional=%s)",
-                from_block,
-                target_entry,
+                blk_label(mba, from_block),
+                blk_label(mba, target_entry),
                 transition.from_state,
                 to_state,
                 transition.is_conditional,
@@ -491,17 +493,17 @@ class LinearizedFlowGraphStrategy:
                 owned_edges.add((pre_header_serial, initial_entry))
                 claimed_1way[pre_header_serial] = initial_entry
                 logger.info(
-                    "LFG: pre-header blk[%d] -> initial handler blk[%d] "
+                    "LFG: pre-header %s -> initial handler %s "
                     "(state 0x%X)",
-                    pre_header_serial,
-                    initial_entry,
+                    blk_label(mba, pre_header_serial),
+                    blk_label(mba, initial_entry),
                     initial_state,
                 )
             else:
                 logger.info(
-                    "LFG: pre-header blk[%d] already redirected, "
+                    "LFG: pre-header %s already redirected, "
                     "skipping duplicate pre-header wire",
-                    pre_header_serial,
+                    blk_label(mba, pre_header_serial),
                 )
 
         if not modifications:
@@ -565,6 +567,7 @@ class LinearizedFlowGraphStrategy:
         # -----------------------------------------------------------------
         disconnect_count = self._disconnect_bst_comparison_nodes(
             bst_node_blocks, dispatcher_serial, builder, modifications, emitted,
+            mba=mba,
         )
 
         # -----------------------------------------------------------------
@@ -584,6 +587,7 @@ class LinearizedFlowGraphStrategy:
         flow_graph = snapshot.flow_graph
         bst_convert_count = self._convert_bst_nodes_to_goto(
             bst_node_blocks, flow_graph, builder, modifications, emitted,
+            mba=mba,
         )
 
         logger.info(
@@ -654,9 +658,9 @@ class LinearizedFlowGraphStrategy:
                     )
 
                 logger.info(
-                    "DIAG_COVERAGE: dispatcher blk[%d] has %d preds, "
+                    "DIAG_COVERAGE: dispatcher %s has %d preds, "
                     "%d redirected, %d BST, %d uncovered non-BST",
-                    snapshot.bst_dispatcher_serial,
+                    blk_label(mba, snapshot.bst_dispatcher_serial),
                     len(dispatcher_snap.preds),
                     len(redirected_blocks & set(dispatcher_snap.preds)),
                     sum(
@@ -668,9 +672,9 @@ class LinearizedFlowGraphStrategy:
                 )
                 for pred, nsucc, npred, succs, has_trans in uncovered:
                     logger.info(
-                        "DIAG_COVERAGE: uncovered blk[%d] nsucc=%d npred=%d "
+                        "DIAG_COVERAGE: uncovered %s nsucc=%d npred=%d "
                         "succs=%s has_transition=%s",
-                        pred,
+                        blk_label(mba, pred),
                         nsucc,
                         npred,
                         succs,
@@ -1030,10 +1034,10 @@ class LinearizedFlowGraphStrategy:
                 correct_entry = _exit_dispatcher.lookup(state_val)
                 if correct_entry is not None:
                     logger.info(
-                        "LFG EXIT: DISP_LOOKUP state 0x%X -> blk[%d] "
+                        "LFG EXIT: DISP_LOOKUP state 0x%X -> %s "
                         "(via IntervalDispatcher)",
                         state_val,
-                        correct_entry,
+                        blk_label(mba, correct_entry),
                     )
             if correct_entry is None:
                 if state_val in self_loop_only:
@@ -1067,9 +1071,9 @@ class LinearizedFlowGraphStrategy:
                         if from_block in bst_node_blocks:
                             logger.info(
                                 "LFG EXIT: BST walk skipping state 0x%X "
-                                "— from_block blk[%d] is BST node",
+                                "— from_block %s is BST node",
                                 state_val,
-                                from_block,
+                                blk_label(mba, from_block),
                             )
                             continue
                         if from_block != target_serial:
@@ -1116,12 +1120,12 @@ class LinearizedFlowGraphStrategy:
                                         resolved_count += 1
                                         logger.info(
                                             "LFG EXIT: BST walk resolved "
-                                            "state 0x%X: blk[%d] -> blk[%d] "
-                                            "(2-way, old_target=blk[%d])",
+                                            "state 0x%X: %s -> %s "
+                                            "(2-way, old_target=%s)",
                                             state_val,
-                                            from_block,
-                                            target_serial,
-                                            bst_old_target,
+                                            blk_label(mba, from_block),
+                                            blk_label(mba, target_serial),
+                                            blk_label(mba, bst_old_target),
                                         )
                                         continue
                                 else:
@@ -1130,12 +1134,12 @@ class LinearizedFlowGraphStrategy:
                                         if first_target != target_serial:
                                             logger.info(
                                                 "LFG EXIT: BST walk CONFLICT "
-                                                "on 1-way blk[%d]: already "
-                                                "-> blk[%d], skipping "
-                                                "-> blk[%d]",
-                                                from_block,
-                                                first_target,
-                                                target_serial,
+                                                "on 1-way %s: already "
+                                                "-> %s, skipping "
+                                                "-> %s",
+                                                blk_label(mba, from_block),
+                                                blk_label(mba, first_target),
+                                                blk_label(mba, target_serial),
                                             )
                                             continue
                                         else:
@@ -1152,11 +1156,11 @@ class LinearizedFlowGraphStrategy:
                                     resolved_count += 1
                                     logger.info(
                                         "LFG EXIT: BST walk resolved "
-                                        "state 0x%X: blk[%d] -> blk[%d] "
+                                        "state 0x%X: %s -> %s "
                                         "(1-way)",
                                         state_val,
-                                        from_block,
-                                        target_serial,
+                                        blk_label(mba, from_block),
+                                        blk_label(mba, target_serial),
                                     )
                                     continue
                 logger.info(
@@ -1169,11 +1173,11 @@ class LinearizedFlowGraphStrategy:
             current_entry = handler.handler_blocks[0] if handler.handler_blocks else handler.check_block
 
             logger.info(
-                "LFG EXIT: state 0x%X: handler entry blk[%d], "
-                "correct entry blk[%d]%s",
+                "LFG EXIT: state 0x%X: handler entry %s, "
+                "correct entry %s%s",
                 state_val,
-                current_entry,
-                correct_entry,
+                blk_label(mba, current_entry),
+                blk_label(mba, correct_entry),
                 " (MISMATCH)" if current_entry != correct_entry else "",
             )
 
@@ -1219,10 +1223,10 @@ class LinearizedFlowGraphStrategy:
                             )
                             logger.info(
                                 "LFG EXIT: state 0x%X: found m_mov #0x%X, "
-                                "state_var in blk[%d]",
+                                "state_var in %s",
                                 state_val,
                                 const_val,
-                                blk_serial,
+                                blk_label(mba, blk_serial),
                             )
                     insn = insn.next
 
@@ -1240,9 +1244,9 @@ class LinearizedFlowGraphStrategy:
             if not found_writes:
                 logger.info(
                     "LFG EXIT: state 0x%X: no state var writes found via "
-                    "BFS from blk[%d] (depth %d, visited %d blocks)",
+                    "BFS from %s (depth %d, visited %d blocks)",
                     state_val,
-                    correct_entry,
+                    blk_label(mba, correct_entry),
                     max_bfs_depth,
                     len(visited),
                 )
@@ -1257,10 +1261,10 @@ class LinearizedFlowGraphStrategy:
                 if target_entry is None:
                     logger.info(
                         "LFG EXIT: state 0x%X: exit value 0x%X from "
-                        "blk[%d] resolves to None, skipping",
+                        "%s resolves to None, skipping",
                         state_val,
                         exit_state_value,
-                        write_blk,
+                        blk_label(mba, write_blk),
                     )
                     continue
 
@@ -1268,10 +1272,10 @@ class LinearizedFlowGraphStrategy:
                 if write_blk == target_entry:
                     logger.info(
                         "LFG EXIT: state 0x%X: skipping self-loop "
-                        "blk[%d] -> blk[%d]",
+                        "%s -> %s",
                         state_val,
-                        write_blk,
-                        target_entry,
+                        blk_label(mba, write_blk),
+                        blk_label(mba, target_entry),
                     )
                     continue
 
@@ -1315,9 +1319,9 @@ class LinearizedFlowGraphStrategy:
                     if bst_old_target is None:
                         logger.info(
                             "LFG EXIT: state 0x%X: cannot determine "
-                            "old_target for 2-way blk[%d], skipping",
+                            "old_target for 2-way %s, skipping",
                             state_val,
-                            from_block,
+                            blk_label(mba, from_block),
                         )
                         continue
 
@@ -1332,11 +1336,11 @@ class LinearizedFlowGraphStrategy:
                         first_target = claimed_1way[from_block]
                         if first_target != target_entry:
                             logger.info(
-                                "LFG EXIT: CONFLICT on 1-way blk[%d]: "
-                                "already -> blk[%d], skipping -> blk[%d]",
-                                from_block,
-                                first_target,
-                                target_entry,
+                                "LFG EXIT: CONFLICT on 1-way %s: "
+                                "already -> %s, skipping -> %s",
+                                blk_label(mba, from_block),
+                                blk_label(mba, first_target),
+                                blk_label(mba, target_entry),
                             )
                             continue
                         else:
@@ -1353,11 +1357,11 @@ class LinearizedFlowGraphStrategy:
                 resolved_count += 1
 
                 logger.info(
-                    "LFG EXIT: resolved state 0x%X: blk[%d] -> blk[%d] "
+                    "LFG EXIT: resolved state 0x%X: %s -> %s "
                     "(exit value 0x%X)",
                     state_val,
-                    from_block,
-                    target_entry,
+                    blk_label(mba, from_block),
+                    blk_label(mba, target_entry),
                     exit_state_value,
                 )
 
@@ -1545,8 +1549,8 @@ class LinearizedFlowGraphStrategy:
                     if bst_old_target is None:
                         logger.info(
                             "LFG BST-default: cannot determine old_target "
-                            "for 2-way blk[%d], skipping",
-                            from_block,
+                            "for 2-way %s, skipping",
+                            blk_label(mba, from_block),
                         )
                         continue
 
@@ -1562,11 +1566,11 @@ class LinearizedFlowGraphStrategy:
                         if first_target != target_entry:
                             logger.info(
                                 "LFG BST-default: CONFLICT on 1-way "
-                                "blk[%d]: already -> blk[%d], skipping "
-                                "-> blk[%d]",
-                                from_block,
-                                first_target,
-                                target_entry,
+                                "%s: already -> %s, skipping "
+                                "-> %s",
+                                blk_label(mba, from_block),
+                                blk_label(mba, first_target),
+                                blk_label(mba, target_entry),
                             )
                             continue
                         else:
@@ -1588,13 +1592,13 @@ class LinearizedFlowGraphStrategy:
 
                 logger.info(
                     "LFG BST-default: discovered transition "
-                    "handler 0x%X blk[%d] -> state 0x%X -> "
-                    "handler blk[%d] (from_block=blk[%d])",
+                    "handler 0x%X %s -> state 0x%X -> "
+                    "handler %s (from_block=%s)",
                     handler_state,
-                    handler_entry,
+                    blk_label(mba, handler_entry),
                     final_state,
-                    target_entry,
-                    from_block,
+                    blk_label(mba, target_entry),
+                    blk_label(mba, from_block),
                 )
 
             # Early exit: all uncovered entries now covered.
@@ -1728,9 +1732,9 @@ class LinearizedFlowGraphStrategy:
                     insn = insn.next
         except Exception as exc:
             logger.info(
-                "LFG NOP: scan loop CRASHED at blk[%d] after scanning %d blocks, "
+                "LFG NOP: scan loop CRASHED at %s after scanning %d blocks, "
                 "%d NOPs so far: %s",
-                serial, blocks_scanned, nop_count, exc,
+                blk_label(mba, serial), blocks_scanned, nop_count, exc,
             )
 
         logger.info(
@@ -1771,6 +1775,8 @@ class LinearizedFlowGraphStrategy:
         builder: ModificationBuilder,
         modifications: list,
         emitted: set[tuple[int, int]],
+        *,
+        mba: object | None = None,
     ) -> int:
         """Convert 2-way blocks with dispatcher back-edges to 1-way.
 
@@ -1838,12 +1844,12 @@ class LinearizedFlowGraphStrategy:
 
             is_bst = serial in bst_node_blocks
             logger.info(
-                "BST_DISCONNECT: blk[%d] (%s) 2-way -> 1-way goto "
-                "blk[%d] (removed dispatcher back-edge to blk[%d])",
-                serial,
+                "BST_DISCONNECT: %s (%s) 2-way -> 1-way goto "
+                "%s (removed dispatcher back-edge to %s)",
+                blk_label(mba, serial) if mba else f"blk[{serial}]",
                 "BST" if is_bst else "handler",
-                keep_serial,
-                dispatcher_serial,
+                blk_label(mba, keep_serial) if mba else f"blk[{keep_serial}]",
+                blk_label(mba, dispatcher_serial) if mba else f"blk[{dispatcher_serial}]",
             )
 
         return disconnect_count
@@ -1855,6 +1861,8 @@ class LinearizedFlowGraphStrategy:
         builder: ModificationBuilder,
         modifications: list,
         emitted: set[tuple[int, int]],
+        *,
+        mba: object | None = None,
     ) -> int:
         """Convert BST comparison blocks from 2-way to unconditional goto.
 
@@ -1897,14 +1905,15 @@ class LinearizedFlowGraphStrategy:
                 continue
             if bst_snap.block_type != _BLT_2WAY:
                 logger.debug(
-                    "BST_CONVERT: skip blk[%d] -- not BLT_2WAY (type=%d)",
-                    bst_serial, bst_snap.block_type,
+                    "BST_CONVERT: skip %s -- not BLT_2WAY (type=%d)",
+                    blk_label(mba, bst_serial) if mba else f"blk[{bst_serial}]",
+                    bst_snap.block_type,
                 )
                 continue
             if len(bst_snap.succs) < 1:
                 logger.debug(
-                    "BST_CONVERT: skip blk[%d] -- no successors",
-                    bst_serial,
+                    "BST_CONVERT: skip %s -- no successors",
+                    blk_label(mba, bst_serial) if mba else f"blk[{bst_serial}]",
                 )
                 continue
 
@@ -1921,8 +1930,9 @@ class LinearizedFlowGraphStrategy:
             )
             bst_converted += 1
             logger.info(
-                "BST_CONVERT: blk[%d] 2-way -> goto blk[%d]",
-                bst_serial, fallthrough_target,
+                "BST_CONVERT: %s 2-way -> goto %s",
+                blk_label(mba, bst_serial) if mba else f"blk[{bst_serial}]",
+                blk_label(mba, fallthrough_target) if mba else f"blk[{fallthrough_target}]",
             )
 
         if bst_converted > 0:
@@ -2003,7 +2013,7 @@ class LinearizedFlowGraphStrategy:
                 disconnect_count += 1
                 logger.info(
                     "LFG BST-DISCONNECT: blk[%d] edge to handler blk[%d] "
-                    "-> redirected to BLT_STOP blk[%d]",
+                    "-> redirected to BLT_STOP blk[%d]",  # no mba available in this static method
                     bst_serial,
                     succ,
                     stop_serial,

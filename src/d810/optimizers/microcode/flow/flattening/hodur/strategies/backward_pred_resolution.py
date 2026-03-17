@@ -13,6 +13,7 @@ from __future__ import annotations
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 from d810.cfg.graph_modification import DuplicateAndRedirect
+from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
     ModificationBuilder,
 )
@@ -292,8 +293,8 @@ class BackwardPredResolutionStrategy:
                 histories = tracker.search_backward(pred_blk, pred_blk.tail)
             except Exception:
                 logger.debug(
-                    "BACKWARD_PRED: blk[%d] MopTracker search_backward failed",
-                    pred_serial,
+                    "BACKWARD_PRED: %s MopTracker search_backward failed",
+                    blk_label(mba, pred_serial),
                 )
                 continue
 
@@ -314,9 +315,9 @@ class BackwardPredResolutionStrategy:
                     )
                     if target is None and value not in bst_result.exits:
                         logger.debug(
-                            "BACKWARD_PRED: blk[%d] state=0x%X skipped "
+                            "BACKWARD_PRED: %s state=0x%X skipped "
                             "(terminal handler — forward proof)",
-                            pred_serial, value,
+                            blk_label(mba, pred_serial), value,
                         )
                     if target is not None:
                         resolved_targets.add(target)
@@ -332,9 +333,10 @@ class BackwardPredResolutionStrategy:
                     modifications.append(mod)
                     owned_blocks.add(pred_serial)
                     logger.info(
-                        "BACKWARD_PRED: blk[%d] MopTracker resolved state=0x%X "
-                        "-> handler blk[%d] (%d paths agree)",
-                        pred_serial, resolved_values[0][0], target,
+                        "BACKWARD_PRED: %s MopTracker resolved state=0x%X "
+                        "-> handler %s (%d paths agree)",
+                        blk_label(mba, pred_serial), resolved_values[0][0],
+                        blk_label(mba, target),
                         len(resolved_values),
                     )
             elif len(resolved_targets) > 1:
@@ -380,9 +382,9 @@ class BackwardPredResolutionStrategy:
                     modifications.append(mod)
                     owned_blocks.add(pred_serial)
                     logger.info(
-                        "BACKWARD_PRED: blk[%d] DUPLICATE_AND_REDIRECT: %s",
-                        pred_serial,
-                        [(f"pred={p} -> blk[{t}]") for p, t in per_pred_targets],
+                        "BACKWARD_PRED: %s DUPLICATE_AND_REDIRECT: %s",
+                        blk_label(mba, pred_serial),
+                        [(f"pred={p} -> {blk_label(mba, t)}") for p, t in per_pred_targets],
                     )
                 else:
                     # Per-arm mapping failed — try valrange as last resort
@@ -398,15 +400,16 @@ class BackwardPredResolutionStrategy:
                             modifications.append(mod)
                             owned_blocks.add(pred_serial)
                             logger.info(
-                                "BACKWARD_PRED: blk[%d] multi-target resolved "
-                                "via valrange probe -> blk[%d]",
-                                pred_serial, vr_target,
+                                "BACKWARD_PRED: %s multi-target resolved "
+                                "via valrange probe -> %s",
+                                blk_label(mba, pred_serial),
+                                blk_label(mba, vr_target),
                             )
                     else:
                         logger.info(
-                            "BACKWARD_PRED: blk[%d] MULTI-TARGET but couldn't "
+                            "BACKWARD_PRED: %s MULTI-TARGET but couldn't "
                             "map %d targets to predecessors",
-                            pred_serial, len(resolved_targets),
+                            blk_label(mba, pred_serial), len(resolved_targets),
                         )
             else:
                 # MopTracker failed — try valrange probe as fallback
@@ -423,25 +426,27 @@ class BackwardPredResolutionStrategy:
                         owned_blocks.add(pred_serial)
                         if vr_target in bst_result.exits:
                             logger.info(
-                                "BACKWARD_PRED: blk[%d] resolved via "
-                                "valrange probe -> exit handler blk[%d]",
-                                pred_serial, vr_target,
+                                "BACKWARD_PRED: %s resolved via "
+                                "valrange probe -> exit handler %s",
+                                blk_label(mba, pred_serial),
+                                blk_label(mba, vr_target),
                             )
                         else:
                             logger.info(
-                                "BACKWARD_PRED: blk[%d] resolved via "
-                                "valrange probe -> handler blk[%d]",
-                                pred_serial, vr_target,
+                                "BACKWARD_PRED: %s resolved via "
+                                "valrange probe -> handler %s",
+                                blk_label(mba, pred_serial),
+                                blk_label(mba, vr_target),
                             )
                 elif len(histories) > 0:
                     logger.debug(
-                        "BACKWARD_PRED: blk[%d] %d histories, none resolved",
-                        pred_serial, len(histories),
+                        "BACKWARD_PRED: %s %d histories, none resolved",
+                        blk_label(mba, pred_serial), len(histories),
                     )
                 else:
                     logger.debug(
-                        "BACKWARD_PRED: blk[%d] 0 histories",
-                        pred_serial,
+                        "BACKWARD_PRED: %s 0 histories",
+                        blk_label(mba, pred_serial),
                     )
 
         if not modifications:
