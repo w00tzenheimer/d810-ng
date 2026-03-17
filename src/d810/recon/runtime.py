@@ -86,6 +86,7 @@ class ReconAnalysisRuntime:
         self._store = store
         self._current_func_ea: int = -1
         self._outcome_log: ReconOutcomeLog = ReconOutcomeLog()
+        self._outcome_seen: set[tuple] = set()
 
     def reset_for_func(self, func_ea: int) -> bool:
         """Reset recon state -- deduplicates across managers.
@@ -108,6 +109,7 @@ class ReconAnalysisRuntime:
             lambda store: store.clear_func(func_ea=func_ea)
         )
         self._outcome_log.reset_for_func(func_ea)
+        self._outcome_seen.clear()
         logger.debug("reset_for_func: func=0x%x prev=0x%x flushed=%s", func_ea, prev_ea, prev_ea != -1)
         return True
 
@@ -171,8 +173,16 @@ class ReconAnalysisRuntime:
         return self._outcome_log
 
     def record_outcome(self, report: ConsumerOutcomeReport) -> None:
-        """Record a consumer outcome report and log it at INFO level."""
+        """Record a consumer outcome report and log it at INFO level.
+
+        Deduplicates: only logs once per (func_ea, consumer, verdict) to
+        avoid per-block spam when gates evaluate identically on every block.
+        """
         self._outcome_log.record(report)
+        dedup_key = (report.func_ea, report.consumer_name, report.consumer_verdict_applied)
+        if dedup_key in self._outcome_seen:
+            return
+        self._outcome_seen.add(dedup_key)
         logger.info(
             "outcome: func=0x%x consumer=%s artifacts=%s summary=%s verdict=%s",
             report.func_ea, report.consumer_name,
