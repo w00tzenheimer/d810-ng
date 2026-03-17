@@ -395,6 +395,39 @@ class MicroCodeInterpreter(object):
         else:
             self._strategies = []
 
+    def _resolve_segment_register(self, mreg: int) -> int | None:
+        """Resolve a segment register to its selector value.
+
+        On x86-64 flat model, data/stack segment selectors (ds, es, ss) have
+        a base of 0, so the effective address equals the linear address.
+        Returns the selector value or None if the register is not a known
+        segment register or the binary is not 64-bit.
+        """
+        try:
+            import ida_idaapi
+        except ImportError:
+            return None
+
+        # Build map from micro-register number to segment name
+        _SEG_ATTRS = ("mr_cs", "mr_ds", "mr_ss", "mr_es", "mr_fs", "mr_gs")
+        seg_map: dict[int, str] = {}
+        for attr in _SEG_ATTRS:
+            mr_val = getattr(ida_hexrays, attr, None)
+            if mr_val is not None:
+                seg_map[mr_val] = attr[3:]  # e.g. "ds"
+
+        seg_name = seg_map.get(mreg)
+        if seg_name is None:
+            return None
+
+        # On x86-64 flat model, ds/es/ss bases are 0
+        inf = ida_idaapi.get_inf_structure()
+        if inf.is_64bit() and seg_name in ("ds", "es", "ss"):
+            return 0
+
+        # Unknown architecture or segment — don't guess
+        return None
+
     def _resolve_mop_via_def_use(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int | None:
         # Use cached value if available
         mop_key = get_mop_key(mop)
@@ -1092,6 +1125,13 @@ class MicroCodeInterpreter(object):
             value = environment.lookup(mop, raise_exception=False)
             if value is not None:
                 return value
+
+            # Segment registers are constants on x86-64 flat model
+            if mop.t == ida_hexrays.mop_r and mop.size == 2:
+                seg_val = self._resolve_segment_register(mop.r)
+                if seg_val is not None:
+                    environment.define(mop, seg_val)
+                    return seg_val
 
             # Try configured resolution strategies
             if self._strategies:
