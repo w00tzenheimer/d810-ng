@@ -7,8 +7,6 @@ environment. The canonical model name is ``DispatcherStateMachine``; the
 historical ``HodurStateMachine`` name remains as a compatibility alias.
 """
 from __future__ import annotations
-
-import enum
 from dataclasses import dataclass, field
 from d810.core.typing import TYPE_CHECKING
 
@@ -21,8 +19,10 @@ from d810.recon.flow.transition_builder import (
     StateUpdateSite,
 )
 from d810.recon.flow.state_machine_analysis import (
+    CarrierResolutionResult,
     ConditionalTransition,
     HandlerPathResult,
+    ResolutionMethod,
 )
 
 __all__ = [
@@ -30,7 +30,7 @@ __all__ = [
     "StateHandler",
     "StateTransition",
     "StateUpdateSite",
-    # Defined here
+    # Re-exported from recon state-machine analysis
     "CarrierResolutionResult",
     "DispatcherStateMachine",
     "HodurStateMachine",
@@ -39,51 +39,6 @@ __all__ = [
     "Pass0RedirectRecord",
     "ResolutionMethod",
 ]
-
-
-class ResolutionMethod(enum.Enum):
-    """How a carrier constant was resolved."""
-
-    SNAPSHOT = "snapshot"
-    MBA_DEF_SEARCH = "mba_def_search"
-    VALRANGES = "valranges"
-    UNRESOLVED = "unresolved"
-
-
-@dataclass(frozen=True, slots=True)
-class CarrierResolutionResult:
-    """Centralized result from backward constant resolution.
-
-    Captures both the classification of a carrier value and the location of
-    the defining instruction so that the temp definition can be NOPed when
-    the state write itself is NOPed.
-    """
-
-    kind: str
-    """CarrierSourceKind value (str enum)."""
-
-    const_value: int | None = None
-    """Resolved numeric constant, or None if unresolved."""
-
-    method: ResolutionMethod = ResolutionMethod.UNRESOLVED
-    """How the constant was resolved."""
-
-    # Def location -- enables NOP of temp def
-    def_blk_serial: int | None = None
-    """Block serial containing the temp definition instruction."""
-
-    def_insn_ea: int | None = None
-    """Instruction EA of the temp definition."""
-
-    # Source operand identity
-    source_mop_type: int | None = None
-    """mop_t.t of the source operand in the defining instruction."""
-
-    source_stkoff: int | None = None
-    """Stack offset if source is mop_S."""
-
-    source_mreg: int | None = None
-    """Register id if source is mop_r."""
 
 
 @dataclass

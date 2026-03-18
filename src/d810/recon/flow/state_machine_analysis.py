@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass, field
 
 import ida_hexrays
@@ -16,8 +17,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CarrierResolutionResult",
     "ConditionalTransition",
     "HandlerPathResult",
+    "ResolutionMethod",
     "can_reach_return_snapshot",
     "detect_conditional_transitions",
     "eval_bst_condition",
@@ -26,6 +29,44 @@ __all__ = [
     "init_bst_cmp_opcodes",
     "resolve_exit_via_bst_default_snapshot",
 ]
+
+
+class ResolutionMethod(enum.Enum):
+    """How a carrier constant was resolved."""
+
+    SNAPSHOT = "snapshot"
+    MBA_DEF_SEARCH = "mba_def_search"
+    VALRANGES = "valranges"
+    UNRESOLVED = "unresolved"
+
+
+@dataclass(frozen=True, slots=True)
+class CarrierResolutionResult:
+    """Centralized result from backward constant resolution provenance."""
+
+    kind: str
+    """CarrierSourceKind value (str enum)."""
+
+    const_value: int | None = None
+    """Resolved numeric constant, or None if unresolved."""
+
+    method: ResolutionMethod = ResolutionMethod.UNRESOLVED
+    """How the constant was resolved."""
+
+    def_blk_serial: int | None = None
+    """Block serial containing the defining instruction."""
+
+    def_insn_ea: int | None = None
+    """Instruction EA of the defining instruction."""
+
+    source_mop_type: int | None = None
+    """mop_t.t of the source operand in the defining instruction."""
+
+    source_stkoff: int | None = None
+    """Stack offset if source is mop_S."""
+
+    source_mreg: int | None = None
+    """Register id if source is mop_r."""
 
 
 @dataclass
