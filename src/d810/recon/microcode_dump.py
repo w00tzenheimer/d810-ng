@@ -825,8 +825,10 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
             insn_str = _clean_insn_str(ins._print(_PRINT_FLAGS))
             if insn_idx == 1:
                 minst_str, _, mop_str = insn_str.partition(" ")
-                mop_str = re.sub("\s+", " ", mop_str)
-                insn_str = f"{minst_str:<7} {mop_str}"
+                mop_str = re.sub(r"\s+", " ", mop_str)
+                # Ensure minst_str is left justified and mop_str starts at position 7 (index 6)
+                # (so exactly one space after the 6-char field)
+                insn_str = f"{minst_str.ljust(6)} {mop_str.ljust(max(0, len(mop_str)))}"
             insn_str = _fix_block_refs(insn_str)
             insn_str = _fix_var_names(insn_str, _frsize)
 
@@ -1081,7 +1083,9 @@ def _build_live_linearized_state_dag(
     )
 
     handler_paths_by_handler: dict[int, tuple[HandlerPathResult, ...]] = {}
-    conditional_transitions_by_handler: dict[int, tuple[ConditionalTransition, ...]] = {}
+    conditional_transitions_by_handler: dict[int, tuple[ConditionalTransition, ...]] = (
+        {}
+    )
 
     if state_var_stkoff is not None:
         handler_entry_blocks = {
