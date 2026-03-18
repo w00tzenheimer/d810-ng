@@ -7,10 +7,14 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from d810.cfg.flowgraph import FlowGraph
-from d810.core.typing import Any, Callable
 from d810.recon.flow.interval_map import IntervalDispatcher
+from d810.recon.flow.state_machine_analysis import (
+    ConditionalTransition,
+    HandlerPathResult,
+)
 from d810.recon.flow.transition_builder import TransitionResult
 from d810.recon.flow.transition_report import DispatcherTransitionReport
+from d810.core.typing import Callable
 
 
 class StateNodeKind(Enum):
@@ -228,8 +232,8 @@ def _collect_local_block_order(
     handler_serial: int,
     transition_result: TransitionResult,
     row_state_const: int | None,
-    paths: tuple[Any, ...],
-    conditional_transitions: tuple[Any, ...],
+    paths: tuple[HandlerPathResult, ...],
+    conditional_transitions: tuple[ConditionalTransition, ...],
 ) -> tuple[int, ...]:
     ordered: list[int] = [handler_serial]
 
@@ -250,7 +254,7 @@ def _collect_local_block_order(
 
 
 def _compute_shared_blocks(
-    handler_paths_by_handler: dict[int, tuple[Any, ...]],
+    handler_paths_by_handler: dict[int, tuple[HandlerPathResult, ...]],
 ) -> set[int]:
     counts: Counter[int] = Counter()
     for paths in handler_paths_by_handler.values():
@@ -320,7 +324,7 @@ def _classify_local_edge_kind(
 
 def _build_local_edges(
     local_blocks: tuple[int, ...],
-    paths: tuple[Any, ...],
+    paths: tuple[HandlerPathResult, ...],
     flow_graph: FlowGraph,
     *,
     shared_blocks: set[int],
@@ -361,7 +365,7 @@ def _build_local_edges(
 
 
 def _infer_terminal_edge_kind(
-    path: Any,
+    path: HandlerPathResult,
     flow_graph: FlowGraph,
     branch_anchor: StateRedirectAnchor | None,
 ) -> SemanticEdgeKind:
@@ -376,9 +380,9 @@ def _infer_terminal_edge_kind(
 
 
 def _select_path_for_state(
-    paths: tuple[Any, ...],
+    paths: tuple[HandlerPathResult, ...],
     state_value: int,
-) -> Any | None:
+) -> HandlerPathResult | None:
     for path in paths:
         if path.final_state is None:
             continue
@@ -388,8 +392,8 @@ def _select_path_for_state(
 
 
 def _find_path_branch_anchor(
-    path: Any,
-    paths: tuple[Any, ...],
+    path: HandlerPathResult,
+    paths: tuple[HandlerPathResult, ...],
     flow_graph: FlowGraph,
 ) -> StateRedirectAnchor | None:
     if len(paths) < 2 or len(path.ordered_path) < 2:
@@ -462,8 +466,11 @@ def build_linearized_state_dag_from_graph(
     transition_result: TransitionResult,
     *,
     dispatcher: IntervalDispatcher | None = None,
-    handler_paths_by_handler: dict[int, tuple[Any, ...]] | None = None,
-    conditional_transitions_by_handler: dict[int, tuple[Any, ...]] | None = None,
+    handler_paths_by_handler: dict[int, tuple[HandlerPathResult, ...]] | None = None,
+    conditional_transitions_by_handler: dict[
+        int, tuple[ConditionalTransition, ...]
+    ]
+    | None = None,
 ) -> LinearizedStateDag:
     """Build a state-level DAG from structured graph-backed inputs."""
     paths_by_handler = {

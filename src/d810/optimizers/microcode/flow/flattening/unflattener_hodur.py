@@ -1,5 +1,6 @@
 """Backward-compatibility shim — re-exports from hodur package."""
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (  # noqa: F401
+    DispatcherStateMachine,
     HandlerPathResult,
     HodurStateMachine,
     Pass0RedirectRecord,

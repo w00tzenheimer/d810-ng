@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.recon.flow.linearized_state_dag import (
     LocalEdgeKind,
@@ -10,6 +8,10 @@ from d810.recon.flow.linearized_state_dag import (
     StateNodeKind,
     build_linearized_state_dag_from_graph,
     render_linearized_state_dag,
+)
+from d810.recon.flow.state_machine_analysis import (
+    ConditionalTransition,
+    HandlerPathResult,
 )
 from d810.recon.flow.transition_builder import (
     StateHandler,
@@ -24,26 +26,6 @@ from d810.recon.flow.transition_report import (
     TransitionSummary,
     build_dispatcher_transition_report_from_graph,
 )
-
-
-@dataclass
-class _HandlerPathResult:
-    exit_block: int
-    final_state: int | None
-    state_writes: list = field(default_factory=list)
-    ordered_path: list[int] = field(default_factory=list)
-
-
-@dataclass
-class _ConditionalTransition:
-    handler_entry: int
-    branch_block: int
-    target_state: int
-    target_handler: int | None
-    state_write_block: int | None
-    state_write_ea: int | None
-    branch_arm: int
-    is_terminal_no_write: bool = False
 
 
 def _make_branch_flow_graph() -> FlowGraph:
@@ -129,13 +111,13 @@ def test_branch_anchors_and_local_cfg_are_preserved() -> None:
         transition_result,
         handler_paths_by_handler={
             2: (
-                _HandlerPathResult(
+                HandlerPathResult(
                     exit_block=3,
                     final_state=0x30,
                     state_writes=[(2, 0x1000)],
                     ordered_path=[2, 3],
                 ),
-                _HandlerPathResult(
+                HandlerPathResult(
                     exit_block=7,
                     final_state=0x40,
                     state_writes=[(2, 0x1004)],
@@ -145,7 +127,7 @@ def test_branch_anchors_and_local_cfg_are_preserved() -> None:
         },
         conditional_transitions_by_handler={
             2: (
-                _ConditionalTransition(
+                ConditionalTransition(
                     handler_entry=2,
                     branch_block=2,
                     target_state=0x30,
@@ -154,7 +136,7 @@ def test_branch_anchors_and_local_cfg_are_preserved() -> None:
                     state_write_ea=0x1000,
                     branch_arm=0,
                 ),
-                _ConditionalTransition(
+                ConditionalTransition(
                     handler_entry=2,
                     branch_block=2,
                     target_state=0x40,
@@ -291,13 +273,13 @@ def test_terminal_sibling_paths_use_branch_anchors() -> None:
         transition_result,
         handler_paths_by_handler={
             2: (
-                _HandlerPathResult(
+                HandlerPathResult(
                     exit_block=3,
                     final_state=None,
                     state_writes=[],
                     ordered_path=[2, 3],
                 ),
-                _HandlerPathResult(
+                HandlerPathResult(
                     exit_block=4,
                     final_state=0x30,
                     state_writes=[(2, 0x2000)],
@@ -307,7 +289,7 @@ def test_terminal_sibling_paths_use_branch_anchors() -> None:
         },
         conditional_transitions_by_handler={
             2: (
-                _ConditionalTransition(
+                ConditionalTransition(
                     handler_entry=2,
                     branch_block=2,
                     target_state=0x30,
@@ -483,7 +465,7 @@ def test_range_backed_nodes_keep_shared_suffixes_out_of_entry_targets() -> None:
         transition_result,
         handler_paths_by_handler={
             1: (
-                _HandlerPathResult(
+                HandlerPathResult(
                     exit_block=6,
                     final_state=0x20,
                     state_writes=[(1, 0x2000)],
@@ -491,7 +473,7 @@ def test_range_backed_nodes_keep_shared_suffixes_out_of_entry_targets() -> None:
                 ),
             ),
             9: (
-                _HandlerPathResult(
+                HandlerPathResult(
                     exit_block=6,
                     final_state=None,
                     state_writes=[],

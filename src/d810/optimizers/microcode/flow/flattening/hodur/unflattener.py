@@ -46,8 +46,8 @@ from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     HodurStateMachineDetector,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
+    DispatcherStateMachine,
     HandlerPathResult,
-    HodurStateMachine,
     Pass0RedirectRecord,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
@@ -158,7 +158,7 @@ class HodurUnflattener(GenericUnflatteningRule):
 
     def __init__(self) -> None:
         super().__init__()
-        self.state_machine: HodurStateMachine | None = None
+        self.state_machine: DispatcherStateMachine | None = None
         self.max_passes = self.DEFAULT_MAX_PASSES
         self.min_state_constant = MIN_STATE_CONSTANT
         self.min_state_constants = MIN_STATE_CONSTANTS
@@ -760,7 +760,7 @@ class HodurUnflattener(GenericUnflatteningRule):
     def _build_snapshot(
         self,
         mba: ida_hexrays.mba_t,
-        state_machine: HodurStateMachine,
+        state_machine: DispatcherStateMachine,
         detector: HodurStateMachineDetector,
     ) -> AnalysisSnapshot:
         """Build an immutable AnalysisSnapshot from current mba state.
@@ -833,7 +833,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         )
 
     def _get_effective_state_var_stkoff(
-        self, state_machine: HodurStateMachine | None = None
+        self, state_machine: DispatcherStateMachine | None = None
     ) -> int | None:
         """Return the stack offset of the state variable, or None on failure.
 
@@ -2347,8 +2347,8 @@ class HodurUnflattener(GenericUnflatteningRule):
 
     def _build_state_machine_from_cache(
         self, analysis: object
-    ) -> HodurStateMachine | None:
-        """Build a HodurStateMachine from a DispatcherAnalysis cache result.
+    ) -> DispatcherStateMachine | None:
+        """Build a DispatcherStateMachine from a DispatcherAnalysis cache result.
 
         This fallback path is used when the primary detector does not find a
         state machine but the dispatcher cache identifies a conditional chain.

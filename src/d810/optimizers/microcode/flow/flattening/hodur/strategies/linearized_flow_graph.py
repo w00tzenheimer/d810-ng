@@ -1,7 +1,7 @@
 """LinearizedFlowGraphStrategy -- deterministic graph-stitching linearization.
 
 Uses the complete handler transition graph already present in the
-:class:`~d810.optimizers.microcode.flow.flattening.hodur.datamodel.HodurStateMachine`
+:class:`~d810.optimizers.microcode.flow.flattening.hodur.datamodel.DispatcherStateMachine`
 to wire handler exits directly to handler entries.  No forward evaluation is
 needed -- the known ``StateTransition`` objects provide the mapping.
 
@@ -45,7 +45,7 @@ from d810.recon.flow.transition_builder import _get_state_var_stkoff
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
-        HodurStateMachine,
+        DispatcherStateMachine,
     )
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
         AnalysisSnapshot,
@@ -1145,7 +1145,7 @@ class LinearizedFlowGraphStrategy:
 
     @staticmethod
     def _emit_resolved_graph_dot(
-        sm: HodurStateMachine,
+        sm: DispatcherStateMachine,
         bst_result: object,
         handler_state_map: dict[int, int],
         emitted: set[tuple[int, int]],
@@ -1343,7 +1343,7 @@ class LinearizedFlowGraphStrategy:
     @staticmethod
     def _resolve_exit_states(
         snapshot: AnalysisSnapshot,
-        sm: HodurStateMachine,
+        sm: DispatcherStateMachine,
         bst_result: object,
         handler_state_map: dict[int, int],
         bst_node_blocks: set[int],
@@ -1800,7 +1800,7 @@ class LinearizedFlowGraphStrategy:
     @staticmethod
     def _discover_bst_default_transitions(
         snapshot: AnalysisSnapshot,
-        sm: HodurStateMachine,
+        sm: DispatcherStateMachine,
         bst_result: object,
         handler_state_map: dict[int, int],
         bst_node_blocks: set[int],
@@ -2457,4 +2457,3 @@ class LinearizedFlowGraphStrategy:
                 )
 
         return disconnect_count
-
