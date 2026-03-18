@@ -560,18 +560,9 @@ def evaluate_handler_paths(
                             ordered_path=list(ordered_path),
                         )
                     )
-                # Also continue DFS into BST node to find default branch transitions
-                new_ordered = ordered_path + [succ_serial]
-                queue.append(
-                    (
-                        succ_serial,
-                        dict(reg_map),
-                        dict(stk_map),
-                        path_visited,
-                        list(cur_writes),
-                        new_ordered,
-                    )
-                )
+                # DISABLED: BST walk-through causes cross-handler contamination.
+                # Handler 0x6E958F99's evaluator walked through BST into handler
+                # 0x71E22BF3 and attributed state write 0x11CD1DA3 to wrong handler.
             else:
                 new_ordered = ordered_path + [succ_serial]
                 queue.append(
