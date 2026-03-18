@@ -19,6 +19,7 @@ Usage (from IDA Python or via headless script):
 from __future__ import annotations
 
 import json
+import importlib
 import re
 from dataclasses import dataclass, field
 
@@ -45,6 +46,10 @@ from d810.recon.flow.bst_analysis import (
     _detect_state_var_stkoff,
     _dump_dispatcher_node,
     _find_pre_header_state,
+)
+from d810.recon.flow.linearized_state_dag import (
+    build_linearized_state_dag_from_graph,
+    render_linearized_state_dag,
 )
 from d810.recon.flow.transition_report import (
     TransitionKind,
@@ -559,7 +564,6 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
     Returns:
         A list of strings in IDA's native human-readable microcode format.
     """
-
     entry_ea = getattr(mba, "entry_ea", 0)
     maturity = getattr(mba, "maturity", 0)
 
@@ -609,8 +613,8 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
         blk: idaapi.mblock_t = mba.get_mblock(i)
         if blk is None:
             continue
-
         serial = blk.serial
+
         start_ea = blk.start
         end_ea = blk.end
         block_type = BlockType(blk.type)
@@ -623,17 +627,12 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
         preds_sorted = [str(p) for p in sorted(preds)] if preds else []
         succs_sorted = [str(s) for s in sorted(succs)] if succs else []
 
-        # Stack frame info on block 0
         label = "Successors" if serial == 0 else "Predecessors"
         items = succs_sorted if serial == 0 else preds_sorted
 
         line = [f"{i}.{type_name:<60} ; {label}: {', '.join(items)}"]
 
-        # Block header line
-
-        # Stack frame info on block 0
         if serial == 0:
-            # ; STKD=0 MINREF=7F8/END=7F8 ARGS: OFF=820/MINREF=A00/END=A00/SHADOW=20
             _stkd_parts = []
             _inargoff = mba.inargoff
             _minargref = mba.minargref
@@ -650,7 +649,7 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
                 _val = getattr(mba, _attr, None)
                 if _val is not None:
                     _stkd_parts.append(f"{_attr}={_val:X} ")
-            line.append(f"; STKD=0 {" ".join(_stkd_extra + _stkd_parts)}")
+            line.append(f"; STKD=0 {' '.join(_stkd_extra + _stkd_parts)}")
 
         is_fake = "FAKE" if flags & MicrocodeBasicBlockFlag.FAKE else ""
         inbounds = f"INBOUNDS: {' '.join(preds_sorted)}" if preds_sorted else ""
@@ -660,7 +659,6 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
             f"; {block_type.name}-BLOCK {serial} {is_fake} {inbounds} {outbounds} [START={start_ea:X} END={end_ea:X}] MINREFS: STK={blk.minbstkref:X}/ARG={blk.minbargref:X}, MAXBSP: {blk.maxbsp:X}"
         )
 
-        # USE / DEF / DNU liveness sets
         def_must = _mlist_dstr(blk.mustbdef)
         dnu = _mlist_dstr(blk.dnu)
         use_must = _mlist_dstr(blk.mustbuse)
@@ -686,14 +684,12 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
         line.append(f"; DEF: {_paren_if_multi(def_str)}")
         line.append(f"; DNU: {_paren_if_multi(dnu)}")
 
-        # VALRANGES
         vr_records = collect_block_valrange_records(blk)
         if vr_records:
             line.append(
                 f"; VALRANGES: {', '.join(str(record) for record in vr_records)}"
             )
 
-        # Collect instructions
         insns = []
         ins: idaapi.minsn_t = blk.head
         while ins is not None:
@@ -711,7 +707,6 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
                     insn_str = _clean_insn_str(ins._print())
                 except Exception as exc:
                     insn_str = f"<error: {exc}>"
-
             insn_str = _fix_block_refs(insn_str)
             insn_str = _fix_var_names(insn_str, _frsize)
 
@@ -730,17 +725,15 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
             try:
                 ins_vr_records = collect_instruction_valrange_records(blk, ins)
                 if ins_vr_records:
-                    ins_vr = (
-                        f" vr={{{', '.join(str(record) for record in ins_vr_records)}}}"
-                    )
+                    ins_vr = f" vr={{{', '.join(str(r) for r in ins_vr_records)}}}"
             except Exception:
                 pass
 
             ea_str = f"{ea:016X}"
             suffix = f" ; {ea_str} u={ins_use} d={ins_def}{ins_vr}"
-
             line.append(f"  {serial}.{insn_idx - 1:<4} {insn_str:<50}{suffix}")
         as_str.append("\n".join(line))
+
     return as_str
 
 
@@ -936,165 +929,125 @@ def dump_dispatcher_tree(
 # -----------------------------------------------------------------------------
 
 
+def _build_live_linearized_state_dag(
+    mba: "idaapi.mbl_array_t",
+    dispatcher_entry_serial: int,
+    *,
+    state_var_stkoff: Optional[int] = None,
+    state_var_lvar_idx: Optional[int] = None,
+    max_depth: int = 20,
+):
+    IDAIRTranslator = importlib.import_module(
+        "d810.hexrays.mutation.ir_translator"
+    ).IDAIRTranslator
+    hodur_helpers = importlib.import_module(
+        "d810.optimizers.microcode.flow.flattening.hodur._helpers"
+    )
+    detect_conditional_transitions = hodur_helpers.detect_conditional_transitions
+    evaluate_handler_paths = hodur_helpers.evaluate_handler_paths
+    analyze_bst_dispatcher = importlib.import_module(
+        "d810.recon.flow.bst_analysis"
+    ).analyze_bst_dispatcher
+    _convert_bst_to_result = importlib.import_module(
+        "d810.recon.flow.transition_builder"
+    )._convert_bst_to_result
+    build_dispatcher_transition_report_from_graph = importlib.import_module(
+        "d810.recon.flow.transition_report"
+    ).build_dispatcher_transition_report_from_graph
+
+    if state_var_stkoff is None:
+        detected, detected_lvar_idx = _detect_state_var_stkoff(
+            mba,
+            dispatcher_entry_serial,
+            diag=False,
+        )
+        if detected is not None:
+            state_var_stkoff = detected
+            if state_var_lvar_idx is None:
+                state_var_lvar_idx = detected_lvar_idx
+
+    bst_result = analyze_bst_dispatcher(
+        mba,
+        dispatcher_entry_serial,
+        state_var_stkoff=state_var_stkoff,
+        state_var_lvar_idx=state_var_lvar_idx,
+        max_depth=max_depth,
+    )
+    transition_result = _convert_bst_to_result(bst_result)
+    flow_graph = IDAIRTranslator().lift(mba)
+    report = build_dispatcher_transition_report_from_graph(
+        flow_graph=flow_graph,
+        transition_result=transition_result,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        state_var_stkoff=state_var_stkoff,
+        state_var_lvar_idx=state_var_lvar_idx,
+        pre_header_serial=bst_result.pre_header_serial,
+        initial_state=bst_result.initial_state,
+        handler_range_map=bst_result.handler_range_map,
+        bst_node_blocks=tuple(sorted(bst_result.bst_node_blocks)),
+    )
+
+    handler_paths_by_handler: dict[int, tuple[object, ...]] = {}
+    conditional_transitions_by_handler: dict[int, tuple[object, ...]] = {}
+
+    if state_var_stkoff is not None:
+        handler_entry_blocks = {
+            handler.check_block for handler in transition_result.handlers.values()
+        }
+        state_constants = set(transition_result.handlers.keys())
+
+        for row in report.rows:
+            incoming_state = row.state_const
+            if incoming_state is None:
+                incoming_state = row.state_range_lo
+            if incoming_state is None:
+                continue
+
+            paths = tuple(
+                evaluate_handler_paths(
+                    mba,
+                    row.handler_serial,
+                    incoming_state,
+                    set(report.bst_node_blocks),
+                    state_var_stkoff,
+                    handler_entry_blocks,
+                )
+            )
+            handler_paths_by_handler[row.handler_serial] = paths
+            conds = tuple(
+                detect_conditional_transitions(
+                    row.handler_serial,
+                    list(paths),
+                    state_constants,
+                    flow_graph,
+                    incoming_state=incoming_state,
+                )
+            )
+            if conds:
+                conditional_transitions_by_handler[row.handler_serial] = conds
+
+    return build_linearized_state_dag_from_graph(
+        flow_graph,
+        report,
+        transition_result,
+        dispatcher=bst_result.dispatcher,
+        handler_paths_by_handler=handler_paths_by_handler,
+        conditional_transitions_by_handler=conditional_transitions_by_handler,
+    )
+
+
 def dump_linearized_dag(
     mba: "idaapi.mbl_array_t",
     dispatcher_entry_serial: int,
     state_var_stkoff: Optional[int] = None,
 ) -> str:
-    """Walk the BST state machine from the initial state and dump a linearized DAG.
-
-    Starting from the pre-header initial state, follows the transition chain
-    through handlers, producing a human-readable execution-order DAG.  Handles
-    conditional forks, terminal exits, unresolved transitions, and cycles.
-
-    Args:
-        mba: The microcode block array.
-        dispatcher_entry_serial: Block serial number of the BST root.
-        state_var_stkoff: Optional stack offset of the state variable
-            (auto-detected from the BST root when *None*).
-
-    Returns:
-        Multi-line string describing the linearized DAG.
-    """
-
-    # --- Build the transition report ---
-    report = build_dispatcher_transition_report(
-        mba=mba,
-        dispatcher_entry_serial=dispatcher_entry_serial,
+    """Build and render the unified state-level DAG for a dispatcher."""
+    dag = _build_live_linearized_state_dag(
+        mba,
+        dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
-        capture_diagnostics=False,
     )
-
-    initial_state = report.initial_state
-
-    # Build lookup: state_const -> TransitionRow  (exact match only)
-    state_to_row: Dict[int, "TransitionRow"] = {}
-    for row in report.rows:
-        if row.state_const is not None:
-            state_to_row[row.state_const] = row
-
-    # --- Walk the chain via BFS (breadth-first to keep step indices stable) ---
-    lines: List[str] = []
-    # visited maps state_const -> step index (for cycle detection)
-    visited: Dict[int, int] = {}
-    # queue entries: (state_value, step_index, indent_prefix)
-    #   indent_prefix is "" for top-level steps, "  " for conditional sub-steps
-    queue: List[Tuple[int, int, str]] = []
-
-    if initial_state is None:
-        return (
-            "=== LINEARIZED DAG ===\n" "<initial state not found — cannot walk chain>\n"
-        )
-
-    lines.append(f"=== LINEARIZED DAG (starting from 0x{initial_state:08X}) ===")
-    lines.append("")
-
-    step_counter = 0
-    # Counters for summary
-    conditional_forks = 0
-    exit_count = 0
-    cycle_count = 0
-    unresolved_count = 0
-
-    queue.append((initial_state, step_counter, ""))
-    visited[initial_state] = step_counter
-    step_counter += 1
-
-    while queue:
-        state_val, step_idx, prefix = queue.pop(0)
-        row = state_to_row.get(state_val)
-
-        if row is None:
-            lines.append(
-                f"{prefix}[{step_idx}] 0x{state_val:08X} → <no handler>  [UNRESOLVED]"
-            )
-            unresolved_count += 1
-            continue
-
-        handler_serial = row.handler_serial
-
-        if row.kind == TransitionKind.EXIT:
-            lines.append(
-                f"{prefix}[{step_idx}] 0x{state_val:08X} → blk[{handler_serial}]"
-                f" → EXIT"
-            )
-            exit_count += 1
-
-        elif row.kind == TransitionKind.CONDITIONAL:
-            cond_states = row.conditional_states
-            cond_hex = ", ".join(f"0x{s:08X}" for s in cond_states)
-            lines.append(
-                f"{prefix}[{step_idx}] 0x{state_val:08X} → blk[{handler_serial}]"
-                f" → {{{cond_hex}}}  [CONDITIONAL]"
-            )
-            conditional_forks += 1
-            # Enqueue each conditional branch as a sub-step
-            for branch_idx, cond_state in enumerate(cond_states):
-                sub_label = (
-                    chr(ord("a") + branch_idx) if branch_idx < 26 else str(branch_idx)
-                )
-                sub_prefix = f"{prefix}  "
-                if cond_state in visited:
-                    lines.append(
-                        f"{sub_prefix}[{step_idx}{sub_label}] 0x{cond_state:08X}"
-                        f" → blk[{state_to_row[cond_state].handler_serial}]"
-                        f"  [CYCLE → step {visited[cond_state]}]"
-                        if cond_state in state_to_row
-                        else f"{sub_prefix}[{step_idx}{sub_label}] 0x{cond_state:08X}"
-                        f"  [CYCLE → step {visited[cond_state]}]"
-                    )
-                    cycle_count += 1
-                else:
-                    visited[cond_state] = step_counter
-                    queue.append((cond_state, step_counter, sub_prefix))
-                    step_counter += 1
-
-        elif row.kind == TransitionKind.TRANSITION:
-            next_state = row.next_state
-            if next_state is not None:
-                next_hex = f"0x{next_state:08X}"
-                annotation = ""
-                if next_state in visited:
-                    annotation = f"  [CYCLE → step {visited[next_state]}]"
-                    cycle_count += 1
-                    lines.append(
-                        f"{prefix}[{step_idx}] 0x{state_val:08X}"
-                        f" → blk[{handler_serial}] → {next_hex}{annotation}"
-                    )
-                else:
-                    lines.append(
-                        f"{prefix}[{step_idx}] 0x{state_val:08X}"
-                        f" → blk[{handler_serial}] → {next_hex}"
-                    )
-                    visited[next_state] = step_counter
-                    queue.append((next_state, step_counter, prefix))
-                    step_counter += 1
-            else:
-                lines.append(
-                    f"{prefix}[{step_idx}] 0x{state_val:08X}"
-                    f" → blk[{handler_serial}] → EXIT"
-                )
-                exit_count += 1
-
-        else:
-            # TransitionKind.UNKNOWN
-            lines.append(
-                f"{prefix}[{step_idx}] 0x{state_val:08X} → blk[{handler_serial}]"
-                f" → ???  [UNRESOLVED]"
-            )
-            unresolved_count += 1
-
-    # --- Summary ---
-    lines.append("")
-    lines.append(
-        f"Summary: {len(visited)} handlers in chain, "
-        f"{conditional_forks} conditional forks, "
-        f"{exit_count} exits, "
-        f"{cycle_count} cycles, "
-        f"{unresolved_count} unresolved"
-    )
-
-    return "\n".join(lines)
+    return render_linearized_state_dag(dag)
 
 
 # -----------------------------------------------------------------------------
