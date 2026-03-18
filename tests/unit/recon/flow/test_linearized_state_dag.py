@@ -15,6 +15,7 @@ from d810.recon.flow.linearized_state_dag import (
     StateRedirectAnchor,
     build_linearized_state_dag_from_graph,
     render_linearized_state_dag,
+    render_linearized_state_dag_dot,
 )
 from d810.recon.flow.state_machine_analysis import (
     ConditionalTransition,
@@ -855,3 +856,124 @@ def test_render_prefers_raw_target_state_over_canonical_handler_label() -> None:
         "edge conditional_transition src=blk[1].fallthrough -> "
         "0x00000031 via 0x00000030 entry=blk[3] path=[1, 2]"
     ) in rendered
+
+
+def test_render_linearized_state_dag_dot_state_level() -> None:
+    flow_graph = _make_branch_flow_graph()
+    transition_result = _make_branch_transition_result()
+    report = build_dispatcher_transition_report_from_graph(
+        flow_graph=flow_graph,
+        transition_result=transition_result,
+        dispatcher_entry_serial=5,
+    )
+
+    dag = build_linearized_state_dag_from_graph(
+        flow_graph,
+        report,
+        transition_result,
+        handler_paths_by_handler={
+            2: (
+                HandlerPathResult(
+                    exit_block=3,
+                    final_state=0x30,
+                    state_writes=[(2, 0x1000)],
+                    ordered_path=[2, 3],
+                ),
+                HandlerPathResult(
+                    exit_block=7,
+                    final_state=0x40,
+                    state_writes=[(2, 0x1004)],
+                    ordered_path=[2, 7],
+                ),
+            ),
+        },
+        conditional_transitions_by_handler={
+            2: (
+                ConditionalTransition(
+                    handler_entry=2,
+                    branch_block=2,
+                    target_state=0x30,
+                    target_handler=3,
+                    state_write_block=2,
+                    state_write_ea=0x1000,
+                    branch_arm=0,
+                ),
+                ConditionalTransition(
+                    handler_entry=2,
+                    branch_block=2,
+                    target_state=0x40,
+                    target_handler=7,
+                    state_write_block=2,
+                    state_write_ea=0x1004,
+                    branch_arm=1,
+                ),
+            ),
+        },
+    )
+
+    dot = render_linearized_state_dag_dot(dag)
+    assert "digraph linearized_state_dag {" in dot
+    assert "START [shape=point];" in dot
+    assert "state_00000020_2" in dot
+    assert 'label="conditional_transition\\nsrc=blk[2].fallthrough\\npath=[2, 3]"' in dot
+    assert "state_00000020_2 -> state_00000030_3" in dot
+
+
+def test_render_linearized_state_dag_dot_expanded() -> None:
+    flow_graph = _make_branch_flow_graph()
+    transition_result = _make_branch_transition_result()
+    report = build_dispatcher_transition_report_from_graph(
+        flow_graph=flow_graph,
+        transition_result=transition_result,
+        dispatcher_entry_serial=5,
+    )
+
+    dag = build_linearized_state_dag_from_graph(
+        flow_graph,
+        report,
+        transition_result,
+        handler_paths_by_handler={
+            2: (
+                HandlerPathResult(
+                    exit_block=3,
+                    final_state=0x30,
+                    state_writes=[(2, 0x1000)],
+                    ordered_path=[2, 3],
+                ),
+                HandlerPathResult(
+                    exit_block=7,
+                    final_state=0x40,
+                    state_writes=[(2, 0x1004)],
+                    ordered_path=[2, 7],
+                ),
+            ),
+        },
+        conditional_transitions_by_handler={
+            2: (
+                ConditionalTransition(
+                    handler_entry=2,
+                    branch_block=2,
+                    target_state=0x30,
+                    target_handler=3,
+                    state_write_block=2,
+                    state_write_ea=0x1000,
+                    branch_arm=0,
+                ),
+                ConditionalTransition(
+                    handler_entry=2,
+                    branch_block=2,
+                    target_state=0x40,
+                    target_handler=7,
+                    state_write_block=2,
+                    state_write_ea=0x1004,
+                    branch_arm=1,
+                ),
+            ),
+        },
+    )
+
+    dot = render_linearized_state_dag_dot(dag, expanded=True)
+    assert "subgraph cluster_state_00000020_2 {" in dot
+    assert "state_00000020_2_blk_2" in dot
+    assert 'state_00000020_2 -> state_00000020_2_blk_2 [style=dotted, arrowhead=none];' in dot
+    assert 'state_00000020_2_blk_2 -> state_00000030_3 [label="conditional_transition\\nsrc=blk[2].fallthrough\\npath=[2, 3]"' in dot
