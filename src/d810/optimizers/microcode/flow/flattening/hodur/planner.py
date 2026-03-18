@@ -492,6 +492,24 @@ class UnflatteningPlanner:
                         "strategy '%s' into snapshot",
                         len(nsv), fragment.strategy_name,
                     )
+                # Inject lfg_redirected_blocks from LFG fragment's
+                # ownership edges so backward_pred skips blocks that
+                # LFG already redirected (prevents SUCC_MISMATCH).
+                if (
+                    strategy.name in ("direct_handler_linearization", "linearized_flow_graph")
+                    and not snapshot.lfg_redirected_blocks
+                ):
+                    lfg_src = {src for src, _ in fragment.ownership.edges}
+                    if lfg_src:
+                        snapshot = replace(
+                            snapshot,
+                            lfg_redirected_blocks=frozenset(lfg_src),
+                        )
+                        logger.info(
+                            "Planner: injected %d LFG-redirected blocks "
+                            "into snapshot",
+                            len(lfg_src),
+                        )
             else:
                 pre_planner_records.append(DecisionRecord(
                     strategy_name=strategy.name,
