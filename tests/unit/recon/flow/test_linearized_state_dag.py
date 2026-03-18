@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.recon.flow.linearized_state_dag import (
+    LinearizedStateDag,
+    LocalSegmentKind,
     LocalEdgeKind,
     RedirectSourceKind,
     SemanticEdgeKind,
+    StateDagEdge,
+    StateDagNode,
+    StateDagNodeKey,
+    StateLocalSegment,
     StateNodeKind,
+    StateRedirectAnchor,
     build_linearized_state_dag_from_graph,
     render_linearized_state_dag,
 )
@@ -317,6 +324,94 @@ def test_terminal_sibling_paths_use_branch_anchors() -> None:
     assert "edge conditional_return src=blk[2].fallthrough -> RETURN path=[2, 3]" in rendered
 
 
+def test_branch_anchored_inherited_state_paths_do_not_render_self_edges() -> None:
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(1, 0, (2,), (), 0, 0, ()),
+            2: BlockSnapshot(2, 0, (3, 4), (1,), 0, 0, ()),
+            3: BlockSnapshot(3, 0, (), (2,), 0, 0, ()),
+            4: BlockSnapshot(4, 0, (), (2,), 0, 0, ()),
+            6: BlockSnapshot(6, 0, (), (), 0, 0, ()),
+        },
+        entry_serial=1,
+        func_ea=0x404000,
+    )
+    transition_result = TransitionResult(
+        transitions=[
+            StateTransition(
+                from_state=0x20,
+                to_state=0x30,
+                from_block=1,
+                is_conditional=False,
+            )
+        ],
+        handlers={
+            0x20: StateHandler(
+                state_value=0x20,
+                check_block=1,
+                handler_blocks=[1, 2],
+                transitions=[],
+            ),
+            0x30: StateHandler(
+                state_value=0x30,
+                check_block=6,
+                handler_blocks=[6],
+                transitions=[],
+            ),
+        },
+        initial_state=0x20,
+        pre_header_serial=7,
+        strategy_name="fixture",
+        resolved_count=1,
+    )
+    transition_result.handlers[0x20].transitions = transition_result.transitions
+    report = build_dispatcher_transition_report_from_graph(
+        flow_graph=flow_graph,
+        transition_result=transition_result,
+        dispatcher_entry_serial=6,
+    )
+
+    dag = build_linearized_state_dag_from_graph(
+        flow_graph,
+        report,
+        transition_result,
+        handler_paths_by_handler={
+            1: (
+                HandlerPathResult(
+                    exit_block=3,
+                    final_state=0x20,
+                    state_writes=[(1, 0x2000)],
+                    ordered_path=[1, 2, 3],
+                ),
+                HandlerPathResult(
+                    exit_block=4,
+                    final_state=None,
+                    state_writes=[],
+                    ordered_path=[1, 2, 4],
+                ),
+            ),
+        },
+    )
+
+    outgoing = [
+        edge
+        for edge in dag.edges
+        if edge.source_key.handler_serial == 1
+    ]
+    assert any(
+        edge.kind == SemanticEdgeKind.TRANSITION and edge.target_state == 0x30
+        for edge in outgoing
+    )
+    assert not any(
+        edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION
+        and edge.target_state == 0x20
+        for edge in outgoing
+    )
+
+    rendered = render_linearized_state_dag(dag)
+    assert "src=blk[2].fallthrough -> 0x00000020" not in rendered
+
+
 def _make_shared_suffix_flow_graph() -> FlowGraph:
     blocks = {
         1: BlockSnapshot(1, 0, (5,), (), 0, 0, ()),
@@ -502,3 +597,76 @@ def test_range_backed_nodes_keep_shared_suffixes_out_of_entry_targets() -> None:
     rendered = render_linearized_state_dag(dag)
     assert "[0x00000100..0x000001FF] (repr 0x00000100)" in rendered
     assert "shared-suffix: blk[5], blk[6]" in rendered
+
+
+def test_render_prefers_raw_target_state_over_canonical_handler_label() -> None:
+    source_key = StateDagNodeKey(handler_serial=1, state_const=0x10)
+    target_key = StateDagNodeKey(handler_serial=3, state_const=0x30)
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=0,
+        state_var_stkoff=None,
+        pre_header_serial=None,
+        initial_state=0x10,
+        bst_node_blocks=(),
+        nodes=(
+            StateDagNode(
+                key=source_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000010",
+                handler_serial=1,
+                entry_anchor=1,
+                owned_blocks=(1,),
+                exclusive_blocks=(1,),
+                shared_suffix_blocks=(),
+                local_segments=(
+                    StateLocalSegment(
+                        segment_id="blk[1]",
+                        kind=LocalSegmentKind.STRAIGHT_LINE,
+                        blocks=(1,),
+                    ),
+                ),
+                local_edges=(),
+            ),
+            StateDagNode(
+                key=target_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000030",
+                handler_serial=3,
+                entry_anchor=3,
+                owned_blocks=(3,),
+                exclusive_blocks=(3,),
+                shared_suffix_blocks=(),
+                local_segments=(
+                    StateLocalSegment(
+                        segment_id="blk[3]",
+                        kind=LocalSegmentKind.STRAIGHT_LINE,
+                        blocks=(3,),
+                    ),
+                ),
+                local_edges=(),
+            ),
+        ),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=target_key,
+                target_state=0x31,
+                target_entry_anchor=3,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=1,
+                    branch_arm=0,
+                ),
+                ordered_path=(1, 2),
+            ),
+        ),
+        diagnostics=(),
+    )
+
+    rendered = render_linearized_state_dag(dag)
+    assert (
+        "edge conditional_transition src=blk[1].fallthrough -> "
+        "0x00000031 via 0x00000030 entry=blk[3] path=[1, 2]"
+    ) in rendered

@@ -460,6 +460,27 @@ def _find_path_branch_anchor(
     return None
 
 
+def _path_has_state_write_at_or_after_block(
+    path: HandlerPathResult,
+    block_serial: int,
+) -> bool:
+    positions = {serial: idx for idx, serial in enumerate(path.ordered_path)}
+    anchor_index = positions.get(block_serial)
+
+    for write_block, _ in path.state_writes:
+        if write_block == block_serial:
+            return True
+        write_index = positions.get(write_block)
+        if (
+            anchor_index is not None
+            and write_index is not None
+            and write_index > anchor_index
+        ):
+            return True
+
+    return False
+
+
 def build_linearized_state_dag_from_graph(
     flow_graph: FlowGraph,
     report: DispatcherTransitionReport,
@@ -744,6 +765,7 @@ def build_linearized_state_dag_from_graph(
                 continue
 
             branch_anchor = _find_path_branch_anchor(path, paths, flow_graph)
+            source_state = source_node.key.state_const
 
             if path.final_state is None:
                 edge_kind = _infer_terminal_edge_kind(path, flow_graph, branch_anchor)
@@ -772,6 +794,16 @@ def build_linearized_state_dag_from_graph(
                     ordered_path=tuple(path.ordered_path),
                 )
             else:
+                if (
+                    branch_anchor is not None
+                    and source_state is not None
+                    and (path.final_state & 0xFFFFFFFF)
+                    == (source_state & 0xFFFFFFFF)
+                    and not _path_has_state_write_at_or_after_block(
+                        path, branch_anchor.block_serial
+                    )
+                ):
+                    continue
                 target_handler_serial = resolve_handler(path.final_state)
                 target_node = (
                     node_by_handler.get(target_handler_serial)
@@ -858,6 +890,15 @@ def _format_anchor(anchor: StateRedirectAnchor) -> str:
 def _format_local_edge(edge: StateLocalEdge) -> str:
     label = edge.kind.name.lower()
     return f"{edge.source_segment_id} -{label}-> {edge.target_segment_id}"
+
+
+def _format_edge_target(edge: StateDagEdge) -> str:
+    if edge.target_state is None:
+        return edge.target_label
+    raw_target = f"0x{edge.target_state:08X}"
+    if edge.target_label == raw_target:
+        return raw_target
+    return f"{raw_target} via {edge.target_label}"
 
 
 def render_linearized_state_dag(dag: LinearizedStateDag) -> str:
@@ -956,7 +997,7 @@ def render_linearized_state_dag(dag: LinearizedStateDag) -> str:
             )
             lines.append(
                 f"    edge {edge.kind.name.lower()} src={_format_anchor(edge.source_anchor)}"
-                f" -> {edge.target_label}{target_entry}{path_suffix}"
+                f" -> {_format_edge_target(edge)}{target_entry}{path_suffix}"
             )
             if edge.target_key is not None and edge.target_key not in rendered:
                 queue.append(edge.target_key)
