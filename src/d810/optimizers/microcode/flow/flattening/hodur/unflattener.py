@@ -1214,16 +1214,19 @@ class HodurUnflattener(GenericUnflatteningRule):
             return 0
 
         # --- Phase 0: backward-resolve dispatcher predecessors ---
+        # DISABLED: backward_resolve does direct MBA manipulation outside
+        # CfgTransactionEngine. All resolution should go through the
+        # backward_pred strategy via the pipeline.
         backward_resolved = 0
-        if bst_result is not None:
-            state_var = getattr(self, "state_machine", None)
-            sv = getattr(state_var, "state_var", None) if state_var else None
-            if sv is not None and sv.t == ida_hexrays.mop_S and sv.s is not None:
-                backward_resolved = self._backward_resolve_dispatcher_preds(
-                    dispatcher_serial, bst_node_blocks, bst_result,
-                    state_var_stkoff=sv.s.off,
-                    state_var_mop=sv,
-                )
+        # if bst_result is not None:
+        #     state_var = getattr(self, "state_machine", None)
+        #     sv = getattr(state_var, "state_var", None) if state_var else None
+        #     if sv is not None and sv.t == ida_hexrays.mop_S and sv.s is not None:
+        #         backward_resolved = self._backward_resolve_dispatcher_preds(
+        #             dispatcher_serial, bst_node_blocks, bst_result,
+        #             state_var_stkoff=sv.s.off,
+        #             state_var_mop=sv,
+        #         )
 
         # --- Diagnostic: dispatcher predecessors BEFORE Phase 1 cleanup ---
         unflat_logger.info(
