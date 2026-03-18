@@ -506,7 +506,8 @@ def build_linearized_state_dag_from_graph(
     _, resolve_handler = _build_state_resolver(report, transition_result, dispatcher)
 
     nodes: list[StateDagNode] = []
-    node_by_handler: dict[int, StateDagNode] = {}
+    primary_node_by_handler: dict[int, StateDagNode] = {}
+    node_by_state: dict[int, StateDagNode] = {}
 
     for row in report.rows:
         node_kind = _node_kind_for_handler(report, row.handler_serial)
@@ -597,7 +598,21 @@ def build_linearized_state_dag_from_graph(
             local_edges=local_edges,
         )
         nodes.append(node)
-        node_by_handler[row.handler_serial] = node
+        primary_node_by_handler.setdefault(row.handler_serial, node)
+        if row.state_const is not None:
+            node_by_state[row.state_const] = node
+
+    def resolve_target_node(
+        target_handler_serial: int | None,
+        target_state: int | None,
+    ) -> StateDagNode | None:
+        if target_state is not None:
+            direct_node = node_by_state.get(target_state & 0xFFFFFFFF)
+            if direct_node is not None:
+                return direct_node
+        if target_handler_serial is None:
+            return None
+        return primary_node_by_handler.get(target_handler_serial)
 
     edges: list[StateDagEdge] = []
     seen_edge_keys: set[
@@ -617,7 +632,7 @@ def build_linearized_state_dag_from_graph(
     )
 
     for state_const, handler in transition_result.handlers.items():
-        source_node = node_by_handler.get(handler.check_block)
+        source_node = primary_node_by_handler.get(handler.check_block)
         if source_node is None:
             continue
         paths = paths_by_handler.get(handler.check_block, ())
@@ -626,11 +641,7 @@ def build_linearized_state_dag_from_graph(
             if transition.is_conditional:
                 continue
             target_handler_serial = resolve_handler(transition.to_state)
-            target_node = (
-                node_by_handler.get(target_handler_serial)
-                if target_handler_serial is not None
-                else None
-            )
+            target_node = resolve_target_node(target_handler_serial, transition.to_state)
             matched_path = _select_path_for_state(paths, transition.to_state)
             ordered_path = (
                 tuple(matched_path.ordered_path) if matched_path is not None else ()
@@ -681,7 +692,7 @@ def build_linearized_state_dag_from_graph(
                 )
 
     for handler_serial, conds in conds_by_handler.items():
-        source_node = node_by_handler.get(handler_serial)
+        source_node = primary_node_by_handler.get(handler_serial)
         if source_node is None:
             continue
         paths = paths_by_handler.get(handler_serial, ())
@@ -697,8 +708,8 @@ def build_linearized_state_dag_from_graph(
                 else None
             )
             target_node = (
-                node_by_handler.get(target_handler_serial)
-                if target_handler_serial is not None
+                resolve_target_node(target_handler_serial, cond.target_state)
+                if not cond.is_terminal_no_write
                 else None
             )
             matched_path = _select_path_for_state(paths, cond.target_state)
@@ -756,7 +767,7 @@ def build_linearized_state_dag_from_graph(
                 )
 
     for handler_serial, paths in paths_by_handler.items():
-        source_node = node_by_handler.get(handler_serial)
+        source_node = primary_node_by_handler.get(handler_serial)
         if source_node is None:
             continue
         for path in paths:
@@ -805,10 +816,8 @@ def build_linearized_state_dag_from_graph(
                 ):
                     continue
                 target_handler_serial = resolve_handler(path.final_state)
-                target_node = (
-                    node_by_handler.get(target_handler_serial)
-                    if target_handler_serial is not None
-                    else None
+                target_node = resolve_target_node(
+                    target_handler_serial, path.final_state
                 )
                 source_anchor = (
                     branch_anchor
@@ -864,6 +873,40 @@ def build_linearized_state_dag_from_graph(
                 continue
             seen_edge_keys.add(edge_key)
             edges.append(edge)
+
+    primary_edges_by_source: dict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
+    for edge in edges:
+        primary_edges_by_source[edge.source_key].append(edge)
+
+    for node in nodes:
+        primary_node = primary_node_by_handler.get(node.handler_serial)
+        if primary_node is None or primary_node.key == node.key:
+            continue
+        for edge in primary_edges_by_source.get(primary_node.key, ()):
+            alias_edge = StateDagEdge(
+                kind=edge.kind,
+                source_key=node.key,
+                target_key=edge.target_key,
+                target_state=edge.target_state,
+                target_entry_anchor=edge.target_entry_anchor,
+                target_label=edge.target_label,
+                source_anchor=edge.source_anchor,
+                ordered_path=edge.ordered_path,
+            )
+            edge_key = (
+                alias_edge.kind,
+                alias_edge.source_key,
+                alias_edge.target_key,
+                alias_edge.target_state,
+                alias_edge.target_entry_anchor,
+                alias_edge.source_anchor.kind,
+                alias_edge.source_anchor.block_serial,
+                alias_edge.source_anchor.branch_arm,
+            )
+            if edge_key in seen_edge_keys:
+                continue
+            seen_edge_keys.add(edge_key)
+            edges.append(alias_edge)
 
     return LinearizedStateDag(
         dispatcher_entry_serial=report.dispatcher_entry_serial,
