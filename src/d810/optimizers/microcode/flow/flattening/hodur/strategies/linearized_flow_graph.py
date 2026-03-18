@@ -782,6 +782,213 @@ class LinearizedFlowGraphStrategy:
                         _uc_resolved, len(uncovered_1way),
                     )
 
+        # -----------------------------------------------------------------
+        # INTERVAL DISPATCHER RESOLUTION
+        #
+        # Walk ALL handler block chains and scan for m_mov #const, %state_var.
+        # Resolve each constant via IntervalDispatcher.lookup() to fill in
+        # gaps that sm.transitions missed (e.g. wrong-branch BST walker bug).
+        # Skips blocks that already have a redirect in `emitted`.
+        # -----------------------------------------------------------------
+        _interval_resolved = 0
+        _id_dispatcher = getattr(bst_result, "dispatcher", None)
+        if _id_dispatcher is not None and mba is not None:
+            # Resolve state variable stkoff (reuse uncovered logic).
+            _id_stkoff: int | None = None
+            _id_detector = snapshot.detector
+            if _id_detector is not None:
+                try:
+                    _id_stkoff = _get_state_var_stkoff(_id_detector)
+                except Exception:
+                    pass
+            if _id_stkoff is None and sm.state_var is not None:
+                try:
+                    if sm.state_var.t == ida_hexrays.mop_S:
+                        _id_stkoff = sm.state_var.s.off
+                except Exception:
+                    pass
+
+            if _id_stkoff is not None:
+                # Build set of handler entry serials to avoid walking into
+                # other handlers' blocks.
+                _id_handler_entries: set[int] = set(handler_state_map.keys())
+
+                for _id_entry_serial in sorted(handler_state_map.keys()):
+                    # Walk the handler's block chain: follow 1-way successors
+                    # until hitting dispatcher, BST node, or another handler.
+                    _id_visited: set[int] = set()
+                    _id_queue: list[int] = [_id_entry_serial]
+
+                    while _id_queue:
+                        _id_blk_serial = _id_queue.pop(0)
+                        if _id_blk_serial in _id_visited:
+                            continue
+                        _id_visited.add(_id_blk_serial)
+
+                        # Skip BST nodes.
+                        if _id_blk_serial in bst_node_blocks:
+                            continue
+
+                        try:
+                            _id_blk = mba.get_mblock(_id_blk_serial)
+                        except (AttributeError, IndexError):
+                            continue
+                        if _id_blk is None:
+                            continue
+
+                        # Check if this block already has a redirect emitted
+                        # from it (any target).
+                        _id_already_redirected = any(
+                            src == _id_blk_serial for src, _ in emitted
+                        )
+
+                        # Scan instructions for m_mov #const, %state_var.
+                        _id_insn = _id_blk.head
+                        while _id_insn is not None:
+                            if _id_insn.opcode == ida_hexrays.m_mov:
+                                _id_d = _id_insn.d
+                                if (
+                                    _id_d is not None
+                                    and _id_d.t == ida_hexrays.mop_S
+                                    and _id_d.s is not None
+                                    and _id_d.s.off == _id_stkoff
+                                    and _id_insn.l is not None
+                                    and _id_insn.l.t == ida_hexrays.mop_n
+                                ):
+                                    _id_const = _id_insn.l.nnn.value
+                                    _id_target = _id_dispatcher.lookup(
+                                        _id_const,
+                                    )
+                                    if (
+                                        _id_target is not None
+                                        and _id_target != _id_blk_serial
+                                        and not _id_already_redirected
+                                    ):
+                                        _id_emit_key = (
+                                            _id_blk_serial,
+                                            _id_target,
+                                        )
+                                        if _id_emit_key not in emitted:
+                                            # Check 1-way conflict.
+                                            _id_nsucc = (
+                                                builder.block_nsucc_map.get(
+                                                    _id_blk_serial, 1,
+                                                )
+                                            )
+                                            if _id_nsucc == 2:
+                                                # 2-way: find dispatcher-bound leg.
+                                                _id_old_target: int | None = None
+                                                _id_from_succs = (
+                                                    builder.block_succ_map.get(
+                                                        _id_blk_serial, (),
+                                                    )
+                                                )
+                                                for _id_s in _id_from_succs:
+                                                    if _id_s in bst_node_blocks:
+                                                        _id_old_target = _id_s
+                                                        break
+                                                if _id_old_target is None:
+                                                    for _id_s in _id_from_succs:
+                                                        if _id_s not in owned_blocks:
+                                                            _id_old_target = _id_s
+                                                            break
+                                                if _id_old_target is None:
+                                                    for _id_s in _id_from_succs:
+                                                        if _id_s in dispatcher_region:
+                                                            _id_old_target = _id_s
+                                                            break
+                                                if _id_old_target is None:
+                                                    for _id_s in _id_from_succs:
+                                                        if _id_s != _id_target:
+                                                            _id_old_target = _id_s
+                                                            break
+                                                if _id_old_target is not None:
+                                                    _id_mod = builder.edge_redirect(
+                                                        source_block=_id_blk_serial,
+                                                        target_block=_id_target,
+                                                        old_target=_id_old_target,
+                                                    )
+                                                    modifications.append(_id_mod)
+                                                    emitted.add(_id_emit_key)
+                                                    owned_edges.add(_id_emit_key)
+                                                    _interval_resolved += 1
+                                                    logger.info(
+                                                        "LFG INTERVAL: resolved "
+                                                        "%s -> %s (const 0x%X, "
+                                                        "2-way old_target=%s)",
+                                                        blk_label(mba, _id_blk_serial),
+                                                        blk_label(mba, _id_target),
+                                                        _id_const,
+                                                        blk_label(mba, _id_old_target),
+                                                    )
+                                            else:
+                                                # 1-way.
+                                                if _id_blk_serial in claimed_1way:
+                                                    if (
+                                                        claimed_1way[_id_blk_serial]
+                                                        != _id_target
+                                                    ):
+                                                        logger.info(
+                                                            "LFG INTERVAL: CONFLICT "
+                                                            "on 1-way %s: already "
+                                                            "-> %s, skipping -> %s "
+                                                            "(const 0x%X)",
+                                                            blk_label(mba, _id_blk_serial),
+                                                            blk_label(
+                                                                mba,
+                                                                claimed_1way[_id_blk_serial],
+                                                            ),
+                                                            blk_label(mba, _id_target),
+                                                            _id_const,
+                                                        )
+                                                else:
+                                                    _id_mod = builder.goto_redirect(
+                                                        source_block=_id_blk_serial,
+                                                        target_block=_id_target,
+                                                    )
+                                                    modifications.append(_id_mod)
+                                                    emitted.add(_id_emit_key)
+                                                    claimed_1way[_id_blk_serial] = (
+                                                        _id_target
+                                                    )
+                                                    owned_edges.add(_id_emit_key)
+                                                    _interval_resolved += 1
+                                                    logger.info(
+                                                        "LFG INTERVAL: resolved "
+                                                        "%s -> %s (const 0x%X)",
+                                                        blk_label(mba, _id_blk_serial),
+                                                        blk_label(mba, _id_target),
+                                                        _id_const,
+                                                    )
+                                                    break  # one redirect per 1-way block
+                            _id_insn = _id_insn.next
+
+                        # Follow successors for chain walking (BFS depth 1
+                        # from entry — follow 1-way successors staying within
+                        # handler ownership, not crossing into other handlers).
+                        try:
+                            _id_nsucc_walk = _id_blk.nsucc()
+                            for _id_si in range(_id_nsucc_walk):
+                                _id_succ = _id_blk.succ(_id_si)
+                                if (
+                                    _id_succ not in _id_visited
+                                    and _id_succ not in bst_node_blocks
+                                    and (
+                                        _id_succ not in _id_handler_entries
+                                        or _id_succ == _id_entry_serial
+                                    )
+                                ):
+                                    _id_queue.append(_id_succ)
+                        except Exception:
+                            pass
+
+            logger.info(
+                "LFG INTERVAL: resolved %d transitions via "
+                "IntervalDispatcher across all handler blocks",
+                _interval_resolved,
+            )
+        resolved_count += _interval_resolved
+
         handlers_visited = len(sm.handlers)
         ownership = OwnershipScope(
             blocks=frozenset(owned_blocks),
@@ -808,6 +1015,7 @@ class LinearizedFlowGraphStrategy:
                 "chain_redirect_count": chain_redirect_count,
                 "exit_resolved_count": exit_resolved_count,
                 "bst_default_count": bst_default_count,
+                "interval_resolved_count": _interval_resolved,
                 "raw_transitions": raw_transition_count,
                 "skipped_count": skipped_count,
                 "range_fallback_count": range_fallback_count,
