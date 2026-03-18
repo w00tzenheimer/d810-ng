@@ -310,15 +310,8 @@ class TopologicalSortStrategy:
             blocks_freed=0,
             conflict_density=0.0,
         )
-        # Mark as applied so subsequent IDA passes at the same maturity skip.
-        if mba is not None:
-            func_ea = mba.entry_ea
-            maturity = mba.maturity
-            TopologicalSortStrategy._applied.add((func_ea, maturity))
-            logger.info(
-                "TopologicalSort: marking func_ea=0x%x maturity=%d as applied",
-                func_ea, maturity,
-            )
+        # NOTE: _applied marking moved to unflattener post-success loop.
+        # Strategies must NOT mark themselves applied during planning.
 
         return PlanFragment(
             strategy_name=self.name,
