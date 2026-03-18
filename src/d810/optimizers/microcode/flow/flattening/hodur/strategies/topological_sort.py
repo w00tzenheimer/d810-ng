@@ -211,9 +211,21 @@ class TopologicalSortStrategy:
         # Pre-compute which blocks are NOT BLT_2WAY and which ARE BLT_2WAY.
         # Non-2WAY blocks are copied directly in Phase A.  2WAY blocks (handler-
         # internal conditionals) get a copy + fallthrough trampoline pair.
+        #
+        # BST comparison nodes are excluded from the 2WAY list even if the
+        # live MBA still shows them as BLT_2WAY: the LFG strategy emits
+        # ConvertToGoto for these blocks (turning them into BLT_1WAY) but
+        # the conversion hasn't been applied yet at planning time.  Treating
+        # them as 2WAY here would create a 1WAY copy with 2 successors,
+        # triggering CFG_50856_BAD_NSUCC violations.
         non_2way_serials: tuple[int, ...] = ()
         two_way_serials: tuple[int, ...] = ()
         mba = snapshot.mba
+        bst_blocks: frozenset[int] = (
+            frozenset(bst_result.bst_node_blocks)
+            if bst_result is not None and bst_result.bst_node_blocks
+            else frozenset()
+        )
         if mba is not None and _BLT_2WAY is not None:
             _non_2way: list[int] = []
             _two_way: list[int] = []
@@ -221,7 +233,7 @@ class TopologicalSortStrategy:
                 blk = mba.get_mblock(s)
                 if blk is None:
                     continue
-                if blk.type == _BLT_2WAY:
+                if blk.type == _BLT_2WAY and s not in bst_blocks:
                     _two_way.append(s)
                 else:
                     _non_2way.append(s)

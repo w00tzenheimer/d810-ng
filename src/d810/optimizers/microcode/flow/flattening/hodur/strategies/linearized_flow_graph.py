@@ -687,6 +687,108 @@ class LinearizedFlowGraphStrategy:
                         has_trans,
                     )
 
+                # -------------------------------------------------------------
+                # UNCOVERED DISPATCHER PREDECESSOR RESOLUTION
+                #
+                # For each uncovered 1-way dispatcher predecessor, scan its
+                # instructions for ``m_mov #const, %state_var``.  Resolve the
+                # constant via BST to find the target handler entry, then emit
+                # a goto_redirect to wire the block directly to the handler.
+                # -------------------------------------------------------------
+                uncovered_1way = [
+                    (pred, nsucc, npred, succs, has_trans)
+                    for pred, nsucc, npred, succs, has_trans in uncovered
+                    if nsucc == 1
+                ]
+                if uncovered_1way and mba is not None:
+                    # Resolve state variable stkoff.
+                    _uc_stkoff: int | None = None
+                    _uc_detector = snapshot.detector
+                    if _uc_detector is not None:
+                        try:
+                            _uc_stkoff = _get_state_var_stkoff(_uc_detector)
+                        except Exception:
+                            pass
+                    if _uc_stkoff is None and sm.state_var is not None:
+                        try:
+                            if sm.state_var.t == ida_hexrays.mop_S:
+                                _uc_stkoff = sm.state_var.s.off
+                        except Exception:
+                            pass
+
+                    _uc_dispatcher = getattr(bst_result, "dispatcher", None)
+                    _uc_resolved = 0
+
+                    if _uc_stkoff is not None:
+                        for uc_serial, _, _, _, _ in uncovered_1way:
+                            try:
+                                blk = mba.get_mblock(uc_serial)
+                            except (AttributeError, IndexError):
+                                continue
+                            if blk is None:
+                                continue
+
+                            # Scan instructions for m_mov #const, %state_var.
+                            insn = blk.head
+                            while insn is not None:
+                                if insn.opcode == ida_hexrays.m_mov:
+                                    d = insn.d
+                                    if (
+                                        d is not None
+                                        and d.t == ida_hexrays.mop_S
+                                        and d.s is not None
+                                        and d.s.off == _uc_stkoff
+                                        and insn.l is not None
+                                        and insn.l.t == ida_hexrays.mop_n
+                                    ):
+                                        const_val = insn.l.nnn.value
+                                        target = resolve_target_via_bst(
+                                            bst_result, const_val,
+                                        )
+                                        if target is None and _uc_dispatcher is not None:
+                                            target = _uc_dispatcher.lookup(const_val)
+                                        if target is not None and target != uc_serial:
+                                            emit_key = (uc_serial, target)
+                                            if emit_key not in emitted:
+                                                # Check claimed_1way conflict.
+                                                if uc_serial in claimed_1way:
+                                                    if claimed_1way[uc_serial] != target:
+                                                        logger.info(
+                                                            "LFG UNCOVERED: CONFLICT on "
+                                                            "1-way %s: already -> %s, "
+                                                            "skipping -> %s (const 0x%X)",
+                                                            blk_label(mba, uc_serial),
+                                                            blk_label(mba, claimed_1way[uc_serial]),
+                                                            blk_label(mba, target),
+                                                            const_val,
+                                                        )
+                                                else:
+                                                    mod = builder.goto_redirect(
+                                                        source_block=uc_serial,
+                                                        target_block=target,
+                                                    )
+                                                    modifications.append(mod)
+                                                    emitted.add(emit_key)
+                                                    claimed_1way[uc_serial] = target
+                                                    owned_edges.add((uc_serial, target))
+                                                    resolved_count += 1
+                                                    _uc_resolved += 1
+                                                    logger.info(
+                                                        "LFG UNCOVERED: resolved %s -> %s "
+                                                        "(const 0x%X)",
+                                                        blk_label(mba, uc_serial),
+                                                        blk_label(mba, target),
+                                                        const_val,
+                                                    )
+                                                break  # one redirect per block
+                                insn = insn.next
+
+                    logger.info(
+                        "LFG UNCOVERED: resolved %d of %d uncovered "
+                        "1-way dispatcher predecessors",
+                        _uc_resolved, len(uncovered_1way),
+                    )
+
         handlers_visited = len(sm.handlers)
         ownership = OwnershipScope(
             blocks=frozenset(owned_blocks),
