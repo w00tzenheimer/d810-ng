@@ -114,7 +114,8 @@ __all__ = [
 ALL_STRATEGIES: list[type] = [
     LinearizedFlowGraphStrategy,
     HiddenHandlerClosureStrategy,
-    TopologicalSortStrategy,
+    # DISCRIMINATOR TEST: topo disabled
+    # TopologicalSortStrategy,
     BackwardPredResolutionStrategy,
 ]
 
