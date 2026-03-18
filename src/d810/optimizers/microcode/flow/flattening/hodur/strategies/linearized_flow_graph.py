@@ -36,9 +36,6 @@ from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     blk_label,
     evaluate_handler_paths,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort import (
-    TopologicalSortStrategy,
-)
 from d810.recon.flow.bst_analysis import resolve_via_bst_walk
 from d810.recon.flow.bst_model import resolve_target_via_bst
 from d810.recon.flow.transition_builder import _get_state_var_stkoff
@@ -430,18 +427,11 @@ class LinearizedFlowGraphStrategy:
         )
         resolved_count += exit_resolved_count
 
-        # Mark as applied BEFORE BST-default discovery so that a crash
-        # inside _discover_bst_default_transitions does not cause
-        # redundant retries on subsequent IDA callbacks.
+        # NOTE: _applied marking moved to unflattener post-success loop.
+        # Strategies must NOT mark themselves applied during planning —
+        # if the fragment later gate-fails, standalone strategies would
+        # be incorrectly suppressed.
         mba = snapshot.mba
-        if mba is not None:
-            func_ea = mba.entry_ea
-            maturity = mba.maturity
-            type(self)._applied.add((func_ea, maturity))
-            logger.info(
-                "LFG: marking func 0x%X maturity=%d as applied",
-                func_ea, maturity,
-            )
 
         # -----------------------------------------------------------------
         # 1c. Discover transitions through BST default blocks via DFS
@@ -792,38 +782,6 @@ class LinearizedFlowGraphStrategy:
                         _uc_resolved, len(uncovered_1way),
                     )
 
-        # -----------------------------------------------------------------
-        # 5. Inline topological sort: compute DFS block reorder and append
-        #    to this PlanFragment so LFG redirects + topo reorder are
-        #    applied atomically, avoiding cross-strategy projected
-        #    contract conflicts.
-        # -----------------------------------------------------------------
-        topo_inlined = False
-        try:
-            # DISCRIMINATOR TEST: topo disabled
-            # reorder = TopologicalSortStrategy.compute_reorder_blocks(snapshot)
-            reorder = None
-            if reorder is not None:
-                modifications.append(reorder)
-                topo_inlined = True
-                logger.info(
-                    "LFG: inlined topological sort (%d blocks in DFS order)",
-                    len(reorder.dfs_block_order),
-                )
-                # Mark topo as applied so standalone TopologicalSortStrategy
-                # skips this function/maturity if it runs later.
-                if mba is not None:
-                    TopologicalSortStrategy._applied.add(
-                        (mba.entry_ea, mba.maturity),
-                    )
-            else:
-                logger.info("LFG: topological sort returned None, skipping inline")
-        except Exception:
-            logger.warning(
-                "LFG: topological sort inline failed, continuing without reorder",
-                exc_info=True,
-            )
-
         handlers_visited = len(sm.handlers)
         ownership = OwnershipScope(
             blocks=frozenset(owned_blocks),
@@ -858,7 +816,6 @@ class LinearizedFlowGraphStrategy:
                 "goto_nop_count": goto_nop_count,
                 "goto_skip_count": goto_skip_count,
                 "nop_state_values": nop_state_values,
-                "topo_inlined": topo_inlined,
             },
         )
 

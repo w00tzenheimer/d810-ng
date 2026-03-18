@@ -418,6 +418,21 @@ class HodurUnflattener(GenericUnflatteningRule):
             )
         self._last_provenance = provenance
 
+        # Mark strategies as applied only AFTER successful execution.
+        # This prevents gate-failed fragments from suppressing standalone
+        # strategies on subsequent IDA callbacks.
+        func_ea = self.mba.entry_ea
+        maturity = self.cur_maturity
+        for frag, result in zip(pipeline, results):
+            if result.success and result.edits_applied > 0:
+                for strategy in self._strategies:
+                    if strategy.name == frag.strategy_name and hasattr(strategy, '_applied'):
+                        strategy._applied.add((func_ea, maturity))
+                        unflat_logger.info(
+                            "Marking strategy %s as applied for func 0x%X maturity=%d",
+                            strategy.name, func_ea, maturity,
+                        )
+
         # Record planner outcome via flow context callback
         if self.flow_context is not None and hasattr(self.flow_context, 'report_outcome'):
             self.flow_context.report_outcome(provenance, "planner")
