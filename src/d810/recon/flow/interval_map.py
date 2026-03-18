@@ -10,7 +10,10 @@ from __future__ import annotations
 from bisect import bisect_right
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from d810.core.logging import getLogger
 from d810.core.typing import Any
+
+logger = getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -203,32 +206,32 @@ def emit_dispatch_intervals(
                 k = node.imm
                 yes_mask = Interval(U32_MIN, k + 1)
                 no_mask = Interval(k + 1, U32_MAX_EXCL)
-                _recurse_child(node.yes, feasible, yes_mask, "JBE/yes")
-                _recurse_child(node.no, feasible, no_mask, "JBE/no")
+                _recurse_child(node.yes, feasible, yes_mask, "JBE/yes", node)
+                _recurse_child(node.no, feasible, no_mask, "JBE/no", node)
 
             case NodeKind.JA:
                 assert node.imm is not None
                 k = node.imm
                 yes_mask = Interval(k + 1, U32_MAX_EXCL)
                 no_mask = Interval(U32_MIN, k + 1)
-                _recurse_child(node.yes, feasible, yes_mask, "JA/yes")
-                _recurse_child(node.no, feasible, no_mask, "JA/no")
+                _recurse_child(node.yes, feasible, yes_mask, "JA/yes", node)
+                _recurse_child(node.no, feasible, no_mask, "JA/no", node)
 
             case NodeKind.JB:
                 assert node.imm is not None
                 k = node.imm
                 yes_mask = Interval(U32_MIN, k)
                 no_mask = Interval(k, U32_MAX_EXCL)
-                _recurse_child(node.yes, feasible, yes_mask, "JB/yes")
-                _recurse_child(node.no, feasible, no_mask, "JB/no")
+                _recurse_child(node.yes, feasible, yes_mask, "JB/yes", node)
+                _recurse_child(node.no, feasible, no_mask, "JB/no", node)
 
             case NodeKind.JAE:
                 assert node.imm is not None
                 k = node.imm
                 yes_mask = Interval(k, U32_MAX_EXCL)
                 no_mask = Interval(U32_MIN, k)
-                _recurse_child(node.yes, feasible, yes_mask, "JAE/yes")
-                _recurse_child(node.no, feasible, no_mask, "JAE/no")
+                _recurse_child(node.yes, feasible, yes_mask, "JAE/yes", node)
+                _recurse_child(node.no, feasible, no_mask, "JAE/no", node)
 
             case NodeKind.JNZ:
                 # Equality match → emit point interval; inequality → yes child
@@ -244,6 +247,14 @@ def emit_dispatch_intervals(
                     remainder.extend(iv.subtract_point(k))
                 if node.yes is not None:
                     _dfs(node.yes, remainder)
+                elif remainder:
+                    for iv in remainder:
+                        out.append(EmittedRange(iv, node.block_serial, "INTERVAL_DEFAULT"))
+                    logger.info(
+                        "JNZ node imm=0x%X: yes child is None, emitting %d "
+                        "INTERVAL_DEFAULT remainder intervals → blk_serial=%d",
+                        k, len(remainder), node.block_serial,
+                    )
 
             case NodeKind.JZ:
                 # Equality match → emit point interval; inequality → no child
@@ -259,19 +270,36 @@ def emit_dispatch_intervals(
                     remainder2.extend(iv.subtract_point(k))
                 if node.no is not None:
                     _dfs(node.no, remainder2)
+                elif remainder2:
+                    for iv in remainder2:
+                        out.append(EmittedRange(iv, node.block_serial, "INTERVAL_DEFAULT"))
+                    logger.info(
+                        "JZ node imm=0x%X: no child is None, emitting %d "
+                        "INTERVAL_DEFAULT remainder intervals → blk_serial=%d",
+                        k, len(remainder2), node.block_serial,
+                    )
 
     def _recurse_child(
         child: Node | None,
         feasible: list[Interval],
         mask: Interval,
         label: str,
+        parent: Node | None = None,
     ) -> None:
-        if child is None:
-            return
         clipped = [iv.intersect(mask) for iv in feasible]
         valid = [iv for iv in clipped if iv is not None]
-        if valid:
+        if not valid:
+            return
+        if child is not None:
             _dfs(child, valid)
+        elif parent is not None:
+            for iv in valid:
+                out.append(EmittedRange(iv, parent.block_serial, "INTERVAL_DEFAULT"))
+            logger.info(
+                "%s child is None, emitting %d INTERVAL_DEFAULT "
+                "intervals → blk_serial=%d",
+                label, len(valid), parent.block_serial,
+            )
 
     initial = [domain]
     _dfs(root, initial)
