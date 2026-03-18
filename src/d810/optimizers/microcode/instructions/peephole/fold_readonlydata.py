@@ -296,11 +296,12 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             # ------------------------------------------------------------ #
             ea = self._ea_from_simple_mov_load(ins)
 
-        if ea is None:
-            # Fallback: use the microcode emulator to evaluate complex address
-            # expressions that pattern-based resolvers can't match, e.g.,
-            # ldx ds, add(&byte_TABLE, xds(xdu(const & 0xF) + 0x60))
-            ea = self._try_emulator_eval_address(ins, blk)
+        # TODO(perf): emulator fallback disabled — too slow without caching.
+        # Each call instantiates a new MicroCodeInterpreter. For AntiDebug
+        # with 160+ byte_TABLE refs, this grinds at 100% CPU for 27+ minutes.
+        # Needs per-pass interpreter reuse or expression-level caching.
+        # if ea is None:
+        #     ea = self._try_emulator_eval_address(ins, blk)
 
         if ea is None:
             # Quick pre-check: skip instructions that cannot possibly contain
