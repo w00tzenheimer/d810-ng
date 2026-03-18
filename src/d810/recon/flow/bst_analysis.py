@@ -1865,6 +1865,8 @@ def analyze_bst_dispatcher(
         )
         dispatcher = None
     result.dispatcher = dispatcher
+    if dispatcher is not None:
+        logger.info("INTERVAL_DISPATCHER_ROWS: %s", dispatcher.to_json())
 
     # Back-fill handler_state_map from IntervalDispatcher for handlers
     # missed by legacy walk (e.g., JNZ taken branches with range_is_pair=False)
