@@ -18,8 +18,8 @@ Usage (from IDA Python or via headless script):
 
 from __future__ import annotations
 
-import json
 import importlib
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -40,7 +40,7 @@ from d810.hexrays.utils.hexrays_helpers import (
     BlockType,
     MicrocodeBasicBlockFlag,
     ShowInstructionsFlags,
-    SideEffectFlags,
+    UseDefFlags,
 )
 from d810.recon.flow.bst_analysis import (
     _detect_state_var_stkoff,
@@ -53,7 +53,6 @@ from d810.recon.flow.linearized_state_dag import (
 )
 from d810.recon.flow.transition_report import (
     TransitionKind,
-    TransitionRow,
     build_dispatcher_transition_report,
 )
 
@@ -547,6 +546,200 @@ def _clean_insn_str(raw) -> str:
     ).rstrip()
 
 
+def _clean_insn_str(raw: Optional[str]) -> str:
+    if raw is None:
+        return "<none>"
+    return "".join(c if 0x20 <= ord(c) <= 0x7E else " " for c in str(raw)).rstrip()
+
+
+def _print_list_pair(label: str, must, may=None) -> Optional[str]:
+    """Mimic C++ print_list(vec, label, must, may)."""
+    must_s = _mlist_dstr(must)
+    may_s = _mlist_dstr(may) if may is not None else ""
+
+    if not must_s and not may_s:
+        return None
+
+    if not may_s or may_s == must_s:
+        return f"; {label}: {must_s}"
+
+    # must and may differ → show may in parens
+    if must_s:
+        return f"; {label}: {must_s},({may_s})"
+    return f"; {label}: ({may_s})"
+
+
+def _print_use_def_dnu(line: List[str], blk: idaapi.mblock_t) -> None:
+    """Append USE/DEF/DNU lines to *line*, matching C++ print_list calls."""
+    s = _print_list_pair("USE", blk.mustbuse, blk.maybuse)
+    if s:
+        line.append(s)
+    s = _print_list_pair("DEF", blk.mustbdef, blk.maybdef)
+    if s:
+        line.append(s)
+    # DNU has no may variant in C++
+    dnu_s = _mlist_dstr(blk.dnu)
+    if dnu_s:
+        line.append(f"; DNU: {dnu_s}")
+
+
+def _print_stack_frame_overview(hdr: List[str], mba: idaapi.mba_t) -> None:
+    """Append stack frame overview lines to *hdr*."""
+    hdr.append(
+        f"; STKD={mba.tmpstk_size:X}"
+        f" MINREF={mba.minstkref:X}/END={mba.stacksize:X}"
+        f" ARGS: OFF={mba.inargoff:X}/MINREF={mba.minargref:X}"
+        f"/END={mba.fullsize:X}/SHADOW={mba.shadow_args:X}"
+    )
+    # SAVEDREGS (if procinf is exposed)
+    procinf = getattr(mba, "procinf", None)
+    if procinf is not None:
+        sregs = getattr(procinf, "sregs", None)
+        if sregs and len(sregs) > 0:
+            parts = []
+            slotsize = getattr(mba, "slotsize", None)
+            for idx, sr in enumerate(sregs):
+                if slotsize is not None:
+                    rl = idaapi.rlist_t(sr, slotsize())
+                    parts.append(rl.dstr())
+                else:
+                    parts.append(str(sr))
+            hdr.append(f"; SAVEDREGS: {','.join(parts)}")
+
+
+def _print_block_header(i: int, blk: idaapi.mblock_t, mba: idaapi.mba_t) -> list[str]:
+    """Append block header lines to *line*, matching C++ print_block_header calls."""
+    serial = blk.serial
+    start_ea = blk.start
+    end_ea = blk.end
+    block_type = BlockType(blk.type)
+    type_name = BLT_NAMES[block_type.value]
+    flags = blk.flags
+
+    preds = _collect_bitset(blk.predset)
+    succs = _collect_bitset(blk.succset)
+
+    preds_sorted = [str(p) for p in sorted(preds)] if preds else []
+    succs_sorted = [str(s) for s in sorted(succs)] if succs else []
+
+    # Stack frame info on block 0
+    label = "Successors" if serial == 0 else "Predecessors"
+    items = succs_sorted if serial == 0 else preds_sorted
+
+    hdr = [f"{i}.{type_name:<60} ; {label}: {', '.join(items)}"]
+
+    # Block header line
+    # Stack frame info on block 0
+    # ---- Block 0: STKD / frame overview ----
+    if serial == 0:
+        _print_stack_frame_overview(hdr, mba)
+
+    flags_str = MicrocodeBasicBlockFlag.block_header_flags_str(flags)
+
+    # INBOUNDS / OUTBOUNDS
+    inbounds = ""
+    if preds_sorted:
+        inbounds = " INBOUNDS: " + " ".join(preds_sorted)
+    outbounds = ""
+    if succs_sorted:
+        outbounds = " OUTBOUNDS: " + " ".join(succs_sorted)
+
+    hdr.append(
+        f"; {block_type.display_name}-BLOCK {serial}{flags_str}"
+        f"{inbounds}{outbounds}"
+        f" [START={start_ea:X} END={end_ea:X}]"
+        f" MINREFS: STK={blk.minbstkref:X}/ARG={blk.minbargref:X},"
+        f" MAXBSP: {blk.maxbsp:X}"
+    )
+
+    # NOTE: C++ also prints SUBFRAME info when EXTFRAME is set,
+    # but mba_t.subframes is not exposed in the Python bindings
+
+    # ---- USE / DEF / DNU liveness sets ----
+    lists_ok = getattr(blk, "lists_ready", lambda: True)()
+    if lists_ok:
+        _print_use_def_dnu(hdr, blk)
+    else:
+        hdr.append("; USE-DEF LISTS ARE NOT READY")
+
+    # ---- VALRANGES ----
+    vr_records = collect_block_valrange_records(blk)
+    if vr_records:
+        hdr.append(f"; VALRANGES: {', '.join(str(r) for r in vr_records)}")
+
+    return hdr
+
+
+def _collect_block_instructions(blk: idaapi.mblock_t) -> List[idaapi.minsn_t]:
+    """Collect all instructions in a block."""
+    insns = []
+    ins: idaapi.minsn_t = blk.head
+    while ins is not None:
+        insns.append(ins)
+        ins = ins.next
+    return insns
+
+
+def _print_use_list(blk: idaapi.mblock_t, ins: idaapi.minsn_t, frsize: int) -> str:
+    """Build the '; EA u=... d=...' suffix for one instruction, matching C++ print_insn_usedef."""
+    # ---- USE ----
+    may_use = blk.build_use_list(ins, UseDefFlags.MAY_ACCESS)
+    must_use = blk.build_use_list(ins, UseDefFlags.MUST_ACCESS)
+
+    must_use_s = _fix_var_names(must_use.dstr(), frsize) if not must_use.empty() else ""
+
+    if may_use == must_use:
+        use_str = f"u={must_use_s:<10}"
+    else:
+        may_use.sub(must_use)  # may -= must  (leaves the "may-only" part)
+        may_only_s = (
+            _fix_var_names(may_use.dstr(), frsize) if not may_use.empty() else ""
+        )
+        sep = "," if not must_use.empty() else ""
+        use_str = f"u={must_use_s}{sep}({may_only_s})"
+    return use_str
+
+
+def _print_def_list(blk: idaapi.mblock_t, ins: idaapi.minsn_t, frsize: int) -> str:
+    # ---- DEF ----
+    may_def = blk.build_def_list(ins, UseDefFlags.MAY_ACCESS)
+    if may_def.empty():
+        return ""
+
+    must_def = blk.build_def_list(ins, UseDefFlags.MUST_ACCESS)
+    must_def_s = _fix_var_names(must_def.dstr(), frsize) if not must_def.empty() else ""
+    def_str = f" d={must_def_s}"
+    if may_def == must_def:
+        return def_str
+
+    sep = ""
+    if not must_def.empty():
+        sep = ","
+        may_def.sub(must_def)  # may -= must
+
+    may_only_s = _fix_var_names(may_def.dstr(), frsize) if not may_def.empty() else ""
+    def_str += f"{sep}({may_only_s})"
+
+    # pass regs: may_only - may_excluding_pass
+    pd = may_def
+    may_no_pass = blk.build_def_list(
+        ins, UseDefFlags.MAY_ACCESS | UseDefFlags.EXCLUDE_PASS_REGS
+    )
+    pd.sub(may_no_pass)
+    if not pd.empty():
+        pd_s = _fix_var_names(pd.dstr(), frsize) if not pd.empty() else ""
+        def_str += f",pass={pd_s}"
+    return def_str
+
+
+def _print_insn_usedef(blk: idaapi.mblock_t, ins: idaapi.minsn_t, frsize: int) -> str:
+    """Build the '; EA u=... d=...' suffix for one instruction, matching C++ print_insn_usedef."""
+
+    use_str = _print_use_list(blk, ins, frsize)
+    def_str = _print_def_list(blk, ins, frsize)
+    return f"{use_str}{def_str}"
+
+
 def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
     """Convert an mbl_array_t to a list of strings in IDA's native human-readable microcode format.
 
@@ -564,8 +757,7 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
     Returns:
         A list of strings in IDA's native human-readable microcode format.
     """
-    entry_ea = getattr(mba, "entry_ea", 0)
-    maturity = getattr(mba, "maturity", 0)
+    maturity = mba.maturity
 
     # frsize is needed to convert %var_XX.N -> sp+0xOFF.N
     _frsize: int = getattr(mba, "stacksize", 0) or getattr(mba, "frsize", 0) or 0
@@ -577,9 +769,7 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
     # Flag constants
 
     _PRINT_FLAGS = (
-        ShowInstructionsFlags.SHINS_SHORT
-        | ShowInstructionsFlags.SHINS_VALNUM
-        | ShowInstructionsFlags.SHINS_NUMADDR
+        ShowInstructionsFlags.SHINS_VALNUM | ShowInstructionsFlags.SHINS_NUMADDR
     )
     """
         
@@ -615,111 +805,23 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
             continue
         serial = blk.serial
 
-        start_ea = blk.start
-        end_ea = blk.end
-        block_type = BlockType(blk.type)
-        type_name = BLT_NAMES[block_type.value]
-        flags = blk.flags
-
-        preds = _collect_bitset(blk.predset)
-        succs = _collect_bitset(blk.succset)
-
-        preds_sorted = [str(p) for p in sorted(preds)] if preds else []
-        succs_sorted = [str(s) for s in sorted(succs)] if succs else []
-
-        label = "Successors" if serial == 0 else "Predecessors"
-        items = succs_sorted if serial == 0 else preds_sorted
-
-        line = [f"{i}.{type_name:<60} ; {label}: {', '.join(items)}"]
-
-        if serial == 0:
-            _stkd_parts = []
-            _inargoff = mba.inargoff
-            _minargref = mba.minargref
-            _shadow_args = mba.shadow_args
-            _stkd_extra = []
-            if _inargoff is not None:
-                _stkd_extra.append(f"ARGS: OFF={_inargoff:X}/")
-            if _minargref is not None:
-                _stkd_extra.append(f"MINREF={_minargref:X}/")
-                _stkd_extra.append(f"END={mba.fullsize:X}/")
-            if _shadow_args is not None:
-                _stkd_extra.append(f"SHADOW={_shadow_args:X}/")
-            for _attr in ("pfn_flags", "stacksize", "frsize", "argsize", "tmpstk_size"):
-                _val = getattr(mba, _attr, None)
-                if _val is not None:
-                    _stkd_parts.append(f"{_attr}={_val:X} ")
-            line.append(f"; STKD=0 {' '.join(_stkd_extra + _stkd_parts)}")
-
-        is_fake = "FAKE" if flags & MicrocodeBasicBlockFlag.FAKE else ""
-        inbounds = f"INBOUNDS: {' '.join(preds_sorted)}" if preds_sorted else ""
-        outbounds = f"OUTBOUNDS: {' '.join(succs_sorted)}" if succs_sorted else ""
-
-        line.append(
-            f"; {block_type.name}-BLOCK {serial} {is_fake} {inbounds} {outbounds} [START={start_ea:X} END={end_ea:X}] MINREFS: STK={blk.minbstkref:X}/ARG={blk.minbargref:X}, MAXBSP: {blk.maxbsp:X}"
-        )
-
-        def_must = _mlist_dstr(blk.mustbdef)
-        dnu = _mlist_dstr(blk.dnu)
-        use_must = _mlist_dstr(blk.mustbuse)
-        use_may = _mlist_dstr(blk.maybuse)
-        def_may = _mlist_dstr(blk.maybdef)
-
-        def _paren_if_multi(s: str) -> str:
-            return f"({s})" if "," in s else s
-
-        use_parts = []
-        if use_must:
-            use_parts.append(use_must)
-        if use_may and use_may != use_must:
-            use_parts.append(use_may)
-        use_str = ", ".join(use_parts)
-
-        def_parts = [def_must] if def_must else []
-        if def_may and def_may != def_must:
-            def_parts.append(def_may)
-        def_str = ", ".join(def_parts)
-
-        line.append(f"; USE: {_paren_if_multi(use_str)}")
-        line.append(f"; DEF: {_paren_if_multi(def_str)}")
-        line.append(f"; DNU: {_paren_if_multi(dnu)}")
-
-        vr_records = collect_block_valrange_records(blk)
-        if vr_records:
-            line.append(
-                f"; VALRANGES: {', '.join(str(record) for record in vr_records)}"
-            )
-
-        insns = []
-        ins: idaapi.minsn_t = blk.head
-        while ins is not None:
-            insns.append(ins)
-            ins = ins.next
+        line = _print_block_header(i, blk, mba)
+        # Collect instructions
+        insns = _collect_block_instructions(blk)
 
         # Per-instruction use/def lists
 
         for insn_idx, ins in enumerate(insns, start=1):
             ea = ins.ea
-            try:
-                insn_str = _clean_insn_str(ins._print(_PRINT_FLAGS))
-            except Exception:
-                try:
-                    insn_str = _clean_insn_str(ins._print())
-                except Exception as exc:
-                    insn_str = f"<error: {exc}>"
+            insn_str = _clean_insn_str(ins._print(_PRINT_FLAGS))
+            if insn_idx == 1:
+                minst_str, _, mop_str = insn_str.partition(" ")
+                mop_str = re.sub("\s+", " ", mop_str)
+                insn_str = f"{minst_str:<7} {mop_str}"
             insn_str = _fix_block_refs(insn_str)
             insn_str = _fix_var_names(insn_str, _frsize)
 
-            ins_use = ""
-            ins_def = ""
-            must_use_ml = blk.build_use_list(ins, idaapi.MUST_ACCESS)
-            ins_use = must_use_ml.dstr() if not must_use_ml.empty() else ""
-
-            must_def_ml = blk.build_def_list(ins, idaapi.MUST_ACCESS)
-            ins_def = must_def_ml.dstr() if not must_def_ml.empty() else ""
-
-            ins_use = _fix_var_names(ins_use, _frsize)
-            ins_def = _fix_var_names(ins_def, _frsize)
+            usedef = _print_insn_usedef(blk, ins, _frsize)
 
             ins_vr = ""
             try:
@@ -730,8 +832,8 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
                 pass
 
             ea_str = f"{ea:016X}"
-            suffix = f" ; {ea_str} u={ins_use} d={ins_def}{ins_vr}"
-            line.append(f"  {serial}.{insn_idx - 1:<4} {insn_str:<50}{suffix}")
+            suffix = f" ; {ea_str} {usedef}{ins_vr}"
+            line.append(f"  {serial}.{insn_idx - 1:<4} {insn_str}{suffix}")
         as_str.append("\n".join(line))
 
     return as_str

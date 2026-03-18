@@ -392,6 +392,15 @@ class BlockType(enum.IntEnum):
 
     XTRN = ida_hexrays.BLT_XTRN
     """external block (out of function address)"""
+    
+    @property
+    def display_name(self) -> str:
+        mapping = {
+            BlockType.WAY0: "0WAY",
+            BlockType.WAY1: "1WAY",
+            BlockType.WAY2: "2WAY",
+        }
+        return mapping.get(self, self.name)
 
 
 BLT_NAMES: dict[int, str] = {
@@ -539,6 +548,36 @@ class MicrocodeBasicBlockFlag(enum.IntEnum):
     """an inlined block with an external frame"""
 
 
+    @classmethod
+    def block_header_flags_str(cls, flags: int) -> str:
+        """Return the flag suffix string for a block header, matching C++ order.
+
+        Example::
+
+            >>> MicrocodeBasicBlockFlag.block_header_flags_str(0x0084)
+            ' TAILCALL FAKE'
+        """
+    
+        _HEADER_FLAGS: list = [
+            ("DSLOT", "DSLOT"),
+            ("NORET", "NORET"),
+            ("PROP", "PROP"),
+            ("COMB", "COMB"),
+            ("PUSH", "PUSH"),
+            ("TCAL", "TAILCALL"),
+            ("FAKE", "FAKE"),
+            ("KEEP", "KEEP"),
+            ("INLINED", "INLINED"),
+            ("EXTFRAME", "EXTFRAME"),
+            # print? MBL_GOTO MBL_DMT64 MBL_DEAD MBL_BACKPROP
+        ]        
+        return "".join(
+            f" {display}"
+            for member_name, display in _HEADER_FLAGS
+            if flags & getattr(cls, member_name)
+        )
+
+
 class FuncFlags(enum.IntFlag):
     """
     Flags used to describe properties of functions.
@@ -616,6 +655,23 @@ class FuncFlags(enum.IntFlag):
 
     RESERVED = 0x8000000000000000
     """Reserved (for internal usage)"""
+
+
+class UseDefFlags(enum.IntEnum):
+    MUST_ACCESS           = idaapi.MUST_ACCESS
+    MAY_ACCESS            = idaapi.MAY_ACCESS
+    MAYMUST_ACCESS_MASK   = idaapi.MAYMUST_ACCESS_MASK
+    ONE_ACCESS_TYPE       = idaapi.ONE_ACCESS_TYPE
+    INCLUDE_SPOILED_REGS  = idaapi.INCLUDE_SPOILED_REGS
+    EXCLUDE_PASS_REGS     = idaapi.EXCLUDE_PASS_REGS
+    FULL_XDSU             = idaapi.FULL_XDSU
+    WITH_ASSERTS          = idaapi.WITH_ASSERTS
+    EXCLUDE_VOLATILE      = idaapi.EXCLUDE_VOLATILE
+    INCLUDE_UNUSED_SRC    = idaapi.INCLUDE_UNUSED_SRC
+    INCLUDE_DEAD_RETREGS  = idaapi.INCLUDE_DEAD_RETREGS
+    INCLUDE_RESTRICTED    = idaapi.INCLUDE_RESTRICTED
+    CALL_SPOILS_ONLY_ARGS = idaapi.CALL_SPOILS_ONLY_ARGS
+
 
 
 # Hex-Rays mop equality checking
