@@ -102,33 +102,42 @@ class TopologicalSortStrategy:
         return True
 
     # ------------------------------------------------------------------
-    # Plan
+    # Core reorder logic (static, reusable from LFG)
     # ------------------------------------------------------------------
 
-    def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
-        """Produce a PlanFragment with a single ReorderBlocks modification.
+    @staticmethod
+    def compute_reorder_blocks(
+        snapshot: AnalysisSnapshot,
+    ) -> ReorderBlocks | None:
+        """Compute a :class:`ReorderBlocks` modification from the snapshot.
 
-        DFS traversal from initial_state through sm.transitions to collect
-        handler body blocks in linearized order.
+        DFS traversal from ``initial_state`` through ``sm.transitions``
+        to collect handler body blocks in linearized order.  The result
+        can be appended to any strategy's modification list.
 
         Args:
             snapshot: Immutable analysis snapshot for the current function.
 
         Returns:
-            A PlanFragment with a ReorderBlocks modification, or None
-            when the strategy has nothing to contribute.
+            A :class:`ReorderBlocks` instance, or ``None`` when there is
+            nothing to reorder.
         """
-        if not self.is_applicable(snapshot):
+        sm = snapshot.state_machine
+        if sm is None or not sm.handlers:
+            return None
+        if sm.initial_state is None:
             return None
 
-        sm = snapshot.state_machine
-        assert sm is not None
         bst_result = snapshot.bst_result
-        assert bst_result is not None
+        if bst_result is None:
+            return None
 
         handler_state_map: dict[int, int] = getattr(
             bst_result, "handler_state_map", {}
         ) or {}
+        if not handler_state_map:
+            return None
+
         range_map: dict[int, tuple[int | None, int | None]] = getattr(
             bst_result, "handler_range_map", {}
         ) or {}
@@ -255,6 +264,38 @@ class TopologicalSortStrategy:
             len(visited_states),
         )
 
+        return ReorderBlocks(
+            dfs_block_order=tuple(dfs_block_order),
+            non_2way_serials=non_2way_serials,
+            two_way_serials=two_way_serials,
+        )
+
+    # ------------------------------------------------------------------
+    # Plan
+    # ------------------------------------------------------------------
+
+    def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
+        """Produce a PlanFragment with a single ReorderBlocks modification.
+
+        DFS traversal from initial_state through sm.transitions to collect
+        handler body blocks in linearized order.
+
+        Args:
+            snapshot: Immutable analysis snapshot for the current function.
+
+        Returns:
+            A PlanFragment with a ReorderBlocks modification, or None
+            when the strategy has nothing to contribute.
+        """
+        if not self.is_applicable(snapshot):
+            return None
+
+        reorder = self.compute_reorder_blocks(snapshot)
+        if reorder is None:
+            return None
+
+        mba = snapshot.mba
+
         # Empty ownership — ReorderBlocks copies blocks to new serials and
         # remaps references; it does not claim exclusive ownership of the
         # originals (LFG already owns the redirect edges on those blocks).
@@ -282,20 +323,16 @@ class TopologicalSortStrategy:
         return PlanFragment(
             strategy_name=self.name,
             family=self.family,
-            modifications=[
-                ReorderBlocks(
-                    dfs_block_order=tuple(dfs_block_order),
-                    non_2way_serials=non_2way_serials,
-                    two_way_serials=two_way_serials,
-                ),
-            ],
+            modifications=[reorder],
             ownership=ownership,
             prerequisites=self.prerequisites,
             expected_benefit=benefit,
             risk_score=0.2,
             metadata={
-                "dfs_block_count": len(dfs_block_order),
-                "handler_count": len(visited_states),
+                "dfs_block_count": len(reorder.dfs_block_order),
+                "handler_count": len(
+                    snapshot.state_machine.handlers
+                ) if snapshot.state_machine else 0,
                 # Override safeguard threshold: ReorderBlocks is a single bulk
                 # operation, not per-edge redirects.  The safeguard gate counts
                 # len(modifications) which is 1 for this strategy.
