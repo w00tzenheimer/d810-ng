@@ -7,17 +7,15 @@ needed -- the known ``StateTransition`` objects provide the mapping.
 
 Algorithm:
 
-0. **IntervalDispatcher resolution (primary)** -- walk ALL handler block chains,
-   scan for ``m_mov #const, %state_var``, resolve via ``IntervalDispatcher.lookup()``.
-   Populates ``emitted`` so step 1 skips already-covered blocks.
-1. Iterate ALL transitions in ``sm.transitions`` (the flat list of every
-   ``StateTransition`` ever recorded) as **fallback** for blocks not covered
-   by step 0.
-2. Resolve each ``to_state`` via ``resolve_target_via_bst`` (handles both
+0. **IntervalDispatcher resolution (sole authority)** -- walk ALL handler block
+   chains, scan for ``m_mov #const, %state_var``, resolve via
+   ``IntervalDispatcher.lookup()``.  This is the single source of truth for
+   transition resolution.
+1. Resolve each ``to_state`` via ``IntervalDispatcher.lookup()`` (handles both
    exact matches and BST range-map entries).
-3. Emit a ``RedirectGoto`` (unconditional) or ``RedirectBranch`` (conditional)
+2. Emit a ``RedirectGoto`` (unconditional) or ``RedirectBranch`` (conditional)
    targeting the resolved handler entry serial.
-4. Wire pre-header to the initial handler entry.
+3. Wire pre-header to the initial handler entry.
 """
 from __future__ import annotations
 
@@ -227,7 +225,7 @@ class LinearizedFlowGraphStrategy:
         # Walk ALL handler block chains and scan for m_mov #const, %state_var.
         # Resolve each constant via IntervalDispatcher.lookup().  This runs
         # FIRST so that IntervalDispatcher is the primary transition authority;
-        # sm.transitions (step 1) acts as fallback for blocks not covered here.
+        # IntervalDispatcher is the sole transition authority (no fallback).
         # Populates `emitted` and `claimed_1way` so step 1 skips covered blocks.
         # -----------------------------------------------------------------
         _interval_resolved = 0
@@ -536,182 +534,9 @@ class LinearizedFlowGraphStrategy:
             )
         resolved_count += _interval_resolved
 
-        # -----------------------------------------------------------------
-        # 1. Iterate ALL transitions from the flat sm.transitions list
-        #    as FALLBACK for blocks not already covered by IntervalDispatcher.
-        #    This includes orphaned MBA/proxy-var transitions that may not
-        #    be attached to any per-handler transition list.
-        # -----------------------------------------------------------------
-        raw_transition_count = len(sm.transitions)
-        range_fallback_count = 0
-
-        for transition in sm.transitions:
-            # Skip transitions with unresolved from_state (emitted by UD
-            # chain discovery as placeholders for future resolution).
-            if transition.from_state is None:
-                continue
-
-            to_state = transition.to_state
-            from_block = transition.from_block
-
-            # Resolve target via BST (handles exact + range matches).
-            target_entry = resolve_target_via_bst(bst_result, to_state)
-
-            # Fallback: check range_map including catch-all ranges that
-            # resolve_target_via_bst() intentionally skips.
-            if target_entry is None:
-                for serial, (low, high) in range_map.items():
-                    lo = low if low is not None else 0
-                    hi = high if high is not None else 0xFFFFFFFF
-                    if lo <= to_state <= hi:
-                        target_entry = serial
-                        range_fallback_count += 1
-                        logger.info(
-                            "LFG: range-fallback resolved 0x%X -> %s",
-                            to_state,
-                            blk_label(mba, serial),
-                        )
-                        break
-
-            if target_entry is None:
-                logger.debug(
-                    "LFG: to_state 0x%X resolves to None, skipping",
-                    to_state,
-                )
-                skipped_count += 1
-                continue
-
-            # Deduplicate: same (from_block, target_entry) should only
-            # emit one redirect.
-            emit_key = (from_block, target_entry)
-            if emit_key in emitted:
-                continue
-            emitted.add(emit_key)
-
-            # Skip self-loop redirects (MBA fake self-loops).
-            if from_block == target_entry:
-                logger.info(
-                    "LFG: skipping self-loop redirect %s -> %s "
-                    "(state 0x%X -> 0x%X)",
-                    blk_label(mba, from_block), blk_label(mba, target_entry),
-                    transition.from_state, to_state,
-                )
-                skipped_count += 1
-                continue
-
-            # Emit the appropriate modification.
-            #
-            # For 2-way (conditional) blocks we MUST identify which
-            # successor leg to replace and use edge_redirect so that a
-            # RedirectBranch is emitted with the correct old_target.
-            # Using goto_redirect on a 2-way block would emit
-            # ConvertToGoto, collapsing both arms into a single goto --
-            # producing CFG_BLT2WAY_NON_JCC_TAIL / BAD_NSUCC violations.
-            from_nsucc = builder.block_nsucc_map.get(from_block, 1)
-            if from_nsucc == 2:
-                bst_old_target: int | None = None
-                from_succs = builder.block_succ_map.get(from_block, ())
-
-                # Strategy: find the successor that leads toward the
-                # dispatcher.  Check BST nodes first, then any block
-                # outside handler ownership, then any block in the
-                # dispatcher_region.
-                for succ_serial in from_succs:
-                    if succ_serial in bst_node_blocks:
-                        bst_old_target = succ_serial
-                        break
-                if bst_old_target is None:
-                    for succ_serial in from_succs:
-                        if succ_serial not in owned_blocks:
-                            bst_old_target = succ_serial
-                            break
-                if bst_old_target is None:
-                    for succ_serial in from_succs:
-                        if succ_serial in dispatcher_region:
-                            bst_old_target = succ_serial
-                            break
-
-                # Last resort for 2-way blocks where BOTH successors are
-                # handler blocks: pick the successor that is NOT the
-                # resolved target.  This happens when a conditional
-                # handler has already had one arm redirected in a
-                # previous transition, leaving both arms as handler
-                # entries.
-                if bst_old_target is None:
-                    for succ_serial in from_succs:
-                        if succ_serial != target_entry:
-                            bst_old_target = succ_serial
-                            break
-
-                if bst_old_target is None:
-                    logger.debug(
-                        "LFG: skipping 2-way transition %s -> "
-                        "%s (state 0x%X -> 0x%X, conditional=%s): "
-                        "cannot determine old_target among succs %s",
-                        blk_label(mba, from_block),
-                        blk_label(mba, target_entry),
-                        transition.from_state,
-                        to_state,
-                        transition.is_conditional,
-                        from_succs,
-                    )
-                    skipped_count += 1
-                    continue
-
-                mod = builder.edge_redirect(
-                    source_block=from_block,
-                    target_block=target_entry,
-                    old_target=bst_old_target,
-                )
-            else:
-                # 1-way block -- check for shared tail conflict.
-                if from_block in claimed_1way:
-                    first_target = claimed_1way[from_block]
-                    if first_target != target_entry:
-                        # CONFLICT: this 1-way block already has a redirect
-                        # to a different target.  Skip to avoid emitting two
-                        # conflicting goto_redirects on the same BLT_1WAY
-                        # block (which causes CFG_50856_BAD_NSUCC and
-                        # rejects the entire plan fragment).
-                        # TODO: back-propagate to predecessor conditional
-                        # block once handler-aware predecessor walk is
-                        # implemented.
-                        logger.info(
-                            "LFG: CONFLICT on 1-way %s: already "
-                            "-> %s, skipping -> %s "
-                            "(state 0x%X -> 0x%X)",
-                            blk_label(mba, from_block),
-                            blk_label(mba, first_target),
-                            blk_label(mba, target_entry),
-                            transition.from_state,
-                            to_state,
-                        )
-                        skipped_count += 1
-                        continue
-                    else:
-                        # Same target -- already handled by dedup.
-                        continue
-                else:
-                    mod = builder.goto_redirect(
-                        source_block=from_block,
-                        target_block=target_entry,
-                    )
-                    claimed_1way[from_block] = target_entry
-
-            modifications.append(mod)
-            owned_edges.add((from_block, target_entry))
-            owned_transitions.add((transition.from_state, to_state))
-            resolved_count += 1
-
-            logger.info(
-                "LFG: redirect %s -> %s  "
-                "(state 0x%X -> 0x%X, conditional=%s)",
-                blk_label(mba, from_block),
-                blk_label(mba, target_entry),
-                transition.from_state,
-                to_state,
-                transition.is_conditional,
-            )
+        # REMOVED: sm.transitions fallback — IntervalDispatcher is sole authority.
+        # sm.transitions has BST walker wrong-branch bugs (0x6E958F99 → 0x11CD1DA3).
+        # IntervalDispatcher.lookup() is the single source of truth.
 
         # A1 handler chain block redirect pass DISABLED: chain blocks inside
         # handlers may be mid-handler, not handler exits. Redirecting them to
@@ -913,7 +738,7 @@ class LinearizedFlowGraphStrategy:
             "+ %d chain redirects, %d stvar NOPs across %d blocks, "
             "%d goto NOPs (%d shared-skipped), %d BST disconnects, "
             "%d BST-node conversions "
-            "(%d raw transitions, %d skipped, %d range-fallback)",
+            "(%d skipped)",
             resolved_count,
             exit_resolved_count,
             bst_default_count,
@@ -924,9 +749,7 @@ class LinearizedFlowGraphStrategy:
             goto_skip_count,
             disconnect_count,
             bst_convert_count,
-            raw_transition_count,
             skipped_count,
-            range_fallback_count,
         )
 
         # =============================================================
@@ -1128,9 +951,7 @@ class LinearizedFlowGraphStrategy:
                 "exit_resolved_count": exit_resolved_count,
                 "bst_default_count": bst_default_count,
                 "interval_resolved_count": _interval_resolved,
-                "raw_transitions": raw_transition_count,
                 "skipped_count": skipped_count,
-                "range_fallback_count": range_fallback_count,
                 "disconnect_count": disconnect_count,
                 "bst_convert_count": bst_convert_count,
                 "goto_nop_count": goto_nop_count,
