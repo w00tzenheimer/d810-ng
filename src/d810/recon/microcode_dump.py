@@ -18,7 +18,6 @@ Usage (from IDA Python or via headless script):
 
 from __future__ import annotations
 
-import importlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -52,6 +51,12 @@ from d810.recon.flow.bst_analysis import (
 from d810.recon.flow.linearized_state_dag import (
     build_linearized_state_dag_from_graph,
     render_linearized_state_dag,
+)
+from d810.recon.flow.state_machine_analysis import (
+    ConditionalTransition,
+    HandlerPathResult,
+    detect_conditional_transitions,
+    evaluate_handler_paths,
 )
 from d810.recon.flow.transition_builder import _convert_bst_to_result
 from d810.recon.flow.transition_report import (
@@ -1043,14 +1048,6 @@ def _build_live_linearized_state_dag(
     state_var_lvar_idx: Optional[int] = None,
     max_depth: int = 20,
 ):
-
-    hodur_helpers = importlib.import_module(
-        "d810.optimizers.microcode.flow.flattening.hodur._helpers"
-    )
-    detect_conditional_transitions = hodur_helpers.detect_conditional_transitions
-    evaluate_handler_paths = hodur_helpers.evaluate_handler_paths
-
-
     if state_var_stkoff is None:
         detected, detected_lvar_idx = _detect_state_var_stkoff(
             mba,
@@ -1083,8 +1080,8 @@ def _build_live_linearized_state_dag(
         bst_node_blocks=tuple(sorted(bst_result.bst_node_blocks)),
     )
 
-    handler_paths_by_handler: dict[int, tuple[object, ...]] = {}
-    conditional_transitions_by_handler: dict[int, tuple[object, ...]] = {}
+    handler_paths_by_handler: dict[int, tuple[HandlerPathResult, ...]] = {}
+    conditional_transitions_by_handler: dict[int, tuple[ConditionalTransition, ...]] = {}
 
     if state_var_stkoff is not None:
         handler_entry_blocks = {

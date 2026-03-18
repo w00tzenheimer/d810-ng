@@ -15,7 +15,7 @@ from d810.core.typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from d810.cfg.flowgraph import FlowGraph
     from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
-        HodurStateMachine,
+        DispatcherStateMachine,
     )
     from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
         HodurStateMachineDetector,
@@ -52,7 +52,7 @@ class AnalysisSnapshot:
     """
 
     mba: object  # ida_hexrays.mba_t — keep as object (IDA type, not importable in unit tests)
-    state_machine: HodurStateMachine | None = None
+    state_machine: DispatcherStateMachine | None = None
     detector: HodurStateMachineDetector | None = None
     dispatcher_cache: object | None = None  # keep as object (IDA type)
     bst_result: object | None = None

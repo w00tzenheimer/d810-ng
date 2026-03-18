@@ -63,7 +63,7 @@ class TestReachabilityInfo:
 
 
 class _FakeStateMachine:
-    """Minimal stand-in for HodurStateMachine in tests."""
+    """Minimal stand-in for DispatcherStateMachine in tests."""
 
     def __init__(self, state_constants: set, handlers: dict, transitions: list) -> None:
         self.state_constants = state_constants

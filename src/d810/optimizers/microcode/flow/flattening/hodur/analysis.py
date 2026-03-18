@@ -44,7 +44,9 @@ from d810.hexrays.utils.hexrays_helpers import (
     extract_num_mop,
     get_mop_index,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.datamodel import HodurStateMachine
+from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
+    DispatcherStateMachine,
+)
 from d810.recon.flow.bst_model import BSTAnalysisResult
 from d810.recon.flow.dispatcher_detection import DispatcherCache
 from d810.recon.flow.transition_builder import (
@@ -124,7 +126,7 @@ class HodurStateMachineDetector:
         max_state_constants: int = MAX_STATE_CONSTANTS_HODUR,
     ):
         self.mba = mba
-        self.state_machine: HodurStateMachine | None = None
+        self.state_machine: DispatcherStateMachine | None = None
         self.use_cache = use_cache
         self._cache: DispatcherCache | None = None
         self.bst_result: BSTAnalysisResult | None = None
@@ -132,7 +134,7 @@ class HodurStateMachineDetector:
         self.min_state_constants = min_state_constants
         self.max_state_constants = max_state_constants
 
-    def detect(self) -> HodurStateMachine | None:
+    def detect(self) -> DispatcherStateMachine | None:
         """
         Detect if the function contains a Hodur state machine.
 
@@ -228,7 +230,7 @@ class HodurStateMachineDetector:
             initial_state = self._find_initial_state(state_constants)
 
         # Build the state machine structure
-        self.state_machine = HodurStateMachine(
+        self.state_machine = DispatcherStateMachine(
             mba=self.mba,
             state_var=state_var,
             initial_state=initial_state,
@@ -1022,7 +1024,7 @@ class HodurStateMachineDetector:
 
     def _resolve_transitions_forward_prop(
         self,
-        state_machine: "HodurStateMachine",
+        state_machine: "DispatcherStateMachine",
         mba: "ida_hexrays.mba_t",
     ) -> "list[StateTransition]":
         """Resolve unresolved handler states via forward constant propagation.

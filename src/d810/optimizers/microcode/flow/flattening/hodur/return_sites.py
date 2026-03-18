@@ -14,8 +14,8 @@ from d810.cfg.flow.return_frontier import ReturnSite
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
+        DispatcherStateMachine,
         HandlerPathResult,
-        HodurStateMachine,
     )
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import AnalysisSnapshot
     from d810.recon.flow.transition_report import (

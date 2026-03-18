@@ -1,15 +1,16 @@
-"""Hodur state machine data model — pure dataclass definitions.
+"""Dispatcher state machine data model — pure dataclass definitions.
 
-These types describe the detected Hodur while-loop state machine and the
-records produced during pass-0 linearization.  They are separated from the
+These types describe the detected dispatcher-driven state machine and the
+records produced during pass-0 linearization. They are separated from the
 detection logic so that unit tests can construct them without an IDA
-environment.
+environment. The canonical model name is ``DispatcherStateMachine``; the
+historical ``HodurStateMachine`` name remains as a compatibility alias.
 """
 from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from d810.core.typing import TYPE_CHECKING, Optional
+from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import ida_hexrays
@@ -19,6 +20,10 @@ from d810.recon.flow.transition_builder import (
     StateTransition,
     StateUpdateSite,
 )
+from d810.recon.flow.state_machine_analysis import (
+    ConditionalTransition,
+    HandlerPathResult,
+)
 
 __all__ = [
     # Re-exported from transition_builder for convenience
@@ -27,6 +32,7 @@ __all__ = [
     "StateUpdateSite",
     # Defined here
     "CarrierResolutionResult",
+    "DispatcherStateMachine",
     "HodurStateMachine",
     "HandlerPathResult",
     "ConditionalTransition",
@@ -81,8 +87,8 @@ class CarrierResolutionResult:
 
 
 @dataclass
-class HodurStateMachine:
-    """Represents the complete Hodur state machine structure."""
+class DispatcherStateMachine:
+    """Represents a recovered dispatcher-driven state machine."""
 
     mba: "ida_hexrays.mba_t"
     state_var: "ida_hexrays.mop_t | None" = None
@@ -106,35 +112,8 @@ class HodurStateMachine:
             self.handlers[transition.from_state].transitions.append(transition)
 
 
-@dataclass
-class HandlerPathResult:
-    """Result of evaluating one exit path from a handler."""
-
-    exit_block: int  # block serial where handler exits to dispatcher
-    final_state: Optional[int]  # concrete state value at exit; None for terminal (m_ret) paths
-    state_writes: list  # [(block_serial, insn_ea), ...] of state var writes
-    ordered_path: list = field(default_factory=list)  # ordered sequence of block serials visited during DFS
-
-
-@dataclass
-class ConditionalTransition:
-    """An intra-handler conditional branch where one arm is a state transition.
-
-    When ``is_terminal_no_write`` is True, this entry represents the *sibling*
-    arm of a detected state-transition conditional — the arm that does NOT
-    write a new state constant.  The stale incoming state passes through
-    unchanged, so this arm must be redirected to the terminal exit target
-    to prevent the leaked constant from reaching return slots.
-    """
-
-    handler_entry: int               # handler that contains this conditional
-    branch_block: int                # block serial with the m_jnz
-    target_state: int                # state constant written on the redirectable arm
-    target_handler: int | None       # resolved handler entry (filled during linearization)
-    state_write_block: int | None    # block that writes the state constant (None for no-write arms)
-    state_write_ea: int | None       # instruction EA of the state write (None for no-write arms)
-    branch_arm: int                  # which successor arm (0=fall-through, 1=taken)
-    is_terminal_no_write: bool = False  # True for sibling arms with no state write
+# Backward-compatible alias for older Hodur-specific imports.
+HodurStateMachine = DispatcherStateMachine
 
 
 @dataclass
