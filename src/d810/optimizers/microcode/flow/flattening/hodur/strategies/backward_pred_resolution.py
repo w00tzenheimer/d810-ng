@@ -329,10 +329,11 @@ class BackwardPredResolutionStrategy:
             if pred_serial in bst_serials:
                 continue
 
-            # Skip predecessors whose transitions are handled by LFG
-            # or were already resolved by earlier strategies.
-            if pred_serial in lfg_handled:
-                continue
+            # EXPERIMENT: lfg_handled guard disabled — let backward_pred
+            # process all dispatcher predecessors, including those in
+            # handler block sets. NOPs are OFF so state writes survive.
+            # if pred_serial in lfg_handled:
+            #     continue
 
             pred_blk = mba.get_mblock(pred_serial)
             if pred_blk is None or pred_blk.nsucc() != 1:
