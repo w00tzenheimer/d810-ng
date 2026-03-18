@@ -599,6 +599,191 @@ def test_range_backed_nodes_keep_shared_suffixes_out_of_entry_targets() -> None:
     assert "shared-suffix: blk[5], blk[6]" in rendered
 
 
+def test_alias_states_can_share_handler_anchor_and_inherit_edges() -> None:
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(1, 0, (2,), (), 0, 0, ()),
+            2: BlockSnapshot(2, 0, (3,), (1,), 0, 0, ()),
+            3: BlockSnapshot(3, 0, (), (2,), 0, 0, ()),
+        },
+        entry_serial=1,
+        func_ea=0x406000,
+    )
+    handler_10_transition = StateTransition(
+        from_state=0x10,
+        to_state=0x25,
+        from_block=1,
+        is_conditional=False,
+    )
+    handler_20_transition = StateTransition(
+        from_state=0x20,
+        to_state=0x30,
+        from_block=2,
+        is_conditional=False,
+    )
+    transition_result = TransitionResult(
+        transitions=[
+            handler_10_transition,
+            handler_20_transition,
+        ],
+        handlers={
+            0x10: StateHandler(
+                state_value=0x10,
+                check_block=1,
+                handler_blocks=[1],
+                transitions=[handler_10_transition],
+            ),
+            0x20: StateHandler(
+                state_value=0x20,
+                check_block=2,
+                handler_blocks=[2],
+                transitions=[handler_20_transition],
+            ),
+            0x30: StateHandler(
+                state_value=0x30,
+                check_block=3,
+                handler_blocks=[3],
+                transitions=[],
+            ),
+        },
+        initial_state=0x10,
+        pre_header_serial=0,
+        strategy_name="fixture",
+        resolved_count=2,
+    )
+    report = DispatcherTransitionReport(
+        dispatcher_entry_serial=0,
+        state_var_stkoff=None,
+        state_var_lvar_idx=None,
+        pre_header_serial=None,
+        initial_state=0x10,
+        handler_state_map={1: 0x10, 2: 0x20, 3: 0x30},
+        handler_range_map={},
+        bst_node_blocks=(),
+        rows=(
+            TransitionRow(
+                state_const=0x10,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=1,
+                kind=TransitionKind.TRANSITION,
+                next_state=0x25,
+                conditional_states=(),
+                state_label="State 0x00000010",
+                transition_label="next=0x00000025",
+                chain_preview=(1,),
+                path=TransitionPath(
+                    handler_serial=1,
+                    chain=(1,),
+                    next_state=0x25,
+                    conditional_states=(),
+                    back_edge=True,
+                    reaches_exit_block=False,
+                    classified_exit=False,
+                    unresolved=False,
+                ),
+            ),
+            TransitionRow(
+                state_const=0x20,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=2,
+                kind=TransitionKind.TRANSITION,
+                next_state=0x30,
+                conditional_states=(),
+                state_label="State 0x00000020",
+                transition_label="next=0x00000030",
+                chain_preview=(2,),
+                path=TransitionPath(
+                    handler_serial=2,
+                    chain=(2,),
+                    next_state=0x30,
+                    conditional_states=(),
+                    back_edge=True,
+                    reaches_exit_block=False,
+                    classified_exit=False,
+                    unresolved=False,
+                ),
+            ),
+            TransitionRow(
+                state_const=0x25,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=2,
+                kind=TransitionKind.TRANSITION,
+                next_state=0x30,
+                conditional_states=(),
+                state_label="State 0x00000025",
+                transition_label="range alias of State 0x00000020",
+                chain_preview=(2,),
+                path=TransitionPath(
+                    handler_serial=2,
+                    chain=(2,),
+                    next_state=0x30,
+                    conditional_states=(),
+                    back_edge=True,
+                    reaches_exit_block=False,
+                    classified_exit=False,
+                    unresolved=False,
+                ),
+            ),
+            TransitionRow(
+                state_const=0x30,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=3,
+                kind=TransitionKind.UNKNOWN,
+                next_state=None,
+                conditional_states=(),
+                state_label="State 0x00000030",
+                transition_label="unknown",
+                chain_preview=(3,),
+                path=TransitionPath(
+                    handler_serial=3,
+                    chain=(3,),
+                    next_state=None,
+                    conditional_states=(),
+                    back_edge=False,
+                    reaches_exit_block=False,
+                    classified_exit=False,
+                    unresolved=True,
+                ),
+            ),
+        ),
+        summary=TransitionSummary(
+            handlers_total=4,
+            known_count=3,
+            conditional_count=0,
+            exit_count=0,
+            unknown_count=1,
+        ),
+        diagnostics=(),
+    )
+
+    dag = build_linearized_state_dag_from_graph(
+        flow_graph,
+        report,
+        transition_result,
+    )
+
+    alias_node = next(node for node in dag.nodes if node.key.state_const == 0x25)
+    assert alias_node.entry_anchor == 2
+
+    incoming_edge = next(
+        edge
+        for edge in dag.edges
+        if edge.source_key.state_const == 0x10 and edge.target_state == 0x25
+    )
+    assert incoming_edge.target_key == alias_node.key
+
+    alias_outgoing = next(
+        edge
+        for edge in dag.edges
+        if edge.source_key.state_const == 0x25 and edge.target_state == 0x30
+    )
+    assert alias_outgoing.target_entry_anchor == 3
+
+
 def test_render_prefers_raw_target_state_over_canonical_handler_label() -> None:
     source_key = StateDagNodeKey(handler_serial=1, state_const=0x10)
     target_key = StateDagNodeKey(handler_serial=3, state_const=0x30)
