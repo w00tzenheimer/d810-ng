@@ -944,6 +944,194 @@ def _format_edge_target(edge: StateDagEdge) -> str:
     return f"{raw_target} via {edge.target_label}"
 
 
+def _node_sort_key(node: StateDagNode) -> tuple[int, int, int]:
+    state_rank = (
+        node.key.state_const if node.key.state_const is not None else 0xFFFFFFFF
+    )
+    range_rank = node.key.range_lo if node.key.range_lo is not None else 0xFFFFFFFF
+    return (state_rank, range_rank, node.handler_serial)
+
+
+def _dot_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _dot_state_id(key: StateDagNodeKey) -> str:
+    if key.state_const is not None:
+        return f"state_{key.state_const:08X}_{key.handler_serial}"
+    if key.range_lo is not None and key.range_hi is not None:
+        return f"state_range_{key.range_lo:08X}_{key.range_hi:08X}_{key.handler_serial}"
+    return f"state_unknown_{key.handler_serial}"
+
+
+def _dot_segment_id(key: StateDagNodeKey, block_serial: int) -> str:
+    return f"{_dot_state_id(key)}_blk_{block_serial}"
+
+
+def _dot_terminal_id(kind: SemanticEdgeKind) -> str:
+    return f"terminal_{kind.name.lower()}"
+
+
+def _dot_edge_attributes(edge: StateDagEdge) -> list[str]:
+    label_lines = [edge.kind.name.lower(), f"src={_format_anchor(edge.source_anchor)}"]
+    if edge.ordered_path:
+        path_text = ", ".join(str(block) for block in edge.ordered_path)
+        label_lines.append(f"path=[{path_text}]")
+    attrs = [f'label="{_dot_escape(chr(10).join(label_lines))}"']
+    if edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION:
+        attrs.append("color=blue")
+    elif edge.kind == SemanticEdgeKind.CONDITIONAL_RETURN:
+        attrs.append("color=darkgreen")
+    elif edge.kind == SemanticEdgeKind.EXIT_ROUTINE:
+        attrs.append("color=orange")
+    elif edge.kind == SemanticEdgeKind.UNKNOWN:
+        attrs.append("style=dashed")
+        attrs.append("color=red")
+    return attrs
+
+
+def render_linearized_state_dag_dot(
+    dag: LinearizedStateDag,
+    *,
+    expanded: bool = False,
+) -> str:
+    """Render the DAG as a Graphviz DOT graph."""
+    lines: list[str] = ["digraph linearized_state_dag {"]
+    lines.append("    rankdir=LR;")
+    lines.append("    graph [compound=true];")
+    lines.append("    node [shape=record];")
+    lines.append("")
+
+    node_by_key = {node.key: node for node in dag.nodes}
+    sorted_nodes = sorted(dag.nodes, key=_node_sort_key)
+    terminal_nodes_needed: dict[SemanticEdgeKind, str] = {}
+    raw_target_nodes: dict[tuple[int, str], str] = {}
+
+    if dag.initial_state is not None:
+        start_id = None
+        for node in sorted_nodes:
+            if node.key.state_const == dag.initial_state:
+                start_id = _dot_state_id(node.key)
+                break
+        if start_id is None:
+            for node in sorted_nodes:
+                lo = node.key.range_lo
+                hi = node.key.range_hi
+                if lo is None or hi is None:
+                    continue
+                if lo <= dag.initial_state <= hi:
+                    start_id = _dot_state_id(node.key)
+                    break
+        if start_id is not None:
+            lines.append("    START [shape=point];")
+            lines.append(f"    START -> {start_id};")
+            lines.append("")
+
+    if not expanded:
+        for node in sorted_nodes:
+            attrs = [
+                f'label="{_dot_escape(f"{node.state_label}\\nblk[{node.entry_anchor}]")}"'
+            ]
+            if node.kind == StateNodeKind.RANGE_BACKED:
+                attrs.extend(["style=filled", "fillcolor=lightblue"])
+            lines.append(f"    {_dot_state_id(node.key)} [{', '.join(attrs)}];")
+        lines.append("")
+    else:
+        for node in sorted_nodes:
+            cluster_id = f"cluster_{_dot_state_id(node.key)}"
+            header_id = _dot_state_id(node.key)
+            cluster_label = (
+                f"{node.state_label}\\nentry blk[{node.entry_anchor}] [{node.kind.name.lower()}]"
+            )
+            lines.append(f"    subgraph {cluster_id} {{")
+            lines.append(f'        label="{_dot_escape(cluster_label)}";')
+            lines.append("        color=lightgrey;")
+            header_attrs = [
+                f'label="{_dot_escape(f"{node.state_label}\\nentry blk[{node.entry_anchor}]")}"'
+            ]
+            if node.kind == StateNodeKind.RANGE_BACKED:
+                header_attrs.extend(["style=filled", "fillcolor=lightblue"])
+            lines.append(f"        {header_id} [{', '.join(header_attrs)}];")
+            for segment in node.local_segments:
+                seg_id = _dot_segment_id(node.key, segment.blocks[0])
+                seg_label = f"{segment.segment_id}\\n{segment.kind.name.lower()}"
+                seg_attrs = [f'label="{_dot_escape(seg_label)}"', "shape=box"]
+                if segment.kind == LocalSegmentKind.SHARED_SUFFIX:
+                    seg_attrs.extend(["style=filled", "fillcolor=lightgrey"])
+                elif segment.kind == LocalSegmentKind.TERMINAL_SUFFIX:
+                    seg_attrs.extend(["style=filled", "fillcolor=lightgreen"])
+                elif segment.kind == LocalSegmentKind.BRANCH:
+                    seg_attrs.extend(["style=filled", "fillcolor=lightyellow"])
+                lines.append(f"        {seg_id} [{', '.join(seg_attrs)}];")
+            entry_segment_id = _dot_segment_id(node.key, node.entry_anchor)
+            if any(segment.blocks[0] == node.entry_anchor for segment in node.local_segments):
+                lines.append(
+                    f"        {header_id} -> {entry_segment_id} [style=dotted, arrowhead=none];"
+                )
+            lines.append("    }")
+        lines.append("")
+
+        for node in sorted_nodes:
+            for local_edge in node.local_edges:
+                source_block = int(local_edge.source_segment_id[4:-1])
+                target_block = int(local_edge.target_segment_id[4:-1])
+                source_id = _dot_segment_id(node.key, source_block)
+                target_id = _dot_segment_id(node.key, target_block)
+                attrs = [f'label="{local_edge.kind.name.lower()}"', "color=gray50"]
+                lines.append(f"    {source_id} -> {target_id} [{', '.join(attrs)}];")
+        lines.append("")
+
+    for edge in dag.edges:
+        if edge.target_key is None:
+            if edge.target_state is not None:
+                raw_label = _format_edge_target(edge)
+                raw_key = (edge.target_state, raw_label)
+                target_id = raw_target_nodes.get(raw_key)
+                if target_id is None:
+                    target_id = f"raw_target_{edge.target_state:08X}"
+                    raw_target_nodes[raw_key] = target_id
+                    lines.append(
+                        f'    {target_id} [label="{_dot_escape(raw_label)}", style=dashed];'
+                    )
+            else:
+                target_id = terminal_nodes_needed.get(edge.kind)
+                if target_id is None:
+                    target_id = _dot_terminal_id(edge.kind)
+                    terminal_nodes_needed[edge.kind] = target_id
+                    term_label = edge.target_label
+                    term_attrs = [f'label="{_dot_escape(term_label)}"']
+                    if edge.kind == SemanticEdgeKind.CONDITIONAL_RETURN:
+                        term_attrs.extend(["shape=oval", "style=filled", "fillcolor=lightgreen"])
+                    elif edge.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                        term_attrs.extend(["shape=oval", "style=filled", "fillcolor=orange"])
+                    else:
+                        term_attrs.extend(["shape=oval", "style=filled", "fillcolor=lightyellow"])
+                    lines.append(f"    {target_id} [{', '.join(term_attrs)}];")
+        else:
+            target_id = _dot_state_id(edge.target_key)
+
+        if expanded:
+            source_node = node_by_key[edge.source_key]
+            if any(
+                segment.blocks[0] == edge.source_anchor.block_serial
+                for segment in source_node.local_segments
+            ):
+                source_id = _dot_segment_id(
+                    edge.source_key, edge.source_anchor.block_serial
+                )
+            else:
+                source_id = _dot_state_id(edge.source_key)
+        else:
+            source_id = _dot_state_id(edge.source_key)
+
+        lines.append(
+            f"    {source_id} -> {target_id} [{', '.join(_dot_edge_attributes(edge))}];"
+        )
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
 def render_linearized_state_dag(dag: LinearizedStateDag) -> str:
     """Render a human-readable dump of a state-level DAG."""
     lines: list[str] = []
@@ -951,13 +1139,6 @@ def render_linearized_state_dag(dag: LinearizedStateDag) -> str:
     edges_by_source: dict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
     for edge in dag.edges:
         edges_by_source[edge.source_key].append(edge)
-
-    def node_sort_key(node: StateDagNode) -> tuple[int, int, int]:
-        state_rank = (
-            node.key.state_const if node.key.state_const is not None else 0xFFFFFFFF
-        )
-        range_rank = node.key.range_lo if node.key.range_lo is not None else 0xFFFFFFFF
-        return (state_rank, range_rank, node.handler_serial)
 
     start_key: StateDagNodeKey | None = None
     if dag.initial_state is not None:
@@ -981,7 +1162,7 @@ def render_linearized_state_dag(dag: LinearizedStateDag) -> str:
         queue.append(start_key)
         visited.add(start_key)
 
-    for node in sorted(dag.nodes, key=node_sort_key):
+    for node in sorted(dag.nodes, key=_node_sort_key):
         if node.key not in visited:
             queue.append(node.key)
             visited.add(node.key)
@@ -1076,4 +1257,5 @@ __all__ = [
     "StateRedirectAnchor",
     "build_linearized_state_dag_from_graph",
     "render_linearized_state_dag",
+    "render_linearized_state_dag_dot",
 ]

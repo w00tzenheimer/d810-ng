@@ -51,6 +51,7 @@ from d810.recon.flow.bst_analysis import (
 from d810.recon.flow.linearized_state_dag import (
     build_linearized_state_dag_from_graph,
     render_linearized_state_dag,
+    render_linearized_state_dag_dot,
 )
 from d810.recon.flow.state_machine_analysis import (
     ConditionalTransition,
@@ -1446,6 +1447,22 @@ def dump_linearized_dag(
         state_var_stkoff=state_var_stkoff,
     )
     return render_linearized_state_dag(dag)
+
+
+def dump_linearized_dag_dot(
+    mba: "idaapi.mbl_array_t",
+    dispatcher_entry_serial: int,
+    state_var_stkoff: Optional[int] = None,
+    *,
+    expanded: bool = False,
+) -> str:
+    """Build and render the unified state-level DAG as Graphviz DOT."""
+    dag = _build_live_linearized_state_dag(
+        mba,
+        dispatcher_entry_serial,
+        state_var_stkoff=state_var_stkoff,
+    )
+    return render_linearized_state_dag_dot(dag, expanded=expanded)
 
 
 # -----------------------------------------------------------------------------
