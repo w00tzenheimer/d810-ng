@@ -410,9 +410,116 @@ class LinearizedFlowGraphStrategy:
                             _id_nsucc_walk = _id_blk.nsucc()
                             for _id_si in range(_id_nsucc_walk):
                                 _id_succ = _id_blk.succ(_id_si)
+                                if _id_succ in bst_node_blocks:
+                                    # Enter BST default blocks to find state
+                                    # writes, but don't follow their successors
+                                    # deeper into the BST tree.
+                                    if _id_already_redirected:
+                                        continue
+                                    try:
+                                        _id_bst_blk = mba.get_mblock(
+                                            _id_succ,
+                                        )
+                                    except (AttributeError, IndexError):
+                                        continue
+                                    if _id_bst_blk is None:
+                                        continue
+                                    _id_bst_insn = _id_bst_blk.head
+                                    while _id_bst_insn is not None:
+                                        if (
+                                            _id_bst_insn.opcode
+                                            == ida_hexrays.m_mov
+                                            and _id_bst_insn.d is not None
+                                            and _id_bst_insn.d.t
+                                            == ida_hexrays.mop_S
+                                            and _id_bst_insn.d.s is not None
+                                            and _id_bst_insn.d.s.off
+                                            == _id_stkoff
+                                            and _id_bst_insn.l is not None
+                                            and _id_bst_insn.l.t
+                                            == ida_hexrays.mop_n
+                                        ):
+                                            _id_bst_const = (
+                                                _id_bst_insn.l.nnn.value
+                                            )
+                                            _id_bst_target = (
+                                                _id_dispatcher.lookup(
+                                                    _id_bst_const,
+                                                )
+                                            )
+                                            if (
+                                                _id_bst_target is not None
+                                                and _id_bst_target
+                                                != _id_blk_serial
+                                            ):
+                                                _id_bst_emit_key = (
+                                                    _id_blk_serial,
+                                                    _id_bst_target,
+                                                )
+                                                if (
+                                                    _id_bst_emit_key
+                                                    not in emitted
+                                                ):
+                                                    _id_bst_nsucc = (
+                                                        builder.block_nsucc_map.get(
+                                                            _id_blk_serial,
+                                                            1,
+                                                        )
+                                                    )
+                                                    if _id_bst_nsucc == 2:
+                                                        _id_bst_mod = (
+                                                            builder.edge_redirect(
+                                                                source_block=_id_blk_serial,
+                                                                target_block=_id_bst_target,
+                                                                old_target=_id_succ,
+                                                            )
+                                                        )
+                                                    else:
+                                                        _id_bst_mod = (
+                                                            builder.goto_redirect(
+                                                                source_block=_id_blk_serial,
+                                                                target_block=_id_bst_target,
+                                                            )
+                                                        )
+                                                    modifications.append(
+                                                        _id_bst_mod,
+                                                    )
+                                                    emitted.add(
+                                                        _id_bst_emit_key,
+                                                    )
+                                                    if _id_bst_nsucc != 2:
+                                                        claimed_1way[
+                                                            _id_blk_serial
+                                                        ] = _id_bst_target
+                                                    owned_edges.add(
+                                                        _id_bst_emit_key,
+                                                    )
+                                                    _interval_resolved += 1
+                                                    logger.info(
+                                                        "LFG INTERVAL "
+                                                        "BST-DEFAULT: "
+                                                        "resolved %s -> %s "
+                                                        "(const 0x%X from "
+                                                        "BST blk %s)",
+                                                        blk_label(
+                                                            mba,
+                                                            _id_blk_serial,
+                                                        ),
+                                                        blk_label(
+                                                            mba,
+                                                            _id_bst_target,
+                                                        ),
+                                                        _id_bst_const,
+                                                        blk_label(
+                                                            mba,
+                                                            _id_succ,
+                                                        ),
+                                                    )
+                                                    break
+                                        _id_bst_insn = _id_bst_insn.next
+                                    continue  # Don't BFS deeper into BST
                                 if (
                                     _id_succ not in _id_visited
-                                    and _id_succ not in bst_node_blocks
                                     and (
                                         _id_succ not in _id_handler_entries
                                         or _id_succ == _id_entry_serial
