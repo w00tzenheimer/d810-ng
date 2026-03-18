@@ -251,7 +251,13 @@ class LinearizedFlowGraphStrategy:
                 # other handlers' blocks.
                 _id_handler_entries: set[int] = set(handler_state_map.keys())
 
-                for _id_entry_serial in sorted(handler_state_map.keys()):
+                # Use a queue for the outer loop so range-match targets
+                # discovered during scanning get visited transitively.
+                _id_outer_queue: list[int] = sorted(handler_state_map.keys())
+                _id_outer_visited: set[int] = set(_id_outer_queue)
+
+                while _id_outer_queue:
+                    _id_entry_serial = _id_outer_queue.pop(0)
                     # Walk the handler's block chain: follow 1-way successors
                     # until hitting dispatcher, BST node, or another handler.
                     _id_visited: set[int] = set()
@@ -359,6 +365,19 @@ class LinearizedFlowGraphStrategy:
                                                         _id_const,
                                                         blk_label(mba, _id_old_target),
                                                     )
+                                                    # Chain: queue target for
+                                                    # transitive resolution.
+                                                    if _id_target not in _id_outer_visited:
+                                                        _id_outer_visited.add(_id_target)
+                                                        _id_handler_entries.add(_id_target)
+                                                        _id_outer_queue.append(_id_target)
+                                                        logger.info(
+                                                            "LFG INTERVAL CHAIN: "
+                                                            "queued range-match "
+                                                            "target %s for "
+                                                            "transitive resolution",
+                                                            blk_label(mba, _id_target),
+                                                        )
                                             else:
                                                 # 1-way.
                                                 if _id_blk_serial in claimed_1way:
@@ -398,6 +417,19 @@ class LinearizedFlowGraphStrategy:
                                                         blk_label(mba, _id_target),
                                                         _id_const,
                                                     )
+                                                    # Chain: queue target for
+                                                    # transitive resolution.
+                                                    if _id_target not in _id_outer_visited:
+                                                        _id_outer_visited.add(_id_target)
+                                                        _id_handler_entries.add(_id_target)
+                                                        _id_outer_queue.append(_id_target)
+                                                        logger.info(
+                                                            "LFG INTERVAL CHAIN: "
+                                                            "queued range-match "
+                                                            "target %s for "
+                                                            "transitive resolution",
+                                                            blk_label(mba, _id_target),
+                                                        )
                                                     break  # one redirect per 1-way block
                             _id_insn = _id_insn.next
 
@@ -513,6 +545,34 @@ class LinearizedFlowGraphStrategy:
                                                             _id_succ,
                                                         ),
                                                     )
+                                                    # Chain: queue target
+                                                    # for transitive
+                                                    # resolution.
+                                                    if (
+                                                        _id_bst_target
+                                                        not in _id_outer_visited
+                                                    ):
+                                                        _id_outer_visited.add(
+                                                            _id_bst_target,
+                                                        )
+                                                        _id_handler_entries.add(
+                                                            _id_bst_target,
+                                                        )
+                                                        _id_outer_queue.append(
+                                                            _id_bst_target,
+                                                        )
+                                                        logger.info(
+                                                            "LFG INTERVAL "
+                                                            "CHAIN: queued "
+                                                            "range-match "
+                                                            "target %s for "
+                                                            "transitive "
+                                                            "resolution",
+                                                            blk_label(
+                                                                mba,
+                                                                _id_bst_target,
+                                                            ),
+                                                        )
                                                     break
                                         _id_bst_insn = _id_bst_insn.next
                                     continue  # Don't BFS deeper into BST
