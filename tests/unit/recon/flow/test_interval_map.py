@@ -85,19 +85,39 @@ def _target_node(target: int) -> Node:
 class TestEmitDispatchIntervals:
     def test_single_jnz_leaf(self) -> None:
         # JNZ(imm=0x30, target=42): equality → target; no yes child
-        node = Node(kind=NodeKind.JNZ, imm=0x30, target=42, yes=None)
+        # With INTERVAL_DEFAULT fix: remainder emitted as default intervals
+        node = Node(kind=NodeKind.JNZ, imm=0x30, target=42, yes=None, block_serial=7)
         emitted = emit_dispatch_intervals(node)
-        assert len(emitted) == 1
-        assert emitted[0].interval == Interval(0x30, 0x31)
-        assert emitted[0].target == 42
+        # 1 point (eq match) + 2 INTERVAL_DEFAULT (remainder before/after)
+        assert len(emitted) == 3
+        eq_entries = [e for e in emitted if e.reason == "JNZ/eq"]
+        default_entries = [e for e in emitted if e.reason == "INTERVAL_DEFAULT"]
+        assert len(eq_entries) == 1
+        assert eq_entries[0].interval == Interval(0x30, 0x31)
+        assert eq_entries[0].target == 42
+        assert len(default_entries) == 2
+        assert default_entries[0].interval == Interval(0, 0x30)
+        assert default_entries[0].target == 7
+        assert default_entries[1].interval == Interval(0x31, U32_MAX_EXCL)
+        assert default_entries[1].target == 7
 
     def test_single_jz_leaf(self) -> None:
         # JZ(imm=0x50, target=99): equality → target; no no child
-        node = Node(kind=NodeKind.JZ, imm=0x50, target=99, no=None)
+        # With INTERVAL_DEFAULT fix: remainder emitted as default intervals
+        node = Node(kind=NodeKind.JZ, imm=0x50, target=99, no=None, block_serial=8)
         emitted = emit_dispatch_intervals(node)
-        assert len(emitted) == 1
-        assert emitted[0].interval == Interval(0x50, 0x51)
-        assert emitted[0].target == 99
+        # 1 point (eq match) + 2 INTERVAL_DEFAULT (remainder before/after)
+        assert len(emitted) == 3
+        eq_entries = [e for e in emitted if e.reason == "JZ/eq"]
+        default_entries = [e for e in emitted if e.reason == "INTERVAL_DEFAULT"]
+        assert len(eq_entries) == 1
+        assert eq_entries[0].interval == Interval(0x50, 0x51)
+        assert eq_entries[0].target == 99
+        assert len(default_entries) == 2
+        assert default_entries[0].interval == Interval(0, 0x50)
+        assert default_entries[0].target == 8
+        assert default_entries[1].interval == Interval(0x51, U32_MAX_EXCL)
+        assert default_entries[1].target == 8
 
     def test_jbe_split(self) -> None:
         # JBE(0x100): yes=[0, 0x101) → target 1; no=[0x101, 2^32) → target 2
@@ -152,30 +172,42 @@ class TestEmitDispatchIntervals:
     def test_chained_jnz(self) -> None:
         # Chain: jnz(0x10, t=1) → jnz(0x20, t=2) → jnz(0x30, t=3)
         # Each JNZ emits its own point interval for equality; yes child is next node
-        inner = Node(kind=NodeKind.JNZ, imm=0x30, target=3, yes=None)
+        # With INTERVAL_DEFAULT fix: last node (yes=None) emits remainder as defaults
+        inner = Node(kind=NodeKind.JNZ, imm=0x30, target=3, yes=None, block_serial=9)
         mid = Node(kind=NodeKind.JNZ, imm=0x20, target=2, yes=inner)
         root = Node(kind=NodeKind.JNZ, imm=0x10, target=1, yes=mid)
         emitted = emit_dispatch_intervals(root)
-        # Exactly 3 point intervals (remainder after all JNZ equalities removed is not emitted)
-        assert len(emitted) == 3
-        targets_by_lo = {e.interval.lo: e.target for e in emitted}
+        eq_entries = [e for e in emitted if e.reason == "JNZ/eq"]
+        default_entries = [e for e in emitted if e.reason == "INTERVAL_DEFAULT"]
+        # 3 point intervals for equalities
+        assert len(eq_entries) == 3
+        targets_by_lo = {e.interval.lo: e.target for e in eq_entries}
         assert targets_by_lo[0x10] == 1
         assert targets_by_lo[0x20] == 2
         assert targets_by_lo[0x30] == 3
-        for e in emitted:
+        for e in eq_entries:
             assert e.interval.hi == e.interval.lo + 1
+        # 4 INTERVAL_DEFAULT entries for remainder gaps between/around the 3 points
+        assert len(default_entries) == 4
+        for e in default_entries:
+            assert e.target == 9
 
     def test_balanced_bst(self) -> None:
-        # JBE root with JNZ leaves → 2 point intervals and 2 range intervals
-        yes_leaf = Node(kind=NodeKind.JNZ, imm=0x10, target=10, yes=None)
-        no_leaf = Node(kind=NodeKind.JNZ, imm=0x50, target=50, yes=None)
+        # JBE root with JNZ leaves → 2 point intervals + INTERVAL_DEFAULT remainders
+        yes_leaf = Node(kind=NodeKind.JNZ, imm=0x10, target=10, yes=None, block_serial=5)
+        no_leaf = Node(kind=NodeKind.JNZ, imm=0x50, target=50, yes=None, block_serial=6)
         root = Node(kind=NodeKind.JBE, imm=0x30, yes=yes_leaf, no=no_leaf)
         emitted = emit_dispatch_intervals(root)
-        # Each JNZ emits exactly 1 point; the no-taken remainder is swallowed (no yes child)
-        point_intervals = [e for e in emitted if e.interval.hi - e.interval.lo == 1]
-        assert len(point_intervals) == 2
-        targets = {e.target for e in point_intervals}
+        eq_entries = [e for e in emitted if e.reason in ("JNZ/eq",)]
+        default_entries = [e for e in emitted if e.reason == "INTERVAL_DEFAULT"]
+        # 2 point intervals for exact matches
+        assert len(eq_entries) == 2
+        targets = {e.target for e in eq_entries}
         assert targets == {10, 50}
+        # INTERVAL_DEFAULT remainder intervals cover the rest of the domain
+        # yes_leaf (domain [0, 0x31)): [0, 0x10) + [0x11, 0x31) → blk 5
+        # no_leaf (domain [0x31, 2^32)): [0x31, 0x50) + [0x51, 2^32) → blk 6
+        assert len(default_entries) == 4
 
 
 # ---------------------------------------------------------------------------
