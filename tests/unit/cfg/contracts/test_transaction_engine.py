@@ -197,3 +197,55 @@ class TestCfgTransactionEngine:
         translator.lower.assert_called_once_with(
             plan, mba, post_apply_hook=hook,
         )
+
+    def test_apply_cumulative_pre_cfg_used_for_projected_check(
+        self, translator: MagicMock, contract: MagicMock,
+        plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+    ) -> None:
+        """When cumulative_pre_cfg is provided, verify_projected receives it
+        instead of pre_cfg."""
+        cumulative = MagicMock(name="cumulative_cfg")
+        contract.verify_projected.return_value = ()
+        contract.verify.return_value = ()
+        translator.lower.return_value = 3
+        engine = CfgTransactionEngine(translator, contract=contract)
+
+        result = engine.apply(
+            plan, pre_cfg=pre_cfg, mba=mba, cumulative_pre_cfg=cumulative,
+        )
+
+        assert result.success is True
+        # verify_projected should be called with cumulative CFG, not pre_cfg
+        contract.verify_projected.assert_called_once_with(cumulative, plan)
+
+    def test_apply_without_cumulative_uses_pre_cfg(
+        self, translator: MagicMock, contract: MagicMock,
+        plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+    ) -> None:
+        """Without cumulative_pre_cfg, verify_projected uses pre_cfg (backward compat)."""
+        contract.verify_projected.return_value = ()
+        contract.verify.return_value = ()
+        translator.lower.return_value = 3
+        engine = CfgTransactionEngine(translator, contract=contract)
+
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+
+        assert result.success is True
+        contract.verify_projected.assert_called_once_with(pre_cfg, plan)
+
+    def test_apply_cumulative_projected_failure_rejects(
+        self, translator: MagicMock, contract: MagicMock,
+        plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+    ) -> None:
+        """Projected contract failure with cumulative CFG still rejects."""
+        cumulative = MagicMock(name="cumulative_cfg")
+        contract.verify_projected.side_effect = _make_contract_error("projected")
+        engine = CfgTransactionEngine(translator, contract=contract)
+
+        result = engine.apply(
+            plan, pre_cfg=pre_cfg, mba=mba, cumulative_pre_cfg=cumulative,
+        )
+
+        assert result.success is False
+        assert result.failure_phase == "projected_contract"
+        translator.lower.assert_not_called()

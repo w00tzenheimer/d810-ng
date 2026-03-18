@@ -8,6 +8,7 @@ from d810.cfg.flow.edit_simulator import (
     SimulationResult,
     graph_modifications_to_simulated_edits,
     patch_plan_to_simulated_edits,
+    project_cumulative_state,
     project_post_state,
     simulate_edits,
 )
@@ -551,3 +552,80 @@ class TestModificationProjection:
         )
 
         assert sim.adj[1] == [2]
+
+
+class TestProjectCumulativeState:
+    """Tests for project_cumulative_state -- cumulative CFG projection."""
+
+    def _make_cfg(
+        self, adj: dict[int, list[int]], entry: int = 0
+    ) -> FlowGraph:
+        """Build a FlowGraph from an adjacency dict."""
+        blocks: dict[int, BlockSnapshot] = {}
+        preds_map: dict[int, list[int]] = {s: [] for s in adj}
+        for s, succs in adj.items():
+            for succ in succs:
+                if succ in preds_map:
+                    preds_map[succ].append(s)
+        for serial, succs in adj.items():
+            blocks[serial] = BlockSnapshot(
+                serial=serial,
+                block_type=3 if len(succs) == 1 else (4 if len(succs) == 2 else 0),
+                succs=tuple(succs),
+                preds=tuple(preds_map.get(serial, ())),
+                flags=0,
+                start_ea=0,
+                insn_snapshots=(),
+                tail_opcode=2 if succs else 0,
+            )
+        return FlowGraph(blocks=blocks, entry_serial=entry, func_ea=0)
+
+    def test_cumulative_is_same_as_project_post_state(self):
+        """project_cumulative_state produces the same result as project_post_state
+        when called with the same inputs."""
+        cfg = self._make_cfg({0: [1], 1: [2], 2: []})
+        modifications = [RedirectGoto(from_serial=0, old_target=1, new_target=2)]
+        plan = compile_patch_plan(modifications, cfg)
+
+        result_standard = project_post_state(cfg, plan)
+        result_cumulative = project_cumulative_state(cfg, plan)
+
+        assert result_standard.as_adjacency_dict() == result_cumulative.as_adjacency_dict()
+        assert result_standard.entry_serial == result_cumulative.entry_serial
+
+    def test_cumulative_chaining_two_plans(self):
+        """Two sequential plans applied cumulatively produce correct topology."""
+        cfg = self._make_cfg({0: [1], 1: [2], 2: [3], 3: []})
+
+        plan1 = compile_patch_plan(
+            [RedirectGoto(from_serial=0, old_target=1, new_target=2)], cfg,
+        )
+        cumulative1 = project_cumulative_state(cfg, plan1)
+
+        adj1 = cumulative1.as_adjacency_dict()
+        assert adj1[0] == [2]
+        assert adj1[1] == [2]
+
+        plan2 = compile_patch_plan(
+            [RedirectGoto(from_serial=1, old_target=2, new_target=3)], cumulative1,
+        )
+        cumulative2 = project_cumulative_state(cumulative1, plan2)
+
+        adj2 = cumulative2.as_adjacency_dict()
+        assert adj2[0] == [2]
+        assert adj2[1] == [3]
+        assert adj2[2] == [3]
+
+    def test_cumulative_preserves_metadata(self):
+        """Cumulative projection preserves base CFG metadata."""
+        cfg = self._make_cfg({0: [1], 1: []})
+        cfg = FlowGraph(
+            blocks=cfg.blocks,
+            entry_serial=cfg.entry_serial,
+            func_ea=cfg.func_ea,
+            metadata={"custom_key": "value"},
+        )
+        plan = compile_patch_plan([], cfg)
+        result = project_cumulative_state(cfg, plan)
+        assert result.metadata.get("custom_key") == "value"
+        assert result.metadata.get("projected_from_patch_plan") is True

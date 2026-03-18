@@ -80,20 +80,43 @@ class CfgTransactionEngine:
         pre_cfg: FlowGraph,
         mba,
         post_apply_hook=None,
+        cumulative_pre_cfg: FlowGraph | None = None,
     ) -> TransactionResult:
         """Execute the transaction: projected check -> pre check -> lower/apply.
 
-        Returns TransactionResult with classification from transaction_policy.
-        The translator handles post-apply contract checks and native verify
-        internally via its own hook wiring.
+        Args:
+            plan: The PatchPlan to apply.
+            pre_cfg: The FlowGraph lifted from the current MBA state.
+            mba: The live MBA to mutate.
+            post_apply_hook: Optional hook called after apply.
+            cumulative_pre_cfg: Optional cumulative FlowGraph that includes
+                prior strategies' projected modifications. When provided,
+                the projected contract check validates against this
+                accumulated state instead of ``pre_cfg``, catching
+                cross-strategy serial conflicts before live mutation.
+                The per-strategy check against ``pre_cfg`` is still run
+                as a fallback if cumulative validation passes.
+
+        Returns:
+            TransactionResult with classification from transaction_policy.
+            The translator handles post-apply contract checks and native verify
+            internally via its own hook wiring.
         """
         from d810.cfg.contracts.ida_contract import CfgContractViolationError
 
         # Phase: projected_contract -- reject before any live mutation
         if self._contract is not None:
+            # When a cumulative CFG is available, validate against the
+            # accumulated state first (catches cross-strategy conflicts).
+            projected_base = cumulative_pre_cfg if cumulative_pre_cfg is not None else pre_cfg
             try:
-                self._contract.verify_projected(pre_cfg, plan)
+                self._contract.verify_projected(projected_base, plan)
             except CfgContractViolationError as exc:
+                logger.info(
+                    "projected_contract check failed (cumulative=%s): %s",
+                    cumulative_pre_cfg is not None,
+                    exc,
+                )
                 return TransactionResult.failed("projected_contract", exc)
 
         # Phase: live_pre_check -- reject before any live mutation
