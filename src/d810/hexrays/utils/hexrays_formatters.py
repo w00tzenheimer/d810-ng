@@ -3,10 +3,11 @@ from __future__ import annotations
 import functools
 import pathlib
 
-from d810.core import typing
-from d810.core.typing import TYPE_CHECKING
 import ida_hexrays
 import idaapi
+
+from d810.core import typing
+from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     # Type hints for IDE support when IDA stubs are available
@@ -438,3 +439,12 @@ def dump_microcode_for_debug(
 
 def sanitize_ea(ea: int) -> int:
     return ea & idaapi.BADADDR  # BADADDR = 0xFFFF_FFFF_FFFF_FFFF on x64
+
+
+def blk_label(mba: ida_hexrays.mba_t, serial: int) -> str:
+    """Format block serial with EA for log messages: blk[N]@0xEA."""
+    try:
+        blk = mba.get_mblock(serial)
+        return f"blk[{serial}]@{blk.start:#x}"
+    except Exception:
+        return f"blk[{serial}]@?"
