@@ -347,6 +347,33 @@ def project_post_state(pre_cfg: FlowGraph, patch_plan: PatchPlan) -> FlowGraph:
     )
 
 
+def project_cumulative_state(
+    base_cfg: FlowGraph,
+    patch_plan: PatchPlan,
+) -> FlowGraph:
+    """Project a PatchPlan onto an already-projected FlowGraph.
+
+    Unlike :func:`project_post_state` which always projects from a fresh
+    pre-MBA lift, this function accepts an arbitrary :class:`FlowGraph`
+    (including one produced by a prior ``project_post_state`` or
+    ``project_cumulative_state`` call) and applies the new plan on top.
+
+    This enables cumulative validation: strategy N's projected contract
+    check can run against the virtual CFG that includes strategies 1..N-1's
+    modifications, catching cross-strategy serial conflicts before live
+    mutation.
+
+    Args:
+        base_cfg: The current cumulative FlowGraph (may already be projected).
+        patch_plan: The PatchPlan for the next strategy to validate.
+
+    Returns:
+        A new FlowGraph reflecting the cumulative post-state after applying
+        *patch_plan* onto *base_cfg*.
+    """
+    return project_post_state(base_cfg, patch_plan)
+
+
 def graph_modifications_to_simulated_edits(
     modifications: list[GraphModification],
 ) -> list[SimulatedEdit]:

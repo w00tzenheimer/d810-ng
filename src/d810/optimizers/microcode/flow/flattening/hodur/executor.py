@@ -139,8 +139,19 @@ class TransactionalExecutor:
 
         The safeguard gate is checked here, before calling execute_stage(),
         so that the executor never sees rejected stages.
+
+        Maintains a **cumulative projected CFG** across strategy iterations.
+        After each successful strategy application, the cumulative CFG is
+        updated to include the applied modifications. Subsequent strategies'
+        projected contract checks validate against this accumulated state,
+        catching cross-strategy serial conflicts (e.g. LFG redirects +
+        topological_sort reordering) before live mutation.
         """
         results: list[StageResult] = []
+        # Cumulative projected CFG: accumulates across strategies within a pass.
+        # None until the first successful stage; then updated after each stage.
+        cumulative_cfg: FlowGraph | None = None
+
         for fragment in pipeline:
             # Pre-execution safeguard gate: check before execute_stage()
             modifications = list(fragment.modifications)
@@ -184,8 +195,31 @@ class TransactionalExecutor:
                 results.append(result)
                 continue
 
-            result = self.execute_stage(fragment, total_handlers)
+            result = self.execute_stage(
+                fragment, total_handlers, cumulative_pre_cfg=cumulative_cfg,
+            )
             results.append(result)
+
+            # Update cumulative CFG after successful application
+            if result.success and result.edits_applied > 0:
+                try:
+                    # Lift post-apply state and use it as the new cumulative base
+                    post_cfg = self.translator.lift(self.mba)
+                    cumulative_cfg = post_cfg
+                    executor_logger.info(
+                        "Cumulative CFG updated after stage %s: %d blocks",
+                        fragment.strategy_name,
+                        len(post_cfg.blocks),
+                    )
+                except Exception:
+                    executor_logger.debug(
+                        "Failed to update cumulative CFG after stage %s",
+                        fragment.strategy_name,
+                        exc_info=True,
+                    )
+                    # Non-fatal: subsequent stages will still work with per-strategy
+                    # pre_cfg from the live MBA lift in execute_stage.
+
             if result.rollback_needed or result.quarantine:
                 executor_logger.warning(
                     "Stage %s failed gate check - skipping remaining pipeline",
@@ -194,7 +228,12 @@ class TransactionalExecutor:
                 break
         return results
 
-    def execute_stage(self, fragment: PlanFragment, total_handlers: int) -> StageResult:
+    def execute_stage(
+        self,
+        fragment: PlanFragment,
+        total_handlers: int,
+        cumulative_pre_cfg: FlowGraph | None = None,
+    ) -> StageResult:
         """Execute one plan fragment through IDAIRTranslator lowering."""
         if fragment.is_empty():
             return StageResult(strategy_name=fragment.strategy_name)
@@ -284,7 +323,12 @@ class TransactionalExecutor:
         )
         engine = CfgTransactionEngine(translator=self.translator, contract=contract)
 
-        tx_result = engine.apply(patch_plan, pre_cfg=pre_cfg, mba=self.mba)
+        tx_result = engine.apply(
+            patch_plan,
+            pre_cfg=pre_cfg,
+            mba=self.mba,
+            cumulative_pre_cfg=cumulative_pre_cfg,
+        )
 
         gate_accounting = gate_accounting.add(
             GateDecision(
