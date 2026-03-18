@@ -31,6 +31,7 @@ from d810.evaluator.hexrays_microcode.valranges import (
     collect_block_valrange_records,
     collect_instruction_valrange_records,
 )
+from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.utils.hexrays_helpers import (
     BLT_NAMES,
     MATURITY_TO_STRING_DICT,
@@ -46,14 +47,17 @@ from d810.recon.flow.bst_analysis import (
     _detect_state_var_stkoff,
     _dump_dispatcher_node,
     _find_pre_header_state,
+    analyze_bst_dispatcher,
 )
 from d810.recon.flow.linearized_state_dag import (
     build_linearized_state_dag_from_graph,
     render_linearized_state_dag,
 )
+from d810.recon.flow.transition_builder import _convert_bst_to_result
 from d810.recon.flow.transition_report import (
     TransitionKind,
     build_dispatcher_transition_report,
+    build_dispatcher_transition_report_from_graph,
 )
 
 # -----------------------------------------------------------------------------
@@ -1039,23 +1043,13 @@ def _build_live_linearized_state_dag(
     state_var_lvar_idx: Optional[int] = None,
     max_depth: int = 20,
 ):
-    IDAIRTranslator = importlib.import_module(
-        "d810.hexrays.mutation.ir_translator"
-    ).IDAIRTranslator
+
     hodur_helpers = importlib.import_module(
         "d810.optimizers.microcode.flow.flattening.hodur._helpers"
     )
     detect_conditional_transitions = hodur_helpers.detect_conditional_transitions
     evaluate_handler_paths = hodur_helpers.evaluate_handler_paths
-    analyze_bst_dispatcher = importlib.import_module(
-        "d810.recon.flow.bst_analysis"
-    ).analyze_bst_dispatcher
-    _convert_bst_to_result = importlib.import_module(
-        "d810.recon.flow.transition_builder"
-    )._convert_bst_to_result
-    build_dispatcher_transition_report_from_graph = importlib.import_module(
-        "d810.recon.flow.transition_report"
-    ).build_dispatcher_transition_report_from_graph
+
 
     if state_var_stkoff is None:
         detected, detected_lvar_idx = _detect_state_var_stkoff(

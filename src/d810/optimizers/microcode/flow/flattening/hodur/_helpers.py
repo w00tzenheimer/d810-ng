@@ -4,19 +4,18 @@ These are module-level functions extracted from the original HodurUnflattener
 monolith.  Snapshot-based helpers operate on immutable FlowGraph objects;
 ``evaluate_handler_paths`` still requires live mba_t (see K3 annotation).
 """
+
 from __future__ import annotations
 
-from d810.core.typing import TYPE_CHECKING
+import ida_hexrays
 
 from d810.core import logging
-
-from d810.recon.flow.bst_analysis import (
-    _forward_eval_insn,
-)
+from d810.core.typing import TYPE_CHECKING
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     ConditionalTransition,
     HandlerPathResult,
 )
+from d810.recon.flow.bst_analysis import _forward_eval_insn
 
 if TYPE_CHECKING:
     from d810.cfg.flowgraph import FlowGraph
@@ -78,7 +77,6 @@ def can_reach_return_snapshot(
     Returns:
         True if any block reachable from *start_serial* has an m_ret tail.
     """
-    import ida_hexrays
 
     m_ret = ida_hexrays.m_ret
     visited: set[int] = set()
@@ -118,7 +116,6 @@ def find_terminal_exit_target_snapshot(
     Returns:
         Serial of an exit target, or ``None`` if not found.
     """
-    import ida_hexrays
 
     m_ret = ida_hexrays.m_ret
 
@@ -157,16 +154,16 @@ def init_bst_cmp_opcodes() -> frozenset:
     Returns:
         Frozenset of IDA opcode integers used in BST comparison blocks.
     """
-    import ida_hexrays
-
-    return frozenset({
-        ida_hexrays.m_jnz,
-        ida_hexrays.m_jz,
-        ida_hexrays.m_jbe,
-        ida_hexrays.m_ja,
-        ida_hexrays.m_jb,
-        ida_hexrays.m_jae,
-    })
+    return frozenset(
+        {
+            ida_hexrays.m_jnz,
+            ida_hexrays.m_jz,
+            ida_hexrays.m_jbe,
+            ida_hexrays.m_ja,
+            ida_hexrays.m_jb,
+            ida_hexrays.m_jae,
+        }
+    )
 
 
 def eval_bst_condition(opcode: int, state: int, cmp_val: int) -> bool:
@@ -180,8 +177,6 @@ def eval_bst_condition(opcode: int, state: int, cmp_val: int) -> bool:
     Returns:
         True if the branch condition is taken for the given state.
     """
-    import ida_hexrays
-
     if opcode == ida_hexrays.m_jnz:
         return state != cmp_val
     if opcode == ida_hexrays.m_jz:
@@ -350,11 +345,15 @@ def detect_conditional_transitions(
         # handler via BST but differ from incoming_state numerically.
         # Catching those requires BST resolution: resolve_target_via_bst().
         # See ticket d81-b6yj.
-        if incoming_state is not None and (path.final_state & 0xFFFFFFFF) == (incoming_state & 0xFFFFFFFF):
+        if incoming_state is not None and (path.final_state & 0xFFFFFFFF) == (
+            incoming_state & 0xFFFFFFFF
+        ):
             _helpers_logger.info(
                 "detect_conditional_transitions: skipping self-loop path "
                 "handler=blk[%d] final_state=0x%X == incoming_state=0x%X",
-                handler_entry, path.final_state, incoming_state,
+                handler_entry,
+                path.final_state,
+                incoming_state,
             )
             continue
 
@@ -362,9 +361,7 @@ def detect_conditional_transitions(
         # splits from at least one other path, using the maximum pairwise
         # common-prefix length.  This avoids collapsing nested conditionals
         # when multiple state-write paths share the same outer arm.
-        other_paths = [
-            op for op in all_ordered_paths if op is not path.ordered_path
-        ]
+        other_paths = [op for op in all_ordered_paths if op is not path.ordered_path]
         if not other_paths:
             continue
 
@@ -419,8 +416,14 @@ def detect_conditional_transitions(
             # (i.e., takes a different successor at this block).
             has_diverging_sibling = False
             for other_op in other_paths:
-                if candidate_len - 1 < len(other_op) and other_op[candidate_len - 1] == cand_block:
-                    if candidate_len < len(other_op) and other_op[candidate_len] != cand_next:
+                if (
+                    candidate_len - 1 < len(other_op)
+                    and other_op[candidate_len - 1] == cand_block
+                ):
+                    if (
+                        candidate_len < len(other_op)
+                        and other_op[candidate_len] != cand_next
+                    ):
                         has_diverging_sibling = True
                         break
                 elif candidate_len - 1 >= len(other_op):
@@ -440,18 +443,19 @@ def detect_conditional_transitions(
         # Use the first state write as the canonical write location
         write_blk, write_ea = path.state_writes[0]
 
-        results.append(ConditionalTransition(
-            handler_entry=handler_entry,
-            branch_block=divergence_block,
-            target_state=path.final_state & 0xFFFFFFFF,
-            target_handler=None,
-            state_write_block=write_blk,
-            state_write_ea=write_ea,
-            branch_arm=branch_arm,
-        ))
+        results.append(
+            ConditionalTransition(
+                handler_entry=handler_entry,
+                branch_block=divergence_block,
+                target_state=path.final_state & 0xFFFFFFFF,
+                target_handler=None,
+                state_write_block=write_blk,
+                state_write_ea=write_ea,
+                branch_arm=branch_arm,
+            )
+        )
 
     return results
-
 
 
 # K3: DEEP_IDA — _forward_eval_insn requires live minsn_t
@@ -496,7 +500,9 @@ def evaluate_handler_paths(
     ]
 
     while queue:
-        curr_serial, reg_map, stk_map, path_visited, state_writes, ordered_path = queue.pop()
+        curr_serial, reg_map, stk_map, path_visited, state_writes, ordered_path = (
+            queue.pop()
+        )
 
         if curr_serial in path_visited:
             continue
@@ -527,16 +533,22 @@ def evaluate_handler_paths(
         succs = [blk.succ(i) for i in range(blk.nsucc())]
 
         if not succs:
-            results.append(HandlerPathResult(
-                exit_block=curr_serial,
-                final_state=None,
-                state_writes=list(cur_writes),
-                ordered_path=list(ordered_path),
-            ))
+            results.append(
+                HandlerPathResult(
+                    exit_block=curr_serial,
+                    final_state=None,
+                    state_writes=list(cur_writes),
+                    ordered_path=list(ordered_path),
+                )
+            )
             continue
 
         for succ_serial in succs:
-            if handler_entry_blocks and succ_serial in handler_entry_blocks and succ_serial != entry_serial:
+            if (
+                handler_entry_blocks
+                and succ_serial in handler_entry_blocks
+                and succ_serial != entry_serial
+            ):
                 # Reached another handler's entry — record transition, don't enter
                 final_val = stk_map.get(state_var_stkoff)
                 if final_val is not None:
