@@ -66,6 +66,7 @@ class AnalysisSnapshot:
     initial_transitions: tuple = ()
     flow_graph: FlowGraph | None = None
     nop_state_values: dict[int, int] = field(default_factory=dict)
+    lfg_redirected_blocks: frozenset[int] = field(default_factory=frozenset)
 
     @property
     def state_constants(self) -> set:

@@ -329,11 +329,11 @@ class BackwardPredResolutionStrategy:
             if pred_serial in bst_serials:
                 continue
 
-            # EXPERIMENT: lfg_handled guard disabled — let backward_pred
-            # process all dispatcher predecessors, including those in
-            # handler block sets. NOPs are OFF so state writes survive.
-            # if pred_serial in lfg_handled:
-            #     continue
+            # Skip blocks that LFG already emitted a redirect for.
+            # This is a NARROW guard (actual redirects only), not the
+            # broad lfg_handled (all handler block sets).
+            if pred_serial in snapshot.lfg_redirected_blocks:
+                continue
 
             pred_blk = mba.get_mblock(pred_serial)
             if pred_blk is None or pred_blk.nsucc() != 1:
