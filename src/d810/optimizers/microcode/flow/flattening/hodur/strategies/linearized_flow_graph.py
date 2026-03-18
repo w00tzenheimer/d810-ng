@@ -800,7 +800,9 @@ class LinearizedFlowGraphStrategy:
         # -----------------------------------------------------------------
         topo_inlined = False
         try:
-            reorder = TopologicalSortStrategy.compute_reorder_blocks(snapshot)
+            # DISCRIMINATOR TEST: topo disabled
+            # reorder = TopologicalSortStrategy.compute_reorder_blocks(snapshot)
+            reorder = None
             if reorder is not None:
                 modifications.append(reorder)
                 topo_inlined = True

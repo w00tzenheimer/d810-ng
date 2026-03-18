@@ -162,10 +162,10 @@ class BackwardPredResolutionStrategy:
         Returns:
             True if the snapshot has a BST result with a valid dispatcher serial.
         """
-        return (
-            snapshot.bst_result is not None
-            and snapshot.bst_dispatcher_serial >= 0
-        )
+        bst = snapshot.bst_result
+        if bst is None:
+            return False
+        return snapshot.bst_dispatcher_serial is not None
 
     def plan(
         self, snapshot: "AnalysisSnapshot",
