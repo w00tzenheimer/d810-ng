@@ -414,6 +414,25 @@ class IntervalDispatcher:
             )
         self._starts: list[int] = [r.lo for r in self._rows]
 
+    def to_json(self) -> str:
+        """Serialize rows as JSON for log diagnostics."""
+        import json
+        return json.dumps(
+            [{"lo": f"0x{r.lo:X}", "hi": f"0x{r.hi:X}", "target": r.target}
+             for r in self._rows],
+        )
+
+    @classmethod
+    def from_json(cls, data: str) -> "IntervalDispatcher":
+        """Reconstruct from JSON string (for offline inspection)."""
+        import json
+        rows_raw = json.loads(data)
+        rows = [
+            IntervalRow(lo=int(r["lo"], 16), hi=int(r["hi"], 16), target=r["target"])
+            for r in rows_raw
+        ]
+        return cls(rows)
+
     def __len__(self) -> int:
         """Return the number of rows in the table."""
         return len(self._rows)
