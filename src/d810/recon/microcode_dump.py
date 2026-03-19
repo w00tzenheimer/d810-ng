@@ -26,10 +26,12 @@ import idaapi
 
 from d810.core.logging import getLogger
 from d810.core.typing import Any, Dict, List, Optional, Tuple, cast
+from d810.evaluator.hexrays_microcode.valrange_dataflow import (
+    format_valrange_env,
+    run_valrange_fixpoint,
+)
 from d810.evaluator.hexrays_microcode.valranges import (
-    collect_block_valrange_records,
     collect_instruction_valrange_records,
-    collect_mba_valrange_records,
 )
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.utils.hexrays_helpers import (
@@ -652,7 +654,7 @@ def _print_stack_frame_overview(hdr: List[str], mba: idaapi.mba_t) -> None:
 
 
 def _print_block_header(
-    i: int, blk: idaapi.mblock_t, mba: idaapi.mba_t
+    i: int, blk: idaapi.mblock_t, mba: idaapi.mba_t, valrange_env=None
 ) -> tuple[list[str], list[str]]:
     """Append block header lines to *line*, matching C++ print_block_header calls."""
     serial = blk.serial
@@ -709,11 +711,10 @@ def _print_block_header(
         hdr.append("; USE-DEF LISTS ARE NOT READY")
 
     # ---- VALRANGES ---
-    # this is wrong, i think this is collecting valranges and their possible values
-    # from predecessors as well (whatever is in the full-set of mayuse)
-    vr_records = collect_block_valrange_records(blk, include_predecessors=False)
-    if vr_records:
-        hdr.append(f"; VALRANGES: {', '.join(str(r) for r in vr_records)}")
+    if valrange_env:
+        vr_str = format_valrange_env(valrange_env)
+        if vr_str != "none":
+            hdr.append(f"; VALRANGES: {vr_str}")
 
     return hdr, succs_sorted
 
@@ -812,7 +813,7 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
     Produces output similar to IDA's own microcode listing, including:
     - Block headers with type, predecessor/successor sets, EA range
     - USE/DEF/DNU liveness sets per block
-    - VALRANGES per block (via :func:`d810.evaluator.hexrays_microcode.valranges.collect_block_valrange_records`)
+    - VALRANGES per block (via :func:`d810.evaluator.hexrays_microcode.valrange_dataflow.run_valrange_fixpoint`)
     - Instruction-level VALRANGES via
       :func:`d810.evaluator.hexrays_microcode.valranges.collect_instruction_valrange_records`
     - Instructions via ``minsn_t._print()`` with per-instruction u=/d= annotations
@@ -866,6 +867,14 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
     32.11 180013405  mov    #0x432DC789@180013405.4, %var_7BC.4 ; 180013405 u=           d=sp+3C.4
     32.12 18001340D  goto   @2     ; 18001340D u=                         ; Successors: 2
     """
+    # Pre-compute value ranges for all blocks via forward dataflow.
+    try:
+        vr_result = run_valrange_fixpoint(mba)
+        vr_in_states = vr_result.in_states
+    except Exception:
+        logger.warning("run_valrange_fixpoint failed", exc_info=True)
+        vr_in_states = {}
+
     as_str = [f"; Maturity: {maturity_name}"]
     for i in range(num_blocks):
         blk: idaapi.mblock_t = mba.get_mblock(i)
@@ -873,7 +882,9 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
             continue
         serial = blk.serial
         block_type = BlockType(blk.type)
-        line, succs_sorted = _print_block_header(i, blk, mba)
+        line, succs_sorted = _print_block_header(
+            i, blk, mba, valrange_env=vr_in_states.get(serial)
+        )
         # Collect instructions
         insns = _collect_block_instructions(blk)
 
@@ -1142,6 +1153,7 @@ def _build_live_linearized_state_dag(
         bst_node_blocks=tuple(sorted(bst_result.bst_node_blocks)),
         dispatcher=bst_result.dispatcher,
         mba=mba,
+        prefer_local_corridors=True,
     )
 
 
