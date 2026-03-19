@@ -63,6 +63,14 @@ from d810.evaluator.hexrays_microcode.valranges import (
     collect_mba_valrange_records,
     collect_mba_valranges,
 )
+from d810.evaluator.hexrays_microcode.valrange_dataflow import (
+    ValrangeKey,
+    ValrangeEnv,
+    valrange_meet,
+    valrange_transfer,
+    run_valrange_fixpoint,
+    validate_against_ida,
+)
 from d810.evaluator.hexrays_microcode.terminal_return_valranges import (
     TerminalReturnValrangeGroup,
     TerminalReturnValrangeReport,
@@ -151,6 +159,13 @@ __all__ = [
     "collect_instruction_valranges",
     "collect_mba_valrange_records",
     "collect_mba_valranges",
+    # Value-range dataflow domain
+    "ValrangeKey",
+    "ValrangeEnv",
+    "valrange_meet",
+    "valrange_transfer",
+    "run_valrange_fixpoint",
+    "validate_against_ida",
     # Terminal return valranges
     "TerminalValrangeMergeKind",
     "TerminalValrangeSnapshot",

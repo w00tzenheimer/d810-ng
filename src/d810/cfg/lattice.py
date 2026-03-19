@@ -1,11 +1,14 @@
-"""3-valued lattice for Forward Constant Propagation.
+"""Generic lattice infrastructure and constant-propagation domain.
 
-Values:
+Provides domain-agnostic building blocks (``BOTTOM``, ``TOP``, ``env_meet``,
+``LatticeMeet``) that any forward-dataflow domain can reuse, plus the
+concrete constant-propagation domain (``Const``, ``lattice_meet``).
+
+Sentinel values:
     BOTTOM  – identity for meet (unknown / not-yet-seen)
-    Const   – a known constant (value, size)
     TOP     – absorbing for meet (conflicting definitions)
 
-Meet rules:
+Constant-propagation meet rules:
     meet(BOTTOM, x)       = x
     meet(TOP,    x)       = TOP
     meet(Const(v,s), Const(v,s)) = Const(v,s)
@@ -18,7 +21,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from d810.core import getLogger
-from d810.core.typing import Union
+from d810.core.typing import Any, Callable, Optional, Union
 
 logger = getLogger(__name__)
 
@@ -117,27 +120,38 @@ def lattice_meet(a: LatticeValue, b: LatticeValue) -> LatticeValue:
 
 
 def env_meet(
-    a: LatticeEnv, b: LatticeEnv, *, default_missing: LatticeValue = BOTTOM
-) -> LatticeEnv:
-    """Pointwise meet over the union of keys in two LatticeEnvs.
+    a: dict,
+    b: dict,
+    *,
+    default_missing: Any = BOTTOM,
+    value_meet: Optional[Callable[[Any, Any], Any]] = None,
+) -> dict:
+    """Pointwise meet over the union of keys in two environments.
+
+    Works with any key type and any value type — the per-value merge is
+    delegated to *value_meet*.
 
     Args:
         a: First environment.
         b: Second environment.
-        default_missing: Lattice value used for keys absent from one side.
+        default_missing: Value used for keys absent from one side.
             ``BOTTOM`` (default) is aggressive — missing keys are treated as
-            the identity for meet, so a constant present in one env survives.
-            ``TOP`` is conservative — missing keys kill the constant.
+            the identity for meet, so a value present in one env survives.
+            ``TOP`` is conservative — missing keys kill the value.
+        value_meet: Callable ``(v1, v2) -> merged``.  Defaults to
+            :func:`lattice_meet` (the constant-propagation domain).
 
     Returns:
-        A new LatticeEnv that is the pointwise meet of a and b.
+        A new dict that is the pointwise meet of *a* and *b*.
     """
-    result: LatticeEnv = {}
+    if value_meet is None:
+        value_meet = lattice_meet
+    result: dict = {}
     all_keys = a.keys() | b.keys()
     for key in all_keys:
         va = a.get(key, default_missing)
         vb = b.get(key, default_missing)
-        met = lattice_meet(va, vb)
+        met = value_meet(va, vb)
         result[key] = met
     return result
 
@@ -150,41 +164,59 @@ def env_meet(
 class LatticeMeet:
     """Meet strategy that folds a list of predecessor OUT environments.
 
+    Domain-agnostic: works with any key/value types.  The per-value merge
+    is delegated to *value_meet* (defaults to :func:`lattice_meet` for the
+    constant-propagation domain).
+
     Args:
-        default_missing: Lattice value used for keys absent from one predecessor.
+        default_missing: Value used for keys absent from one predecessor.
             ``BOTTOM`` (default) is aggressive — missing keys are identity for
-            meet, so constants present in only one predecessor survive.  This is
-            suitable for post-apply sweeps where unreachable blocks have empty
-            (all-BOTTOM) OUT environments.
-            ``TOP`` is conservative — missing keys kill the constant, equivalent
-            to the old IntersectionMeet behaviour.  Use this for standalone FCP
-            passes to avoid unsound propagation.
+            meet, so values present in only one predecessor survive.
+            ``TOP`` is conservative — missing keys kill the value.
+        value_meet: Callable ``(v1, v2) -> merged``.  Defaults to
+            :func:`lattice_meet`.
 
     Usage::
 
-        strategy = LatticeMeet()                          # aggressive (BOTTOM)
-        conservative = LatticeMeet(default_missing=TOP)   # conservative
+        # Constant-propagation (default)
+        strategy = LatticeMeet()
+        conservative = LatticeMeet(default_missing=TOP)
+
+        # Custom domain
+        strategy = LatticeMeet(value_meet=my_domain_meet, default_missing=MY_TOP)
+
         in_env = strategy.meet(pred_out_envs)
     """
 
-    def __init__(self, *, default_missing: LatticeValue = BOTTOM):
+    def __init__(
+        self,
+        *,
+        default_missing: Any = BOTTOM,
+        value_meet: Optional[Callable[[Any, Any], Any]] = None,
+    ):
         self._default_missing = default_missing
+        self._value_meet = value_meet
 
-    def meet(self, pred_outs: list[LatticeEnv]) -> LatticeEnv:
+    def meet(self, pred_outs: list[dict]) -> dict:
         """Compute the meet over all predecessor OUT environments.
 
         Args:
             pred_outs: List of OUT environments from predecessor blocks.
 
         Returns:
-            A new LatticeEnv that is the meet of all inputs.
+            A new dict that is the meet of all inputs.
             - Empty list  → empty dict (no information).
             - Single env  → a copy of that env.
-            - Multiple    → sequential pairwise env_meet.
+            - Multiple    → sequential pairwise :func:`env_meet`.
         """
         if not pred_outs:
             return {}
-        result: LatticeEnv = dict(pred_outs[0])
+        result: dict = dict(pred_outs[0])
         for env in pred_outs[1:]:
-            result = env_meet(result, env, default_missing=self._default_missing)
+            result = env_meet(
+                result,
+                env,
+                default_missing=self._default_missing,
+                value_meet=self._value_meet,
+            )
         return result
