@@ -7,14 +7,23 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from d810.cfg.flowgraph import FlowGraph
+from d810.core.typing import Callable, Mapping
 from d810.recon.flow.interval_map import IntervalDispatcher
 from d810.recon.flow.state_machine_analysis import (
     ConditionalTransition,
     HandlerPathResult,
+    detect_conditional_transitions,
+    evaluate_handler_paths,
 )
 from d810.recon.flow.transition_builder import TransitionResult
-from d810.recon.flow.transition_report import DispatcherTransitionReport
-from d810.core.typing import Callable
+from d810.recon.flow.transition_report import (
+    DispatcherTransitionReport,
+    TransitionKind,
+    TransitionPath,
+    TransitionRow,
+    TransitionSummary,
+    build_dispatcher_transition_report_from_graph,
+)
 
 
 class StateNodeKind(Enum):
@@ -147,6 +156,82 @@ class LinearizedStateDag:
 
     def node_by_handler(self) -> dict[int, StateDagNode]:
         return {node.handler_serial: node for node in self.nodes}
+
+
+def _summarize_rows(rows: tuple[TransitionRow, ...]) -> TransitionSummary:
+    known_count = sum(1 for row in rows if row.kind == TransitionKind.TRANSITION)
+    conditional_count = sum(
+        1 for row in rows if row.kind == TransitionKind.CONDITIONAL
+    )
+    exit_count = sum(1 for row in rows if row.kind == TransitionKind.EXIT)
+    unknown_count = sum(1 for row in rows if row.kind == TransitionKind.UNKNOWN)
+    return TransitionSummary(
+        handlers_total=len(rows),
+        known_count=known_count,
+        conditional_count=conditional_count,
+        exit_count=exit_count,
+        unknown_count=unknown_count,
+    )
+
+
+def _resolve_range_backed_anchor(
+    state_value: int,
+    handler_range_map: Mapping[int, tuple[int | None, int | None]],
+    *,
+    known_entry_anchors: set[int],
+) -> int | None:
+    matching_ranges: list[tuple[int, int]] = []
+    for handler_serial, (range_lo, range_hi) in handler_range_map.items():
+        if range_lo is None or range_hi is None:
+            continue
+        if not (range_lo <= state_value <= range_hi):
+            continue
+        matching_ranges.append((range_hi - range_lo, handler_serial))
+
+    if not matching_ranges:
+        return None
+
+    matching_ranges.sort()
+    for _, handler_serial in matching_ranges:
+        if handler_serial not in known_entry_anchors:
+            return handler_serial
+    return matching_ranges[0][1]
+
+
+def _resolve_fallback_anchor_from_exact_cover(
+    state_value: int,
+    report: DispatcherTransitionReport,
+    flow_graph: FlowGraph,
+) -> int | None:
+    exact_rows = sorted(
+        (row for row in report.rows if row.state_const is not None),
+        key=lambda row: row.state_const if row.state_const is not None else -1,
+    )
+    covering_row = None
+    for row in exact_rows:
+        if row.state_const is None or row.state_const > state_value:
+            break
+        covering_row = row
+    if covering_row is None:
+        return None
+
+    handler_snapshot = flow_graph.get_block(covering_row.handler_serial)
+    if handler_snapshot is None or len(handler_snapshot.preds) != 1:
+        return None
+    pred_serial = handler_snapshot.preds[0]
+    if pred_serial not in set(report.bst_node_blocks):
+        return None
+
+    pred_snapshot = flow_graph.get_block(pred_serial)
+    if pred_snapshot is None or len(pred_snapshot.succs) != 2:
+        return None
+
+    sibling_succs = [
+        succ for succ in pred_snapshot.succs if succ != covering_row.handler_serial
+    ]
+    if len(sibling_succs) != 1:
+        return None
+    return sibling_succs[0]
 
 
 def _ordered_unique(values: list[int] | tuple[int, ...]) -> tuple[int, ...]:
@@ -481,6 +566,438 @@ def _path_has_state_write_at_or_after_block(
     return False
 
 
+def _infer_path_branch_anchor(
+    path: HandlerPathResult,
+    flow_graph: FlowGraph,
+) -> StateRedirectAnchor | None:
+    if len(path.ordered_path) < 2:
+        return None
+
+    for source_block, next_block in zip(
+        reversed(path.ordered_path[:-1]),
+        reversed(path.ordered_path[1:]),
+    ):
+        branch_snapshot = flow_graph.get_block(source_block)
+        if branch_snapshot is None or len(branch_snapshot.succs) != 2:
+            continue
+        if next_block == branch_snapshot.succs[0]:
+            return StateRedirectAnchor(
+                kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                block_serial=source_block,
+                branch_arm=0,
+            )
+        if next_block == branch_snapshot.succs[1]:
+            return StateRedirectAnchor(
+                kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                block_serial=source_block,
+                branch_arm=1,
+            )
+
+    return None
+
+
+def _find_sibling_branch_handoff_path(
+    handler_serial: int,
+    paths: tuple[HandlerPathResult, ...],
+    flow_graph: FlowGraph,
+    *,
+    known_state_by_entry: Mapping[int, int],
+) -> HandlerPathResult | None:
+    """Synthesize a non-terminal sibling path that lands in another handler's join.
+
+    This preserves local goto-label chains like:
+    source handler -> local branch arm -> local goto blocks -> join block
+    where the join's other predecessor is an exact handler entry for the first
+    semantic continuation state.
+    """
+
+    for path in paths:
+        if path.final_state is not None:
+            continue
+
+        branch_anchor = _find_path_branch_anchor(path, paths, flow_graph)
+        if branch_anchor is None:
+            branch_anchor = _infer_path_branch_anchor(path, flow_graph)
+        if (
+            branch_anchor is None
+            or branch_anchor.kind != RedirectSourceKind.CONDITIONAL_BRANCH
+            or branch_anchor.branch_arm is None
+        ):
+            continue
+
+        branch_block = flow_graph.get_block(branch_anchor.block_serial)
+        if branch_block is None or len(branch_block.succs) != 2:
+            continue
+
+        sibling_arm = 1 - branch_anchor.branch_arm
+        if sibling_arm >= len(branch_block.succs):
+            continue
+
+        sibling_next = branch_block.succs[sibling_arm]
+        try:
+            branch_index = path.ordered_path.index(branch_anchor.block_serial)
+        except ValueError:
+            continue
+
+        prefix = list(path.ordered_path[: branch_index + 1])
+        chain = list(prefix)
+        current = sibling_next
+        previous = branch_anchor.block_serial
+        visited = {branch_anchor.block_serial}
+
+        while current not in visited:
+            visited.add(current)
+            chain.append(current)
+
+            if current in known_state_by_entry and current != handler_serial:
+                return HandlerPathResult(
+                    exit_block=current,
+                    final_state=known_state_by_entry[current],
+                    state_writes=[],
+                    ordered_path=chain,
+                )
+
+            current_snapshot = flow_graph.get_block(current)
+            if current_snapshot is None:
+                break
+
+            if len(current_snapshot.preds) > 1:
+                alternate_entries = [
+                    pred
+                    for pred in current_snapshot.preds
+                    if pred != previous
+                    and pred in known_state_by_entry
+                    and pred != handler_serial
+                ]
+                if len(alternate_entries) == 1:
+                    entry_serial = alternate_entries[0]
+                    return HandlerPathResult(
+                        exit_block=current,
+                        final_state=known_state_by_entry[entry_serial],
+                        state_writes=[],
+                        ordered_path=chain,
+                    )
+                break
+
+            if len(current_snapshot.succs) != 1:
+                break
+
+            previous, current = current, current_snapshot.succs[0]
+
+    return None
+
+
+def build_live_linearized_state_dag_from_graph(
+    flow_graph: FlowGraph,
+    transition_result: TransitionResult,
+    *,
+    dispatcher_entry_serial: int,
+    state_var_stkoff: int | None = None,
+    state_var_lvar_idx: int | None = None,
+    pre_header_serial: int | None = None,
+    initial_state: int | None = None,
+    handler_range_map: Mapping[int, tuple[int | None, int | None]] | None = None,
+    bst_node_blocks: tuple[int, ...] = (),
+    diagnostics: tuple[str, ...] = (),
+    dispatcher: IntervalDispatcher | None = None,
+    mba: object | None = None,
+) -> LinearizedStateDag:
+    """Build a live DAG from graph-backed analysis inputs.
+
+    This is the shared semantic-graph builder for both recon dumping and
+    strategy planning. When ``mba`` and ``state_var_stkoff`` are available,
+    it enriches the base transition report with path-evaluated conditional and
+    fallback states before materializing the DAG.
+    """
+
+    report = build_dispatcher_transition_report_from_graph(
+        flow_graph=flow_graph,
+        transition_result=transition_result,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        state_var_stkoff=state_var_stkoff,
+        state_var_lvar_idx=state_var_lvar_idx,
+        pre_header_serial=pre_header_serial,
+        initial_state=initial_state,
+        handler_range_map=handler_range_map,
+        bst_node_blocks=bst_node_blocks,
+        diagnostics=diagnostics,
+    )
+
+    handler_paths_by_handler: dict[int, tuple[HandlerPathResult, ...]] = {}
+    conditional_transitions_by_handler: dict[
+        int, tuple[ConditionalTransition, ...]
+    ] = {}
+
+    if state_var_stkoff is None or mba is None:
+        return build_linearized_state_dag_from_graph(
+            flow_graph,
+            report,
+            transition_result,
+            dispatcher=dispatcher,
+            handler_paths_by_handler=handler_paths_by_handler,
+            conditional_transitions_by_handler=conditional_transitions_by_handler,
+        )
+
+    handler_entry_blocks = {
+        handler.check_block for handler in transition_result.handlers.values()
+    }
+    state_constants = set(transition_result.handlers.keys())
+
+    for row in report.rows:
+        incoming_state = row.state_const
+        if incoming_state is None:
+            incoming_state = row.state_range_lo
+        if incoming_state is None:
+            continue
+
+        paths = tuple(
+            evaluate_handler_paths(
+                mba,
+                row.handler_serial,
+                incoming_state,
+                set(report.bst_node_blocks),
+                state_var_stkoff,
+                handler_entry_blocks,
+            )
+        )
+        handler_paths_by_handler[row.handler_serial] = paths
+        conds = tuple(
+            detect_conditional_transitions(
+                row.handler_serial,
+                list(paths),
+                state_constants,
+                flow_graph,
+                incoming_state=incoming_state,
+            )
+        )
+        if conds:
+            conditional_transitions_by_handler[row.handler_serial] = conds
+
+    initial_dag = build_linearized_state_dag_from_graph(
+        flow_graph,
+        report,
+        transition_result,
+        dispatcher=dispatcher,
+        handler_paths_by_handler=handler_paths_by_handler,
+        conditional_transitions_by_handler=conditional_transitions_by_handler,
+    )
+
+    existing_states = {
+        row.state_const for row in report.rows if row.state_const is not None
+    }
+    known_entry_anchors = {row.handler_serial for row in report.rows}
+    existing_rows_by_handler = {
+        row.handler_serial: row for row in report.rows
+    }
+    supplemental_states: set[int] = set()
+    collapsed_target_anchors: dict[int, set[int]] = {}
+
+    for transition in transition_result.transitions:
+        if transition.to_state not in existing_states:
+            supplemental_states.add(transition.to_state)
+    for paths in handler_paths_by_handler.values():
+        for path in paths:
+            if path.final_state is not None and path.final_state not in existing_states:
+                supplemental_states.add(path.final_state & 0xFFFFFFFF)
+    for conds in conditional_transitions_by_handler.values():
+        for cond in conds:
+            if (
+                not cond.is_terminal_no_write
+                and cond.target_state not in existing_states
+            ):
+                supplemental_states.add(cond.target_state)
+    for edge in initial_dag.edges:
+        if edge.target_state is None or edge.target_state in existing_states:
+            continue
+        if edge.target_key is None or edge.target_key.state_const != edge.target_state:
+            supplemental_states.add(edge.target_state)
+            candidate_anchor: int | None = None
+            if (
+                edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+                and edge.source_anchor.branch_arm is not None
+            ):
+                branch_block = flow_graph.get_block(edge.source_anchor.block_serial)
+                if (
+                    branch_block is not None
+                    and edge.source_anchor.branch_arm < len(branch_block.succs)
+                ):
+                    candidate_anchor = branch_block.succs[edge.source_anchor.branch_arm]
+            if candidate_anchor is None:
+                tail_block = (
+                    edge.ordered_path[-1]
+                    if edge.ordered_path
+                    else edge.source_anchor.block_serial
+                )
+                tail_snapshot = flow_graph.get_block(tail_block)
+                if tail_snapshot is not None:
+                    succ_candidates = [
+                        succ
+                        for succ in tail_snapshot.succs
+                        if succ not in edge.ordered_path
+                    ]
+                    if len(succ_candidates) == 1:
+                        candidate_anchor = succ_candidates[0]
+                    elif len(tail_snapshot.succs) == 1:
+                        candidate_anchor = tail_snapshot.succs[0]
+            if candidate_anchor is not None:
+                collapsed_target_anchors.setdefault(edge.target_state, set()).add(
+                    candidate_anchor
+                )
+
+    supplemental_rows: list[TransitionRow] = []
+    for state_value in sorted(supplemental_states):
+        anchor_candidates = collapsed_target_anchors.get(state_value, set())
+        anchor = _resolve_fallback_anchor_from_exact_cover(
+            state_value,
+            report,
+            flow_graph,
+        )
+        if anchor is None:
+            anchor = _resolve_range_backed_anchor(
+                state_value,
+                dict(report.handler_range_map),
+                known_entry_anchors=known_entry_anchors,
+            )
+        if anchor is None and len(anchor_candidates) == 1:
+            anchor = next(iter(anchor_candidates))
+        if anchor is None and dispatcher is not None:
+            row = dispatcher.lookup_row(state_value)
+            anchor = row.target if row is not None else None
+        if anchor is None:
+            continue
+
+        if anchor in known_entry_anchors:
+            base_row = existing_rows_by_handler.get(anchor)
+            paths = handler_paths_by_handler.get(anchor, ())
+            conds = conditional_transitions_by_handler.get(anchor, ())
+            synthetic_kind = (
+                base_row.kind if base_row is not None else TransitionKind.UNKNOWN
+            )
+            transition_label = (
+                f"range alias of {base_row.state_label}"
+                if base_row is not None
+                else "range alias"
+            )
+            conditional_states = (
+                base_row.conditional_states if base_row is not None else ()
+            )
+            next_state = base_row.next_state if base_row is not None else None
+            chain = base_row.chain_preview if base_row is not None else (anchor,)
+        else:
+            paths = tuple(
+                evaluate_handler_paths(
+                    mba,
+                    anchor,
+                    state_value,
+                    set(report.bst_node_blocks),
+                    state_var_stkoff,
+                    handler_entry_blocks,
+                )
+            )
+            handler_paths_by_handler[anchor] = paths
+            conds = tuple(
+                detect_conditional_transitions(
+                    anchor,
+                    list(paths),
+                    state_constants | supplemental_states,
+                    flow_graph,
+                    incoming_state=state_value,
+                )
+            )
+            if conds:
+                conditional_transitions_by_handler[anchor] = conds
+
+            synthetic_kind = TransitionKind.UNKNOWN
+            transition_label = "synthetic fallback"
+            if any(not cond.is_terminal_no_write for cond in conds):
+                synthetic_kind = TransitionKind.CONDITIONAL
+                transition_label = "conditional fallback"
+            elif any(path.final_state is not None for path in paths):
+                synthetic_kind = TransitionKind.TRANSITION
+                transition_label = "resolved fallback"
+            elif any(path.final_state is None for path in paths):
+                synthetic_kind = TransitionKind.EXIT
+                transition_label = "fallback exit"
+
+            conditional_states = tuple(
+                sorted(
+                    {
+                        cond.target_state
+                        for cond in conds
+                        if not cond.is_terminal_no_write
+                    }
+                )
+            )
+            next_state = next(
+                (
+                    path.final_state
+                    for path in paths
+                    if path.final_state is not None and not conditional_states
+                ),
+                None,
+            )
+            chain = tuple(paths[0].ordered_path[:4]) if paths else (anchor,)
+
+        supplemental_rows.append(
+            TransitionRow(
+                state_const=state_value,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=anchor,
+                kind=synthetic_kind,
+                next_state=next_state,
+                conditional_states=conditional_states,
+                state_label=f"State 0x{state_value:08x}",
+                transition_label=transition_label,
+                chain_preview=chain,
+                path=TransitionPath(
+                    handler_serial=anchor,
+                    chain=chain,
+                    next_state=next_state,
+                    conditional_states=conditional_states,
+                    back_edge=bool(next_state is not None or conditional_states),
+                    reaches_exit_block=any(path.final_state is None for path in paths),
+                    classified_exit=synthetic_kind == TransitionKind.EXIT,
+                    unresolved=synthetic_kind == TransitionKind.UNKNOWN,
+                ),
+            )
+        )
+
+    if supplemental_rows:
+        rows = tuple(
+            sorted(
+                (*report.rows, *supplemental_rows),
+                key=lambda row: (
+                    row.state_const is None,
+                    row.state_const if row.state_const is not None else 0xFFFFFFFF,
+                    row.handler_serial,
+                ),
+            )
+        )
+        report = DispatcherTransitionReport(
+            dispatcher_entry_serial=report.dispatcher_entry_serial,
+            state_var_stkoff=report.state_var_stkoff,
+            state_var_lvar_idx=report.state_var_lvar_idx,
+            pre_header_serial=report.pre_header_serial,
+            initial_state=report.initial_state,
+            handler_state_map=report.handler_state_map,
+            handler_range_map=report.handler_range_map,
+            bst_node_blocks=report.bst_node_blocks,
+            rows=rows,
+            summary=_summarize_rows(rows),
+            diagnostics=report.diagnostics,
+        )
+
+    return build_linearized_state_dag_from_graph(
+        flow_graph,
+        report,
+        transition_result,
+        dispatcher=dispatcher,
+        handler_paths_by_handler=handler_paths_by_handler,
+        conditional_transitions_by_handler=conditional_transitions_by_handler,
+    )
+
+
 def build_linearized_state_dag_from_graph(
     flow_graph: FlowGraph,
     report: DispatcherTransitionReport,
@@ -502,6 +1019,33 @@ def build_linearized_state_dag_from_graph(
         serial: tuple(conds)
         for serial, conds in (conditional_transitions_by_handler or {}).items()
     }
+    known_state_by_entry = {
+        row.handler_serial: row.state_const
+        for row in report.rows
+        if row.state_const is not None
+    }
+    for handler_serial, paths in list(paths_by_handler.items()):
+        synthetic_path = _find_sibling_branch_handoff_path(
+            handler_serial,
+            paths,
+            flow_graph,
+            known_state_by_entry=known_state_by_entry,
+        )
+        if synthetic_path is None:
+            continue
+        existing_signatures = {
+            (path.exit_block, path.final_state, tuple(path.ordered_path))
+            for path in paths
+        }
+        synthetic_signature = (
+            synthetic_path.exit_block,
+            synthetic_path.final_state,
+            tuple(synthetic_path.ordered_path),
+        )
+        if synthetic_signature in existing_signatures:
+            continue
+        paths_by_handler[handler_serial] = (*paths, synthetic_path)
+
     shared_blocks = _compute_shared_blocks(paths_by_handler)
     _, resolve_handler = _build_state_resolver(report, transition_result, dispatcher)
 
@@ -636,6 +1180,11 @@ def build_linearized_state_dag_from_graph(
         if source_node is None:
             continue
         paths = paths_by_handler.get(handler.check_block, ())
+        synthesized_targets = {
+            path.final_state & 0xFFFFFFFF
+            for path in paths
+            if path.final_state is not None and not path.state_writes
+        }
 
         for transition in handler.transitions:
             if transition.is_conditional:
@@ -643,6 +1192,8 @@ def build_linearized_state_dag_from_graph(
             target_handler_serial = resolve_handler(transition.to_state)
             target_node = resolve_target_node(target_handler_serial, transition.to_state)
             matched_path = _select_path_for_state(paths, transition.to_state)
+            if matched_path is None and synthesized_targets:
+                continue
             ordered_path = (
                 tuple(matched_path.ordered_path) if matched_path is not None else ()
             )
@@ -1255,6 +1806,7 @@ __all__ = [
     "StateLocalSegment",
     "StateNodeKind",
     "StateRedirectAnchor",
+    "build_live_linearized_state_dag_from_graph",
     "build_linearized_state_dag_from_graph",
     "render_linearized_state_dag",
     "render_linearized_state_dag_dot",
