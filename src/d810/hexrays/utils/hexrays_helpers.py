@@ -658,19 +658,57 @@ class FuncFlags(enum.IntFlag):
 
 
 class UseDefFlags(enum.IntEnum):
-    MUST_ACCESS           = idaapi.MUST_ACCESS
-    MAY_ACCESS            = idaapi.MAY_ACCESS
-    MAYMUST_ACCESS_MASK   = idaapi.MAYMUST_ACCESS_MASK
-    ONE_ACCESS_TYPE       = idaapi.ONE_ACCESS_TYPE
-    INCLUDE_SPOILED_REGS  = idaapi.INCLUDE_SPOILED_REGS
-    EXCLUDE_PASS_REGS     = idaapi.EXCLUDE_PASS_REGS
-    FULL_XDSU             = idaapi.FULL_XDSU
-    WITH_ASSERTS          = idaapi.WITH_ASSERTS
-    EXCLUDE_VOLATILE      = idaapi.EXCLUDE_VOLATILE
-    INCLUDE_UNUSED_SRC    = idaapi.INCLUDE_UNUSED_SRC
-    INCLUDE_DEAD_RETREGS  = idaapi.INCLUDE_DEAD_RETREGS
-    INCLUDE_RESTRICTED    = idaapi.INCLUDE_RESTRICTED
+    """
+    Are we looking for 'must access' or 'may access' information?
+    'must access' means that the code will always access the specified location(s).
+    'may access' means that the code may in some cases access the specified location(s).
+
+    Example:
+        ldx cs.2, r0.4, r1.4
+        MUST_ACCESS: r0.4 and r1.4, usually displayed as r0.8 because r0 and r1 are adjacent
+        MAY_ACCESS: r0.4 and r1.4, and all aliasable memory, because ldx may access any part of the aliasable memory
+
+    """
+
+    MUST_ACCESS = idaapi.MUST_ACCESS
+    """Access information we can count on."""
+
+    MAY_ACCESS = idaapi.MAY_ACCESS
+    """Access information we should take into account."""
+
+    MAYMUST_ACCESS_MASK = idaapi.MAYMUST_ACCESS_MASK
+    """Masks MUST_ACCESS and MAY_ACCESS."""
+
+    ONE_ACCESS_TYPE = idaapi.ONE_ACCESS_TYPE
+    """For find_first_use(): use only the specified maymust access type (by default it inverts the access type for def-lists)."""
+
+    INCLUDE_SPOILED_REGS = idaapi.INCLUDE_SPOILED_REGS
+    """For build_def_list() with MUST_ACCESS: include spoiled registers in the list."""
+
+    EXCLUDE_PASS_REGS = idaapi.EXCLUDE_PASS_REGS
+    """For build_def_list() with MAY_ACCESS: exclude pass_regs from the list."""
+
+    FULL_XDSU = idaapi.FULL_XDSU
+    """For build_def_list(): if xds/xdu source and targets are the same, treat it as if xdsu redefines the entire destination."""
+
+    WITH_ASSERTS = idaapi.WITH_ASSERTS
+    """For find_first_use(): do not ignore assertions."""
+
+    EXCLUDE_VOLATILE = idaapi.EXCLUDE_VOLATILE
+    """For build_def_list(): exclude volatile memory from the list."""
+
+    INCLUDE_UNUSED_SRC = idaapi.INCLUDE_UNUSED_SRC
+    """For build_use_list(): do not exclude unused source bytes for m_and/m_or insns."""
+
+    INCLUDE_DEAD_RETREGS = idaapi.INCLUDE_DEAD_RETREGS
+    """For build_def_list(): include dead returned registers in the list."""
+
+    INCLUDE_RESTRICTED = idaapi.INCLUDE_RESTRICTED
+    """For MAY_ACCESS: include restricted memory."""
+
     CALL_SPOILS_ONLY_ARGS = idaapi.CALL_SPOILS_ONLY_ARGS
+    """For build_def_list() & MAY_ACCESS: do not include global memory into the spoiled list of a call."""
+
 
 
 
