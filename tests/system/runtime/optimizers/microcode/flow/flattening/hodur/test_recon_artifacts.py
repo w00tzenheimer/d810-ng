@@ -11,6 +11,12 @@ from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
     save_transition_report_to_store,
     write_return_frontier_artifact_from_store,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+    BenefitMetrics,
+    OwnershipScope,
+    PlanFragment,
+    StageResult,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.unflattener import (
     HodurUnflattener,
 )
@@ -203,3 +209,58 @@ def test_write_return_frontier_artifact_from_store(tmp_path):
     assert artifact is not None
     assert artifact.exists()
     assert '"total_sites": 1' in artifact.read_text()
+
+
+def test_collect_post_apply_bst_cleanup_blockers_only_counts_applied_stages():
+    fragment = PlanFragment(
+        strategy_name="linearized_flow_graph",
+        family="direct",
+        ownership=OwnershipScope(
+            blocks=frozenset(),
+            edges=frozenset(),
+            transitions=frozenset(),
+        ),
+        prerequisites=[],
+        expected_benefit=BenefitMetrics(0, 0, 0, 0.0),
+        risk_score=0.0,
+        metadata={
+            "allow_post_apply_bst_cleanup": False,
+            "residual_dispatcher_preds": (95, 131),
+        },
+        modifications=[],
+    )
+    skipped_fragment = PlanFragment(
+        strategy_name="other_stage",
+        family="direct",
+        ownership=OwnershipScope(
+            blocks=frozenset(),
+            edges=frozenset(),
+            transitions=frozenset(),
+        ),
+        prerequisites=[],
+        expected_benefit=BenefitMetrics(0, 0, 0, 0.0),
+        risk_score=0.0,
+        metadata={
+            "allow_post_apply_bst_cleanup": False,
+            "residual_dispatcher_preds": (17,),
+        },
+        modifications=[],
+    )
+
+    blockers = HodurUnflattener._collect_post_apply_bst_cleanup_blockers(
+        [fragment, skipped_fragment],
+        [
+            StageResult(
+                strategy_name="linearized_flow_graph",
+                success=True,
+                edits_applied=3,
+            ),
+            StageResult(
+                strategy_name="other_stage",
+                success=False,
+                edits_applied=0,
+            ),
+        ],
+    )
+
+    assert blockers == {"linearized_flow_graph": (95, 131)}
