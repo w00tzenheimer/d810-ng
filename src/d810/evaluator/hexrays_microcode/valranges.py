@@ -14,6 +14,7 @@ import ida_hexrays
 
 from d810.core import logging
 from d810.core.typing import Dict, Iterable, List, Optional
+from d810.hexrays.utils.hexrays_helpers import UseDefFlags
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ class _ValrangeOperand:
     location: ValrangeLocation
 
 
-def _iter_operand_specs(ins) -> Iterable[_ValrangeOperand]:
+def _iter_operand_specs(ins: ida_hexrays.minsn_t) -> Iterable[_ValrangeOperand]:
     """Yield structured operand specs for register/stack operands in *ins*."""
     for mop in (ins.l, ins.r, ins.d):
         if mop is None:
@@ -75,6 +76,7 @@ def _iter_operand_specs(ins) -> Iterable[_ValrangeOperand]:
         try:
             vivl = ida_hexrays.vivl_t()
             if mop_type == ida_hexrays.mop_r:
+                assert mop.r is not None
                 vivl.set_reg(mop.r, mop.size)
                 location = ValrangeLocation(
                     kind=ValrangeLocationKind.REGISTER,
@@ -82,6 +84,7 @@ def _iter_operand_specs(ins) -> Iterable[_ValrangeOperand]:
                     width=int(mop.size),
                 )
             elif mop_type == ida_hexrays.mop_S:
+                assert mop.s is not None
                 try:
                     stkoff = mop.s.off
                 except Exception:
@@ -124,9 +127,22 @@ def _collect_valrange_records_for_operands(
 
             vr = ida_hexrays.valrng_t(operand.location.width)
             if ins is None:
-                ok = blk.get_valranges(vr, operand.vivl, ida_hexrays.VR_AT_START)
+                ok = blk.get_valranges(
+                    vr,
+                    operand.vivl,
+                    ida_hexrays.VR_AT_START
+                    | ida_hexrays.VR_AT_END
+                    | ida_hexrays.VR_EXACT,
+                )
             else:
-                ok = blk.get_valranges(vr, operand.vivl, ins, ida_hexrays.VR_AT_START)
+                ok = blk.get_valranges(
+                    vr,
+                    operand.vivl,
+                    ins,
+                    ida_hexrays.VR_AT_START
+                    | ida_hexrays.VR_AT_END
+                    | ida_hexrays.VR_EXACT,
+                )
             if ok and not vr.empty() and not vr.all_values():
                 ins_ea = None
                 if ins is not None:
@@ -213,14 +229,53 @@ def collect_instruction_valrange_records(blk, ins) -> List[ValrangeRecord]:
     )
 
 
-def collect_block_valrange_records(blk) -> List[ValrangeRecord]:
-    """Collect non-trivial value-range records for register/stack operands in *blk*."""
+def _collect_block_operands(blk) -> List[_ValrangeOperand]:
+    """Collect register/stack operand specs from all instructions in *blk*."""
     operands: list[_ValrangeOperand] = []
     ins = blk.head
     while ins is not None:
         operands.extend(_iter_operand_specs(ins))
         ins = ins.next
-    return _collect_valrange_records_for_operands(blk, operands)
+    return operands
+
+
+def _collect_valrange_records_from_block_and_predecessors(
+    blk: ida_hexrays.mblock_t,
+    visited: set[int],
+) -> List[ValrangeRecord]:
+    """Recursively collect valrange records from *blk* and its predecessors."""
+    serial = int(blk.serial)
+    if serial in visited:
+        return []
+    visited.add(serial)
+
+    results = list(
+        _collect_valrange_records_for_operands(blk, _collect_block_operands(blk))
+    )
+
+    for pred in blk.preds():
+        if pred is not None:
+            results.extend(
+                _collect_valrange_records_from_block_and_predecessors(pred, visited)
+            )
+
+    return results
+
+
+def collect_block_valrange_records(
+    blk: ida_hexrays.mblock_t, *, include_predecessors: bool = False
+) -> List[ValrangeRecord]:
+    """Collect non-trivial value-range records for register/stack operands in *blk*.
+
+    Args:
+        blk: Block to collect from.
+        include_predecessors: If True, recursively walk predecessors and include
+            their valranges. Default False for per-block-only (used by
+            collect_mba_valrange_records).
+    """
+    if include_predecessors:
+        return _collect_valrange_records_from_block_and_predecessors(blk, set())
+    return _collect_valrange_records_for_operands(blk, _collect_block_operands(blk))
 
 
 def collect_mba_valrange_records(mba) -> Dict[int, List[ValrangeRecord]]:

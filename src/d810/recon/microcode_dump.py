@@ -25,10 +25,11 @@ from dataclasses import dataclass, field
 import idaapi
 
 from d810.core.logging import getLogger
-from d810.core.typing import Any, Dict, List, Optional, Tuple
+from d810.core.typing import Any, Dict, List, Optional, Tuple, cast
 from d810.evaluator.hexrays_microcode.valranges import (
     collect_block_valrange_records,
     collect_instruction_valrange_records,
+    collect_mba_valrange_records,
 )
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.utils.hexrays_helpers import (
@@ -49,25 +50,14 @@ from d810.recon.flow.bst_analysis import (
     analyze_bst_dispatcher,
 )
 from d810.recon.flow.linearized_state_dag import (
-    build_linearized_state_dag_from_graph,
+    build_live_linearized_state_dag_from_graph,
     render_linearized_state_dag,
     render_linearized_state_dag_dot,
 )
-from d810.recon.flow.state_machine_analysis import (
-    ConditionalTransition,
-    HandlerPathResult,
-    detect_conditional_transitions,
-    evaluate_handler_paths,
-)
 from d810.recon.flow.transition_builder import _convert_bst_to_result
 from d810.recon.flow.transition_report import (
-    DispatcherTransitionReport,
     TransitionKind,
-    TransitionPath,
-    TransitionRow,
-    TransitionSummary,
     build_dispatcher_transition_report,
-    build_dispatcher_transition_report_from_graph,
 )
 
 # -----------------------------------------------------------------------------
@@ -85,7 +75,9 @@ MATURITY_NAMES: Dict[int, str] = MATURITY_TO_STRING_DICT
 OPCODE_MAP: Dict[int, str] = {op: OPCODES_INFO[op]["name"] for op in OPCODES_INFO}
 MOP_TYPE_MAP: Dict[int, str] = {mop: MOP_INFO[mop]["name"] for mop in MOP_INFO}
 
-
+_WS_RE = re.compile(r"\s+")
+_NON_PRINTABLE_CHARS_RE = re.compile(r"[^\x20-\x7E]+")
+_ESC_RE = re.compile(r"[\x01\x02].", re.S)
 # -----------------------------------------------------------------------------
 # Data Classes for JSON Serialization
 # -----------------------------------------------------------------------------
@@ -504,13 +496,13 @@ def _fix_block_refs(s: str) -> str:
     """
     # Pattern: ') (' + exactly 16 hex chars + decimal digits + ' )'
     # Capture group 1: the trailing decimal serial
-    s = re.sub(r"\) \([0-9A-Fa-f]{16}(\d+) \)", r"@\1", s)
+    s = re.sub(r"@[0-9A-Fa-f]{16}(\d+)$", r"@\1", s)
     # goto lines end up with '@ @N' after the above substitution
     s = s.replace("@ @", "@")
     return s
 
 
-def _fix_var_names(s: str, frsize: int) -> str:
+def _replace_var_placeholders_with_sp_offset(s: str, frsize: int) -> str:
     """Replace ``%var_XX.N`` placeholders with ``sp+0xOFF.N`` notation.
 
     IDA's ``minsn_t._print()`` emits stack variables as ``%var_HEX.size``
@@ -552,35 +544,73 @@ def _collect_bitset(bs) -> list:
             return []
 
 
-def _clean_insn_str(raw) -> str:
-    if raw is None:
-        return "<none>"
-    return "".join(
-        c if c == "\t" or 0x20 <= ord(c) <= 0x7E else " " for c in str(raw)
-    ).rstrip()
+def _split_trailing_comment(s: str) -> tuple[str, str]:
+    start_marker = "\x01\x04 ;"
+    idx = s.rfind(start_marker)
+    if idx == -1:
+        return s, ""
+
+    head = s[:idx]
+    tail = s[idx + (len(start_marker) - 1) :]  # keep "; ..."
+
+    # Drop one trailing close-marker pair like \x02\x04, if present.
+    if len(tail) >= 2 and tail[-2] == "\x02":
+        tail = tail[:-2]
+
+    return head, tail
 
 
 def _clean_insn_str(raw: Optional[str]) -> str:
     if raw is None:
         return "<none>"
-    return "".join(c if 0x20 <= ord(c) <= 0x7E else " " for c in str(raw)).rstrip()
+
+    s = raw
+    s = _ESC_RE.sub("", s)
+    s = "".join(c for c in s if 0x20 <= ord(c) <= 0x7E)
+    s = _WS_RE.sub(" ", s).strip()
+    return s
 
 
-def _print_list_pair(label: str, must, may=None) -> Optional[str]:
+def _format_insn_str(insn_str: str) -> str:
+    """
+    Format an already-cleaned instruction string as:
+      <mnemonic in 6-char field><space><rest>
+
+    Examples:
+      "mov #-1, sp+0x20.8" -> "mov    #-1, sp+0x20.8"
+      "goto @87"           -> "goto   @87"
+      "ret"                -> "ret   "
+    """
+    insn_str = _clean_insn_str(insn_str)
+    if not insn_str:
+        return ""
+
+    parts = insn_str.split(None, 1)
+    mnemonic = parts[0]
+    operands = parts[1] if len(parts) > 1 else ""
+
+    return f"{mnemonic.ljust(6)} {operands}" if operands else mnemonic.ljust(6)
+
+
+def _print_list_pair(
+    label: str, must: idaapi.mlist_t, may: Optional[idaapi.mlist_t] = None
+) -> Optional[str]:
     """Mimic C++ print_list(vec, label, must, may)."""
-    must_s = _mlist_dstr(must)
-    may_s = _mlist_dstr(may) if may is not None else ""
-
-    if not must_s and not may_s:
+    must_s = must.dstr()
+    if not must_s:
         return None
 
-    if not may_s or may_s == must_s:
-        return f"; {label}: {must_s}"
+    may_s = ""
+    if may is not None and not may.empty() and may != must:
+        may.sub(must)  # may -= must  (leaves the "may-only" part)
+        may_s = may.dstr()
 
-    # must and may differ → show may in parens
-    if must_s:
-        return f"; {label}: {must_s},({may_s})"
-    return f"; {label}: ({may_s})"
+    rval = f"; {label}: {must_s}"
+    if may_s:
+        # must and may differ → show may in parens
+        rval += f",({may_s})"
+
+    return rval
 
 
 def _print_use_def_dnu(line: List[str], blk: idaapi.mblock_t) -> None:
@@ -621,7 +651,9 @@ def _print_stack_frame_overview(hdr: List[str], mba: idaapi.mba_t) -> None:
             hdr.append(f"; SAVEDREGS: {','.join(parts)}")
 
 
-def _print_block_header(i: int, blk: idaapi.mblock_t, mba: idaapi.mba_t) -> list[str]:
+def _print_block_header(
+    i: int, blk: idaapi.mblock_t, mba: idaapi.mba_t
+) -> tuple[list[str], list[str]]:
     """Append block header lines to *line*, matching C++ print_block_header calls."""
     serial = blk.serial
     start_ea = blk.start
@@ -676,12 +708,14 @@ def _print_block_header(i: int, blk: idaapi.mblock_t, mba: idaapi.mba_t) -> list
     else:
         hdr.append("; USE-DEF LISTS ARE NOT READY")
 
-    # ---- VALRANGES ----
-    vr_records = collect_block_valrange_records(blk)
+    # ---- VALRANGES ---
+    # this is wrong, i think this is collecting valranges and their possible values
+    # from predecessors as well (whatever is in the full-set of mayuse)
+    vr_records = collect_block_valrange_records(blk, include_predecessors=False)
     if vr_records:
         hdr.append(f"; VALRANGES: {', '.join(str(r) for r in vr_records)}")
 
-    return hdr
+    return hdr, succs_sorted
 
 
 def _collect_block_instructions(blk: idaapi.mblock_t) -> List[idaapi.minsn_t]:
@@ -700,14 +734,20 @@ def _print_use_list(blk: idaapi.mblock_t, ins: idaapi.minsn_t, frsize: int) -> s
     may_use = blk.build_use_list(ins, UseDefFlags.MAY_ACCESS)
     must_use = blk.build_use_list(ins, UseDefFlags.MUST_ACCESS)
 
-    must_use_s = _fix_var_names(must_use.dstr(), frsize) if not must_use.empty() else ""
+    must_use_s = (
+        _replace_var_placeholders_with_sp_offset(must_use.dstr(), frsize)
+        if not must_use.empty()
+        else ""
+    )
 
     if may_use == must_use:
         use_str = f"u={must_use_s:<10}"
     else:
         may_use.sub(must_use)  # may -= must  (leaves the "may-only" part)
         may_only_s = (
-            _fix_var_names(may_use.dstr(), frsize) if not may_use.empty() else ""
+            _replace_var_placeholders_with_sp_offset(may_use.dstr(), frsize)
+            if not may_use.empty()
+            else ""
         )
         sep = "," if not must_use.empty() else ""
         use_str = f"u={must_use_s}{sep}({may_only_s})"
@@ -721,7 +761,11 @@ def _print_def_list(blk: idaapi.mblock_t, ins: idaapi.minsn_t, frsize: int) -> s
         return ""
 
     must_def = blk.build_def_list(ins, UseDefFlags.MUST_ACCESS)
-    must_def_s = _fix_var_names(must_def.dstr(), frsize) if not must_def.empty() else ""
+    must_def_s = (
+        _replace_var_placeholders_with_sp_offset(must_def.dstr(), frsize)
+        if not must_def.empty()
+        else ""
+    )
     def_str = f" d={must_def_s}"
     if may_def == must_def:
         return def_str
@@ -731,7 +775,11 @@ def _print_def_list(blk: idaapi.mblock_t, ins: idaapi.minsn_t, frsize: int) -> s
         sep = ","
         may_def.sub(must_def)  # may -= must
 
-    may_only_s = _fix_var_names(may_def.dstr(), frsize) if not may_def.empty() else ""
+    may_only_s = (
+        _replace_var_placeholders_with_sp_offset(may_def.dstr(), frsize)
+        if not may_def.empty()
+        else ""
+    )
     def_str += f"{sep}({may_only_s})"
 
     # pass regs: may_only - may_excluding_pass
@@ -741,7 +789,11 @@ def _print_def_list(blk: idaapi.mblock_t, ins: idaapi.minsn_t, frsize: int) -> s
     )
     pd.sub(may_no_pass)
     if not pd.empty():
-        pd_s = _fix_var_names(pd.dstr(), frsize) if not pd.empty() else ""
+        pd_s = (
+            _replace_var_placeholders_with_sp_offset(pd.dstr(), frsize)
+            if not pd.empty()
+            else ""
+        )
         def_str += f",pass={pd_s}"
     return def_str
 
@@ -783,7 +835,9 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
     # Flag constants
 
     _PRINT_FLAGS = (
-        ShowInstructionsFlags.SHINS_VALNUM | ShowInstructionsFlags.SHINS_NUMADDR
+        ShowInstructionsFlags.SHINS_VALNUM
+        | ShowInstructionsFlags.SHINS_NUMADDR
+        | ShowInstructionsFlags.SHINS_LDXEA
     )
     """
         
@@ -818,8 +872,8 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
         if blk is None:
             continue
         serial = blk.serial
-
-        line = _print_block_header(i, blk, mba)
+        block_type = BlockType(blk.type)
+        line, succs_sorted = _print_block_header(i, blk, mba)
         # Collect instructions
         insns = _collect_block_instructions(blk)
 
@@ -827,29 +881,30 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
 
         for insn_idx, ins in enumerate(insns, start=1):
             ea = ins.ea
-            insn_str = _clean_insn_str(ins._print(_PRINT_FLAGS))
-            if insn_idx == 1:
-                minst_str, _, mop_str = insn_str.partition(" ")
-                mop_str = re.sub(r"\s+", " ", mop_str)
-                # Ensure minst_str is left justified and mop_str starts at position 7 (index 6)
-                # (so exactly one space after the 6-char field)
-                insn_str = f"{minst_str.ljust(6)} {mop_str.ljust(max(0, len(mop_str)))}"
+            raw = cast(str, ins._print(_PRINT_FLAGS))
+            head, tail = _split_trailing_comment(raw)
+            insn_str = _clean_insn_str(head)
+            # line.append(raw)
             insn_str = _fix_block_refs(insn_str)
-            insn_str = _fix_var_names(insn_str, _frsize)
+            insn_str = _format_insn_str(insn_str)
+            # _print_insn_usedef(blk, ins, _frsize)
 
-            usedef = _print_insn_usedef(blk, ins, _frsize)
+            ins_vr_records = collect_instruction_valrange_records(blk, ins)
+            ins_vr = (
+                f" vr={{{', '.join(str(r) for r in ins_vr_records)}}}"
+                if ins_vr_records
+                else ""
+            )
 
-            ins_vr = ""
-            try:
-                ins_vr_records = collect_instruction_valrange_records(blk, ins)
-                if ins_vr_records:
-                    ins_vr = f" vr={{{', '.join(str(r) for r in ins_vr_records)}}}"
-            except Exception:
-                pass
+            ea_str = f"{ea:X}"
+            suffix = f"{tail}{ins_vr}"
+            prefix = f"{serial}.{insn_idx:>2} {ea_str}"
+            line.append(f"{prefix}  {insn_str:<12} {suffix}")
 
-            ea_str = f"{ea:016X}"
-            suffix = f" ; {ea_str} {usedef}{ins_vr}"
-            line.append(f"  {serial}.{insn_idx - 1:<4} {insn_str}{suffix}")
+        if serial != 0 and block_type != BlockType.STOP:
+            last_line = line.pop()
+            last_line += f" ; Successors: {', '.join(succs_sorted)}"
+            line.append(last_line)
         as_str.append("\n".join(line))
 
     return as_str
@@ -1055,85 +1110,6 @@ def _build_live_linearized_state_dag(
     state_var_lvar_idx: Optional[int] = None,
     max_depth: int = 20,
 ):
-    def _summarize_rows(rows: tuple[TransitionRow, ...]) -> TransitionSummary:
-        known_count = sum(1 for row in rows if row.kind == TransitionKind.TRANSITION)
-        conditional_count = sum(
-            1 for row in rows if row.kind == TransitionKind.CONDITIONAL
-        )
-        exit_count = sum(1 for row in rows if row.kind == TransitionKind.EXIT)
-        unknown_count = sum(1 for row in rows if row.kind == TransitionKind.UNKNOWN)
-        return TransitionSummary(
-            handlers_total=len(rows),
-            known_count=known_count,
-            conditional_count=conditional_count,
-            exit_count=exit_count,
-            unknown_count=unknown_count,
-        )
-
-    def _resolve_range_backed_anchor(
-        state_value: int,
-        handler_range_map: dict[int, tuple[int | None, int | None]],
-        *,
-        known_entry_anchors: set[int],
-    ) -> int | None:
-        matching_ranges: list[tuple[int, int]] = []
-        for handler_serial, (range_lo, range_hi) in handler_range_map.items():
-            if range_lo is None or range_hi is None:
-                continue
-            if not (range_lo <= state_value <= range_hi):
-                continue
-            matching_ranges.append((range_hi - range_lo, handler_serial))
-
-        if not matching_ranges:
-            return None
-
-        matching_ranges.sort()
-        for _, handler_serial in matching_ranges:
-            if handler_serial not in known_entry_anchors:
-                return handler_serial
-        return matching_ranges[0][1]
-
-    def _resolve_fallback_anchor_from_exact_cover(
-        state_value: int,
-        report: DispatcherTransitionReport,
-        flow_graph,
-    ) -> int | None:
-        exact_rows = sorted(
-            (
-                row
-                for row in report.rows
-                if row.state_const is not None
-            ),
-            key=lambda row: row.state_const if row.state_const is not None else -1,
-        )
-        covering_row = None
-        for row in exact_rows:
-            if row.state_const is None or row.state_const > state_value:
-                break
-            covering_row = row
-        if covering_row is None:
-            return None
-
-        handler_snapshot = flow_graph.get_block(covering_row.handler_serial)
-        if handler_snapshot is None or len(handler_snapshot.preds) != 1:
-            return None
-        pred_serial = handler_snapshot.preds[0]
-        if pred_serial not in set(report.bst_node_blocks):
-            return None
-
-        pred_snapshot = flow_graph.get_block(pred_serial)
-        if pred_snapshot is None or len(pred_snapshot.succs) != 2:
-            return None
-
-        sibling_succs = [
-            succ
-            for succ in pred_snapshot.succs
-            if succ != covering_row.handler_serial
-        ]
-        if len(sibling_succs) != 1:
-            return None
-        return sibling_succs[0]
-
     if state_var_stkoff is None:
         detected, detected_lvar_idx = _detect_state_var_stkoff(
             mba,
@@ -1154,9 +1130,9 @@ def _build_live_linearized_state_dag(
     )
     transition_result = _convert_bst_to_result(bst_result)
     flow_graph = IDAIRTranslator().lift(mba)
-    report = build_dispatcher_transition_report_from_graph(
-        flow_graph=flow_graph,
-        transition_result=transition_result,
+    return build_live_linearized_state_dag_from_graph(
+        flow_graph,
+        transition_result,
         dispatcher_entry_serial=dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
@@ -1164,274 +1140,8 @@ def _build_live_linearized_state_dag(
         initial_state=bst_result.initial_state,
         handler_range_map=bst_result.handler_range_map,
         bst_node_blocks=tuple(sorted(bst_result.bst_node_blocks)),
-    )
-
-    handler_paths_by_handler: dict[int, tuple[HandlerPathResult, ...]] = {}
-    conditional_transitions_by_handler: dict[int, tuple[ConditionalTransition, ...]] = (
-        {}
-    )
-
-    initial_dag = None
-
-    if state_var_stkoff is not None:
-        handler_entry_blocks = {
-            handler.check_block for handler in transition_result.handlers.values()
-        }
-        state_constants = set(transition_result.handlers.keys())
-
-        for row in report.rows:
-            incoming_state = row.state_const
-            if incoming_state is None:
-                incoming_state = row.state_range_lo
-            if incoming_state is None:
-                continue
-
-            paths = tuple(
-                evaluate_handler_paths(
-                    mba,
-                    row.handler_serial,
-                    incoming_state,
-                    set(report.bst_node_blocks),
-                    state_var_stkoff,
-                    handler_entry_blocks,
-                )
-            )
-            handler_paths_by_handler[row.handler_serial] = paths
-            conds = tuple(
-                detect_conditional_transitions(
-                    row.handler_serial,
-                    list(paths),
-                    state_constants,
-                    flow_graph,
-                    incoming_state=incoming_state,
-                )
-            )
-            if conds:
-                conditional_transitions_by_handler[row.handler_serial] = conds
-
-        initial_dag = build_linearized_state_dag_from_graph(
-            flow_graph,
-            report,
-            transition_result,
-            dispatcher=bst_result.dispatcher,
-            handler_paths_by_handler=handler_paths_by_handler,
-            conditional_transitions_by_handler=conditional_transitions_by_handler,
-        )
-
-        existing_states = {
-            row.state_const for row in report.rows if row.state_const is not None
-        }
-        known_entry_anchors = {row.handler_serial for row in report.rows}
-        existing_rows_by_handler = {
-            row.handler_serial: row for row in report.rows
-        }
-        supplemental_states: set[int] = set()
-        collapsed_target_anchors: dict[int, set[int]] = {}
-
-        for transition in transition_result.transitions:
-            if transition.to_state not in existing_states:
-                supplemental_states.add(transition.to_state)
-        for paths in handler_paths_by_handler.values():
-            for path in paths:
-                if path.final_state is not None and path.final_state not in existing_states:
-                    supplemental_states.add(path.final_state & 0xFFFFFFFF)
-        for conds in conditional_transitions_by_handler.values():
-            for cond in conds:
-                if not cond.is_terminal_no_write and cond.target_state not in existing_states:
-                    supplemental_states.add(cond.target_state)
-        for edge in initial_dag.edges:
-            if edge.target_state is None or edge.target_state in existing_states:
-                continue
-            if edge.target_key is None or edge.target_key.state_const != edge.target_state:
-                supplemental_states.add(edge.target_state)
-                candidate_anchor: int | None = None
-                if (
-                    edge.source_anchor.kind.name == "CONDITIONAL_BRANCH"
-                    and edge.source_anchor.branch_arm is not None
-                ):
-                    branch_block = flow_graph.get_block(edge.source_anchor.block_serial)
-                    if (
-                        branch_block is not None
-                        and edge.source_anchor.branch_arm < len(branch_block.succs)
-                    ):
-                        candidate_anchor = branch_block.succs[edge.source_anchor.branch_arm]
-                if candidate_anchor is None:
-                    tail_block = (
-                        edge.ordered_path[-1]
-                        if edge.ordered_path
-                        else edge.source_anchor.block_serial
-                    )
-                    tail_snapshot = flow_graph.get_block(tail_block)
-                    if tail_snapshot is not None:
-                        succ_candidates = [
-                            succ
-                            for succ in tail_snapshot.succs
-                            if succ not in edge.ordered_path
-                        ]
-                        if len(succ_candidates) == 1:
-                            candidate_anchor = succ_candidates[0]
-                        elif len(tail_snapshot.succs) == 1:
-                            candidate_anchor = tail_snapshot.succs[0]
-                if candidate_anchor is not None:
-                    collapsed_target_anchors.setdefault(edge.target_state, set()).add(
-                        candidate_anchor
-                    )
-
-        supplemental_rows: list[TransitionRow] = []
-        for state_value in sorted(supplemental_states):
-            anchor_candidates = collapsed_target_anchors.get(state_value, set())
-            anchor = _resolve_fallback_anchor_from_exact_cover(
-                state_value,
-                report,
-                flow_graph,
-            )
-            if anchor is None:
-                anchor = _resolve_range_backed_anchor(
-                    state_value,
-                    dict(report.handler_range_map),
-                    known_entry_anchors=known_entry_anchors,
-                )
-            if anchor is None and len(anchor_candidates) == 1:
-                anchor = next(iter(anchor_candidates))
-            if anchor is None and bst_result.dispatcher is not None:
-                row = bst_result.dispatcher.lookup_row(state_value)
-                anchor = row.target if row is not None else None
-            if anchor is None:
-                continue
-
-            if anchor in known_entry_anchors:
-                base_row = existing_rows_by_handler.get(anchor)
-                paths = handler_paths_by_handler.get(anchor, ())
-                conds = conditional_transitions_by_handler.get(anchor, ())
-                synthetic_kind = (
-                    base_row.kind if base_row is not None else TransitionKind.UNKNOWN
-                )
-                transition_label = (
-                    f"range alias of {base_row.state_label}"
-                    if base_row is not None
-                    else "range alias"
-                )
-                conditional_states = (
-                    base_row.conditional_states if base_row is not None else ()
-                )
-                next_state = base_row.next_state if base_row is not None else None
-                chain = (
-                    base_row.chain_preview if base_row is not None else (anchor,)
-                )
-            else:
-                paths = tuple(
-                    evaluate_handler_paths(
-                        mba,
-                        anchor,
-                        state_value,
-                        set(report.bst_node_blocks),
-                        state_var_stkoff,
-                        handler_entry_blocks,
-                    )
-                )
-                handler_paths_by_handler[anchor] = paths
-                conds = tuple(
-                    detect_conditional_transitions(
-                        anchor,
-                        list(paths),
-                        state_constants | supplemental_states,
-                        flow_graph,
-                        incoming_state=state_value,
-                    )
-                )
-                if conds:
-                    conditional_transitions_by_handler[anchor] = conds
-
-                synthetic_kind = TransitionKind.UNKNOWN
-                transition_label = "synthetic fallback"
-                if any(not cond.is_terminal_no_write for cond in conds):
-                    synthetic_kind = TransitionKind.CONDITIONAL
-                    transition_label = "conditional fallback"
-                elif any(path.final_state is not None for path in paths):
-                    synthetic_kind = TransitionKind.TRANSITION
-                    transition_label = "resolved fallback"
-                elif any(path.final_state is None for path in paths):
-                    synthetic_kind = TransitionKind.EXIT
-                    transition_label = "fallback exit"
-
-                conditional_states = tuple(
-                    sorted(
-                        {
-                            cond.target_state
-                            for cond in conds
-                            if not cond.is_terminal_no_write
-                        }
-                    )
-                )
-                next_state = next(
-                    (
-                        path.final_state
-                        for path in paths
-                        if path.final_state is not None and not conditional_states
-                    ),
-                    None,
-                )
-                chain = tuple(paths[0].ordered_path[:4]) if paths else (anchor,)
-
-            supplemental_rows.append(
-                TransitionRow(
-                    state_const=state_value,
-                    state_range_lo=None,
-                    state_range_hi=None,
-                    handler_serial=anchor,
-                    kind=synthetic_kind,
-                    next_state=next_state,
-                    conditional_states=conditional_states,
-                    state_label=f"State 0x{state_value:08x}",
-                    transition_label=transition_label,
-                    chain_preview=chain,
-                    path=TransitionPath(
-                        handler_serial=anchor,
-                        chain=chain,
-                        next_state=next_state,
-                        conditional_states=conditional_states,
-                        back_edge=bool(next_state is not None or conditional_states),
-                        reaches_exit_block=any(path.final_state is None for path in paths),
-                        classified_exit=(
-                            synthetic_kind == TransitionKind.EXIT
-                        ),
-                        unresolved=synthetic_kind == TransitionKind.UNKNOWN,
-                    ),
-                )
-            )
-
-        if supplemental_rows:
-            rows = tuple(
-                sorted(
-                    (*report.rows, *supplemental_rows),
-                    key=lambda row: (
-                        row.state_const is None,
-                        row.state_const if row.state_const is not None else 0xFFFFFFFF,
-                        row.handler_serial,
-                    ),
-                )
-            )
-            report = DispatcherTransitionReport(
-                dispatcher_entry_serial=report.dispatcher_entry_serial,
-                state_var_stkoff=report.state_var_stkoff,
-                state_var_lvar_idx=report.state_var_lvar_idx,
-                pre_header_serial=report.pre_header_serial,
-                initial_state=report.initial_state,
-                handler_state_map=report.handler_state_map,
-                handler_range_map=report.handler_range_map,
-                bst_node_blocks=report.bst_node_blocks,
-                rows=rows,
-                summary=_summarize_rows(rows),
-                diagnostics=report.diagnostics,
-            )
-
-    return build_linearized_state_dag_from_graph(
-        flow_graph,
-        report,
-        transition_result,
         dispatcher=bst_result.dispatcher,
-        handler_paths_by_handler=handler_paths_by_handler,
-        conditional_transitions_by_handler=conditional_transitions_by_handler,
+        mba=mba,
     )
 
 
