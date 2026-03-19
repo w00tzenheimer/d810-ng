@@ -13,6 +13,7 @@ from d810.recon.flow.linearized_state_dag import (
     StateLocalSegment,
     StateNodeKind,
     StateRedirectAnchor,
+    build_live_linearized_state_dag_from_graph,
     build_linearized_state_dag_from_graph,
     render_linearized_state_dag,
     render_linearized_state_dag_dot,
@@ -982,6 +983,227 @@ def test_alias_states_can_share_handler_anchor_and_inherit_edges() -> None:
         if edge.source_key.state_const == 0x25 and edge.target_state == 0x30
     )
     assert alias_outgoing.target_entry_anchor == 3
+
+
+def test_live_builder_iterates_supplemental_fallback_aliases(
+    monkeypatch,
+) -> None:
+    from d810.recon.flow import linearized_state_dag as dag_mod
+
+    flow_graph = FlowGraph(
+        blocks={
+            93: BlockSnapshot(93, 0, (94, 95), (), 0, 0, ()),
+            94: BlockSnapshot(94, 0, (), (93,), 0, 0, ()),
+            95: BlockSnapshot(95, 0, (211,), (93,), 0, 0, ()),
+            211: BlockSnapshot(211, 0, (106,), (95,), 0, 0, ()),
+            106: BlockSnapshot(106, 0, (78,), (211,), 0, 0, ()),
+            78: BlockSnapshot(78, 0, (14,), (106,), 0, 0, ()),
+            14: BlockSnapshot(14, 0, (), (78,), 0, 0, ()),
+        },
+        entry_serial=93,
+        func_ea=0x409000,
+    )
+    transition_from_422 = StateTransition(
+        from_state=0x42267E66,
+        to_state=0x24E2E77A,
+        from_block=93,
+        is_conditional=False,
+    )
+    transition_result = TransitionResult(
+        transitions=[transition_from_422],
+        handlers={
+            0x42267E66: StateHandler(
+                state_value=0x42267E66,
+                check_block=93,
+                handler_blocks=[93, 95],
+                transitions=[transition_from_422],
+            ),
+            0x606DC166: StateHandler(
+                state_value=0x606DC166,
+                check_block=14,
+                handler_blocks=[14],
+                transitions=[],
+            ),
+        },
+        initial_state=0x42267E66,
+        pre_header_serial=0,
+        strategy_name="fixture",
+        resolved_count=1,
+    )
+    initial_report = DispatcherTransitionReport(
+        dispatcher_entry_serial=0,
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        pre_header_serial=None,
+        initial_state=0x42267E66,
+        handler_state_map={93: 0x42267E66, 14: 0x606DC166},
+        handler_range_map={},
+        bst_node_blocks=(),
+        rows=(
+            TransitionRow(
+                state_const=0x42267E66,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=93,
+                kind=TransitionKind.TRANSITION,
+                next_state=0x24E2E77A,
+                conditional_states=(),
+                state_label="State 0x42267E66",
+                transition_label="next=0x24E2E77A",
+                chain_preview=(93, 95),
+                path=TransitionPath(
+                    handler_serial=93,
+                    chain=(93, 95),
+                    next_state=0x24E2E77A,
+                    conditional_states=(),
+                    back_edge=True,
+                    reaches_exit_block=False,
+                    classified_exit=False,
+                    unresolved=False,
+                ),
+            ),
+            TransitionRow(
+                state_const=0x606DC166,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=14,
+                kind=TransitionKind.UNKNOWN,
+                next_state=None,
+                conditional_states=(),
+                state_label="State 0x606DC166",
+                transition_label="unknown",
+                chain_preview=(14,),
+                path=TransitionPath(
+                    handler_serial=14,
+                    chain=(14,),
+                    next_state=None,
+                    conditional_states=(),
+                    back_edge=False,
+                    reaches_exit_block=False,
+                    classified_exit=False,
+                    unresolved=True,
+                ),
+            ),
+        ),
+        summary=TransitionSummary(
+            handlers_total=2,
+            known_count=1,
+            conditional_count=0,
+            exit_count=0,
+            unknown_count=1,
+        ),
+        diagnostics=(),
+    )
+
+    def fake_build_report(**kwargs) -> DispatcherTransitionReport:
+        return initial_report
+
+    fake_paths: dict[tuple[int, int], tuple[HandlerPathResult, ...]] = {
+        (93, 0x42267E66): (
+            HandlerPathResult(
+                exit_block=95,
+                final_state=0x24E2E77A,
+                state_writes=[(95, 0x1000)],
+                ordered_path=[93, 95],
+            ),
+        ),
+        (211, 0x24E2E77A): (
+            HandlerPathResult(
+                exit_block=211,
+                final_state=0x3E7EA8B8,
+                state_writes=[(211, 0x1004)],
+                ordered_path=[211],
+            ),
+        ),
+        (106, 0x3E7EA8B8): (
+            HandlerPathResult(
+                exit_block=106,
+                final_state=0x604AAEA6,
+                state_writes=[(106, 0x1008)],
+                ordered_path=[106],
+            ),
+        ),
+        (78, 0x604AAEA6): (
+            HandlerPathResult(
+                exit_block=78,
+                final_state=0x606DC166,
+                state_writes=[(78, 0x100C)],
+                ordered_path=[78],
+            ),
+        ),
+        (14, 0x606DC166): (
+            HandlerPathResult(
+                exit_block=14,
+                final_state=None,
+                state_writes=[],
+                ordered_path=[14],
+            ),
+        ),
+    }
+
+    def fake_evaluate_handler_paths(
+        mba,
+        handler_serial,
+        incoming_state,
+        bst_node_blocks,
+        state_var_stkoff,
+        handler_entry_blocks,
+    ) -> tuple[HandlerPathResult, ...]:
+        return fake_paths.get((handler_serial, incoming_state), ())
+
+    monkeypatch.setattr(
+        dag_mod,
+        "build_dispatcher_transition_report_from_graph",
+        fake_build_report,
+    )
+    monkeypatch.setattr(
+        dag_mod,
+        "evaluate_handler_paths",
+        fake_evaluate_handler_paths,
+    )
+    monkeypatch.setattr(
+        dag_mod,
+        "detect_conditional_transitions",
+        lambda *args, **kwargs: (),
+    )
+
+    dag = build_live_linearized_state_dag_from_graph(
+        flow_graph,
+        transition_result,
+        dispatcher_entry_serial=0,
+        state_var_stkoff=0x3C,
+        mba=object(),
+    )
+
+    present_states = {node.key.state_const for node in dag.nodes}
+    assert 0x24E2E77A in present_states
+    assert 0x3E7EA8B8 in present_states
+    assert 0x604AAEA6 in present_states
+
+    assert any(
+        edge.source_key.state_const == 0x42267E66
+        and edge.target_state == 0x24E2E77A
+        and edge.target_entry_anchor == 211
+        for edge in dag.edges
+    )
+    assert any(
+        edge.source_key.state_const == 0x24E2E77A
+        and edge.target_state == 0x3E7EA8B8
+        and edge.target_entry_anchor == 106
+        for edge in dag.edges
+    )
+    assert any(
+        edge.source_key.state_const == 0x3E7EA8B8
+        and edge.target_state == 0x604AAEA6
+        and edge.target_entry_anchor == 78
+        for edge in dag.edges
+    )
+    assert any(
+        edge.source_key.state_const == 0x604AAEA6
+        and edge.target_state == 0x606DC166
+        and edge.target_entry_anchor == 14
+        for edge in dag.edges
+    )
 
 
 def test_render_prefers_raw_target_state_over_canonical_handler_label() -> None:

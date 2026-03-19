@@ -687,6 +687,89 @@ def _find_sibling_branch_handoff_path(
     return None
 
 
+def _discover_supplemental_states(
+    report: DispatcherTransitionReport,
+    transition_result: TransitionResult,
+    paths_by_handler: Mapping[int, tuple[HandlerPathResult, ...]],
+    conds_by_handler: Mapping[int, tuple[ConditionalTransition, ...]],
+    dag: LinearizedStateDag,
+    flow_graph: FlowGraph,
+) -> tuple[set[int], dict[int, set[int]]]:
+    existing_states = {
+        row.state_const & 0xFFFFFFFF
+        for row in report.rows
+        if row.state_const is not None
+    }
+    supplemental_states: set[int] = set()
+    collapsed_target_anchors: dict[int, set[int]] = {}
+
+    for transition in transition_result.transitions:
+        state_value = transition.to_state & 0xFFFFFFFF
+        if state_value not in existing_states:
+            supplemental_states.add(state_value)
+
+    for paths in paths_by_handler.values():
+        for path in paths:
+            if path.final_state is None:
+                continue
+            state_value = path.final_state & 0xFFFFFFFF
+            if state_value not in existing_states:
+                supplemental_states.add(state_value)
+
+    for conds in conds_by_handler.values():
+        for cond in conds:
+            if cond.is_terminal_no_write:
+                continue
+            state_value = cond.target_state & 0xFFFFFFFF
+            if state_value not in existing_states:
+                supplemental_states.add(state_value)
+
+    for edge in dag.edges:
+        if edge.target_state is None:
+            continue
+        state_value = edge.target_state & 0xFFFFFFFF
+        if state_value in existing_states:
+            continue
+        if edge.target_key is not None and edge.target_key.state_const == state_value:
+            continue
+        supplemental_states.add(state_value)
+
+        candidate_anchor: int | None = None
+        if (
+            edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+            and edge.source_anchor.branch_arm is not None
+        ):
+            branch_block = flow_graph.get_block(edge.source_anchor.block_serial)
+            if (
+                branch_block is not None
+                and edge.source_anchor.branch_arm < len(branch_block.succs)
+            ):
+                candidate_anchor = branch_block.succs[edge.source_anchor.branch_arm]
+        if candidate_anchor is None:
+            tail_block = (
+                edge.ordered_path[-1]
+                if edge.ordered_path
+                else edge.source_anchor.block_serial
+            )
+            tail_snapshot = flow_graph.get_block(tail_block)
+            if tail_snapshot is not None:
+                succ_candidates = [
+                    succ
+                    for succ in tail_snapshot.succs
+                    if succ not in edge.ordered_path
+                ]
+                if len(succ_candidates) == 1:
+                    candidate_anchor = succ_candidates[0]
+                elif len(tail_snapshot.succs) == 1:
+                    candidate_anchor = tail_snapshot.succs[0]
+        if candidate_anchor is not None:
+            collapsed_target_anchors.setdefault(state_value, set()).add(
+                candidate_anchor
+            )
+
+    return supplemental_states, collapsed_target_anchors
+
+
 def build_live_linearized_state_dag_from_graph(
     flow_graph: FlowGraph,
     transition_result: TransitionResult,
@@ -773,200 +856,249 @@ def build_live_linearized_state_dag_from_graph(
         if conds:
             conditional_transitions_by_handler[row.handler_serial] = conds
 
-    initial_dag = build_linearized_state_dag_from_graph(
+    report_with_supplemental = report
+    dag = build_linearized_state_dag_from_graph(
         flow_graph,
-        report,
+        report_with_supplemental,
         transition_result,
         dispatcher=dispatcher,
         handler_paths_by_handler=handler_paths_by_handler,
         conditional_transitions_by_handler=conditional_transitions_by_handler,
     )
 
-    existing_states = {
-        row.state_const for row in report.rows if row.state_const is not None
-    }
-    known_entry_anchors = {row.handler_serial for row in report.rows}
-    existing_rows_by_handler = {
-        row.handler_serial: row for row in report.rows
-    }
-    supplemental_states: set[int] = set()
-    collapsed_target_anchors: dict[int, set[int]] = {}
-
-    for transition in transition_result.transitions:
-        if transition.to_state not in existing_states:
-            supplemental_states.add(transition.to_state)
-    for paths in handler_paths_by_handler.values():
-        for path in paths:
-            if path.final_state is not None and path.final_state not in existing_states:
-                supplemental_states.add(path.final_state & 0xFFFFFFFF)
-    for conds in conditional_transitions_by_handler.values():
-        for cond in conds:
-            if (
-                not cond.is_terminal_no_write
-                and cond.target_state not in existing_states
-            ):
-                supplemental_states.add(cond.target_state)
-    for edge in initial_dag.edges:
-        if edge.target_state is None or edge.target_state in existing_states:
-            continue
-        if edge.target_key is None or edge.target_key.state_const != edge.target_state:
-            supplemental_states.add(edge.target_state)
-            candidate_anchor: int | None = None
-            if (
-                edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
-                and edge.source_anchor.branch_arm is not None
-            ):
-                branch_block = flow_graph.get_block(edge.source_anchor.block_serial)
-                if (
-                    branch_block is not None
-                    and edge.source_anchor.branch_arm < len(branch_block.succs)
-                ):
-                    candidate_anchor = branch_block.succs[edge.source_anchor.branch_arm]
-            if candidate_anchor is None:
-                tail_block = (
-                    edge.ordered_path[-1]
-                    if edge.ordered_path
-                    else edge.source_anchor.block_serial
-                )
-                tail_snapshot = flow_graph.get_block(tail_block)
-                if tail_snapshot is not None:
-                    succ_candidates = [
-                        succ
-                        for succ in tail_snapshot.succs
-                        if succ not in edge.ordered_path
-                    ]
-                    if len(succ_candidates) == 1:
-                        candidate_anchor = succ_candidates[0]
-                    elif len(tail_snapshot.succs) == 1:
-                        candidate_anchor = tail_snapshot.succs[0]
-            if candidate_anchor is not None:
-                collapsed_target_anchors.setdefault(edge.target_state, set()).add(
-                    candidate_anchor
-                )
-
-    supplemental_rows: list[TransitionRow] = []
-    for state_value in sorted(supplemental_states):
-        anchor_candidates = collapsed_target_anchors.get(state_value, set())
-        anchor = _resolve_fallback_anchor_from_exact_cover(
-            state_value,
-            report,
+    while True:
+        existing_states = {
+            row.state_const & 0xFFFFFFFF
+            for row in report_with_supplemental.rows
+            if row.state_const is not None
+        }
+        known_entry_anchors = {
+            row.handler_serial for row in report_with_supplemental.rows
+        }
+        existing_rows_by_handler = {
+            row.handler_serial: row for row in report_with_supplemental.rows
+        }
+        supplemental_states, collapsed_target_anchors = _discover_supplemental_states(
+            report_with_supplemental,
+            transition_result,
+            handler_paths_by_handler,
+            conditional_transitions_by_handler,
+            dag,
             flow_graph,
         )
-        if anchor is None:
-            anchor = _resolve_range_backed_anchor(
-                state_value,
-                dict(report.handler_range_map),
-                known_entry_anchors=known_entry_anchors,
-            )
-        if anchor is None and len(anchor_candidates) == 1:
-            anchor = next(iter(anchor_candidates))
-        if anchor is None and dispatcher is not None:
-            row = dispatcher.lookup_row(state_value)
-            anchor = row.target if row is not None else None
-        if anchor is None:
-            continue
+        pending_states = sorted(state for state in supplemental_states if state not in existing_states)
+        if not pending_states:
+            return dag
 
-        if anchor in known_entry_anchors:
-            base_row = existing_rows_by_handler.get(anchor)
-            paths = handler_paths_by_handler.get(anchor, ())
-            conds = conditional_transitions_by_handler.get(anchor, ())
-            synthetic_kind = (
-                base_row.kind if base_row is not None else TransitionKind.UNKNOWN
-            )
-            transition_label = (
-                f"range alias of {base_row.state_label}"
-                if base_row is not None
-                else "range alias"
-            )
-            conditional_states = (
-                base_row.conditional_states if base_row is not None else ()
-            )
-            next_state = base_row.next_state if base_row is not None else None
-            chain = base_row.chain_preview if base_row is not None else (anchor,)
-        else:
-            paths = tuple(
-                evaluate_handler_paths(
-                    mba,
-                    anchor,
-                    state_value,
-                    set(report.bst_node_blocks),
-                    state_var_stkoff,
-                    handler_entry_blocks,
-                )
-            )
-            handler_paths_by_handler[anchor] = paths
-            conds = tuple(
-                detect_conditional_transitions(
-                    anchor,
-                    list(paths),
-                    state_constants | supplemental_states,
-                    flow_graph,
-                    incoming_state=state_value,
-                )
-            )
-            if conds:
-                conditional_transitions_by_handler[anchor] = conds
-
-            synthetic_kind = TransitionKind.UNKNOWN
-            transition_label = "synthetic fallback"
-            if any(not cond.is_terminal_no_write for cond in conds):
-                synthetic_kind = TransitionKind.CONDITIONAL
-                transition_label = "conditional fallback"
-            elif any(path.final_state is not None for path in paths):
-                synthetic_kind = TransitionKind.TRANSITION
-                transition_label = "resolved fallback"
-            elif any(path.final_state is None for path in paths):
-                synthetic_kind = TransitionKind.EXIT
-                transition_label = "fallback exit"
-
-            conditional_states = tuple(
-                sorted(
-                    {
-                        cond.target_state
-                        for cond in conds
-                        if not cond.is_terminal_no_write
+        supplemental_rows: list[TransitionRow] = []
+        for state_value in pending_states:
+            anchor_candidates = collapsed_target_anchors.get(state_value, set())
+            preferred_anchor: int | None = None
+            preferred_paths: tuple[HandlerPathResult, ...] = ()
+            preferred_conds: tuple[ConditionalTransition, ...] = ()
+            if len(anchor_candidates) == 1:
+                candidate_anchor = next(iter(anchor_candidates))
+                if candidate_anchor not in set(report_with_supplemental.bst_node_blocks):
+                    candidate_paths = tuple(
+                        evaluate_handler_paths(
+                            mba,
+                            candidate_anchor,
+                            state_value,
+                            set(report_with_supplemental.bst_node_blocks),
+                            state_var_stkoff,
+                            handler_entry_blocks,
+                        )
+                    )
+                    candidate_normalized_states = {
+                        path.final_state & 0xFFFFFFFF
+                        for path in candidate_paths
+                        if path.final_state is not None
                     }
-                )
-            )
-            next_state = next(
-                (
-                    path.final_state
-                    for path in paths
-                    if path.final_state is not None and not conditional_states
-                ),
-                None,
-            )
-            chain = tuple(paths[0].ordered_path[:4]) if paths else (anchor,)
+                    candidate_normalized_states.update(
+                        value & 0xFFFFFFFF
+                        for path in candidate_paths
+                        for _, value in path.state_writes
+                    )
+                    if candidate_paths and candidate_normalized_states & existing_states:
+                        preferred_anchor = candidate_anchor
+                        preferred_paths = candidate_paths
+                        preferred_conds = tuple(
+                            detect_conditional_transitions(
+                                candidate_anchor,
+                                list(candidate_paths),
+                                state_constants
+                                | existing_states
+                                | set(pending_states),
+                                flow_graph,
+                                incoming_state=state_value,
+                            )
+                        )
 
-        supplemental_rows.append(
-            TransitionRow(
-                state_const=state_value,
-                state_range_lo=None,
-                state_range_hi=None,
-                handler_serial=anchor,
-                kind=synthetic_kind,
-                next_state=next_state,
-                conditional_states=conditional_states,
-                state_label=f"State 0x{state_value:08x}",
-                transition_label=transition_label,
-                chain_preview=chain,
-                path=TransitionPath(
+            anchor = _resolve_fallback_anchor_from_exact_cover(
+                state_value,
+                report_with_supplemental,
+                flow_graph,
+            )
+            if anchor is None:
+                anchor = _resolve_range_backed_anchor(
+                    state_value,
+                    dict(report_with_supplemental.handler_range_map),
+                    known_entry_anchors=known_entry_anchors,
+                )
+            if anchor is None and len(anchor_candidates) == 1:
+                anchor = next(iter(anchor_candidates))
+            if anchor is None and dispatcher is not None:
+                row = dispatcher.lookup_row(state_value)
+                anchor = row.target if row is not None else None
+            if preferred_anchor is not None:
+                anchor = preferred_anchor
+            if anchor is None:
+                continue
+
+            if preferred_anchor is not None:
+                paths = preferred_paths
+                conds = preferred_conds
+                handler_paths_by_handler[anchor] = paths
+                if conds:
+                    conditional_transitions_by_handler[anchor] = conds
+                elif anchor in conditional_transitions_by_handler:
+                    del conditional_transitions_by_handler[anchor]
+
+                synthetic_kind = TransitionKind.UNKNOWN
+                transition_label = "synthetic fallback"
+                if any(not cond.is_terminal_no_write for cond in conds):
+                    synthetic_kind = TransitionKind.CONDITIONAL
+                    transition_label = "conditional fallback"
+                elif any(path.final_state is not None for path in paths):
+                    synthetic_kind = TransitionKind.TRANSITION
+                    transition_label = "resolved fallback"
+                elif any(path.final_state is None for path in paths):
+                    synthetic_kind = TransitionKind.EXIT
+                    transition_label = "fallback exit"
+
+                conditional_states = tuple(
+                    sorted(
+                        {
+                            cond.target_state
+                            for cond in conds
+                            if not cond.is_terminal_no_write
+                        }
+                    )
+                )
+                next_state = next(
+                    (
+                        path.final_state
+                        for path in paths
+                        if path.final_state is not None and not conditional_states
+                    ),
+                    None,
+                )
+                chain = tuple(paths[0].ordered_path[:4]) if paths else (anchor,)
+            elif anchor in known_entry_anchors:
+                base_row = existing_rows_by_handler.get(anchor)
+                paths = handler_paths_by_handler.get(anchor, ())
+                conds = conditional_transitions_by_handler.get(anchor, ())
+                synthetic_kind = (
+                    base_row.kind if base_row is not None else TransitionKind.UNKNOWN
+                )
+                transition_label = (
+                    f"range alias of {base_row.state_label}"
+                    if base_row is not None
+                    else "range alias"
+                )
+                conditional_states = (
+                    base_row.conditional_states if base_row is not None else ()
+                )
+                next_state = base_row.next_state if base_row is not None else None
+                chain = base_row.chain_preview if base_row is not None else (anchor,)
+            else:
+                paths = tuple(
+                    evaluate_handler_paths(
+                        mba,
+                        anchor,
+                        state_value,
+                        set(report_with_supplemental.bst_node_blocks),
+                        state_var_stkoff,
+                        handler_entry_blocks,
+                    )
+                )
+                handler_paths_by_handler[anchor] = paths
+                conds = tuple(
+                    detect_conditional_transitions(
+                        anchor,
+                        list(paths),
+                        state_constants | existing_states | set(pending_states),
+                        flow_graph,
+                        incoming_state=state_value,
+                    )
+                )
+                if conds:
+                    conditional_transitions_by_handler[anchor] = conds
+
+                synthetic_kind = TransitionKind.UNKNOWN
+                transition_label = "synthetic fallback"
+                if any(not cond.is_terminal_no_write for cond in conds):
+                    synthetic_kind = TransitionKind.CONDITIONAL
+                    transition_label = "conditional fallback"
+                elif any(path.final_state is not None for path in paths):
+                    synthetic_kind = TransitionKind.TRANSITION
+                    transition_label = "resolved fallback"
+                elif any(path.final_state is None for path in paths):
+                    synthetic_kind = TransitionKind.EXIT
+                    transition_label = "fallback exit"
+
+                conditional_states = tuple(
+                    sorted(
+                        {
+                            cond.target_state
+                            for cond in conds
+                            if not cond.is_terminal_no_write
+                        }
+                    )
+                )
+                next_state = next(
+                    (
+                        path.final_state
+                        for path in paths
+                        if path.final_state is not None and not conditional_states
+                    ),
+                    None,
+                )
+                chain = tuple(paths[0].ordered_path[:4]) if paths else (anchor,)
+
+            supplemental_rows.append(
+                TransitionRow(
+                    state_const=state_value,
+                    state_range_lo=None,
+                    state_range_hi=None,
                     handler_serial=anchor,
-                    chain=chain,
+                    kind=synthetic_kind,
                     next_state=next_state,
                     conditional_states=conditional_states,
-                    back_edge=bool(next_state is not None or conditional_states),
-                    reaches_exit_block=any(path.final_state is None for path in paths),
-                    classified_exit=synthetic_kind == TransitionKind.EXIT,
-                    unresolved=synthetic_kind == TransitionKind.UNKNOWN,
-                ),
+                    state_label=f"State 0x{state_value:08x}",
+                    transition_label=transition_label,
+                    chain_preview=chain,
+                    path=TransitionPath(
+                        handler_serial=anchor,
+                        chain=chain,
+                        next_state=next_state,
+                        conditional_states=conditional_states,
+                        back_edge=bool(next_state is not None or conditional_states),
+                        reaches_exit_block=any(
+                            path.final_state is None for path in paths
+                        ),
+                        classified_exit=synthetic_kind == TransitionKind.EXIT,
+                        unresolved=synthetic_kind == TransitionKind.UNKNOWN,
+                    ),
+                )
             )
-        )
 
-    if supplemental_rows:
+        if not supplemental_rows:
+            return dag
+
         rows = tuple(
             sorted(
-                (*report.rows, *supplemental_rows),
+                (*report_with_supplemental.rows, *supplemental_rows),
                 key=lambda row: (
                     row.state_const is None,
                     row.state_const if row.state_const is not None else 0xFFFFFFFF,
@@ -974,28 +1106,27 @@ def build_live_linearized_state_dag_from_graph(
                 ),
             )
         )
-        report = DispatcherTransitionReport(
-            dispatcher_entry_serial=report.dispatcher_entry_serial,
-            state_var_stkoff=report.state_var_stkoff,
-            state_var_lvar_idx=report.state_var_lvar_idx,
-            pre_header_serial=report.pre_header_serial,
-            initial_state=report.initial_state,
-            handler_state_map=report.handler_state_map,
-            handler_range_map=report.handler_range_map,
-            bst_node_blocks=report.bst_node_blocks,
+        report_with_supplemental = DispatcherTransitionReport(
+            dispatcher_entry_serial=report_with_supplemental.dispatcher_entry_serial,
+            state_var_stkoff=report_with_supplemental.state_var_stkoff,
+            state_var_lvar_idx=report_with_supplemental.state_var_lvar_idx,
+            pre_header_serial=report_with_supplemental.pre_header_serial,
+            initial_state=report_with_supplemental.initial_state,
+            handler_state_map=report_with_supplemental.handler_state_map,
+            handler_range_map=report_with_supplemental.handler_range_map,
+            bst_node_blocks=report_with_supplemental.bst_node_blocks,
             rows=rows,
             summary=_summarize_rows(rows),
-            diagnostics=report.diagnostics,
+            diagnostics=report_with_supplemental.diagnostics,
         )
-
-    return build_linearized_state_dag_from_graph(
-        flow_graph,
-        report,
-        transition_result,
-        dispatcher=dispatcher,
-        handler_paths_by_handler=handler_paths_by_handler,
-        conditional_transitions_by_handler=conditional_transitions_by_handler,
-    )
+        dag = build_linearized_state_dag_from_graph(
+            flow_graph,
+            report_with_supplemental,
+            transition_result,
+            dispatcher=dispatcher,
+            handler_paths_by_handler=handler_paths_by_handler,
+            conditional_transitions_by_handler=conditional_transitions_by_handler,
+        )
 
 
 def build_linearized_state_dag_from_graph(
