@@ -7,6 +7,12 @@ looking up the target handler via the IntervalDispatcher.
 This runs on the PRE-APPLY MBA where state var writes are still intact
 (before NOP'ing). Post-apply, the writes are NOP'd and block structure
 changes due to trampolines.
+
+DEAD CODE NOTE:
+This module is currently kept only for reference/debugging. The active Hodur
+pipeline no longer registers ``BackwardPredResolutionStrategy`` in
+``ALL_STRATEGIES`` because the live DAG/LFG path now owns the late orphan-tail
+cases that this strategy previously patched.
 """
 from __future__ import annotations
 
@@ -23,6 +29,15 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     OwnershipScope,
     PlanFragment,
 )
+from d810.recon.flow.transition_builder import TransitionResult
+from d810.recon.flow.linearized_state_dag import (
+    SemanticEdgeKind,
+    build_live_linearized_state_dag_from_graph,
+)
+from d810.recon.flow.transition_report import (
+    TransitionKind,
+    build_dispatcher_transition_report_from_graph,
+)
 from d810.recon.flow.bst_model import (
     resolve_redirectable_handler_target,
 )
@@ -33,6 +48,115 @@ if TYPE_CHECKING:
 logger = logging.getLogger("D810.hodur.strategy.backward_pred_resolution")
 
 __all__ = ["BackwardPredResolutionStrategy"]
+
+
+def _collect_known_transition_sources(sm: object | None) -> set[int]:
+    """Return source blocks already explained by recovered state transitions.
+
+    Backward-pred is meant to recover unresolved dispatcher predecessors.
+    If the state machine already has a concrete ``from_block -> to_state``
+    transition, re-emitting a goto rewrite here is both redundant and risky:
+    these blocks can be shared suffixes or exact handler bodies that the DAG
+    already models semantically.
+    """
+    if sm is None:
+        return set()
+    return {
+        trans.from_block
+        for trans in getattr(sm, "transitions", ())
+        if getattr(trans, "from_block", None) is not None
+    }
+
+
+def _collect_report_transition_sources(
+    snapshot: "AnalysisSnapshot",
+    sm: object | None,
+) -> set[int]:
+    """Return source/tail blocks explained by the live transition report."""
+    flow_graph = snapshot.flow_graph
+    bst_result = snapshot.bst_result
+    if flow_graph is None or bst_result is None or sm is None:
+        return set()
+
+    try:
+        transition_result = TransitionResult(
+            transitions=list(getattr(sm, "transitions", ()) or ()),
+            handlers=dict(getattr(sm, "handlers", {}) or {}),
+            assignment_map=dict(getattr(sm, "assignment_map", {}) or {}),
+            initial_state=getattr(sm, "initial_state", None),
+            pre_header_serial=getattr(bst_result, "pre_header_serial", None),
+            strategy_name="backward_pred_resolution",
+            resolved_count=len(getattr(sm, "transitions", ()) or ()),
+        )
+        report = build_dispatcher_transition_report_from_graph(
+            flow_graph,
+            transition_result,
+            dispatcher_entry_serial=snapshot.bst_dispatcher_serial,
+            pre_header_serial=getattr(bst_result, "pre_header_serial", None),
+            initial_state=getattr(sm, "initial_state", None),
+            handler_range_map=getattr(bst_result, "handler_range_map", {}) or {},
+            bst_node_blocks=tuple(
+                sorted(getattr(bst_result, "bst_node_blocks", ()) or ())
+            ),
+            diagnostics=tuple(getattr(bst_result, "diagnostics", ()) or ()),
+        )
+    except Exception:
+        return set()
+
+    known_sources: set[int] = set()
+    for row in report.rows:
+        if row.kind not in (TransitionKind.TRANSITION, TransitionKind.CONDITIONAL):
+            continue
+        if row.path.chain:
+            known_sources.add(row.path.chain[-1])
+    return known_sources
+
+
+def _collect_live_dag_transition_sources(
+    snapshot: "AnalysisSnapshot",
+    sm: object | None,
+    *,
+    state_var_stkoff: int | None,
+) -> set[int]:
+    """Return semantic edge source blocks from the live DAG builder."""
+    flow_graph = snapshot.flow_graph
+    bst_result = snapshot.bst_result
+    if flow_graph is None or bst_result is None or sm is None:
+        return set()
+
+    try:
+        transition_result = TransitionResult(
+            transitions=list(getattr(sm, "transitions", ()) or ()),
+            handlers=dict(getattr(sm, "handlers", {}) or {}),
+            assignment_map=dict(getattr(sm, "assignment_map", {}) or {}),
+            initial_state=getattr(sm, "initial_state", None),
+            pre_header_serial=getattr(bst_result, "pre_header_serial", None),
+            strategy_name="backward_pred_resolution",
+            resolved_count=len(getattr(sm, "transitions", ()) or ()),
+        )
+        dag = build_live_linearized_state_dag_from_graph(
+            flow_graph,
+            transition_result,
+            dispatcher_entry_serial=snapshot.bst_dispatcher_serial,
+            state_var_stkoff=state_var_stkoff,
+            pre_header_serial=getattr(bst_result, "pre_header_serial", None),
+            initial_state=getattr(sm, "initial_state", None),
+            handler_range_map=getattr(bst_result, "handler_range_map", {}) or {},
+            bst_node_blocks=tuple(
+                sorted(getattr(bst_result, "bst_node_blocks", ()) or ())
+            ),
+            diagnostics=tuple(getattr(bst_result, "diagnostics", ()) or ()),
+            dispatcher=getattr(bst_result, "dispatcher", None),
+            mba=snapshot.mba,
+        )
+    except Exception:
+        return set()
+
+    return {
+        edge.source_anchor.block_serial
+        for edge in dag.edges
+        if edge.kind in (SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION)
+    }
 
 
 def _nop_value_lookup(
@@ -139,6 +263,11 @@ class BackwardPredResolutionStrategy:
     can be resolved, perform a BST lookup to determine the target handler
     and emit a ``RedirectGoto`` modification.
 
+    DEAD CODE NOTE:
+    This strategy is intentionally inactive in the current experimental
+    pipeline. It remains in-tree as a reference implementation and as a
+    debugging fallback, but it is not part of ``ALL_STRATEGIES``.
+
     Family: ``FAMILY_DIRECT`` -- runs after primary direct strategies.
     Risk: LOW-MEDIUM -- read-only backward walk + BST lookup, no speculation.
     """
@@ -201,6 +330,7 @@ class BackwardPredResolutionStrategy:
         state_var = getattr(snapshot.state_machine, "state_var", None)
         if state_var is None or state_var.t != ida_hexrays.mop_S:
             return None
+        state_var_stkoff = state_var.s.off
 
         disp_blk = mba.get_mblock(dispatcher_serial)
         if disp_blk is None:
@@ -211,12 +341,17 @@ class BackwardPredResolutionStrategy:
         # check the state machine's transition list directly -- these are
         # the from_block serials that LFG's direct_handler_linearization
         # will redirect.  Emitting duplicates causes GATE_FAILED.
-        lfg_handled: set[int] = set()
         sm = snapshot.state_machine
-        if sm is not None:
-            for trans in sm.transitions:
-                if trans.from_block is not None:
-                    lfg_handled.add(trans.from_block)
+        known_transition_sources = _collect_known_transition_sources(sm)
+        known_transition_sources.update(_collect_report_transition_sources(snapshot, sm))
+        known_transition_sources.update(
+            _collect_live_dag_transition_sources(
+                snapshot,
+                sm,
+                state_var_stkoff=state_var_stkoff,
+            )
+        )
+        lfg_handled: set[int] = set(known_transition_sources)
 
         # Also include blocks whose transitions were explicitly resolved
         # by earlier strategies (belt-and-suspenders for later passes).
@@ -329,9 +464,14 @@ class BackwardPredResolutionStrategy:
             if pred_serial in bst_serials:
                 continue
 
+            # Skip blocks already explained by the semantic planner or
+            # already proven to belong to a known handler/exit corridor.
+            # Backward-pred is only meant to recover truly orphaned
+            # dispatcher predecessors that lie outside modeled handler bodies.
+            if pred_serial in lfg_handled:
+                continue
+
             # Skip blocks that LFG already emitted a redirect for.
-            # This is a NARROW guard (actual redirects only), not the
-            # broad lfg_handled (all handler block sets).
             if pred_serial in snapshot.lfg_redirected_blocks:
                 continue
 

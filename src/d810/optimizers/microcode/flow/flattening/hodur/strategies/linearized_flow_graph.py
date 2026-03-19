@@ -1,21 +1,12 @@
-"""LinearizedFlowGraphStrategy -- deterministic graph-stitching linearization.
+"""LinearizedFlowGraphStrategy -- DAG-driven branch stitching.
 
-Uses the complete handler transition graph already present in the
-:class:`~d810.optimizers.microcode.flow.flattening.hodur.datamodel.DispatcherStateMachine`
-to wire handler exits directly to handler entries.  No forward evaluation is
-needed -- the known ``StateTransition`` objects provide the mapping.
+Builds a live :class:`LinearizedStateDag` from the current CFG and uses that
+state-level semantic graph as the planning surface for redirect emission.
 
-Algorithm:
-
-0. **IntervalDispatcher resolution (sole authority)** -- walk ALL handler block
-   chains, scan for ``m_mov #const, %state_var``, resolve via
-   ``IntervalDispatcher.lookup()``.  This is the single source of truth for
-   transition resolution.
-1. Resolve each ``to_state`` via ``IntervalDispatcher.lookup()`` (handles both
-   exact matches and BST range-map entries).
-2. Emit a ``RedirectGoto`` (unconditional) or ``RedirectBranch`` (conditional)
-   targeting the resolved handler entry serial.
-3. Wire pre-header to the initial handler entry.
+The current implementation prefers DAG-selected path tails and branch anchors,
+and now also allows direct rewrites of shared 1-way dispatcher tails when the
+tail block itself proves the same state->handler mapping. This lets LFG absorb
+the late orphan-goto cases that previously required backward_pred_resolution.
 """
 from __future__ import annotations
 
@@ -33,13 +24,19 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
-    blk_label,
-    evaluate_handler_paths,
+from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
+from d810.recon.flow.linearized_state_dag import (
+    LinearizedStateDag,
+    RedirectSourceKind,
+    SemanticEdgeKind,
+    StateDagEdge,
+    build_live_linearized_state_dag_from_graph,
 )
-from d810.recon.flow.bst_analysis import resolve_via_bst_walk
-from d810.recon.flow.bst_model import resolve_target_via_bst
-from d810.recon.flow.transition_builder import _get_state_var_stkoff
+from d810.recon.flow.transition_report import (
+    TransitionKind,
+    build_dispatcher_transition_report_from_graph,
+)
+from d810.recon.flow.transition_builder import TransitionResult, _get_state_var_stkoff
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
@@ -55,14 +52,7 @@ __all__ = ["LinearizedFlowGraphStrategy"]
 
 
 class LinearizedFlowGraphStrategy:
-    """Wire handler exits to handler entries using the known transition graph.
-
-    This strategy is a lightweight alternative to
-    :class:`DirectHandlerLinearizationStrategy`.  Instead of running DFS
-    forward evaluation on live microcode, it reads the pre-computed
-    ``StateTransition`` objects from the state machine and emits redirect
-    modifications deterministically.
-    """
+    """Emit DAG-selected redirect edits for branch-anchored handler exits."""
 
     @property
     def name(self) -> str:
@@ -143,6 +133,252 @@ class LinearizedFlowGraphStrategy:
         bst_result = snapshot.bst_result
         assert bst_result is not None
         mba = snapshot.mba
+        flow_graph = snapshot.flow_graph
+        if flow_graph is None:
+            logger.info("LFG: no flow_graph available, skipping")
+            return None
+
+        # DAG-driven semantic planner.
+        dag_bst_node_blocks: set[int] = set(
+            getattr(bst_result, "bst_node_blocks", set()) or set()
+        )
+        dag_builder = ModificationBuilder.from_snapshot(snapshot)
+        dag_state_var_stkoff = self._resolve_state_var_stkoff(snapshot, sm)
+        dag_dispatcher = getattr(bst_result, "dispatcher", None)
+        dag_modifications: list = []
+        dag_owned_blocks: set[int] = set()
+        dag_owned_edges: set[tuple[int, int]] = set()
+        dag_owned_transitions: set[tuple[int, int]] = set()
+        dag_emitted: set[tuple[int, int]] = set()
+        dag_claimed_1way: dict[int, int] = {}
+        dag_claimed_2way: dict[tuple[int, int], int] = {}
+        dag_claimed_exits: dict[int, int] = {}
+        dag_claimed_path_edges: dict[tuple[int, int], int] = {}
+        dag_blocked_sources: set[int] = set()
+        dag_skipped_count = 0
+
+        for handler in sm.handlers.values():
+            dag_owned_blocks.add(handler.check_block)
+            dag_owned_blocks.update(handler.handler_blocks)
+
+        dag_transition_result = TransitionResult(
+            transitions=list(sm.transitions),
+            handlers=dict(sm.handlers),
+            assignment_map=dict(sm.assignment_map),
+            initial_state=sm.initial_state,
+            pre_header_serial=getattr(bst_result, "pre_header_serial", None),
+            strategy_name=self.name,
+            resolved_count=len(sm.transitions),
+        )
+        dag = build_live_linearized_state_dag_from_graph(
+            flow_graph,
+            dag_transition_result,
+            dispatcher_entry_serial=snapshot.bst_dispatcher_serial,
+            state_var_stkoff=dag_state_var_stkoff,
+            pre_header_serial=getattr(bst_result, "pre_header_serial", None),
+            initial_state=sm.initial_state,
+            handler_range_map=getattr(bst_result, "handler_range_map", {}) or {},
+            bst_node_blocks=tuple(sorted(dag_bst_node_blocks)),
+            diagnostics=tuple(getattr(bst_result, "diagnostics", ()) or ()),
+            dispatcher=getattr(bst_result, "dispatcher", None),
+            mba=mba,
+        )
+        dag_report = build_dispatcher_transition_report_from_graph(
+            flow_graph,
+            dag_transition_result,
+            dispatcher_entry_serial=snapshot.bst_dispatcher_serial,
+            state_var_stkoff=dag_state_var_stkoff,
+            pre_header_serial=getattr(bst_result, "pre_header_serial", None),
+            initial_state=sm.initial_state,
+            handler_range_map=getattr(bst_result, "handler_range_map", {}) or {},
+            bst_node_blocks=tuple(sorted(dag_bst_node_blocks)),
+            diagnostics=tuple(getattr(bst_result, "diagnostics", ()) or ()),
+        )
+        report_exit_handlers = {
+            row.handler_serial
+            for row in dag_report.rows
+            if row.kind == TransitionKind.EXIT
+        }
+        report_exit_owned_blocks = {
+            block_serial
+            for handler in sm.handlers.values()
+            if handler.check_block in report_exit_handlers
+            for block_serial in {handler.check_block, *handler.handler_blocks}
+        }
+
+        dag_transition_count = 0
+        dag_conditional_count = 0
+        dag_terminal_source_keys = {
+            edge.source_key
+            for edge in dag.edges
+            if edge.kind
+            in (
+                SemanticEdgeKind.CONDITIONAL_RETURN,
+                SemanticEdgeKind.EXIT_ROUTINE,
+                SemanticEdgeKind.UNKNOWN,
+            )
+        }
+        dag_terminal_source_handlers = {
+            edge.source_key.handler_serial
+            for edge in dag.edges
+            if edge.kind
+            in (
+                SemanticEdgeKind.CONDITIONAL_RETURN,
+                SemanticEdgeKind.EXIT_ROUTINE,
+                SemanticEdgeKind.UNKNOWN,
+            )
+        }
+        dag_terminal_source_owned_blocks = {
+            block_serial
+            for node in dag.nodes
+            if node.handler_serial in dag_terminal_source_handlers
+            for block_serial in node.owned_blocks
+        }
+        dag_terminal_protected_blocks = {
+            block_serial
+            for edge in dag.edges
+            if edge.kind
+            in (
+                SemanticEdgeKind.CONDITIONAL_RETURN,
+                SemanticEdgeKind.EXIT_ROUTINE,
+                SemanticEdgeKind.UNKNOWN,
+            )
+            for block_serial in edge.ordered_path
+        }
+        dag_terminal_skipped = sum(
+            1
+            for edge in dag.edges
+            if edge.kind
+            in (SemanticEdgeKind.CONDITIONAL_RETURN, SemanticEdgeKind.EXIT_ROUTINE)
+        )
+        dag_unknown_skipped = sum(
+            1 for edge in dag.edges if edge.kind == SemanticEdgeKind.UNKNOWN
+        )
+        dag_dispatcher_region: set[int] = set(dag_bst_node_blocks)
+        for edge in self._select_plannable_edges(dag):
+            if self._emit_dag_redirect(
+                edge=edge,
+                dag=dag,
+                builder=dag_builder,
+                modifications=dag_modifications,
+                owned_blocks=dag_owned_blocks,
+                owned_edges=dag_owned_edges,
+                owned_transitions=dag_owned_transitions,
+                emitted=dag_emitted,
+                claimed_1way=dag_claimed_1way,
+                claimed_2way=dag_claimed_2way,
+                claimed_exits=dag_claimed_exits,
+                claimed_path_edges=dag_claimed_path_edges,
+                blocked_sources=dag_blocked_sources,
+                terminal_source_keys=dag_terminal_source_keys,
+                terminal_source_handlers=dag_terminal_source_handlers,
+                terminal_source_owned_blocks=dag_terminal_source_owned_blocks,
+                terminal_protected_blocks=dag_terminal_protected_blocks,
+                report_exit_handlers=report_exit_handlers,
+                report_exit_owned_blocks=report_exit_owned_blocks,
+                bst_node_blocks=dag_bst_node_blocks,
+                dispatcher_region=dag_dispatcher_region,
+                flow_graph=flow_graph,
+                state_var_stkoff=dag_state_var_stkoff,
+                dispatcher_lookup=dag_dispatcher.lookup if dag_dispatcher is not None else None,
+                mba=mba,
+            ):
+                if edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION:
+                    dag_conditional_count += 1
+                else:
+                    dag_transition_count += 1
+            else:
+                dag_skipped_count += 1
+
+        dag_initial_entry = (
+            self._resolve_dag_entry_for_state(dag, sm.initial_state)
+            if sm.initial_state is not None
+            else None
+        )
+        dag_pre_header = getattr(bst_result, "pre_header_serial", None)
+        if (
+            dag_pre_header is not None
+            and dag_initial_entry is not None
+            and dag_pre_header not in dag_claimed_1way
+        ):
+            dag_modifications.append(
+                dag_builder.goto_redirect(
+                    source_block=dag_pre_header,
+                    target_block=dag_initial_entry,
+                )
+            )
+            dag_owned_blocks.add(dag_pre_header)
+            dag_owned_edges.add((dag_pre_header, dag_initial_entry))
+            dag_claimed_1way[dag_pre_header] = dag_initial_entry
+            dag_transition_count += 1
+            logger.info(
+                "LFG DAG: pre-header %s -> %s (state 0x%X)",
+                blk_label(mba, dag_pre_header),
+                blk_label(mba, dag_initial_entry),
+                sm.initial_state if sm.initial_state is not None else 0,
+            )
+
+        if not dag_modifications:
+            logger.info("LFG: DAG produced no redirect modifications")
+            return None
+
+        dag_disconnect_count = self._disconnect_bst_comparison_nodes(
+            dag_bst_node_blocks,
+            snapshot.bst_dispatcher_serial,
+            dag_builder,
+            dag_modifications,
+            dag_emitted,
+            mba=mba,
+        )
+
+        logger.info(
+            "LFG DAG: emitted %d redirects (%d unconditional, %d conditional); "
+            "%d terminal edges ignored, %d unknown edges ignored, %d skipped conflicts; "
+            "%d BST disconnects",
+            dag_transition_count + dag_conditional_count,
+            dag_transition_count,
+            dag_conditional_count,
+            dag_terminal_skipped,
+            dag_unknown_skipped,
+            dag_skipped_count,
+            dag_disconnect_count,
+        )
+
+        dag_handlers_visited = len(sm.handlers)
+        dag_ownership = OwnershipScope(
+            blocks=frozenset(dag_owned_blocks),
+            edges=frozenset(dag_owned_edges),
+            transitions=frozenset(dag_owned_transitions),
+        )
+        dag_benefit = BenefitMetrics(
+            handlers_resolved=dag_handlers_visited,
+            transitions_resolved=dag_transition_count + dag_conditional_count,
+            blocks_freed=len(dag_bst_node_blocks),
+            conflict_density=0.0,
+        )
+        return PlanFragment(
+            strategy_name=self.name,
+            family=self.family,
+            modifications=dag_modifications,
+            ownership=dag_ownership,
+            prerequisites=self.prerequisites,
+            expected_benefit=dag_benefit,
+            risk_score=0.1,
+            metadata={
+                "handlers_visited": dag_handlers_visited,
+                "resolved_count": dag_transition_count + dag_conditional_count,
+                "dag_transition_count": dag_transition_count,
+                "dag_conditional_count": dag_conditional_count,
+                "dag_terminal_skipped": dag_terminal_skipped,
+                "dag_unknown_skipped": dag_unknown_skipped,
+                "skipped_count": dag_skipped_count,
+                "disconnect_count": dag_disconnect_count,
+                "bst_convert_count": 0,
+                "goto_nop_count": 0,
+                "goto_skip_count": 0,
+                "nop_state_values": {},
+            },
+        )
 
         handler_state_map: dict[int, int] = dict(
             getattr(bst_result, "handler_state_map", {}) or {}
@@ -1019,6 +1255,589 @@ class LinearizedFlowGraphStrategy:
                 "nop_state_values": nop_state_values,
             },
         )
+
+    @staticmethod
+    def _resolve_state_var_stkoff(
+        snapshot: AnalysisSnapshot,
+        sm: DispatcherStateMachine,
+    ) -> int | None:
+        detector = snapshot.detector
+        if detector is not None:
+            try:
+                stkoff = _get_state_var_stkoff(detector)
+            except Exception:
+                stkoff = None
+            if stkoff is not None:
+                return stkoff
+        if sm.state_var is not None:
+            try:
+                if sm.state_var.t == ida_hexrays.mop_S:
+                    return sm.state_var.s.off
+            except Exception:
+                pass
+        return None
+
+    @staticmethod
+    def _edge_priority(edge: StateDagEdge) -> int:
+        if edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH:
+            return 0
+        if edge.source_anchor.kind == RedirectSourceKind.EXIT_BLOCK:
+            return 1
+        return 2
+
+    @classmethod
+    def _select_plannable_edges(
+        cls,
+        dag: LinearizedStateDag,
+    ) -> tuple[StateDagEdge, ...]:
+        return tuple(
+            sorted(
+                (
+                    edge
+                    for edge in dag.edges
+                    if edge.kind
+                    in (
+                        SemanticEdgeKind.TRANSITION,
+                        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                    )
+                    and edge.target_entry_anchor is not None
+                ),
+                key=lambda edge: (
+                    0 if edge.kind == SemanticEdgeKind.TRANSITION else 1,
+                    -(len(edge.ordered_path)),
+                    edge.source_anchor.block_serial,
+                    -1
+                    if edge.source_anchor.branch_arm is None
+                    else edge.source_anchor.branch_arm,
+                    edge.kind.value,
+                    edge.target_entry_anchor if edge.target_entry_anchor is not None else -1,
+                    cls._edge_priority(edge),
+                ),
+            )
+        )
+
+    @staticmethod
+    def _resolve_dag_entry_for_state(
+        dag: LinearizedStateDag,
+        state_value: int | None,
+    ) -> int | None:
+        if state_value is None:
+            return None
+        for node in dag.nodes:
+            if node.key.state_const == state_value:
+                return node.entry_anchor
+        for node in dag.nodes:
+            lo = node.key.range_lo
+            hi = node.key.range_hi
+            if lo is None or hi is None:
+                continue
+            if lo <= state_value <= hi:
+                return node.entry_anchor
+        return None
+
+    @staticmethod
+    def _resolve_edge_old_target(
+        source_block: int,
+        edge: StateDagEdge,
+        builder: ModificationBuilder,
+        *,
+        bst_node_blocks: set[int],
+        dispatcher_region: set[int],
+    ) -> int | None:
+        succs = tuple(builder.block_succ_map.get(source_block, ()))
+        if not succs:
+            return None
+        if (
+            edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+            and edge.source_anchor.branch_arm is not None
+            and edge.source_anchor.branch_arm < len(succs)
+        ):
+            return succs[edge.source_anchor.branch_arm]
+
+        if source_block in edge.ordered_path:
+            path_index = edge.ordered_path.index(source_block)
+            if path_index + 1 < len(edge.ordered_path):
+                candidate = edge.ordered_path[path_index + 1]
+                if candidate in succs:
+                    return candidate
+
+        for succ in succs:
+            if succ in bst_node_blocks:
+                return succ
+        for succ in succs:
+            if succ in dispatcher_region:
+                return succ
+        if edge.target_entry_anchor is not None:
+            for succ in succs:
+                if succ != edge.target_entry_anchor:
+                    return succ
+        return succs[0]
+
+    @staticmethod
+    def _is_valid_pred_split_pair(
+        source_block: int,
+        via_pred: int | None,
+        builder: ModificationBuilder,
+    ) -> bool:
+        if via_pred is None:
+            return False
+        if builder.block_nsucc_map.get(source_block, 1) != 1:
+            return False
+        if builder.block_nsucc_map.get(via_pred, 1) != 1:
+            return False
+        succs = tuple(builder.block_succ_map.get(via_pred, ()))
+        return len(succs) == 1 and succs[0] == source_block
+
+    @staticmethod
+    def _can_duplicate_path_tail(
+        source_block: int,
+        via_pred: int | None,
+        edge: StateDagEdge,
+        flow_graph: object,
+    ) -> bool:
+        if via_pred is None:
+            return False
+        src_snapshot = flow_graph.get_block(source_block)
+        pred_snapshot = flow_graph.get_block(via_pred)
+        if src_snapshot is None or pred_snapshot is None:
+            return False
+        if src_snapshot.nsucc != 1:
+            return False
+        if pred_snapshot.nsucc == 1:
+            return tuple(pred_snapshot.succs) == (source_block,)
+        if pred_snapshot.nsucc != 2:
+            return False
+        if (
+            edge.source_anchor.kind != RedirectSourceKind.CONDITIONAL_BRANCH
+            or edge.source_anchor.block_serial != via_pred
+            or edge.source_anchor.branch_arm != 1
+        ):
+            return False
+        succs = tuple(pred_snapshot.succs)
+        return len(succs) == 2 and succs[1] == source_block
+
+    @staticmethod
+    def _block_writes_redirected_state(
+        mba: object,
+        block_serial: int,
+        *,
+        state_var_stkoff: int | None,
+        dispatcher_lookup: object | None,
+        target_entry: int,
+    ) -> bool:
+        if (
+            mba is None
+            or state_var_stkoff is None
+            or dispatcher_lookup is None
+            or not callable(dispatcher_lookup)
+        ):
+            return False
+        try:
+            block = mba.get_mblock(block_serial)
+        except Exception:
+            return False
+        if block is None:
+            return False
+
+        resolved_targets: set[int] = set()
+        insn = block.head
+        while insn is not None:
+            if insn.opcode == ida_hexrays.m_mov:
+                d = insn.d
+                l = insn.l
+                if (
+                    d is not None
+                    and d.t == ida_hexrays.mop_S
+                    and d.s is not None
+                    and d.s.off == state_var_stkoff
+                    and l is not None
+                    and l.t == ida_hexrays.mop_n
+                ):
+                    try:
+                        resolved = dispatcher_lookup(l.nnn.value)
+                    except Exception:
+                        resolved = None
+                    if resolved is not None:
+                        resolved_targets.add(int(resolved))
+            insn = insn.next
+        return resolved_targets == {target_entry}
+
+    @classmethod
+    def _emit_path_tail_redirect(
+        cls,
+        *,
+        edge: StateDagEdge,
+        builder: ModificationBuilder,
+        modifications: list,
+        owned_blocks: set[int],
+        owned_edges: set[tuple[int, int]],
+        owned_transitions: set[tuple[int, int]],
+        emitted: set[tuple[int, int]],
+        claimed_exits: dict[int, int],
+        claimed_path_edges: dict[tuple[int, int], int],
+        blocked_sources: set[int],
+        terminal_source_keys: set[object],
+        terminal_source_handlers: set[int],
+        terminal_source_owned_blocks: set[int],
+        terminal_protected_blocks: set[int],
+        report_exit_handlers: set[int],
+        report_exit_owned_blocks: set[int],
+        bst_node_blocks: set[int],
+        dispatcher_region: set[int],
+        flow_graph: object,
+        state_var_stkoff: int | None,
+        dispatcher_lookup: object | None,
+        mba: object,
+    ) -> bool:
+        if not edge.ordered_path or edge.target_entry_anchor is None:
+            return False
+        if edge.source_key.handler_serial in report_exit_handlers:
+            return False
+        if edge.ordered_path and edge.ordered_path[0] in report_exit_handlers:
+            return False
+        if (
+            edge.kind == SemanticEdgeKind.TRANSITION
+            and edge.source_key.handler_serial in terminal_source_handlers
+        ):
+            return False
+
+        source_block = edge.ordered_path[-1]
+        target_entry = edge.target_entry_anchor
+        if source_block == target_entry:
+            return False
+        if (
+            edge.kind == SemanticEdgeKind.TRANSITION
+            and source_block in terminal_source_owned_blocks
+        ):
+            return False
+        if source_block in report_exit_owned_blocks:
+            return False
+        if source_block in blocked_sources:
+            return False
+        if source_block in terminal_protected_blocks:
+            return False
+
+        source_snapshot = flow_graph.get_block(source_block)
+        if source_snapshot is None or source_snapshot.nsucc != 1:
+            return False
+
+        old_target = cls._resolve_edge_old_target(
+            source_block,
+            edge,
+            builder,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher_region=dispatcher_region,
+        )
+        if old_target is None or old_target == target_entry:
+            return False
+
+        emit_key = (source_block, target_entry)
+        if emit_key in emitted:
+            return False
+
+        npreds = len(tuple(source_snapshot.preds))
+        if (
+            npreds > 1
+            and cls._block_writes_redirected_state(
+                mba,
+                source_block,
+                state_var_stkoff=state_var_stkoff,
+                dispatcher_lookup=dispatcher_lookup,
+                target_entry=target_entry,
+            )
+        ):
+            existing_target = claimed_exits.get(source_block)
+            if existing_target is not None:
+                if existing_target == target_entry:
+                    return False
+                return False
+            modifications.append(
+                builder.goto_redirect(
+                    source_block=source_block,
+                    target_block=target_entry,
+                    old_target=old_target,
+                )
+            )
+            claimed_exits[source_block] = target_entry
+            emitted.add(emit_key)
+            owned_blocks.add(source_block)
+            owned_edges.add((source_block, target_entry))
+            if edge.source_key.state_const is not None and edge.target_state is not None:
+                owned_transitions.add(
+                    (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
+                )
+            logger.info(
+                "LFG DAG: shared tail redirect %s -> %s via %s",
+                blk_label(mba, source_block),
+                blk_label(mba, target_entry),
+                edge.kind.name.lower(),
+            )
+            return True
+
+        if npreds <= 1:
+            existing_target = claimed_exits.get(source_block)
+            if existing_target is not None:
+                if existing_target == target_entry:
+                    return False
+                return False
+            modifications.append(
+                builder.goto_redirect(
+                    source_block=source_block,
+                    target_block=target_entry,
+                    old_target=old_target,
+                )
+            )
+            claimed_exits[source_block] = target_entry
+            emitted.add(emit_key)
+            owned_blocks.add(source_block)
+            owned_edges.add((source_block, target_entry))
+            if edge.source_key.state_const is not None and edge.target_state is not None:
+                owned_transitions.add(
+                    (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
+                )
+            logger.info(
+                "LFG DAG: path-tail redirect %s -> %s via %s",
+                blk_label(mba, source_block),
+                blk_label(mba, target_entry),
+                edge.kind.name.lower(),
+            )
+            return True
+
+        via_pred = edge.ordered_path[-2] if len(edge.ordered_path) >= 2 else None
+        if cls._is_valid_pred_split_pair(source_block, via_pred, builder):
+            assert via_pred is not None
+            if via_pred in blocked_sources:
+                return False
+            if via_pred in terminal_protected_blocks:
+                return False
+            edge_key = (source_block, via_pred)
+            existing_target = claimed_path_edges.get(edge_key)
+            if existing_target is not None:
+                if existing_target == target_entry:
+                    return False
+                return False
+            modifications.append(
+                builder.edge_redirect(
+                    source_block=source_block,
+                    target_block=target_entry,
+                    old_target=old_target,
+                    via_pred=via_pred,
+                )
+            )
+            claimed_path_edges[edge_key] = target_entry
+            blocked_sources.add(via_pred)
+            emitted.add(emit_key)
+            owned_blocks.add(source_block)
+            owned_blocks.add(via_pred)
+            owned_edges.add((source_block, target_entry))
+            if edge.source_key.state_const is not None and edge.target_state is not None:
+                owned_transitions.add(
+                    (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
+                )
+            logger.info(
+                "LFG DAG: path-tail pred-split %s via %s -> %s",
+                blk_label(mba, source_block),
+                blk_label(mba, via_pred),
+                blk_label(mba, target_entry),
+            )
+            return True
+
+        if cls._can_duplicate_path_tail(source_block, via_pred, edge, flow_graph):
+            assert via_pred is not None
+            if via_pred in blocked_sources:
+                return False
+            other_preds = [
+                pred for pred in tuple(source_snapshot.preds)
+                if pred != via_pred
+            ]
+            if other_preds:
+                modifications.append(
+                    builder.duplicate_and_redirect(
+                        source_block=source_block,
+                        per_pred_targets=[
+                            (other_preds[0], old_target),
+                            (via_pred, target_entry),
+                        ],
+                    )
+                )
+                blocked_sources.add(via_pred)
+                emitted.add(emit_key)
+                owned_blocks.add(source_block)
+                owned_blocks.add(via_pred)
+                owned_blocks.add(other_preds[0])
+                owned_edges.add((source_block, target_entry))
+                if edge.source_key.state_const is not None and edge.target_state is not None:
+                    owned_transitions.add(
+                        (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
+                    )
+                logger.info(
+                    "LFG DAG: path-tail duplicate %s via %s -> %s",
+                    blk_label(mba, source_block),
+                    blk_label(mba, via_pred),
+                    blk_label(mba, target_entry),
+                )
+                return True
+
+        return False
+
+    @classmethod
+    def _emit_dag_redirect(
+        cls,
+        *,
+        edge: StateDagEdge,
+        dag: LinearizedStateDag,
+        builder: ModificationBuilder,
+        modifications: list,
+        owned_blocks: set[int],
+        owned_edges: set[tuple[int, int]],
+        owned_transitions: set[tuple[int, int]],
+        emitted: set[tuple[int, int]],
+        claimed_1way: dict[int, int],
+        claimed_2way: dict[tuple[int, int], int],
+        claimed_exits: dict[int, int],
+        claimed_path_edges: dict[tuple[int, int], int],
+        blocked_sources: set[int],
+        terminal_source_keys: set[object],
+        terminal_source_handlers: set[int],
+        terminal_source_owned_blocks: set[int],
+        terminal_protected_blocks: set[int],
+        report_exit_handlers: set[int],
+        report_exit_owned_blocks: set[int],
+        bst_node_blocks: set[int],
+        dispatcher_region: set[int],
+        flow_graph: object,
+        state_var_stkoff: int | None,
+        dispatcher_lookup: object | None,
+        mba: object,
+    ) -> bool:
+        target_entry = edge.target_entry_anchor
+        if target_entry is None:
+            return False
+
+        if cls._emit_path_tail_redirect(
+            edge=edge,
+            builder=builder,
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            owned_transitions=owned_transitions,
+            emitted=emitted,
+            claimed_exits=claimed_exits,
+            claimed_path_edges=claimed_path_edges,
+            blocked_sources=blocked_sources,
+            terminal_source_keys=terminal_source_keys,
+            terminal_source_handlers=terminal_source_handlers,
+            terminal_source_owned_blocks=terminal_source_owned_blocks,
+            terminal_protected_blocks=terminal_protected_blocks,
+            report_exit_handlers=report_exit_handlers,
+            report_exit_owned_blocks=report_exit_owned_blocks,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher_region=dispatcher_region,
+            flow_graph=flow_graph,
+            state_var_stkoff=state_var_stkoff,
+            dispatcher_lookup=dispatcher_lookup,
+            mba=mba,
+        ):
+            return True
+
+        source_block = edge.source_anchor.block_serial
+        if edge.source_key.handler_serial in report_exit_handlers:
+            return False
+        if edge.ordered_path and edge.ordered_path[0] in report_exit_handlers:
+            return False
+        if source_block == target_entry:
+            return False
+        if source_block in blocked_sources:
+            return False
+        if source_block in terminal_protected_blocks:
+            return False
+        if source_block in report_exit_owned_blocks:
+            return False
+        if (
+            edge.kind == SemanticEdgeKind.TRANSITION
+            and source_block in terminal_source_owned_blocks
+        ):
+            return False
+        if edge.ordered_path and source_block != edge.ordered_path[-1]:
+            return False
+
+        emit_key = (source_block, target_entry)
+        if emit_key in emitted:
+            return False
+
+        nsucc = builder.block_nsucc_map.get(source_block, 1)
+        if (
+            edge.kind == SemanticEdgeKind.TRANSITION
+            and edge.source_key.handler_serial in terminal_source_handlers
+        ):
+            return False
+        if nsucc == 2 and edge.kind == SemanticEdgeKind.TRANSITION:
+            return False
+        old_target = cls._resolve_edge_old_target(
+            source_block,
+            edge,
+            builder,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher_region=dispatcher_region,
+        )
+        if nsucc == 2:
+            if old_target is None or old_target == target_entry:
+                return False
+            branch_key = (source_block, old_target)
+            existing_target = claimed_2way.get(branch_key)
+            if existing_target is not None:
+                if existing_target == target_entry:
+                    return False
+                logger.info(
+                    "LFG DAG: conflict on 2-way %s old=%s: already -> %s, skipping -> %s",
+                    blk_label(mba, source_block),
+                    blk_label(mba, old_target),
+                    blk_label(mba, existing_target),
+                    blk_label(mba, target_entry),
+                )
+                return False
+            modifications.append(
+                builder.edge_redirect(
+                    source_block=source_block,
+                    target_block=target_entry,
+                    old_target=old_target,
+                )
+            )
+            claimed_2way[branch_key] = target_entry
+        else:
+            existing_target = claimed_1way.get(source_block)
+            if existing_target is not None and existing_target != target_entry:
+                logger.info(
+                    "LFG DAG: conflict on 1-way %s: already -> %s, skipping -> %s",
+                    blk_label(mba, source_block),
+                    blk_label(mba, existing_target),
+                    blk_label(mba, target_entry),
+                )
+                return False
+            modifications.append(
+                builder.goto_redirect(
+                    source_block=source_block,
+                    target_block=target_entry,
+                    old_target=old_target,
+                )
+            )
+            claimed_1way[source_block] = target_entry
+
+        emitted.add(emit_key)
+        owned_blocks.add(source_block)
+        owned_edges.add((source_block, target_entry))
+        if edge.source_key.state_const is not None and edge.target_state is not None:
+            owned_transitions.add(
+                (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
+            )
+        logger.info(
+            "LFG DAG: resolved %s -> %s via %s (%s)",
+            blk_label(mba, source_block),
+            blk_label(mba, target_entry),
+            edge.kind.name.lower(),
+            edge.source_anchor.kind.name.lower(),
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Resolved state machine DOT graph
