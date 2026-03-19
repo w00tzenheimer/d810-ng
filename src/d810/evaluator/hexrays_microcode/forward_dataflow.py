@@ -15,6 +15,7 @@ Also contains two concrete domains previously in the ``domains/`` sub-package:
 2. **Constant-propagation domain** -- tracks constant values of stack/register
    variables. Used by ``ForwardConstantPropagationRule``.
 """
+
 from __future__ import annotations
 
 import copy
@@ -33,9 +34,6 @@ from d810.core.typing import (
     Union,
     runtime_checkable,
 )
-
-if TYPE_CHECKING:
-    pass
 
 logger = getLogger(__name__)
 
@@ -450,10 +448,7 @@ def build_reaching_defs_entry_state(universe: set[VarKey]) -> ReachingDefEnv:
 # Every public function operates on plain ``LatticeEnv``
 # (``dict[str, LatticeValue]``) dicts and IDA microcode objects.
 
-from d810.cfg.lattice import (
-    Const,
-    LatticeEnv,
-)
+from d810.cfg.lattice import Const, LatticeEnv
 
 ConstMap = LatticeEnv  # backward-compat alias
 
@@ -470,10 +465,7 @@ def _get_written_var_name(ins: object) -> Optional[str]:
     except ImportError:
         return None
 
-    from d810.hexrays.ir.mop_utils import (
-        extract_base_and_offset,
-        get_stack_var_name,
-    )
+    from d810.hexrays.ir.mop_utils import extract_base_and_offset, get_stack_var_name
 
     d = ins.d  # type: ignore[attr-defined]
     if d is None:
@@ -524,10 +516,7 @@ def _extract_assignment(
     except ImportError:
         return None
 
-    from d810.hexrays.ir.mop_utils import (
-        extract_base_and_offset,
-        get_stack_var_name,
-    )
+    from d810.hexrays.ir.mop_utils import extract_base_and_offset, get_stack_var_name
 
     if not _is_constant_stack_assignment(ins):
         return None
