@@ -600,6 +600,205 @@ def test_range_backed_nodes_keep_shared_suffixes_out_of_entry_targets() -> None:
     assert "shared-suffix: blk[5], blk[6]" in rendered
 
 
+def test_terminal_branch_handoff_preserves_local_goto_chain() -> None:
+    flow_graph = FlowGraph(
+        blocks={
+            23: BlockSnapshot(23, 0, (), (200,), 0, 0, ()),
+            131: BlockSnapshot(131, 0, (174,), (), 0, 0, ()),
+            174: BlockSnapshot(174, 0, (175, 176), (131,), 0, 0, ()),
+            175: BlockSnapshot(175, 0, (217,), (174,), 0, 0, ()),
+            176: BlockSnapshot(176, 0, (200,), (174,), 0, 0, ()),
+            198: BlockSnapshot(198, 0, (199,), (), 0, 0, ()),
+            199: BlockSnapshot(199, 0, (200,), (198,), 0, 0, ()),
+            200: BlockSnapshot(200, 0, (23,), (176, 199), 0, 0, ()),
+            217: BlockSnapshot(217, 0, (218,), (175,), 0, 0, ()),
+            218: BlockSnapshot(218, 0, (), (217,), 0, 0, ()),
+        },
+        entry_serial=131,
+        func_ea=0x407000,
+    )
+    transition_from_acd = StateTransition(
+        from_state=0x0ACD0BD5,
+        to_state=0x6465D165,
+        from_block=131,
+        is_conditional=False,
+    )
+    transition_from_258 = StateTransition(
+        from_state=0x258ED455,
+        to_state=0x6465D165,
+        from_block=199,
+        is_conditional=False,
+    )
+    transition_result = TransitionResult(
+        transitions=[transition_from_acd, transition_from_258],
+        handlers={
+            0x0ACD0BD5: StateHandler(
+                state_value=0x0ACD0BD5,
+                check_block=131,
+                handler_blocks=[131, 174, 175, 176],
+                transitions=[transition_from_acd],
+            ),
+            0x258ED455: StateHandler(
+                state_value=0x258ED455,
+                check_block=199,
+                handler_blocks=[199],
+                transitions=[transition_from_258],
+            ),
+            0x6465D165: StateHandler(
+                state_value=0x6465D165,
+                check_block=23,
+                handler_blocks=[23],
+                transitions=[],
+            ),
+        },
+        initial_state=0x0ACD0BD5,
+        pre_header_serial=0,
+        strategy_name="fixture",
+        resolved_count=2,
+    )
+    report = DispatcherTransitionReport(
+        dispatcher_entry_serial=0,
+        state_var_stkoff=None,
+        state_var_lvar_idx=None,
+        pre_header_serial=None,
+        initial_state=0x0ACD0BD5,
+        handler_state_map={131: 0x0ACD0BD5, 199: 0x258ED455, 23: 0x6465D165},
+        handler_range_map={},
+        bst_node_blocks=(),
+        rows=(
+            TransitionRow(
+                state_const=0x0ACD0BD5,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=131,
+                kind=TransitionKind.EXIT,
+                next_state=None,
+                conditional_states=(),
+                state_label="State 0x0ACD0BD5",
+                transition_label="RETURN (exit)",
+                chain_preview=(131, 174, 175, 217),
+                path=TransitionPath(
+                    handler_serial=131,
+                    chain=(131, 174, 175, 217),
+                    next_state=None,
+                    conditional_states=(),
+                    back_edge=False,
+                    reaches_exit_block=True,
+                    classified_exit=True,
+                    unresolved=False,
+                ),
+            ),
+            TransitionRow(
+                state_const=0x258ED455,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=199,
+                kind=TransitionKind.TRANSITION,
+                next_state=0x6465D165,
+                conditional_states=(),
+                state_label="State 0x258ED455",
+                transition_label="next=0x6465D165",
+                chain_preview=(199,),
+                path=TransitionPath(
+                    handler_serial=199,
+                    chain=(199,),
+                    next_state=0x6465D165,
+                    conditional_states=(),
+                    back_edge=True,
+                    reaches_exit_block=False,
+                    classified_exit=False,
+                    unresolved=False,
+                ),
+            ),
+            TransitionRow(
+                state_const=0x6465D165,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=23,
+                kind=TransitionKind.UNKNOWN,
+                next_state=None,
+                conditional_states=(),
+                state_label="State 0x6465D165",
+                transition_label="unknown",
+                chain_preview=(23,),
+                path=TransitionPath(
+                    handler_serial=23,
+                    chain=(23,),
+                    next_state=None,
+                    conditional_states=(),
+                    back_edge=False,
+                    reaches_exit_block=False,
+                    classified_exit=False,
+                    unresolved=True,
+                ),
+            ),
+        ),
+        summary=TransitionSummary(
+            handlers_total=3,
+            known_count=1,
+            conditional_count=0,
+            exit_count=1,
+            unknown_count=1,
+        ),
+        diagnostics=(),
+    )
+
+    dag = build_linearized_state_dag_from_graph(
+        flow_graph,
+        report,
+        transition_result,
+        handler_paths_by_handler={
+            131: (
+                HandlerPathResult(
+                    exit_block=218,
+                    final_state=None,
+                    state_writes=[],
+                    ordered_path=[131, 174, 175, 217, 218],
+                ),
+            ),
+            199: (
+                HandlerPathResult(
+                    exit_block=199,
+                    final_state=0x6465D165,
+                    state_writes=[(199, 0x3000)],
+                    ordered_path=[199],
+                ),
+            ),
+        },
+    )
+
+    acd_node = next(node for node in dag.nodes if node.handler_serial == 131)
+    assert any(
+        edge.source_segment_id == "blk[176]"
+        and edge.target_segment_id == "blk[200]"
+        and edge.kind == LocalEdgeKind.JOIN
+        for edge in acd_node.local_edges
+    )
+
+    acd_edges = [edge for edge in dag.edges if edge.source_key.handler_serial == 131]
+    assert any(
+        edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION
+        and edge.source_anchor.block_serial == 174
+        and edge.source_anchor.branch_arm == 1
+        and edge.target_state == 0x258ED455
+        and edge.target_entry_anchor == 199
+        and edge.ordered_path == (131, 174, 176, 200)
+        for edge in acd_edges
+    )
+    assert not any(
+        edge.kind == SemanticEdgeKind.TRANSITION
+        and edge.target_state == 0x6465D165
+        for edge in acd_edges
+    )
+
+    rendered = render_linearized_state_dag(dag)
+    assert "blk[176] -join-> blk[200]" in rendered
+    assert (
+        "edge conditional_transition src=blk[174].taken -> "
+        "0x258ED455 entry=blk[199] path=[131, 174, 176, 200]"
+    ) in rendered
+
+
 def test_alias_states_can_share_handler_anchor_and_inherit_edges() -> None:
     flow_graph = FlowGraph(
         blocks={
