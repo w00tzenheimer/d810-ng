@@ -35,6 +35,7 @@ from d810.recon.microcode_dump import (
     dump_dispatcher_tree,
     dump_function_microcode,
     dump_linearized_dag,
+    dump_linearized_dag_dot,
     dump_state_machine_graph,
     mba_to_human_readable,
 )
@@ -411,6 +412,43 @@ class TestDumpFunctionPseudocode:
                             except Exception as e:
                                 print(f"\n[linearized DAG dump failed: {e}]")
                             try:
+                                dag_dot_dir = os.environ.get(
+                                    "D810_DUMP_DIR", "/work/.tmp"
+                                )
+                                os.makedirs(dag_dot_dir, exist_ok=True)
+
+                                dag_dot = dump_linearized_dag_dot(
+                                    mba,
+                                    dispatcher_serial,
+                                    state_var_stkoff=hodur_stkoff,
+                                )
+                                dag_dot_path = os.path.join(
+                                    dag_dot_dir,
+                                    "linearized_state_dag.dot",
+                                )
+                                with open(dag_dot_path, "w") as f:
+                                    f.write(dag_dot)
+                                print(f"Linearized DAG DOT written to: {dag_dot_path}")
+
+                                dag_dot_expanded = dump_linearized_dag_dot(
+                                    mba,
+                                    dispatcher_serial,
+                                    state_var_stkoff=hodur_stkoff,
+                                    expanded=True,
+                                )
+                                dag_dot_expanded_path = os.path.join(
+                                    dag_dot_dir,
+                                    "linearized_state_dag_expanded.dot",
+                                )
+                                with open(dag_dot_expanded_path, "w") as f:
+                                    f.write(dag_dot_expanded)
+                                print(
+                                    "Expanded Linearized DAG DOT written to: "
+                                    f"{dag_dot_expanded_path}"
+                                )
+                            except Exception as e:
+                                print(f"\n[linearized DAG DOT dump failed: {e}]")
+                            try:
                                 dot_str, graph_summary = dump_state_machine_graph(
                                     mba,
                                     dispatcher_serial,
@@ -695,9 +733,9 @@ class TestDumpFunctionPseudocode:
                         )
                         if mba is not None:
                             print(f"\n--- HUMAN MICROCODE ({maturity_name}) ---")
-                            header = func_name or f"sub_{entry_ea:x}"
+                            header = function_name or f"sub_{func_ea:x}"
                             print(
-                                f"; ===== Microcode: {header} @ 0x{entry_ea:x}  maturity={maturity_name}  blocks={num_blocks} ====="
+                                f"; ===== Microcode: {header} @ 0x{func_ea:x}  maturity={maturity_name}  blocks={data['num_blocks']} ====="
                             )
                             human_readable = mba_to_human_readable(mba)
                             print("\n\n".join(human_readable))

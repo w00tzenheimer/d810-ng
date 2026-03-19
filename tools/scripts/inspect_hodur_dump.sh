@@ -5,7 +5,7 @@
 FILE="${1:-.tmp/output.txt}"
 
 echo "=== Gate Failures ==="
-rg -C3 'Gate accounting: \d+ passed, [1-9]\d* failed, \d+ bypassed' "$FILE" 2>/dev/null || echo "(none)"
+rg -A1 'Gate accounting: \d+ passed, [1-9]\d* failed, \d+ bypassed' "$FILE" 2>/dev/null || echo "(none)"
 
 echo ""
 echo "=== Provenance ==="
@@ -21,7 +21,26 @@ rg '^(BEFORE|AFTER|DELTA):' "$FILE" 2>/dev/null || echo "(none)"
 
 echo ""
 echo "=== INTERR ==="
-rg -i 'INTERR|50860|50858|50856' "$FILE" 2>/dev/null | grep -v invariants | head -5 || echo "(none)"
+rg -A20 'INTERR' "$FILE" 2>/dev/null | head -60 || echo "(none)"
+
+echo ""
+echo "=== Verify Failure Artifacts ==="
+rg -o 'verify_failures/[^ ]*\.json' "$FILE" 2>/dev/null | sort -u | while read -r artifact; do
+  # artifact is relative path like verify_failures/verify_fail_...json
+  # try common base dirs
+  for base in .tmp/logs/d810_logs /root/.idapro/logs/d810_logs ~/.idapro/logs/d810_logs; do
+    full="$base/$artifact"
+    if [ -f "$full" ]; then
+      echo "--- $full ---"
+      cat "$full"
+      echo ""
+      break
+    fi
+  done
+done
+if ! rg -q 'verify_failures/' "$FILE" 2>/dev/null; then
+  echo "(none)"
+fi
 
 echo ""
 echo "=== Rejected Stages ==="
