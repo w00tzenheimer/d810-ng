@@ -460,7 +460,20 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Gate to first pass only — BST cleanup invalidates state analysis,
         # so a second Hodur pass would crash (RuntimeError 52719).
         bst_cleanup_ran = False
-        if nb_changes > 0 and self._actual_pass_count == 0 and snapshot.bst_result is not None:
+        bst_cleanup_blockers = self._collect_post_apply_bst_cleanup_blockers(
+            pipeline, results
+        )
+        if bst_cleanup_blockers:
+            unflat_logger.info(
+                "Skipping post-apply BST cleanup because unresolved non-BST dispatcher predecessors remain: %s",
+                bst_cleanup_blockers,
+            )
+        if (
+            not bst_cleanup_blockers
+            and nb_changes > 0
+            and self._actual_pass_count == 0
+            and snapshot.bst_result is not None
+        ):
             bst_cleanup_edges = self._post_apply_bst_cleanup(
                 snapshot.bst_result.bst_node_blocks,
                 snapshot.bst_dispatcher_serial,
@@ -576,6 +589,24 @@ class HodurUnflattener(GenericUnflatteningRule):
     # ------------------------------------------------------------------
     # Return frontier audit helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _collect_post_apply_bst_cleanup_blockers(
+        pipeline: list,
+        results: list[StageResult],
+    ) -> dict[str, tuple[int, ...]]:
+        blockers: dict[str, tuple[int, ...]] = {}
+        for fragment, result in zip(pipeline, results):
+            if not (result.success and result.edits_applied > 0):
+                continue
+            if fragment.metadata.get("allow_post_apply_bst_cleanup", True):
+                continue
+            residual_preds = tuple(
+                int(serial)
+                for serial in fragment.metadata.get("residual_dispatcher_preds", ())
+            )
+            blockers[fragment.strategy_name] = residual_preds
+        return blockers
 
     def _build_successor_map(self) -> dict[int, list[int]]:
         """Build successor map from current MBA state."""

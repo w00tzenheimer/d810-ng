@@ -620,12 +620,306 @@ def test_lfg_plan_uses_dag_semantic_edges(monkeypatch):
         and mod.from_serial == 12
         for mod in mods
     )
+
+
+def test_lfg_plan_uses_single_stable_dag_pass(monkeypatch):
+    strategy = LinearizedFlowGraphStrategy()
+
+    source_node = StateDagNode(
+        key=StateDagNodeKey(handler_serial=93, state_const=0x42267E66),
+        kind=StateNodeKind.EXACT,
+        state_label="0x42267E66",
+        handler_serial=93,
+        entry_anchor=93,
+        owned_blocks=(93, 94, 95),
+        exclusive_blocks=(93, 94, 95),
+        shared_suffix_blocks=(),
+        local_segments=(),
+        local_edges=(),
+    )
+    target_node = StateDagNode(
+        key=StateDagNodeKey(handler_serial=211, state_const=0x24E2E77A),
+        kind=StateNodeKind.EXACT,
+        state_label="0x24E2E77A",
+        handler_serial=211,
+        entry_anchor=211,
+        owned_blocks=(211,),
+        exclusive_blocks=(211,),
+        shared_suffix_blocks=(),
+        local_segments=(),
+        local_edges=(),
+    )
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=None,
+        pre_header_serial=1,
+        initial_state=0x42267E66,
+        bst_node_blocks=(),
+        nodes=(source_node, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=0x24E2E77A,
+                target_entry_anchor=211,
+                target_label="0x24E2E77A",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=93,
+                ),
+                ordered_path=(93, 95),
+            ),
+        ),
+        diagnostics=(),
+    )
+
+    original_flow_graph = _FakeFlowGraph(
+        [
+            _FakeFlowBlock(1, [2]),
+            _FakeFlowBlock(2, []),
+            _FakeFlowBlock(93, [94, 95]),
+            _FakeFlowBlock(94, [], preds=[93]),
+            _FakeFlowBlock(95, [2], preds=[93]),
+            _FakeFlowBlock(211, []),
+        ]
+    )
+    projected_flow_graph = _FakeFlowGraph(
+        [
+            _FakeFlowBlock(1, [93]),
+            _FakeFlowBlock(2, []),
+            _FakeFlowBlock(93, [94, 95], preds=[1]),
+            _FakeFlowBlock(94, [], preds=[93]),
+            _FakeFlowBlock(95, [2], preds=[93]),
+            _FakeFlowBlock(211, []),
+        ]
+    )
+
+    build_calls: list[object] = []
+
+    def _fake_build_live(flow_graph, *args, **kwargs):
+        build_calls.append(flow_graph)
+        return dag
+
+    monkeypatch.setattr(
+        lfg_module,
+        "build_live_linearized_state_dag_from_graph",
+        _fake_build_live,
+    )
+    monkeypatch.setattr(
+        lfg_module,
+        "build_dispatcher_transition_report_from_graph",
+        lambda *args, **kwargs: SimpleNamespace(
+            rows=(
+                SimpleNamespace(
+                    handler_serial=93,
+                    kind=lfg_module.TransitionKind.EXIT,
+                ),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        lfg_module,
+        "compile_patch_plan",
+        lambda modifications, cfg: SimpleNamespace(
+            modifications=tuple(modifications),
+            cfg=cfg,
+        ),
+    )
+    monkeypatch.setattr(
+        lfg_module,
+        "project_post_state",
+        lambda cfg, patch_plan: projected_flow_graph,
+    )
+    monkeypatch.setattr(
+        lfg_module,
+        "build_mba_view_from_flow_graph",
+        lambda flow_graph: None,
+    )
+    monkeypatch.setattr(
+        LinearizedFlowGraphStrategy,
+        "_supports_projected_replanning",
+        staticmethod(lambda flow_graph: True),
+    )
+    monkeypatch.setattr(
+        LinearizedFlowGraphStrategy,
+        "_disconnect_bst_comparison_nodes",
+        staticmethod(lambda *args, **kwargs: 0),
+    )
+
+    sm = DispatcherStateMachine(
+        mba=SimpleNamespace(entry_ea=0x401000, maturity=1),
+        initial_state=0x42267E66,
+        handlers={
+            0x42267E66: StateHandler(
+                state_value=0x42267E66,
+                check_block=93,
+                handler_blocks=[93, 94, 95],
+            ),
+            0x24E2E77A: StateHandler(
+                state_value=0x24E2E77A,
+                check_block=211,
+                handler_blocks=[211],
+            ),
+        },
+    )
+    snapshot = AnalysisSnapshot(
+        mba=sm.mba,
+        state_machine=sm,
+        detector=None,
+        bst_result=SimpleNamespace(
+            handler_state_map={93: 0x42267E66, 211: 0x24E2E77A},
+            handler_range_map={},
+            pre_header_serial=1,
+            bst_node_blocks=set(),
+            dispatcher=None,
+            diagnostics=(),
+        ),
+        bst_dispatcher_serial=2,
+        flow_graph=original_flow_graph,
+    )
+
+    fragment = strategy.plan(snapshot)
+
+    assert fragment is not None
+    assert build_calls == [original_flow_graph]
     assert any(
         isinstance(mod, RedirectGoto)
         and mod.from_serial == 1
-        and mod.new_target == 10
-        for mod in mods
+        and mod.old_target == 2
+        and mod.new_target == 93
+        for mod in fragment.modifications
     )
+    assert any(
+        isinstance(mod, RedirectGoto)
+        and mod.from_serial == 95
+        and mod.old_target == 2
+        and mod.new_target == 211
+        for mod in fragment.modifications
+    )
+
+
+def test_lfg_plan_blocks_post_apply_bst_cleanup_when_residual_dispatcher_tails_remain(
+    monkeypatch,
+):
+    strategy = LinearizedFlowGraphStrategy()
+
+    source_node = StateDagNode(
+        key=StateDagNodeKey(handler_serial=93, state_const=0x42267E66),
+        kind=StateNodeKind.EXACT,
+        state_label="0x42267E66",
+        handler_serial=93,
+        entry_anchor=93,
+        owned_blocks=(93, 94, 95),
+        exclusive_blocks=(93, 94, 95),
+        shared_suffix_blocks=(),
+        local_segments=(),
+        local_edges=(),
+    )
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=None,
+        pre_header_serial=1,
+        initial_state=0x42267E66,
+        bst_node_blocks=(),
+        nodes=(source_node,),
+        edges=(),
+        diagnostics=(),
+    )
+
+    original_flow_graph = _FakeFlowGraph(
+        [
+            _FakeFlowBlock(1, [2]),
+            _FakeFlowBlock(2, []),
+            _FakeFlowBlock(93, [94, 95], preds=[]),
+            _FakeFlowBlock(94, [], preds=[93]),
+            _FakeFlowBlock(95, [2], preds=[93]),
+        ]
+    )
+    projected_flow_graph = _FakeFlowGraph(
+        [
+            _FakeFlowBlock(1, [93]),
+            _FakeFlowBlock(2, []),
+            _FakeFlowBlock(93, [94, 95], preds=[1]),
+            _FakeFlowBlock(94, [], preds=[93]),
+            _FakeFlowBlock(95, [2], preds=[93]),
+        ]
+    )
+
+    monkeypatch.setattr(
+        lfg_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+    monkeypatch.setattr(
+        lfg_module,
+        "build_dispatcher_transition_report_from_graph",
+        lambda *args, **kwargs: SimpleNamespace(rows=()),
+    )
+    monkeypatch.setattr(
+        lfg_module,
+        "compile_patch_plan",
+        lambda modifications, cfg: SimpleNamespace(
+            modifications=tuple(modifications),
+            cfg=cfg,
+        ),
+    )
+    monkeypatch.setattr(
+        lfg_module,
+        "project_post_state",
+        lambda cfg, patch_plan: projected_flow_graph,
+    )
+    monkeypatch.setattr(
+        lfg_module,
+        "build_mba_view_from_flow_graph",
+        lambda flow_graph: None,
+    )
+    monkeypatch.setattr(
+        LinearizedFlowGraphStrategy,
+        "_supports_projected_replanning",
+        staticmethod(lambda flow_graph: True),
+    )
+    monkeypatch.setattr(
+        LinearizedFlowGraphStrategy,
+        "_disconnect_bst_comparison_nodes",
+        staticmethod(lambda *args, **kwargs: 0),
+    )
+
+    sm = DispatcherStateMachine(
+        mba=SimpleNamespace(entry_ea=0x401000, maturity=1),
+        initial_state=0x42267E66,
+        handlers={
+            0x42267E66: StateHandler(
+                state_value=0x42267E66,
+                check_block=93,
+                handler_blocks=[93, 94, 95],
+            ),
+        },
+    )
+    snapshot = AnalysisSnapshot(
+        mba=sm.mba,
+        state_machine=sm,
+        detector=None,
+        bst_result=SimpleNamespace(
+            handler_state_map={93: 0x42267E66},
+            handler_range_map={},
+            pre_header_serial=1,
+            bst_node_blocks=set(),
+            dispatcher=None,
+            diagnostics=(),
+        ),
+        bst_dispatcher_serial=2,
+        flow_graph=original_flow_graph,
+    )
+
+    fragment = strategy.plan(snapshot)
+
+    assert fragment is not None
+    assert fragment.metadata["allow_post_apply_bst_cleanup"] is False
+    assert fragment.metadata["post_apply_bst_cleanup_reason"] == (
+        "residual_dispatcher_predecessors"
+    )
+    assert fragment.metadata["residual_dispatcher_preds"] == (95,)
 
 
 def test_lfg_plan_blocks_source_after_path_tail_pred_split():
@@ -715,6 +1009,7 @@ def test_lfg_plan_blocks_source_after_path_tail_pred_split():
 
     assert LinearizedFlowGraphStrategy._emit_path_tail_redirect(
         edge=first_edge,
+        dag=dag,
         builder=builder,
         modifications=modifications,
         owned_blocks=owned_blocks,
@@ -997,9 +1292,225 @@ def test_lfg_plan_skips_transition_edges_from_terminal_source_nodes():
         bst_node_blocks=set(),
         dispatcher_region=set(),
         flow_graph=flow_graph,
+        state_var_stkoff=None,
+        dispatcher_lookup=None,
         mba=SimpleNamespace(entry_ea=0x401000),
     )
     assert modifications == []
+
+
+def test_lfg_plan_keeps_nonterminal_corridor_from_mixed_terminal_handler():
+    source_node = StateDagNode(
+        key=StateDagNodeKey(handler_serial=93, state_const=0x42267E66),
+        kind=StateNodeKind.EXACT,
+        state_label="0x42267E66",
+        handler_serial=93,
+        entry_anchor=93,
+        owned_blocks=(93, 94, 95),
+        exclusive_blocks=(93, 94, 95),
+        shared_suffix_blocks=(),
+        local_segments=(),
+        local_edges=(),
+    )
+    target_node = StateDagNode(
+        key=StateDagNodeKey(handler_serial=211, state_const=0x24E2E77A),
+        kind=StateNodeKind.EXACT,
+        state_label="0x24E2E77A",
+        handler_serial=211,
+        entry_anchor=211,
+        owned_blocks=(211,),
+        exclusive_blocks=(211,),
+        shared_suffix_blocks=(),
+        local_segments=(),
+        local_edges=(),
+    )
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=None,
+        pre_header_serial=None,
+        initial_state=None,
+        bst_node_blocks=(),
+        nodes=(source_node, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=0x24E2E77A,
+                target_entry_anchor=211,
+                target_label="0x24E2E77A",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=93,
+                ),
+                ordered_path=(93, 95),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                source_key=source_node.key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="RETURN",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=93,
+                    branch_arm=0,
+                ),
+                ordered_path=(93, 94),
+            ),
+        ),
+        diagnostics=(),
+    )
+    flow_graph = _FakeFlowGraph(
+        [
+            _FakeFlowBlock(93, [94, 95], preds=[]),
+            _FakeFlowBlock(94, [], preds=[93]),
+            _FakeFlowBlock(95, [2], preds=[93]),
+            _FakeFlowBlock(211, [], preds=[]),
+        ]
+    )
+    fake_mba = SimpleNamespace(entry_ea=0x401000)
+    builder = ModificationBuilder.from_snapshot(
+        SimpleNamespace(flow_graph=flow_graph, mba=fake_mba)
+    )
+    modifications: list = []
+
+    assert LinearizedFlowGraphStrategy._emit_dag_redirect(
+        edge=dag.edges[0],
+        dag=dag,
+        builder=builder,
+        modifications=modifications,
+        owned_blocks=set(),
+        owned_edges=set(),
+        owned_transitions=set(),
+        emitted=set(),
+        claimed_1way={},
+        claimed_2way={},
+        claimed_exits={},
+        claimed_path_edges={},
+        blocked_sources=set(),
+        terminal_source_keys={source_node.key},
+        terminal_source_handlers={93},
+        terminal_source_owned_blocks={93, 94, 95},
+        terminal_protected_blocks={93, 94},
+        report_exit_handlers=set(),
+        report_exit_owned_blocks=set(),
+        bst_node_blocks=set(),
+        dispatcher_region={2},
+        flow_graph=flow_graph,
+        state_var_stkoff=None,
+        dispatcher_lookup=None,
+        mba=fake_mba,
+    )
+    assert any(
+        isinstance(mod, RedirectGoto)
+        and mod.from_serial == 95
+        and mod.old_target == 2
+        and mod.new_target == 211
+        for mod in modifications
+    )
+
+
+def test_emit_dag_redirect_retargets_stale_bst_entry_to_semantic_body():
+    source_node = StateDagNode(
+        key=StateDagNodeKey(handler_serial=1, state_const=0x11111111),
+        kind=StateNodeKind.EXACT,
+        state_label="0x11111111",
+        handler_serial=1,
+        entry_anchor=1,
+        owned_blocks=(1,),
+        exclusive_blocks=(1,),
+        shared_suffix_blocks=(),
+        local_segments=(),
+        local_edges=(),
+    )
+    target_node = StateDagNode(
+        key=StateDagNodeKey(handler_serial=77, state_const=0x5D0AEBD3),
+        kind=StateNodeKind.EXACT,
+        state_label="0x5D0AEBD3",
+        handler_serial=77,
+        entry_anchor=77,
+        owned_blocks=(77, 78),
+        exclusive_blocks=(77, 78),
+        shared_suffix_blocks=(),
+        local_segments=(),
+        local_edges=(),
+    )
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=None,
+        pre_header_serial=1,
+        initial_state=0x11111111,
+        bst_node_blocks=(77,),
+        nodes=(source_node, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=0x5D0AEBD3,
+                target_entry_anchor=77,
+                target_label="0x5D0AEBD3",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=1,
+                ),
+                ordered_path=(1,),
+            ),
+        ),
+        diagnostics=(),
+    )
+    flow_graph = _FakeFlowGraph(
+        [
+            _FakeFlowBlock(1, [2], preds=[]),
+            _FakeFlowBlock(2, [], preds=[1]),
+            _FakeFlowBlock(77, [78, 79], preds=[]),
+            _FakeFlowBlock(78, [14], preds=[77]),
+            _FakeFlowBlock(79, [], preds=[77]),
+            _FakeFlowBlock(14, [], preds=[78]),
+        ]
+    )
+    fake_mba = SimpleNamespace(entry_ea=0x401000)
+    builder = ModificationBuilder.from_snapshot(
+        SimpleNamespace(flow_graph=flow_graph, mba=fake_mba)
+    )
+    modifications: list = []
+
+    assert LinearizedFlowGraphStrategy._emit_dag_redirect(
+        edge=dag.edges[0],
+        dag=dag,
+        builder=builder,
+        modifications=modifications,
+        owned_blocks=set(),
+        owned_edges=set(),
+        owned_transitions=set(),
+        emitted=set(),
+        claimed_1way={},
+        claimed_2way={},
+        claimed_exits={},
+        claimed_path_edges={},
+        blocked_sources=set(),
+        terminal_source_keys=set(),
+        terminal_source_handlers=set(),
+        terminal_source_owned_blocks=set(),
+        terminal_protected_blocks=set(),
+        report_exit_handlers=set(),
+        report_exit_owned_blocks=set(),
+        bst_node_blocks={77},
+        dispatcher_region={2, 77},
+        flow_graph=flow_graph,
+        state_var_stkoff=None,
+        dispatcher_lookup=None,
+        mba=fake_mba,
+    )
+    assert any(
+        isinstance(mod, RedirectGoto)
+        and mod.from_serial == 1
+        and mod.old_target == 2
+        and mod.new_target == 78
+        for mod in modifications
+    )
 
 
 # ---------------------------------------------------------------------------
