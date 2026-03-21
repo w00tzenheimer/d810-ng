@@ -12,8 +12,8 @@ them, preventing stale dispatcher state constants from leaking into the
 decompiled pseudocode.
 
 Family: ``FAMILY_CLEANUP`` -- runs after all other strategies.
-Prerequisites: ``["direct_handler_linearization"]`` -- state writes must
-already be handled by DirectLinearization.
+Prerequisites: ``["linearized_flow_graph"]`` -- the active DAG-driven
+linearizer must already have handled state writes and handoffs.
 """
 from __future__ import annotations
 
@@ -221,15 +221,14 @@ class DeadStateVariableEliminationStrategy:
                     )
                     continue
 
-                # EXPERIMENT: NOPs disabled
-                # modifications.append(
-                #     builder.nop_instruction(
-                #         source_block=use.block_serial,
-                #         instruction_ea=use.ins_ea,
-                #     )
-                # )
-                # owned_blocks.add(use.block_serial)
-                # nop_count += 1
+                modifications.append(
+                    builder.nop_instruction(
+                        source_block=use.block_serial,
+                        instruction_ea=use.ins_ea,
+                    )
+                )
+                owned_blocks.add(use.block_serial)
+                nop_count += 1
                 logger.debug(
                     "DeadStateVarElim: NOP read site blk[%d] ea=0x%x opcode=%d",
                     use.block_serial,
@@ -263,7 +262,7 @@ class DeadStateVariableEliminationStrategy:
             family=self.family,
             modifications=modifications,
             ownership=ownership,
-            prerequisites=["direct_handler_linearization"],
+            prerequisites=["linearized_flow_graph"],
             expected_benefit=benefit,
             risk_score=0.1,
             metadata={"safeguard_min_required": 1},

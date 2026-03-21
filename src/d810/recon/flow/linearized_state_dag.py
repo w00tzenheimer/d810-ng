@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from d810.cfg.flowgraph import FlowGraph
+from d810.core import logging
 from d810.core.typing import Callable, Mapping
 from d810.recon.flow.interval_map import IntervalDispatcher
 from d810.recon.flow.state_machine_analysis import (
@@ -15,6 +16,7 @@ from d810.recon.flow.state_machine_analysis import (
     detect_conditional_transitions,
     evaluate_handler_paths,
 )
+
 from d810.recon.flow.transition_builder import TransitionResult
 from d810.recon.flow.transition_report import (
     DispatcherTransitionReport,
@@ -24,6 +26,8 @@ from d810.recon.flow.transition_report import (
     TransitionSummary,
     build_dispatcher_transition_report_from_graph,
 )
+
+logger = logging.getLogger("D810.recon.flow.linearized_state_dag", logging.INFO)
 
 
 class StateNodeKind(Enum):
@@ -203,15 +207,11 @@ def _resolve_fallback_anchor_from_exact_cover(
     report: DispatcherTransitionReport,
     flow_graph: FlowGraph,
 ) -> int | None:
-    exact_rows = sorted(
-        (row for row in report.rows if row.state_const is not None),
-        key=lambda row: row.state_const if row.state_const is not None else -1,
+    covering_row = _find_exact_cover_row(
+        state_value,
+        report,
+        exact_handler_state_map=report.handler_state_map,
     )
-    covering_row = None
-    for row in exact_rows:
-        if row.state_const is None or row.state_const > state_value:
-            break
-        covering_row = row
     if covering_row is None:
         return None
 
@@ -234,6 +234,38 @@ def _resolve_fallback_anchor_from_exact_cover(
     return sibling_succs[0]
 
 
+def _find_exact_cover_row(
+    state_value: int,
+    report: DispatcherTransitionReport,
+    *,
+    exact_handler_state_map: Mapping[int, int] | None = None,
+) -> TransitionRow | None:
+    allowed_pairs = None
+    if exact_handler_state_map is not None:
+        allowed_pairs = {
+            (handler_serial, state_const)
+            for handler_serial, state_const in exact_handler_state_map.items()
+        }
+    exact_rows = sorted(
+        (
+            row
+            for row in report.rows
+            if row.state_const is not None
+            and (
+                allowed_pairs is None
+                or (row.handler_serial, row.state_const) in allowed_pairs
+            )
+        ),
+        key=lambda row: row.state_const if row.state_const is not None else -1,
+    )
+    covering_row = None
+    for row in exact_rows:
+        if row.state_const is None or row.state_const > state_value:
+            break
+        covering_row = row
+    return covering_row
+
+
 def _ordered_unique(values: list[int] | tuple[int, ...]) -> tuple[int, ...]:
     seen: set[int] = set()
     ordered: list[int] = []
@@ -245,8 +277,267 @@ def _ordered_unique(values: list[int] | tuple[int, ...]) -> tuple[int, ...]:
     return tuple(ordered)
 
 
+def _resolve_owner_family_fallback(
+    anchor_candidates: set[int] | tuple[int, ...],
+    dag: LinearizedStateDag,
+    flow_graph: FlowGraph,
+) -> tuple[int, str] | None:
+    """Map a synthetic alias onto the local exact handler's fallback sibling.
+
+    Some supplemental states are not real dispatcher values. They are local
+    branch artifacts inside an exact handler family, and the correct semantic
+    continuation is that family's existing ``*_fallback`` node rather than a
+    shared interval prelude or the dispatcher root.
+    """
+
+    if not anchor_candidates:
+        return None
+
+    def _owns_candidate(node: StateDagNode, block_serial: int) -> bool:
+        if block_serial == node.entry_anchor or block_serial in node.owned_blocks:
+            return True
+        return any(block_serial in segment.blocks for segment in node.local_segments)
+
+    owner_nodes: list[StateDagNode] = []
+    for node in dag.nodes:
+        if node.kind != StateNodeKind.EXACT or node.key.state_const is None:
+            continue
+        if any(_owns_candidate(node, block_serial) for block_serial in anchor_candidates):
+            owner_nodes.append(node)
+
+    if not owner_nodes:
+        return None
+
+    owner_nodes.sort(
+        key=lambda node: (
+            0 if any(block in node.exclusive_blocks for block in anchor_candidates) else 1,
+            0 if any(block == node.entry_anchor for block in anchor_candidates) else 1,
+            abs(node.entry_anchor - min(anchor_candidates)),
+        )
+    )
+    owner = owner_nodes[0]
+    base_state = owner.key.state_const & 0xFFFFFFFF
+    fallback_label = f"0x{base_state:08X}_fallback"
+
+    fallback_nodes = [
+        node
+        for node in dag.nodes
+        if node.state_label == fallback_label and node.entry_anchor != owner.entry_anchor
+    ]
+    max_candidate = max(anchor_candidates)
+    if fallback_nodes:
+        fallback_nodes.sort(
+            key=lambda node: (
+                0 if node.entry_anchor > max_candidate else 1,
+                abs(node.entry_anchor - max_candidate),
+            )
+        )
+        chosen = fallback_nodes[0]
+        return chosen.entry_anchor, chosen.state_label
+
+    owner_snapshot = flow_graph.get_block(owner.entry_anchor)
+    if owner_snapshot is None:
+        return None
+    sibling_candidates: list[int] = []
+    for pred_serial in owner_snapshot.preds:
+        pred_snapshot = flow_graph.get_block(pred_serial)
+        if pred_snapshot is None or len(pred_snapshot.succs) != 2:
+            continue
+        sibling_succs = [
+            succ for succ in pred_snapshot.succs if succ != owner.entry_anchor
+        ]
+        if len(sibling_succs) != 1:
+            continue
+        sibling_candidates.append(sibling_succs[0])
+    if not sibling_candidates:
+        return None
+    sibling_candidates.sort(
+        key=lambda block_serial: (
+            0 if block_serial > max_candidate else 1,
+            abs(block_serial - max_candidate),
+        )
+    )
+    return sibling_candidates[0], fallback_label
+
+
+def _suppress_bst_extension_alias_edges(
+    edges: tuple[StateDagEdge, ...] | list[StateDagEdge],
+    *,
+    bst_node_blocks: tuple[int, ...] | set[int],
+) -> list[StateDagEdge]:
+    """Drop alias edges that only extend a resolved path back into the BST.
+
+    These show up as a second semantic edge whose ordered path is exactly the
+    same as a concrete transition, plus one trailing dispatcher-root hop. They
+    are useful for explanation, but they keep synthetic supplemental states like
+    0x27EEEA11 alive and in turn preserve dispatcher-root loops in the planner.
+    """
+
+    bst_block_set = set(bst_node_blocks)
+    if not bst_block_set:
+        return list(edges)
+
+    concrete_prefixes: set[tuple[StateDagNodeKey, tuple[int, ...]]] = set()
+    for edge in edges:
+        if (
+            edge.kind not in (SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION)
+            or edge.target_entry_anchor is None
+            or edge.target_entry_anchor in bst_block_set
+            or not edge.ordered_path
+        ):
+            continue
+        concrete_prefixes.add((edge.source_key, tuple(edge.ordered_path)))
+
+    filtered: list[StateDagEdge] = []
+    for edge in edges:
+        if (
+            edge.kind in (SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION)
+            and edge.target_entry_anchor is not None
+            and edge.target_entry_anchor in bst_block_set
+            and len(edge.ordered_path) >= 2
+            and edge.ordered_path[-1] in bst_block_set
+            and (edge.source_key, tuple(edge.ordered_path[:-1])) in concrete_prefixes
+        ):
+            continue
+        filtered.append(edge)
+    return filtered
+
+
 def _segment_id(block_serial: int) -> str:
     return f"blk[{block_serial}]"
+
+
+def _is_canonical_exact_row(
+    row: TransitionRow,
+    *,
+    real_handler_states: set[int],
+) -> bool:
+    if (
+        row.state_const is None
+        or row.state_range_lo is not None
+        or row.state_range_hi is not None
+    ):
+        return False
+    if row.state_const not in real_handler_states:
+        return False
+    label = row.transition_label.lower()
+    return "fallback" not in label and not label.startswith("range alias")
+
+
+def _find_unique_exact_bridge_row(
+    state_value: int,
+    report: DispatcherTransitionReport,
+    *,
+    real_handler_states: set[int],
+) -> TransitionRow | None:
+    canonical_rows = [
+        row
+        for row in report.rows
+        if _is_canonical_exact_row(
+            row, real_handler_states=real_handler_states
+        )
+    ]
+    canonical_states = {
+        row.state_const for row in canonical_rows if row.state_const is not None
+    }
+    candidates = [
+        row
+        for row in canonical_rows
+        if row.state_const is not None
+        and row.state_const < state_value
+        and row.kind == TransitionKind.TRANSITION
+        and row.next_state is not None
+        and row.next_state in canonical_states
+        and row.next_state > state_value
+        and not row.conditional_states
+    ]
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda row: (
+            (row.next_state or 0) - state_value,
+            state_value - (row.state_const or 0),
+            row.handler_serial,
+        )
+    )
+    best = candidates[0]
+    if len(candidates) > 1:
+        second = candidates[1]
+        best_key = (
+            (best.next_state or 0) - state_value,
+            state_value - (best.state_const or 0),
+        )
+        second_key = (
+            (second.next_state or 0) - state_value,
+            state_value - (second.state_const or 0),
+        )
+        if second_key == best_key:
+            return None
+    return best
+
+
+def _resolve_bridge_anchor(
+    bridge_row: TransitionRow,
+    edges_by_source_state: Mapping[int, tuple[StateDagEdge, ...]],
+) -> int:
+    bridge_state = bridge_row.state_const
+    bridge_next = bridge_row.next_state
+    if bridge_state is not None and bridge_next is not None:
+        candidate_edges = tuple(
+            edge
+            for edge in edges_by_source_state.get(bridge_state, ())
+            if edge.kind == SemanticEdgeKind.TRANSITION
+            and edge.target_state == bridge_next
+        )
+        if len(candidate_edges) == 1:
+            return candidate_edges[0].source_anchor.block_serial
+    return bridge_row.handler_serial
+
+
+def _find_exact_bridge_edge(
+    state_value: int,
+    edges_by_source_state: Mapping[int, tuple[StateDagEdge, ...]],
+    *,
+    real_handler_states: set[int],
+) -> StateDagEdge | None:
+    candidates: list[StateDagEdge] = []
+    for source_state, state_edges in edges_by_source_state.items():
+        if source_state not in real_handler_states or source_state >= state_value:
+            continue
+        for edge in state_edges:
+            if (
+                edge.kind != SemanticEdgeKind.TRANSITION
+                or edge.target_state is None
+                or edge.target_state not in real_handler_states
+                or edge.target_state <= state_value
+            ):
+                continue
+            candidates.append(edge)
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda edge: (
+            (edge.target_state or 0) - state_value,
+            state_value - (edge.source_key.state_const or 0),
+            edge.source_anchor.block_serial,
+        )
+    )
+    best = candidates[0]
+    if len(candidates) > 1:
+        second = candidates[1]
+        best_key = (
+            (best.target_state or 0) - state_value,
+            state_value - (best.source_key.state_const or 0),
+        )
+        second_key = (
+            (second.target_state or 0) - state_value,
+            state_value - (second.source_key.state_const or 0),
+        )
+        if second_key == best_key:
+            return None
+    return best
 
 
 def _format_state_label(
@@ -296,21 +587,969 @@ def _build_state_resolver(
         handler_serial = exact_state_to_handler.get(state_value)
         if handler_serial is not None:
             return handler_serial
-        for handler_serial_inner, (lo, hi) in report.handler_range_map.items():
-            if lo is None or hi is None:
-                continue
-            if lo <= state_value <= hi:
-                return handler_serial_inner
         handler = transition_result.handlers.get(state_value)
         if handler is not None and handler.check_block in valid_handler_serials:
             return handler.check_block
         if dispatcher is not None:
             resolved = dispatcher.lookup(state_value)
-            if resolved in valid_handler_serials:
-                return resolved
+            if resolved is not None:
+                return int(resolved)
+        for handler_serial_inner, (lo, hi) in report.handler_range_map.items():
+            if lo is None or hi is None:
+                continue
+            if lo <= state_value <= hi:
+                return handler_serial_inner
         return None
 
     return exact_state_to_handler, resolve_handler
+
+
+def _canonical_exact_handler_states(
+    report: DispatcherTransitionReport,
+    transition_result: TransitionResult,
+) -> set[int]:
+    canonical_states = {
+        state_const & 0xFFFFFFFF
+        for state_const in report.handler_state_map.values()
+        if state_const is not None
+    }
+    if transition_result.initial_state is not None:
+        canonical_states.add(transition_result.initial_state & 0xFFFFFFFF)
+    return canonical_states
+
+
+def _protected_exact_point_keys(
+    report: DispatcherTransitionReport,
+) -> set[StateDagNodeKey]:
+    protected: set[StateDagNodeKey] = set()
+    for row in report.rows:
+        if (
+            row.state_const is None
+            or row.state_range_lo is not None
+            or row.state_range_hi is not None
+        ):
+            continue
+        expected_label = f"0x{row.state_const:08X}"
+        if row.state_label != expected_label:
+            continue
+        protected.add(
+            StateDagNodeKey(
+                handler_serial=row.handler_serial,
+                state_const=row.state_const & 0xFFFFFFFF,
+            )
+        )
+    return protected
+
+
+def _compute_alias_label_override(
+    node: StateDagNode,
+    incoming_edges: tuple[StateDagEdge, ...],
+    outgoing_edges: tuple[StateDagEdge, ...],
+    report: DispatcherTransitionReport,
+    flow_graph: FlowGraph,
+    edges_by_source_block: Mapping[int, tuple[StateDagEdge, ...]],
+    edges_by_source_state: Mapping[int, tuple[StateDagEdge, ...]],
+    real_handler_states: set[int],
+    *,
+    prefer_local_corridors: bool = False,
+) -> tuple[str, int, bool] | None:
+    state_value = node.key.state_const
+    if state_value is None or len(outgoing_edges) != 1:
+        if state_value in {0x2A5E29F6, 0x6CAA9521}:
+            logger.info(
+                "DAG alias override skip state=0x%08X outgoing=%d incoming=%d entry=%s label=%s",
+                state_value,
+                len(outgoing_edges),
+                len(incoming_edges),
+                node.entry_anchor,
+                node.state_label,
+            )
+        return None
+
+    terminal_kinds = {
+        SemanticEdgeKind.CONDITIONAL_RETURN,
+        SemanticEdgeKind.EXIT_ROUTINE,
+        SemanticEdgeKind.UNKNOWN,
+    }
+    outgoing_edge = outgoing_edges[0]
+    if (
+        outgoing_edge.kind in terminal_kinds
+        and len(incoming_edges) == 1
+        and incoming_edges[0].source_key.state_const is not None
+    ):
+        bst_blocks = set(report.bst_node_blocks)
+        incoming_edge = incoming_edges[0]
+        source_state = incoming_edge.source_key.state_const & 0xFFFFFFFF
+        source_terminal_edges = tuple(
+            edge
+            for edge in edges_by_source_state.get(source_state, ())
+            if edge.kind in terminal_kinds and edge.ordered_path
+        )
+        alias_terminal_path = tuple(outgoing_edge.ordered_path)
+        alias_exit_block = alias_terminal_path[-1] if alias_terminal_path else None
+        for terminal_edge in source_terminal_edges:
+            terminal_path = tuple(terminal_edge.ordered_path)
+            if (
+                alias_exit_block is not None
+                and terminal_path
+                and terminal_path[-1] != alias_exit_block
+            ):
+                continue
+
+            common_len = 0
+            for lhs, rhs in zip(incoming_edge.ordered_path, terminal_path):
+                if lhs != rhs:
+                    break
+                common_len += 1
+            if (
+                common_len == 0
+                and terminal_path
+                and terminal_path[0] == incoming_edge.source_key.handler_serial
+            ):
+                common_len = 1
+
+            candidate_anchor = next(
+                (
+                    block_serial
+                    for block_serial in terminal_path[common_len:]
+                    if block_serial not in bst_blocks
+                ),
+                None,
+            )
+            if candidate_anchor is None:
+                candidate_anchor = next(
+                    (
+                        block_serial
+                        for block_serial in terminal_path
+                        if block_serial not in bst_blocks
+                    ),
+                    None,
+                )
+            if candidate_anchor is None or candidate_anchor == node.entry_anchor:
+                continue
+            if state_value in {0x2A5E29F6, 0x6CAA9521}:
+                logger.info(
+                    "DAG alias override terminal collapse state=0x%08X -> anchor=%s",
+                    state_value,
+                    candidate_anchor,
+                )
+            return (node.state_label, candidate_anchor, True)
+
+    for incoming_edge in incoming_edges:
+        source_snapshot = flow_graph.get_block(incoming_edge.source_anchor.block_serial)
+        if source_snapshot is None or len(source_snapshot.succs) != 1:
+            continue
+        prelude_anchor = source_snapshot.succs[0]
+        if prelude_anchor == node.entry_anchor:
+            continue
+        exact_preludes = tuple(
+            candidate
+            for candidate in edges_by_source_block.get(prelude_anchor, ())
+            if candidate.kind == SemanticEdgeKind.TRANSITION
+            and candidate.target_state is not None
+            and candidate.target_state in real_handler_states
+        )
+        exact_targets = {
+            candidate.target_state
+            for candidate in exact_preludes
+            if candidate.target_state is not None
+        }
+        if len(exact_targets) != 1:
+            continue
+        exact_target = next(iter(exact_targets))
+        if exact_target is None:
+            continue
+        if state_value in {0x2A5E29F6, 0x6CAA9521}:
+            logger.info(
+                "DAG alias override prelude collapse state=0x%08X -> fallback=%s anchor=%s",
+                state_value,
+                exact_target,
+                prelude_anchor,
+            )
+        return (f"0x{exact_target:08X}_fallback", prelude_anchor, True)
+
+    cover_row = _find_exact_cover_row(
+        state_value,
+        report,
+        exact_handler_state_map=report.handler_state_map,
+    )
+    edge = outgoing_edges[0]
+    if (
+        prefer_local_corridors
+        and edge.kind == SemanticEdgeKind.TRANSITION
+        and edge.target_state is not None
+    ):
+        lower_gap = (
+            state_value - cover_row.state_const
+            if cover_row is not None and cover_row.state_const is not None
+            else None
+        )
+        upper_candidates: list[tuple[int, str, int, bool]] = []
+        if (
+            edge.target_state in real_handler_states
+            and edge.target_state > state_value
+        ):
+            upper_candidates.append(
+                (
+                    edge.target_state - state_value,
+                    f"0x{edge.target_state:08X}_fallback",
+                    node.entry_anchor,
+                    False,
+                )
+            )
+        bridge_edge = _find_exact_bridge_edge(
+            state_value,
+            edges_by_source_state,
+            real_handler_states=real_handler_states,
+        )
+        if (
+            bridge_edge is not None
+            and bridge_edge.target_state is not None
+            and bridge_edge.target_state > state_value
+            and bridge_edge.source_anchor.block_serial < node.entry_anchor
+        ):
+            upper_candidates.append(
+                (
+                    bridge_edge.target_state - state_value,
+                    f"0x{bridge_edge.target_state:08X}_fallback",
+                    bridge_edge.source_anchor.block_serial,
+                    True,
+                )
+            )
+        if upper_candidates:
+            upper_candidates.sort(key=lambda item: item[0])
+            best_gap, best_label, best_anchor, best_local = upper_candidates[0]
+            if lower_gap is None or best_gap < lower_gap:
+                if state_value in {0x2A5E29F6, 0x6CAA9521}:
+                    logger.info(
+                        "DAG alias override upper-gap collapse state=0x%08X -> label=%s anchor=%s local=%s lower_gap=%s best_gap=%s",
+                        state_value,
+                        best_label,
+                        best_anchor,
+                        best_local,
+                        lower_gap,
+                        best_gap,
+                    )
+                return (best_label, best_anchor, best_local)
+        if (
+            cover_row is not None
+            and cover_row.state_const is not None
+            and cover_row.state_const != state_value
+            and node.entry_anchor != cover_row.handler_serial
+        ):
+            if state_value in {0x2A5E29F6, 0x6CAA9521}:
+                logger.info(
+                    "DAG alias override cover collapse state=0x%08X -> cover=0x%08X anchor=%s",
+                    state_value,
+                    cover_row.state_const,
+                    node.entry_anchor,
+                )
+            return (
+                f"0x{cover_row.state_const:08X}_fallback",
+                node.entry_anchor,
+                False,
+            )
+
+    if prefer_local_corridors:
+        return None
+
+    if edge.kind != SemanticEdgeKind.TRANSITION or edge.target_state is None:
+        return None
+
+    bridge_edge = _find_exact_bridge_edge(
+        state_value,
+        edges_by_source_state,
+        real_handler_states=real_handler_states,
+    )
+    if bridge_edge is not None and bridge_edge.target_state is not None:
+        return (
+            f"0x{bridge_edge.target_state:08X}_fallback",
+            bridge_edge.source_anchor.block_serial,
+            True,
+        )
+
+    bridge_row = _find_unique_exact_bridge_row(
+        state_value,
+        report,
+        real_handler_states=real_handler_states,
+    )
+    if bridge_row is not None and bridge_row.next_state is not None:
+        return (
+            f"0x{bridge_row.next_state:08X}_fallback",
+            _resolve_bridge_anchor(bridge_row, edges_by_source_state),
+            True,
+        )
+    if edge.target_state in real_handler_states:
+        return (
+            f"0x{edge.target_state:08X}_fallback",
+            edge.source_anchor.block_serial,
+            True,
+        )
+    if cover_row is None or cover_row.state_const == state_value:
+        return None
+    return (f"0x{cover_row.state_const:08X}_fallback", node.entry_anchor, False)
+
+
+def _normalize_alias_nodes(
+    nodes: list[StateDagNode],
+    edges: list[StateDagEdge],
+    report: DispatcherTransitionReport,
+    transition_result: TransitionResult,
+    flow_graph: FlowGraph,
+    *,
+    prefer_local_corridors: bool = False,
+) -> tuple[list[StateDagNode], list[StateDagEdge]]:
+    real_handler_states = _canonical_exact_handler_states(
+        report,
+        transition_result,
+    )
+    protected_exact_keys = _protected_exact_point_keys(report)
+    incoming_by_state: defaultdict[int, list[StateDagEdge]] = defaultdict(list)
+    outgoing_by_state_key: defaultdict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
+    edges_by_source_block: defaultdict[int, list[StateDagEdge]] = defaultdict(list)
+    edges_by_source_state: defaultdict[int, list[StateDagEdge]] = defaultdict(list)
+    for edge in edges:
+        if edge.target_state is not None:
+            incoming_by_state[edge.target_state & 0xFFFFFFFF].append(edge)
+        outgoing_by_state_key[edge.source_key].append(edge)
+        edges_by_source_block[edge.source_anchor.block_serial].append(edge)
+        if edge.source_key.state_const is not None:
+            edges_by_source_state[edge.source_key.state_const & 0xFFFFFFFF].append(edge)
+
+    normalized_nodes: list[StateDagNode] = []
+    key_updates: dict[StateDagNodeKey, StateDagNode] = {}
+    for node in nodes:
+        state_value = node.key.state_const
+        if (
+            state_value is None
+            or state_value in real_handler_states
+            or node.key in protected_exact_keys
+        ):
+            normalized_nodes.append(node)
+            key_updates[node.key] = node
+            continue
+
+        embedded_owner_override = _resolve_embedded_exact_owner_override(
+            node,
+            nodes,
+            tuple(outgoing_by_state_key.get(node.key, ())),
+            {
+                state_key: tuple(state_edges)
+                for state_key, state_edges in outgoing_by_state_key.items()
+            },
+            canonical_handler_states=real_handler_states,
+        )
+        if embedded_owner_override is not None:
+            state_label, entry_anchor, use_anchor_as_local_entry = embedded_owner_override
+            if state_value in {0x2A5E29F6, 0x6CAA9521}:
+                logger.info(
+                    "DAG alias normalize embedded-owner state=0x%08X handler=%s -> label=%s anchor=%s local=%s",
+                    state_value,
+                    node.handler_serial,
+                    state_label,
+                    entry_anchor,
+                    use_anchor_as_local_entry,
+                )
+
+            owned_blocks = node.owned_blocks
+            exclusive_blocks = node.exclusive_blocks
+            shared_suffix_blocks = node.shared_suffix_blocks
+            local_segments = node.local_segments
+            local_edges = node.local_edges
+            if use_anchor_as_local_entry and entry_anchor != node.entry_anchor:
+                owned_blocks = (entry_anchor,)
+                exclusive_blocks = (entry_anchor,)
+                shared_suffix_blocks = ()
+                local_segments = (
+                    StateLocalSegment(
+                        segment_id=_segment_id(entry_anchor),
+                        kind=LocalSegmentKind.STRAIGHT_LINE,
+                        blocks=(entry_anchor,),
+                    ),
+                )
+                local_edges = ()
+
+            normalized = StateDagNode(
+                key=node.key,
+                kind=node.kind,
+                state_label=state_label,
+                handler_serial=node.handler_serial,
+                entry_anchor=entry_anchor,
+                owned_blocks=owned_blocks,
+                exclusive_blocks=exclusive_blocks,
+                shared_suffix_blocks=shared_suffix_blocks,
+                local_segments=local_segments,
+                local_edges=local_edges,
+            )
+            normalized_nodes.append(normalized)
+            key_updates[node.key] = normalized
+            continue
+
+        override = _compute_alias_label_override(
+            node,
+            tuple(incoming_by_state.get(state_value, ())),
+            tuple(outgoing_by_state_key.get(node.key, ())),
+            report,
+            flow_graph,
+            {
+                block_serial: tuple(block_edges)
+                for block_serial, block_edges in edges_by_source_block.items()
+            },
+            {
+                state_value: tuple(state_edges)
+                for state_value, state_edges in edges_by_source_state.items()
+            },
+            real_handler_states,
+            prefer_local_corridors=prefer_local_corridors,
+        )
+        if override is None:
+            normalized_nodes.append(node)
+            key_updates[node.key] = node
+            continue
+
+        state_label, entry_anchor, use_anchor_as_local_entry = override
+        if override is not None:
+            state_label, entry_anchor, use_anchor_as_local_entry = override
+
+        owned_blocks = node.owned_blocks
+        exclusive_blocks = node.exclusive_blocks
+        shared_suffix_blocks = node.shared_suffix_blocks
+        local_segments = node.local_segments
+        local_edges = node.local_edges
+        if use_anchor_as_local_entry and entry_anchor != node.entry_anchor:
+            owned_blocks = (entry_anchor,)
+            exclusive_blocks = (entry_anchor,)
+            shared_suffix_blocks = ()
+            local_segments = (
+                StateLocalSegment(
+                    segment_id=_segment_id(entry_anchor),
+                    kind=LocalSegmentKind.STRAIGHT_LINE,
+                    blocks=(entry_anchor,),
+                ),
+            )
+            local_edges = ()
+
+        normalized = StateDagNode(
+            key=node.key,
+            kind=node.kind,
+            state_label=state_label,
+            handler_serial=node.handler_serial,
+            entry_anchor=entry_anchor,
+            owned_blocks=owned_blocks,
+            exclusive_blocks=exclusive_blocks,
+            shared_suffix_blocks=shared_suffix_blocks,
+            local_segments=local_segments,
+            local_edges=local_edges,
+        )
+        normalized_nodes.append(normalized)
+        key_updates[node.key] = normalized
+
+    normalized_edges: list[StateDagEdge] = []
+    for edge in edges:
+        target_node = key_updates.get(edge.target_key) if edge.target_key is not None else None
+        normalized_edges.append(
+            StateDagEdge(
+                kind=edge.kind,
+                source_key=edge.source_key,
+                target_key=edge.target_key,
+                target_state=edge.target_state,
+                target_entry_anchor=(
+                    target_node.entry_anchor
+                    if target_node is not None
+                    else edge.target_entry_anchor
+                ),
+                target_label=(
+                    target_node.state_label
+                    if target_node is not None
+                    else edge.target_label
+                ),
+                source_anchor=edge.source_anchor,
+                ordered_path=edge.ordered_path,
+            )
+        )
+
+    return normalized_nodes, normalized_edges
+
+
+def _normalize_nonhandler_exact_nodes(
+    nodes: list[StateDagNode],
+    edges: list[StateDagEdge],
+    report: DispatcherTransitionReport,
+    transition_result: TransitionResult,
+    flow_graph: FlowGraph,
+    *,
+    prefer_local_corridors: bool = False,
+) -> tuple[list[StateDagNode], list[StateDagEdge]]:
+    canonical_handler_states = _canonical_exact_handler_states(
+        report,
+        transition_result,
+    )
+    protected_exact_keys = _protected_exact_point_keys(report)
+    initial_state = (
+        transition_result.initial_state & 0xFFFFFFFF
+        if transition_result.initial_state is not None
+        else None
+    )
+    incoming_by_state: defaultdict[int, list[StateDagEdge]] = defaultdict(list)
+    outgoing_by_state_key: defaultdict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
+    edges_by_source_block: defaultdict[int, list[StateDagEdge]] = defaultdict(list)
+    edges_by_source_state: defaultdict[int, list[StateDagEdge]] = defaultdict(list)
+    for edge in edges:
+        if edge.target_state is not None:
+            incoming_by_state[edge.target_state & 0xFFFFFFFF].append(edge)
+        outgoing_by_state_key[edge.source_key].append(edge)
+        edges_by_source_block[edge.source_anchor.block_serial].append(edge)
+        if edge.source_key.state_const is not None:
+            edges_by_source_state[edge.source_key.state_const & 0xFFFFFFFF].append(edge)
+
+    normalized_nodes: list[StateDagNode] = []
+    key_updates: dict[StateDagNodeKey, StateDagNode] = {}
+    for node in nodes:
+        state_value = node.key.state_const
+        if (
+            state_value is None
+            or node.kind != StateNodeKind.EXACT
+            or state_value == initial_state
+            or node.key in protected_exact_keys
+        ):
+            normalized_nodes.append(node)
+            key_updates[node.key] = node
+            continue
+
+        if state_value in {0x2A5E29F6, 0x6CAA9521}:
+            logger.info(
+                "DAG nonhandler normalize inspect state=0x%08X canonical=%s handler=%s entry=%s label=%s",
+                state_value,
+                state_value in canonical_handler_states,
+                node.handler_serial,
+                node.entry_anchor,
+                node.state_label,
+            )
+
+        embedded_owner_override = _resolve_embedded_exact_owner_override(
+            node,
+            nodes,
+            tuple(outgoing_by_state_key.get(node.key, ())),
+            {
+                state_key: tuple(state_edges)
+                for state_key, state_edges in outgoing_by_state_key.items()
+            },
+            canonical_handler_states=canonical_handler_states,
+        )
+        if embedded_owner_override is not None:
+            state_label, entry_anchor, use_anchor_as_local_entry = embedded_owner_override
+            if state_value in {0x2A5E29F6, 0x6CAA9521}:
+                logger.info(
+                    "DAG nonhandler normalize embedded-owner state=0x%08X handler=%s -> label=%s anchor=%s local=%s",
+                    state_value,
+                    node.handler_serial,
+                    state_label,
+                    entry_anchor,
+                    use_anchor_as_local_entry,
+                )
+
+            owned_blocks = node.owned_blocks
+            exclusive_blocks = node.exclusive_blocks
+            shared_suffix_blocks = node.shared_suffix_blocks
+            local_segments = node.local_segments
+            local_edges = node.local_edges
+            if use_anchor_as_local_entry and entry_anchor != node.entry_anchor:
+                owned_blocks = (entry_anchor,)
+                exclusive_blocks = (entry_anchor,)
+                shared_suffix_blocks = ()
+                local_segments = (
+                    StateLocalSegment(
+                        segment_id=_segment_id(entry_anchor),
+                        kind=LocalSegmentKind.STRAIGHT_LINE,
+                        blocks=(entry_anchor,),
+                    ),
+                )
+                local_edges = ()
+
+            normalized = StateDagNode(
+                key=node.key,
+                kind=node.kind,
+                state_label=state_label,
+                handler_serial=node.handler_serial,
+                entry_anchor=entry_anchor,
+                owned_blocks=owned_blocks,
+                exclusive_blocks=exclusive_blocks,
+                shared_suffix_blocks=shared_suffix_blocks,
+                local_segments=local_segments,
+                local_edges=local_edges,
+            )
+            normalized_nodes.append(normalized)
+            key_updates[node.key] = normalized
+            continue
+
+        override = _compute_alias_label_override(
+            node,
+            tuple(incoming_by_state.get(state_value, ())),
+            tuple(outgoing_by_state_key.get(node.key, ())),
+            report,
+            flow_graph,
+            {
+                block_serial: tuple(block_edges)
+                for block_serial, block_edges in edges_by_source_block.items()
+            },
+            {
+                source_state: tuple(state_edges)
+                for source_state, state_edges in edges_by_source_state.items()
+            },
+            canonical_handler_states,
+            prefer_local_corridors=prefer_local_corridors,
+        )
+        if override is None:
+            if state_value in {0x2A5E29F6, 0x6CAA9521}:
+                logger.info(
+                    "DAG nonhandler normalize no-override state=0x%08X handler=%s entry=%s",
+                    state_value,
+                    node.handler_serial,
+                    node.entry_anchor,
+                )
+            normalized_nodes.append(node)
+            key_updates[node.key] = node
+            continue
+
+        state_label, entry_anchor, use_anchor_as_local_entry = override
+        if state_value in {0x2A5E29F6, 0x6CAA9521}:
+            logger.info(
+                "DAG nonhandler normalize apply state=0x%08X handler=%s -> label=%s anchor=%s local=%s",
+                state_value,
+                node.handler_serial,
+                state_label,
+                entry_anchor,
+                use_anchor_as_local_entry,
+            )
+        owned_blocks = node.owned_blocks
+        exclusive_blocks = node.exclusive_blocks
+        shared_suffix_blocks = node.shared_suffix_blocks
+        local_segments = node.local_segments
+        local_edges = node.local_edges
+        if use_anchor_as_local_entry and entry_anchor != node.entry_anchor:
+            owned_blocks = (entry_anchor,)
+            exclusive_blocks = (entry_anchor,)
+            shared_suffix_blocks = ()
+            local_segments = (
+                StateLocalSegment(
+                    segment_id=_segment_id(entry_anchor),
+                    kind=LocalSegmentKind.STRAIGHT_LINE,
+                    blocks=(entry_anchor,),
+                ),
+            )
+            local_edges = ()
+
+        normalized = StateDagNode(
+            key=node.key,
+            kind=node.kind,
+            state_label=state_label,
+            handler_serial=node.handler_serial,
+            entry_anchor=entry_anchor,
+            owned_blocks=owned_blocks,
+            exclusive_blocks=exclusive_blocks,
+            shared_suffix_blocks=shared_suffix_blocks,
+            local_segments=local_segments,
+            local_edges=local_edges,
+        )
+        normalized_nodes.append(normalized)
+        key_updates[node.key] = normalized
+
+    normalized_edges: list[StateDagEdge] = []
+    for edge in edges:
+        target_node = key_updates.get(edge.target_key) if edge.target_key is not None else None
+        normalized_edges.append(
+            StateDagEdge(
+                kind=edge.kind,
+                source_key=edge.source_key,
+                target_key=edge.target_key,
+                target_state=edge.target_state,
+                target_entry_anchor=(
+                    target_node.entry_anchor
+                    if target_node is not None
+                    else edge.target_entry_anchor
+                ),
+                target_label=(
+                    target_node.state_label
+                    if target_node is not None
+                    else edge.target_label
+                ),
+                source_anchor=edge.source_anchor,
+                ordered_path=edge.ordered_path,
+            )
+        )
+
+    return normalized_nodes, normalized_edges
+
+
+def _resolve_embedded_exact_owner_override(
+    node: StateDagNode,
+    nodes: list[StateDagNode],
+    outgoing_edges: tuple[StateDagEdge, ...],
+    outgoing_edges_by_key: Mapping[StateDagNodeKey, tuple[StateDagEdge, ...]],
+    *,
+    canonical_handler_states: set[int],
+) -> tuple[str, int, bool] | None:
+    state_value = node.key.state_const
+    if state_value is None or state_value in canonical_handler_states:
+        return None
+
+    alias_targets = {
+        edge.target_state & 0xFFFFFFFF
+        for edge in outgoing_edges
+        if edge.kind in (SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION)
+        and edge.target_state is not None
+    }
+    if not alias_targets:
+        return None
+
+    owner_candidates: list[tuple[tuple[int, int, int], StateDagNode]] = []
+    for owner in nodes:
+        owner_state = owner.key.state_const
+        if (
+            owner.key == node.key
+            or owner.kind != StateNodeKind.EXACT
+            or owner_state is None
+            or owner_state not in canonical_handler_states
+        ):
+            continue
+        owns_entry = (
+            node.entry_anchor == owner.entry_anchor
+            or node.entry_anchor in owner.owned_blocks
+            or any(node.entry_anchor in segment.blocks for segment in owner.local_segments)
+        )
+        if not owns_entry:
+            continue
+
+        owner_targets = {
+            edge.target_state & 0xFFFFFFFF
+            for edge in outgoing_edges_by_key.get(owner.key, ())
+            if edge.kind in (SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION)
+            and edge.target_state is not None
+        }
+        if not owner_targets or not alias_targets.issubset(owner_targets):
+            continue
+
+        score = (
+            1 if node.entry_anchor in owner.exclusive_blocks else 0,
+            len(owner_targets),
+            -abs(owner.entry_anchor - node.entry_anchor),
+        )
+        owner_candidates.append((score, owner))
+
+    if not owner_candidates:
+        return None
+
+    owner_candidates.sort(key=lambda item: item[0], reverse=True)
+    owner = owner_candidates[0][1]
+    if owner.entry_anchor == node.entry_anchor:
+        return None
+    return (node.state_label, owner.entry_anchor, False)
+
+
+def _promote_range_backed_nodes_to_dispatcher_bodies(
+    nodes: list[StateDagNode],
+    edges: list[StateDagEdge],
+    dispatcher: IntervalDispatcher | None,
+    *,
+    bst_node_blocks: tuple[int, ...],
+) -> tuple[list[StateDagNode], list[StateDagEdge]]:
+    if dispatcher is None:
+        return nodes, edges
+
+    bst_blocks = set(bst_node_blocks)
+    promoted_by_key: dict[StateDagNodeKey, StateDagNode] = {}
+    promoted_nodes: list[StateDagNode] = []
+
+    for node in nodes:
+        promoted = node
+        if (
+            node.kind == StateNodeKind.RANGE_BACKED
+            and node.key.state_const is not None
+            and node.entry_anchor in bst_blocks
+        ):
+            try:
+                dispatcher_row = dispatcher.lookup_row(node.key.state_const)
+            except Exception:
+                dispatcher_row = None
+            promoted_anchor = (
+                int(dispatcher_row.target)
+                if dispatcher_row is not None and dispatcher_row.target not in bst_blocks
+                else None
+            )
+            if promoted_anchor is not None and promoted_anchor != node.entry_anchor:
+                promoted = StateDagNode(
+                    key=node.key,
+                    kind=node.kind,
+                    state_label=node.state_label,
+                    handler_serial=node.handler_serial,
+                    entry_anchor=promoted_anchor,
+                    owned_blocks=(promoted_anchor,),
+                    exclusive_blocks=(promoted_anchor,),
+                    shared_suffix_blocks=(),
+                    local_segments=(
+                        StateLocalSegment(
+                            segment_id=_segment_id(promoted_anchor),
+                            kind=LocalSegmentKind.STRAIGHT_LINE,
+                            blocks=(promoted_anchor,),
+                        ),
+                    ),
+                    local_edges=(),
+                )
+        promoted_nodes.append(promoted)
+        promoted_by_key[promoted.key] = promoted
+
+    promoted_edges: list[StateDagEdge] = []
+    for edge in edges:
+        target_node = (
+            promoted_by_key.get(edge.target_key)
+            if edge.target_key is not None
+            else None
+        )
+        promoted_edges.append(
+            StateDagEdge(
+                kind=edge.kind,
+                source_key=edge.source_key,
+                target_key=edge.target_key,
+                target_state=edge.target_state,
+                target_entry_anchor=(
+                    target_node.entry_anchor
+                    if target_node is not None
+                    else edge.target_entry_anchor
+                ),
+                target_label=(
+                    target_node.state_label
+                    if target_node is not None
+                    else edge.target_label
+                ),
+                source_anchor=edge.source_anchor,
+                ordered_path=edge.ordered_path,
+            )
+        )
+
+    return promoted_nodes, promoted_edges
+
+
+def _normalize_entry_anchors_to_unique_path_starts(
+    nodes: list[StateDagNode],
+    edges: list[StateDagEdge],
+    *,
+    bst_node_blocks: tuple[int, ...],
+) -> tuple[list[StateDagNode], list[StateDagEdge]]:
+    bst_blocks = set(bst_node_blocks)
+    outgoing_by_key: defaultdict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
+    for edge in edges:
+        outgoing_by_key[edge.source_key].append(edge)
+
+    normalized_nodes: list[StateDagNode] = []
+    normalized_by_key: dict[StateDagNodeKey, StateDagNode] = {}
+
+    for node in nodes:
+        if node.local_segments:
+            normalized_nodes.append(node)
+            normalized_by_key[node.key] = node
+            continue
+
+        outgoing_paths = tuple(
+            edge.ordered_path
+            for edge in outgoing_by_key.get(node.key, ())
+            if edge.ordered_path
+        )
+        if not outgoing_paths:
+            normalized_nodes.append(node)
+            normalized_by_key[node.key] = node
+            continue
+
+        blocks_on_paths = {
+            block_serial
+            for path in outgoing_paths
+            for block_serial in path
+        }
+        if node.entry_anchor in blocks_on_paths:
+            normalized_nodes.append(node)
+            normalized_by_key[node.key] = node
+            continue
+
+        path_starts = _ordered_unique(
+            [
+                path[0]
+                for path in outgoing_paths
+                if path and path[0] not in bst_blocks
+            ]
+        )
+        if len(path_starts) != 1:
+            normalized_nodes.append(node)
+            normalized_by_key[node.key] = node
+            continue
+
+        entry_anchor = path_starts[0]
+        if entry_anchor == node.entry_anchor:
+            normalized_nodes.append(node)
+            normalized_by_key[node.key] = node
+            continue
+
+        owned_blocks = node.owned_blocks
+        if entry_anchor not in owned_blocks:
+            owned_blocks = _ordered_unique((entry_anchor, *owned_blocks))
+
+        exclusive_blocks = node.exclusive_blocks
+        if entry_anchor not in exclusive_blocks:
+            exclusive_blocks = _ordered_unique((entry_anchor, *exclusive_blocks))
+
+        local_segments = node.local_segments
+        if not any(entry_anchor in segment.blocks for segment in local_segments):
+            local_segments = (
+                StateLocalSegment(
+                    segment_id=_segment_id(entry_anchor),
+                    kind=LocalSegmentKind.STRAIGHT_LINE,
+                    blocks=(entry_anchor,),
+                ),
+                *local_segments,
+            )
+
+        normalized = StateDagNode(
+            key=node.key,
+            kind=node.kind,
+            state_label=node.state_label,
+            handler_serial=node.handler_serial,
+            entry_anchor=entry_anchor,
+            owned_blocks=owned_blocks,
+            exclusive_blocks=exclusive_blocks,
+            shared_suffix_blocks=node.shared_suffix_blocks,
+            local_segments=local_segments,
+            local_edges=node.local_edges,
+        )
+        normalized_nodes.append(normalized)
+        normalized_by_key[node.key] = normalized
+
+    normalized_edges: list[StateDagEdge] = []
+    for edge in edges:
+        target_node = (
+            normalized_by_key.get(edge.target_key)
+            if edge.target_key is not None
+            else None
+        )
+        normalized_edges.append(
+            StateDagEdge(
+                kind=edge.kind,
+                source_key=edge.source_key,
+                target_key=edge.target_key,
+                target_state=edge.target_state,
+                target_entry_anchor=(
+                    target_node.entry_anchor
+                    if target_node is not None
+                    else edge.target_entry_anchor
+                ),
+                target_label=(
+                    target_node.state_label
+                    if target_node is not None
+                    else edge.target_label
+                ),
+                source_anchor=edge.source_anchor,
+                ordered_path=edge.ordered_path,
+            )
+        )
+
+    return normalized_nodes, normalized_edges
 
 
 def _collect_local_block_order(
@@ -319,10 +1558,16 @@ def _collect_local_block_order(
     row_state_const: int | None,
     paths: tuple[HandlerPathResult, ...],
     conditional_transitions: tuple[ConditionalTransition, ...],
+    *,
+    path_root_override: int | None = None,
 ) -> tuple[int, ...]:
-    ordered: list[int] = [handler_serial]
+    ordered: list[int]
+    if path_root_override is not None and path_root_override != handler_serial:
+        ordered = [path_root_override]
+    else:
+        ordered = [handler_serial]
 
-    if row_state_const is not None:
+    if row_state_const is not None and path_root_override is None:
         handler = transition_result.handlers.get(row_state_const)
         if handler is not None:
             ordered.extend(handler.handler_blocks)
@@ -336,6 +1581,83 @@ def _collect_local_block_order(
             ordered.append(cond.state_write_block)
 
     return _ordered_unique(ordered)
+
+
+def _resolve_semantic_entry_anchor(
+    handler_serial: int,
+    local_blocks: tuple[int, ...],
+    paths: tuple[HandlerPathResult, ...],
+    *,
+    bst_node_blocks: tuple[int, ...],
+) -> int:
+    path_roots = _ordered_unique(
+        [path.ordered_path[0] for path in paths if path.ordered_path]
+    )
+    if len(path_roots) == 1 and path_roots[0] != handler_serial:
+        return path_roots[0]
+
+    bst_blocks = set(bst_node_blocks)
+    if handler_serial not in bst_blocks:
+        return handler_serial
+
+    path_candidates: list[int] = []
+    for path in paths:
+        try:
+            start_idx = path.ordered_path.index(handler_serial)
+        except ValueError:
+            continue
+        candidate = next(
+            (
+                block_serial
+                for block_serial in path.ordered_path[start_idx + 1 :]
+                if block_serial not in bst_blocks
+            ),
+            None,
+        )
+        if candidate is not None:
+            path_candidates.append(candidate)
+
+    ordered_path_candidates = _ordered_unique(path_candidates)
+    if len(ordered_path_candidates) == 1:
+        return ordered_path_candidates[0]
+
+    local_candidate = next(
+        (
+            block_serial
+            for block_serial in local_blocks
+            if block_serial != handler_serial and block_serial not in bst_blocks
+        ),
+        None,
+    )
+    if local_candidate is not None:
+        return local_candidate
+
+    return handler_serial
+
+
+def _is_self_handoff_only_candidate(
+    paths: tuple[HandlerPathResult, ...],
+    state_value: int,
+) -> bool:
+    if not paths:
+        return False
+
+    saw_path = False
+    normalized_state = state_value & 0xFFFFFFFF
+    for path in paths:
+        if path.final_state is None:
+            return False
+        saw_path = True
+        if (path.final_state & 0xFFFFFFFF) != normalized_state:
+            return False
+        if path.state_writes:
+            normalized_writes = {
+                value & 0xFFFFFFFF for _, value in path.state_writes
+            }
+            if normalized_writes != {normalized_state}:
+                return False
+
+    return saw_path
 
 
 def _compute_shared_blocks(
@@ -784,6 +2106,7 @@ def build_live_linearized_state_dag_from_graph(
     diagnostics: tuple[str, ...] = (),
     dispatcher: IntervalDispatcher | None = None,
     mba: object | None = None,
+    prefer_local_corridors: bool = False,
 ) -> LinearizedStateDag:
     """Build a live DAG from graph-backed analysis inputs.
 
@@ -819,12 +2142,25 @@ def build_live_linearized_state_dag_from_graph(
             dispatcher=dispatcher,
             handler_paths_by_handler=handler_paths_by_handler,
             conditional_transitions_by_handler=conditional_transitions_by_handler,
+            prefer_local_corridors=prefer_local_corridors,
         )
 
     handler_entry_blocks = {
         handler.check_block for handler in transition_result.handlers.values()
     }
+    if dispatcher is not None:
+        for state_value in transition_result.handlers:
+            try:
+                dispatcher_row = dispatcher.lookup_row(state_value)
+            except Exception:
+                dispatcher_row = None
+            if (
+                dispatcher_row is not None
+                and getattr(dispatcher_row, "lo", None) == state_value
+            ):
+                handler_entry_blocks.add(int(dispatcher_row.target))
     state_constants = set(transition_result.handlers.keys())
+    real_handler_states = state_constants | set(report.handler_state_map.values())
 
     for row in report.rows:
         incoming_state = row.state_const
@@ -833,10 +2169,42 @@ def build_live_linearized_state_dag_from_graph(
         if incoming_state is None:
             continue
 
+        analysis_anchor = row.handler_serial
+        if (
+            dispatcher is not None
+            and row.state_const is not None
+            and row.state_range_lo is None
+            and row.state_range_hi is None
+        ):
+            try:
+                dispatcher_row = dispatcher.lookup_row(row.state_const)
+            except Exception:
+                dispatcher_row = None
+            exact_anchor = (
+                int(dispatcher_row.target)
+                if dispatcher_row is not None
+                and getattr(dispatcher_row, "lo", None) == row.state_const
+                and int(dispatcher_row.target) not in set(report.bst_node_blocks)
+                else None
+            )
+            if exact_anchor is not None and exact_anchor != row.handler_serial:
+                exact_paths = tuple(
+                    evaluate_handler_paths(
+                        mba,
+                        exact_anchor,
+                        incoming_state,
+                        set(report.bst_node_blocks),
+                        state_var_stkoff,
+                        handler_entry_blocks,
+                    )
+                )
+                if exact_paths:
+                    analysis_anchor = exact_anchor
+
         paths = tuple(
             evaluate_handler_paths(
                 mba,
-                row.handler_serial,
+                analysis_anchor,
                 incoming_state,
                 set(report.bst_node_blocks),
                 state_var_stkoff,
@@ -846,7 +2214,7 @@ def build_live_linearized_state_dag_from_graph(
         handler_paths_by_handler[row.handler_serial] = paths
         conds = tuple(
             detect_conditional_transitions(
-                row.handler_serial,
+                analysis_anchor,
                 list(paths),
                 state_constants,
                 flow_graph,
@@ -864,6 +2232,7 @@ def build_live_linearized_state_dag_from_graph(
         dispatcher=dispatcher,
         handler_paths_by_handler=handler_paths_by_handler,
         conditional_transitions_by_handler=conditional_transitions_by_handler,
+        prefer_local_corridors=prefer_local_corridors,
     )
 
     while True:
@@ -893,22 +2262,96 @@ def build_live_linearized_state_dag_from_graph(
         supplemental_rows: list[TransitionRow] = []
         for state_value in pending_states:
             anchor_candidates = collapsed_target_anchors.get(state_value, set())
+            bst_block_set = set(report_with_supplemental.bst_node_blocks)
+            cover_anchor = _resolve_fallback_anchor_from_exact_cover(
+                state_value,
+                report_with_supplemental,
+                flow_graph,
+            )
+            dispatcher_row = (
+                dispatcher.lookup_row(state_value) if dispatcher is not None else None
+            )
+            dispatcher_anchor = (
+                dispatcher_row.target
+                if dispatcher_row is not None and dispatcher_row.target not in bst_block_set
+                else None
+            )
+            dispatcher_exact_anchor = (
+                dispatcher_row.target
+                if dispatcher_row is not None
+                and getattr(dispatcher_row, "lo", None) == state_value
+                and dispatcher_row.target not in bst_block_set
+                else None
+            )
+            bridge_row = _find_unique_exact_bridge_row(
+                state_value,
+                report_with_supplemental,
+                real_handler_states=real_handler_states,
+            )
+            range_anchor = _resolve_range_backed_anchor(
+                state_value,
+                dict(report_with_supplemental.handler_range_map),
+                known_entry_anchors=known_entry_anchors,
+            )
             preferred_anchor: int | None = None
             preferred_paths: tuple[HandlerPathResult, ...] = ()
             preferred_conds: tuple[ConditionalTransition, ...] = ()
-            if len(anchor_candidates) == 1:
-                candidate_anchor = next(iter(anchor_candidates))
-                if candidate_anchor not in set(report_with_supplemental.bst_node_blocks):
+            family_fallback = (
+                _resolve_owner_family_fallback(anchor_candidates, dag, flow_graph)
+                if prefer_local_corridors and anchor_candidates
+                else None
+            )
+            family_fallback_anchor = family_fallback[0] if family_fallback is not None else None
+            if prefer_local_corridors:
+                candidate_anchor_set: set[int] = {
+                    candidate_anchor
+                    for candidate_anchor in anchor_candidates
+                    if candidate_anchor not in bst_block_set
+                }
+                for candidate_anchor in (
+                    family_fallback_anchor,
+                    dispatcher_exact_anchor,
+                    cover_anchor,
+                    dispatcher_anchor,
+                    range_anchor,
+                    bridge_row.handler_serial if bridge_row is not None else None,
+                ):
+                    if (
+                        candidate_anchor is not None
+                        and candidate_anchor not in bst_block_set
+                    ):
+                        candidate_anchor_set.add(candidate_anchor)
+
+                best_candidate: tuple[
+                    int,
+                    int,
+                    int,
+                    int,
+                    int,
+                    int,
+                    int,
+                    int,
+                    tuple[HandlerPathResult, ...],
+                    tuple[ConditionalTransition, ...],
+                ] | None = None
+                for candidate_anchor in sorted(candidate_anchor_set):
                     candidate_paths = tuple(
                         evaluate_handler_paths(
                             mba,
                             candidate_anchor,
                             state_value,
-                            set(report_with_supplemental.bst_node_blocks),
+                            bst_block_set,
                             state_var_stkoff,
                             handler_entry_blocks,
                         )
                     )
+                    if not candidate_paths:
+                        continue
+                    if _is_self_handoff_only_candidate(
+                        candidate_paths,
+                        state_value,
+                    ):
+                        continue
                     candidate_normalized_states = {
                         path.final_state & 0xFFFFFFFF
                         for path in candidate_paths
@@ -919,7 +2362,67 @@ def build_live_linearized_state_dag_from_graph(
                         for path in candidate_paths
                         for _, value in path.state_writes
                     )
-                    if candidate_paths and candidate_normalized_states & existing_states:
+                    candidate_conds = tuple(
+                        detect_conditional_transitions(
+                            candidate_anchor,
+                            list(candidate_paths),
+                            state_constants | existing_states | set(pending_states),
+                            flow_graph,
+                            incoming_state=state_value,
+                        )
+                    )
+                    score = (
+                        len(candidate_normalized_states & (existing_states | set(pending_states))),
+                        max(len(path.ordered_path) for path in candidate_paths),
+                        sum(1 for path in candidate_paths if path.final_state is not None),
+                        len(candidate_normalized_states - existing_states),
+                        1 if candidate_anchor in anchor_candidates else 0,
+                        1 if candidate_anchor == cover_anchor else 0,
+                        -candidate_anchor,
+                    )
+                    if best_candidate is None or score > best_candidate[:7]:
+                        best_candidate = (
+                            *score,
+                            candidate_anchor,
+                            candidate_paths,
+                            candidate_conds,
+                        )
+                if best_candidate is not None:
+                    preferred_anchor = best_candidate[7]
+                    preferred_paths = best_candidate[8]
+                    preferred_conds = best_candidate[9]
+            elif len(anchor_candidates) == 1:
+                candidate_anchor = next(iter(anchor_candidates))
+                if candidate_anchor not in bst_block_set:
+                    candidate_paths = tuple(
+                        evaluate_handler_paths(
+                            mba,
+                            candidate_anchor,
+                            state_value,
+                            bst_block_set,
+                            state_var_stkoff,
+                            handler_entry_blocks,
+                        )
+                    )
+                    if _is_self_handoff_only_candidate(
+                        candidate_paths,
+                        state_value,
+                    ):
+                        candidate_paths = ()
+                    candidate_normalized_states = {
+                        path.final_state & 0xFFFFFFFF
+                        for path in candidate_paths
+                        if path.final_state is not None
+                    }
+                    candidate_normalized_states.update(
+                        value & 0xFFFFFFFF
+                        for path in candidate_paths
+                        for _, value in path.state_writes
+                    )
+                    if candidate_paths and (
+                        bridge_row is None
+                        or candidate_normalized_states & existing_states
+                    ):
                         preferred_anchor = candidate_anchor
                         preferred_paths = candidate_paths
                         preferred_conds = tuple(
@@ -934,26 +2437,52 @@ def build_live_linearized_state_dag_from_graph(
                             )
                         )
 
-            anchor = _resolve_fallback_anchor_from_exact_cover(
-                state_value,
-                report_with_supplemental,
-                flow_graph,
-            )
-            if anchor is None:
-                anchor = _resolve_range_backed_anchor(
-                    state_value,
-                    dict(report_with_supplemental.handler_range_map),
-                    known_entry_anchors=known_entry_anchors,
-                )
-            if anchor is None and len(anchor_candidates) == 1:
-                anchor = next(iter(anchor_candidates))
-            if anchor is None and dispatcher is not None:
-                row = dispatcher.lookup_row(state_value)
-                anchor = row.target if row is not None else None
+            anchor = None
             if preferred_anchor is not None:
                 anchor = preferred_anchor
             if anchor is None:
+                anchor = family_fallback_anchor
+            if anchor is None:
+                anchor = dispatcher_exact_anchor
+            cover_conflicts_with_dispatcher = (
+                cover_anchor is not None
+                and dispatcher_anchor is not None
+                and range_anchor is not None
+                and dispatcher_anchor == range_anchor
+                and cover_anchor != dispatcher_anchor
+            )
+            if anchor is None and not cover_conflicts_with_dispatcher:
+                anchor = cover_anchor
+            # Prefer a concrete dispatcher-resolved body entry over a
+            # range-backed BST family anchor. This keeps supplemental alias
+            # states off dispatcher-root compare nodes like blk[2] when the
+            # interval lookup already points at the first semantic body block.
+            if anchor is None:
+                anchor = dispatcher_anchor
+            if anchor is None and cover_conflicts_with_dispatcher:
+                anchor = cover_anchor
+            if anchor is None:
+                anchor = range_anchor
+            if anchor is None and len(anchor_candidates) == 1:
+                only_candidate = next(iter(anchor_candidates))
+                if only_candidate not in bst_block_set:
+                    anchor = only_candidate
+            if anchor is None and bridge_row is not None:
+                anchor = bridge_row.handler_serial
+            if anchor is None:
                 continue
+
+            if state_value == 0x27EEEA11:
+                logger.info(
+                    "DAG supplemental 0x27EEEA11: preferred=%s family=%s cover=%s dispatcher=%s range=%s selected=%s candidates=%s",
+                    preferred_anchor,
+                    family_fallback_anchor,
+                    cover_anchor,
+                    dispatcher_anchor,
+                    range_anchor,
+                    anchor,
+                    sorted(anchor_candidates),
+                )
 
             if preferred_anchor is not None:
                 paths = preferred_paths
@@ -1126,6 +2655,7 @@ def build_live_linearized_state_dag_from_graph(
             dispatcher=dispatcher,
             handler_paths_by_handler=handler_paths_by_handler,
             conditional_transitions_by_handler=conditional_transitions_by_handler,
+            prefer_local_corridors=prefer_local_corridors,
         )
 
 
@@ -1140,6 +2670,7 @@ def build_linearized_state_dag_from_graph(
         int, tuple[ConditionalTransition, ...]
     ]
     | None = None,
+    prefer_local_corridors: bool = False,
 ) -> LinearizedStateDag:
     """Build a state-level DAG from structured graph-backed inputs."""
     paths_by_handler = {
@@ -1188,12 +2719,19 @@ def build_linearized_state_dag_from_graph(
         node_kind = _node_kind_for_handler(report, row.handler_serial)
         paths = paths_by_handler.get(row.handler_serial, ())
         conds = conds_by_handler.get(row.handler_serial, ())
+        path_root_override = None
+        path_roots = _ordered_unique(
+            [path.ordered_path[0] for path in paths if path.ordered_path]
+        )
+        if len(path_roots) == 1 and path_roots[0] != row.handler_serial:
+            path_root_override = path_roots[0]
         local_blocks = _collect_local_block_order(
             row.handler_serial,
             transition_result,
             row.state_const,
             paths,
             conds,
+            path_root_override=path_root_override,
         )
 
         terminal_exit_blocks = {
@@ -1249,6 +2787,12 @@ def build_linearized_state_dag_from_graph(
             for block_serial in local_blocks
             if block_serial not in shared_blocks
         )
+        entry_anchor = _resolve_semantic_entry_anchor(
+            row.handler_serial,
+            local_blocks,
+            paths,
+            bst_node_blocks=report.bst_node_blocks,
+        )
 
         node = StateDagNode(
             key=StateDagNodeKey(
@@ -1265,7 +2809,7 @@ def build_linearized_state_dag_from_graph(
                 node_kind,
             ),
             handler_serial=row.handler_serial,
-            entry_anchor=row.handler_serial,
+            entry_anchor=entry_anchor,
             owned_blocks=local_blocks,
             exclusive_blocks=exclusive_blocks,
             shared_suffix_blocks=shared_suffix_blocks,
@@ -1589,6 +3133,38 @@ def build_linearized_state_dag_from_graph(
                 continue
             seen_edge_keys.add(edge_key)
             edges.append(alias_edge)
+
+    nodes, edges = _normalize_alias_nodes(
+        nodes,
+        edges,
+        report,
+        transition_result,
+        flow_graph,
+        prefer_local_corridors=prefer_local_corridors,
+    )
+    nodes, edges = _normalize_nonhandler_exact_nodes(
+        nodes,
+        edges,
+        report,
+        transition_result,
+        flow_graph,
+        prefer_local_corridors=prefer_local_corridors,
+    )
+    nodes, edges = _promote_range_backed_nodes_to_dispatcher_bodies(
+        nodes,
+        edges,
+        dispatcher,
+        bst_node_blocks=report.bst_node_blocks,
+    )
+    nodes, edges = _normalize_entry_anchors_to_unique_path_starts(
+        nodes,
+        edges,
+        bst_node_blocks=report.bst_node_blocks,
+    )
+    edges = _suppress_bst_extension_alias_edges(
+        edges,
+        bst_node_blocks=report.bst_node_blocks,
+    )
 
     return LinearizedStateDag(
         dispatcher_entry_serial=report.dispatcher_entry_serial,
