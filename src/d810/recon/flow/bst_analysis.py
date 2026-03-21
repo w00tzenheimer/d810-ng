@@ -285,6 +285,9 @@ def _get_mop_const_value(mop: "idaapi.mop_t") -> Optional[int]:
         nnn = getattr(mop, "nnn", None)
         if nnn is not None:
             return getattr(nnn, "value", None)
+        value = getattr(mop, "value", None)
+        if value is not None:
+            return int(value)
     return None
 
 
@@ -1041,10 +1044,14 @@ def _resolve_mop_from_maps(
         off = getattr(mop, "s", None)
         if off is not None:
             off = getattr(off, "off", None)
+        if off is None:
+            off = getattr(mop, "stkoff", None)
         if off is not None:
             result = stk_map.get(off)
     elif mop_type == mop_r_type:
         reg = getattr(mop, "r", None)
+        if reg is None:
+            reg = getattr(mop, "reg", None)
         if reg is not None:
             result = reg_map.get(reg)
     elif mop_l_type is not None and mop_type == mop_l_type:
@@ -1156,12 +1163,16 @@ def _forward_eval_insn(
             off = getattr(dest, "s", None)
             if off is not None:
                 off = getattr(off, "off", None)
+            if off is None:
+                off = getattr(dest, "stkoff", None)
             if off is not None:
                 stk_map[off] = val
                 if off == state_var_stkoff:
                     is_state = True
         elif dest_t == mop_r_type:
             reg = getattr(dest, "r", None)
+            if reg is None:
+                reg = getattr(dest, "reg", None)
             if reg is not None:
                 reg_map[reg] = val
         elif mop_l_type is not None and dest_t == mop_l_type:

@@ -264,3 +264,72 @@ def test_collect_post_apply_bst_cleanup_blockers_only_counts_applied_stages():
     )
 
     assert blockers == {"linearized_flow_graph": (95, 131)}
+
+
+def test_collect_post_apply_bst_cleanup_blockers_ignores_empty_residual_pred_sets():
+    fragment = PlanFragment(
+        strategy_name="linearized_flow_graph",
+        family="direct",
+        ownership=OwnershipScope(
+            blocks=frozenset(),
+            edges=frozenset(),
+            transitions=frozenset(),
+        ),
+        prerequisites=[],
+        expected_benefit=BenefitMetrics(0, 0, 0, 0.0),
+        risk_score=0.0,
+        metadata={
+            "allow_post_apply_bst_cleanup": False,
+            "residual_dispatcher_preds": (),
+        },
+        modifications=[],
+    )
+
+    blockers = HodurUnflattener._collect_post_apply_bst_cleanup_blockers(
+        [fragment],
+        [
+            StageResult(
+                strategy_name="linearized_flow_graph",
+                success=True,
+                edits_applied=7,
+            ),
+        ],
+    )
+
+    assert blockers == {}
+
+
+def test_collect_post_apply_bst_cleanup_blockers_prefers_live_residual_pred_sets():
+    fragment = PlanFragment(
+        strategy_name="linearized_flow_graph",
+        family="direct",
+        ownership=OwnershipScope(
+            blocks=frozenset(),
+            edges=frozenset(),
+            transitions=frozenset(),
+        ),
+        prerequisites=[],
+        expected_benefit=BenefitMetrics(0, 0, 0, 0.0),
+        risk_score=0.0,
+        metadata={
+            "allow_post_apply_bst_cleanup": False,
+            "residual_dispatcher_preds": (),
+        },
+        modifications=[],
+    )
+
+    blockers = HodurUnflattener._collect_post_apply_bst_cleanup_blockers(
+        [fragment],
+        [
+            StageResult(
+                strategy_name="linearized_flow_graph",
+                success=True,
+                edits_applied=7,
+            ),
+        ],
+        live_residual_dispatcher_preds_by_strategy={
+            "linearized_flow_graph": (10, 45, 69, 192),
+        },
+    )
+
+    assert blockers == {"linearized_flow_graph": (10, 45, 69, 192)}

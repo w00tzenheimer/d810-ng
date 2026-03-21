@@ -70,6 +70,7 @@ from d810.cfg.flow.graph_checks import SemanticGate
 from d810.hexrays.mutation.cfg_mutations import (
     change_1way_block_successor,
     make_2way_block_goto,
+    remove_block_edge,
 )
 
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
@@ -418,6 +419,17 @@ class HodurUnflattener(GenericUnflatteningRule):
             )
         self._last_provenance = provenance
 
+        live_residual_dispatcher_preds_by_strategy: dict[str, tuple[int, ...]] = {}
+        if any(
+            fragment.strategy_name == "linearized_flow_graph"
+            and result.success
+            and result.edits_applied > 0
+            for fragment, result in zip(pipeline, results)
+        ):
+            live_residual_dispatcher_preds_by_strategy["linearized_flow_graph"] = (
+                self._collect_live_lfg_residual_dispatcher_preds(snapshot)
+            )
+
         # Mark strategies as applied only AFTER successful execution.
         # This prevents gate-failed fragments from suppressing standalone
         # strategies on subsequent IDA callbacks.
@@ -432,6 +444,27 @@ class HodurUnflattener(GenericUnflatteningRule):
                             "Marking strategy %s as applied for func 0x%X maturity=%d",
                             strategy.name, func_ea, maturity,
                         )
+                        if (
+                            strategy.name == "linearized_flow_graph"
+                            and hasattr(
+                                strategy,
+                                "_last_successful_residual_dispatcher_pred_counts",
+                            )
+                        ):
+                            residual_preds = live_residual_dispatcher_preds_by_strategy.get(
+                                "linearized_flow_graph",
+                                tuple(frag.metadata.get("residual_dispatcher_preds", ())),
+                            )
+                            strategy._last_successful_residual_dispatcher_pred_counts[
+                                (func_ea, maturity)
+                            ] = len(residual_preds)
+                            unflat_logger.info(
+                                "Recorded LFG residual dispatcher pred count for func 0x%X "
+                                "maturity=%d: %d",
+                                func_ea,
+                                maturity,
+                                len(residual_preds),
+                            )
 
         # Record planner outcome via flow context callback
         if self.flow_context is not None and hasattr(self.flow_context, 'report_outcome'):
@@ -456,12 +489,17 @@ class HodurUnflattener(GenericUnflatteningRule):
             except Exception:
                 unflat_logger.debug("_record_audit_stage(post_apply) failed (non-critical)")
 
-        # 5c. Post-apply: disconnect BST comparison nodes and dispatcher
-        # Gate to first pass only — BST cleanup invalidates state analysis,
-        # so a second Hodur pass would crash (RuntimeError 52719).
+        # 5c. Post-apply: disconnect BST comparison nodes and dispatcher.
+        # Run this on the first pass where no live dispatcher blockers remain.
+        # The cleanup invalidates subsequent state-machine analysis, so once it
+        # runs we suppress further Hodur iteration below.
         bst_cleanup_ran = False
         bst_cleanup_blockers = self._collect_post_apply_bst_cleanup_blockers(
-            pipeline, results
+            pipeline,
+            results,
+            live_residual_dispatcher_preds_by_strategy=(
+                live_residual_dispatcher_preds_by_strategy
+            ),
         )
         if bst_cleanup_blockers:
             unflat_logger.info(
@@ -471,7 +509,6 @@ class HodurUnflattener(GenericUnflatteningRule):
         if (
             not bst_cleanup_blockers
             and nb_changes > 0
-            and self._actual_pass_count == 0
             and snapshot.bst_result is not None
         ):
             bst_cleanup_edges = self._post_apply_bst_cleanup(
@@ -500,23 +537,35 @@ class HodurUnflattener(GenericUnflatteningRule):
             # diagnostic BFS to track unreachability.)
             bst_serials = set(snapshot.bst_result.bst_node_blocks) | {snapshot.bst_dispatcher_serial}
             self._prune_unreachable_bst_blocks(bst_serials)
+            dead_cleanup_applied = self._nop_unreachable_blocks_after_bst_cleanup(
+                dispatcher_serial=snapshot.bst_dispatcher_serial,
+                bst_serials=bst_serials,
+            )
+            if dead_cleanup_applied > 0:
+                nb_changes += dead_cleanup_applied
 
             # Persist BST serials + dispatcher serial for hxe_glbopt PruneUnreachable
-            self._last_bst_serials = bst_serials
-            self._last_dispatcher_serial = snapshot.bst_dispatcher_serial
-            self._last_func_ea = self.mba.entry_ea
-            # Persist BST block start_ea values (serials drift between maturities)
-            self._last_bst_block_eas = set()
-            for s in bst_serials:
-                blk = self.mba.get_mblock(s)
-                if blk is not None:
-                    self._last_bst_block_eas.add(blk.start)
-            self._last_dispatcher_ea = (
-                self.mba.get_mblock(snapshot.bst_dispatcher_serial).start
-                if snapshot.bst_dispatcher_serial >= 0
-                and self.mba.get_mblock(snapshot.bst_dispatcher_serial) is not None
-                else 0
-            )
+            if dead_cleanup_applied == 0:
+                self._last_bst_serials = bst_serials
+                self._last_dispatcher_serial = snapshot.bst_dispatcher_serial
+                self._last_func_ea = self.mba.entry_ea
+                # Persist BST block start_ea values (serials drift between maturities)
+                self._last_bst_block_eas = set()
+                for s in bst_serials:
+                    blk = self.mba.get_mblock(s)
+                    if blk is not None:
+                        self._last_bst_block_eas.add(blk.start)
+                self._last_dispatcher_ea = (
+                    self.mba.get_mblock(snapshot.bst_dispatcher_serial).start
+                    if snapshot.bst_dispatcher_serial >= 0
+                    and self.mba.get_mblock(snapshot.bst_dispatcher_serial) is not None
+                    else 0
+                )
+            else:
+                self._last_bst_serials = None
+                self._last_dispatcher_serial = -1
+                self._last_bst_block_eas = set()
+                self._last_dispatcher_ea = 0
 
         # 6. Log summary
         self._log_pipeline_results(results, nb_changes)
@@ -590,12 +639,59 @@ class HodurUnflattener(GenericUnflatteningRule):
     # Return frontier audit helpers
     # ------------------------------------------------------------------
 
+    def _collect_live_lfg_residual_dispatcher_preds(
+        self,
+        snapshot: AnalysisSnapshot,
+    ) -> tuple[int, ...]:
+        """Collect live residual non-BST predecessors to the dispatcher.
+
+        This must be computed from the actual post-apply MBA, not fragment
+        metadata generated from projected CFG planning. Otherwise same-maturity
+        rerun bookkeeping and BST cleanup can diverge from reality.
+        """
+        bst_result = snapshot.bst_result
+        if bst_result is None or snapshot.bst_dispatcher_serial < 0:
+            return ()
+        strategy = next(
+            (
+                candidate
+                for candidate in self._strategies
+                if getattr(candidate, "name", None) == "linearized_flow_graph"
+            ),
+            None,
+        )
+        if strategy is None:
+            return ()
+        collector = getattr(strategy, "_collect_residual_dispatcher_predecessors", None)
+        if collector is None:
+            return ()
+        try:
+            flow_graph = self._cfg_translator.lift(self.mba)
+            raw_collector = getattr(strategy, "_collect_dispatcher_predecessors", None)
+            active_collector = raw_collector or collector
+            return active_collector(
+                flow_graph,
+                snapshot.bst_dispatcher_serial,
+                bst_node_blocks=set(bst_result.bst_node_blocks),
+            )
+        except Exception:
+            unflat_logger.debug(
+                "Failed to collect live LFG residual dispatcher preds",
+                exc_info=True,
+            )
+            return ()
+
     @staticmethod
     def _collect_post_apply_bst_cleanup_blockers(
         pipeline: list,
         results: list[StageResult],
+        *,
+        live_residual_dispatcher_preds_by_strategy: dict[str, tuple[int, ...]] | None = None,
     ) -> dict[str, tuple[int, ...]]:
         blockers: dict[str, tuple[int, ...]] = {}
+        live_residual_dispatcher_preds_by_strategy = (
+            live_residual_dispatcher_preds_by_strategy or {}
+        )
         for fragment, result in zip(pipeline, results):
             if not (result.success and result.edits_applied > 0):
                 continue
@@ -603,8 +699,13 @@ class HodurUnflattener(GenericUnflatteningRule):
                 continue
             residual_preds = tuple(
                 int(serial)
-                for serial in fragment.metadata.get("residual_dispatcher_preds", ())
+                for serial in live_residual_dispatcher_preds_by_strategy.get(
+                    fragment.strategy_name,
+                    tuple(fragment.metadata.get("residual_dispatcher_preds", ())),
+                )
             )
+            if not residual_preds:
+                continue
             blockers[fragment.strategy_name] = residual_preds
         return blockers
 
@@ -1461,6 +1562,150 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Block removal requires MMAT_LOCOPT maturity (see hrtng).
         # Keeping diagnostic BFS only for now.
         return 0
+
+    def _nop_unreachable_blocks_after_bst_cleanup(
+        self,
+        *,
+        dispatcher_serial: int,
+        bst_serials: set[int],
+    ) -> int:
+        """Clear the unreachable dispatcher island in-place after BST cleanup.
+
+        The translator-based dead-block elimination path re-verifies a second
+        large PatchPlan against an already-mutated MBA and can trip INTERR 50856.
+        At this point the dispatcher island is already unreachable from block 0,
+        so we can collapse those blocks directly on the live MBA by severing
+        their outgoing edges and deleting their instructions.
+        """
+        mba = self.mba
+        if mba is None or mba.qty <= 1:
+            return 0
+
+        visited: set[int] = set()
+        queue: list[int] = [0]
+        while queue:
+            serial = queue.pop(0)
+            if serial in visited or serial < 0 or serial >= mba.qty:
+                continue
+            visited.add(serial)
+            blk = mba.get_mblock(serial)
+            if blk is None:
+                continue
+            for i in range(blk.nsucc()):
+                succ = blk.succ(i)
+                if succ not in visited:
+                    queue.append(succ)
+
+        stop_serial = mba.qty - 1
+        unreachable = {
+            serial
+            for serial in range(mba.qty)
+            if serial not in visited and serial != stop_serial
+        }
+        if not unreachable:
+            unflat_logger.info(
+                "DeadBlockElimination: no unreachable live blocks after BST cleanup"
+            )
+            return 0
+
+        cleanup_candidates: set[int] = set()
+        forward_queue = [dispatcher_serial]
+        while forward_queue:
+            serial = forward_queue.pop()
+            if serial in cleanup_candidates or serial not in unreachable:
+                continue
+            cleanup_candidates.add(serial)
+            blk = mba.get_mblock(serial)
+            if blk is None:
+                continue
+            for i in range(blk.nsucc()):
+                succ = blk.succ(i)
+                if succ in unreachable and succ not in cleanup_candidates:
+                    forward_queue.append(succ)
+
+        backward_queue = [dispatcher_serial]
+        while backward_queue:
+            serial = backward_queue.pop()
+            if serial < 0 or serial >= mba.qty:
+                continue
+            blk = mba.get_mblock(serial)
+            if blk is None:
+                continue
+            for i in range(blk.npred()):
+                pred = blk.pred(i)
+                if pred in unreachable and pred not in cleanup_candidates:
+                    cleanup_candidates.add(pred)
+                    backward_queue.append(pred)
+
+        cleanup_candidates.update(unreachable & set(bst_serials))
+        cleanup_candidates.discard(stop_serial)
+        if not cleanup_candidates:
+            unflat_logger.info(
+                "DeadBlockElimination: no unreachable dispatcher component after BST cleanup"
+            )
+            return 0
+
+        cleaned = 0
+        for serial in sorted(cleanup_candidates):
+            blk = mba.get_mblock(serial)
+            if blk is None:
+                continue
+            blk.mark_lists_dirty()
+            cleaned += 1
+
+        try:
+            if hasattr(mba, "remove_empty_and_unreachable_blocks"):
+                mba.remove_empty_and_unreachable_blocks()
+            elif hasattr(mba, "remove_empty_blocks"):
+                mba.remove_empty_blocks()
+        except Exception as exc:
+            unflat_logger.warning(
+                "DeadBlockElimination: IDA empty/unreachable cleanup failed after clearing %d blocks: %s",
+                cleaned,
+                exc,
+                exc_info=True,
+            )
+            return 0
+
+        try:
+            mba.build_graph()
+        except Exception:
+            unflat_logger.debug(
+                "DeadBlockElimination: build_graph unavailable after unreachable cleanup"
+            )
+
+        # Refresh per-block use/def state before verify. Clearing the unreachable
+        # island in place left stale must/may lists behind (INTERR 50846), so
+        # rebuild lists over the compacted graph after IDA removes dead blocks.
+        for serial in range(mba.qty):
+            blk = mba.get_mblock(serial)
+            if blk is None:
+                continue
+            try:
+                blk.build_lists(False)
+            except Exception:
+                try:
+                    blk.make_lists_ready()
+                except Exception:
+                    pass
+
+        mba.mark_chains_dirty()
+        try:
+            mba.verify(True)
+        except Exception as exc:
+            unflat_logger.warning(
+                "DeadBlockElimination: live cleanup verify failed after IDA cleanup of %d blocks: %s",
+                cleaned,
+                exc,
+                exc_info=True,
+            )
+            return 0
+
+        unflat_logger.info(
+            "DeadBlockElimination: cleared %d unreachable dispatcher-island blocks after BST cleanup",
+            cleaned,
+        )
+        return cleaned
 
     def _eval_mba_expression(
         self,

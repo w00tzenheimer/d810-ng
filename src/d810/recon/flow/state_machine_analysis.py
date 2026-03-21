@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import ida_hexrays
 
+from d810.cfg.flowgraph import FlowGraph, InsnSnapshot
 from d810.core import logging
-from d810.core.typing import TYPE_CHECKING, Optional
+from d810.core.typing import Optional
 from d810.recon.flow.bst_analysis import _forward_eval_insn
-
-if TYPE_CHECKING:
-    from d810.cfg.flowgraph import FlowGraph
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +20,71 @@ __all__ = [
     "ConditionalTransition",
     "HandlerPathResult",
     "ResolutionMethod",
+    "SnapshotConstantFixpointResult",
+    "StateWriteSite",
+    "build_mba_view_from_flow_graph",
     "can_reach_return_snapshot",
     "detect_conditional_transitions",
     "eval_bst_condition",
     "evaluate_handler_paths",
+    "find_last_state_write_site_snapshot",
+    "find_state_write_sites_snapshot",
     "find_terminal_exit_target_snapshot",
     "init_bst_cmp_opcodes",
     "resolve_exit_via_bst_default_snapshot",
+    "run_snapshot_constant_fixpoint",
 ]
+
+
+class _InsnView:
+    __slots__ = ("opcode", "ea", "l", "r", "d", "next")
+
+    def __init__(self, insn: InsnSnapshot):
+        self.opcode = insn.opcode
+        self.ea = insn.ea
+        self.l = insn.l
+        self.r = insn.r
+        self.d = insn.d
+        self.next: _InsnView | None = None
+
+
+class _BlockView:
+    __slots__ = ("serial", "_succs", "head")
+
+    def __init__(self, serial: int, succs: tuple[int, ...], head: _InsnView | None):
+        self.serial = serial
+        self._succs = succs
+        self.head = head
+
+    def nsucc(self) -> int:
+        return len(self._succs)
+
+    def succ(self, index: int) -> int:
+        return self._succs[index]
+
+
+class _FlowGraphMBAView:
+    __slots__ = ("qty", "_blocks")
+
+    def __init__(self, blocks: dict[int, _BlockView]):
+        self.qty = (max(blocks) + 1) if blocks else 0
+        self._blocks = blocks
+
+    def get_mblock(self, serial: int) -> _BlockView | None:
+        return self._blocks.get(serial)
+
+
+def build_mba_view_from_flow_graph(flow_graph: FlowGraph) -> object:
+    """Adapt a ``FlowGraph`` snapshot into the minimal MBA API used by path eval."""
+
+    block_views: dict[int, _BlockView] = {}
+    for serial, block in flow_graph.blocks.items():
+        insn_views = [_InsnView(insn) for insn in block.insn_snapshots]
+        for current, nxt in zip(insn_views, insn_views[1:]):
+            current.next = nxt
+        head = insn_views[0] if insn_views else None
+        block_views[serial] = _BlockView(serial, tuple(block.succs), head)
+    return _FlowGraphMBAView(block_views)
 
 
 class ResolutionMethod(enum.Enum):
@@ -93,6 +149,237 @@ class ConditionalTransition:
     is_terminal_no_write: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class StateWriteSite:
+    """A resolved write to the dispatcher state variable in one snapshot block."""
+
+    block_serial: int
+    state_value: int
+    insn_ea: int
+    insn_index: int
+    trailing_insn_eas: tuple[int, ...] = ()
+    trailing_opcodes: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotConstantFixpointResult:
+    """Conservative exact-constant facts at block boundaries for snapshots."""
+
+    in_stk_maps: dict[int, dict[int, int]]
+    in_reg_maps: dict[int, dict[int, int]]
+    out_stk_maps: dict[int, dict[int, int]]
+    out_reg_maps: dict[int, dict[int, int]]
+    iterations: int
+
+
+def _kill_constant_dest_snapshot(
+    dest: object | None,
+    stk_map: dict[int, int],
+    reg_map: dict[int, int],
+) -> None:
+    """Forget a written destination when its new value is not provably constant."""
+
+    if dest is None:
+        return
+
+    mop_type = getattr(dest, "t", None)
+    if mop_type == getattr(ida_hexrays, "mop_S", None):
+        stkoff = getattr(dest, "stkoff", None)
+        if stkoff is None:
+            stack_ref = getattr(dest, "s", None)
+            stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
+        if stkoff is not None:
+            stk_map.pop(int(stkoff), None)
+        return
+
+    if mop_type == getattr(ida_hexrays, "mop_r", None):
+        reg = getattr(dest, "r", None)
+        if reg is None:
+            reg = getattr(dest, "reg", None)
+        if reg is not None:
+            reg_map.pop(int(reg), None)
+
+
+def _constant_dest_locator_snapshot(dest: object | None) -> tuple[str, int] | None:
+    """Return a stable locator for stack/register destinations in snapshots."""
+
+    if dest is None:
+        return None
+    mop_type = getattr(dest, "t", None)
+    if mop_type == getattr(ida_hexrays, "mop_S", None):
+        stkoff = getattr(dest, "stkoff", None)
+        if stkoff is None:
+            stack_ref = getattr(dest, "s", None)
+            stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
+        if stkoff is not None:
+            return ("stk", int(stkoff))
+        return None
+
+    if mop_type == getattr(ida_hexrays, "mop_r", None):
+        reg = getattr(dest, "r", None)
+        if reg is None:
+            reg = getattr(dest, "reg", None)
+        if reg is not None:
+            return ("reg", int(reg))
+    return None
+
+
+def _eval_insn_view_snapshot(insn: InsnSnapshot) -> object:
+    """Build an evaluator view that prefers rich operand-slot snapshots.
+
+    ``InsnSnapshot.l/r/d`` intentionally use lightweight cfg operands that omit
+    nested expression structure. ``operand_slots`` retains the richer
+    ``hexrays.ir.mop_snapshot.MopSnapshot`` objects, which can expose ``mop_d``
+    trees through their owned-mop fallback. The forward evaluator needs those
+    rich operands to fold live formula state writes.
+    """
+
+    if not insn.operand_slots:
+        return insn
+
+    slot_map = {name: operand for name, operand in insn.operand_slots}
+    if not slot_map:
+        return insn
+
+    return SimpleNamespace(
+        opcode=insn.opcode,
+        ea=insn.ea,
+        l=slot_map.get("l", insn.l),
+        r=slot_map.get("r", insn.r),
+        d=slot_map.get("d", insn.d),
+    )
+
+
+def _meet_constant_maps(pred_maps: tuple[dict[int, int], ...]) -> dict[int, int]:
+    """Keep only keys that are present with the same exact value in every pred."""
+
+    if not pred_maps:
+        return {}
+
+    shared_keys = set(pred_maps[0])
+    for mapping in pred_maps[1:]:
+        shared_keys &= set(mapping)
+
+    result: dict[int, int] = {}
+    for key in shared_keys:
+        value = pred_maps[0][key]
+        if all(mapping.get(key) == value for mapping in pred_maps[1:]):
+            result[int(key)] = int(value) & 0xFFFFFFFF
+    return result
+
+
+def _transfer_snapshot_constant_block(
+    block,
+    in_stk_map: dict[int, int],
+    in_reg_map: dict[int, int],
+    state_var_stkoff: int,
+) -> tuple[dict[int, int], dict[int, int]]:
+    """Propagate exact stack/register constants through one snapshot block."""
+
+    stk_map = dict(in_stk_map)
+    reg_map = dict(in_reg_map)
+    for insn in block.insn_snapshots:
+        eval_insn = _eval_insn_view_snapshot(insn)
+        dest = getattr(eval_insn, "d", None)
+        dest_locator = _constant_dest_locator_snapshot(dest)
+        old_dest_value = None
+        if dest_locator is not None:
+            kind, ident = dest_locator
+            old_dest_value = (
+                stk_map.get(ident) if kind == "stk" else reg_map.get(ident)
+            )
+        resolved = _forward_eval_insn(
+            eval_insn,
+            stk_map,
+            reg_map,
+            state_var_stkoff,
+            mba=None,
+            state_var_lvar_idx=None,
+        )
+        if resolved is None:
+            if dest_locator is None:
+                continue
+            kind, ident = dest_locator
+            new_dest_value = stk_map.get(ident) if kind == "stk" else reg_map.get(ident)
+            if new_dest_value != old_dest_value or new_dest_value is not None:
+                continue
+            _kill_constant_dest_snapshot(dest, stk_map, reg_map)
+    return stk_map, reg_map
+
+
+def run_snapshot_constant_fixpoint(
+    flow_graph: FlowGraph,
+    state_var_stkoff: int,
+    *,
+    max_iterations: int = 1000,
+) -> SnapshotConstantFixpointResult:
+    """Compute conservative exact constants at each snapshot block boundary.
+
+    The domain is two exact-constant maps keyed by stack offset and register id.
+    Meet semantics are intersection-on-equality: a fact survives only when every
+    predecessor proves the same constant.
+    """
+
+    block_serials = tuple(sorted(flow_graph.blocks))
+    in_stk_maps: dict[int, dict[int, int]] = {serial: {} for serial in block_serials}
+    in_reg_maps: dict[int, dict[int, int]] = {serial: {} for serial in block_serials}
+    out_stk_maps: dict[int, dict[int, int]] = {serial: {} for serial in block_serials}
+    out_reg_maps: dict[int, dict[int, int]] = {serial: {} for serial in block_serials}
+
+    worklist = list(block_serials)
+    iterations = 0
+
+    while worklist and iterations < max_iterations:
+        serial = worklist.pop()
+        iterations += 1
+
+        block = flow_graph.get_block(serial)
+        if block is None:
+            continue
+
+        if block.preds:
+            pred_stk_maps = tuple(out_stk_maps.get(pred, {}) for pred in block.preds)
+            pred_reg_maps = tuple(out_reg_maps.get(pred, {}) for pred in block.preds)
+            in_stk = _meet_constant_maps(pred_stk_maps)
+            in_reg = _meet_constant_maps(pred_reg_maps)
+        else:
+            in_stk = in_stk_maps.get(serial, {})
+            in_reg = in_reg_maps.get(serial, {})
+
+        in_changed = (
+            in_stk != in_stk_maps.get(serial, {})
+            or in_reg != in_reg_maps.get(serial, {})
+        )
+        if in_changed:
+            in_stk_maps[serial] = in_stk
+            in_reg_maps[serial] = in_reg
+
+        out_stk, out_reg = _transfer_snapshot_constant_block(
+            block,
+            in_stk,
+            in_reg,
+            state_var_stkoff,
+        )
+
+        if (
+            out_stk != out_stk_maps.get(serial, {})
+            or out_reg != out_reg_maps.get(serial, {})
+        ):
+            out_stk_maps[serial] = out_stk
+            out_reg_maps[serial] = out_reg
+            for succ in block.succs:
+                if succ not in worklist:
+                    worklist.append(succ)
+
+    return SnapshotConstantFixpointResult(
+        in_stk_maps=in_stk_maps,
+        in_reg_maps=in_reg_maps,
+        out_stk_maps=out_stk_maps,
+        out_reg_maps=out_reg_maps,
+        iterations=iterations,
+    )
+
+
 def can_reach_return_snapshot(
     flow_graph: FlowGraph,
     start_serial: int,
@@ -116,6 +403,92 @@ def can_reach_return_snapshot(
             if succ not in visited:
                 to_visit.append(succ)
     return False
+
+
+def find_state_write_sites_snapshot(
+    flow_graph: FlowGraph,
+    block_serial: int,
+    state_var_stkoff: int,
+    *,
+    initial_stk_map: dict[int, int] | None = None,
+    initial_reg_map: dict[int, int] | None = None,
+) -> tuple[StateWriteSite, ...]:
+    """Return all resolved state-variable write sites in one snapshot block.
+
+    The walk uses the same forward evaluator as the live BST analysis, so it
+    can recover simple formula-derived constants within a block rather than
+    matching only literal ``m_mov #const, state_var`` writes.
+    """
+
+    block = flow_graph.get_block(block_serial)
+    if block is None:
+        return ()
+
+    stk_map: dict[int, int] = dict(initial_stk_map or {})
+    reg_map: dict[int, int] = dict(initial_reg_map or {})
+    sites: list[StateWriteSite] = []
+    instructions = tuple(block.insn_snapshots)
+
+    for index, insn in enumerate(instructions):
+        eval_insn = _eval_insn_view_snapshot(insn)
+        dest = getattr(eval_insn, "d", None)
+        dest_locator = _constant_dest_locator_snapshot(dest)
+        old_dest_value = None
+        if dest_locator is not None:
+            kind, ident = dest_locator
+            old_dest_value = (
+                stk_map.get(ident) if kind == "stk" else reg_map.get(ident)
+            )
+        resolved_state = _forward_eval_insn(
+            eval_insn,
+            stk_map,
+            reg_map,
+            state_var_stkoff,
+            mba=None,
+            state_var_lvar_idx=None,
+        )
+        if resolved_state is None:
+            if dest_locator is None:
+                continue
+            kind, ident = dest_locator
+            new_dest_value = stk_map.get(ident) if kind == "stk" else reg_map.get(ident)
+            if new_dest_value != old_dest_value or new_dest_value is not None:
+                continue
+            _kill_constant_dest_snapshot(dest, stk_map, reg_map)
+            continue
+        trailing = instructions[index + 1 :]
+        sites.append(
+            StateWriteSite(
+                block_serial=block_serial,
+                state_value=resolved_state & 0xFFFFFFFF,
+                insn_ea=int(insn.ea),
+                insn_index=index,
+                trailing_insn_eas=tuple(int(tail.ea) for tail in trailing),
+                trailing_opcodes=tuple(int(tail.opcode) for tail in trailing),
+            )
+        )
+
+    return tuple(sites)
+
+
+def find_last_state_write_site_snapshot(
+    flow_graph: FlowGraph,
+    block_serial: int,
+    state_var_stkoff: int,
+    *,
+    initial_stk_map: dict[int, int] | None = None,
+    initial_reg_map: dict[int, int] | None = None,
+) -> StateWriteSite | None:
+    """Return the last resolved state write in one snapshot block, if any."""
+
+    sites = find_state_write_sites_snapshot(
+        flow_graph,
+        block_serial,
+        state_var_stkoff,
+        initial_stk_map=initial_stk_map,
+        initial_reg_map=initial_reg_map,
+    )
+    return sites[-1] if sites else None
 
 
 def find_terminal_exit_target_snapshot(

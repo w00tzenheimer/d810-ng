@@ -457,6 +457,7 @@ class UnflatteningPlanner:
             except Exception as e:
                 logger.warning(
                     "Strategy %s crashed: %s", strategy.name, e,
+                    exc_info=True,
                 )
                 pre_planner_records.append(DecisionRecord(
                     strategy_name=strategy.name,
@@ -480,6 +481,30 @@ class UnflatteningPlanner:
                             "strategy '%s' into snapshot",
                             len(nsv), frag.strategy_name,
                         )
+                if strategy.name in (
+                    "direct_handler_linearization",
+                    "linearized_flow_graph",
+                    "state_write_reconstruction",
+                ):
+                    for frag in fragment:
+                        if frag.strategy_name != strategy.name:
+                            continue
+                        lfg_src = {src for src, _ in frag.ownership.edges}
+                        if not lfg_src:
+                            continue
+                        snapshot = replace(
+                            snapshot,
+                            lfg_redirected_blocks=(
+                                frozenset(snapshot.lfg_redirected_blocks) | frozenset(lfg_src)
+                            ),
+                        )
+                        logger.info(
+                            "Planner: injected %d redirected blocks "
+                            "from strategy '%s' into snapshot",
+                            len(lfg_src),
+                            frag.strategy_name,
+                        )
+                        break
             elif fragment is not None:
                 fragments.append(fragment)
                 # Extract nop_state_values from fragment metadata
@@ -495,20 +520,24 @@ class UnflatteningPlanner:
                 # Inject lfg_redirected_blocks from LFG fragment's
                 # ownership edges so backward_pred skips blocks that
                 # LFG already redirected (prevents SUCC_MISMATCH).
-                if (
-                    strategy.name in ("direct_handler_linearization", "linearized_flow_graph")
-                    and not snapshot.lfg_redirected_blocks
+                if strategy.name in (
+                    "direct_handler_linearization",
+                    "linearized_flow_graph",
+                    "state_write_reconstruction",
                 ):
                     lfg_src = {src for src, _ in fragment.ownership.edges}
                     if lfg_src:
                         snapshot = replace(
                             snapshot,
-                            lfg_redirected_blocks=frozenset(lfg_src),
+                            lfg_redirected_blocks=(
+                                frozenset(snapshot.lfg_redirected_blocks) | frozenset(lfg_src)
+                            ),
                         )
                         logger.info(
-                            "Planner: injected %d LFG-redirected blocks "
-                            "into snapshot",
+                            "Planner: injected %d redirected blocks "
+                            "from strategy '%s' into snapshot",
                             len(lfg_src),
+                            fragment.strategy_name,
                         )
             else:
                 pre_planner_records.append(DecisionRecord(
@@ -776,11 +805,16 @@ class UnflatteningPlanner:
             transitions=frozenset(),
         )
         for c in scored:
-            if c.ownership.is_disjoint(claimed):
+            overlap_blocks = c.ownership.blocks & claimed.blocks
+            overlap_edges = c.ownership.edges & claimed.edges
+            overlap_transitions = c.ownership.transitions & claimed.transitions
+            if not overlap_blocks and not overlap_edges and not overlap_transitions:
+                accepted.append(c)
+                claimed = claimed.union(c.ownership)
+            elif self._can_stack_cleanup_block_overlap(c, accepted):
                 accepted.append(c)
                 claimed = claimed.union(c.ownership)
             else:
-                overlap_blocks = c.ownership.blocks & claimed.blocks
                 decision = PlannerDecision(
                     candidate=c,
                     reason=PlannerDecisionReason.REJECTED_CONFLICT,
@@ -790,6 +824,52 @@ class UnflatteningPlanner:
                 )
                 rows.append(decision.to_decision_record())
         return accepted
+
+    @staticmethod
+    def _can_stack_cleanup_block_overlap(
+        candidate: PlannerCandidate,
+        accepted: list[PlannerCandidate],
+    ) -> bool:
+        """Allow narrow cleanup fragments to stack on prerequisite blocks.
+
+        Some cleanup passes intentionally operate inside blocks already claimed
+        by a prerequisite direct strategy, without rewriting CFG edges or state
+        transitions.  Those should be allowed to layer on top of the selected
+        prerequisite instead of being conflict-dropped.
+        """
+        metadata = getattr(candidate.fragment, "metadata", {}) or {}
+        if not metadata.get("allow_prerequisite_block_overlap"):
+            return False
+
+        overlap_edges = set(candidate.ownership.edges)
+        overlap_transitions = set(candidate.ownership.transitions)
+        overlapping_accepted: list[PlannerCandidate] = []
+        for accepted_candidate in accepted:
+            if candidate.ownership.blocks.isdisjoint(accepted_candidate.ownership.blocks):
+                continue
+            overlapping_accepted.append(accepted_candidate)
+            if candidate.ownership.edges & accepted_candidate.ownership.edges:
+                return False
+            if (
+                candidate.ownership.transitions
+                & accepted_candidate.ownership.transitions
+            ):
+                return False
+            overlap_edges -= accepted_candidate.ownership.edges
+            overlap_transitions -= accepted_candidate.ownership.transitions
+
+        if not overlapping_accepted:
+            return False
+        if overlap_edges or overlap_transitions:
+            return False
+
+        prerequisite_names = set(candidate.prerequisites)
+        if not prerequisite_names:
+            return False
+        return all(
+            accepted_candidate.strategy_name in prerequisite_names
+            for accepted_candidate in overlapping_accepted
+        )
 
     def _order_candidates(
         self,

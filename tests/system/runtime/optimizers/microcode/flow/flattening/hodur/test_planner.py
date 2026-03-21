@@ -15,6 +15,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     PlannerInputs,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+    FAMILY_CLEANUP,
     FAMILY_DIRECT,
     FAMILY_FALLBACK,
     BenefitMetrics,
@@ -53,6 +54,7 @@ def _make_fragment(
     prerequisites: list[str] | None = None,
     risk_score: float = 0.0,
     empty: bool = False,
+    metadata: dict | None = None,
 ) -> PlanFragment:
     modifications = (
         []
@@ -67,6 +69,7 @@ def _make_fragment(
         prerequisites=prerequisites or [],
         expected_benefit=_make_benefit(handlers=handlers),
         risk_score=risk_score,
+        metadata=metadata or {},
     )
 
 
@@ -164,3 +167,19 @@ class TestResolveConflicts:
 
     def test_empty_fragment_still_reports_empty(self) -> None:
         assert _make_fragment("empty", empty=True).is_empty()
+
+    def test_cleanup_can_stack_on_prerequisite_block_overlap(self) -> None:
+        planner = UnflatteningPlanner()
+        direct = _make_fragment("linearized_flow_graph", handlers=10, blocks={41, 47, 71})
+        cleanup = _make_fragment(
+            "state_constant_return_fixup",
+            family=FAMILY_CLEANUP,
+            handlers=0,
+            blocks={41, 47},
+            prerequisites=["linearized_flow_graph"],
+            metadata={"allow_prerequisite_block_overlap": True},
+        )
+        pipeline, _prov = planner.compose_pipeline([cleanup, direct])
+        names = [fragment.strategy_name for fragment in pipeline]
+        assert "linearized_flow_graph" in names
+        assert "state_constant_return_fixup" in names
