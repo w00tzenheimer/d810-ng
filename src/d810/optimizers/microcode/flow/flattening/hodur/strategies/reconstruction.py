@@ -112,6 +112,76 @@ class StateWriteReconstructionStrategy:
         return shared_blocks
 
     @staticmethod
+    def _classify_artifact_return_blocks(
+        flow_graph,
+        state_var_stkoff: int,
+        state_constants: set[int],
+    ) -> set[int]:
+        """Identify blocks that are m_xdu/m_mov artifacts writing state var to return slot.
+
+        Artifact blocks zero-extend or move the dead state variable into the
+        return slot (a different stack variable).  These blocks should be
+        bypassed during Return Path Wiring because they propagate the
+        obfuscation state constant into the decompiled return value.
+
+        The classifier looks for two patterns:
+
+        1. **m_xdu artifact**: ``m_xdu  state_var -> other_stkvar`` where
+           src.stkoff == state_var_stkoff and dest.stkoff != state_var_stkoff.
+        2. **m_mov const artifact**: ``m_mov  #state_const -> stkvar`` where
+           the immediate value is a known state constant.
+
+        Args:
+            flow_graph: Snapshot flow graph with block/instruction data.
+            state_var_stkoff: Stack offset of the dispatcher state variable.
+            state_constants: Set of known state constant values.
+
+        Returns:
+            Set of block serials classified as artifact return blocks.
+        """
+        MOP_N = int(getattr(ida_hexrays, "mop_n", 2))
+        MOP_S = int(getattr(ida_hexrays, "mop_S", 5))
+        m_xdu = int(getattr(ida_hexrays, "m_xdu", 9))
+        m_mov = int(getattr(ida_hexrays, "m_mov", 4))
+
+        artifact_blocks: set[int] = set()
+        for serial, blk in flow_graph.blocks.items():
+            for insn in blk.insn_snapshots:
+                # Pattern 1: m_xdu with src=state_var, dest=other stkvar
+                if insn.opcode == m_xdu:
+                    l_op = insn.l
+                    d_op = insn.d
+                    if (
+                        l_op is not None
+                        and d_op is not None
+                        and getattr(l_op, "t", None) == MOP_S
+                        and getattr(d_op, "t", None) == MOP_S
+                        and getattr(l_op, "stkoff", None) is not None
+                        and getattr(d_op, "stkoff", None) is not None
+                        and int(l_op.stkoff) == state_var_stkoff
+                        and int(d_op.stkoff) != state_var_stkoff
+                    ):
+                        artifact_blocks.add(serial)
+                        break
+                # Pattern 2: m_mov with imm state constant to stkvar
+                if insn.opcode == m_mov:
+                    l_op = insn.l
+                    d_op = insn.d
+                    if (
+                        l_op is not None
+                        and d_op is not None
+                        and getattr(l_op, "t", None) == MOP_N
+                        and getattr(d_op, "t", None) == MOP_S
+                        and getattr(l_op, "value", None) is not None
+                        and getattr(d_op, "stkoff", None) is not None
+                        and int(d_op.stkoff) != state_var_stkoff
+                        and (int(l_op.value) & 0xFFFFFFFF) in state_constants
+                    ):
+                        artifact_blocks.add(serial)
+                        break
+        return artifact_blocks
+
+    @staticmethod
     def _edge_kind_name(edge: StateDagEdge) -> str:
         kind = getattr(edge.kind, "name", None)
         return kind if isinstance(kind, str) else str(edge.kind)
@@ -1945,6 +2015,22 @@ class StateWriteReconstructionStrategy:
                 )
 
             # ------------------------------------------------------------------
+            # Artifact return block classification: identify m_xdu / m_mov
+            # blocks that copy the dead state variable into the return slot.
+            # ------------------------------------------------------------------
+            artifact_return_blocks: set[int] = set()
+            if state_var_stkoff is not None:
+                _state_consts = sm.state_constants if sm is not None else set()
+                artifact_return_blocks = self._classify_artifact_return_blocks(
+                    flow_graph, state_var_stkoff, _state_consts,
+                )
+                if artifact_return_blocks:
+                    logger.info(
+                        "RECON RETURN: artifact return blocks: %s",
+                        sorted(artifact_return_blocks),
+                    )
+
+            # ------------------------------------------------------------------
             # Return Path Wiring: path-local return lowering for
             # CONDITIONAL_RETURN edges using DAG shared-suffix info
             # ------------------------------------------------------------------
@@ -2220,20 +2306,39 @@ class StateWriteReconstructionStrategy:
                             wired = True
                             break
                         if arm == 0:
-                            # Fallthrough arm points to an artifact block.
-                            # TODO: detect m_xdu artifacts by checking if
-                            # the block uses the state variable (stkoff)
-                            # to write the return slot.  For now, skip —
-                            # redirecting all fallthrough blocks destroys
-                            # real return-value setters (blk[175] MBA,
-                            # blk[162] mov, blk[94] add).
-                            logger.info(
-                                "RECON RETURN: skip arm0 blk[%d] "
-                                "(fallthrough artifact detection pending)",
-                                arm_target,
-                            )
-                            wired = True  # not an error
-                            break
+                            # Fallthrough arm: classify as artifact or
+                            # real return-value setter using the pre-
+                            # computed artifact_return_blocks set.
+                            artifact_blk = flow_graph.get_block(arm_target)
+                            if (
+                                artifact_blk is not None
+                                and artifact_blk.nsucc == 1
+                                and arm_target in artifact_return_blocks
+                                and arm_target not in claimed_sources
+                            ):
+                                artifact_old = int(artifact_blk.succs[0])
+                                return_mods.append(
+                                    builder.goto_redirect(
+                                        source_block=arm_target,
+                                        target_block=suffix_entry_serial,
+                                        old_target=artifact_old,
+                                    )
+                                )
+                                claimed_sources.add(arm_target)
+                                logger.info(
+                                    "RECON RETURN: redirect artifact blk[%d] -> blk[%d]",
+                                    arm_target, suffix_entry_serial,
+                                )
+                                wired = True
+                                break
+                            else:
+                                # Real return-value setter — leave alone
+                                logger.info(
+                                    "RECON RETURN: skip arm0 blk[%d] (real return writer)",
+                                    arm_target,
+                                )
+                                wired = True
+                                break
                         else:
                             # Taken arm — use edge_redirect normally
                             return_mods.append(
