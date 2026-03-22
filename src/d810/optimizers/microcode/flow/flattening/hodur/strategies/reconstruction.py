@@ -1946,84 +1946,155 @@ class StateWriteReconstructionStrategy:
             # ------------------------------------------------------------------
             # Return Path Wiring: connect CONDITIONAL_RETURN edges
             # ------------------------------------------------------------------
-            # Bypass BST nodes on return paths so handler return sites
-            # survive BST cleanup.
+            # Use source_anchor to identify the exact source block and arm,
+            # then wire the return arm through BST to the return corridor.
+            # A 2-way block may have its transition arm already claimed;
+            # the return arm is independent and can still be wired.
 
             return_mods: list = []
+            return_skipped: list[tuple[int, str]] = []
             for edge in dag.edges:
                 if edge.kind != SemanticEdgeKind.CONDITIONAL_RETURN:
                     continue
+
+                src_serial = edge.source_anchor.block_serial
+                src_arm = edge.source_anchor.branch_arm
+
                 if not edge.ordered_path:
+                    return_skipped.append((src_serial, "empty_ordered_path"))
                     continue
 
-                # Find the last handler block (non-BST) on the return path
-                handler_exit: int | None = None
-                for serial in edge.ordered_path:
-                    if serial not in _bst_set:
-                        handler_exit = serial
-
-                if handler_exit is None:
-                    continue
-
-                if handler_exit in claimed_sources:
-                    continue
-
-                # Find the return block (last block in ordered_path)
-                return_block = edge.ordered_path[-1]
-                if return_block in _bst_set:
-                    # Return block IS a BST block — can't wire
-                    continue
-
-                block = flow_graph.get_block(handler_exit)
-                if block is None or handler_exit == return_block:
-                    continue
-
-                # Check if handler_exit already reaches return_block
-                already_wired = any(
-                    int(block.succs[i]) == return_block
-                    for i in range(block.nsucc)
-                )
-                if already_wired:
-                    continue
-
-                if block.nsucc == 1:
-                    old_target = int(block.succs[0])
-                    if old_target in _bst_set:
-                        return_mods.append(
-                            builder.goto_redirect(
-                                source_block=handler_exit,
-                                target_block=return_block,
-                                old_target=old_target,
-                            )
-                        )
-                        claimed_sources.add(handler_exit)
-                        logger.info(
-                            "RECON RETURN: wire blk[%d] -> blk[%d] (return path)",
-                            handler_exit, return_block,
-                        )
-                elif block.nsucc == 2:
-                    for arm in range(2):
-                        arm_target = int(block.succs[arm])
-                        if arm_target in _bst_set and arm == 1:
-                            return_mods.append(
-                                builder.edge_redirect(
-                                    source_block=handler_exit,
-                                    target_block=return_block,
-                                    old_target=arm_target,
-                                )
-                            )
-                            claimed_sources.add(handler_exit)
-                            logger.info(
-                                "RECON RETURN: wire blk[%d].arm%d -> blk[%d] (return path)",
-                                handler_exit, arm, return_block,
-                            )
+                # Find the return target: the first non-BST block on the
+                # path AFTER the source block.  Fall back to the last
+                # non-BST block on the path.
+                ordered = tuple(int(s) for s in edge.ordered_path)
+                past_source = False
+                wire_target: int | None = None
+                for serial in ordered:
+                    if serial == src_serial:
+                        past_source = True
+                        continue
+                    if past_source and serial not in _bst_set:
+                        wire_target = serial
+                        break
+                # Fallback: last non-BST block that is not the source
+                if wire_target is None:
+                    for serial in reversed(ordered):
+                        if serial != src_serial and serial not in _bst_set:
+                            wire_target = serial
                             break
+
+                if wire_target is None:
+                    return_skipped.append((src_serial, "no_wire_target"))
+                    continue
+
+                block = flow_graph.get_block(src_serial)
+                if block is None:
+                    return_skipped.append((src_serial, "block_not_found"))
+                    continue
+
+                # --- 1-way source block ---
+                if block.nsucc == 1:
+                    if src_serial in claimed_sources:
+                        return_skipped.append(
+                            (src_serial, "claimed_1way"),
+                        )
+                        continue
+                    old_target = int(block.succs[0])
+                    if old_target == wire_target:
+                        return_skipped.append(
+                            (src_serial, "already_wired_1way"),
+                        )
+                        continue
+                    if old_target not in _bst_set:
+                        # Successor is a handler block, not BST — path
+                        # is intact, nothing to redirect.
+                        return_skipped.append(
+                            (src_serial, "intact_1way"),
+                        )
+                        continue
+                    return_mods.append(
+                        builder.goto_redirect(
+                            source_block=src_serial,
+                            target_block=wire_target,
+                            old_target=old_target,
+                        )
+                    )
+                    claimed_sources.add(src_serial)
+                    logger.info(
+                        "RECON RETURN: wire blk[%d] -> blk[%d] "
+                        "(return path, 1-way)",
+                        src_serial, wire_target,
+                    )
+
+                # --- 2-way source block ---
+                elif block.nsucc == 2:
+                    # Determine which arm to wire.  Prefer the arm
+                    # indicated by source_anchor.branch_arm; if not
+                    # available, pick the arm pointing into the BST.
+                    candidate_arms: list[int] = []
+                    if src_arm is not None:
+                        candidate_arms = [src_arm]
+                    else:
+                        candidate_arms = [0, 1]
+
+                    wired = False
+                    for arm in candidate_arms:
+                        if arm >= block.nsucc:
+                            continue
+                        arm_target = int(block.succs[arm])
+                        if arm_target == wire_target:
+                            # This arm already reaches the return block
+                            return_skipped.append(
+                                (src_serial, f"already_wired_arm{arm}"),
+                            )
+                            wired = True
+                            break
+                        if arm_target not in _bst_set:
+                            # Arm reaches a non-BST block — the path
+                            # from this arm is already intact.  Check
+                            # if it transitively reaches wire_target.
+                            return_skipped.append(
+                                (src_serial, f"intact_arm{arm}"),
+                            )
+                            wired = True
+                            break
+                        # Arm points to BST — wire it to the return
+                        # corridor.
+                        return_mods.append(
+                            builder.edge_redirect(
+                                source_block=src_serial,
+                                target_block=wire_target,
+                                old_target=arm_target,
+                            )
+                        )
+                        claimed_sources.add(src_serial)
+                        logger.info(
+                            "RECON RETURN: wire blk[%d].arm%d -> "
+                            "blk[%d] (return path, 2-way)",
+                            src_serial, arm, wire_target,
+                        )
+                        wired = True
+                        break
+                    if not wired:
+                        return_skipped.append(
+                            (src_serial, "no_eligible_arm"),
+                        )
+                else:
+                    return_skipped.append(
+                        (src_serial, f"unexpected_nsucc_{block.nsucc}"),
+                    )
 
             if return_mods:
                 modifications.extend(return_mods)
+            logger.info(
+                "RECON RETURN: %d return path edges wired, %d skipped",
+                len(return_mods), len(return_skipped),
+            )
+            for blk_ser, reason in return_skipped:
                 logger.info(
-                    "RECON RETURN: %d return path edges wired",
-                    len(return_mods),
+                    "RECON RETURN: skip blk[%d] reason=%s",
+                    blk_ser, reason,
                 )
 
             # DISABLED: Force-Wire unnecessary when relay collapsing is off.
