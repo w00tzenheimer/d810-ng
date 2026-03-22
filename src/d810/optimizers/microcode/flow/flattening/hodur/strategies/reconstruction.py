@@ -1455,6 +1455,59 @@ class StateWriteReconstructionStrategy:
             state_var_stkoff,
         )
 
+        # --- Early DAG-only diagnostic snapshot (fires even if no modifications) ---
+        try:
+            from d810.core.diag import get_diag_db
+            diag_db = get_diag_db(mba.entry_ea if mba is not None else 0)
+            if diag_db is not None:
+                from d810.core.diag.snapshot import (
+                    DagEdge,
+                    DagNode,
+                    snapshot_dag,
+                    snapshot_mba,
+                )
+                import json as _json
+
+                _early_snap_id = snapshot_mba(
+                    diag_db,
+                    [],
+                    label=f"{self.name}_state_write_reconstruction_dag",
+                    func_ea=mba.entry_ea if mba is not None else 0,
+                    maturity="MMAT_GLBOPT1",
+                    phase="post_apply",
+                )
+
+                _early_dag_nodes = []
+                for node in dag.nodes:
+                    _early_dag_nodes.append(DagNode(
+                        state=int(node.key.state_const) if node.key.state_const is not None else 0,
+                        state_hex=f"0x{node.key.state_const:08X}" if node.key.state_const is not None else "None",
+                        entry_block=int(node.entry_anchor),
+                        classification=str(node.kind.name) if hasattr(node.kind, "name") else str(node.kind),
+                        shared_suffix=_json.dumps(sorted(int(b) for b in node.shared_suffix_blocks)) if node.shared_suffix_blocks else None,
+                    ))
+
+                _early_dag_edges = []
+                for eidx, edge in enumerate(dag.edges):
+                    _early_dag_edges.append(DagEdge(
+                        edge_id=eidx,
+                        source_state=int(edge.source_key.state_const) if edge.source_key.state_const is not None else None,
+                        target_state=int(edge.target_key.state_const) if edge.target_key is not None and edge.target_key.state_const is not None else None,
+                        edge_kind=str(edge.kind.name) if hasattr(edge.kind, "name") else str(edge.kind),
+                        source_block=int(edge.source_anchor.block_serial) if edge.source_anchor is not None else None,
+                        source_arm=edge.source_anchor.branch_arm if edge.source_anchor is not None else None,
+                        target_entry=int(edge.target_entry_anchor) if edge.target_entry_anchor is not None else None,
+                        ordered_path=_json.dumps([int(s) for s in edge.ordered_path]) if edge.ordered_path else "[]",
+                    ))
+
+                snapshot_dag(diag_db, _early_snap_id, _early_dag_nodes, _early_dag_edges)
+                diag_db.close()
+        except Exception:
+            logger.warning(
+                "Early diagnostic DAG snapshot failed (non-critical)",
+                exc_info=True,
+            )
+
         dispatcher_region = set(dag.bst_node_blocks)
         if dag.dispatcher_entry_serial >= 0:
             dispatcher_region.add(int(dag.dispatcher_entry_serial))
@@ -2463,9 +2516,10 @@ class StateWriteReconstructionStrategy:
                 snap_id = snapshot_mba(
                     diag_db,
                     [],  # No block data here — executor captures full MBA
-                    label=f"{self.name}_dag",
+                    label=f"{self.name}_state_write_reconstruction_post_apply",
                     func_ea=mba.entry_ea if mba is not None else 0,
                     maturity="MMAT_GLBOPT1",
+                    phase="post_apply",
                 )
 
                 # Build DAG node snapshots
