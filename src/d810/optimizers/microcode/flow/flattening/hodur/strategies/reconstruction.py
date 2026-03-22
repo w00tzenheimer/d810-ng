@@ -1986,19 +1986,39 @@ class StateWriteReconstructionStrategy:
                         int(b) for b in source_node.shared_suffix_blocks
                     }
 
-                # Find the first block in the ordered_path that is in the
-                # shared suffix set.  Fall back to global shared_suffix_blocks
-                # when the node has no suffix info.
+                # Determine the shared suffix entry block.
+                # Prefer the node's own shared_suffix_blocks (which knows
+                # the correct chain entry, e.g. blk[217]) over scanning
+                # the ordered_path (which may route through artifact blocks
+                # like m_xdu blk[207] and skip the real entry).
                 suffix_lookup = node_shared_suffix or shared_suffix_blocks
-                suffix_entry_idx: int | None = None
-                for path_idx, blk_serial in enumerate(ordered):
-                    if blk_serial in suffix_lookup:
-                        suffix_entry_idx = path_idx
-                        break
+                suffix_entry_serial: int | None = None
+                if suffix_lookup:
+                    # The suffix entry is the lowest-serial block in the
+                    # suffix set that is NOT BLT_STOP.  This is the chain
+                    # entry (e.g., blk[217] with mov var_178 -> var_8).
+                    stop_serial = max(suffix_lookup)  # BLT_STOP = highest
+                    non_stop = sorted(b for b in suffix_lookup if b != stop_serial)
+                    if non_stop:
+                        suffix_entry_serial = non_stop[0]
+                    else:
+                        suffix_entry_serial = stop_serial
 
-                if suffix_entry_idx is None or suffix_entry_idx < 1:
-                    # No shared suffix in path, or path starts with suffix
-                    # — fall back to simple last-hop redirect.
+                    # The anchor is the last block in the ordered_path that
+                    # is NOT in the suffix set and NOT BLT_STOP.
+                    anchor_serial: int | None = None
+                    for blk_serial in ordered:
+                        if blk_serial not in suffix_lookup:
+                            anchor_serial = blk_serial
+                    # If anchor == src_serial and there are intermediate
+                    # blocks, use the source as the anchor (it's the block
+                    # whose arm we need to rewire).
+                    if anchor_serial is None:
+                        anchor_serial = src_serial
+
+                if suffix_entry_serial is None:
+                    # No shared suffix info — fall back to simple last-hop
+                    # redirect.
                     # Use the last non-BST block pair in the ordered_path.
                     fallback_emitted = False
                     for hop_idx in range(len(ordered) - 1):
@@ -2062,10 +2082,8 @@ class StateWriteReconstructionStrategy:
                         )
                     continue
 
-                # Shared suffix entry found in the path.  The return
-                # anchor is the block immediately before the suffix entry.
-                suffix_entry_serial = ordered[suffix_entry_idx]
-                anchor_serial = ordered[suffix_entry_idx - 1]
+                # Shared suffix entry determined from node's shared_suffix_blocks.
+                # anchor_serial determined as last non-suffix block in path.
 
                 logger.info(
                     "RECON RETURN: path-local edge src=blk[%d] path=%s "
