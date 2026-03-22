@@ -544,6 +544,59 @@ class HodurUnflattener(GenericUnflatteningRule):
             if dead_cleanup_applied > 0:
                 nb_changes += dead_cleanup_applied
 
+            # --- Diagnostic snapshot: reachability after Gut-and-Wire ---
+            try:
+                from d810.core.diag import get_diag_db
+                diag_db = get_diag_db(self.mba.entry_ea)
+                if diag_db is not None:
+                    from d810.core.diag.snapshot import snapshot_mba, snapshot_reachability
+
+                    # Compute reachable blocks via BFS from block 0
+                    _diag_visited: set[int] = set()
+                    _diag_queue: list[int] = [0]
+                    while _diag_queue:
+                        _ds = _diag_queue.pop(0)
+                        if _ds in _diag_visited or _ds < 0 or _ds >= self.mba.qty:
+                            continue
+                        _diag_visited.add(_ds)
+                        _db = self.mba.get_mblock(_ds)
+                        if _db is not None:
+                            for _di in range(_db.nsucc()):
+                                _diag_queue.append(_db.succ(_di))
+
+                    all_serials = set(range(self.mba.qty))
+                    gutted_serials = all_serials - _diag_visited - {self.mba.qty - 1}
+
+                    # Collect claimed_sources from pipeline results metadata
+                    _claimed: set[int] = set()
+                    for _r in results:
+                        _cs = _r.metadata.get("claimed_sources")
+                        if isinstance(_cs, (set, frozenset)):
+                            _claimed |= set(_cs)
+
+                    snap_id = snapshot_mba(
+                        diag_db,
+                        [],
+                        label="post_gut_and_wire_reachability",
+                        func_ea=self.mba.entry_ea,
+                        maturity="MMAT_GLBOPT1",
+                    )
+                    snapshot_reachability(
+                        diag_db,
+                        snap_id,
+                        all_serials=all_serials,
+                        reachable=_diag_visited,
+                        bst_serials=bst_serials,
+                        gutted=gutted_serials,
+                        claimed_sources=_claimed,
+                    )
+                    diag_db.close()
+            except Exception:
+                unflat_logger.debug(
+                    "Diagnostic reachability snapshot failed (non-critical)",
+                    exc_info=True,
+                )
+
             # Persist BST serials + dispatcher serial for hxe_glbopt PruneUnreachable
             if dead_cleanup_applied == 0:
                 self._last_bst_serials = bst_serials
