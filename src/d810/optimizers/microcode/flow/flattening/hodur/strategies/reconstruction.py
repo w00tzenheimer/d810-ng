@@ -1994,8 +1994,7 @@ class StateWriteReconstructionStrategy:
                         if (
                             pred_blk is not None
                             and pred_blk.nsucc == 1
-                            and pred_serial not in _bst_set
-                            and pred_serial != dispatcher_serial
+                            and pred_serial in shared_suffix_blocks
                             and pred_serial not in common_return_corridor
                         ):
                             common_return_corridor.add(pred_serial)
