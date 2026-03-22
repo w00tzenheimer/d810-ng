@@ -2007,13 +2007,13 @@ class StateWriteReconstructionStrategy:
                             (src_serial, "already_wired_1way"),
                         )
                         continue
+                    # Redirect to wire_target whether old_target is BST
+                    # or a wrong non-BST block (e.g. m_xdu artifact).
+                    artifact_note = ""
                     if old_target not in _bst_set:
-                        # Successor is a handler block, not BST — path
-                        # is intact, nothing to redirect.
-                        return_skipped.append(
-                            (src_serial, "intact_1way"),
+                        artifact_note = (
+                            f", artifact bypass blk[{old_target}]"
                         )
-                        continue
                     return_mods.append(
                         builder.goto_redirect(
                             source_block=src_serial,
@@ -2024,8 +2024,8 @@ class StateWriteReconstructionStrategy:
                     claimed_sources.add(src_serial)
                     logger.info(
                         "RECON RETURN: wire blk[%d] -> blk[%d] "
-                        "(return path, 1-way)",
-                        src_serial, wire_target,
+                        "(return path, 1-way%s)",
+                        src_serial, wire_target, artifact_note,
                     )
 
                 # --- 2-way source block ---
@@ -2051,17 +2051,14 @@ class StateWriteReconstructionStrategy:
                             )
                             wired = True
                             break
+                        # Arm points to wrong target (BST or non-BST
+                        # artifact like m_xdu block) — wire it to the
+                        # return corridor.
+                        artifact_note = ""
                         if arm_target not in _bst_set:
-                            # Arm reaches a non-BST block — the path
-                            # from this arm is already intact.  Check
-                            # if it transitively reaches wire_target.
-                            return_skipped.append(
-                                (src_serial, f"intact_arm{arm}"),
+                            artifact_note = (
+                                f", artifact bypass blk[{arm_target}]"
                             )
-                            wired = True
-                            break
-                        # Arm points to BST — wire it to the return
-                        # corridor.
                         return_mods.append(
                             builder.edge_redirect(
                                 source_block=src_serial,
@@ -2072,8 +2069,8 @@ class StateWriteReconstructionStrategy:
                         claimed_sources.add(src_serial)
                         logger.info(
                             "RECON RETURN: wire blk[%d].arm%d -> "
-                            "blk[%d] (return path, 2-way)",
-                            src_serial, arm, wire_target,
+                            "blk[%d] (return path, 2-way%s)",
+                            src_serial, arm, wire_target, artifact_note,
                         )
                         wired = True
                         break
