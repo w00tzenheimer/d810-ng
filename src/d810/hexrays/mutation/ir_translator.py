@@ -65,20 +65,19 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
 
     Returns ``None`` for empty (``mop_z``) operands.
     """
-    if mop is None or mop.t == 0:  # mop_z = empty
+    if mop is None or mop.t == ida_hexrays.mop_z:
         return None
     t = mop.t
     size = mop.size
-    if t == 2:  # mop_n
+    if t == ida_hexrays.mop_n:
         nnn = mop.nnn
         return CfgMopSnapshot(t=t, size=size, value=int(nnn.value) if nnn is not None else 0)
-    _mop_S = getattr(ida_hexrays, "mop_S", 5)
-    if t == _mop_S or t == 3:  # mop_S (stack var) — IDA 9.x: 5, fallback: 3
+    if t == ida_hexrays.mop_S:
         s = mop.s
         return CfgMopSnapshot(t=t, size=size, stkoff=s.off if s is not None else None)
-    if t == 1:  # mop_r (register)
+    if t == ida_hexrays.mop_r:
         return CfgMopSnapshot(t=t, size=size, reg=mop.r)
-    if t == 7:  # mop_b (block ref)
+    if t == ida_hexrays.mop_b:
         return CfgMopSnapshot(t=t, size=size, block_ref=mop.b)
     return CfgMopSnapshot(t=t, size=size)
 
