@@ -2472,8 +2472,8 @@ class StateWriteReconstructionStrategy:
                 dag_nodes = []
                 for node in dag.nodes:
                     dag_nodes.append(DagNode(
-                        state=int(node.state_const) if node.state_const is not None else 0,
-                        state_hex=f"0x{node.state_const:08X}" if node.state_const is not None else "None",
+                        state=int(node.key.state_const) if node.key.state_const is not None else 0,
+                        state_hex=f"0x{node.key.state_const:08X}" if node.key.state_const is not None else "None",
                         entry_block=int(node.entry_anchor),
                         classification=str(node.kind.name) if hasattr(node.kind, "name") else str(node.kind),
                         shared_suffix=_json.dumps(sorted(int(b) for b in node.shared_suffix_blocks)) if node.shared_suffix_blocks else None,
@@ -2514,7 +2514,7 @@ class StateWriteReconstructionStrategy:
                 snapshot_modifications(diag_db, snap_id, mod_snapshots)
                 diag_db.close()
         except Exception:
-            logger.debug(
+            logger.warning(
                 "Diagnostic DAG/modifications snapshot failed (non-critical)",
                 exc_info=True,
             )
