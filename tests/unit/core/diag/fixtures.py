@@ -27,7 +27,7 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
     fh, fi = _dual(0x180012B60)
     conn.execute(
         "INSERT INTO snapshots VALUES "
-        "(1, 'pass0_post_apply', ?, ?, 'MMAT_GLBOPT1', 233, 0.0)",
+        "(1, 'pass0_post_apply', ?, ?, 'MMAT_GLBOPT1', 'post_apply', 233, 0.0)",
         (fh, fi),
     )
 

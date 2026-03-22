@@ -133,6 +133,32 @@ class TestSnapshotMba:
         ).fetchone()
         assert row[0] == "MMAT_GLBOPT1"
 
+    def test_phase_stored(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        snapshot_mba(
+            conn,
+            mock_mba_3_blocks,
+            label="test",
+            func_ea=0x1000,
+            phase="post_apply",
+        )
+        row = conn.execute(
+            "SELECT phase FROM snapshots WHERE id=1"
+        ).fetchone()
+        assert row[0] == "post_apply"
+
+    def test_phase_defaults_to_unknown(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        snapshot_mba(
+            conn, mock_mba_3_blocks, label="test", func_ea=0x1000
+        )
+        row = conn.execute(
+            "SELECT phase FROM snapshots WHERE id=1"
+        ).fetchone()
+        assert row[0] == "unknown"
+
     def test_block_snapshot_str(self) -> None:
         blk = _make_block(5, succs=[6], preds=[4])
         text = str(blk)
@@ -244,7 +270,7 @@ class TestSnapshotDag:
         # Need a snapshot row first
         conn.execute(
             "INSERT INTO snapshots VALUES "
-            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
         )
 
         nodes = [
@@ -284,7 +310,7 @@ class TestSnapshotDag:
         create_tables(conn)
         conn.execute(
             "INSERT INTO snapshots VALUES "
-            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
         )
 
         bad_edge = DagEdge(0, None, None, "BOGUS_KIND")
@@ -296,7 +322,7 @@ class TestSnapshotDag:
         create_tables(conn)
         conn.execute(
             "INSERT INTO snapshots VALUES "
-            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
         )
 
         edge = DagEdge(
@@ -317,7 +343,7 @@ class TestSnapshotModifications:
         create_tables(conn)
         conn.execute(
             "INSERT INTO snapshots VALUES "
-            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
         )
 
         mods = [
@@ -361,7 +387,7 @@ class TestSnapshotModifications:
         create_tables(conn)
         conn.execute(
             "INSERT INTO snapshots VALUES "
-            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
         )
         snapshot_modifications(conn, 1, [])
         count = conn.execute(
@@ -376,7 +402,7 @@ class TestSnapshotReachability:
         create_tables(conn)
         conn.execute(
             "INSERT INTO snapshots VALUES "
-            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 10, 0.0)"
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 10, 0.0)"
         )
 
         all_serials = {0, 1, 2, 3, 4}
@@ -411,7 +437,7 @@ class TestSnapshotReachability:
         create_tables(conn)
         conn.execute(
             "INSERT INTO snapshots VALUES "
-            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
         )
         snapshot_reachability(conn, 1, {0, 1, 2})
         rows = conn.execute(

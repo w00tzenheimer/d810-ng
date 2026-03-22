@@ -28,6 +28,18 @@ def _resolve_snapshot_id(conn: sqlite3.Connection, snapshot: int) -> int:
     return row[0]
 
 
+def _snapshot_header(conn: sqlite3.Connection, snapshot_id: int) -> str:
+    """Return a one-line header with snapshot maturity and phase."""
+    row = conn.execute(
+        "SELECT maturity, phase FROM snapshots WHERE id=?",
+        (snapshot_id,),
+    ).fetchone()
+    if row is None:
+        return f"snapshot {snapshot_id}"
+    maturity, phase = row
+    return f"snapshot {snapshot_id} [{maturity} / {phase}]"
+
+
 def _format_chain(results: list[dict]) -> str:
     """Format chain query output as compact per-block summary."""
     lines: list[str] = []
@@ -153,12 +165,14 @@ def main(argv: list[str] | None = None) -> int:
     snap_id = _resolve_snapshot_id(conn, args.snapshot)
 
     if args.command == "chain":
+        print(_snapshot_header(conn, snap_id))
         result = chain(conn, snap_id, args.serials)
         print(_format_chain(result))
     elif args.command == "var-writes":
         result = var_writes(conn, snap_id, args.stkoff)
         print(_format_var_writes(result))
     elif args.command == "block":
+        print(_snapshot_header(conn, snap_id))
         result = block_detail(conn, snap_id, args.serial)
         print(_format_block(result, show_insns=args.insns))
     elif args.command == "return-paths":

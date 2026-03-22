@@ -193,6 +193,7 @@ def snapshot_mba(
     label: str,
     func_ea: int,
     maturity: str = "UNKNOWN",
+    phase: str = "unknown",
 ) -> int:
     """Snapshot MBA blocks and instructions into SQLite.
 
@@ -202,6 +203,8 @@ def snapshot_mba(
         label: Snapshot label (e.g. "pass0_post_apply").
         func_ea: Function effective address.
         maturity: MBA maturity level string.
+        phase: Pipeline phase (pre_d810, post_apply, post_gut_wire,
+            post_pipeline, or unknown).
 
     Returns:
         The snapshot_id of the newly created row.
@@ -209,9 +212,9 @@ def snapshot_mba(
     func_hex, func_i64 = _dual(func_ea)
     cursor = conn.execute(
         "INSERT INTO snapshots "
-        "(label, func_ea_hex, func_ea_i64, maturity, block_count, timestamp) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (label, func_hex, func_i64, maturity, len(blocks), time.time()),
+        "(label, func_ea_hex, func_ea_i64, maturity, phase, block_count, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (label, func_hex, func_i64, maturity, phase, len(blocks), time.time()),
     )
     snap_id = cursor.lastrowid
     assert snap_id is not None

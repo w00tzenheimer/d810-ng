@@ -35,7 +35,7 @@ def test_json_extract_on_meta_columns():
     # Insert a block with JSON meta containing valranges
     conn.execute(
         "INSERT INTO snapshots VALUES "
-        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
     )
     conn.execute(
         "INSERT INTO blocks VALUES "
@@ -63,7 +63,7 @@ def test_edge_kind_check_constraint_rejects_invalid():
     create_tables(conn)
     conn.execute(
         "INSERT INTO snapshots VALUES "
-        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
     )
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
@@ -71,6 +71,33 @@ def test_edge_kind_check_constraint_rejects_invalid():
             "(1, 1, NULL, NULL, NULL, NULL, 'INVALID_KIND', "
             "NULL, NULL, NULL, '[]')"
         )
+
+
+def test_phase_check_constraint_rejects_invalid():
+    """Verify CHECK constraint on phase column rejects invalid values."""
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
+            "'INVALID_PHASE', 3, 0.0)"
+        )
+
+
+def test_phase_check_constraint_accepts_valid():
+    """Verify CHECK constraint accepts all valid phase values."""
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    valid_phases = ['pre_d810', 'post_apply', 'post_gut_wire', 'post_pipeline', 'unknown']
+    for i, phase in enumerate(valid_phases):
+        conn.execute(
+            "INSERT INTO snapshots VALUES "
+            "(?, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', ?, 3, 0.0)",
+            (i + 1, phase),
+        )
+    count = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
+    assert count == 5
 
 
 def test_var_writes_view_exists():
