@@ -13,6 +13,7 @@ from d810.core.diag.snapshot import (
     DagNode,
     InstructionSnapshot,
     Modification,
+    _dual,
     _safe_int,
     snapshot_dag,
     snapshot_mba,
@@ -213,20 +214,24 @@ class TestSnapshotMba:
         snap_id = snapshot_mba(conn, [blk], label="overflow", func_ea=large_ea)
         assert snap_id is not None
 
-        # Verify stored values are negative (signed representation)
+        # Verify hex columns store fixed-width 16-digit hex
         row = conn.execute(
-            "SELECT start_ea FROM blocks WHERE snapshot_id=? AND serial=0",
+            "SELECT start_ea_hex, start_ea_i64 FROM blocks "
+            "WHERE snapshot_id=? AND serial=0",
             (snap_id,),
         ).fetchone()
-        assert row[0] < 0  # stored as signed negative
+        assert row[0] == "0xffffffffffffff80"  # hex text
+        assert row[1] < 0  # stored as signed negative
 
         irow = conn.execute(
-            "SELECT ea, src_l_value FROM instructions "
-            "WHERE snapshot_id=? AND block_serial=0",
+            "SELECT ea_hex, ea_i64, src_l_value_hex, src_l_value_i64 "
+            "FROM instructions WHERE snapshot_id=? AND block_serial=0",
             (snap_id,),
         ).fetchone()
-        assert irow[0] < 0  # ea stored as signed negative
-        assert irow[1] < 0  # large immediate stored as signed negative
+        assert irow[0] == "0xffffffffffffff80"  # ea hex
+        assert irow[1] < 0  # ea signed negative
+        assert irow[2] == "0xc5fb34a1d9a6e315"  # immediate hex
+        assert irow[3] < 0  # large immediate signed negative
 
 
 # ── Task 3: Strategy metadata writer tests ───────────────────────────────
@@ -238,7 +243,8 @@ class TestSnapshotDag:
         create_tables(conn)
         # Need a snapshot row first
         conn.execute(
-            "INSERT INTO snapshots VALUES (1, 'test', 0x1000, 'GLBOPT1', 3, 0.0)"
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
         )
 
         nodes = [
@@ -277,7 +283,8 @@ class TestSnapshotDag:
         conn = sqlite3.connect(":memory:")
         create_tables(conn)
         conn.execute(
-            "INSERT INTO snapshots VALUES (1, 'test', 0x1000, 'GLBOPT1', 3, 0.0)"
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
         )
 
         bad_edge = DagEdge(0, None, None, "BOGUS_KIND")
@@ -288,7 +295,8 @@ class TestSnapshotDag:
         conn = sqlite3.connect(":memory:")
         create_tables(conn)
         conn.execute(
-            "INSERT INTO snapshots VALUES (1, 'test', 0x1000, 'GLBOPT1', 3, 0.0)"
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
         )
 
         edge = DagEdge(
@@ -308,7 +316,8 @@ class TestSnapshotModifications:
         conn = sqlite3.connect(":memory:")
         create_tables(conn)
         conn.execute(
-            "INSERT INTO snapshots VALUES (1, 'test', 0x1000, 'GLBOPT1', 3, 0.0)"
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
         )
 
         mods = [
@@ -351,7 +360,8 @@ class TestSnapshotModifications:
         conn = sqlite3.connect(":memory:")
         create_tables(conn)
         conn.execute(
-            "INSERT INTO snapshots VALUES (1, 'test', 0x1000, 'GLBOPT1', 3, 0.0)"
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
         )
         snapshot_modifications(conn, 1, [])
         count = conn.execute(
@@ -365,7 +375,8 @@ class TestSnapshotReachability:
         conn = sqlite3.connect(":memory:")
         create_tables(conn)
         conn.execute(
-            "INSERT INTO snapshots VALUES (1, 'test', 0x1000, 'GLBOPT1', 10, 0.0)"
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 10, 0.0)"
         )
 
         all_serials = {0, 1, 2, 3, 4}
@@ -399,7 +410,8 @@ class TestSnapshotReachability:
         conn = sqlite3.connect(":memory:")
         create_tables(conn)
         conn.execute(
-            "INSERT INTO snapshots VALUES (1, 'test', 0x1000, 'GLBOPT1', 3, 0.0)"
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
         )
         snapshot_reachability(conn, 1, {0, 1, 2})
         rows = conn.execute(
@@ -409,6 +421,40 @@ class TestSnapshotReachability:
         assert len(rows) == 3
         # All defaults: not bst, not reachable, not gutted, not claimed
         assert all(row[1:] == (0, 0, 0, 0) for row in rows)
+
+
+class TestDual:
+    """Tests for _dual helper that returns (hex_text, signed_i64) pairs."""
+
+    def test_none_returns_none_pair(self) -> None:
+        assert _dual(None) == (None, None)
+
+    def test_small_value(self) -> None:
+        h, i = _dual(0x1000)
+        assert h == "0x0000000000001000"
+        assert i == 0x1000
+
+    def test_large_unsigned(self) -> None:
+        h, i = _dual(0xFFFFFFFFFFFFFF80)
+        assert h == "0xffffffffffffff80"
+        assert i == -128
+
+    def test_max_unsigned(self) -> None:
+        h, i = _dual(0xFFFFFFFFFFFFFFFF)
+        assert h == "0xffffffffffffffff"
+        assert i == -1
+
+    def test_zero(self) -> None:
+        h, i = _dual(0)
+        assert h == "0x0000000000000000"
+        assert i == 0
+
+    def test_hex_sorting_matches_numeric_sorting(self) -> None:
+        """Verify that lexicographic sort of hex strings matches unsigned numeric sort."""
+        values = [0x0, 0x100, 0x7FFFFFFFFFFFFFFF, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF]
+        hex_strs = [_dual(v)[0] for v in values]
+        # Already in ascending order; sort by hex string should preserve order
+        assert hex_strs == sorted(hex_strs)
 
 
 class TestSafeInt:

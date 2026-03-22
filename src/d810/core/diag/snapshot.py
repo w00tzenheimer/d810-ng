@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 
 _SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
+_MASK64 = 0xFFFFFFFFFFFFFFFF
 
 
 def _safe_int(val: int | None) -> int | None:
@@ -16,6 +17,20 @@ def _safe_int(val: int | None) -> int | None:
     if val > _SIGNED64_MAX:
         return val - (1 << 64)
     return val
+
+
+def _dual(val: int | None) -> tuple[str | None, int | None]:
+    """Return (hex_text, signed_i64) pair for an unsigned 64-bit value.
+
+    The hex column is fixed-width 16-digit lowercase so that lexicographic
+    sort matches numeric sort.  The i64 column stores the signed
+    representation for numeric filtering/sorting in SQL.
+    """
+    if val is None:
+        return (None, None)
+    hex_text = f"0x{val & _MASK64:016x}"
+    i64 = _safe_int(val)
+    return (hex_text, i64)
 
 
 @dataclass
@@ -191,34 +206,39 @@ def snapshot_mba(
     Returns:
         The snapshot_id of the newly created row.
     """
+    func_hex, func_i64 = _dual(func_ea)
     cursor = conn.execute(
-        "INSERT INTO snapshots (label, func_ea, maturity, block_count, timestamp) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (label, _safe_int(func_ea), maturity, len(blocks), time.time()),
+        "INSERT INTO snapshots "
+        "(label, func_ea_hex, func_ea_i64, maturity, block_count, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (label, func_hex, func_i64, maturity, len(blocks), time.time()),
     )
     snap_id = cursor.lastrowid
     assert snap_id is not None
 
     # Bulk insert blocks
-    block_rows = [
-        (
+    block_rows = []
+    for b in blocks:
+        s_hex, s_i64 = _dual(b.start_ea)
+        e_hex, e_i64 = _dual(b.end_ea)
+        block_rows.append((
             snap_id,
             b.serial,
             b.block_type,
             b.type_name,
-            _safe_int(b.start_ea),
-            _safe_int(b.end_ea),
+            s_hex,
+            s_i64,
+            e_hex,
+            e_i64,
             b.nsucc,
             b.npred,
             json.dumps(b.succs),
             json.dumps(b.preds),
             len(b.instructions),
             b.meta,
-        )
-        for b in blocks
-    ]
+        ))
     conn.executemany(
-        "INSERT INTO blocks VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO blocks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         block_rows,
     )
 
@@ -226,11 +246,15 @@ def snapshot_mba(
     insn_rows = []
     for b in blocks:
         for insn in b.instructions:
+            ea_hex, ea_i64 = _dual(insn.ea)
+            sl_hex, sl_i64 = _dual(insn.src_l_value)
+            sr_hex, sr_i64 = _dual(insn.src_r_value)
             insn_rows.append((
                 snap_id,
                 b.serial,
                 insn.index,
-                _safe_int(insn.ea),
+                ea_hex,
+                ea_i64,
                 insn.opcode,
                 insn.opcode_name,
                 insn.dest_type,
@@ -238,16 +262,19 @@ def snapshot_mba(
                 insn.dest_size,
                 insn.src_l_type,
                 _safe_int(insn.src_l_stkoff),
-                _safe_int(insn.src_l_value),
+                sl_hex,
+                sl_i64,
                 insn.src_r_type,
                 _safe_int(insn.src_r_stkoff),
-                _safe_int(insn.src_r_value),
+                sr_hex,
+                sr_i64,
                 insn.dstr,
                 insn.meta,
             ))
     if insn_rows:
         conn.executemany(
-            "INSERT INTO instructions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO instructions VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             insn_rows,
         )
 
@@ -269,38 +296,41 @@ def snapshot_dag(
         nodes: List of DagNode dataclasses.
         edges: List of DagEdge dataclasses.
     """
-    node_rows = [
-        (
+    node_rows = []
+    for n in nodes:
+        st_hex, st_i64 = _dual(n.state)
+        node_rows.append((
             snapshot_id,
-            _safe_int(n.state),
-            n.state_hex,
+            st_hex,
+            st_i64,
             n.entry_block,
             n.classification,
             n.shared_suffix,
-        )
-        for n in nodes
-    ]
+        ))
     conn.executemany(
         "INSERT INTO dag_nodes VALUES (?,?,?,?,?,?)",
         node_rows,
     )
 
-    edge_rows = [
-        (
+    edge_rows = []
+    for e in edges:
+        ss_hex, ss_i64 = _dual(e.source_state)
+        ts_hex, ts_i64 = _dual(e.target_state)
+        edge_rows.append((
             snapshot_id,
             e.edge_id,
-            _safe_int(e.source_state),
-            _safe_int(e.target_state),
+            ss_hex,
+            ss_i64,
+            ts_hex,
+            ts_i64,
             e.edge_kind,
             e.source_block,
             e.source_arm,
             e.target_entry,
             e.ordered_path,
-        )
-        for e in edges
-    ]
+        ))
     conn.executemany(
-        "INSERT INTO dag_edges VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO dag_edges VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         edge_rows,
     )
 
@@ -319,23 +349,24 @@ def snapshot_modifications(
         snapshot_id: The snapshot to associate with.
         modifications: List of Modification dataclasses.
     """
-    rows = [
-        (
+    rows = []
+    for m in modifications:
+        ws_hex, ws_i64 = _dual(m.write_site_ea)
+        rows.append((
             snapshot_id,
             m.mod_index,
             m.mod_type,
             m.source_block,
             m.target_block,
             m.old_target,
-            _safe_int(m.write_site_ea),
+            ws_hex,
+            ws_i64,
             m.write_site_blk,
             m.status,
             m.reason,
-        )
-        for m in modifications
-    ]
+        ))
     conn.executemany(
-        "INSERT INTO modifications VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO modifications VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         rows,
     )
     conn.commit()

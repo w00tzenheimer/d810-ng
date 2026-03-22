@@ -142,8 +142,8 @@ def return_paths(
 
         results.append({
             "edge_id": edge["edge_id"],
-            "source_state": edge["source_state"],
-            "target_state": edge["target_state"],
+            "source_state": edge["source_state_hex"],
+            "target_state": edge["target_state_hex"],
             "path_serials": path_serials,
             "hops": hops,
         })

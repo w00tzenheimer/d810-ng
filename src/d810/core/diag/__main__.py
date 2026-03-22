@@ -99,8 +99,7 @@ def _format_return_paths(paths: list[dict]) -> str:
     """Format return-paths query output."""
     lines: list[str] = []
     for p in paths:
-        src = p.get("source_state")
-        src_hex = f"0x{src:X}" if src is not None else "None"
+        src_hex = p.get("source_state") or "None"
         lines.append(f"edge[{p['edge_id']}] src={src_hex} CONDITIONAL_RETURN")
         lines.append(f"  path={p['path_serials']}")
         for hop in p.get("hops", []):

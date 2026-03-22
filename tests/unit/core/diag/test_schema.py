@@ -34,10 +34,12 @@ def test_json_extract_on_meta_columns():
     create_tables(conn)
     # Insert a block with JSON meta containing valranges
     conn.execute(
-        "INSERT INTO snapshots VALUES (1, 'test', 0x1000, 'GLBOPT1', 3, 0.0)"
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
     )
     conn.execute(
-        "INSERT INTO blocks VALUES (1, 206, 2, 'BLT_2WAY', NULL, NULL, 2, 2, "
+        "INSERT INTO blocks VALUES "
+        "(1, 206, 2, 'BLT_2WAY', NULL, NULL, NULL, NULL, 2, 2, "
         "'[207,208]', '[62,204]', 1, ?)",
         ('{"valranges": {"0x3C": "==432DC789"}, "flags": ["MBL_GOTO"]}',),
     )
@@ -60,11 +62,13 @@ def test_edge_kind_check_constraint_rejects_invalid():
     conn = sqlite3.connect(":memory:")
     create_tables(conn)
     conn.execute(
-        "INSERT INTO snapshots VALUES (1, 'test', 0x1000, 'GLBOPT1', 3, 0.0)"
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 3, 0.0)"
     )
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
-            "INSERT INTO dag_edges VALUES (1, 1, NULL, NULL, 'INVALID_KIND', "
+            "INSERT INTO dag_edges VALUES "
+            "(1, 1, NULL, NULL, NULL, NULL, 'INVALID_KIND', "
             "NULL, NULL, NULL, '[]')"
         )
 
