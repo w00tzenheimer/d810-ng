@@ -121,6 +121,30 @@ def _make_all_values(size: int) -> object:
     return vr
 
 
+def _resolve_singleton(mop, env: ValrangeEnv) -> Optional[int]:
+    """Return the singleton constant value for *mop*, or None.
+
+    Handles three cases:
+    - ``mop_n`` (immediate): return the literal value.
+    - ``mop_r`` or ``mop_S`` with a singleton in *env*: extract via
+      ``valrng_t.cvt_to_single_value()``.
+    - Otherwise: return None.
+    """
+    if mop is None:
+        return None
+    if mop.t == ida_hexrays.mop_n:
+        return mop.nnn.value
+    key = _extract_key_from_mop(mop)
+    if key is not None and key in env:
+        vr = env[key]
+        if vr is TOP or vr is BOTTOM:
+            return None
+        val = ida_hexrays.sval_t()
+        if vr.cvt_to_single_value(val):
+            return int(val.value)
+    return None
+
+
 def _extract_key_from_mop(mop) -> Optional[ValrangeKey]:
     """Extract a ValrangeKey from a microcode operand, or None."""
     if mop is None:
@@ -380,6 +404,34 @@ def _transfer_single_insn(ins, env: ValrangeEnv) -> None:
         vr.set_eq(ins.l.nnn.value)
         env[key] = vr
         return
+
+    # GEN: arithmetic with two known-constant operands
+    if ins.opcode in (
+        ida_hexrays.m_add,
+        ida_hexrays.m_sub,
+        ida_hexrays.m_xor,
+        ida_hexrays.m_and,
+        ida_hexrays.m_or,
+    ):
+        l_val = _resolve_singleton(ins.l, env)
+        r_val = _resolve_singleton(ins.r, env)
+        if l_val is not None and r_val is not None:
+            mask = (1 << (key.size * 8)) - 1
+            if ins.opcode == ida_hexrays.m_add:
+                result = (l_val + r_val) & mask
+            elif ins.opcode == ida_hexrays.m_sub:
+                result = (l_val - r_val) & mask
+            elif ins.opcode == ida_hexrays.m_xor:
+                result = (l_val ^ r_val) & mask
+            elif ins.opcode == ida_hexrays.m_and:
+                result = (l_val & r_val) & mask
+            elif ins.opcode == ida_hexrays.m_or:
+                result = (l_val | r_val) & mask
+            vr = ida_hexrays.valrng_t(key.size)
+            vr.set_eq(result)
+            env[key] = vr
+            return
+        # Fall through to KILL if operands aren't resolved
 
     # KILL: destination is overwritten by a non-constant → remove constraint.
     env.pop(key, None)
