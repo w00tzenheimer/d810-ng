@@ -1965,122 +1965,127 @@ class StateWriteReconstructionStrategy:
                     return_skipped.append((src_serial, "empty_ordered_path"))
                     continue
 
-                # Find the return target: the first non-BST block on the
-                # path AFTER the source block.  Fall back to the last
-                # non-BST block on the path.
+                # Multi-hop walk: walk consecutive pairs in ordered_path
+                # and emit a redirect at the first broken hop.
                 ordered = tuple(int(s) for s in edge.ordered_path)
-                past_source = False
-                wire_target: int | None = None
-                for serial in ordered:
-                    if serial == src_serial:
-                        past_source = True
-                        continue
-                    if past_source and serial not in _bst_set:
-                        wire_target = serial
-                        break
-                # Fallback: last non-BST block that is not the source
-                if wire_target is None:
-                    for serial in reversed(ordered):
-                        if serial != src_serial and serial not in _bst_set:
-                            wire_target = serial
-                            break
 
-                if wire_target is None:
-                    return_skipped.append((src_serial, "no_wire_target"))
+                if len(ordered) < 2:
+                    return_skipped.append((src_serial, "path_too_short"))
                     continue
 
-                block = flow_graph.get_block(src_serial)
-                if block is None:
-                    return_skipped.append((src_serial, "block_not_found"))
-                    continue
+                hop_emitted = False
+                for hop_idx in range(len(ordered) - 1):
+                    from_serial = ordered[hop_idx]
+                    expected_next = ordered[hop_idx + 1]
 
-                # --- 1-way source block ---
-                if block.nsucc == 1:
-                    if src_serial in claimed_sources:
+                    # Skip BST blocks — gutted, not actionable
+                    if from_serial in _bst_set:
+                        continue
+
+                    # Skip if already claimed by another pass
+                    if from_serial in claimed_sources:
                         return_skipped.append(
-                            (src_serial, "claimed_1way"),
+                            (from_serial, "claimed_hop"),
                         )
                         continue
-                    old_target = int(block.succs[0])
-                    if old_target == wire_target:
+
+                    from_block = flow_graph.get_block(from_serial)
+                    if from_block is None:
                         return_skipped.append(
-                            (src_serial, "already_wired_1way"),
+                            (from_serial, "block_not_found_hop"),
                         )
                         continue
-                    # Redirect to wire_target whether old_target is BST
-                    # or a wrong non-BST block (e.g. m_xdu artifact).
-                    artifact_note = ""
-                    if old_target not in _bst_set:
-                        artifact_note = (
-                            f", artifact bypass blk[{old_target}]"
-                        )
-                    return_mods.append(
-                        builder.goto_redirect(
-                            source_block=src_serial,
-                            target_block=wire_target,
-                            old_target=old_target,
-                        )
-                    )
-                    claimed_sources.add(src_serial)
-                    logger.info(
-                        "RECON RETURN: wire blk[%d] -> blk[%d] "
-                        "(return path, 1-way%s)",
-                        src_serial, wire_target, artifact_note,
-                    )
 
-                # --- 2-way source block ---
-                elif block.nsucc == 2:
-                    # Determine which arm to wire.  Prefer the arm
-                    # indicated by source_anchor.branch_arm; if not
-                    # available, pick the arm pointing into the BST.
-                    candidate_arms: list[int] = []
-                    if src_arm is not None:
-                        candidate_arms = [src_arm]
-                    else:
-                        candidate_arms = [0, 1]
-
-                    wired = False
-                    for arm in candidate_arms:
-                        if arm >= block.nsucc:
+                    # --- 1-way hop block ---
+                    if from_block.nsucc == 1:
+                        old_target = int(from_block.succs[0])
+                        if old_target == expected_next:
+                            # Hop already correct, continue walking
                             continue
-                        arm_target = int(block.succs[arm])
-                        if arm_target == wire_target:
-                            # This arm already reaches the return block
-                            return_skipped.append(
-                                (src_serial, f"already_wired_arm{arm}"),
-                            )
-                            wired = True
-                            break
-                        # Arm points to wrong target (BST or non-BST
-                        # artifact like m_xdu block) — wire it to the
-                        # return corridor.
                         artifact_note = ""
-                        if arm_target not in _bst_set:
+                        if old_target not in _bst_set:
                             artifact_note = (
-                                f", artifact bypass blk[{arm_target}]"
+                                f", artifact bypass blk[{old_target}]"
                             )
                         return_mods.append(
-                            builder.edge_redirect(
-                                source_block=src_serial,
-                                target_block=wire_target,
-                                old_target=arm_target,
+                            builder.goto_redirect(
+                                source_block=from_serial,
+                                target_block=expected_next,
+                                old_target=old_target,
                             )
                         )
-                        claimed_sources.add(src_serial)
+                        claimed_sources.add(from_serial)
                         logger.info(
-                            "RECON RETURN: wire blk[%d].arm%d -> "
-                            "blk[%d] (return path, 2-way%s)",
-                            src_serial, arm, wire_target, artifact_note,
+                            "RECON RETURN: wire blk[%d] -> blk[%d] "
+                            "(return path hop %d/%d, 1-way%s)",
+                            from_serial, expected_next,
+                            hop_idx, len(ordered) - 1, artifact_note,
                         )
-                        wired = True
-                        break
-                    if not wired:
+                        hop_emitted = True
+                        break  # one redirect per edge
+
+                    # --- 2-way hop block ---
+                    elif from_block.nsucc == 2:
+                        # For the first hop (from_serial == src_serial),
+                        # prefer the arm indicated by source_anchor.
+                        # For later hops, check both arms.
+                        if from_serial == src_serial and src_arm is not None:
+                            candidate_arms: list[int] = [src_arm]
+                        else:
+                            candidate_arms = [0, 1]
+
+                        hop_wired = False
+                        for arm in candidate_arms:
+                            if arm >= from_block.nsucc:
+                                continue
+                            arm_target = int(from_block.succs[arm])
+                            if arm_target == expected_next:
+                                # This arm already correct, continue walk
+                                hop_wired = True
+                                break
+                            # Arm points to wrong target — wire it
+                            artifact_note = ""
+                            if arm_target not in _bst_set:
+                                artifact_note = (
+                                    f", artifact bypass blk[{arm_target}]"
+                                )
+                            return_mods.append(
+                                builder.edge_redirect(
+                                    source_block=from_serial,
+                                    target_block=expected_next,
+                                    old_target=arm_target,
+                                )
+                            )
+                            claimed_sources.add(from_serial)
+                            logger.info(
+                                "RECON RETURN: wire blk[%d].arm%d -> "
+                                "blk[%d] (return path hop %d/%d, 2-way%s)",
+                                from_serial, arm, expected_next,
+                                hop_idx, len(ordered) - 1, artifact_note,
+                            )
+                            hop_wired = True
+                            hop_emitted = True
+                            break
+                        if hop_emitted:
+                            break  # one redirect per edge
+                        if not hop_wired:
+                            # Neither arm matched — check if either arm
+                            # already reaches expected_next (both arms
+                            # were not in candidate_arms).
+                            return_skipped.append(
+                                (from_serial, "no_eligible_arm_hop"),
+                            )
+                            continue
+                    else:
                         return_skipped.append(
-                            (src_serial, "no_eligible_arm"),
+                            (from_serial,
+                             f"unexpected_nsucc_{from_block.nsucc}_hop"),
                         )
-                else:
+                        continue
+
+                if not hop_emitted:
                     return_skipped.append(
-                        (src_serial, f"unexpected_nsucc_{block.nsucc}"),
+                        (src_serial, "all_hops_correct_or_skipped"),
                     )
 
             if return_mods:
