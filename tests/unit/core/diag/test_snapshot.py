@@ -148,6 +148,21 @@ class TestSnapshotMba:
         ).fetchone()
         assert row[0] == "post_apply"
 
+    def test_phase_post_d810_stored(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        snapshot_mba(
+            conn,
+            mock_mba_3_blocks,
+            label="test",
+            func_ea=0x1000,
+            phase="post_d810",
+        )
+        row = conn.execute(
+            "SELECT phase FROM snapshots WHERE id=1"
+        ).fetchone()
+        assert row[0] == "post_d810"
+
     def test_phase_defaults_to_unknown(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
         conn = sqlite3.connect(":memory:")
         create_tables(conn)

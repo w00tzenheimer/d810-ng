@@ -89,7 +89,7 @@ def test_phase_check_constraint_accepts_valid():
     """Verify CHECK constraint accepts all valid phase values."""
     conn = sqlite3.connect(":memory:")
     create_tables(conn)
-    valid_phases = ['pre_d810', 'post_apply', 'post_gut_wire', 'post_pipeline', 'unknown']
+    valid_phases = ['pre_d810', 'post_apply', 'post_gut_wire', 'post_pipeline', 'post_d810', 'unknown']
     for i, phase in enumerate(valid_phases):
         conn.execute(
             "INSERT INTO snapshots VALUES "
@@ -97,7 +97,7 @@ def test_phase_check_constraint_accepts_valid():
             (i + 1, phase),
         )
     count = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
-    assert count == 5
+    assert count == 6
 
 
 def test_var_writes_view_exists():

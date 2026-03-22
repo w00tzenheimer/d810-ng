@@ -836,10 +836,55 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     int(self.current_maturity),
                 )
 
+            # --- Diagnostic: post_d810 snapshot for the PREVIOUS maturity ---
+            if self.current_maturity is not None:
+                try:
+                    from d810.core.diag import get_diag_db
+                    from d810.core.diag.mba_serializer import mba_to_block_snapshots
+                    from d810.core.diag.snapshot import snapshot_mba as _snap_mba
+
+                    _prev_mat_name = maturity_to_string(self.current_maturity)
+                    _diag_conn = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
+                    if _diag_conn is not None:
+                        _snap_blocks = mba_to_block_snapshots(mba)
+                        _snap_mba(
+                            _diag_conn,
+                            _snap_blocks,
+                            label=f"maturity_{_prev_mat_name}_post_d810",
+                            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                            maturity=_prev_mat_name,
+                            phase="post_d810",
+                        )
+                        _diag_conn.close()
+                except Exception:
+                    pass  # diagnostic, never gates decompilation
+
             self.current_maturity = mba.maturity
             self._pipeline_just_fired = False
             self.reset_pass_counter()
             self._invalidate_flow_context("maturity changed")
+
+            # --- Diagnostic: pre_d810 snapshot for the NEW maturity ---
+            try:
+                from d810.core.diag import get_diag_db
+                from d810.core.diag.mba_serializer import mba_to_block_snapshots
+                from d810.core.diag.snapshot import snapshot_mba as _snap_mba
+
+                _new_mat_name = maturity_to_string(self.current_maturity)
+                _diag_conn = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
+                if _diag_conn is not None:
+                    _snap_blocks = mba_to_block_snapshots(mba)
+                    _snap_mba(
+                        _diag_conn,
+                        _snap_blocks,
+                        label=f"maturity_{_new_mat_name}_pre_d810",
+                        func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                        maturity=_new_mat_name,
+                        phase="pre_d810",
+                    )
+                    _diag_conn.close()
+            except Exception:
+                pass  # diagnostic, never gates decompilation
 
             # Recon: reset state when a new function is decompiled, then
             # fire microcode collectors at this maturity. No-op when recon is

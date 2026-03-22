@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
     func_ea_hex     TEXT NOT NULL,
     func_ea_i64     INTEGER NOT NULL,
     maturity        TEXT NOT NULL,
-    phase           TEXT NOT NULL DEFAULT 'unknown' CHECK(phase IN ('pre_d810', 'post_apply', 'post_gut_wire', 'post_pipeline', 'unknown')),
+    phase           TEXT NOT NULL DEFAULT 'unknown' CHECK(phase IN ('pre_d810', 'post_apply', 'post_gut_wire', 'post_pipeline', 'post_d810', 'unknown')),
     block_count     INTEGER NOT NULL,
     timestamp       REAL NOT NULL
 );
