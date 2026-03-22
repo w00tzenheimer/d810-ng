@@ -515,6 +515,7 @@ class TransactionalExecutor:
                     label=f"{fragment.strategy_name}_post_apply",
                     func_ea=self.mba.entry_ea,
                     maturity="MMAT_GLBOPT1",
+                    phase="post_apply",
                 )
                 diag_db.close()
         except Exception:
