@@ -72,7 +72,8 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
     if t == 2:  # mop_n
         nnn = mop.nnn
         return CfgMopSnapshot(t=t, size=size, value=int(nnn.value) if nnn is not None else 0)
-    if t == 3:  # mop_S / mop_str (stack var)
+    _mop_S = getattr(ida_hexrays, "mop_S", 5)
+    if t == _mop_S or t == 3:  # mop_S (stack var) — IDA 9.x: 5, fallback: 3
         s = mop.s
         return CfgMopSnapshot(t=t, size=size, stkoff=s.off if s is not None else None)
     if t == 1:  # mop_r (register)

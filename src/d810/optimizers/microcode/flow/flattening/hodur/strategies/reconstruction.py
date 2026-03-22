@@ -147,6 +147,17 @@ class StateWriteReconstructionStrategy:
         artifact_blocks: set[int] = set()
         for serial, blk in flow_graph.blocks.items():
             for insn in blk.insn_snapshots:
+                # Diagnostic: log first instruction of target blocks
+                if serial in (27, 41, 47, 71, 207) and insn is blk.insn_snapshots[0]:
+                    logger.info(
+                        "RECON RETURN: classify blk[%d] insn0: "
+                        "opcode=%s l.t=%s l.stkoff=%s d.t=%s d.stkoff=%s",
+                        serial, insn.opcode,
+                        getattr(getattr(insn, "l", None), "t", "?"),
+                        getattr(getattr(insn, "l", None), "stkoff", "?"),
+                        getattr(getattr(insn, "d", None), "t", "?"),
+                        getattr(getattr(insn, "d", None), "stkoff", "?"),
+                    )
                 # Pattern 1: m_xdu with src=state_var, dest=other stkvar
                 if insn.opcode == m_xdu:
                     l_op = insn.l
@@ -2021,6 +2032,13 @@ class StateWriteReconstructionStrategy:
             artifact_return_blocks: set[int] = set()
             if state_var_stkoff is not None:
                 _state_consts = sm.state_constants if sm is not None else set()
+                logger.info(
+                    "RECON RETURN: classifying artifacts: "
+                    "state_var_stkoff=%s, flow_graph blocks=%d, "
+                    "state_constants count=%d",
+                    state_var_stkoff, len(flow_graph.blocks),
+                    len(_state_consts),
+                )
                 artifact_return_blocks = self._classify_artifact_return_blocks(
                     flow_graph, state_var_stkoff, _state_consts,
                 )
@@ -2028,6 +2046,11 @@ class StateWriteReconstructionStrategy:
                     logger.info(
                         "RECON RETURN: artifact return blocks: %s",
                         sorted(artifact_return_blocks),
+                    )
+                else:
+                    logger.info(
+                        "RECON RETURN: NO artifact blocks found "
+                        "(classifier returned empty set)",
                     )
 
             # ------------------------------------------------------------------
