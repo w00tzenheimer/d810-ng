@@ -2055,21 +2055,17 @@ class StateWriteReconstructionStrategy:
                 # NOT the dispatcher or unrelated shared blocks.
                 suffix_entry_serial: int | None = None
                 anchor_serial: int | None = None
-                if node_shared_suffix and len(ordered) >= 2:
-                    # The terminal is the last block (BLT_STOP).
-                    # The suffix entry is the node-local suffix block
-                    # that is closest to the handler (lowest index in
-                    # topological order before the terminal).
+                if len(ordered) >= 2:
                     terminal = ordered[-1]
-                    # Filter: prefer suffix blocks in the common return
-                    # corridor.  Fall back to node-local suffix blocks
-                    # that are not dispatcher/BST/terminal.
+                    # Use the common return corridor directly (not per-node
+                    # suffix).  The corridor entry is the lowest-serial
+                    # block in the corridor that is not the terminal.
                     corridor_candidates = sorted(
-                        b for b in node_shared_suffix
-                        if b in common_return_corridor
-                        and b != terminal
+                        b for b in common_return_corridor
+                        if b != terminal
                     )
                     if not corridor_candidates:
+                        # Fall back to node-local suffix
                         corridor_candidates = sorted(
                             b for b in node_shared_suffix
                             if b != terminal
