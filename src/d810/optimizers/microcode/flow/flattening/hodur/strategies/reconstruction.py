@@ -139,10 +139,10 @@ class StateWriteReconstructionStrategy:
         Returns:
             Set of block serials classified as artifact return blocks.
         """
-        MOP_N = int(getattr(ida_hexrays, "mop_n", 2))
-        MOP_S = int(getattr(ida_hexrays, "mop_S", 5))
-        m_xdu = int(getattr(ida_hexrays, "m_xdu", 9))
-        m_mov = int(getattr(ida_hexrays, "m_mov", 4))
+        MOP_N = int(ida_hexrays.mop_n)
+        MOP_S = int(ida_hexrays.mop_S)
+        m_xdu = int(ida_hexrays.m_xdu)
+        m_mov = int(ida_hexrays.m_mov)
 
         artifact_blocks: set[int] = set()
         for serial, blk in flow_graph.blocks.items():
