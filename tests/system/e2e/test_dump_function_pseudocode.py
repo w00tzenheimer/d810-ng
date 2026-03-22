@@ -473,6 +473,30 @@ class TestDumpFunctionPseudocode:
                 except Exception as e:
                     print(f"\n[dispatcher tree dump failed: {e}]")
 
+                # --- Diagnostic SQLite snapshot for BST dump MBA ---
+                try:
+                    if mba:
+                        from d810.core.diag import get_diag_db
+                        from d810.core.diag.mba_serializer import mba_to_block_snapshots
+                        from d810.core.diag.snapshot import snapshot_mba as _snap_mba
+
+                        _bst_mat = _bst_maturity_name.upper() if _bst_maturity_name else "LVARS"
+                        _diag_conn = get_diag_db(func_ea)
+                        if _diag_conn is not None:
+                            _snap_blocks = mba_to_block_snapshots(mba)
+                            _snap_mba(
+                                _diag_conn,
+                                _snap_blocks,
+                                label=f"dump_bst_{function_name}_{_bst_mat}",
+                                func_ea=func_ea,
+                                maturity=f"MMAT_{_bst_mat}",
+                                phase="pre_d810",
+                            )
+                            _diag_conn.close()
+                            print("[diag snapshot written]")
+                except Exception:
+                    pass  # diagnostic, never gates test
+
     def test_dump_microcode(
         self,
         request,
@@ -576,6 +600,29 @@ class TestDumpFunctionPseudocode:
                         print("\n\n".join(human_readable))
                     if dump_terminal_valranges:
                         _print_terminal_return_valranges(mba, func_ea)
+
+                    # --- Diagnostic SQLite snapshot (gated by D810_DIAG_SNAPSHOT=1) ---
+                    try:
+                        from d810.core.diag import get_diag_db
+                        from d810.core.diag.mba_serializer import mba_to_block_snapshots
+                        from d810.core.diag.snapshot import snapshot_mba as _snap_mba
+
+                        _diag_conn = get_diag_db(func_ea)
+                        if _diag_conn is not None:
+                            _snap_blocks = mba_to_block_snapshots(mba)
+                            _snap_mba(
+                                _diag_conn,
+                                _snap_blocks,
+                                label=f"dump_d810_{function_name}",
+                                func_ea=func_ea,
+                                maturity=data["maturity"],
+                                phase="post_d810",
+                            )
+                            _diag_conn.close()
+                            print("[diag snapshot written]")
+                    except Exception:
+                        pass  # diagnostic, never gates test
+
                     print("=" * 88)
         if dump_d810_maturity:
             # Post-D810 mid-pipeline capture: run decompile with D810 active,
@@ -723,23 +770,61 @@ class TestDumpFunctionPseudocode:
                                 if insn.get("r"):
                                     parts.append(f"{insn['r']}")
                             print(" ".join(parts))
+                    _live_mba = None
                     if dump_human:
                         func = idaapi.get_func(func_ea)
                         mbr = idaapi.mba_ranges_t()
                         mbr.ranges.push_back(idaapi.range_t(func.start_ea, func.end_ea))
                         hf = idaapi.hexrays_failure_t()
-                        mba = idaapi.gen_microcode(
+                        _live_mba = idaapi.gen_microcode(
                             mbr, hf, None, idaapi.DECOMP_NO_WAIT, maturity
                         )
-                        if mba is not None:
+                        if _live_mba is not None:
                             print(f"\n--- HUMAN MICROCODE ({maturity_name}) ---")
                             header = function_name or f"sub_{func_ea:x}"
                             print(
                                 f"; ===== Microcode: {header} @ 0x{func_ea:x}  maturity={maturity_name}  blocks={data['num_blocks']} ====="
                             )
-                            human_readable = mba_to_human_readable(mba)
+                            human_readable = mba_to_human_readable(_live_mba)
                             print("\n\n".join(human_readable))
                             print(f"\n; ===== End microcode: {header} =====")
                             if dump_terminal_valranges:
-                                _print_terminal_return_valranges(mba, func_ea)
+                                _print_terminal_return_valranges(_live_mba, func_ea)
+
+                    # --- Diagnostic SQLite snapshot (gated by D810_DIAG_SNAPSHOT=1) ---
+                    try:
+                        from d810.core.diag import get_diag_db
+
+                        _diag_conn = get_diag_db(func_ea)
+                        if _diag_conn is not None:
+                            from d810.core.diag.mba_serializer import mba_to_block_snapshots
+                            from d810.core.diag.snapshot import snapshot_mba as _snap_mba
+
+                            # Re-use the live MBA from human-readable if available,
+                            # otherwise generate one now.
+                            if _live_mba is None:
+                                _func = idaapi.get_func(func_ea)
+                                _mbr = idaapi.mba_ranges_t()
+                                _mbr.ranges.push_back(
+                                    idaapi.range_t(_func.start_ea, _func.end_ea)
+                                )
+                                _hf = idaapi.hexrays_failure_t()
+                                _live_mba = idaapi.gen_microcode(
+                                    _mbr, _hf, None, idaapi.DECOMP_NO_WAIT, maturity
+                                )
+                            if _live_mba is not None:
+                                _snap_blocks = mba_to_block_snapshots(_live_mba)
+                                _snap_mba(
+                                    _diag_conn,
+                                    _snap_blocks,
+                                    label=f"dump_raw_{function_name}_{maturity_name}",
+                                    func_ea=func_ea,
+                                    maturity=f"MMAT_{maturity_name}",
+                                    phase="pre_d810",
+                                )
+                                print("[diag snapshot written]")
+                            _diag_conn.close()
+                    except Exception:
+                        pass  # diagnostic, never gates test
+
                     print("=" * 88)
