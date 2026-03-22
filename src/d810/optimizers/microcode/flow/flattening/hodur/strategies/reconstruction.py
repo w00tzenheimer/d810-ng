@@ -2219,14 +2219,30 @@ class StateWriteReconstructionStrategy:
                             # Arm already correct
                             wired = True
                             break
-                        # Wire this arm to suffix entry
-                        return_mods.append(
-                            builder.edge_redirect(
-                                source_block=anchor_serial,
-                                target_block=suffix_entry_serial,
-                                old_target=arm_target,
+                        # Wire this arm to suffix entry.
+                        # For arm0 (fallthrough), edge_redirect changes the
+                        # jnz target, not the fallthrough.  Use
+                        # conditional_redirect to set both arms explicitly.
+                        other_arm = 1 - arm
+                        other_target = int(anchor_block.succs[other_arm])
+                        if arm == 0:
+                            # Redirect fallthrough to suffix, keep taken
+                            return_mods.append(
+                                builder.conditional_redirect(
+                                    source_block=anchor_serial,
+                                    conditional_target=other_target,
+                                    fallthrough_target=suffix_entry_serial,
+                                )
                             )
-                        )
+                        else:
+                            # Redirect taken to suffix, keep fallthrough
+                            return_mods.append(
+                                builder.edge_redirect(
+                                    source_block=anchor_serial,
+                                    target_block=suffix_entry_serial,
+                                    old_target=arm_target,
+                                )
+                            )
                         claimed_sources.add(anchor_serial)
                         logger.info(
                             "RECON RETURN: wire blk[%d].arm%d -> blk[%d] "
