@@ -28,6 +28,11 @@ from d810.evaluator.hexrays_microcode.chains import (
     find_all_uses_of_stkvar,
     find_reaching_defs_for_stkvar,
 )
+from d810.evaluator.hexrays_microcode.valrange_dataflow import (
+    ValrangeKey,
+    run_valrange_fixpoint,
+)
+from d810.evaluator.hexrays_microcode.forward_dataflow import FixpointResult
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
     ModificationBuilder,
 )
@@ -130,6 +135,20 @@ class DeadStateVariableEliminationStrategy:
         # Collect known state constants for reaching-def override check.
         state_constants = self._collect_state_constants(snapshot)
 
+        # Run valrange fixpoint once for the entire MBA.  The result is
+        # used by _dest_is_non_state_stkvar to reclassify reaching defs
+        # whose source is not a literal constant but whose valrange collapses
+        # to a known state constant.
+        vr_fixpoint: FixpointResult | None = None
+        try:
+            vr_fixpoint = run_valrange_fixpoint(mba)
+            logger.info(
+                "DSVE: valrange fixpoint converged in %d iterations",
+                vr_fixpoint.iterations,
+            )
+        except Exception:
+            logger.info("DSVE: valrange fixpoint failed; falling back to ad-hoc checks")
+
         # BST check nodes read the state var as a comparison operand (m_jnz
         # condition).  Nopping the tail of a 2WAY block causes INTERR 50860
         # because the succset no longer matches the tail instruction type.
@@ -160,6 +179,16 @@ class DeadStateVariableEliminationStrategy:
             if use.block_serial in _bst_node_blocks:
                 logger.debug(
                     "DSVE: skipping NOP in BST node blk[%d] ea=0x%x",
+                    use.block_serial, use.ins_ea,
+                )
+                continue
+
+            # Skip use sites in gutted blocks — after Gut-and-Wire, these
+            # blocks contain only m_nop/m_goto; their DU chain entries are
+            # stale leftovers from pre-gut analysis.
+            if self._is_gutted_block(mba, use.block_serial):
+                logger.debug(
+                    "DSVE: skipping NOP in gutted blk[%d] ea=0x%x",
                     use.block_serial, use.ins_ea,
                 )
                 continue
@@ -210,6 +239,7 @@ class DeadStateVariableEliminationStrategy:
                     mba, use, state_var_stkoff,
                     state_constants=state_constants,
                     state_var_width=state_var_width,
+                    vr_fixpoint=vr_fixpoint,
                 )
                 if skip_reason is not None:
                     logger.warning(
@@ -268,6 +298,43 @@ class DeadStateVariableEliminationStrategy:
             risk_score=0.1,
             metadata={"safeguard_min_required": 1},
         )
+
+    @staticmethod
+    def _is_gutted_block(mba: object, serial: int) -> bool:
+        """Check whether a block has been gutted (all instructions NOPed).
+
+        After Gut-and-Wire, unreachable blocks have their instructions
+        replaced with ``m_nop`` (possibly followed by a trailing ``m_goto``).
+        IDA's DU chains are stale — computed before the gut pass — so they
+        still reference defs in these dead blocks.  This predicate lets
+        DSVE skip such defs.
+
+        Args:
+            mba: An ``ida_hexrays.mba_t`` instance.
+            serial: Block serial number to check.
+
+        Returns:
+            ``True`` if every instruction in the block is ``m_nop`` or
+            ``m_goto`` (i.e., the block has been gutted).
+        """
+        try:
+            blk = mba.get_mblock(serial)  # type: ignore[attr-defined]
+        except (AttributeError, IndexError):
+            return False
+        if blk is None:
+            return False
+        insn = blk.head
+        if insn is None:
+            # Empty block — treat as gutted.
+            return True
+        while insn is not None:
+            if (
+                insn.opcode != ida_hexrays.m_nop
+                and insn.opcode != ida_hexrays.m_goto
+            ):
+                return False
+            insn = insn.next
+        return True
 
     @staticmethod
     def _resolve_stkoff(snapshot: AnalysisSnapshot) -> int | None:
@@ -486,6 +553,108 @@ class DeadStateVariableEliminationStrategy:
     }
 
     @staticmethod
+    def _resolve_def_via_fixpoint(
+        vr_fixpoint: FixpointResult,
+        def_block_serial: int,
+        state_var_stkoff: int,
+        state_var_width: int,
+    ) -> int | None:
+        """Look up the state variable value from the valrange fixpoint result.
+
+        Queries the fixpoint's ``out_states`` for the def block to find
+        whether the state variable has a singleton value after the block's
+        transfer function.  This replaces per-def IDA valrange queries with
+        a single cached fixpoint computation.
+
+        Args:
+            vr_fixpoint: Precomputed fixpoint result from
+                :func:`run_valrange_fixpoint`.
+            def_block_serial: Block serial of the defining instruction.
+            state_var_stkoff: Stack offset of the dead state variable.
+            state_var_width: Operand width in bytes (typically 4).
+
+        Returns:
+            A single concrete integer if the fixpoint resolves the state
+            variable to a singleton value, otherwise ``None``.
+        """
+        state_var_key = ValrangeKey(
+            mop_type=ida_hexrays.mop_S,
+            identifier=state_var_stkoff,
+            size=state_var_width,
+        )
+        out_env = vr_fixpoint.out_states.get(def_block_serial, {})
+        if state_var_key not in out_env:
+            return None
+
+        vr = out_env[state_var_key]
+        try:
+            ok, val = vr.cvt_to_single_value()
+            if ok:
+                return int(val)
+        except (AttributeError, TypeError):
+            # cvt_to_single_value not available; try dstr() parse fallback.
+            pass
+        return None
+
+    @staticmethod
+    def _chase_indirect_stkvar_def(
+        def_blk: object,
+        def_ins: object,
+        source_stkoff: int,
+        state_constants: frozenset[int],
+    ) -> int | None:
+        """Chase one level of indirection through a stack variable copy.
+
+        When the reaching def is ``m_mov %src_stkvar, %state_var``, walk
+        backward in the same block to find the most recent write to
+        ``%src_stkvar``.  If that write is ``m_mov #const, %src_stkvar``
+        and *const* is in *state_constants*, return the constant value.
+
+        Args:
+            def_blk: ``ida_hexrays.mblock_t`` containing the def instruction.
+            def_ins: The defining ``ida_hexrays.minsn_t`` instruction (the
+                ``m_mov %src_stkvar, %state_var`` instruction).
+            source_stkoff: Stack offset of the intermediate source variable.
+            state_constants: Known dispatcher state constant values.
+
+        Returns:
+            The state constant value if the indirect chain resolves,
+            otherwise ``None``.
+        """
+        try:
+            # Walk backward from def_ins to find the latest write to
+            # source_stkoff in this block.
+            prev = def_ins.prev  # type: ignore[union-attr]
+            while prev is not None:
+                # Look for m_mov #const, %src_stkvar
+                if prev.opcode == ida_hexrays.m_mov:
+                    d = prev.d
+                    if (
+                        d is not None
+                        and d.t == ida_hexrays.mop_S
+                        and d.s is not None
+                        and d.s.off == source_stkoff
+                    ):
+                        # Found a write to the source variable.
+                        l = prev.l
+                        if (
+                            l is not None
+                            and l.t == ida_hexrays.mop_n
+                        ):
+                            try:
+                                val = l.nnn.value
+                            except (AttributeError, TypeError):
+                                return None
+                            if (val & 0xFFFFFFFF) in state_constants:
+                                return val
+                        # Non-constant source — stop chasing.
+                        return None
+                prev = prev.prev
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
     def _collect_state_constants(snapshot: AnalysisSnapshot) -> frozenset[int]:
         """Collect all known state constants from the snapshot and BST result.
 
@@ -525,6 +694,7 @@ class DeadStateVariableEliminationStrategy:
         state_var_stkoff: int,
         state_constants: frozenset[int] = frozenset(),
         state_var_width: int = 4,
+        vr_fixpoint: FixpointResult | None = None,
     ) -> tuple[str, int] | None:
         """Check if the instruction writes to a non-state stack variable.
 
@@ -545,6 +715,8 @@ class DeadStateVariableEliminationStrategy:
             state_constants: Known dispatcher state constant values for
                 reaching-def override check.
             state_var_width: Operand width of the state variable in bytes.
+            vr_fixpoint: Precomputed valrange fixpoint result, or ``None``
+                to skip fixpoint-based reclassification.
 
         Returns:
             A ``(opcode_name, dest_stkoff)`` tuple if the guard triggers
@@ -611,8 +783,25 @@ class DeadStateVariableEliminationStrategy:
                     )
 
                     non_const_count = 0
+                    gutted_count = 0
                     for def_site in defs:
+                        # Skip defs from gutted (all-NOP/goto) blocks.
+                        # After Gut-and-Wire, IDA's DU chains are stale
+                        # and still reference defs in dead blocks.
+                        if DeadStateVariableEliminationStrategy._is_gutted_block(
+                            mba, def_site.block_serial,
+                        ):
+                            gutted_count += 1
+                            logger.info(
+                                "DSVE: skipping def at blk[%d] ea=0x%x"
+                                " — gutted block (dead def)",
+                                def_site.block_serial,
+                                def_site.ins_ea,
+                            )
+                            continue
+
                         is_state_const = False
+                        reclassify_method: str | None = None
                         try:
                             def_blk = mba.get_mblock(  # type: ignore[attr-defined]
                                 def_site.block_serial,
@@ -621,7 +810,7 @@ class DeadStateVariableEliminationStrategy:
                                 def_ins = def_blk.head
                                 while def_ins is not None:
                                     if def_ins.ea == def_site.ins_ea:
-                                        # Already NOPed → safe
+                                        # Already NOPed -> safe
                                         if def_ins.opcode == ida_hexrays.m_nop:
                                             is_state_const = True
                                         # m_mov with immediate state constant
@@ -636,6 +825,83 @@ class DeadStateVariableEliminationStrategy:
                                                 val = None
                                             if val is not None and val in state_constants:
                                                 is_state_const = True
+
+                                        # -- Fallback 1: valrange fixpoint --
+                                        # If the def instruction writes to the
+                                        # state variable but the source is not an
+                                        # immediate constant, look up the cached
+                                        # valrange fixpoint to see if the state
+                                        # variable collapses to a singleton known
+                                        # state constant after this block.
+                                        if (
+                                            not is_state_const
+                                            and vr_fixpoint is not None
+                                            and def_ins.d is not None
+                                            and def_ins.d.t == ida_hexrays.mop_S
+                                            and def_ins.d.s is not None
+                                            and def_ins.d.s.off == state_var_stkoff
+                                        ):
+                                            vr_val = DeadStateVariableEliminationStrategy._resolve_def_via_fixpoint(
+                                                vr_fixpoint,
+                                                def_site.block_serial,
+                                                state_var_stkoff,
+                                                state_var_width,
+                                            )
+                                            if (
+                                                vr_val is not None
+                                                and (vr_val & 0xFFFFFFFF)
+                                                in state_constants
+                                            ):
+                                                is_state_const = True
+                                                reclassify_method = "valrange_fixpoint"
+                                                logger.info(
+                                                    "DSVE: reclassified def at"
+                                                    " blk[%d] ea=0x%x as"
+                                                    " state_const via valrange"
+                                                    " fixpoint (value=0x%x)",
+                                                    def_site.block_serial,
+                                                    def_site.ins_ea,
+                                                    vr_val & 0xFFFFFFFF,
+                                                )
+
+                                        # -- Fallback 2: indirect mop_S chase --
+                                        # If the def is ``m_mov %src_stkvar,
+                                        # %state_var`` (mop_S source), walk
+                                        # backward in the same block to find
+                                        # the most recent write to that source
+                                        # variable.  If it is ``m_mov #const,
+                                        # %src_stkvar`` with const in
+                                        # state_constants, reclassify.
+                                        if (
+                                            not is_state_const
+                                            and def_ins.opcode
+                                            == ida_hexrays.m_mov
+                                            and def_ins.l is not None
+                                            and def_ins.l.t
+                                            == ida_hexrays.mop_S
+                                            and def_ins.l.s is not None
+                                        ):
+                                            ind_val = (
+                                                DeadStateVariableEliminationStrategy._chase_indirect_stkvar_def(
+                                                    def_blk,
+                                                    def_ins,
+                                                    def_ins.l.s.off,
+                                                    state_constants,
+                                                )
+                                            )
+                                            if ind_val is not None:
+                                                is_state_const = True
+                                                reclassify_method = "indirect"
+                                                logger.info(
+                                                    "DSVE: reclassified def at"
+                                                    " blk[%d] ea=0x%x as"
+                                                    " state_const via indirect"
+                                                    " (value=0x%x)",
+                                                    def_site.block_serial,
+                                                    def_site.ins_ea,
+                                                    ind_val & 0xFFFFFFFF,
+                                                )
+
                                         break
                                     def_ins = def_ins.next
                         except Exception:
@@ -643,27 +909,40 @@ class DeadStateVariableEliminationStrategy:
 
                         logger.info(
                             "  def in blk[%d] ea=0x%x: opcode=%d"
-                            " (is_state_const=%s)",
+                            " (is_state_const=%s%s)",
                             def_site.block_serial,
                             def_site.ins_ea,
                             def_site.ins_opcode,
                             is_state_const,
+                            " via %s" % reclassify_method
+                            if reclassify_method
+                            else "",
                         )
                         if not is_state_const:
                             non_const_count += 1
 
+                    if gutted_count > 0:
+                        logger.info(
+                            "DSVE: filtered %d/%d reaching defs from"
+                            " gutted blocks for blk[%d]",
+                            gutted_count, len(defs), use.block_serial,
+                        )
+
                     if non_const_count == 0:
                         logger.info(
                             "DSVE guard OVERRIDDEN for blk[%d]: all %d"
-                            " reaching defs are state constants",
+                            " reaching defs are state constants"
+                            " (%d gutted, %d live)",
                             use.block_serial, len(defs),
+                            gutted_count, len(defs) - gutted_count,
                         )
                         return None  # Allow NOP
 
                     logger.info(
                         "DSVE guard PRESERVED for blk[%d]: %d/%d defs"
-                        " are non-constant",
+                        " are non-constant (%d gutted)",
                         use.block_serial, non_const_count, len(defs),
+                        gutted_count,
                     )
                     return skip_tuple
 
