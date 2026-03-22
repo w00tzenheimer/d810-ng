@@ -1961,6 +1961,25 @@ class StateWriteReconstructionStrategy:
 
             return_mods: list = []
             return_skipped: list[tuple[int, str]] = []
+
+            # Precompute the common return corridor: blocks that appear
+            # in ALL CONDITIONAL_RETURN edge paths.  This identifies
+            # blk[217]/blk[218] as the universal return corridor.
+            _ret_paths: list[set[int]] = []
+            for _e in dag.edges:
+                if _e.kind == SemanticEdgeKind.CONDITIONAL_RETURN and _e.ordered_path:
+                    _ret_paths.append({int(s) for s in _e.ordered_path})
+            common_return_corridor: set[int] = set()
+            if _ret_paths:
+                common_return_corridor = _ret_paths[0]
+                for _p in _ret_paths[1:]:
+                    common_return_corridor &= _p
+            if common_return_corridor:
+                logger.info(
+                    "RECON RETURN: common return corridor blocks: %s",
+                    sorted(common_return_corridor),
+                )
+
             for edge in dag.edges:
                 if edge.kind != SemanticEdgeKind.CONDITIONAL_RETURN:
                     continue
@@ -2000,15 +2019,21 @@ class StateWriteReconstructionStrategy:
                     # that is closest to the handler (lowest index in
                     # topological order before the terminal).
                     terminal = ordered[-1]
-                    # Filter: only suffix blocks that are plausible
-                    # return corridor entries (not the dispatcher, not
-                    # BST blocks, and with serial > dispatcher_serial).
+                    # Filter: prefer suffix blocks in the common return
+                    # corridor.  Fall back to node-local suffix blocks
+                    # that are not dispatcher/BST/terminal.
                     corridor_candidates = sorted(
                         b for b in node_shared_suffix
-                        if b != terminal
-                        and b not in _bst_set
-                        and b != dispatcher_serial
+                        if b in common_return_corridor
+                        and b != terminal
                     )
+                    if not corridor_candidates:
+                        corridor_candidates = sorted(
+                            b for b in node_shared_suffix
+                            if b != terminal
+                            and b not in _bst_set
+                            and b != dispatcher_serial
+                        )
                     if corridor_candidates:
                         suffix_entry_serial = corridor_candidates[0]
 
