@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from d810.diag.schema import create_tables
+from d810.core.diag.schema import create_tables
 
 
 def test_create_tables_creates_all_expected_tables():

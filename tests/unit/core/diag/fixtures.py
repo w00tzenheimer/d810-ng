@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from d810.diag.schema import create_tables
+from d810.core.diag.schema import create_tables
 
 
 def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:

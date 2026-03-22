@@ -1,4 +1,4 @@
-"""Tests for the ``python -m d810.diag`` CLI entry point."""
+"""Tests for the ``python -m d810.core.diag`` CLI entry point."""
 from __future__ import annotations
 
 import sqlite3
@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from d810.diag.__main__ import main
-from tests.unit.diag.fixtures import create_sub_7ffd_scenario
+from d810.core.diag.__main__ import main
+from tests.unit.core.diag.fixtures import create_sub_7ffd_scenario
 
 
 @pytest.fixture()
@@ -164,18 +164,18 @@ class TestSnapshotResolution:
 
 
 # ---------------------------------------------------------------------------
-# Subprocess test (validates ``python -m d810.diag`` entry point)
+# Subprocess test (validates ``python -m d810.core.diag`` entry point)
 # ---------------------------------------------------------------------------
 
 
 class TestSubprocess:
     def test_cli_chain_subprocess(self, loaded_db_path: Path):
         result = subprocess.run(
-            [sys.executable, "-m", "d810.diag", "chain",
+            [sys.executable, "-m", "d810.core.diag", "chain",
              "--db", str(loaded_db_path), "131", "174", "176"],
             capture_output=True,
             text=True,
-            env={"PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src")},
+            env={"PYTHONPATH": str(Path(__file__).resolve().parents[4] / "src")},
             timeout=10,
         )
         assert result.returncode == 0, f"stderr: {result.stderr}"
