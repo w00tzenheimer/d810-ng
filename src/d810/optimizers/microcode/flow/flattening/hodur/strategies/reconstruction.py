@@ -1987,34 +1987,36 @@ class StateWriteReconstructionStrategy:
                     }
 
                 # Determine the shared suffix entry block.
-                # Prefer the node's own shared_suffix_blocks (which knows
-                # the correct chain entry, e.g. blk[217]) over scanning
-                # the ordered_path (which may route through artifact blocks
-                # like m_xdu blk[207] and skip the real entry).
-                suffix_lookup = node_shared_suffix or shared_suffix_blocks
+                # Use ONLY the node-local shared_suffix_blocks that are
+                # on the return corridor (predecessors of the last block
+                # in the ordered_path).  The suffix entry is the block
+                # in the suffix set that is a predecessor of the terminal,
+                # NOT the dispatcher or unrelated shared blocks.
                 suffix_entry_serial: int | None = None
-                if suffix_lookup:
-                    # The suffix entry is the lowest-serial block in the
-                    # suffix set that is NOT BLT_STOP.  This is the chain
-                    # entry (e.g., blk[217] with mov var_178 -> var_8).
-                    stop_serial = max(suffix_lookup)  # BLT_STOP = highest
-                    non_stop = sorted(b for b in suffix_lookup if b != stop_serial)
-                    if non_stop:
-                        suffix_entry_serial = non_stop[0]
-                    else:
-                        suffix_entry_serial = stop_serial
+                anchor_serial: int | None = None
+                if node_shared_suffix and len(ordered) >= 2:
+                    # The terminal is the last block (BLT_STOP).
+                    # The suffix entry is the node-local suffix block
+                    # that is closest to the handler (lowest index in
+                    # topological order before the terminal).
+                    terminal = ordered[-1]
+                    # Filter: only suffix blocks that are plausible
+                    # return corridor entries (not the dispatcher, not
+                    # BST blocks, and with serial > dispatcher_serial).
+                    corridor_candidates = sorted(
+                        b for b in node_shared_suffix
+                        if b != terminal
+                        and b not in _bst_set
+                        and b != dispatcher_serial
+                    )
+                    if corridor_candidates:
+                        suffix_entry_serial = corridor_candidates[0]
 
-                    # The anchor is the last block in the ordered_path that
-                    # is NOT in the suffix set and NOT BLT_STOP.
-                    anchor_serial: int | None = None
-                    for blk_serial in ordered:
-                        if blk_serial not in suffix_lookup:
-                            anchor_serial = blk_serial
-                    # If anchor == src_serial and there are intermediate
-                    # blocks, use the source as the anchor (it's the block
-                    # whose arm we need to rewire).
-                    if anchor_serial is None:
-                        anchor_serial = src_serial
+                    # The anchor is the source block itself (it's the
+                    # block whose arm we need to rewire to the corridor).
+                    # For edges like src=blk[206], the anchor IS blk[206]
+                    # — its fallthrough should reach the suffix entry.
+                    anchor_serial = src_serial
 
                 if suffix_entry_serial is None:
                     # No shared suffix info — fall back to simple last-hop
