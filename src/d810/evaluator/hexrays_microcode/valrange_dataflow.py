@@ -139,9 +139,9 @@ def _resolve_singleton(mop, env: ValrangeEnv) -> Optional[int]:
         vr = env[key]
         if vr is TOP or vr is BOTTOM:
             return None
-        val = ida_hexrays.sval_t()
-        if vr.cvt_to_single_value(val):
-            return int(val.value)
+        ok, val = vr.cvt_to_single_value()
+        if ok:
+            return int(val)
     return None
 
 
