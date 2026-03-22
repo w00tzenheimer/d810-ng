@@ -1276,11 +1276,10 @@ def test_state_write_reconstruction_rebuilds_shared_suffix_via_duplication(monke
 
     assert fragment is not None
     assert fragment.modifications == [
-        NopInstructions(block_serial=10, insn_eas=(0x1000,)),
         DuplicateAndRedirect(
             source_serial=10,
             per_pred_targets=((11, 2), (9, 24)),
-        ),
+        )
     ]
     assert fragment.metadata["reconstruction_sites"][0]["emission_mode"] == "duplicate_and_redirect"
 
@@ -1443,11 +1442,10 @@ def test_state_write_reconstruction_groups_multi_pred_shared_tail_duplication(
 
     assert fragment is not None
     assert fragment.modifications == [
-        NopInstructions(block_serial=10, insn_eas=(0x1000,)),
         DuplicateAndRedirect(
             source_serial=10,
             per_pred_targets=((9, 24), (11, 30)),
-        ),
+        )
     ]
     assert {
         site["emission_mode"] for site in fragment.metadata["reconstruction_sites"]
@@ -1609,11 +1607,10 @@ def test_state_write_reconstruction_groups_same_target_two_pred_shared_tail_dupl
 
     assert fragment is not None
     assert fragment.modifications == [
-        NopInstructions(block_serial=10, insn_eas=(0x1000,)),
         DuplicateAndRedirect(
             source_serial=10,
             per_pred_targets=((9, 24), (11, 24)),
-        ),
+        )
     ]
     assert {
         site["emission_mode"] for site in fragment.metadata["reconstruction_sites"]
@@ -1733,11 +1730,10 @@ def test_state_write_reconstruction_rebuilds_conditional_merge_corridor(monkeypa
 
     assert fragment is not None
     assert fragment.modifications == [
-        NopInstructions(block_serial=70, insn_eas=(0x1010,)),
         DuplicateAndRedirect(
             source_serial=70,
             per_pred_targets=((61, 2), (60, 24)),
-        ),
+        )
     ]
 
 

@@ -1292,24 +1292,6 @@ class StateWriteReconstructionStrategy:
             )
             return 0
 
-        # NOP state-write instructions BEFORE duplication so the clone
-        # inherits the already-NOPed block content.  Deduplicate by
-        # (block_serial, insn_ea) in case multiple candidates share a site.
-        seen_nop_sites: set[tuple[int, int]] = set()
-        nopped_count = 0
-        for candidate in ordered_candidates:
-            nop_key = (int(candidate.site.block_serial), int(candidate.site.insn_ea))
-            if nop_key in seen_nop_sites:
-                continue
-            seen_nop_sites.add(nop_key)
-            modifications.append(
-                NopInstructions(
-                    block_serial=nop_key[0],
-                    insn_eas=(nop_key[1],),
-                )
-            )
-            nopped_count += 1
-
         modifications.append(
             builder.duplicate_and_redirect(
                 source_block=shared_block,
@@ -1325,13 +1307,12 @@ class StateWriteReconstructionStrategy:
                 replace(candidate, emission_mode="duplicate_and_redirect"),
             )
         logger.info(
-            "RECON DAG: duplicate-and-redirect %s preds=%s nopped=%d",
+            "RECON DAG: duplicate-and-redirect %s preds=%s",
             blk_label(mba, shared_block),
             [
                 (blk_label(mba, pred), blk_label(mba, target))
                 for pred, target in per_pred_targets
             ],
-            nopped_count,
         )
         return len(ordered_candidates)
 
