@@ -387,11 +387,12 @@ class MicroCodeInterpreter(object):
         # Cache for def-use chain resolutions during the current emulation pass
         self._def_use_cache: dict[tuple, int | None] = {}
         # Resolution strategies (tried in order after env lookup, before def-use chains)
-        # When debug logging is on and no strategies provided, auto-enable SCCP
         if strategies is not None:
             self._strategies: list[MopResolutionStrategy] = strategies
-        elif emulator_log.debug_on:
-            self._strategies = [SCCPStrategy()]
+        # # Auto-enable SCCP when debug logging is on — disabled because it
+        # # changes deobfuscation behavior (different handler resolution paths).
+        # elif emulator_log.debug_on:
+        #     self._strategies = [SCCPStrategy()]
         else:
             self._strategies = []
 
