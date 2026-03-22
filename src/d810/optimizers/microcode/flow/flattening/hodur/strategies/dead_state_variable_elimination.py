@@ -12,8 +12,9 @@ them, preventing stale dispatcher state constants from leaking into the
 decompiled pseudocode.
 
 Family: ``FAMILY_CLEANUP`` -- runs after all other strategies.
-Prerequisites: ``["linearized_flow_graph"]`` -- the active DAG-driven
-linearizer must already have handled state writes and handoffs.
+Prerequisites: ``["state_write_reconstruction"]`` -- the reconstruction pass
+must already have rewritten the semantic handoffs before stale state-variable
+reads are removed.
 """
 from __future__ import annotations
 
@@ -262,7 +263,7 @@ class DeadStateVariableEliminationStrategy:
             family=self.family,
             modifications=modifications,
             ownership=ownership,
-            prerequisites=["linearized_flow_graph"],
+            prerequisites=["state_write_reconstruction"],
             expected_benefit=benefit,
             risk_score=0.1,
             metadata={"safeguard_min_required": 1},

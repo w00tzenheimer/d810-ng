@@ -143,6 +143,7 @@ class StateDagEdge:
     target_label: str
     source_anchor: StateRedirectAnchor
     ordered_path: tuple[int, ...]
+    last_write_site: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -593,11 +594,16 @@ def _build_state_resolver(
         if dispatcher is not None:
             resolved = dispatcher.lookup(state_value)
             if resolved is not None:
-                return int(resolved)
+                resolved_int = int(resolved)
+                # Skip dispatcher serial — it's a routing trampoline, not a handler
+                if resolved_int != report.dispatcher_entry_serial:
+                    return resolved_int
         for handler_serial_inner, (lo, hi) in report.handler_range_map.items():
             if lo is None or hi is None:
                 continue
             if lo <= state_value <= hi:
+                if handler_serial_inner == report.dispatcher_entry_serial:
+                    continue
                 return handler_serial_inner
         return None
 
@@ -898,6 +904,8 @@ def _normalize_alias_nodes(
     flow_graph: FlowGraph,
     *,
     prefer_local_corridors: bool = False,
+    bst_node_blocks: tuple[int, ...] = (),
+    dispatcher: IntervalDispatcher | None = None,
 ) -> tuple[list[StateDagNode], list[StateDagEdge]]:
     real_handler_states = _canonical_exact_handler_states(
         report,
@@ -1045,19 +1053,32 @@ def _normalize_alias_nodes(
         key_updates[node.key] = normalized
 
     normalized_edges: list[StateDagEdge] = []
+    _bst_set = set(bst_node_blocks)
     for edge in edges:
         target_node = key_updates.get(edge.target_key) if edge.target_key is not None else None
+        _resolved_anchor = (
+            target_node.entry_anchor
+            if target_node is not None
+            else edge.target_entry_anchor
+        )
+        if (
+            _resolved_anchor is not None
+            and int(_resolved_anchor) in _bst_set
+            and edge.target_state is not None
+            and dispatcher is not None
+        ):
+            _lookup = dispatcher.lookup(edge.target_state)
+            if _lookup is not None and int(_lookup) not in _bst_set:
+                _resolved_anchor = int(_lookup)
+            else:
+                _resolved_anchor = None  # No valid target
         normalized_edges.append(
             StateDagEdge(
                 kind=edge.kind,
                 source_key=edge.source_key,
                 target_key=edge.target_key,
                 target_state=edge.target_state,
-                target_entry_anchor=(
-                    target_node.entry_anchor
-                    if target_node is not None
-                    else edge.target_entry_anchor
-                ),
+                target_entry_anchor=_resolved_anchor,
                 target_label=(
                     target_node.state_label
                     if target_node is not None
@@ -1065,6 +1086,7 @@ def _normalize_alias_nodes(
                 ),
                 source_anchor=edge.source_anchor,
                 ordered_path=edge.ordered_path,
+                last_write_site=edge.last_write_site,
             )
         )
 
@@ -1079,6 +1101,8 @@ def _normalize_nonhandler_exact_nodes(
     flow_graph: FlowGraph,
     *,
     prefer_local_corridors: bool = False,
+    bst_node_blocks: tuple[int, ...] = (),
+    dispatcher: IntervalDispatcher | None = None,
 ) -> tuple[list[StateDagNode], list[StateDagEdge]]:
     canonical_handler_states = _canonical_exact_handler_states(
         report,
@@ -1255,19 +1279,32 @@ def _normalize_nonhandler_exact_nodes(
         key_updates[node.key] = normalized
 
     normalized_edges: list[StateDagEdge] = []
+    _bst_set = set(bst_node_blocks)
     for edge in edges:
         target_node = key_updates.get(edge.target_key) if edge.target_key is not None else None
+        _resolved_anchor = (
+            target_node.entry_anchor
+            if target_node is not None
+            else edge.target_entry_anchor
+        )
+        if (
+            _resolved_anchor is not None
+            and int(_resolved_anchor) in _bst_set
+            and edge.target_state is not None
+            and dispatcher is not None
+        ):
+            _lookup = dispatcher.lookup(edge.target_state)
+            if _lookup is not None and int(_lookup) not in _bst_set:
+                _resolved_anchor = int(_lookup)
+            else:
+                _resolved_anchor = None  # No valid target
         normalized_edges.append(
             StateDagEdge(
                 kind=edge.kind,
                 source_key=edge.source_key,
                 target_key=edge.target_key,
                 target_state=edge.target_state,
-                target_entry_anchor=(
-                    target_node.entry_anchor
-                    if target_node is not None
-                    else edge.target_entry_anchor
-                ),
+                target_entry_anchor=_resolved_anchor,
                 target_label=(
                     target_node.state_label
                     if target_node is not None
@@ -1275,6 +1312,7 @@ def _normalize_nonhandler_exact_nodes(
                 ),
                 source_anchor=edge.source_anchor,
                 ordered_path=edge.ordered_path,
+                last_write_site=edge.last_write_site,
             )
         )
 
@@ -1399,23 +1437,36 @@ def _promote_range_backed_nodes_to_dispatcher_bodies(
         promoted_by_key[promoted.key] = promoted
 
     promoted_edges: list[StateDagEdge] = []
+    _bst_set = set(bst_node_blocks)
     for edge in edges:
         target_node = (
             promoted_by_key.get(edge.target_key)
             if edge.target_key is not None
             else None
         )
+        _resolved_anchor = (
+            target_node.entry_anchor
+            if target_node is not None
+            else edge.target_entry_anchor
+        )
+        if (
+            _resolved_anchor is not None
+            and int(_resolved_anchor) in _bst_set
+            and edge.target_state is not None
+            and dispatcher is not None
+        ):
+            _lookup = dispatcher.lookup(edge.target_state)
+            if _lookup is not None and int(_lookup) not in _bst_set:
+                _resolved_anchor = int(_lookup)
+            else:
+                _resolved_anchor = None  # No valid target
         promoted_edges.append(
             StateDagEdge(
                 kind=edge.kind,
                 source_key=edge.source_key,
                 target_key=edge.target_key,
                 target_state=edge.target_state,
-                target_entry_anchor=(
-                    target_node.entry_anchor
-                    if target_node is not None
-                    else edge.target_entry_anchor
-                ),
+                target_entry_anchor=_resolved_anchor,
                 target_label=(
                     target_node.state_label
                     if target_node is not None
@@ -1423,6 +1474,7 @@ def _promote_range_backed_nodes_to_dispatcher_bodies(
                 ),
                 source_anchor=edge.source_anchor,
                 ordered_path=edge.ordered_path,
+                last_write_site=edge.last_write_site,
             )
         )
 
@@ -1434,6 +1486,7 @@ def _normalize_entry_anchors_to_unique_path_starts(
     edges: list[StateDagEdge],
     *,
     bst_node_blocks: tuple[int, ...],
+    dispatcher: IntervalDispatcher | None = None,
 ) -> tuple[list[StateDagNode], list[StateDagEdge]]:
     bst_blocks = set(bst_node_blocks)
     outgoing_by_key: defaultdict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
@@ -1528,17 +1581,29 @@ def _normalize_entry_anchors_to_unique_path_starts(
             if edge.target_key is not None
             else None
         )
+        _resolved_anchor = (
+            target_node.entry_anchor
+            if target_node is not None
+            else edge.target_entry_anchor
+        )
+        if (
+            _resolved_anchor is not None
+            and int(_resolved_anchor) in bst_blocks
+            and edge.target_state is not None
+            and dispatcher is not None
+        ):
+            _lookup = dispatcher.lookup(edge.target_state)
+            if _lookup is not None and int(_lookup) not in bst_blocks:
+                _resolved_anchor = int(_lookup)
+            else:
+                _resolved_anchor = None  # No valid target
         normalized_edges.append(
             StateDagEdge(
                 kind=edge.kind,
                 source_key=edge.source_key,
                 target_key=edge.target_key,
                 target_state=edge.target_state,
-                target_entry_anchor=(
-                    target_node.entry_anchor
-                    if target_node is not None
-                    else edge.target_entry_anchor
-                ),
+                target_entry_anchor=_resolved_anchor,
                 target_label=(
                     target_node.state_label
                     if target_node is not None
@@ -1546,6 +1611,7 @@ def _normalize_entry_anchors_to_unique_path_starts(
                 ),
                 source_anchor=edge.source_anchor,
                 ordered_path=edge.ordered_path,
+                last_write_site=edge.last_write_site,
             )
         )
 
@@ -2876,16 +2942,32 @@ def build_linearized_state_dag_from_graph(
                 kind=RedirectSourceKind.UNCONDITIONAL,
                 block_serial=transition.from_block,
             )
+            _writes = getattr(matched_path, 'state_writes', []) if matched_path is not None else []
+            _last_write = _writes[-1] if _writes else None
+            # Fix 1: resolve target_entry_anchor past BST region
+            _target_entry: int | None = (
+                target_node.entry_anchor if target_node is not None else target_handler_serial
+            )
+            _bst_set = set(report.bst_node_blocks)
+            if _target_entry is not None and int(_target_entry) in _bst_set:
+                if dispatcher is not None and transition.to_state is not None:
+                    _resolved = dispatcher.lookup(transition.to_state)
+                    if _resolved is not None and int(_resolved) not in _bst_set:
+                        _target_entry = int(_resolved)
+                    else:
+                        _target_entry = None
+                else:
+                    _target_entry = None
+            # Fix 2: downgrade edges with no state writes to UNKNOWN
+            _edge_kind = SemanticEdgeKind.TRANSITION
+            if matched_path is not None and not _writes:
+                _edge_kind = SemanticEdgeKind.UNKNOWN
             edge = StateDagEdge(
-                kind=SemanticEdgeKind.TRANSITION,
+                kind=_edge_kind,
                 source_key=source_node.key,
                 target_key=target_node.key if target_node is not None else None,
                 target_state=transition.to_state,
-                target_entry_anchor=(
-                    target_node.entry_anchor
-                    if target_node is not None
-                    else target_handler_serial
-                ),
+                target_entry_anchor=_target_entry,
                 target_label=(
                     target_node.state_label
                     if target_node is not None
@@ -2897,6 +2979,7 @@ def build_linearized_state_dag_from_graph(
                 ),
                 source_anchor=source_anchor,
                 ordered_path=ordered_path,
+                last_write_site=_last_write,
             )
             edge_key = (
                 edge.kind,
@@ -2942,21 +3025,37 @@ def build_linearized_state_dag_from_graph(
             ordered_path = (
                 tuple(matched_path.ordered_path) if matched_path is not None else ()
             )
+            _cond_writes = getattr(matched_path, 'state_writes', []) if matched_path is not None else []
+            _cond_last_write = _cond_writes[-1] if _cond_writes else None
             source_anchor = StateRedirectAnchor(
                 kind=RedirectSourceKind.CONDITIONAL_BRANCH,
                 block_serial=cond.branch_block,
                 branch_arm=cond.branch_arm,
             )
+            # Fix 1: resolve target_entry_anchor past BST region
+            _cond_target_entry: int | None = (
+                target_node.entry_anchor if target_node is not None else target_handler_serial
+            )
+            _cond_bst_set = set(report.bst_node_blocks)
+            if _cond_target_entry is not None and int(_cond_target_entry) in _cond_bst_set:
+                if dispatcher is not None and cond.target_state is not None:
+                    _cond_resolved = dispatcher.lookup(cond.target_state)
+                    if _cond_resolved is not None and int(_cond_resolved) not in _cond_bst_set:
+                        _cond_target_entry = int(_cond_resolved)
+                    else:
+                        _cond_target_entry = None
+                else:
+                    _cond_target_entry = None
+            # Fix 2: downgrade edges with no state writes to UNKNOWN
+            _cond_kind = kind
+            if matched_path is not None and not _cond_writes and kind != SemanticEdgeKind.CONDITIONAL_RETURN:
+                _cond_kind = SemanticEdgeKind.UNKNOWN
             edge = StateDagEdge(
-                kind=kind,
+                kind=_cond_kind,
                 source_key=source_node.key,
                 target_key=target_node.key if target_node is not None else None,
                 target_state=None if cond.is_terminal_no_write else cond.target_state,
-                target_entry_anchor=(
-                    target_node.entry_anchor
-                    if target_node is not None
-                    else target_handler_serial
-                ),
+                target_entry_anchor=_cond_target_entry,
                 target_label=(
                     "RETURN"
                     if cond.is_terminal_no_write
@@ -2972,6 +3071,7 @@ def build_linearized_state_dag_from_graph(
                 ),
                 source_anchor=source_anchor,
                 ordered_path=ordered_path,
+                last_write_site=_cond_last_write,
             )
             edge_key = (
                 edge.kind,
@@ -3004,6 +3104,9 @@ def build_linearized_state_dag_from_graph(
             branch_anchor = _find_path_branch_anchor(path, paths, flow_graph)
             source_state = source_node.key.state_const
 
+            _leftover_writes = getattr(path, 'state_writes', [])
+            _leftover_last_write = _leftover_writes[-1] if _leftover_writes else None
+
             if path.final_state is None:
                 edge_kind = _infer_terminal_edge_kind(path, flow_graph, branch_anchor)
                 target_label = (
@@ -3029,6 +3132,7 @@ def build_linearized_state_dag_from_graph(
                         )
                     ),
                     ordered_path=tuple(path.ordered_path),
+                    last_write_site=_leftover_last_write,
                 )
             else:
                 if (
@@ -3053,25 +3157,39 @@ def build_linearized_state_dag_from_graph(
                         block_serial=path.exit_block,
                     )
                 )
+                # Fix 1: resolve target_entry_anchor past BST region
+                _lo_target_entry: int | None = (
+                    target_node.entry_anchor if target_node is not None else target_handler_serial
+                )
+                _lo_bst_set = set(report.bst_node_blocks)
+                if _lo_target_entry is not None and int(_lo_target_entry) in _lo_bst_set:
+                    if dispatcher is not None and path.final_state is not None:
+                        _lo_resolved = dispatcher.lookup(path.final_state)
+                        if _lo_resolved is not None and int(_lo_resolved) not in _lo_bst_set:
+                            _lo_target_entry = int(_lo_resolved)
+                        else:
+                            _lo_target_entry = None
+                    else:
+                        _lo_target_entry = None
+                # Fix 2: downgrade edges with no state writes to UNKNOWN
+                _lo_kind = (
+                    SemanticEdgeKind.CONDITIONAL_TRANSITION
+                    if branch_anchor is not None
+                    and target_handler_serial is not None
+                    else (
+                        SemanticEdgeKind.TRANSITION
+                        if target_handler_serial is not None
+                        else SemanticEdgeKind.UNKNOWN
+                    )
+                )
+                if not _leftover_writes and _lo_kind == SemanticEdgeKind.TRANSITION:
+                    _lo_kind = SemanticEdgeKind.UNKNOWN
                 edge = StateDagEdge(
-                    kind=(
-                        SemanticEdgeKind.CONDITIONAL_TRANSITION
-                        if branch_anchor is not None
-                        and target_handler_serial is not None
-                        else (
-                            SemanticEdgeKind.TRANSITION
-                            if target_handler_serial is not None
-                            else SemanticEdgeKind.UNKNOWN
-                        )
-                    ),
+                    kind=_lo_kind,
                     source_key=source_node.key,
                     target_key=target_node.key if target_node is not None else None,
                     target_state=path.final_state,
-                    target_entry_anchor=(
-                        target_node.entry_anchor
-                        if target_node is not None
-                        else target_handler_serial
-                    ),
+                    target_entry_anchor=_lo_target_entry,
                     target_label=(
                         target_node.state_label
                         if target_node is not None
@@ -3083,6 +3201,7 @@ def build_linearized_state_dag_from_graph(
                     ),
                     source_anchor=source_anchor,
                     ordered_path=tuple(path.ordered_path),
+                    last_write_site=_leftover_last_write,
                 )
 
             edge_key = (
@@ -3118,6 +3237,7 @@ def build_linearized_state_dag_from_graph(
                 target_label=edge.target_label,
                 source_anchor=edge.source_anchor,
                 ordered_path=edge.ordered_path,
+                last_write_site=edge.last_write_site,
             )
             edge_key = (
                 alias_edge.kind,
@@ -3141,6 +3261,8 @@ def build_linearized_state_dag_from_graph(
         transition_result,
         flow_graph,
         prefer_local_corridors=prefer_local_corridors,
+        bst_node_blocks=report.bst_node_blocks,
+        dispatcher=dispatcher,
     )
     nodes, edges = _normalize_nonhandler_exact_nodes(
         nodes,
@@ -3149,6 +3271,8 @@ def build_linearized_state_dag_from_graph(
         transition_result,
         flow_graph,
         prefer_local_corridors=prefer_local_corridors,
+        bst_node_blocks=report.bst_node_blocks,
+        dispatcher=dispatcher,
     )
     nodes, edges = _promote_range_backed_nodes_to_dispatcher_bodies(
         nodes,
@@ -3160,6 +3284,7 @@ def build_linearized_state_dag_from_graph(
         nodes,
         edges,
         bst_node_blocks=report.bst_node_blocks,
+        dispatcher=dispatcher,
     )
     edges = _suppress_bst_extension_alias_edges(
         edges,

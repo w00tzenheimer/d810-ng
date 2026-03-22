@@ -2963,7 +2963,7 @@ class LinearizedFlowGraphStrategy:
                         blk_label(mba, target_entry),
                     )
                 else:
-                logger.info(
+                    logger.info(
                         "LFG DAG: preserving concrete DAG target %s for non-exact state 0x%X instead of handoff target %s",
                         blk_label(mba, target_entry),
                         immediate_state,

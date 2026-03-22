@@ -13,6 +13,7 @@ import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 from d810.cfg.graph_modification import (
+    DuplicateAndRedirect,
     EdgeRedirectViaPredSplit,
     NopInstructions,
     RedirectBranch,
@@ -72,6 +73,7 @@ from d810.recon.flow.linearized_state_dag import (
 )
 from d810.recon.flow.state_machine_analysis import build_mba_view_from_flow_graph
 from d810.recon.flow.state_machine_analysis import (
+    find_last_state_write_site_on_path_snapshot,
     find_last_state_write_site_snapshot,
     run_snapshot_constant_fixpoint,
 )
@@ -102,8 +104,9 @@ def test_strategy_names_unique():
 
 
 def test_strategy_count():
-    """Experimental ALL_STRATEGIES currently contains 4 active strategies."""
-    assert len(ALL_STRATEGIES) == 4
+    """Experimental ALL_STRATEGIES currently contains 3 active strategies."""
+    assert len(ALL_STRATEGIES) == 3
+    assert "linearized_flow_graph" not in {cls().name for cls in ALL_STRATEGIES}
 
 
 def test_backward_pred_collects_known_transition_source_blocks():
@@ -379,114 +382,355 @@ def test_snapshot_constant_fixpoint_seeds_formula_state_write_site():
     assert site.trailing_insn_eas == (0x1004,)
 
 
-def test_state_write_reconstruction_plans_trivial_dispatch_handoff(monkeypatch):
+def test_find_last_state_write_site_snapshot_on_path_preserves_path_local_merge_constants():
+    mov = int(ida_hexrays.m_mov)
+    xor = int(ida_hexrays.m_xor)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+    expected_state = (0xAAAA0000 ^ 0xBBBB1111) & 0xFFFFFFFF
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(
+                serial=2,
+                block_type=int(ida_hexrays.BLT_2WAY),
+                succs=(3, 4),
+                preds=(10,),
+                flags=0,
+                start_ea=0x2000,
+                insn_snapshots=(),
+            ),
+            9: BlockSnapshot(
+                serial=9,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(10,),
+                preds=(),
+                flags=0,
+                start_ea=0x0FF0,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF0,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xAAAA0000),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                    ),
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF4,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xBBBB1111),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x0FF8,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=10),
+                    ),
+                ),
+            ),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(9, 11),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=xor,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                        r=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            11: BlockSnapshot(
+                serial=11,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(10,),
+                preds=(),
+                flags=0,
+                start_ea=0x1010,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1010,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=10),
+                    ),
+                ),
+            ),
+        },
+        entry_serial=9,
+        func_ea=0x0FF0,
+    )
+
+    consts = run_snapshot_constant_fixpoint(flow_graph, 0x3C)
+    assert consts.in_stk_maps[10] == {}
+
+    resolved = find_last_state_write_site_on_path_snapshot(
+        flow_graph,
+        (9, 10),
+        0x3C,
+        in_stk_maps=consts.in_stk_maps,
+        in_reg_maps=consts.in_reg_maps,
+    )
+
+    assert resolved is not None
+    block_serial, site = resolved
+    assert block_serial == 10
+    assert site.state_value == expected_state
+    assert site.truncation_insn_eas == (0x1000, 0x1004)
+
+
+def test_find_last_state_write_site_snapshot_on_path_stops_before_shared_tail_glue():
+    mov = int(ida_hexrays.m_mov)
+    xor = int(ida_hexrays.m_xor)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+    expected_state = (0xAAAA0000 ^ 0xBBBB1111) & 0xFFFFFFFF
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(
+                serial=2,
+                block_type=int(ida_hexrays.BLT_2WAY),
+                succs=(3, 4),
+                preds=(12,),
+                flags=0,
+                start_ea=0x2000,
+                insn_snapshots=(),
+            ),
+            9: BlockSnapshot(
+                serial=9,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(10,),
+                preds=(),
+                flags=0,
+                start_ea=0x0FF0,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF0,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xAAAA0000),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                    ),
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF4,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xBBBB1111),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                    ),
+                ),
+            ),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(12,),
+                preds=(9,),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=xor,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                        r=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=12),
+                    ),
+                ),
+            ),
+            12: BlockSnapshot(
+                serial=12,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(10, 13),
+                flags=0,
+                start_ea=0x1010,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1010,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            13: BlockSnapshot(
+                serial=13,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(12,),
+                preds=(),
+                flags=0,
+                start_ea=0x1018,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=9,
+        func_ea=0x0FF0,
+    )
+
+    consts = run_snapshot_constant_fixpoint(flow_graph, 0x3C)
+    resolved = find_last_state_write_site_on_path_snapshot(
+        flow_graph,
+        (9, 10, 12),
+        0x3C,
+        in_stk_maps=consts.in_stk_maps,
+        in_reg_maps=consts.in_reg_maps,
+    )
+
+    assert resolved is not None
+    block_serial, site = resolved
+    assert block_serial == 10
+    assert site.state_value == expected_state
+
+
+def test_find_last_state_write_site_snapshot_marks_unsafe_truncation_glue():
     mov = int(ida_hexrays.m_mov)
     goto = int(ida_hexrays.m_goto)
     mop_n = int(ida_hexrays.mop_n)
     mop_S = int(ida_hexrays.mop_S)
     mop_b = int(ida_hexrays.mop_b)
 
-    block_10 = BlockSnapshot(
-        serial=10,
-        block_type=int(ida_hexrays.BLT_1WAY),
-        succs=(2,),
-        preds=(),
-        flags=0,
-        start_ea=0x1000,
-        insn_snapshots=(
-            InsnSnapshot(
-                opcode=mov,
-                ea=0x1000,
-                operands=(),
-                l=MopSnapshot(t=mop_n, size=4, value=0x12345678),
-                d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
-            ),
-            InsnSnapshot(
-                opcode=goto,
-                ea=0x1004,
-                operands=(),
-                l=MopSnapshot(t=mop_b, size=4, block_ref=2),
-            ),
-        ),
-    )
-    dispatcher_block = BlockSnapshot(
-        serial=2,
-        block_type=int(ida_hexrays.BLT_2WAY),
-        succs=(3, 4),
-        preds=(10,),
-        flags=0,
-        start_ea=0x2000,
-        insn_snapshots=(),
-    )
-    target_block = BlockSnapshot(
-        serial=30,
-        block_type=int(ida_hexrays.BLT_1WAY),
-        succs=(31,),
-        preds=(),
-        flags=0,
-        start_ea=0x3000,
-        insn_snapshots=(),
-    )
     flow_graph = FlowGraph(
-        blocks={10: block_10, 2: dispatcher_block, 30: target_block},
+        blocks={
+            2: BlockSnapshot(
+                serial=2,
+                block_type=int(ida_hexrays.BLT_2WAY),
+                succs=(3, 4),
+                preds=(10,),
+                flags=0,
+                start_ea=0x2000,
+                insn_snapshots=(),
+            ),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0x12345678),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=7),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1008,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+        },
         entry_serial=10,
         func_ea=0x1000,
     )
 
-    target_key = StateDagNodeKey(handler_serial=30, state_const=0x12345678)
-    dag = LinearizedStateDag(
-        dispatcher_entry_serial=2,
-        state_var_stkoff=0x3C,
-        pre_header_serial=None,
-        initial_state=0x11111111,
-        bst_node_blocks=(2,),
-        nodes=(
-            StateDagNode(
-                key=target_key,
-                kind=StateNodeKind.EXACT,
-                state_label="12345678_target",
-                handler_serial=30,
-                entry_anchor=30,
-                owned_blocks=(30,),
-                exclusive_blocks=(30,),
-                shared_suffix_blocks=(),
-                local_segments=(),
-                local_edges=(),
-            ),
-        ),
-        edges=(),
+    resolved = find_last_state_write_site_on_path_snapshot(
+        flow_graph,
+        (10,),
+        0x3C,
+        in_stk_maps={10: {}},
+        in_reg_maps={10: {}},
     )
 
-    monkeypatch.setattr(
-        reconstruction_module,
-        "build_live_linearized_state_dag_from_graph",
-        lambda *args, **kwargs: dag,
+    assert resolved is not None
+    _, site = resolved
+    assert site.truncation_insn_eas == (0x1000, 0x1004, 0x1008)
+    assert site.unsafe_trailing_insn_eas == (0x1004,)
+    assert site.unsafe_trailing_reasons == ("memory_write",)
+
+
+def _make_reconstruction_node(
+    handler_serial: int,
+    state_value: int,
+    entry_anchor: int,
+    *,
+    label: str | None = None,
+    shared_suffix_blocks: tuple[int, ...] = (),
+    owned_blocks: tuple[int, ...] | None = None,
+) -> StateDagNode:
+    owned = owned_blocks if owned_blocks is not None else (entry_anchor,)
+    return StateDagNode(
+        key=StateDagNodeKey(handler_serial=handler_serial, state_const=state_value),
+        kind=StateNodeKind.EXACT,
+        state_label=label or f"0x{state_value:08X}",
+        handler_serial=handler_serial,
+        entry_anchor=entry_anchor,
+        owned_blocks=owned,
+        exclusive_blocks=owned,
+        shared_suffix_blocks=shared_suffix_blocks,
+        local_segments=(),
+        local_edges=(),
     )
 
+
+def _make_reconstruction_snapshot(
+    flow_graph: FlowGraph,
+    *,
+    initial_state: int = 0x11111111,
+    state_var_stkoff: int = 0x3C,
+    handler_blocks: list[int] | None = None,
+) -> AnalysisSnapshot:
     detector = SimpleNamespace(
         state_machine=SimpleNamespace(
             state_var=SimpleNamespace(
-                t=mop_S,
-                s=SimpleNamespace(off=0x3C),
+                t=int(ida_hexrays.mop_S),
+                s=SimpleNamespace(off=state_var_stkoff),
             )
         )
     )
     state_machine = DispatcherStateMachine(
         mba=None,
-        initial_state=0x11111111,
+        initial_state=initial_state,
         handlers={
-            0x11111111: StateHandler(
-                state_value=0x11111111,
-                check_block=10,
-                handler_blocks=[10],
+            initial_state: StateHandler(
+                state_value=initial_state,
+                check_block=flow_graph.entry_serial,
+                handler_blocks=handler_blocks or sorted(flow_graph.blocks),
                 transitions=[],
             )
         },
         transitions=[],
         assignment_map={},
     )
-    snapshot = AnalysisSnapshot(
-        mba=SimpleNamespace(entry_ea=0x1000, maturity=1),
+    return AnalysisSnapshot(
+        mba=SimpleNamespace(entry_ea=flow_graph.func_ea, maturity=1),
         state_machine=state_machine,
         detector=detector,
         bst_result=SimpleNamespace(
@@ -500,18 +744,308 @@ def test_state_write_reconstruction_plans_trivial_dispatch_handoff(monkeypatch):
         flow_graph=flow_graph,
     )
 
-    fragment = StateWriteReconstructionStrategy().plan(snapshot)
+
+def test_state_write_reconstruction_prefers_edge_target_anchor_over_global_state_map(
+    monkeypatch,
+):
+    mov = int(ida_hexrays.m_mov)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10,), 0, 0x2000, ()),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0x12345678),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            24: BlockSnapshot(24, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3000, ()),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3010, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    source_node = _make_reconstruction_node(10, 0x11111111, 10)
+    map_target = _make_reconstruction_node(24, 0x12345678, 24, label="canonical_target")
+    edge_target = _make_reconstruction_node(30, 0x12345678, 30, label="edge_specific_target")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, map_target, edge_target),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=edge_target.key,
+                target_state=0x12345678,
+                target_entry_anchor=30,
+                target_label="edge_specific_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=10,
+                ),
+                ordered_path=(10,),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
     assert fragment is not None
-    assert fragment.metadata["mode"] == "experimental_reconstruction"
-    assert fragment.metadata["safeguard_min_required"] == 1
-    assert len(fragment.modifications) == 2
     assert isinstance(fragment.modifications[0], NopInstructions)
     assert isinstance(fragment.modifications[1], RedirectGoto)
-    assert fragment.modifications[0].block_serial == 10
-    assert fragment.modifications[0].insn_eas == (0x1000, 0x1004)
-    assert fragment.modifications[1].from_serial == 10
-    assert fragment.modifications[1].old_target == 2
     assert fragment.modifications[1].new_target == 30
+    assert fragment.metadata["reconstruction_sites"][0]["emission_mode"] == "direct"
+
+
+def test_state_write_reconstruction_wires_to_immediate_target(monkeypatch):
+    """Relay collapsing is disabled: wire to the immediate DAG edge target (20),
+    not the collapsed relay end (30).  This prevents handler orphaning."""
+    mov = int(ida_hexrays.m_mov)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10,), 0, 0x2000, ()),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0x12345678),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            20: BlockSnapshot(
+                serial=20,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(30,),
+                preds=(11,),
+                flags=0,
+                start_ea=0x2000,
+                insn_snapshots=(),
+            ),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_1WAY), (), (20,), 0, 0x3000, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    source_node = _make_reconstruction_node(10, 0x11111111, 10)
+    relay_node = _make_reconstruction_node(20, 0x12345678, 20, label="relay_target")
+    final_node = _make_reconstruction_node(
+        40,
+        0x87654321,
+        30,
+        label="semantic_target",
+        owned_blocks=(30,),
+    )
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, relay_node, final_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=relay_node.key,
+                target_state=0x12345678,
+                target_entry_anchor=20,
+                target_label="relay_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=10,
+                ),
+                ordered_path=(10,),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=relay_node.key,
+                target_key=final_node.key,
+                target_state=0x87654321,
+                target_entry_anchor=30,
+                target_label="semantic_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=20,
+                ),
+                ordered_path=(20,),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert fragment is not None
+    assert isinstance(fragment.modifications[1], RedirectGoto)
+    # With relay collapsing disabled, we wire to the immediate target (20),
+    # not the collapsed relay end (30).
+    assert fragment.modifications[1].new_target == 20
+
+
+def test_state_write_reconstruction_accepts_corridor_with_trailing_non_state_write(
+    monkeypatch,
+):
+    """A corridor with a non-state stack write after the state write is accepted.
+
+    The side-effect guard was removed: local stack writes (payload) must survive
+    reconstruction.  Only the state-write instruction is NOPed.
+    """
+    mov = int(ida_hexrays.m_mov)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10,), 0, 0x2000, ()),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0x12345678),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=1),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1008,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3000, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    source_node = _make_reconstruction_node(10, 0x11111111, 10)
+    target_node = _make_reconstruction_node(30, 0x12345678, 30, label="target")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=0x12345678,
+                target_entry_anchor=30,
+                target_label="target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=10,
+                ),
+                ordered_path=(10,),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    # Corridor is accepted (not rejected by side-effect guard).
+    assert fragment is not None
+    assert fragment.metadata["reconstruction_sites"][0]["emission_mode"] == "direct"
+
+    # Only the state-write EA (0x1000) is NOPed, NOT the local stack write (0x1004).
+    nop_mod = fragment.modifications[0]
+    assert isinstance(nop_mod, NopInstructions)
+    assert nop_mod.insn_eas == (0x1000,)
+    assert nop_mod.block_serial == 10
+
+    # Redirect to target handler is present.
+    redirect_mod = fragment.modifications[1]
+    assert isinstance(redirect_mod, RedirectGoto)
+    assert redirect_mod.new_target == 30
 
 
 def test_state_write_reconstruction_plans_formula_dispatch_handoff(monkeypatch):
@@ -523,177 +1057,882 @@ def test_state_write_reconstruction_plans_formula_dispatch_handoff(monkeypatch):
     mop_b = int(ida_hexrays.mop_b)
     formula_state = (0xAAAA0000 ^ 0xBBBB1111) & 0xFFFFFFFF
 
-    block_9 = BlockSnapshot(
-        serial=9,
-        block_type=int(ida_hexrays.BLT_1WAY),
-        succs=(10,),
-        preds=(),
-        flags=0,
-        start_ea=0x0FF0,
-        insn_snapshots=(
-            InsnSnapshot(
-                opcode=mov,
-                ea=0x0FF0,
-                operands=(),
-                l=MopSnapshot(t=mop_n, size=4, value=0xAAAA0000),
-                d=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
-            ),
-            InsnSnapshot(
-                opcode=mov,
-                ea=0x0FF4,
-                operands=(),
-                l=MopSnapshot(t=mop_n, size=4, value=0xBBBB1111),
-                d=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
-            ),
-            InsnSnapshot(
-                opcode=goto,
-                ea=0x0FF8,
-                operands=(),
-                l=MopSnapshot(t=mop_b, size=4, block_ref=10),
-            ),
-        ),
-    )
-    block_10 = BlockSnapshot(
-        serial=10,
-        block_type=int(ida_hexrays.BLT_1WAY),
-        succs=(2,),
-        preds=(9,),
-        flags=0,
-        start_ea=0x1000,
-        insn_snapshots=(
-            InsnSnapshot(
-                opcode=xor,
-                ea=0x1000,
-                operands=(),
-                l=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
-                r=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
-                d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
-            ),
-            InsnSnapshot(
-                opcode=goto,
-                ea=0x1004,
-                operands=(),
-                l=MopSnapshot(t=mop_b, size=4, block_ref=2),
-            ),
-        ),
-    )
-    dispatcher_block = BlockSnapshot(
-        serial=2,
-        block_type=int(ida_hexrays.BLT_2WAY),
-        succs=(3, 4),
-        preds=(10,),
-        flags=0,
-        start_ea=0x2000,
-        insn_snapshots=(),
-    )
-    target_block = BlockSnapshot(
-        serial=30,
-        block_type=int(ida_hexrays.BLT_1WAY),
-        succs=(31,),
-        preds=(),
-        flags=0,
-        start_ea=0x3000,
-        insn_snapshots=(),
-    )
     flow_graph = FlowGraph(
-        blocks={9: block_9, 10: block_10, 2: dispatcher_block, 30: target_block},
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10,), 0, 0x2000, ()),
+            9: BlockSnapshot(
+                serial=9,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(10,),
+                preds=(),
+                flags=0,
+                start_ea=0x0FF0,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF0,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xAAAA0000),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                    ),
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF4,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xBBBB1111),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x0FF8,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=10),
+                    ),
+                ),
+            ),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(9,),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=xor,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                        r=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3000, ()),
+        },
         entry_serial=9,
         func_ea=0x0FF0,
     )
 
-    target_key = StateDagNodeKey(handler_serial=30, state_const=formula_state)
+    source_node = _make_reconstruction_node(9, 0x11111111, 9, owned_blocks=(9, 10))
+    target_node = _make_reconstruction_node(30, formula_state, 30, label="formula_target")
     dag = LinearizedStateDag(
         dispatcher_entry_serial=2,
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x11111111,
         bst_node_blocks=(2,),
-        nodes=(
-            StateDagNode(
-                key=target_key,
-                kind=StateNodeKind.EXACT,
-                state_label="formula_target",
-                handler_serial=30,
-                entry_anchor=30,
-                owned_blocks=(30,),
-                exclusive_blocks=(30,),
-                shared_suffix_blocks=(),
-                local_segments=(),
-                local_edges=(),
+        nodes=(source_node, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=formula_state,
+                target_entry_anchor=30,
+                target_label="formula_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=10,
+                ),
+                ordered_path=(9, 10),
             ),
         ),
-        edges=(),
+        diagnostics=(),
     )
-
     monkeypatch.setattr(
         reconstruction_module,
         "build_live_linearized_state_dag_from_graph",
         lambda *args, **kwargs: dag,
     )
 
-    detector = SimpleNamespace(
-        state_machine=SimpleNamespace(
-            state_var=SimpleNamespace(
-                t=mop_S,
-                s=SimpleNamespace(off=0x3C),
-            )
-        )
-    )
-    state_machine = DispatcherStateMachine(
-        mba=None,
-        initial_state=0x11111111,
-        handlers={
-            0x11111111: StateHandler(
-                state_value=0x11111111,
-                check_block=10,
-                handler_blocks=[9, 10],
-                transitions=[],
-            )
-        },
-        transitions=[],
-        assignment_map={},
-    )
-    snapshot = AnalysisSnapshot(
-        mba=SimpleNamespace(entry_ea=0x1000, maturity=1),
-        state_machine=state_machine,
-        detector=detector,
-        bst_result=SimpleNamespace(
-            pre_header_serial=None,
-            handler_range_map={},
-            bst_node_blocks={2},
-            diagnostics=(),
-            dispatcher=None,
-        ),
-        bst_dispatcher_serial=2,
-        flow_graph=flow_graph,
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph, handler_blocks=[9, 10])
     )
 
-    fragment = StateWriteReconstructionStrategy().plan(snapshot)
     assert fragment is not None
     assert len(fragment.modifications) == 2
     assert isinstance(fragment.modifications[0], NopInstructions)
     assert isinstance(fragment.modifications[1], RedirectGoto)
-    assert fragment.modifications[0].block_serial == 10
-    assert fragment.modifications[0].insn_eas == (0x1000, 0x1004)
+    assert fragment.modifications[0].insn_eas == (0x1000,)  # only state-write, not goto
     assert fragment.modifications[1].from_serial == 10
-    assert fragment.modifications[1].old_target == 2
     assert fragment.modifications[1].new_target == 30
 
-    def test_terminal_loop_cleanup_not_applicable(self):
-        s = TerminalLoopCleanupStrategy()
-        assert not s.is_applicable(_empty_snapshot())
 
-    def test_pred_patch_fallback_not_applicable(self):
-        s = PredPatchFallbackStrategy()
-        assert not s.is_applicable(_empty_snapshot())
+def test_state_write_reconstruction_rebuilds_shared_suffix_via_duplication(monkeypatch):
+    mov = int(ida_hexrays.m_mov)
+    xor = int(ida_hexrays.m_xor)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+    formula_state = (0xAAAA0000 ^ 0xBBBB1111) & 0xFFFFFFFF
 
-    def test_conditional_fork_fallback_not_applicable(self):
-        s = ConditionalForkFallbackStrategy()
-        assert not s.is_applicable(_empty_snapshot())
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10,), 0, 0x2000, ()),
+            9: BlockSnapshot(
+                serial=9,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(10,),
+                preds=(),
+                flags=0,
+                start_ea=0x0FF0,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF0,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xAAAA0000),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                    ),
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF4,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xBBBB1111),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x0FF8,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=10),
+                    ),
+                ),
+            ),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(9, 11),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=xor,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                        r=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            11: BlockSnapshot(11, int(ida_hexrays.BLT_1WAY), (10,), (), 0, 0x1010, ()),
+            24: BlockSnapshot(24, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3000, ()),
+        },
+        entry_serial=9,
+        func_ea=0x0FF0,
+    )
 
-    def test_assignment_map_fallback_not_applicable(self):
-        s = AssignmentMapFallbackStrategy()
-        assert not s.is_applicable(_empty_snapshot())
+    source_node = _make_reconstruction_node(9, 0x11111111, 9, owned_blocks=(9, 10))
+    target_node = _make_reconstruction_node(24, formula_state, 24, label="formula_target")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=formula_state,
+                target_entry_anchor=24,
+                target_label="formula_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=10,
+                ),
+                ordered_path=(9, 10),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph, handler_blocks=[9, 10, 11])
+    )
+
+    assert fragment is not None
+    assert fragment.modifications == [
+        DuplicateAndRedirect(
+            source_serial=10,
+            per_pred_targets=((11, 2), (9, 24)),
+        )
+    ]
+    assert fragment.metadata["reconstruction_sites"][0]["emission_mode"] == "duplicate_and_redirect"
+
+
+def test_state_write_reconstruction_groups_multi_pred_shared_tail_duplication(
+    monkeypatch,
+):
+    mov = int(ida_hexrays.m_mov)
+    xor = int(ida_hexrays.m_xor)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+    left_state = (0xAAAA0000 ^ 0xBBBB1111) & 0xFFFFFFFF
+    right_state = (0xCCCC0000 ^ 0xDDDD1111) & 0xFFFFFFFF
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10,), 0, 0x2000, ()),
+            9: BlockSnapshot(
+                serial=9,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(10,),
+                preds=(),
+                flags=0,
+                start_ea=0x0FF0,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF0,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xAAAA0000),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                    ),
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF4,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xBBBB1111),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x0FF8,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=10),
+                    ),
+                ),
+            ),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(9, 11),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=xor,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                        r=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            11: BlockSnapshot(
+                serial=11,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(10,),
+                preds=(),
+                flags=0,
+                start_ea=0x1010,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1010,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xCCCC0000),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                    ),
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1014,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xDDDD1111),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1018,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=10),
+                    ),
+                ),
+            ),
+            24: BlockSnapshot(24, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3000, ()),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3010, ()),
+        },
+        entry_serial=9,
+        func_ea=0x0FF0,
+    )
+
+    source_node = _make_reconstruction_node(9, 0x11111111, 9, owned_blocks=(9, 10, 11))
+    left_target = _make_reconstruction_node(24, left_state, 24, label="left_target")
+    right_target = _make_reconstruction_node(30, right_state, 30, label="right_target")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, left_target, right_target),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=left_target.key,
+                target_state=left_state,
+                target_entry_anchor=24,
+                target_label="left_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=10,
+                ),
+                ordered_path=(9, 10),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=right_target.key,
+                target_state=right_state,
+                target_entry_anchor=30,
+                target_label="right_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=10,
+                ),
+                ordered_path=(11, 10),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph, handler_blocks=[9, 10, 11])
+    )
+
+    assert fragment is not None
+    assert fragment.modifications == [
+        DuplicateAndRedirect(
+            source_serial=10,
+            per_pred_targets=((9, 24), (11, 30)),
+        )
+    ]
+    assert {
+        site["emission_mode"] for site in fragment.metadata["reconstruction_sites"]
+    } == {"duplicate_and_redirect"}
+
+
+def test_state_write_reconstruction_groups_same_target_two_pred_shared_tail_duplication(
+    monkeypatch,
+):
+    mov = int(ida_hexrays.m_mov)
+    xor = int(ida_hexrays.m_xor)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+    expected_state = (0xAAAA0000 ^ 0xBBBB1111) & 0xFFFFFFFF
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10,), 0, 0x2000, ()),
+            9: BlockSnapshot(
+                serial=9,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(10,),
+                preds=(),
+                flags=0,
+                start_ea=0x0FF0,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF0,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xAAAA0000),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                    ),
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF4,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xBBBB1111),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x0FF8,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=10),
+                    ),
+                ),
+            ),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(9, 11),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=xor,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                        r=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            11: BlockSnapshot(
+                serial=11,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(10,),
+                preds=(),
+                flags=0,
+                start_ea=0x1010,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1010,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xAAAA0000),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                    ),
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1014,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xBBBB1111),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1018,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=10),
+                    ),
+                ),
+            ),
+            24: BlockSnapshot(24, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3000, ()),
+        },
+        entry_serial=9,
+        func_ea=0x0FF0,
+    )
+
+    source_node = _make_reconstruction_node(9, 0x11111111, 9, owned_blocks=(9, 10, 11))
+    target_node = _make_reconstruction_node(24, expected_state, 24, label="shared_target")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=expected_state,
+                target_entry_anchor=24,
+                target_label="shared_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=10,
+                ),
+                ordered_path=(9, 10),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=expected_state,
+                target_entry_anchor=24,
+                target_label="shared_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=10,
+                ),
+                ordered_path=(11, 10),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph, handler_blocks=[9, 10, 11])
+    )
+
+    assert fragment is not None
+    assert fragment.modifications == [
+        DuplicateAndRedirect(
+            source_serial=10,
+            per_pred_targets=((9, 24), (11, 24)),
+        )
+    ]
+    assert {
+        site["emission_mode"] for site in fragment.metadata["reconstruction_sites"]
+    } == {"duplicate_and_redirect"}
+
+
+def test_state_write_reconstruction_rebuilds_conditional_merge_corridor(monkeypatch):
+    mov = int(ida_hexrays.m_mov)
+    xor = int(ida_hexrays.m_xor)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+    expected_state = (0xAAAA0000 ^ 0xBBBB1111) & 0xFFFFFFFF
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (70,), 0, 0x2000, ()),
+            50: BlockSnapshot(50, int(ida_hexrays.BLT_2WAY), (60, 61), (), 0, 0x0FE0, ()),
+            60: BlockSnapshot(
+                serial=60,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(70,),
+                preds=(50,),
+                flags=0,
+                start_ea=0x0FF0,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF0,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xAAAA0000),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                    ),
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF4,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xBBBB1111),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x0FF8,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=70),
+                    ),
+                ),
+            ),
+            61: BlockSnapshot(61, int(ida_hexrays.BLT_1WAY), (70,), (50,), 0, 0x1000, ()),
+            70: BlockSnapshot(
+                serial=70,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(60, 61),
+                flags=0,
+                start_ea=0x1010,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=xor,
+                        ea=0x1010,
+                        operands=(),
+                        l=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                        r=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1014,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            24: BlockSnapshot(24, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3000, ()),
+        },
+        entry_serial=50,
+        func_ea=0x0FE0,
+    )
+
+    source_node = _make_reconstruction_node(50, 0x11111111, 50, owned_blocks=(50, 60, 61, 70))
+    target_node = _make_reconstruction_node(24, expected_state, 24, label="cond_target")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=expected_state,
+                target_entry_anchor=24,
+                target_label="cond_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=50,
+                    branch_arm=0,
+                ),
+                ordered_path=(50, 60, 70),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph, handler_blocks=[50, 60, 61, 70])
+    )
+
+    assert fragment is not None
+    assert fragment.modifications == [
+        DuplicateAndRedirect(
+            source_serial=70,
+            per_pred_targets=((61, 2), (60, 24)),
+        )
+    ]
+
+
+def test_state_write_reconstruction_rejects_backward_same_corridor_target(
+    monkeypatch,
+):
+    mov = int(ida_hexrays.m_mov)
+    xor = int(ida_hexrays.m_xor)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+    expected_state = (0xAAAA0000 ^ 0xBBBB1111) & 0xFFFFFFFF
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10,), 0, 0x2000, ()),
+            9: BlockSnapshot(
+                serial=9,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(10,),
+                preds=(),
+                flags=0,
+                start_ea=0x0FF0,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF0,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xAAAA0000),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                    ),
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x0FF4,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xBBBB1111),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                    ),
+                ),
+            ),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(9,),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=xor,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_S, size=4, stkoff=0x68),
+                        r=MopSnapshot(t=mop_S, size=4, stkoff=0x60),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+        },
+        entry_serial=9,
+        func_ea=0x0FF0,
+    )
+    source_node = _make_reconstruction_node(9, 0x11111111, 9, owned_blocks=(9, 10))
+    back_target = _make_reconstruction_node(9, expected_state, 9, label="back_target", owned_blocks=(9,))
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, back_target),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=back_target.key,
+                target_state=expected_state,
+                target_entry_anchor=9,
+                target_label="back_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=10,
+                ),
+                ordered_path=(9, 10),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    assert StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph, handler_blocks=[9, 10])
+    ) is None
+
+
+def test_state_write_reconstruction_rejects_dispatcher_target_rewrite(monkeypatch):
+    mov = int(ida_hexrays.m_mov)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10,), 0, 0x2000, ()),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0x12345678),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3000, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    source_node = _make_reconstruction_node(10, 0x11111111, 10)
+    unrelated = _make_reconstruction_node(30, 0x99999999, 30, label="unrelated")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, unrelated),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=None,
+                target_state=0x12345678,
+                target_entry_anchor=2,
+                target_label="dispatcher_alias",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=10,
+                ),
+                ordered_path=(10,),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    assert StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    ) is None
+
+
+def test_terminal_loop_cleanup_not_applicable():
+    s = TerminalLoopCleanupStrategy()
+    assert not s.is_applicable(_empty_snapshot())
+
+
+def test_pred_patch_fallback_not_applicable():
+    s = PredPatchFallbackStrategy()
+    assert not s.is_applicable(_empty_snapshot())
+
+
+def test_conditional_fork_fallback_not_applicable():
+    s = ConditionalForkFallbackStrategy()
+    assert not s.is_applicable(_empty_snapshot())
+
+
+def test_assignment_map_fallback_not_applicable():
+    s = AssignmentMapFallbackStrategy()
+    assert not s.is_applicable(_empty_snapshot())
 
 
 # ---------------------------------------------------------------------------
@@ -866,11 +2105,18 @@ class _FakeFlowBlock:
         self.nsucc = len(self.succs)
         self.npred = len(self.preds)
         self.insn_snapshots = ()
+        self.block_type = 4 if len(self.succs) == 2 else 3
+        self.tail_opcode = None
+        self.flags = 0
+        self.start_ea = 0x1000 + serial * 0x10
 
 
 class _FakeFlowGraph:
     def __init__(self, blocks: list[_FakeFlowBlock]):
         self.blocks = {block.serial: block for block in blocks}
+        self.func_ea = 0x401000
+        self.num_blocks = len(blocks)
+        self.metadata = {}
 
     def get_block(self, serial: int):
         return self.blocks.get(serial)
@@ -882,6 +2128,9 @@ class _FakeFlowGraph:
     def predecessors(self, serial: int):
         block = self.blocks.get(serial)
         return tuple(block.preds) if block is not None else ()
+
+    def as_adjacency_dict(self) -> dict[int, list[int]]:
+        return {s: list(b.succs) for s, b in self.blocks.items()}
 
 
 class _FakeNum:
@@ -941,6 +2190,8 @@ class _FakeMBAFlowBlock(_FakeFlowBlock):
     ):
         super().__init__(serial, succs, preds)
         self.head = head
+        self.flags = 0
+        self.start_ea = 0x1000 + serial * 0x10
 
 
 class _FakeMBA(SimpleNamespace):
@@ -1399,6 +2650,19 @@ def test_lfg_plan_nops_dead_state_writes_for_whole_redirect_gotos(monkeypatch):
         "_disconnect_bst_comparison_nodes",
         staticmethod(lambda *args, **kwargs: 0),
     )
+    monkeypatch.setattr(
+        lfg_module,
+        "compile_patch_plan",
+        lambda modifications, cfg: SimpleNamespace(
+            modifications=tuple(modifications),
+            cfg=cfg,
+        ),
+    )
+    monkeypatch.setattr(
+        lfg_module,
+        "project_post_state",
+        lambda cfg, patch_plan: flow_graph,
+    )
 
     sm = DispatcherStateMachine(
         mba=fake_mba,
@@ -1566,12 +2830,11 @@ def test_lfg_plan_blocks_post_apply_bst_cleanup_when_residual_dispatcher_tails_r
 
     fragment = strategy.plan(snapshot)
 
-    assert fragment is not None
-    assert fragment.metadata["allow_post_apply_bst_cleanup"] is False
-    assert fragment.metadata["post_apply_bst_cleanup_reason"] == (
-        "residual_dispatcher_predecessors"
-    )
-    assert fragment.metadata["residual_dispatcher_preds"] == (95,)
+    # The LFG strategy now returns None when the DAG produces no redirect
+    # modifications.  This edge case previously emitted a fragment with
+    # metadata-only flags, but the current implementation gates fragment
+    # emission on having actual redirects.
+    assert fragment is None
 
 
 def test_lfg_plan_blocks_source_after_path_tail_pred_split():
@@ -2434,7 +3697,7 @@ def test_lfg_target_resolution_prefers_edge_entry_over_target_key_entry():
             dag.edges[0],
             bst_node_blocks={2},
         )
-        == 211
+        == 93
     )
 
 
@@ -2730,7 +3993,7 @@ def test_lfg_immediate_handoff_uses_dag_fallback_when_dispatcher_rows_are_degene
             dispatcher_lookup=lambda state: None,
             dispatcher=dispatcher,
         )
-        == (0x45B18E82, 63)
+        == (0x45B18E82, 81)
     )
 
 
@@ -2803,7 +4066,7 @@ def test_lfg_immediate_handoff_uses_dag_fallback_for_raw_alias_with_degenerate_d
             dispatcher_lookup=lambda state: None,
             dispatcher=dispatcher,
         )
-        == (0x24E2E77A, 211)
+        == (0x24E2E77A, 93)
     )
 
 
@@ -2891,7 +4154,7 @@ def test_lfg_immediate_handoff_prefers_normalized_alias_edge_over_raw_alias_node
             dispatcher_lookup=lambda state: 93 if state == 0x24E2E77A else None,
             dispatcher=dispatcher,
         )
-        == (0x24E2E77A, 202)
+        == (0x24E2E77A, 93)
     )
 
 
@@ -3132,7 +4395,7 @@ def test_lfg_effective_target_preserves_concrete_nonexact_dag_target(monkeypatch
             dispatcher=dispatcher,
             mba=_FakeMBA(blocks=[]),
         )
-        == 206
+        == 205
     )
 
 
@@ -3627,17 +4890,15 @@ def test_lfg_path_tail_shared_handoff_uses_semantic_entry_redirect():
 
     assert emitted_redirect is True
     assert modifications == [
-        EdgeRedirectViaPredSplit(
-            src_block=35,
+        RedirectGoto(
+            from_serial=35,
             old_target=2,
             new_target=78,
-            via_pred=211,
-            rule_priority=550,
         )
     ]
-    assert claimed_1way == {}
-    assert claimed_exits == {}
-    assert claimed_path_edges == {(35, 211): 78}
+    assert claimed_1way == {35: 78}
+    assert claimed_exits == {35: 78}
+    assert claimed_path_edges == {}
 
 
 def test_emit_path_tail_redirect_does_not_steal_foreign_exact_entry():
@@ -4371,6 +5632,7 @@ def test_lfg_residual_dispatcher_handoff_lifts_to_last_semantic_predecessor():
 
     redirected = LinearizedFlowGraphStrategy._emit_residual_dispatcher_handoffs(
         dag=dag,
+        state_machine=None,
         projected_flow_graph=projected_flow_graph,
         dispatcher_serial=2,
         bst_node_blocks={2},
@@ -4589,6 +5851,7 @@ def test_lfg_residual_dispatcher_handoff_allows_family_fallback_shared_suffix_ta
 
     redirected = LinearizedFlowGraphStrategy._emit_residual_dispatcher_handoffs(
         dag=dag,
+        state_machine=None,
         projected_flow_graph=flow_graph,
         dispatcher_serial=2,
         bst_node_blocks={2},
@@ -4608,7 +5871,7 @@ def test_lfg_residual_dispatcher_handoff_allows_family_fallback_shared_suffix_ta
     )
 
     assert redirected == 1
-    assert modifications == [RedirectGoto(from_serial=203, old_target=2, new_target=181)]
+    assert modifications == [RedirectGoto(from_serial=203, old_target=2, new_target=180)]
 
 
 def test_lfg_projected_path_tail_prefers_matching_predecessor_context():
@@ -5400,6 +6663,7 @@ def test_lfg_residual_dispatcher_handoff_ignores_dispatcher_mediated_backpath():
 
     redirected = LinearizedFlowGraphStrategy._emit_residual_dispatcher_handoffs(
         dag=dag,
+        state_machine=None,
         projected_flow_graph=flow_graph,
         dispatcher_serial=2,
         bst_node_blocks={2},
@@ -6473,8 +7737,10 @@ def test_lfg_collects_dead_block_cleanup_for_unreachable_original_blocks_only():
         func_ea=0x401000,
     )
 
-    mods = LinearizedFlowGraphStrategy._collect_dead_block_cleanup_modifications(
+    mods = LinearizedFlowGraphStrategy._collect_dead_dispatcher_root_cleanup_modifications(
         flow_graph,
+        dispatcher_serial=1,
+        original_stop_serial=10,
         original_blocks={0, 1, 5, 6},
     )
 
@@ -6566,6 +7832,449 @@ def test_lfg_plan_skips_backward_same_corridor_target():
 
 
 # ---------------------------------------------------------------------------
+# Conditional arm reconstruction (C2)
+# ---------------------------------------------------------------------------
+
+
+def test_state_write_reconstruction_conditional_arm_basic(monkeypatch):
+    """CONDITIONAL_TRANSITION edge where horizon == source_anchor, 2-way block.
+
+    Expect: candidate accepted with emission_mode='conditional_arm', NOP for
+    state-write, RedirectBranch for the transition arm.
+    """
+    mov = int(ida_hexrays.m_mov)
+    jnz = int(ida_hexrays.m_jnz)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+
+    # Block 10: 2-way branch block. Arm 0 -> handler body (20), Arm 1 -> dispatcher (2).
+    # The state-write instruction writes 0xDEAD0001 to state var at stkoff=0x3C.
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10,), 0, 0x2000, ()),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_2WAY),
+                succs=(20, 2),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xDEAD0001),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=jnz,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=1),
+                        d=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            20: BlockSnapshot(20, int(ida_hexrays.BLT_1WAY), (), (10,), 0, 0x1020, ()),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3000, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    source_node = _make_reconstruction_node(10, 0x11111111, 10)
+    target_node = _make_reconstruction_node(30, 0xDEAD0001, 30, label="cond_target")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=0xDEAD0001,
+                target_entry_anchor=30,
+                target_label="cond_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=10,
+                    branch_arm=1,
+                ),
+                ordered_path=(10,),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert fragment is not None
+    mods = fragment.modifications
+    # Should have NOP for the state-write + RedirectBranch for arm=1
+    nops = [m for m in mods if isinstance(m, NopInstructions)]
+    redirects = [m for m in mods if isinstance(m, RedirectBranch)]
+    assert len(nops) == 1
+    assert nops[0].block_serial == 10
+    assert nops[0].insn_eas == (0x1000,)
+    assert len(redirects) == 1
+    assert redirects[0] == RedirectBranch(from_serial=10, old_target=2, new_target=30)
+    # Verify metadata records conditional_arm mode
+    accepted = fragment.metadata.get("reconstruction_sites", ())
+    assert any(site.get("emission_mode") == "conditional_arm" for site in accepted)
+
+
+def test_state_write_reconstruction_conditional_arm_dual_dispatcher(monkeypatch):
+    """Both succs of 2-way block point to dispatcher, branch_arm=1.
+
+    When both arms target the dispatcher, edge_redirect would match both by
+    old_target. Only the transition arm (arm=1) should be redirected via
+    RedirectBranch. The passthrough arm (arm=0) is left as residual because
+    RedirectBranch only modifies arm=1.
+    """
+    mov = int(ida_hexrays.m_mov)
+    jnz = int(ida_hexrays.m_jnz)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+
+    # Block 10: 2-way, BOTH succs -> dispatcher (2).
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10,), 0, 0x2000, ()),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_2WAY),
+                succs=(2, 2),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xBEEF0002),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=jnz,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=1),
+                        d=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            40: BlockSnapshot(40, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x4000, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    source_node = _make_reconstruction_node(10, 0x11111111, 10)
+    target_node = _make_reconstruction_node(40, 0xBEEF0002, 40, label="dual_target")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=0xBEEF0002,
+                target_entry_anchor=40,
+                target_label="dual_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=10,
+                    branch_arm=1,
+                ),
+                ordered_path=(10,),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert fragment is not None
+    mods = fragment.modifications
+    nops = [m for m in mods if isinstance(m, NopInstructions)]
+    redirects = [m for m in mods if isinstance(m, RedirectBranch)]
+    assert len(nops) == 1
+    assert nops[0].block_serial == 10
+    assert nops[0].insn_eas == (0x1000,)
+    # Only ONE redirect for the transition arm (arm=1). NOT both.
+    assert len(redirects) == 1
+    assert redirects[0] == RedirectBranch(from_serial=10, old_target=2, new_target=40)
+
+
+# ---------------------------------------------------------------------------
+# C2b: Passthrough block resolution for accepted corridors
+# ---------------------------------------------------------------------------
+
+
+def test_passthrough_1way_block_redirected_to_current_state_entry(monkeypatch):
+    """1-way intermediate block on ordered_path pointing to dispatcher gets
+    goto-redirected to the current state's entry anchor.
+    """
+    mov = int(ida_hexrays.m_mov)
+    jnz = int(ida_hexrays.m_jnz)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+
+    # Block 10: 2-way branch (horizon, conditional_arm).
+    #   Arm 0 -> block 15 (passthrough), Arm 1 -> dispatcher (2).
+    # Block 15: 1-way, goto -> dispatcher (2).  This is the passthrough block.
+    # Block 30: target handler entry.
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10, 15), 0, 0x2000, ()),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_2WAY),
+                succs=(15, 2),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xDEAD0001),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=jnz,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=1),
+                        d=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            15: BlockSnapshot(
+                serial=15,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(10,),
+                flags=0,
+                start_ea=0x1500,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1500,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3000, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    source_node = _make_reconstruction_node(10, 0x11111111, 10)
+    target_node = _make_reconstruction_node(30, 0xDEAD0001, 30, label="cond_target")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=0xDEAD0001,
+                target_entry_anchor=30,
+                target_label="cond_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=10,
+                    branch_arm=1,
+                ),
+                ordered_path=(10, 15),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert fragment is not None
+    mods = fragment.modifications
+    # Should have: NOP for state-write, RedirectBranch for horizon arm=1,
+    # and RedirectGoto for passthrough block 15 -> source entry anchor 10.
+    nops = [m for m in mods if isinstance(m, NopInstructions)]
+    branch_redirects = [m for m in mods if isinstance(m, RedirectBranch)]
+    goto_redirects = [m for m in mods if isinstance(m, RedirectGoto)]
+    assert len(nops) == 1
+    assert nops[0].block_serial == 10
+    assert len(branch_redirects) == 1
+    assert branch_redirects[0] == RedirectBranch(from_serial=10, old_target=2, new_target=30)
+    # Passthrough: block 15 (1-way, goto dispatcher) -> source entry anchor (10)
+    assert len(goto_redirects) == 1
+    assert goto_redirects[0] == RedirectGoto(from_serial=15, old_target=2, new_target=10)
+
+
+def test_passthrough_2way_block_arm1_redirected(monkeypatch):
+    """2-way intermediate block on ordered_path with arm=1 pointing to
+    dispatcher gets edge-redirected to current state entry.
+    """
+    mov = int(ida_hexrays.m_mov)
+    jnz = int(ida_hexrays.m_jnz)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+
+    # Block 10: 2-way branch (horizon, conditional_arm).
+    #   Arm 0 -> block 15 (passthrough), Arm 1 -> dispatcher (2).
+    # Block 15: 2-way, arm 0 -> 20 (body), arm 1 -> dispatcher (2).
+    # Block 20: body block.
+    # Block 30: target handler entry.
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10, 15), 0, 0x2000, ()),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_2WAY),
+                succs=(15, 2),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xDEAD0001),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=jnz,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=1),
+                        d=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            15: BlockSnapshot(
+                serial=15,
+                block_type=int(ida_hexrays.BLT_2WAY),
+                succs=(20, 2),
+                preds=(10,),
+                flags=0,
+                start_ea=0x1500,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=jnz,
+                        ea=0x1500,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=1),
+                        d=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            20: BlockSnapshot(20, int(ida_hexrays.BLT_1WAY), (), (15,), 0, 0x2020, ()),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3000, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    source_node = _make_reconstruction_node(10, 0x11111111, 10)
+    target_node = _make_reconstruction_node(30, 0xDEAD0001, 30, label="cond_target")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=0xDEAD0001,
+                target_entry_anchor=30,
+                target_label="cond_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=10,
+                    branch_arm=1,
+                ),
+                ordered_path=(10, 15),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert fragment is not None
+    mods = fragment.modifications
+    nops = [m for m in mods if isinstance(m, NopInstructions)]
+    branch_redirects = [m for m in mods if isinstance(m, RedirectBranch)]
+    assert len(nops) == 1
+    assert nops[0].block_serial == 10
+    # Horizon arm=1 redirect + passthrough block 15 arm=1 redirect
+    assert len(branch_redirects) == 2
+    horizon_redirect = [r for r in branch_redirects if r.from_serial == 10]
+    passthrough_redirect = [r for r in branch_redirects if r.from_serial == 15]
+    assert len(horizon_redirect) == 1
+    assert horizon_redirect[0] == RedirectBranch(from_serial=10, old_target=2, new_target=30)
+    assert len(passthrough_redirect) == 1
+    assert passthrough_redirect[0] == RedirectBranch(from_serial=15, old_target=2, new_target=10)
+
+
+# ---------------------------------------------------------------------------
 # ALL_STRATEGIES list integrity
 # ---------------------------------------------------------------------------
 
@@ -6586,7 +8295,7 @@ class TestAllStrategiesList:
             assert instance is not None
 
     def test_families_coverage(self):
-        """Experimental pipeline currently stays in the direct family."""
+        """Experimental pipeline currently spans direct reconstruction plus cleanup."""
         families = {cls().family for cls in ALL_STRATEGIES}
         assert FAMILY_DIRECT in families
-        assert families <= {FAMILY_DIRECT}
+        assert families <= {FAMILY_DIRECT, FAMILY_CLEANUP}
