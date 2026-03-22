@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import sqlite3
 
-from d810.diag.query import block_detail, chain, return_paths, var_writes
-from tests.unit.diag.fixtures import create_sub_7ffd_scenario
+from d810.core.diag.query import block_detail, chain, return_paths, var_writes
+from tests.unit.core.diag.fixtures import create_sub_7ffd_scenario
 
 
 def _db() -> sqlite3.Connection:

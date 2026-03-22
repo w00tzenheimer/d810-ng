@@ -6,8 +6,8 @@ import sqlite3
 
 import pytest
 
-from d810.diag.schema import create_tables
-from d810.diag.snapshot import (
+from d810.core.diag.schema import create_tables
+from d810.core.diag.snapshot import (
     BlockSnapshot,
     DagEdge,
     DagNode,

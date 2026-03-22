@@ -2,10 +2,10 @@
 
 Usage::
 
-    python -m d810.diag chain --db path.sqlite3 131 174 176 200 23 32 62 206 207 218
-    python -m d810.diag var-writes --db path.sqlite3 0x7F0
-    python -m d810.diag block --db path.sqlite3 206 --insns
-    python -m d810.diag return-paths --db path.sqlite3
+    python -m d810.core.diag chain --db path.sqlite3 131 174 176 200 23 32 62 206 207 218
+    python -m d810.core.diag var-writes --db path.sqlite3 0x7F0
+    python -m d810.core.diag block --db path.sqlite3 206 --insns
+    python -m d810.core.diag return-paths --db path.sqlite3
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import json
 import sqlite3
 import sys
 
-from d810.diag.query import block_detail, chain, return_paths, var_writes
+from d810.core.diag.query import block_detail, chain, return_paths, var_writes
 
 
 def _resolve_snapshot_id(conn: sqlite3.Connection, snapshot: int) -> int:
@@ -112,7 +112,7 @@ def _format_return_paths(paths: list[dict]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for ``python -m d810.diag``."""
+    """Entry point for ``python -m d810.core.diag``."""
     # Common args shared by all subcommands via parents= mechanism.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser = argparse.ArgumentParser(
-        prog="d810.diag",
+        prog="d810.core.diag",
         description="Query MBA diagnostic snapshots.",
     )
     sub = parser.add_subparsers(dest="command")
