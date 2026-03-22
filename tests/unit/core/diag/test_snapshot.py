@@ -13,6 +13,7 @@ from d810.core.diag.snapshot import (
     DagNode,
     InstructionSnapshot,
     Modification,
+    _safe_int,
     snapshot_dag,
     snapshot_mba,
     snapshot_modifications,
@@ -182,6 +183,50 @@ class TestSnapshotMba:
         ).fetchone()
         assert row[0] == 0x7F0
         assert row[1] == 0x3C
+
+    def test_large_unsigned_ea_does_not_overflow(self) -> None:
+        """IDA unsigned 64-bit EAs > 0x7FFFFFFFFFFFFFFF must not crash SQLite."""
+        large_ea = 0xFFFFFFFFFFFFFF80  # typical IDA high address
+        large_imm = 0xC5FB34A1D9A6E315  # unsigned 64-bit immediate
+        insn = _make_insn(
+            0,
+            ea=large_ea,
+            src_l_value=large_imm,
+            src_l_type="mop_n",
+            dstr="mov #0xC5FB.., dest",
+        )
+        blk = BlockSnapshot(
+            serial=0,
+            block_type=1,
+            type_name="BLT_1WAY",
+            start_ea=large_ea,
+            end_ea=large_ea + 4,
+            nsucc=1,
+            npred=0,
+            succs=[1],
+            preds=[],
+            instructions=[insn],
+        )
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        # This must NOT raise OverflowError
+        snap_id = snapshot_mba(conn, [blk], label="overflow", func_ea=large_ea)
+        assert snap_id is not None
+
+        # Verify stored values are negative (signed representation)
+        row = conn.execute(
+            "SELECT start_ea FROM blocks WHERE snapshot_id=? AND serial=0",
+            (snap_id,),
+        ).fetchone()
+        assert row[0] < 0  # stored as signed negative
+
+        irow = conn.execute(
+            "SELECT ea, src_l_value FROM instructions "
+            "WHERE snapshot_id=? AND block_serial=0",
+            (snap_id,),
+        ).fetchone()
+        assert irow[0] < 0  # ea stored as signed negative
+        assert irow[1] < 0  # large immediate stored as signed negative
 
 
 # ── Task 3: Strategy metadata writer tests ───────────────────────────────
@@ -364,3 +409,29 @@ class TestSnapshotReachability:
         assert len(rows) == 3
         # All defaults: not bst, not reachable, not gutted, not claimed
         assert all(row[1:] == (0, 0, 0, 0) for row in rows)
+
+
+class TestSafeInt:
+    """Tests for _safe_int helper that clamps unsigned 64-bit to signed."""
+
+    def test_none_passthrough(self) -> None:
+        assert _safe_int(None) is None
+
+    def test_small_positive_unchanged(self) -> None:
+        assert _safe_int(0x1000) == 0x1000
+
+    def test_max_signed_unchanged(self) -> None:
+        assert _safe_int(0x7FFFFFFFFFFFFFFF) == 0x7FFFFFFFFFFFFFFF
+
+    def test_one_above_max_signed_wraps(self) -> None:
+        assert _safe_int(0x8000000000000000) == -0x8000000000000000
+
+    def test_max_unsigned_wraps(self) -> None:
+        assert _safe_int(0xFFFFFFFFFFFFFFFF) == -1
+
+    def test_typical_ida_ea(self) -> None:
+        # 0xFFFFFFFFFFFFFF80 -> signed = -128
+        assert _safe_int(0xFFFFFFFFFFFFFF80) == -128
+
+    def test_zero_unchanged(self) -> None:
+        assert _safe_int(0) == 0

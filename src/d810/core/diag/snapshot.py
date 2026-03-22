@@ -6,6 +6,17 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 
+_SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
+
+
+def _safe_int(val: int | None) -> int | None:
+    """Clamp to signed 64-bit range for SQLite. Store as negative if > 2^63."""
+    if val is None:
+        return None
+    if val > _SIGNED64_MAX:
+        return val - (1 << 64)
+    return val
+
 
 @dataclass
 class InstructionSnapshot:
@@ -183,7 +194,7 @@ def snapshot_mba(
     cursor = conn.execute(
         "INSERT INTO snapshots (label, func_ea, maturity, block_count, timestamp) "
         "VALUES (?, ?, ?, ?, ?)",
-        (label, func_ea, maturity, len(blocks), time.time()),
+        (label, _safe_int(func_ea), maturity, len(blocks), time.time()),
     )
     snap_id = cursor.lastrowid
     assert snap_id is not None
@@ -195,8 +206,8 @@ def snapshot_mba(
             b.serial,
             b.block_type,
             b.type_name,
-            b.start_ea,
-            b.end_ea,
+            _safe_int(b.start_ea),
+            _safe_int(b.end_ea),
             b.nsucc,
             b.npred,
             json.dumps(b.succs),
@@ -219,18 +230,18 @@ def snapshot_mba(
                 snap_id,
                 b.serial,
                 insn.index,
-                insn.ea,
+                _safe_int(insn.ea),
                 insn.opcode,
                 insn.opcode_name,
                 insn.dest_type,
-                insn.dest_stkoff,
+                _safe_int(insn.dest_stkoff),
                 insn.dest_size,
                 insn.src_l_type,
-                insn.src_l_stkoff,
-                insn.src_l_value,
+                _safe_int(insn.src_l_stkoff),
+                _safe_int(insn.src_l_value),
                 insn.src_r_type,
-                insn.src_r_stkoff,
-                insn.src_r_value,
+                _safe_int(insn.src_r_stkoff),
+                _safe_int(insn.src_r_value),
                 insn.dstr,
                 insn.meta,
             ))
@@ -261,7 +272,7 @@ def snapshot_dag(
     node_rows = [
         (
             snapshot_id,
-            n.state,
+            _safe_int(n.state),
             n.state_hex,
             n.entry_block,
             n.classification,
@@ -278,8 +289,8 @@ def snapshot_dag(
         (
             snapshot_id,
             e.edge_id,
-            e.source_state,
-            e.target_state,
+            _safe_int(e.source_state),
+            _safe_int(e.target_state),
             e.edge_kind,
             e.source_block,
             e.source_arm,
@@ -316,7 +327,7 @@ def snapshot_modifications(
             m.source_block,
             m.target_block,
             m.old_target,
-            m.write_site_ea,
+            _safe_int(m.write_site_ea),
             m.write_site_blk,
             m.status,
             m.reason,
