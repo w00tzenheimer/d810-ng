@@ -825,9 +825,9 @@ def test_state_write_reconstruction_prefers_edge_target_anchor_over_global_state
     )
 
     assert fragment is not None
-    assert isinstance(fragment.modifications[0], NopInstructions)
-    assert isinstance(fragment.modifications[1], RedirectGoto)
-    assert fragment.modifications[1].new_target == 30
+    # State-write NOPing disabled — only redirect emitted
+    assert isinstance(fragment.modifications[0], RedirectGoto)
+    assert fragment.modifications[0].new_target == 30
     assert fragment.metadata["reconstruction_sites"][0]["emission_mode"] == "direct"
 
 
@@ -938,10 +938,11 @@ def test_state_write_reconstruction_wires_to_immediate_target(monkeypatch):
     )
 
     assert fragment is not None
-    assert isinstance(fragment.modifications[1], RedirectGoto)
+    # State-write NOPing disabled — only redirect emitted
+    assert isinstance(fragment.modifications[0], RedirectGoto)
     # With relay collapsing disabled, we wire to the immediate target (20),
     # not the collapsed relay end (30).
-    assert fragment.modifications[1].new_target == 20
+    assert fragment.modifications[0].new_target == 20
 
 
 def test_state_write_reconstruction_accepts_corridor_with_trailing_non_state_write(
@@ -1036,14 +1037,9 @@ def test_state_write_reconstruction_accepts_corridor_with_trailing_non_state_wri
     assert fragment is not None
     assert fragment.metadata["reconstruction_sites"][0]["emission_mode"] == "direct"
 
-    # Only the state-write EA (0x1000) is NOPed, NOT the local stack write (0x1004).
-    nop_mod = fragment.modifications[0]
-    assert isinstance(nop_mod, NopInstructions)
-    assert nop_mod.insn_eas == (0x1000,)
-    assert nop_mod.block_serial == 10
-
+    # State-write NOPing disabled — only redirect emitted.
     # Redirect to target handler is present.
-    redirect_mod = fragment.modifications[1]
+    redirect_mod = fragment.modifications[0]
     assert isinstance(redirect_mod, RedirectGoto)
     assert redirect_mod.new_target == 30
 
@@ -1157,12 +1153,11 @@ def test_state_write_reconstruction_plans_formula_dispatch_handoff(monkeypatch):
     )
 
     assert fragment is not None
-    assert len(fragment.modifications) == 2
-    assert isinstance(fragment.modifications[0], NopInstructions)
-    assert isinstance(fragment.modifications[1], RedirectGoto)
-    assert fragment.modifications[0].insn_eas == (0x1000,)  # only state-write, not goto
-    assert fragment.modifications[1].from_serial == 10
-    assert fragment.modifications[1].new_target == 30
+    # State-write NOPing disabled — only redirect emitted
+    assert len(fragment.modifications) == 1
+    assert isinstance(fragment.modifications[0], RedirectGoto)
+    assert fragment.modifications[0].from_serial == 10
+    assert fragment.modifications[0].new_target == 30
 
 
 def test_state_write_reconstruction_rebuilds_shared_suffix_via_duplication(monkeypatch):
@@ -7923,12 +7918,10 @@ def test_state_write_reconstruction_conditional_arm_basic(monkeypatch):
 
     assert fragment is not None
     mods = fragment.modifications
-    # Should have NOP for the state-write + RedirectBranch for arm=1
+    # State-write NOPing disabled — only RedirectBranch for arm=1
     nops = [m for m in mods if isinstance(m, NopInstructions)]
     redirects = [m for m in mods if isinstance(m, RedirectBranch)]
-    assert len(nops) == 1
-    assert nops[0].block_serial == 10
-    assert nops[0].insn_eas == (0x1000,)
+    assert len(nops) == 0
     assert len(redirects) == 1
     assert redirects[0] == RedirectBranch(from_serial=10, old_target=2, new_target=30)
     # Verify metadata records conditional_arm mode
@@ -8023,11 +8016,10 @@ def test_state_write_reconstruction_conditional_arm_dual_dispatcher(monkeypatch)
 
     assert fragment is not None
     mods = fragment.modifications
+    # State-write NOPing disabled — only redirects emitted
     nops = [m for m in mods if isinstance(m, NopInstructions)]
     redirects = [m for m in mods if isinstance(m, RedirectBranch)]
-    assert len(nops) == 1
-    assert nops[0].block_serial == 10
-    assert nops[0].insn_eas == (0x1000,)
+    assert len(nops) == 0
     # Only ONE redirect for the transition arm (arm=1). NOT both.
     assert len(redirects) == 1
     assert redirects[0] == RedirectBranch(from_serial=10, old_target=2, new_target=40)
@@ -8141,13 +8133,12 @@ def test_passthrough_1way_block_redirected_to_current_state_entry(monkeypatch):
 
     assert fragment is not None
     mods = fragment.modifications
-    # Should have: NOP for state-write, RedirectBranch for horizon arm=1,
+    # State-write NOPing disabled — only RedirectBranch for horizon arm=1,
     # and RedirectGoto for passthrough block 15 -> source entry anchor 10.
     nops = [m for m in mods if isinstance(m, NopInstructions)]
     branch_redirects = [m for m in mods if isinstance(m, RedirectBranch)]
     goto_redirects = [m for m in mods if isinstance(m, RedirectGoto)]
-    assert len(nops) == 1
-    assert nops[0].block_serial == 10
+    assert len(nops) == 0
     assert len(branch_redirects) == 1
     assert branch_redirects[0] == RedirectBranch(from_serial=10, old_target=2, new_target=30)
     # Passthrough: block 15 (1-way, goto dispatcher) -> source entry anchor (10)
@@ -8262,8 +8253,8 @@ def test_passthrough_2way_block_arm1_redirected(monkeypatch):
     mods = fragment.modifications
     nops = [m for m in mods if isinstance(m, NopInstructions)]
     branch_redirects = [m for m in mods if isinstance(m, RedirectBranch)]
-    assert len(nops) == 1
-    assert nops[0].block_serial == 10
+    # DISABLED: state-write NOPing is display-only — IDA DCE handles at later maturity
+    assert len(nops) == 0
     # Horizon arm=1 redirect + passthrough block 15 arm=1 redirect
     assert len(branch_redirects) == 2
     horizon_redirect = [r for r in branch_redirects if r.from_serial == 10]
