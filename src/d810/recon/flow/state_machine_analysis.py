@@ -28,6 +28,7 @@ __all__ = [
     "eval_bst_condition",
     "evaluate_handler_paths",
     "find_last_state_write_site_snapshot",
+    "find_last_state_write_site_on_path_snapshot",
     "find_state_write_sites_snapshot",
     "find_terminal_exit_target_snapshot",
     "init_bst_cmp_opcodes",
@@ -157,8 +158,11 @@ class StateWriteSite:
     state_value: int
     insn_ea: int
     insn_index: int
+    truncation_insn_eas: tuple[int, ...] = ()
     trailing_insn_eas: tuple[int, ...] = ()
     trailing_opcodes: tuple[int, ...] = ()
+    unsafe_trailing_insn_eas: tuple[int, ...] = ()
+    unsafe_trailing_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +252,49 @@ def _eval_insn_view_snapshot(insn: InsnSnapshot) -> object:
         r=slot_map.get("r", insn.r),
         d=slot_map.get("d", insn.d),
     )
+
+
+def _classify_truncation_side_effect_snapshot(
+    insn: InsnSnapshot,
+    *,
+    state_var_stkoff: int,
+) -> str | None:
+    """Classify why truncating *insn* after a state write would be unsafe."""
+
+    opcode = getattr(insn, "opcode", None)
+    safe_opcodes = {
+        getattr(ida_hexrays, "m_goto", None),
+        getattr(ida_hexrays, "m_nop", None),
+    }
+    if opcode in safe_opcodes:
+        return None
+
+    call_opcodes = {
+        getattr(ida_hexrays, "m_call", None),
+        getattr(ida_hexrays, "m_icall", None),
+    }
+    if opcode in call_opcodes:
+        return "call"
+
+    eval_insn = _eval_insn_view_snapshot(insn)
+    dest = getattr(eval_insn, "d", None)
+    if dest is None:
+        return "control_flow"
+
+    mop_type = getattr(dest, "t", None)
+    if mop_type == getattr(ida_hexrays, "mop_S", None):
+        stkoff = getattr(dest, "stkoff", None)
+        if stkoff is None:
+            stack_ref = getattr(dest, "s", None)
+            stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
+        if stkoff is not None and int(stkoff) == int(state_var_stkoff):
+            return "state_var_write"
+        return "memory_write"
+
+    if mop_type == getattr(ida_hexrays, "mop_r", None):
+        return "register_write"
+
+    return "unknown_side_effect"
 
 
 def _meet_constant_maps(pred_maps: tuple[dict[int, int], ...]) -> dict[int, int]:
@@ -457,14 +504,30 @@ def find_state_write_sites_snapshot(
             _kill_constant_dest_snapshot(dest, stk_map, reg_map)
             continue
         trailing = instructions[index + 1 :]
+        unsafe_trailing_eas: list[int] = []
+        unsafe_trailing_reasons: list[str] = []
+        for trailing_insn in trailing:
+            reason = _classify_truncation_side_effect_snapshot(
+                trailing_insn,
+                state_var_stkoff=state_var_stkoff,
+            )
+            if reason is None:
+                continue
+            unsafe_trailing_eas.append(int(trailing_insn.ea))
+            unsafe_trailing_reasons.append(reason)
         sites.append(
             StateWriteSite(
                 block_serial=block_serial,
                 state_value=resolved_state & 0xFFFFFFFF,
                 insn_ea=int(insn.ea),
                 insn_index=index,
+                truncation_insn_eas=tuple(
+                    [int(insn.ea), *(int(tail.ea) for tail in trailing)]
+                ),
                 trailing_insn_eas=tuple(int(tail.ea) for tail in trailing),
                 trailing_opcodes=tuple(int(tail.opcode) for tail in trailing),
+                unsafe_trailing_insn_eas=tuple(unsafe_trailing_eas),
+                unsafe_trailing_reasons=tuple(unsafe_trailing_reasons),
             )
         )
 
@@ -489,6 +552,56 @@ def find_last_state_write_site_snapshot(
         initial_reg_map=initial_reg_map,
     )
     return sites[-1] if sites else None
+
+
+def find_last_state_write_site_on_path_snapshot(
+    flow_graph: FlowGraph,
+    ordered_path: tuple[int, ...] | list[int],
+    state_var_stkoff: int,
+    *,
+    in_stk_maps: dict[int, dict[int, int]] | None = None,
+    in_reg_maps: dict[int, dict[int, int]] | None = None,
+) -> tuple[int, StateWriteSite] | None:
+    """Return the deepest resolved state write while walking one concrete path.
+
+    Unlike :func:`find_last_state_write_site_snapshot`, this helper carries the
+    path-local constant environment forward block by block. That preserves
+    predecessor-specific constants across merge points, which is required when
+    a semantic corridor converges before the state write.
+    """
+
+    path = tuple(int(serial) for serial in ordered_path)
+    if not path:
+        return None
+
+    entry_serial = path[0]
+    stk_map = dict((in_stk_maps or {}).get(entry_serial, {}))
+    reg_map = dict((in_reg_maps or {}).get(entry_serial, {}))
+    last_site: tuple[int, StateWriteSite] | None = None
+
+    for block_serial in path:
+        block = flow_graph.get_block(block_serial)
+        if block is None:
+            return last_site
+
+        site = find_last_state_write_site_snapshot(
+            flow_graph,
+            block_serial,
+            state_var_stkoff,
+            initial_stk_map=stk_map,
+            initial_reg_map=reg_map,
+        )
+        if site is not None:
+            last_site = (int(block_serial), site)
+
+        stk_map, reg_map = _transfer_snapshot_constant_block(
+            block,
+            stk_map,
+            reg_map,
+            state_var_stkoff,
+        )
+
+    return last_site
 
 
 def find_terminal_exit_target_snapshot(

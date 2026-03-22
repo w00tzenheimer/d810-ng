@@ -1569,13 +1569,14 @@ class HodurUnflattener(GenericUnflatteningRule):
         dispatcher_serial: int,
         bst_serials: set[int],
     ) -> int:
-        """Clear the unreachable dispatcher island in-place after BST cleanup.
+        """Gut-and-Wire soft-kill of unreachable blocks after BST cleanup.
 
-        The translator-based dead-block elimination path re-verifies a second
-        large PatchPlan against an already-mutated MBA and can trip INTERR 50856.
-        At this point the dispatcher island is already unreachable from block 0,
-        so we can collapse those blocks directly on the live MBA by severing
-        their outgoing edges and deleting their instructions.
+        ``mba.remove_empty_and_unreachable_blocks()`` segfaults at GLBOPT1.
+        Instead of removing blocks, this pass "soft-kills" them: NOP payload
+        instructions and leave blocks as 1-way goto shells (empty
+        passthroughs).  2-way conditional blocks are converted to 1-way by
+        replacing the conditional tail with ``m_goto`` to the first successor.
+        Hex-Rays' later maturity passes (MMAT_CALLS+) safely fold them out.
         """
         mba = self.mba
         if mba is None or mba.qty <= 1:
@@ -1608,19 +1609,26 @@ class HodurUnflattener(GenericUnflatteningRule):
             )
             return 0
 
-        cleanup_candidates: set[int] = set()
+        # REMOVED: return frontier gate was checking the wrong domain —
+        # _audit_return_sites tracks pre-linearization return sites whose
+        # origin_block serials belong to BST/dispatcher blocks that SHOULD
+        # be eliminated.  The gate incorrectly prevented dead block cleanup
+        # for blocks that are legitimately unreachable after linearization.
+
+        # Diagnostic: walk dispatcher component for logging purposes
+        dispatcher_component: set[int] = set()
         forward_queue = [dispatcher_serial]
         while forward_queue:
             serial = forward_queue.pop()
-            if serial in cleanup_candidates or serial not in unreachable:
+            if serial in dispatcher_component or serial not in unreachable:
                 continue
-            cleanup_candidates.add(serial)
+            dispatcher_component.add(serial)
             blk = mba.get_mblock(serial)
             if blk is None:
                 continue
             for i in range(blk.nsucc()):
                 succ = blk.succ(i)
-                if succ in unreachable and succ not in cleanup_candidates:
+                if succ in unreachable and succ not in dispatcher_component:
                     forward_queue.append(succ)
 
         backward_queue = [dispatcher_serial]
@@ -1633,11 +1641,22 @@ class HodurUnflattener(GenericUnflatteningRule):
                 continue
             for i in range(blk.npred()):
                 pred = blk.pred(i)
-                if pred in unreachable and pred not in cleanup_candidates:
-                    cleanup_candidates.add(pred)
+                if pred in unreachable and pred not in dispatcher_component:
+                    dispatcher_component.add(pred)
                     backward_queue.append(pred)
 
-        cleanup_candidates.update(unreachable & set(bst_serials))
+        dispatcher_component.update(unreachable & set(bst_serials))
+
+        orphaned = unreachable - dispatcher_component
+        if orphaned:
+            unflat_logger.info(
+                "DeadBlockElimination: %d dispatcher-island + %d orphaned unreachable blocks "
+                "(total %d)",
+                len(dispatcher_component), len(orphaned), len(unreachable),
+            )
+
+        # Clean ALL unreachable blocks, not just the dispatcher island
+        cleanup_candidates = set(unreachable)
         cleanup_candidates.discard(stop_serial)
         if not cleanup_candidates:
             unflat_logger.info(
@@ -1645,67 +1664,77 @@ class HodurUnflattener(GenericUnflatteningRule):
             )
             return 0
 
-        cleaned = 0
+        # ----- Gut-and-Wire soft-kill pass -----
+        # mba.remove_empty_and_unreachable_blocks() segfaults at GLBOPT1.
+        # Instead of removing blocks or converting to 0-way shells (which
+        # triggers INTERR 50846), NOP payload instructions and leave blocks
+        # as 1-way goto shells.  Hex-Rays' later maturity passes safely
+        # fold these empty passthrough blocks out.
+        gutted = 0
         for serial in sorted(cleanup_candidates):
             blk = mba.get_mblock(serial)
             if blk is None:
                 continue
-            blk.mark_lists_dirty()
-            cleaned += 1
 
-        try:
-            if hasattr(mba, "remove_empty_and_unreachable_blocks"):
-                mba.remove_empty_and_unreachable_blocks()
-            elif hasattr(mba, "remove_empty_blocks"):
-                mba.remove_empty_blocks()
-        except Exception as exc:
-            unflat_logger.warning(
-                "DeadBlockElimination: IDA empty/unreachable cleanup failed after clearing %d blocks: %s",
-                cleaned,
-                exc,
-                exc_info=True,
-            )
-            return 0
+            nsucc = blk.nsucc()
 
-        try:
-            mba.build_graph()
-        except Exception:
-            unflat_logger.debug(
-                "DeadBlockElimination: build_graph unavailable after unreachable cleanup"
-            )
-
-        # Refresh per-block use/def state before verify. Clearing the unreachable
-        # island in place left stale must/may lists behind (INTERR 50846), so
-        # rebuild lists over the compacted graph after IDA removes dead blocks.
-        for serial in range(mba.qty):
-            blk = mba.get_mblock(serial)
-            if blk is None:
+            # Skip terminal (0-way) blocks — don't modify BLT_STOP etc.
+            if nsucc == 0:
                 continue
-            try:
-                blk.build_lists(False)
-            except Exception:
-                try:
-                    blk.make_lists_ready()
-                except Exception:
-                    pass
 
-        mba.mark_chains_dirty()
-        try:
-            mba.verify(True)
-        except Exception as exc:
-            unflat_logger.warning(
-                "DeadBlockElimination: live cleanup verify failed after IDA cleanup of %d blocks: %s",
-                cleaned,
-                exc,
-                exc_info=True,
+            tail = blk.tail
+
+            # Step 1: NOP all payload instructions (everything before tail).
+            insn = blk.head
+            while insn is not None and insn != tail:
+                next_insn = insn.next
+                blk.make_nop(insn)
+                insn = next_insn
+
+            # Step 2: Handle block type.
+            if nsucc > 1:
+                # 2-way (conditional) block — convert to 1-way goto shell.
+                # Keep the first successor (fallthrough), drop the rest.
+                keep_succ = blk.succ(0)
+                drop_succs = [blk.succ(i) for i in range(1, nsucc)]
+
+                # Convert tail instruction to m_goto targeting kept successor.
+                if tail is not None:
+                    tail.opcode = ida_hexrays.m_goto
+                    tail.l.make_blkref(keep_succ)
+                    tail.r.erase()
+                    tail.d.erase()
+
+                # Remove dropped successors from succset and their predsets.
+                for drop_serial in drop_succs:
+                    blk.succset._del(drop_serial)
+                    drop_blk = mba.get_mblock(drop_serial)
+                    if drop_blk is not None:
+                        drop_blk.predset._del(serial)
+                        drop_blk.mark_lists_dirty()
+
+                blk.type = ida_hexrays.BLT_1WAY
+
+            # For 1-way blocks (nsucc == 1): tail is already m_goto,
+            # leave it intact — the block is already a 1-way shell.
+
+            blk.mark_lists_dirty()
+            gutted += 1
+
+        if gutted == 0:
+            unflat_logger.info(
+                "GutAndWire: no blocks gutted (all candidates were None)"
             )
             return 0
+
+        # Mark chains dirty once after all mutations.
+        mba.mark_chains_dirty()
 
         unflat_logger.info(
-            "DeadBlockElimination: cleared %d unreachable dispatcher-island blocks after BST cleanup",
-            cleaned,
+            "GutAndWire: soft-killed %d unreachable blocks as 1-way goto shells",
+            gutted,
         )
-        return cleaned
+        return gutted
 
     def _eval_mba_expression(
         self,

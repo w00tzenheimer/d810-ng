@@ -878,8 +878,17 @@ def simulate_edits(
                 idx = new_succs.index(edit.old_target)
                 new_succs[idx] = edit.new_target
             except ValueError:
-                # old_target not found — append new_target as fallback
-                new_succs.append(edit.new_target)
+                # old_target not found — a prior edit already changed this
+                # block's successor.  Skip rather than appending (which would
+                # create a spurious extra successor and trigger
+                # SUCC_MISMATCH rejection downstream).
+                logger.warning(
+                    "simulate_edits: %s on block %d skipped — old_target %d "
+                    "not in current successors %s (new_target was %d)",
+                    edit.kind, edit.source, edit.old_target, new_succs,
+                    edit.new_target,
+                )
+                continue
             result[edit.source] = new_succs
 
         elif edit.kind == "convert_to_goto":

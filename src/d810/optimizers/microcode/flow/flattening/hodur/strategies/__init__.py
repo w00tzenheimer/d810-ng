@@ -108,16 +108,15 @@ __all__ = [
     "LEGACY_STRATEGIES",
 ]
 
-# Experimental pipeline: reconstruction + LFG + cleanup.
-# The reconstruction pass claims proven state-write horizons first so LFG can
-# operate on fewer dispatcher-root feeders.
+# Experimental pipeline: reconstruction-first with direct cleanup.
+# LinearizedFlowGraphStrategy remains importable for targeted tests and manual
+# experiments, but it is no longer part of the live Hodur pipeline.
 # DEAD CODE NOTE:
 # BackwardPredResolutionStrategy is intentionally not registered here anymore.
-# It remains in-tree only as reference/debugging code; LFG now owns the late
-# orphan dispatcher-tail rewrites that backward_pred used to patch.
+# It remains in-tree only as reference/debugging code; reconstruction now owns
+# the late semantic handoffs that backward_pred used to patch heuristically.
 ALL_STRATEGIES: list[type] = [
     StateWriteReconstructionStrategy,
-    LinearizedFlowGraphStrategy,
     HiddenHandlerClosureStrategy,
     DeadStateVariableEliminationStrategy,
     # DISCRIMINATOR TEST: topo disabled

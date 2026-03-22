@@ -1646,8 +1646,8 @@ class DeferredGraphModifier:
                 # Unconditional goto: successor is tail.l.b (mop_b operand)
                 if tail.l is not None and tail.l.t == _ihr.mop_b:
                     expected = {int(tail.l.b)}
-            elif tail.opcode == _ihr.m_jcnd:
-                # Conditional branch: fallthrough = serial+1, taken = tail.d.b
+            elif _ihr.m_jcnd <= tail.opcode <= _ihr.m_jle:
+                # Conditional branch (m_jcnd..m_jle): fallthrough = serial+1, taken = tail.d.b
                 if tail.d is not None and tail.d.t == _ihr.mop_b:
                     next_serial = blk.serial + 1
                     if next_serial < qty:
