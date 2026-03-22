@@ -8266,6 +8266,181 @@ def test_passthrough_2way_block_arm1_redirected(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Return-slot artifact classification
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyArtifactReturnBlocks:
+    """Unit tests for _classify_artifact_return_blocks static method."""
+
+    def test_xdu_artifact_detected(self):
+        """Block with m_xdu state_var -> other stkvar is classified as artifact."""
+        m_xdu = int(ida_hexrays.m_xdu)
+        mop_S = int(ida_hexrays.mop_S)
+        state_stkoff = 0x3C
+        return_stkoff = 0x7F0
+
+        fg = FlowGraph(
+            blocks={
+                0: BlockSnapshot(0, 0, (41,), (), 0, 0x1000, ()),
+                41: BlockSnapshot(
+                    serial=41,
+                    block_type=int(ida_hexrays.BLT_1WAY),
+                    succs=(217,),
+                    preds=(0,),
+                    flags=0,
+                    start_ea=0x4100,
+                    insn_snapshots=(
+                        InsnSnapshot(
+                            opcode=m_xdu,
+                            ea=0x4100,
+                            operands=(),
+                            l=MopSnapshot(t=mop_S, size=4, stkoff=state_stkoff),
+                            d=MopSnapshot(t=mop_S, size=8, stkoff=return_stkoff),
+                        ),
+                    ),
+                ),
+                217: BlockSnapshot(217, int(ida_hexrays.BLT_1WAY), (), (41,), 0, 0xD900, ()),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+        result = StateWriteReconstructionStrategy._classify_artifact_return_blocks(
+            fg, state_stkoff, {0xDEAD0001},
+        )
+        assert 41 in result
+        assert 0 not in result
+        assert 217 not in result
+
+    def test_mov_const_artifact_detected(self):
+        """Block with m_mov #state_const -> other stkvar is classified as artifact."""
+        m_mov = int(ida_hexrays.m_mov)
+        mop_n = int(ida_hexrays.mop_n)
+        mop_S = int(ida_hexrays.mop_S)
+        state_stkoff = 0x3C
+        return_stkoff = 0x7F0
+        state_const = 0x41FB8FBB
+
+        fg = FlowGraph(
+            blocks={
+                0: BlockSnapshot(0, 0, (27,), (), 0, 0x1000, ()),
+                27: BlockSnapshot(
+                    serial=27,
+                    block_type=int(ida_hexrays.BLT_1WAY),
+                    succs=(217,),
+                    preds=(0,),
+                    flags=0,
+                    start_ea=0x1B00,
+                    insn_snapshots=(
+                        InsnSnapshot(
+                            opcode=m_mov,
+                            ea=0x1B00,
+                            operands=(),
+                            l=MopSnapshot(t=mop_n, size=4, value=state_const),
+                            d=MopSnapshot(t=mop_S, size=8, stkoff=return_stkoff),
+                        ),
+                    ),
+                ),
+                217: BlockSnapshot(217, int(ida_hexrays.BLT_1WAY), (), (27,), 0, 0xD900, ()),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+        result = StateWriteReconstructionStrategy._classify_artifact_return_blocks(
+            fg, state_stkoff, {state_const},
+        )
+        assert 27 in result
+
+    def test_real_setter_not_classified(self):
+        """Block with m_mov from non-state-const to stkvar is NOT artifact."""
+        m_mov = int(ida_hexrays.m_mov)
+        mop_n = int(ida_hexrays.mop_n)
+        mop_S = int(ida_hexrays.mop_S)
+        state_stkoff = 0x3C
+        return_stkoff = 0x7F0
+
+        fg = FlowGraph(
+            blocks={
+                0: BlockSnapshot(0, 0, (94,), (), 0, 0x1000, ()),
+                94: BlockSnapshot(
+                    serial=94,
+                    block_type=int(ida_hexrays.BLT_1WAY),
+                    succs=(217,),
+                    preds=(0,),
+                    flags=0,
+                    start_ea=0x5E00,
+                    insn_snapshots=(
+                        InsnSnapshot(
+                            opcode=m_mov,
+                            ea=0x5E00,
+                            operands=(),
+                            l=MopSnapshot(t=mop_n, size=4, value=0x00000042),
+                            d=MopSnapshot(t=mop_S, size=8, stkoff=return_stkoff),
+                        ),
+                    ),
+                ),
+                217: BlockSnapshot(217, int(ida_hexrays.BLT_1WAY), (), (94,), 0, 0xD900, ()),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+        result = StateWriteReconstructionStrategy._classify_artifact_return_blocks(
+            fg, state_stkoff, {0xDEAD0001, 0x41FB8FBB},
+        )
+        assert 94 not in result
+
+    def test_xdu_self_write_not_classified(self):
+        """m_xdu where both src and dest are state_var stkoff is NOT artifact."""
+        m_xdu = int(ida_hexrays.m_xdu)
+        mop_S = int(ida_hexrays.mop_S)
+        state_stkoff = 0x3C
+
+        fg = FlowGraph(
+            blocks={
+                0: BlockSnapshot(0, 0, (50,), (), 0, 0x1000, ()),
+                50: BlockSnapshot(
+                    serial=50,
+                    block_type=int(ida_hexrays.BLT_1WAY),
+                    succs=(60,),
+                    preds=(0,),
+                    flags=0,
+                    start_ea=0x3200,
+                    insn_snapshots=(
+                        InsnSnapshot(
+                            opcode=m_xdu,
+                            ea=0x3200,
+                            operands=(),
+                            l=MopSnapshot(t=mop_S, size=4, stkoff=state_stkoff),
+                            d=MopSnapshot(t=mop_S, size=8, stkoff=state_stkoff),
+                        ),
+                    ),
+                ),
+                60: BlockSnapshot(60, int(ida_hexrays.BLT_1WAY), (), (50,), 0, 0x3C00, ()),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+        result = StateWriteReconstructionStrategy._classify_artifact_return_blocks(
+            fg, state_stkoff, {0xDEAD0001},
+        )
+        assert 50 not in result
+
+    def test_empty_flow_graph(self):
+        """Empty flow graph returns empty set."""
+        fg = FlowGraph(
+            blocks={
+                0: BlockSnapshot(0, 0, (), (), 0, 0x1000, ()),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+        result = StateWriteReconstructionStrategy._classify_artifact_return_blocks(
+            fg, 0x3C, {0xDEAD0001},
+        )
+        assert result == set()
+
+
+# ---------------------------------------------------------------------------
 # ALL_STRATEGIES list integrity
 # ---------------------------------------------------------------------------
 
