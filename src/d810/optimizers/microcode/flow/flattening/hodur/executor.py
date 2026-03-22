@@ -72,6 +72,133 @@ from d810.recon.microcode_dump import mba_to_human_readable
 
 executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 
+# ---------- MBA-to-BlockSnapshot helper (IDA-dependent) ----------
+
+_OPCODE_NAME_CACHE: dict[int, str] = {}
+
+
+def _opcode_name(opcode: int) -> str:
+    """Return human-readable opcode name, with a cache to avoid repeated lookups."""
+    if opcode in _OPCODE_NAME_CACHE:
+        return _OPCODE_NAME_CACHE[opcode]
+    try:
+        name = ida_hexrays.get_mreg_name(opcode, 0)
+        if not name:
+            name = f"op_{opcode}"
+    except Exception:
+        name = f"op_{opcode}"
+    _OPCODE_NAME_CACHE[opcode] = name
+    return name
+
+
+def _mop_type_name(mop: "ida_hexrays.mop_t") -> str | None:
+    """Return the mop type as a human-readable string, or None if zero/empty."""
+    _MOP_NAMES = {
+        ida_hexrays.mop_z: None,
+        ida_hexrays.mop_r: "mop_r",
+        ida_hexrays.mop_n: "mop_n",
+        ida_hexrays.mop_d: "mop_d",
+        ida_hexrays.mop_S: "mop_S",
+        ida_hexrays.mop_v: "mop_v",
+        ida_hexrays.mop_b: "mop_b",
+        ida_hexrays.mop_f: "mop_f",
+        ida_hexrays.mop_l: "mop_l",
+        ida_hexrays.mop_a: "mop_a",
+        ida_hexrays.mop_h: "mop_h",
+        ida_hexrays.mop_str: "mop_str",
+        ida_hexrays.mop_c: "mop_c",
+        ida_hexrays.mop_fn: "mop_fn",
+        ida_hexrays.mop_p: "mop_p",
+        ida_hexrays.mop_sc: "mop_sc",
+    }
+    return _MOP_NAMES.get(mop.t)
+
+
+def _mba_to_block_snapshots(
+    mba: "ida_hexrays.mba_t",
+) -> list:
+    """Convert live MBA to a list of BlockSnapshot dataclasses for diagnostic snapshot.
+
+    This function has IDA imports and must live in a file that already imports ida_hexrays.
+    Uses lazy import of snapshot types to avoid import cycle when diag is disabled.
+    """
+    from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+
+    blocks: list[BlockSnapshot] = []
+    for idx in range(mba.qty):
+        blk = mba.get_mblock(idx)
+        if blk is None:
+            continue
+
+        succs = [blk.succ(i) for i in range(blk.nsucc())]
+        preds = [blk.pred(i) for i in range(blk.npred())]
+
+        insns: list[InstructionSnapshot] = []
+        insn = blk.head
+        insn_idx = 0
+        while insn is not None:
+            dest_type = _mop_type_name(insn.d) if insn.d.t != ida_hexrays.mop_z else None
+            dest_stkoff = insn.d.s.off if insn.d.t == ida_hexrays.mop_S else None
+            dest_size = insn.d.size if dest_type is not None else None
+
+            src_l_type = _mop_type_name(insn.l)
+            src_l_stkoff = insn.l.s.off if insn.l.t == ida_hexrays.mop_S else None
+            src_l_value = insn.l.nnn.value if insn.l.t == ida_hexrays.mop_n else None
+
+            src_r_type = _mop_type_name(insn.r)
+            src_r_stkoff = insn.r.s.off if insn.r.t == ida_hexrays.mop_S else None
+            src_r_value = insn.r.nnn.value if insn.r.t == ida_hexrays.mop_n else None
+
+            try:
+                dstr = insn.dstr()
+            except Exception:
+                dstr = ""
+
+            insns.append(InstructionSnapshot(
+                index=insn_idx,
+                ea=insn.ea,
+                opcode=insn.opcode,
+                opcode_name=_opcode_name(insn.opcode),
+                dest_type=dest_type,
+                dest_stkoff=dest_stkoff,
+                dest_size=dest_size,
+                src_l_type=src_l_type,
+                src_l_stkoff=src_l_stkoff,
+                src_l_value=src_l_value,
+                src_r_type=src_r_type,
+                src_r_stkoff=src_r_stkoff,
+                src_r_value=src_r_value,
+                dstr=dstr,
+            ))
+            insn = insn.next
+            insn_idx += 1
+
+        # Block type name
+        _BLT_NAMES = {
+            ida_hexrays.BLT_NONE: "BLT_NONE",
+            ida_hexrays.BLT_STOP: "BLT_STOP",
+            ida_hexrays.BLT_1WAY: "BLT_1WAY",
+            ida_hexrays.BLT_2WAY: "BLT_2WAY",
+            ida_hexrays.BLT_NWAY: "BLT_NWAY",
+            ida_hexrays.BLT_XTRN: "BLT_XTRN",
+        }
+        type_name = _BLT_NAMES.get(blk.type, f"BLT_{blk.type}")
+
+        blocks.append(BlockSnapshot(
+            serial=idx,
+            block_type=blk.type,
+            type_name=type_name,
+            start_ea=blk.start,
+            end_ea=blk.end,
+            nsucc=blk.nsucc(),
+            npred=blk.npred(),
+            succs=succs,
+            preds=preds,
+            instructions=insns,
+        ))
+
+    return blocks
+
 
 def _preflight_priority(mod: GraphModification) -> int:
     """Mirror DeferredGraphModifier apply priority for topology simulation."""
@@ -374,6 +501,26 @@ class TransactionalExecutor:
             changes,
             "\n\n".join(mba_to_human_readable(self.mba)),
         )
+
+        # --- Diagnostic snapshot (gated behind D810_DIAG_SNAPSHOT=1) ---
+        try:
+            from d810.core.diag import get_diag_db
+            diag_db = get_diag_db(self.mba.entry_ea)
+            if diag_db is not None:
+                from d810.core.diag.snapshot import snapshot_mba
+                snap_blocks = _mba_to_block_snapshots(self.mba)
+                snapshot_mba(
+                    diag_db,
+                    snap_blocks,
+                    label=f"{fragment.strategy_name}_post_apply",
+                    func_ea=self.mba.entry_ea,
+                    maturity="MMAT_GLBOPT1",
+                )
+                diag_db.close()
+        except Exception:
+            executor_logger.debug(
+                "Diagnostic snapshot failed (non-critical)", exc_info=True,
+            )
 
         post_cfg = self.translator.lift(self.mba)
         reachable_blocks = self._compute_reachability_from_cfg(post_cfg)
