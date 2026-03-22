@@ -8,50 +8,56 @@ _SCHEMA_SQL = """\
 
 -- One row per snapshot checkpoint
 CREATE TABLE IF NOT EXISTS snapshots (
-    id          INTEGER PRIMARY KEY,
-    label       TEXT NOT NULL,
-    func_ea     INTEGER NOT NULL,
-    maturity    TEXT NOT NULL,
-    block_count INTEGER NOT NULL,
-    timestamp   REAL NOT NULL
+    id              INTEGER PRIMARY KEY,
+    label           TEXT NOT NULL,
+    func_ea_hex     TEXT NOT NULL,
+    func_ea_i64     INTEGER NOT NULL,
+    maturity        TEXT NOT NULL,
+    block_count     INTEGER NOT NULL,
+    timestamp       REAL NOT NULL
 );
 
 -- One row per microcode block
 CREATE TABLE IF NOT EXISTS blocks (
-    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
-    serial      INTEGER NOT NULL,
-    block_type  INTEGER NOT NULL,
-    type_name   TEXT NOT NULL,
-    start_ea    INTEGER,
-    end_ea      INTEGER,
-    nsucc       INTEGER NOT NULL,
-    npred       INTEGER NOT NULL,
-    succs       TEXT NOT NULL,
-    preds       TEXT NOT NULL,
-    insn_count  INTEGER NOT NULL,
-    meta        TEXT,
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
+    serial          INTEGER NOT NULL,
+    block_type      INTEGER NOT NULL,
+    type_name       TEXT NOT NULL,
+    start_ea_hex    TEXT,
+    start_ea_i64    INTEGER,
+    end_ea_hex      TEXT,
+    end_ea_i64      INTEGER,
+    nsucc           INTEGER NOT NULL,
+    npred           INTEGER NOT NULL,
+    succs           TEXT NOT NULL,
+    preds           TEXT NOT NULL,
+    insn_count      INTEGER NOT NULL,
+    meta            TEXT,
     PRIMARY KEY (snapshot_id, serial)
 );
 
 -- One row per microcode instruction
 CREATE TABLE IF NOT EXISTS instructions (
-    snapshot_id   INTEGER NOT NULL REFERENCES snapshots(id),
-    block_serial  INTEGER NOT NULL,
-    insn_index    INTEGER NOT NULL,
-    ea            INTEGER NOT NULL,
-    opcode        INTEGER NOT NULL,
-    opcode_name   TEXT NOT NULL,
-    dest_type     TEXT,
-    dest_stkoff   INTEGER,
-    dest_size     INTEGER,
-    src_l_type    TEXT,
-    src_l_stkoff  INTEGER,
-    src_l_value   INTEGER,
-    src_r_type    TEXT,
-    src_r_stkoff  INTEGER,
-    src_r_value   INTEGER,
-    dstr          TEXT,
-    meta          TEXT,
+    snapshot_id       INTEGER NOT NULL REFERENCES snapshots(id),
+    block_serial      INTEGER NOT NULL,
+    insn_index        INTEGER NOT NULL,
+    ea_hex            TEXT NOT NULL,
+    ea_i64            INTEGER NOT NULL,
+    opcode            INTEGER NOT NULL,
+    opcode_name       TEXT NOT NULL,
+    dest_type         TEXT,
+    dest_stkoff       INTEGER,
+    dest_size         INTEGER,
+    src_l_type        TEXT,
+    src_l_stkoff      INTEGER,
+    src_l_value_hex   TEXT,
+    src_l_value_i64   INTEGER,
+    src_r_type        TEXT,
+    src_r_stkoff      INTEGER,
+    src_r_value_hex   TEXT,
+    src_r_value_i64   INTEGER,
+    dstr              TEXT,
+    meta              TEXT,
     PRIMARY KEY (snapshot_id, block_serial, insn_index)
 );
 
@@ -67,52 +73,57 @@ CREATE INDEX IF NOT EXISTS idx_insn_dest_stkoff
     ON instructions(snapshot_id, dest_stkoff);
 CREATE INDEX IF NOT EXISTS idx_insn_opcode
     ON instructions(snapshot_id, opcode_name);
+CREATE INDEX IF NOT EXISTS idx_insn_ea_hex
+    ON instructions(snapshot_id, ea_hex);
 
 -- Layer 2: Strategy Metadata
 
 -- DAG nodes (one per handler state)
 CREATE TABLE IF NOT EXISTS dag_nodes (
     snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
-    state           INTEGER NOT NULL,
     state_hex       TEXT NOT NULL,
+    state_i64       INTEGER NOT NULL,
     entry_block     INTEGER NOT NULL,
     classification  TEXT NOT NULL,
     shared_suffix   TEXT,
-    PRIMARY KEY (snapshot_id, state)
+    PRIMARY KEY (snapshot_id, state_hex)
 );
 
 -- DAG edges (one per transition)
 CREATE TABLE IF NOT EXISTS dag_edges (
-    snapshot_id       INTEGER NOT NULL REFERENCES snapshots(id),
-    edge_id           INTEGER NOT NULL,
-    source_state      INTEGER,
-    target_state      INTEGER,
-    edge_kind         TEXT NOT NULL CHECK(edge_kind IN (
+    snapshot_id           INTEGER NOT NULL REFERENCES snapshots(id),
+    edge_id               INTEGER NOT NULL,
+    source_state_hex      TEXT,
+    source_state_i64      INTEGER,
+    target_state_hex      TEXT,
+    target_state_i64      INTEGER,
+    edge_kind             TEXT NOT NULL CHECK(edge_kind IN (
         'TRANSITION',
         'CONDITIONAL_TRANSITION',
         'CONDITIONAL_RETURN',
         'EXIT_ROUTINE',
         'UNKNOWN'
     )),
-    source_block      INTEGER,
-    source_arm        INTEGER,
-    target_entry      INTEGER,
-    ordered_path      TEXT NOT NULL,
+    source_block          INTEGER,
+    source_arm            INTEGER,
+    target_entry          INTEGER,
+    ordered_path          TEXT NOT NULL,
     PRIMARY KEY (snapshot_id, edge_id)
 );
 
 -- Reconstruction modifications (one per emitted mod)
 CREATE TABLE IF NOT EXISTS modifications (
-    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
-    mod_index       INTEGER NOT NULL,
-    mod_type        TEXT NOT NULL,
-    source_block    INTEGER,
-    target_block    INTEGER,
-    old_target      INTEGER,
-    write_site_ea   INTEGER,
-    write_site_blk  INTEGER,
-    status          TEXT NOT NULL,
-    reason          TEXT,
+    snapshot_id         INTEGER NOT NULL REFERENCES snapshots(id),
+    mod_index           INTEGER NOT NULL,
+    mod_type            TEXT NOT NULL,
+    source_block        INTEGER,
+    target_block        INTEGER,
+    old_target          INTEGER,
+    write_site_ea_hex   TEXT,
+    write_site_ea_i64   INTEGER,
+    write_site_blk      INTEGER,
+    status              TEXT NOT NULL,
+    reason              TEXT,
     PRIMARY KEY (snapshot_id, mod_index)
 );
 

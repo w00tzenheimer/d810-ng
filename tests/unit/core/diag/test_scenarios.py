@@ -92,7 +92,7 @@ def test_var_writes_finds_unnopped_state_write_at_blk32():
     conn = _db()
     writes = var_writes(conn, 1, stkoff=0x3C)
     blk32_write = next(w for w in writes if w["block_serial"] == 32)
-    assert blk32_write["src_l_value"] == 0x432DC789
+    assert blk32_write["src_l_value_hex"] == "0x00000000432dc789"
     assert blk32_write["opcode_name"] == "m_mov"
 
 
