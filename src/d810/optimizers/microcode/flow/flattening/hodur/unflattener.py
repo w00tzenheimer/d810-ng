@@ -544,13 +544,14 @@ class HodurUnflattener(GenericUnflatteningRule):
             if dead_cleanup_applied > 0:
                 nb_changes += dead_cleanup_applied
 
-            # --- Diagnostic snapshot: reachability after Gut-and-Wire ---
+            # --- Diagnostic snapshot: MBA + reachability after Gut-and-Wire ---
             try:
                 from d810.core.diag import get_diag_db
+                from d810.core.diag.mba_serializer import mba_to_block_snapshots
+                from d810.core.diag.snapshot import snapshot_mba, snapshot_reachability
+
                 diag_db = get_diag_db(self.mba.entry_ea)
                 if diag_db is not None:
-                    from d810.core.diag.snapshot import snapshot_mba, snapshot_reachability
-
                     # Compute reachable blocks via BFS from block 0
                     _diag_visited: set[int] = set()
                     _diag_queue: list[int] = [0]
@@ -574,12 +575,15 @@ class HodurUnflattener(GenericUnflatteningRule):
                         if isinstance(_cs, (set, frozenset)):
                             _claimed |= set(_cs)
 
+                    # Full MBA snapshot at post_gut_wire phase
+                    _gw_blocks = mba_to_block_snapshots(self.mba)
                     snap_id = snapshot_mba(
                         diag_db,
-                        [],
-                        label="post_gut_and_wire_reachability",
+                        _gw_blocks,
+                        label="post_gut_and_wire",
                         func_ea=self.mba.entry_ea,
                         maturity="MMAT_GLBOPT1",
+                        phase="post_gut_wire",
                     )
                     snapshot_reachability(
                         diag_db,
@@ -677,6 +681,30 @@ class HodurUnflattener(GenericUnflatteningRule):
                     audit.summary_log()
             except Exception:
                 unflat_logger.debug("post_pipeline audit failed (non-critical)")
+
+        # --- Diagnostic snapshot: full MBA at post_pipeline ---
+        try:
+            from d810.core.diag import get_diag_db
+            from d810.core.diag.mba_serializer import mba_to_block_snapshots
+            from d810.core.diag.snapshot import snapshot_mba as _snap_mba_pl
+
+            _pl_conn = get_diag_db(self.mba.entry_ea)
+            if _pl_conn is not None:
+                _pl_blocks = mba_to_block_snapshots(self.mba)
+                _snap_mba_pl(
+                    _pl_conn,
+                    _pl_blocks,
+                    label="post_pipeline",
+                    func_ea=self.mba.entry_ea,
+                    maturity="MMAT_GLBOPT1",
+                    phase="post_pipeline",
+                )
+                _pl_conn.close()
+        except Exception:
+            unflat_logger.debug(
+                "post_pipeline diagnostic snapshot failed (non-critical)",
+                exc_info=True,
+            )
 
         # BST cleanup invalidates dispatcher/BST state — suppress re-iteration
         # so IDA does not invoke Hodur again on the cleaned CFG.
