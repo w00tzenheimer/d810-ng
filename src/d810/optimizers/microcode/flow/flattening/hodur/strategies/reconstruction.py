@@ -1988,19 +1988,32 @@ class StateWriteReconstructionStrategy:
                         break
                     # Find 1-way predecessors of this block
                     preds = list(flow_graph.predecessors(_walk_serial))
+                    logger.info(
+                        "RECON RETURN: corridor backward walk blk[%d] "
+                        "preds=%s shared_suffix_blocks=%s",
+                        _walk_serial, preds, sorted(shared_suffix_blocks),
+                    )
                     extended = False
-                    for pred_serial in preds:
+                    # Pick the highest-serial 1-way predecessor that
+                    # is not BST, not dispatcher, not already in corridor.
+                    # The return corridor entry (blk[217]) typically has
+                    # the highest serial among 1-way predecessors.
+                    best_pred: int | None = None
+                    for pred_serial in sorted(preds, reverse=True):
                         pred_blk = flow_graph.get_block(pred_serial)
                         if (
                             pred_blk is not None
                             and pred_blk.nsucc == 1
-                            and pred_serial in shared_suffix_blocks
+                            and pred_serial not in _bst_set
+                            and pred_serial != dispatcher_serial
                             and pred_serial not in common_return_corridor
                         ):
-                            common_return_corridor.add(pred_serial)
-                            _walk_serial = pred_serial
-                            extended = True
+                            best_pred = pred_serial
                             break
+                    if best_pred is not None:
+                        common_return_corridor.add(best_pred)
+                        _walk_serial = best_pred
+                        extended = True
                     if not extended:
                         break
             if common_return_corridor:
