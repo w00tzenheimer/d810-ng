@@ -1711,6 +1711,21 @@ class StateWriteReconstructionStrategy:
                     # 1-way block: redirect goto to target handler entry
                     old_target = int(block.succs[0])
                     if old_target == dispatcher_serial or old_target in _bst_set:
+                        # NOP the state-write instruction if known
+                        if edge.last_write_site is not None:
+                            _ws_blk, _ws_ea = edge.last_write_site
+                            bridge_mods.append(
+                                NopInstructions(
+                                    block_serial=int(_ws_blk),
+                                    insn_eas=(int(_ws_ea),),
+                                )
+                            )
+                        else:
+                            logger.debug(
+                                "RECON BRIDGE: no last_write_site for "
+                                "blk[%d] -> blk[%d], skipping NOP",
+                                exit_block, target_entry,
+                            )
                         bridge_mods.append(
                             builder.goto_redirect(
                                 source_block=exit_block,
@@ -1730,6 +1745,21 @@ class StateWriteReconstructionStrategy:
                         arm_target = int(block.succs[arm])
                         if arm_target == dispatcher_serial or arm_target in _bst_set:
                             if arm == 1:  # RedirectBranch only handles arm=1
+                                # NOP the state-write instruction if known
+                                if edge.last_write_site is not None:
+                                    _ws_blk, _ws_ea = edge.last_write_site
+                                    bridge_mods.append(
+                                        NopInstructions(
+                                            block_serial=int(_ws_blk),
+                                            insn_eas=(int(_ws_ea),),
+                                        )
+                                    )
+                                else:
+                                    logger.debug(
+                                        "RECON BRIDGE: no last_write_site for "
+                                        "blk[%d].arm%d -> blk[%d], skipping NOP",
+                                        exit_block, arm, target_entry,
+                                    )
                                 bridge_mods.append(
                                     builder.edge_redirect(
                                         source_block=exit_block,
@@ -1795,6 +1825,21 @@ class StateWriteReconstructionStrategy:
                 if src_block.nsucc == 1:
                     old_target = int(src_block.succs[0])
                     if old_target == dispatcher_serial or old_target in _bst_set:
+                        # NOP the state-write instruction if known
+                        if edge.last_write_site is not None:
+                            _ws_blk, _ws_ea = edge.last_write_site
+                            feeder_mods.append(
+                                NopInstructions(
+                                    block_serial=int(_ws_blk),
+                                    insn_eas=(int(_ws_ea),),
+                                )
+                            )
+                        else:
+                            logger.debug(
+                                "RECON FEEDER: no last_write_site for "
+                                "blk[%d] -> blk[%d], skipping NOP",
+                                src_serial, target_entry,
+                            )
                         feeder_mods.append(
                             builder.goto_redirect(
                                 source_block=src_serial,
@@ -1813,6 +1858,21 @@ class StateWriteReconstructionStrategy:
                         arm_target = int(src_block.succs[arm])
                         if arm_target == dispatcher_serial or arm_target in _bst_set:
                             if arm == 1:  # RedirectBranch only handles arm=1
+                                # NOP the state-write instruction if known
+                                if edge.last_write_site is not None:
+                                    _ws_blk, _ws_ea = edge.last_write_site
+                                    feeder_mods.append(
+                                        NopInstructions(
+                                            block_serial=int(_ws_blk),
+                                            insn_eas=(int(_ws_ea),),
+                                        )
+                                    )
+                                else:
+                                    logger.debug(
+                                        "RECON FEEDER: no last_write_site for "
+                                        "blk[%d].arm%d -> blk[%d], skipping NOP",
+                                        src_serial, arm, target_entry,
+                                    )
                                 feeder_mods.append(
                                     builder.edge_redirect(
                                         source_block=src_serial,
@@ -1855,6 +1915,14 @@ class StateWriteReconstructionStrategy:
                     resolved = dispatcher.lookup(state_val)
                     if resolved is None or int(resolved) in _bst_set:
                         continue
+                    # Fixpoint feeder has no DAG edge, so no last_write_site.
+                    # State-write NOP would require block instruction scan
+                    # (IDA runtime only) — skip for now.
+                    logger.debug(
+                        "RECON FEEDER: fixpoint blk[%d] has no "
+                        "last_write_site, skipping NOP",
+                        blk_serial,
+                    )
                     feeder_mods.append(
                         builder.goto_redirect(
                             source_block=blk_serial,
