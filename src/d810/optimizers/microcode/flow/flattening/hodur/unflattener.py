@@ -1727,12 +1727,68 @@ class HodurUnflattener(GenericUnflatteningRule):
             )
             return 0
 
+        # ----- Forward-redirect pass -----
+        # Gutted blocks still have goto targets pointing to other dead blocks,
+        # creating back-edges that IDA's structurer interprets as while loops.
+        # Redirect all dead-zone gotos to BLT_STOP (the function's terminal
+        # block) so that all edges within the dead zone point forward.
+        stop_serial: int | None = None
+        for i in range(mba.qty):
+            if mba.get_mblock(i).type == ida_hexrays.BLT_STOP:
+                stop_serial = i
+                break
+        if stop_serial is None:
+            # Fallback: use last block serial (BLT_STOP is always last)
+            stop_serial = mba.qty - 1
+
+        redirected = 0
+        for serial in sorted(cleanup_candidates):
+            blk = mba.get_mblock(serial)
+            if blk is None or blk.nsucc() != 1:
+                continue
+            succ = blk.succ(0)
+            if succ == stop_serial:
+                continue  # already pointing forward
+            if succ not in cleanup_candidates:
+                continue  # successor is live — leave it alone
+
+            # Redirect goto target to BLT_STOP
+            tail = blk.tail
+            if tail is not None and tail.opcode == ida_hexrays.m_goto:
+                tail.l.make_blkref(stop_serial)
+
+            # Update successor set
+            blk.succset._del(succ)
+            blk.succset.push_back(stop_serial)
+
+            # Update predecessor sets
+            old_succ_blk = mba.get_mblock(succ)
+            if old_succ_blk is not None:
+                old_succ_blk.predset._del(serial)
+                old_succ_blk.mark_lists_dirty()
+
+            stop_blk = mba.get_mblock(stop_serial)
+            if stop_blk is not None:
+                # Avoid duplicate predset entries
+                already_pred = False
+                for pi in range(stop_blk.npred()):
+                    if stop_blk.pred(pi) == serial:
+                        already_pred = True
+                        break
+                if not already_pred:
+                    stop_blk.predset.push_back(serial)
+                stop_blk.mark_lists_dirty()
+
+            blk.mark_lists_dirty()
+            redirected += 1
+
         # Mark chains dirty once after all mutations.
         mba.mark_chains_dirty()
 
         unflat_logger.info(
-            "GutAndWire: soft-killed %d unreachable blocks as 1-way goto shells",
-            gutted,
+            "GutAndWire: soft-killed %d unreachable blocks as 1-way goto shells"
+            " (%d redirected forward to BLT_STOP)",
+            gutted, redirected,
         )
         return gutted
 
