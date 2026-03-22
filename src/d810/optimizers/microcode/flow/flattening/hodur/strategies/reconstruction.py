@@ -2220,61 +2220,20 @@ class StateWriteReconstructionStrategy:
                             wired = True
                             break
                         if arm == 0:
-                            # Fallthrough arm points to a block that may
-                            # be an m_xdu artifact (writes state var into
-                            # return slot) or a real return-value setter.
-                            # Only redirect m_xdu artifact blocks — blocks
-                            # that correctly compute the return value must
-                            # NOT be rerouted through the shared corridor.
-                            #
-                            # Heuristic: if the fallthrough block already
-                            # goes to the suffix_entry's successor (the
-                            # terminal corridor), it's an m_xdu-style block
-                            # that bypasses the real corridor.  If it goes
-                            # to the suffix_entry itself, it's already
-                            # correct.  Only redirect if the block goes
-                            # PAST the suffix entry to a later block.
-                            artifact_blk = flow_graph.get_block(arm_target)
-                            if (
-                                artifact_blk is not None
-                                and artifact_blk.nsucc == 1
-                                and arm_target not in claimed_sources
-                            ):
-                                artifact_old = int(artifact_blk.succs[0])
-                                # Only redirect if the artifact block
-                                # skips the suffix entry (goes directly
-                                # to a block AFTER it in the corridor).
-                                # If artifact_old == suffix_entry_serial,
-                                # the block already routes correctly.
-                                if (
-                                    artifact_old != suffix_entry_serial
-                                    and artifact_old in common_return_corridor
-                                ):
-                                    return_mods.append(
-                                        builder.goto_redirect(
-                                            source_block=arm_target,
-                                            target_block=suffix_entry_serial,
-                                            old_target=artifact_old,
-                                        )
-                                    )
-                                    claimed_sources.add(arm_target)
-                                    logger.info(
-                                        "RECON RETURN: redirect artifact "
-                                        "blk[%d] -> blk[%d] (was blk[%d])",
-                                        arm_target, suffix_entry_serial,
-                                        artifact_old,
-                                    )
-                                    wired = True
-                                    break
-                                # Block goes to suffix entry or outside
-                                # corridor — leave it alone
-                                logger.info(
-                                    "RECON RETURN: skip artifact "
-                                    "blk[%d] (old=%d, not corridor-skip)",
-                                    arm_target, artifact_old,
-                                )
-                                wired = True  # not an error, just nothing to do
-                                break
+                            # Fallthrough arm points to an artifact block.
+                            # TODO: detect m_xdu artifacts by checking if
+                            # the block uses the state variable (stkoff)
+                            # to write the return slot.  For now, skip —
+                            # redirecting all fallthrough blocks destroys
+                            # real return-value setters (blk[175] MBA,
+                            # blk[162] mov, blk[94] add).
+                            logger.info(
+                                "RECON RETURN: skip arm0 blk[%d] "
+                                "(fallthrough artifact detection pending)",
+                                arm_target,
+                            )
+                            wired = True  # not an error
+                            break
                         else:
                             # Taken arm — use edge_redirect normally
                             return_mods.append(
