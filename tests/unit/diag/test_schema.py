@@ -1,0 +1,80 @@
+"""Tests for MBA diagnostic snapshot schema creation."""
+import sqlite3
+
+import pytest
+
+from d810.diag.schema import create_tables
+
+
+def test_create_tables_creates_all_expected_tables():
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+    )
+    tables = [row[0] for row in cursor]
+    assert "blocks" in tables
+    assert "instructions" in tables
+    assert "snapshots" in tables
+    assert "dag_edges" in tables
+    assert "dag_nodes" in tables
+    assert "modifications" in tables
+    assert "block_classification" in tables
+
+
+def test_create_tables_idempotent():
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    create_tables(conn)  # should not raise
+
+
+def test_json_extract_on_meta_columns():
+    """Verify SQLite JSON extension works for meta column queries."""
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    # Insert a block with JSON meta containing valranges
+    conn.execute(
+        "INSERT INTO snapshots VALUES (1, 'test', 0x1000, 'GLBOPT1', 3, 0.0)"
+    )
+    conn.execute(
+        "INSERT INTO blocks VALUES (1, 206, 2, 'BLT_2WAY', NULL, NULL, 2, 2, "
+        "'[207,208]', '[62,204]', 1, ?)",
+        ('{"valranges": {"0x3C": "==432DC789"}, "flags": ["MBL_GOTO"]}',),
+    )
+    # Query with json_extract
+    row = conn.execute(
+        "SELECT json_extract(meta, '$.valranges.0x3C') FROM blocks "
+        "WHERE snapshot_id=1 AND serial=206"
+    ).fetchone()
+    assert row[0] == "==432DC789"
+    # Query with json_each on succs
+    succs = conn.execute(
+        "SELECT value FROM json_each("
+        "(SELECT succs FROM blocks WHERE snapshot_id=1 AND serial=206))"
+    ).fetchall()
+    assert [r[0] for r in succs] == [207, 208]
+
+
+def test_edge_kind_check_constraint_rejects_invalid():
+    """Verify CHECK constraint on edge_kind column."""
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    conn.execute(
+        "INSERT INTO snapshots VALUES (1, 'test', 0x1000, 'GLBOPT1', 3, 0.0)"
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO dag_edges VALUES (1, 1, NULL, NULL, 'INVALID_KIND', "
+            "NULL, NULL, NULL, '[]')"
+        )
+
+
+def test_var_writes_view_exists():
+    """Verify the var_writes view is created."""
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='view' ORDER BY name"
+    )
+    views = [row[0] for row in cursor]
+    assert "var_writes" in views
