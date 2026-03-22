@@ -2219,23 +2219,37 @@ class StateWriteReconstructionStrategy:
                             # Arm already correct
                             wired = True
                             break
-                        # Wire this arm to suffix entry.
-                        # For arm0 (fallthrough), edge_redirect changes the
-                        # jnz target, not the fallthrough.  Use
-                        # conditional_redirect to set both arms explicitly.
-                        other_arm = 1 - arm
-                        other_target = int(anchor_block.succs[other_arm])
                         if arm == 0:
-                            # Redirect fallthrough to suffix, keep taken
-                            return_mods.append(
-                                builder.conditional_redirect(
-                                    source_block=anchor_serial,
-                                    conditional_target=other_target,
-                                    fallthrough_target=suffix_entry_serial,
+                            # Fallthrough arm points to artifact block.
+                            # Can't use edge_redirect (changes jnz target,
+                            # not fallthrough).  Instead, redirect the
+                            # ARTIFACT BLOCK itself (1-way) to go through
+                            # the suffix entry before reaching its target.
+                            artifact_blk = flow_graph.get_block(arm_target)
+                            if (
+                                artifact_blk is not None
+                                and artifact_blk.nsucc == 1
+                                and arm_target not in claimed_sources
+                            ):
+                                artifact_old = int(artifact_blk.succs[0])
+                                return_mods.append(
+                                    builder.goto_redirect(
+                                        source_block=arm_target,
+                                        target_block=suffix_entry_serial,
+                                        old_target=artifact_old,
+                                    )
                                 )
-                            )
+                                claimed_sources.add(arm_target)
+                                logger.info(
+                                    "RECON RETURN: redirect artifact "
+                                    "blk[%d] -> blk[%d] (was blk[%d])",
+                                    arm_target, suffix_entry_serial,
+                                    artifact_old,
+                                )
+                                wired = True
+                                break
                         else:
-                            # Redirect taken to suffix, keep fallthrough
+                            # Taken arm — use edge_redirect normally
                             return_mods.append(
                                 builder.edge_redirect(
                                     source_block=anchor_serial,
