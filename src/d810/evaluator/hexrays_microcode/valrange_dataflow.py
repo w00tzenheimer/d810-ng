@@ -163,6 +163,26 @@ def _extract_key_from_mop(mop) -> Optional[ValrangeKey]:
     return None
 
 
+def _key_to_mlist(key: ValrangeKey) -> ida_hexrays.mlist_t:
+    """Convert a ValrangeKey to an mlist_t for def-list intersection checks."""
+    ml = ida_hexrays.mlist_t()
+    if key.mop_type == ida_hexrays.mop_r:
+        ml.reg.add(key.identifier, key.size)
+    elif key.mop_type == ida_hexrays.mop_S:
+        ml.addmem(key.identifier, key.size)
+    return ml
+
+
+def _lookup_range(mop, env: ValrangeEnv) -> Optional[ida_hexrays.valrng_t]:
+    """Look up the valrng_t for an operand in the environment, or None."""
+    key = _extract_key_from_mop(mop)
+    if key is not None and key in env:
+        vr = env[key]
+        if vr is not TOP and vr is not BOTTOM:
+            return vr
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Jcc opcode → cmpop_t mapping
 # ---------------------------------------------------------------------------
@@ -343,20 +363,251 @@ def _refine_for_branch_edge(
 # ---------------------------------------------------------------------------
 
 
-def _transfer_single_insn(ins, env: ValrangeEnv) -> None:
+_SET_FLAG_OPCODES = frozenset({
+    ida_hexrays.m_setz, ida_hexrays.m_setnz,
+    ida_hexrays.m_setae, ida_hexrays.m_setb,
+    ida_hexrays.m_seta, ida_hexrays.m_setbe,
+    ida_hexrays.m_setg, ida_hexrays.m_setge,
+    ida_hexrays.m_setl, ida_hexrays.m_setle,
+    ida_hexrays.m_sets, ida_hexrays.m_seto, ida_hexrays.m_setp,
+})
+
+_ARITH_OPCODES = frozenset({
+    ida_hexrays.m_add, ida_hexrays.m_sub,
+    ida_hexrays.m_mul,
+    ida_hexrays.m_xor, ida_hexrays.m_and, ida_hexrays.m_or,
+    ida_hexrays.m_shl, ida_hexrays.m_shr, ida_hexrays.m_sar,
+})
+
+
+def _try_gen(ins, key: ValrangeKey, env: ValrangeEnv) -> Optional[ida_hexrays.valrng_t]:
+    """Try to produce a GEN range for the instruction's destination.
+
+    Mirrors hexx64's ``valranges_transfer_single_insn`` switch.
+    Returns a valrng_t if the instruction produces a known range,
+    or None to fall through to KILL.
+    """
+    opcode = ins.opcode
+    mask = (1 << (key.size * 8)) - 1
+
+    # --- m_mov (4): constant or variable-to-variable range copy ---
+    if opcode == ida_hexrays.m_mov:
+        if ins.l is not None:
+            # Immediate → singleton
+            if ins.l.t == ida_hexrays.mop_n:
+                vr = ida_hexrays.valrng_t(key.size)
+                vr.set_eq(ins.l.nnn.value)
+                return vr
+            # Variable → copy range from env (hexx64: valranges_lookup_key_range)
+            src_vr = _lookup_range(ins.l, env)
+            if src_vr is not None:
+                return _clone_valrng(src_vr)
+        return None
+
+    # --- m_xdu (9): zero-extend ---
+    if opcode == ida_hexrays.m_xdu:
+        if ins.l is not None:
+            src_size = ins.l.size
+            # If source is a sub-instruction producing a set-flag result → [0, 1]
+            if ins.l.t == ida_hexrays.mop_d and ins.l.d is not None:
+                if ins.l.d.opcode in _SET_FLAG_OPCODES:
+                    vr = ida_hexrays.valrng_t(key.size)
+                    vr.set_cmp(4, 1)  # CMP_A=4 → <=1 after negation... actually use range
+                    # Simpler: just set [0, 1]
+                    vr0 = ida_hexrays.valrng_t(key.size)
+                    vr0.set_eq(0)
+                    vr1 = ida_hexrays.valrng_t(key.size)
+                    vr1.set_eq(1)
+                    vr0.unite_with(vr1)
+                    return vr0
+            # Source variable with known range → zero-extend preserves it
+            src_vr = _lookup_range(ins.l, env)
+            if src_vr is not None:
+                vr = ida_hexrays.valrng_t(src_vr)
+                if vr.get_size() != key.size:
+                    vr.reduce_size(key.size)
+                return vr
+            # Unknown source: result is [0, max_for_source_size]
+            src_max = (1 << (src_size * 8)) - 1 if src_size < 8 else mask
+            vr = ida_hexrays.valrng_t(key.size)
+            vr.set_cmp(5, src_max)  # CMP_BE=5 → <=src_max (unsigned)
+            return vr
+        return None
+
+    # --- m_xds (8): sign-extend ---
+    if opcode == ida_hexrays.m_xds:
+        if ins.l is not None:
+            src_size = ins.l.size
+            # Sub-instruction set-flag → [0, 1]
+            if ins.l.t == ida_hexrays.mop_d and ins.l.d is not None:
+                if ins.l.d.opcode in _SET_FLAG_OPCODES:
+                    vr0 = ida_hexrays.valrng_t(key.size)
+                    vr0.set_eq(0)
+                    vr1 = ida_hexrays.valrng_t(key.size)
+                    vr1.set_eq(1)
+                    vr0.unite_with(vr1)
+                    return vr0
+            # Source with known range
+            src_vr = _lookup_range(ins.l, env)
+            if src_vr is not None:
+                vr = ida_hexrays.valrng_t(src_vr)
+                if vr.get_size() != key.size:
+                    vr.reduce_size(key.size)
+                return vr
+            # Unknown source: signed bound [-min, max] for source size
+            if src_size < 8:
+                sign_bit = 1 << (src_size * 8 - 1)
+                # Result can be [0..sign_bit-1] or [sign-extended negative values]
+                # Use IDA's set_cmp with signed bounds
+                vr = ida_hexrays.valrng_t(key.size)
+                vr.set_all()  # conservative: all values
+                return vr
+        return None
+
+    # --- m_low (0xA): truncation (low part) ---
+    if opcode == ida_hexrays.m_low:
+        if ins.l is not None:
+            src_vr = _lookup_range(ins.l, env)
+            if src_vr is not None:
+                ok, val = src_vr.cvt_to_single_value()
+                if ok:
+                    vr = ida_hexrays.valrng_t(key.size)
+                    vr.set_eq(int(val) & mask)
+                    return vr
+            # Truncation: result is bounded by dest size
+            vr = ida_hexrays.valrng_t(key.size)
+            vr.set_cmp(5, mask)  # CMP_BE → <=mask
+            return vr
+        return None
+
+    # --- m_high (0xB): high part ---
+    if opcode == ida_hexrays.m_high:
+        if ins.l is not None:
+            src_vr = _lookup_range(ins.l, env)
+            if src_vr is not None:
+                ok, val = src_vr.cvt_to_single_value()
+                if ok:
+                    shift = ins.l.size - key.size
+                    if shift > 0:
+                        vr = ida_hexrays.valrng_t(key.size)
+                        vr.set_eq((int(val) >> (shift * 8)) & mask)
+                        return vr
+        return None
+
+    # --- set-flag opcodes (0xF-0x12, 0x1D-0x29): result is [0, 1] ---
+    # Note: hexx64 handles setz/setnz/setae/setb with map intersection.
+    # We simplify to just producing [0, 1].
+    if opcode in _SET_FLAG_OPCODES:
+        vr0 = ida_hexrays.valrng_t(key.size)
+        vr0.set_eq(0)
+        vr1 = ida_hexrays.valrng_t(key.size)
+        vr1.set_eq(1)
+        vr0.unite_with(vr1)
+        return vr0
+
+    # --- m_neg (5): negation ---
+    if opcode == ida_hexrays.m_neg:
+        l_val = _resolve_singleton(ins.l, env)
+        if l_val is not None:
+            vr = ida_hexrays.valrng_t(key.size)
+            vr.set_eq((-l_val) & mask)
+            return vr
+        return None
+
+    # --- m_bnot (7): bitwise NOT ---
+    if opcode == ida_hexrays.m_bnot:
+        l_val = _resolve_singleton(ins.l, env)
+        if l_val is not None:
+            vr = ida_hexrays.valrng_t(key.size)
+            vr.set_eq((~l_val) & mask)
+            return vr
+        return None
+
+    # --- m_lnot (6): logical NOT → result is [0, 1] ---
+    if opcode == ida_hexrays.m_lnot:
+        vr0 = ida_hexrays.valrng_t(key.size)
+        vr0.set_eq(0)
+        vr1 = ida_hexrays.valrng_t(key.size)
+        vr1.set_eq(1)
+        vr0.unite_with(vr1)
+        return vr0
+
+    # --- Arithmetic with two operands ---
+    if opcode in _ARITH_OPCODES:
+        l_val = _resolve_singleton(ins.l, env)
+        r_val = _resolve_singleton(ins.r, env)
+
+        # Both singletons: compute exact result
+        if l_val is not None and r_val is not None:
+            result = None
+            if opcode == ida_hexrays.m_add:
+                result = (l_val + r_val) & mask
+            elif opcode == ida_hexrays.m_sub:
+                result = (l_val - r_val) & mask
+            elif opcode == ida_hexrays.m_mul:
+                result = (l_val * r_val) & mask
+            elif opcode == ida_hexrays.m_xor:
+                result = (l_val ^ r_val) & mask
+            elif opcode == ida_hexrays.m_and:
+                result = (l_val & r_val) & mask
+            elif opcode == ida_hexrays.m_or:
+                result = (l_val | r_val) & mask
+            elif opcode == ida_hexrays.m_shl:
+                if 0 <= r_val < key.size * 8:
+                    result = (l_val << r_val) & mask
+            elif opcode == ida_hexrays.m_shr:
+                if 0 <= r_val < key.size * 8:
+                    result = (l_val >> r_val) & mask
+            elif opcode == ida_hexrays.m_sar:
+                if 0 <= r_val < key.size * 8:
+                    sign_bit = 1 << (key.size * 8 - 1)
+                    if l_val & sign_bit:
+                        # Sign-extend before shift
+                        l_signed = l_val - (1 << (key.size * 8))
+                        result = (l_signed >> r_val) & mask
+                    else:
+                        result = (l_val >> r_val) & mask
+            if result is not None:
+                vr = ida_hexrays.valrng_t(key.size)
+                vr.set_eq(result)
+                return vr
+
+        # m_and with immediate mask (hexx64 pattern): result ∈ [0, mask_val]
+        if opcode == ida_hexrays.m_and:
+            r_imm = _resolve_singleton(ins.r, env)
+            if r_imm is not None:
+                vr = ida_hexrays.valrng_t(key.size)
+                vr.set_cmp(5, r_imm & mask)  # CMP_BE → <= mask_val
+                return vr
+            l_imm = _resolve_singleton(ins.l, env)
+            if l_imm is not None:
+                vr = ida_hexrays.valrng_t(key.size)
+                vr.set_cmp(5, l_imm & mask)  # CMP_BE → <= mask_val
+                return vr
+
+        # m_or with immediate mask (hexx64 pattern): result >= mask_val
+        if opcode == ida_hexrays.m_or:
+            r_imm = _resolve_singleton(ins.r, env)
+            if r_imm is not None and r_imm != 0:
+                vr = ida_hexrays.valrng_t(key.size)
+                vr.set_cmp(2, r_imm & mask)  # CMP_AE → >= mask_val
+                return vr
+
+        return None
+
+    return None
+
+
+def _transfer_single_insn(ins, blk, env: ValrangeEnv) -> None:
     """Apply GEN/KILL for a single instruction (mutates *env* in-place).
 
-    - Assertions (``is_assert()``) with ``mov #constant, dest`` → GEN
-      singleton range.  Assertions are synthetic constraints inserted by
-      Hex-Rays and must NOT be treated as side-effect instructions.
-    - ``mov #constant, dest``  → GEN singleton range for dest
-    - Any other write to dest  → KILL (remove constraint for dest)
-    - Calls with side-effects  → KILL everything
+    Mirrors hexx64's ``valranges_transfer_single_insn`` + def-list KILL.
+    Handles: mov (const + var→var), xdu, xds, low, high, neg, bnot, lnot,
+    set-flags (→[0,1]), add, sub, mul, xor, and, or, shl, shr, sar.
+    KILL uses ``build_def_list`` to remove only actually-clobbered entries.
     """
 
-    # Assertions are synthetic constraint instructions (IPROP_ASSERT).
-    # They encode value-range facts as "mov #val, op" and must be
-    # handled as GEN, not killed by has_side_effects().
+    # Assertions are synthetic constraints (IPROP_ASSERT).
     if ins.is_assert():
         d = ins.d
         if d is not None:
@@ -370,71 +621,42 @@ def _transfer_single_insn(ins, env: ValrangeEnv) -> None:
                     env[key] = vr
         return
 
-    # Side-effect instructions (calls, stx, etc.) may clobber memory but
-    # generally don't invalidate register or stack-variable constraints
-    # that aren't in the def-list.  A full implementation would consult
-    # build_def_list() to KILL only affected locations.  For now we
-    # conservatively kill only the destination operand (if extractable)
-    # rather than wiping the entire env — the real hexx64 algorithm does
-    # the same via per-instruction def-lists.
-    if ins.has_side_effects():
-        d = ins.d
-        if d is not None:
-            key = _extract_key_from_mop(d)
-            if key is not None:
-                env.pop(key, None)
-        return
-
-    # Identify the destination operand.
+    # Determine destination key.
+    # Set-flag opcodes write to .d with size 1, but the destination
+    # operand we care about is the same .d field.
     d = ins.d
     if d is None:
         return
 
     key = _extract_key_from_mop(d)
-    if key is None:
-        return
 
-    # GEN: mov #imm, dest (regular constant assignment)
-    if (
-        ins.opcode == ida_hexrays.m_mov
-        and ins.l is not None
-        and ins.l.t == ida_hexrays.mop_n
-    ):
-        vr = ida_hexrays.valrng_t(key.size)
-        vr.set_eq(ins.l.nnn.value)
-        env[key] = vr
-        return
+    # Try GEN: produce a range for the destination.
+    gen_vr = None
+    if key is not None:
+        gen_vr = _try_gen(ins, key, env)
 
-    # GEN: arithmetic with two known-constant operands
-    if ins.opcode in (
-        ida_hexrays.m_add,
-        ida_hexrays.m_sub,
-        ida_hexrays.m_xor,
-        ida_hexrays.m_and,
-        ida_hexrays.m_or,
-    ):
-        l_val = _resolve_singleton(ins.l, env)
-        r_val = _resolve_singleton(ins.r, env)
-        if l_val is not None and r_val is not None:
-            mask = (1 << (key.size * 8)) - 1
-            if ins.opcode == ida_hexrays.m_add:
-                result = (l_val + r_val) & mask
-            elif ins.opcode == ida_hexrays.m_sub:
-                result = (l_val - r_val) & mask
-            elif ins.opcode == ida_hexrays.m_xor:
-                result = (l_val ^ r_val) & mask
-            elif ins.opcode == ida_hexrays.m_and:
-                result = (l_val & r_val) & mask
-            elif ins.opcode == ida_hexrays.m_or:
-                result = (l_val | r_val) & mask
-            vr = ida_hexrays.valrng_t(key.size)
-            vr.set_eq(result)
-            env[key] = vr
-            return
-        # Fall through to KILL if operands aren't resolved
+    # KILL phase.
+    # For instructions with a trackable dest key, always kill that key.
+    # For side-effect instructions (calls, stx), use build_def_list to
+    # determine which additional env entries are clobbered.
+    if key is not None:
+        env.pop(key, None)
+    if ins.has_side_effects():
+        try:
+            def_list = blk.build_def_list(ins, ida_hexrays.MUST_ACCESS)
+            if not def_list.empty():
+                to_kill = [
+                    k for k in env
+                    if def_list.has_common(_key_to_mlist(k))
+                ]
+                for k in to_kill:
+                    del env[k]
+        except Exception:
+            pass  # build_def_list failed; dest key already killed above
 
-    # KILL: destination is overwritten by a non-constant → remove constraint.
-    env.pop(key, None)
+    # Apply GEN after KILL (GEN overwrites what KILL removed).
+    if gen_vr is not None and key is not None:
+        env[key] = gen_vr
 
 
 def valrange_transfer(mba, serial: int, in_state: ValrangeEnv) -> ValrangeEnv:
@@ -452,7 +674,7 @@ def valrange_transfer(mba, serial: int, in_state: ValrangeEnv) -> ValrangeEnv:
     env = _clone_env(in_state)
     ins = blk.head
     while ins is not None:
-        _transfer_single_insn(ins, env)
+        _transfer_single_insn(ins, blk, env)
         ins = ins.next
     return env
 
