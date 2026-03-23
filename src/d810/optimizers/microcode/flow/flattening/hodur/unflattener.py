@@ -544,13 +544,17 @@ class HodurUnflattener(GenericUnflatteningRule):
             # survive Gut-and-Wire even when BFS from block 0 cannot
             # reach them yet (e.g. corridor blocks whose only predecessor
             # is a BST node that was just disconnected).
-            reconstruction_live: set[int] = set()
+            # Accumulate live corridor blocks across ALL passes
+            # (not just the current one).  Use instance variable so
+            # pass 0's modifications survive to pass 1's cleanup.
+            if not hasattr(self, "_reconstruction_live_blocks"):
+                self._reconstruction_live_blocks: set[int] = set()
             for frag, res in zip(pipeline, results):
                 if not res.success or res.edits_applied <= 0:
                     continue
                 for mod in frag.modifications:
                     for attr in (
-                        "from_serial", "new_target", "old_target",
+                        "from_serial", "new_target",
                         "goto_target", "block_serial", "source_block",
                         "src_block", "source_serial", "via_pred",
                         "conditional_target", "fallthrough_target",
@@ -558,18 +562,22 @@ class HodurUnflattener(GenericUnflatteningRule):
                     ):
                         val = getattr(mod, attr, None)
                         if isinstance(val, int):
-                            reconstruction_live.add(val)
+                            self._reconstruction_live_blocks.add(val)
                     # DuplicateAndRedirect: per_pred_targets
                     ppt = getattr(mod, "per_pred_targets", None)
                     if ppt is not None:
                         for _pred, _tgt in ppt:
-                            reconstruction_live.add(int(_pred))
-                            reconstruction_live.add(int(_tgt))
+                            self._reconstruction_live_blocks.add(int(_pred))
+                            self._reconstruction_live_blocks.add(int(_tgt))
+
+            # Remove dispatcher and BST from live set — they're cleanup targets
+            self._reconstruction_live_blocks -= bst_serials
+            self._reconstruction_live_blocks.discard(snapshot.bst_dispatcher_serial)
 
             dead_cleanup_applied = self._nop_unreachable_blocks_after_bst_cleanup(
                 dispatcher_serial=snapshot.bst_dispatcher_serial,
                 bst_serials=bst_serials,
-                reconstruction_live=reconstruction_live,
+                reconstruction_live=self._reconstruction_live_blocks,
             )
             if dead_cleanup_applied > 0:
                 nb_changes += dead_cleanup_applied
