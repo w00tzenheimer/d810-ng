@@ -8664,6 +8664,495 @@ def test_state_write_reconstruction_unknown_edge_feeder_redirect(monkeypatch):
     )
 
 
+def test_state_write_reconstruction_lifts_reachable_handoff_to_island_entry(
+    monkeypatch,
+):
+    """Projected rescue should attach to the upstream semantic island entry,
+    not directly to the deeper unreachable target, and should use the deepest
+    reachable frontier block in the live chain."""
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x2000, ()),
+            10: BlockSnapshot(10, int(ida_hexrays.BLT_1WAY), (20,), (), 0, 0x1000, ()),
+            20: BlockSnapshot(20, int(ida_hexrays.BLT_1WAY), (30,), (10,), 0, 0x1010, ()),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_1WAY), (35,), (20,), 0, 0x1020, ()),
+            35: BlockSnapshot(35, int(ida_hexrays.BLT_1WAY), (), (30,), 0, 0x1030, ()),
+            50: BlockSnapshot(50, int(ida_hexrays.BLT_1WAY), (60,), (), 0, 0x2000, ()),
+            60: BlockSnapshot(60, int(ida_hexrays.BLT_1WAY), (), (50,), 0, 0x2010, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    frontier_node = _make_reconstruction_node(
+        20,
+        0x11111111,
+        20,
+        owned_blocks=(20, 30),
+    )
+    island_entry = _make_reconstruction_node(50, 0x22222222, 50)
+    target_node = _make_reconstruction_node(60, 0x33333333, 60, label="deep_target")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(frontier_node, island_entry, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=frontier_node.key,
+                target_key=target_node.key,
+                target_state=0x33333333,
+                target_entry_anchor=60,
+                target_label="deep_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=20,
+                ),
+                ordered_path=(20,),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=frontier_node.key,
+                target_key=target_node.key,
+                target_state=0x33333333,
+                target_entry_anchor=60,
+                target_label="deep_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=30,
+                ),
+                ordered_path=(20, 30),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=island_entry.key,
+                target_key=target_node.key,
+                target_state=0x33333333,
+                target_entry_anchor=60,
+                target_label="deep_target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=50,
+                ),
+                ordered_path=(50,),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert fragment is not None
+    redirects = [m for m in fragment.modifications if isinstance(m, RedirectGoto)]
+    assert any(
+        r.from_serial == 30 and r.old_target == 35 and r.new_target == 50
+        for r in redirects
+    ), f"Expected lifted island-entry redirect blk[30] -> blk[50], got: {redirects}"
+    assert not any(
+        r.from_serial == 20 and r.new_target == 50 for r in redirects
+    ), f"Entry-island rescue should pick deepest frontier, got: {redirects}"
+    assert not any(
+        r.from_serial == 30 and r.new_target == 60 for r in redirects
+    ), f"Entry-island rescue should lift target blk[60] to island entry blk[50], got: {redirects}"
+
+
+def test_state_write_reconstruction_prefers_non_regressing_split_frontier(
+    monkeypatch,
+):
+    """When a deeper direct rescue would steal a live chain, prefer a split on
+    an upstream reachable frontier that preserves reachability."""
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x2000, ()),
+            10: BlockSnapshot(10, int(ida_hexrays.BLT_2WAY), (68, 102), (), 0, 0x1000, ()),
+            68: BlockSnapshot(68, int(ida_hexrays.BLT_1WAY), (69,), (10,), 0, 0x1068, ()),
+            102: BlockSnapshot(102, int(ida_hexrays.BLT_1WAY), (69,), (10,), 0, 0x1102, ()),
+            69: BlockSnapshot(69, int(ida_hexrays.BLT_1WAY), (122,), (68, 102), 0, 0x1069, ()),
+            122: BlockSnapshot(122, int(ida_hexrays.BLT_1WAY), (222,), (69,), 0, 0x1122, ()),
+            222: BlockSnapshot(222, int(ida_hexrays.BLT_1WAY), (223,), (122,), 0, 0x1222, ()),
+            223: BlockSnapshot(223, int(ida_hexrays.BLT_0WAY), (), (222,), 0, 0x1223, ()),
+            39: BlockSnapshot(39, int(ida_hexrays.BLT_1WAY), (161,), (), 0, 0x2039, ()),
+            161: BlockSnapshot(161, int(ida_hexrays.BLT_0WAY), (), (39,), 0, 0x2161, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    frontier_69 = _make_reconstruction_node(69, 0x11111111, 69, owned_blocks=(69,))
+    frontier_122 = _make_reconstruction_node(122, 0x22222222, 122, owned_blocks=(122,))
+    island_entry = _make_reconstruction_node(39, 0x33333333, 39)
+    target_node = _make_reconstruction_node(161, 0x44444444, 161, label="target_161")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(frontier_69, frontier_122, island_entry, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=frontier_69.key,
+                target_key=target_node.key,
+                target_state=0x44444444,
+                target_entry_anchor=161,
+                target_label="target_161",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=69,
+                ),
+                ordered_path=(69,),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=frontier_122.key,
+                target_key=target_node.key,
+                target_state=0x44444444,
+                target_entry_anchor=161,
+                target_label="target_161",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=122,
+                ),
+                ordered_path=(69, 122),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=island_entry.key,
+                target_key=target_node.key,
+                target_state=0x44444444,
+                target_entry_anchor=161,
+                target_label="target_161",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=39,
+                ),
+                ordered_path=(39,),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert fragment is not None
+    split_redirects = [
+        m for m in fragment.modifications if isinstance(m, EdgeRedirectViaPredSplit)
+    ]
+    assert any(
+        m.src_block == 69
+        and m.old_target == 122
+        and m.new_target == 39
+        and m.via_pred in {68, 102}
+        for m in split_redirects
+    ), f"Expected non-regressing split rescue on blk[69] -> blk[39], got: {fragment.modifications}"
+
+    direct_redirects = [m for m in fragment.modifications if isinstance(m, RedirectGoto)]
+    assert not any(
+        m.from_serial in {69, 122} and m.new_target == 39
+        for m in direct_redirects
+    ), f"Entry-island rescue should avoid regressing live chain with direct redirect, got: {fragment.modifications}"
+
+
+def test_state_write_reconstruction_rescues_island_after_bridge_projection(
+    monkeypatch,
+):
+    """A bridge redirect can expose a previously dispatcher-reachable island.
+    The late rescue pass should then split the live frontier to keep the old
+    chain while reattaching the island entry."""
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_1WAY), (39,), (122,), 0, 0x2000, ()),
+            10: BlockSnapshot(10, int(ida_hexrays.BLT_2WAY), (68, 102), (), 0, 0x1000, ()),
+            68: BlockSnapshot(68, int(ida_hexrays.BLT_1WAY), (69,), (10,), 0, 0x1068, ()),
+            102: BlockSnapshot(102, int(ida_hexrays.BLT_1WAY), (69,), (10,), 0, 0x1102, ()),
+            69: BlockSnapshot(69, int(ida_hexrays.BLT_1WAY), (122,), (68, 102), 0, 0x1069, ()),
+            122: BlockSnapshot(122, int(ida_hexrays.BLT_1WAY), (2,), (69,), 0, 0x1122, ()),
+            39: BlockSnapshot(39, int(ida_hexrays.BLT_1WAY), (161,), (2,), 0, 0x2039, ()),
+            161: BlockSnapshot(161, int(ida_hexrays.BLT_0WAY), (), (39,), 0, 0x2161, ()),
+            222: BlockSnapshot(222, int(ida_hexrays.BLT_1WAY), (223,), (), 0, 0x2222, ()),
+            223: BlockSnapshot(223, int(ida_hexrays.BLT_0WAY), (), (222,), 0, 0x2223, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    frontier_69 = _make_reconstruction_node(69, 0x11111111, 69, owned_blocks=(69,))
+    frontier_122 = _make_reconstruction_node(122, 0x22222222, 122, owned_blocks=(122,))
+    island_entry = _make_reconstruction_node(39, 0x33333333, 39)
+    target_161 = _make_reconstruction_node(161, 0x44444444, 161, label="target_161")
+    target_222 = _make_reconstruction_node(222, 0x55555555, 222, label="target_222")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(frontier_69, frontier_122, island_entry, target_161, target_222),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.UNKNOWN,
+                source_key=frontier_122.key,
+                target_key=target_222.key,
+                target_state=0x55555555,
+                target_entry_anchor=222,
+                target_label="target_222",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=122,
+                ),
+                ordered_path=(122,),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.UNKNOWN,
+                source_key=frontier_69.key,
+                target_key=target_161.key,
+                target_state=0x44444444,
+                target_entry_anchor=161,
+                target_label="target_161",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=69,
+                ),
+                ordered_path=(69,),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.UNKNOWN,
+                source_key=island_entry.key,
+                target_key=target_161.key,
+                target_state=0x44444444,
+                target_entry_anchor=161,
+                target_label="target_161",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=39,
+                ),
+                ordered_path=(39,),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert fragment is not None
+    redirects = [m for m in fragment.modifications if isinstance(m, RedirectGoto)]
+    assert any(
+        m.from_serial == 122 and m.old_target == 2 and m.new_target == 222
+        for m in redirects
+    ), f"Expected bridge redirect blk[122] -> blk[222], got: {fragment.modifications}"
+
+    split_redirects = [
+        m for m in fragment.modifications if isinstance(m, EdgeRedirectViaPredSplit)
+    ]
+    assert any(
+        m.src_block == 69
+        and m.old_target == 122
+        and m.new_target == 39
+        and m.via_pred in {68, 102}
+        for m in split_redirects
+    ), f"Expected late split rescue blk[69] -> blk[39], got: {fragment.modifications}"
+
+    assert not any(
+        m.from_serial in {69, 122} and m.new_target == 39
+        for m in redirects
+    ), f"Late rescue should preserve blk[122] -> blk[222] with a split, got: {fragment.modifications}"
+
+
+def test_state_write_reconstruction_does_not_chase_closed_upstream_prefix_family(
+    monkeypatch,
+):
+    """Late rescue should stop at the externally rooted island entry.
+
+    A closed upstream exact-state family that only feeds that rescued island
+    should remain detached until it has its own external semantic roots."""
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_1WAY), (39,), (122,), 0, 0x2000, ()),
+            10: BlockSnapshot(10, int(ida_hexrays.BLT_2WAY), (68, 102), (), 0, 0x1000, ()),
+            68: BlockSnapshot(68, int(ida_hexrays.BLT_1WAY), (69,), (10,), 0, 0x1068, ()),
+            102: BlockSnapshot(102, int(ida_hexrays.BLT_1WAY), (69,), (10,), 0, 0x1102, ()),
+            69: BlockSnapshot(69, int(ida_hexrays.BLT_1WAY), (122,), (68, 102), 0, 0x1069, ()),
+            122: BlockSnapshot(122, int(ida_hexrays.BLT_1WAY), (2,), (69,), 0, 0x1122, ()),
+            39: BlockSnapshot(39, int(ida_hexrays.BLT_1WAY), (161,), (2, 229), 0, 0x2039, ()),
+            42: BlockSnapshot(42, int(ida_hexrays.BLT_1WAY), (51,), (56,), 0, 0x2042, ()),
+            51: BlockSnapshot(51, int(ida_hexrays.BLT_1WAY), (229,), (42,), 0, 0x2051, ()),
+            56: BlockSnapshot(56, int(ida_hexrays.BLT_1WAY), (42,), (), 0, 0x2056, ()),
+            161: BlockSnapshot(161, int(ida_hexrays.BLT_0WAY), (), (39,), 0, 0x2161, ()),
+            222: BlockSnapshot(222, int(ida_hexrays.BLT_1WAY), (223,), (), 0, 0x2222, ()),
+            223: BlockSnapshot(223, int(ida_hexrays.BLT_0WAY), (), (222,), 0, 0x2223, ()),
+            229: BlockSnapshot(229, int(ida_hexrays.BLT_1WAY), (39,), (51,), 0, 0x2229, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    frontier_69 = _make_reconstruction_node(69, 0x11111111, 69, owned_blocks=(69,))
+    frontier_122 = _make_reconstruction_node(122, 0x22222222, 122, owned_blocks=(122,))
+    upstream_56 = _make_reconstruction_node(56, 0x33333333, 56)
+    upstream_42 = _make_reconstruction_node(42, 0x44444444, 42)
+    upstream_51 = _make_reconstruction_node(51, 0x55555555, 51)
+    island_entry = _make_reconstruction_node(39, 0x66666666, 39)
+    target_161 = _make_reconstruction_node(161, 0x77777777, 161, label="target_161")
+    target_222 = _make_reconstruction_node(222, 0x88888888, 222, label="target_222")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(
+            frontier_69,
+            frontier_122,
+            upstream_56,
+            upstream_42,
+            upstream_51,
+            island_entry,
+            target_161,
+            target_222,
+        ),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.UNKNOWN,
+                source_key=frontier_122.key,
+                target_key=target_222.key,
+                target_state=0x88888888,
+                target_entry_anchor=222,
+                target_label="target_222",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=122,
+                ),
+                ordered_path=(122,),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.UNKNOWN,
+                source_key=frontier_69.key,
+                target_key=target_161.key,
+                target_state=0x77777777,
+                target_entry_anchor=161,
+                target_label="target_161",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=69,
+                ),
+                ordered_path=(69,),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=upstream_56.key,
+                target_key=upstream_42.key,
+                target_state=0x44444444,
+                target_entry_anchor=42,
+                target_label="state_42",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=56,
+                ),
+                ordered_path=(56,),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=upstream_42.key,
+                target_key=upstream_51.key,
+                target_state=0x55555555,
+                target_entry_anchor=51,
+                target_label="state_51",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=42,
+                ),
+                ordered_path=(42,),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=upstream_51.key,
+                target_key=island_entry.key,
+                target_state=0x66666666,
+                target_entry_anchor=39,
+                target_label="state_39",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=229,
+                ),
+                ordered_path=(51, 229),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=island_entry.key,
+                target_key=target_161.key,
+                target_state=0x77777777,
+                target_entry_anchor=161,
+                target_label="target_161",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=39,
+                ),
+                ordered_path=(39,),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert fragment is not None
+    redirects = [m for m in fragment.modifications if isinstance(m, RedirectGoto)]
+    split_redirects = [
+        m for m in fragment.modifications if isinstance(m, EdgeRedirectViaPredSplit)
+    ]
+
+    assert any(
+        m.from_serial == 122 and m.old_target == 2 and m.new_target == 222
+        for m in redirects
+    ), f"Expected bridge redirect blk[122] -> blk[222], got: {fragment.modifications}"
+    assert any(
+        m.src_block == 69
+        and m.old_target == 122
+        and m.new_target == 39
+        and m.via_pred in {68, 102}
+        for m in split_redirects
+    ), f"Expected late rescue to stop at blk[39], got: {fragment.modifications}"
+    assert not any(
+        getattr(m, "new_target", None) in {42, 51, 56}
+        for m in fragment.modifications
+    ), (
+        "Closed upstream family should remain detached without external roots, "
+        f"got: {fragment.modifications}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # ALL_STRATEGIES list integrity
 # ---------------------------------------------------------------------------

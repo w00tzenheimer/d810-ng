@@ -73,6 +73,16 @@ class ReconstructionCandidate:
     emission_mode: str
 
 
+@dataclass(frozen=True, slots=True)
+class EntryIslandRescueOption:
+    """One projected-CFG rescue candidate for an unreachable semantic entry island."""
+
+    source_block: int
+    lifted_entry: int
+    old_target: int
+    via_pred: int | None = None
+
+
 class StateWriteReconstructionStrategy:
     """Reconstruct proven semantic corridors from state-write horizons."""
 
@@ -572,6 +582,382 @@ class StateWriteReconstructionStrategy:
         if reachable_blocks is None:
             return residual
         return tuple(serial for serial in residual if serial in reachable_blocks)
+
+    @staticmethod
+    def _semantic_entry_anchors(dag: LinearizedStateDag) -> set[int]:
+        return {int(node.entry_anchor) for node in dag.nodes}
+
+    @staticmethod
+    def _incoming_edges_by_target_entry(
+        dag: LinearizedStateDag,
+    ) -> dict[int, tuple[StateDagEdge, ...]]:
+        incoming: defaultdict[int, list[StateDagEdge]] = defaultdict(list)
+        for edge in dag.edges:
+            if edge.target_entry_anchor is None:
+                continue
+            incoming[int(edge.target_entry_anchor)].append(edge)
+        return {
+            entry: tuple(edges)
+            for entry, edges in incoming.items()
+        }
+
+    @staticmethod
+    def _collect_mod_claims(
+        modifications: list,
+    ) -> tuple[set[int], set[int]]:
+        claimed_sources: set[int] = set()
+        claimed_targets: set[int] = set()
+        for mod in modifications:
+            if hasattr(mod, "new_target"):
+                claimed_targets.add(int(mod.new_target))
+            if hasattr(mod, "goto_target"):
+                claimed_targets.add(int(mod.goto_target))
+            if hasattr(mod, "conditional_target"):
+                claimed_targets.add(int(mod.conditional_target))
+            if hasattr(mod, "fallthrough_target"):
+                claimed_targets.add(int(mod.fallthrough_target))
+            if hasattr(mod, "per_pred_targets"):
+                for pred_serial, target_serial in mod.per_pred_targets:
+                    claimed_sources.add(int(pred_serial))
+                    claimed_targets.add(int(target_serial))
+            if hasattr(mod, "from_serial"):
+                claimed_sources.add(int(mod.from_serial))
+            if hasattr(mod, "source_serial"):
+                claimed_sources.add(int(mod.source_serial))
+            if hasattr(mod, "source_block"):
+                claimed_sources.add(int(mod.source_block))
+            if hasattr(mod, "src_block"):
+                claimed_sources.add(int(mod.src_block))
+            if hasattr(mod, "block_serial"):
+                claimed_sources.add(int(mod.block_serial))
+        return claimed_sources, claimed_targets
+
+    @classmethod
+    def _edge_reachable_frontier(
+        cls,
+        edge: StateDagEdge,
+        *,
+        reachable_blocks: set[int],
+        dispatcher_region: set[int],
+    ) -> int | None:
+        ordered_path = tuple(int(serial) for serial in edge.ordered_path)
+        for serial in reversed(ordered_path):
+            if serial in dispatcher_region:
+                continue
+            if serial in reachable_blocks:
+                return serial
+        source_block = int(edge.source_anchor.block_serial)
+        if source_block in dispatcher_region:
+            return None
+        if source_block in reachable_blocks:
+            return source_block
+        return None
+
+    @classmethod
+    def _graph_reaches_block(
+        cls,
+        flow_graph: object,
+        *,
+        source_block: int,
+        target_block: int,
+        limit: int = 512,
+    ) -> bool:
+        reachable = cls._compute_reachable_blocks(
+            flow_graph,
+            start_serial=source_block,
+            limit=limit,
+        )
+        return bool(reachable is not None and target_block in reachable)
+
+    @classmethod
+    def _pick_deepest_rescue_frontier(
+        cls,
+        flow_graph: object,
+        candidates: tuple[int, ...],
+    ) -> int | None:
+        if not candidates:
+            return None
+        unique_candidates = tuple(sorted({int(serial) for serial in candidates}))
+        if len(unique_candidates) == 1:
+            return unique_candidates[0]
+
+        deepest: list[int] = []
+        for source_block in unique_candidates:
+            if any(
+                source_block != other
+                and cls._graph_reaches_block(
+                    flow_graph,
+                    source_block=source_block,
+                    target_block=other,
+                )
+                for other in unique_candidates
+            ):
+                continue
+            deepest.append(source_block)
+
+        if deepest:
+            return deepest[-1]
+        return unique_candidates[-1]
+
+    @classmethod
+    def _lift_target_entry_to_island_entry(
+        cls,
+        target_entry: int,
+        *,
+        incoming_by_target_entry: dict[int, tuple[StateDagEdge, ...]],
+        semantic_entry_anchors: set[int],
+        reachable_blocks: set[int],
+        dispatcher_region: set[int],
+    ) -> int:
+        current = int(target_entry)
+        visited: set[int] = set()
+
+        while current not in visited:
+            visited.add(current)
+            candidates = sorted(
+                {
+                    int(edge.source_anchor.block_serial)
+                    for edge in incoming_by_target_entry.get(current, ())
+                    if int(edge.source_anchor.block_serial) in semantic_entry_anchors
+                    and int(edge.source_anchor.block_serial) not in dispatcher_region
+                    and int(edge.source_anchor.block_serial) not in reachable_blocks
+                }
+            )
+            if len(candidates) != 1:
+                break
+            current = candidates[0]
+
+        return current
+
+    @classmethod
+    def _entry_island_rescue_options(
+        cls,
+        source_block: int,
+        *,
+        lifted_entry: int,
+        projected_flow_graph,
+        reachable_blocks: set[int],
+        dispatcher_region: set[int],
+        claimed_sources: set[int],
+    ) -> tuple[EntryIslandRescueOption, ...]:
+        if source_block in claimed_sources:
+            return ()
+
+        source_snapshot = projected_flow_graph.get_block(source_block)
+        if source_snapshot is None or source_snapshot.nsucc != 1:
+            return ()
+
+        old_target = int(source_snapshot.succs[0])
+        if old_target == lifted_entry:
+            return ()
+
+        options = [
+            EntryIslandRescueOption(
+                source_block=source_block,
+                lifted_entry=lifted_entry,
+                old_target=old_target,
+            )
+        ]
+        for pred_serial in sorted(int(pred) for pred in source_snapshot.preds):
+            if pred_serial in dispatcher_region or pred_serial in claimed_sources:
+                continue
+            if pred_serial not in reachable_blocks:
+                continue
+            options.append(
+                EntryIslandRescueOption(
+                    source_block=source_block,
+                    lifted_entry=lifted_entry,
+                    old_target=old_target,
+                    via_pred=pred_serial,
+                )
+            )
+        return tuple(options)
+
+    @classmethod
+    def _build_entry_island_rescue_modification(
+        cls,
+        option: EntryIslandRescueOption,
+        *,
+        builder: ModificationBuilder,
+    ):
+        if option.via_pred is None:
+            return builder.goto_redirect(
+                source_block=option.source_block,
+                target_block=option.lifted_entry,
+                old_target=option.old_target,
+            )
+        return builder.edge_redirect(
+            source_block=option.source_block,
+            target_block=option.lifted_entry,
+            old_target=option.old_target,
+            via_pred=option.via_pred,
+        )
+
+    @classmethod
+    def _score_entry_island_rescue_option(
+        cls,
+        option: EntryIslandRescueOption,
+        *,
+        base_flow_graph,
+        builder: ModificationBuilder,
+        modifications: list,
+        baseline_reachable_count: int,
+        baseline_reachable_blocks: set[int],
+    ) -> tuple[tuple[int, int, int, int, int], object, object] | None:
+        candidate_mod = cls._build_entry_island_rescue_modification(
+            option,
+            builder=builder,
+        )
+
+        try:
+            patch_plan = compile_patch_plan(modifications + [candidate_mod], base_flow_graph)
+            projected_flow_graph = project_post_state(base_flow_graph, patch_plan)
+        except Exception:
+            return None
+
+        reachable_blocks = cls._compute_reachable_blocks(
+            projected_flow_graph,
+            start_serial=getattr(projected_flow_graph, "entry_serial", None),
+        )
+        if not reachable_blocks or option.lifted_entry not in reachable_blocks:
+            return None
+
+        reachable_count_delta = len(reachable_blocks) - baseline_reachable_count
+        if reachable_count_delta < 0:
+            return None
+
+        preserved_old_target = 1 if (
+            option.old_target in baseline_reachable_blocks
+            and option.old_target in reachable_blocks
+        ) else 0
+        mode_rank = 1 if option.via_pred is None else 0
+        via_rank = int(option.via_pred) if option.via_pred is not None else -1
+        score = (
+            reachable_count_delta,
+            preserved_old_target,
+            mode_rank,
+            int(option.source_block),
+            via_rank,
+        )
+        return score, candidate_mod, projected_flow_graph
+
+    @classmethod
+    def _emit_entry_island_rescues(
+        cls,
+        dag: LinearizedStateDag,
+        *,
+        base_flow_graph,
+        projected_flow_graph,
+        builder: ModificationBuilder,
+        modifications: list,
+        dispatcher_region: set[int],
+        mba,
+    ) -> int:
+        semantic_entry_anchors = cls._semantic_entry_anchors(dag) - dispatcher_region
+        incoming_by_target_entry = cls._incoming_edges_by_target_entry(dag)
+        current_projected_flow_graph = projected_flow_graph
+        emitted = 0
+
+        while True:
+            reachable_blocks = cls._compute_reachable_blocks(
+                current_projected_flow_graph,
+                start_serial=getattr(current_projected_flow_graph, "entry_serial", None),
+            )
+            if not reachable_blocks:
+                break
+
+            baseline_reachable_count = len(reachable_blocks)
+            claimed_sources, claimed_targets = cls._collect_mod_claims(modifications)
+            seen_options: set[tuple[int, int, int | None]] = set()
+            best_score: tuple[int, int, int, int, int] | None = None
+            best_option: EntryIslandRescueOption | None = None
+            best_modification = None
+            best_projected_flow_graph = None
+
+            for edge in dag.edges:
+                if edge.target_entry_anchor is None:
+                    continue
+                target_entry = int(edge.target_entry_anchor)
+                if target_entry in dispatcher_region:
+                    continue
+
+                lifted_entry = cls._lift_target_entry_to_island_entry(
+                    target_entry,
+                    incoming_by_target_entry=incoming_by_target_entry,
+                    semantic_entry_anchors=semantic_entry_anchors,
+                    reachable_blocks=reachable_blocks,
+                    dispatcher_region=dispatcher_region,
+                )
+                if (
+                    lifted_entry in dispatcher_region
+                    or lifted_entry in reachable_blocks
+                    or lifted_entry in claimed_targets
+                ):
+                    continue
+
+                source_block = cls._edge_reachable_frontier(
+                    edge,
+                    reachable_blocks=reachable_blocks,
+                    dispatcher_region=dispatcher_region,
+                )
+                if source_block is None:
+                    continue
+
+                for option in cls._entry_island_rescue_options(
+                    source_block,
+                    lifted_entry=lifted_entry,
+                    projected_flow_graph=current_projected_flow_graph,
+                    reachable_blocks=reachable_blocks,
+                    dispatcher_region=dispatcher_region,
+                    claimed_sources=claimed_sources,
+                ):
+                    option_key = (
+                        int(option.source_block),
+                        int(option.lifted_entry),
+                        int(option.via_pred) if option.via_pred is not None else None,
+                    )
+                    if option_key in seen_options:
+                        continue
+                    seen_options.add(option_key)
+
+                    scored = cls._score_entry_island_rescue_option(
+                        option,
+                        base_flow_graph=base_flow_graph,
+                        builder=builder,
+                        modifications=modifications,
+                        baseline_reachable_count=baseline_reachable_count,
+                        baseline_reachable_blocks=reachable_blocks,
+                    )
+                    if scored is None:
+                        continue
+
+                    score, candidate_mod, candidate_projected = scored
+                    if best_score is not None and score <= best_score:
+                        continue
+                    best_score = score
+                    best_option = option
+                    best_modification = candidate_mod
+                    best_projected_flow_graph = candidate_projected
+
+            if best_option is None or best_modification is None or best_projected_flow_graph is None:
+                break
+
+            modifications.append(best_modification)
+            current_projected_flow_graph = best_projected_flow_graph
+            emitted += 1
+            logger.info(
+                "RECON DAG: entry-island rescue %s -> %s%s (delta=%+d)",
+                blk_label(mba, best_option.source_block),
+                blk_label(mba, best_option.lifted_entry),
+                (
+                    f" via_pred={blk_label(mba, best_option.via_pred)}"
+                    if best_option.via_pred is not None
+                    else ""
+                ),
+                best_score[0] if best_score is not None else 0,
+            )
+
+        return emitted
 
     @staticmethod
     def _is_backward_same_corridor_target(
@@ -1707,16 +2093,37 @@ class StateWriteReconstructionStrategy:
                         kind, reason, count,
                     )
 
+        projected_flow_graph = flow_graph
         residual_dispatcher_preds: tuple[int, ...] = ()
         allow_post_apply_bst_cleanup = True
         post_apply_bst_cleanup_reason: str | None = None
         if dispatcher_serial >= 0:
-            projected_flow_graph = flow_graph
             try:
                 patch_plan = compile_patch_plan(modifications, flow_graph)
                 projected_flow_graph = project_post_state(flow_graph, patch_plan)
             except Exception:
                 projected_flow_graph = flow_graph
+
+            entry_island_rescue_count = self._emit_entry_island_rescues(
+                dag,
+                base_flow_graph=flow_graph,
+                projected_flow_graph=projected_flow_graph,
+                builder=builder,
+                modifications=modifications,
+                dispatcher_region=dispatcher_region,
+                mba=mba,
+            )
+            if entry_island_rescue_count:
+                logger.info(
+                    "RECON DAG: entry-island rescue emitted %d redirects",
+                    entry_island_rescue_count,
+                )
+                try:
+                    patch_plan = compile_patch_plan(modifications, flow_graph)
+                    projected_flow_graph = project_post_state(flow_graph, patch_plan)
+                except Exception:
+                    projected_flow_graph = flow_graph
+
             residual_dispatcher_preds = self._collect_residual_dispatcher_predecessors(
                 projected_flow_graph,
                 dispatcher_serial,
@@ -2529,6 +2936,29 @@ class StateWriteReconstructionStrategy:
                     )
                 except Exception:
                     projected_flow_graph = flow_graph
+
+                late_entry_island_rescue_count = self._emit_entry_island_rescues(
+                    dag,
+                    base_flow_graph=flow_graph,
+                    projected_flow_graph=projected_flow_graph,
+                    builder=builder,
+                    modifications=modifications,
+                    dispatcher_region=dispatcher_region,
+                    mba=mba,
+                )
+                if late_entry_island_rescue_count:
+                    logger.info(
+                        "RECON DAG: post-bridge entry-island rescue emitted %d redirects",
+                        late_entry_island_rescue_count,
+                    )
+                    try:
+                        patch_plan = compile_patch_plan(modifications, flow_graph)
+                        projected_flow_graph = project_post_state(
+                            flow_graph, patch_plan,
+                        )
+                    except Exception:
+                        projected_flow_graph = flow_graph
+
                 residual_dispatcher_preds = (
                     self._collect_residual_dispatcher_predecessors(
                         projected_flow_graph,
