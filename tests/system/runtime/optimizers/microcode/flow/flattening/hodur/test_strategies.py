@@ -8441,6 +8441,230 @@ class TestClassifyArtifactReturnBlocks:
 
 
 # ---------------------------------------------------------------------------
+# Empty ordered_path and UNKNOWN edge fallback
+# ---------------------------------------------------------------------------
+
+
+def test_state_write_reconstruction_empty_path_bridge_fallback(monkeypatch):
+    """Edges with empty ordered_path are wired via the Bridge Builder fallback
+    using source_anchor.block_serial when the source feeds the dispatcher."""
+    mov = int(ida_hexrays.m_mov)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+
+    # blk[10] is a 1-way block that feeds dispatcher (blk[2])
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10,), 0, 0x2000, ()),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0x12345678),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3000, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    source_node = _make_reconstruction_node(10, 0x11111111, 10)
+    target_node = _make_reconstruction_node(30, 0x12345678, 30, label="target")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node, target_node),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node.key,
+                target_key=target_node.key,
+                target_state=0x12345678,
+                target_entry_anchor=30,
+                target_label="target",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=10,
+                ),
+                ordered_path=(),  # empty path
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    # The strict corridor emitter rejects this edge (missing_ordered_path),
+    # but the Bridge Builder fallback should wire it using source_anchor.
+    assert fragment is not None
+    redirects = [m for m in fragment.modifications if isinstance(m, RedirectGoto)]
+    assert any(r.from_serial == 10 and r.new_target == 30 for r in redirects), (
+        f"Expected bridge fallback redirect blk[10] -> blk[30], got: {redirects}"
+    )
+
+
+def test_state_write_reconstruction_unknown_edge_feeder_redirect(monkeypatch):
+    """UNKNOWN edges with valid target_entry_anchor are wired via the Feeder
+    redirect instead of being silently skipped."""
+    mov = int(ida_hexrays.m_mov)
+    goto = int(ida_hexrays.m_goto)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_b = int(ida_hexrays.mop_b)
+
+    # blk[10]: 1-way block feeding dispatcher (blk[2])
+    # blk[15]: TRANSITION edge from blk[15] -> blk[30] (provides at least
+    #          one corridor candidate so the plan is not None)
+    # blk[20]: UNKNOWN edge from blk[20] -> blk[40]
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (3, 4), (10, 15, 20), 0, 0x2000, ()),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(15,),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(),
+            ),
+            15: BlockSnapshot(
+                serial=15,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(10,),
+                flags=0,
+                start_ea=0x1500,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1500,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=4, value=0xAAAA0001),
+                        d=MopSnapshot(t=mop_S, size=4, stkoff=0x3C),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1504,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            20: BlockSnapshot(
+                serial=20,
+                block_type=int(ida_hexrays.BLT_1WAY),
+                succs=(2,),
+                preds=(),
+                flags=0,
+                start_ea=0x2000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x2004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=2),
+                    ),
+                ),
+            ),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x3000, ()),
+            40: BlockSnapshot(40, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x4000, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    source_node_a = _make_reconstruction_node(15, 0x11111111, 15)
+    source_node_b = _make_reconstruction_node(20, 0x22222222, 20)
+    target_node_a = _make_reconstruction_node(30, 0xAAAA0001, 30, label="target_a")
+    target_node_b = _make_reconstruction_node(40, 0xBBBB0002, 40, label="target_b")
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node_a, source_node_b, target_node_a, target_node_b),
+        edges=(
+            # Normal TRANSITION edge that will be accepted by corridor emitter
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_node_a.key,
+                target_key=target_node_a.key,
+                target_state=0xAAAA0001,
+                target_entry_anchor=30,
+                target_label="target_a",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=15,
+                ),
+                ordered_path=(15,),
+            ),
+            # UNKNOWN edge: valid source/target but no state writes found
+            StateDagEdge(
+                kind=SemanticEdgeKind.UNKNOWN,
+                source_key=source_node_b.key,
+                target_key=target_node_b.key,
+                target_state=0xBBBB0002,
+                target_entry_anchor=40,
+                target_label="target_b",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=20,
+                ),
+                ordered_path=(20,),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert fragment is not None
+    # The UNKNOWN edge should be wired via feeder redirect
+    redirects = [m for m in fragment.modifications if isinstance(m, RedirectGoto)]
+    assert any(r.from_serial == 20 and r.new_target == 40 for r in redirects), (
+        f"Expected UNKNOWN feeder redirect blk[20] -> blk[40], got: {redirects}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # ALL_STRATEGIES list integrity
 # ---------------------------------------------------------------------------
 

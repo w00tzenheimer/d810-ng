@@ -1543,6 +1543,11 @@ class StateWriteReconstructionStrategy:
             elif rejection is not None:
                 rejected_metadata.append(rejection)
 
+        modifications: list = []
+        owned_blocks: set[int] = set()
+        owned_edges: set[tuple[int, int]] = set()
+        accepted_metadata: list[dict[str, int | str | None]] = []
+
         if not raw_candidates:
             logger.info(
                 "RECON DAG: no proven corridors across %d semantic edges (rejections=%d)",
@@ -1559,12 +1564,8 @@ class StateWriteReconstructionStrategy:
                         "  edge_kind=%s rejection_reason=%s count=%d",
                         kind, reason, count,
                     )
-            return None
-
-        modifications: list = []
-        owned_blocks: set[int] = set()
-        owned_edges: set[tuple[int, int]] = set()
-        accepted_metadata: list[dict[str, int | str | None]] = []
+            # Fall through to Bridge Builder and Feeder redirect sections
+            # which can wire edges rejected by the strict corridor emitter.
 
         direct_groups: defaultdict[int, list[ReconstructionCandidate]] = defaultdict(list)
         shared_groups: defaultdict[int, list[ReconstructionCandidate]] = defaultdict(list)
@@ -1687,24 +1688,25 @@ class StateWriteReconstructionStrategy:
                         "  edge_kind=%s rejection_reason=%s count=%d",
                         kind, reason, count,
                     )
-            return None
-
-        logger.info(
-            "RECON DAG: accepted %d/%d candidate corridors (rejections=%d)",
-            len(accepted_metadata),
-            len(raw_candidates),
-            len(rejected_metadata),
-        )
-        if rejected_metadata:
-            reason_counts = Counter(
-                (r.get("edge_kind", "?"), r.get("rejection_reason", "unknown"))
-                for r in rejected_metadata
+            # Fall through to Bridge Builder and Feeder redirect sections
+            # which can wire edges rejected by the strict corridor emitter.
+        else:
+            logger.info(
+                "RECON DAG: accepted %d/%d candidate corridors (rejections=%d)",
+                len(accepted_metadata),
+                len(raw_candidates),
+                len(rejected_metadata),
             )
-            for (kind, reason), count in reason_counts.most_common():
-                logger.info(
-                    "  edge_kind=%s rejection_reason=%s count=%d",
-                    kind, reason, count,
+            if rejected_metadata:
+                reason_counts = Counter(
+                    (r.get("edge_kind", "?"), r.get("rejection_reason", "unknown"))
+                    for r in rejected_metadata
                 )
+                for (kind, reason), count in reason_counts.most_common():
+                    logger.info(
+                        "  edge_kind=%s rejection_reason=%s count=%d",
+                        kind, reason, count,
+                    )
 
         residual_dispatcher_preds: tuple[int, ...] = ()
         allow_post_apply_bst_cleanup = True
@@ -1799,6 +1801,21 @@ class StateWriteReconstructionStrategy:
                 if hasattr(mod, "block_serial"):
                     claimed_sources.add(int(mod.block_serial))
 
+            # Step 1b: Build suppressed source->target pairs from structural
+            # rejections (e.g. backward_same_corridor_target) to prevent
+            # Bridge/Feeder from wiring edges that _build_candidate
+            # intentionally refused for safety reasons.
+            _structural_rejection_reasons = frozenset({
+                "backward_same_corridor_target",
+            })
+            suppressed_bridge_pairs: set[tuple[int, int]] = set()
+            for rej in rejected_metadata:
+                if rej.get("rejection_reason") in _structural_rejection_reasons:
+                    _rej_src = rej.get("source_block")
+                    _rej_tgt = rej.get("target_entry_anchor")
+                    if _rej_src is not None and _rej_tgt is not None:
+                        suppressed_bridge_pairs.add((int(_rej_src), int(_rej_tgt)))
+
             # Step 2: Scan DAG edges for unclaimed targets
             bridge_mods: list = []
 
@@ -1813,16 +1830,24 @@ class StateWriteReconstructionStrategy:
 
                 # This target is unclaimed — find the exit block to wire from.
                 # Walk ordered_path to find the last non-BST block.
-                if not edge.ordered_path:
-                    continue
-
+                # Fall back to source_anchor.block_serial for empty paths.
                 exit_block: int | None = None
-                for serial in reversed(edge.ordered_path):
-                    if serial not in _bst_set:
-                        exit_block = serial
-                        break
+                if edge.ordered_path:
+                    for serial in reversed(edge.ordered_path):
+                        if serial not in _bst_set:
+                            exit_block = serial
+                            break
+                else:
+                    # Empty ordered_path: use source_anchor directly
+                    src = int(edge.source_anchor.block_serial)
+                    if src not in _bst_set:
+                        exit_block = src
 
                 if exit_block is None:
+                    continue
+
+                # Skip structurally suppressed edges (e.g. backward corridor)
+                if (exit_block, target_entry) in suppressed_bridge_pairs:
                     continue
 
                 # Skip if this exit block is already the source of a modification
@@ -1861,6 +1886,11 @@ class StateWriteReconstructionStrategy:
                         #         "blk[%d] -> blk[%d], skipping NOP",
                         #         exit_block, target_entry,
                         #     )
+                        _bridge_tag = (
+                            "empty-path direct wire"
+                            if not edge.ordered_path
+                            else "1-way"
+                        )
                         bridge_mods.append(
                             builder.goto_redirect(
                                 source_block=exit_block,
@@ -1871,8 +1901,8 @@ class StateWriteReconstructionStrategy:
                         claimed_targets.add(target_entry)
                         claimed_sources.add(exit_block)
                         logger.info(
-                            "RECON BRIDGE: wire blk[%d] -> blk[%d] (1-way)",
-                            exit_block, target_entry,
+                            "RECON BRIDGE: wire blk[%d] -> blk[%d] (%s)",
+                            exit_block, target_entry, _bridge_tag,
                         )
                 elif block.nsucc == 2:
                     # 2-way block: find which arm points to BST/dispatcher
@@ -1895,6 +1925,11 @@ class StateWriteReconstructionStrategy:
                                 #         "blk[%d].arm%d -> blk[%d], skipping NOP",
                                 #         exit_block, arm, target_entry,
                                 #     )
+                                _bridge_tag_2 = (
+                                    "empty-path direct wire"
+                                    if not edge.ordered_path
+                                    else "2-way"
+                                )
                                 bridge_mods.append(
                                     builder.edge_redirect(
                                         source_block=exit_block,
@@ -1905,8 +1940,8 @@ class StateWriteReconstructionStrategy:
                                 claimed_targets.add(target_entry)
                                 claimed_sources.add(exit_block)
                                 logger.info(
-                                    "RECON BRIDGE: wire blk[%d].arm%d -> blk[%d] (2-way)",
-                                    exit_block, arm, target_entry,
+                                    "RECON BRIDGE: wire blk[%d].arm%d -> blk[%d] (%s)",
+                                    exit_block, arm, target_entry, _bridge_tag_2,
                                 )
                             break
 
@@ -1928,9 +1963,16 @@ class StateWriteReconstructionStrategy:
             feeder_mods: list = []
 
             for edge in dag.edges:
-                if edge.kind == SemanticEdgeKind.UNKNOWN:
-                    continue
                 if edge.target_entry_anchor is None:
+                    continue
+                # UNKNOWN edges with valid target_entry_anchor are DFS-proven
+                # transitions whose snapshot state writes were unresolvable.
+                # They are safe to wire via the feeder redirect.
+                if edge.kind not in (
+                    SemanticEdgeKind.TRANSITION,
+                    SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                    SemanticEdgeKind.UNKNOWN,
+                ):
                     continue
                 target_entry = int(edge.target_entry_anchor)
                 if target_entry in _bst_set:
@@ -1939,6 +1981,10 @@ class StateWriteReconstructionStrategy:
                 src_serial = int(edge.source_anchor.block_serial)
                 if src_serial in claimed_sources:
                     continue  # Already handled by strict emitter or bridge
+
+                # Skip structurally suppressed edges (e.g. backward corridor)
+                if (src_serial, target_entry) in suppressed_bridge_pairs:
+                    continue
 
                 src_block = flow_graph.get_block(src_serial)
                 if src_block is None:
@@ -1975,6 +2021,11 @@ class StateWriteReconstructionStrategy:
                         #         "blk[%d] -> blk[%d], skipping NOP",
                         #         src_serial, target_entry,
                         #     )
+                        _feeder_tag = (
+                            "UNKNOWN 1-way"
+                            if edge.kind == SemanticEdgeKind.UNKNOWN
+                            else "1-way"
+                        )
                         feeder_mods.append(
                             builder.goto_redirect(
                                 source_block=src_serial,
@@ -1985,8 +2036,8 @@ class StateWriteReconstructionStrategy:
                         claimed_sources.add(src_serial)
                         claimed_targets.add(target_entry)
                         logger.info(
-                            "RECON BRIDGE: feeder blk[%d] -> blk[%d] (1-way)",
-                            src_serial, target_entry,
+                            "RECON BRIDGE: feeder blk[%d] -> blk[%d] (%s)",
+                            src_serial, target_entry, _feeder_tag,
                         )
                 elif src_block.nsucc == 2:
                     for arm in range(2):
@@ -2008,6 +2059,11 @@ class StateWriteReconstructionStrategy:
                                 #         "blk[%d].arm%d -> blk[%d], skipping NOP",
                                 #         src_serial, arm, target_entry,
                                 #     )
+                                _feeder_tag_2 = (
+                                    "UNKNOWN 2-way"
+                                    if edge.kind == SemanticEdgeKind.UNKNOWN
+                                    else "2-way"
+                                )
                                 feeder_mods.append(
                                     builder.edge_redirect(
                                         source_block=src_serial,
@@ -2018,8 +2074,8 @@ class StateWriteReconstructionStrategy:
                                 claimed_sources.add(src_serial)
                                 claimed_targets.add(target_entry)
                                 logger.info(
-                                    "RECON BRIDGE: feeder blk[%d].arm%d -> blk[%d] (2-way)",
-                                    src_serial, arm, target_entry,
+                                    "RECON BRIDGE: feeder blk[%d].arm%d -> blk[%d] (%s)",
+                                    src_serial, arm, target_entry, _feeder_tag_2,
                                 )
                             break
 
@@ -2496,6 +2552,13 @@ class StateWriteReconstructionStrategy:
                         len(residual_dispatcher_preds),
                         [blk_label(mba, s) for s in residual_dispatcher_preds],
                     )
+
+        # Final guard: if no modifications after all emission phases, return None.
+        if not modifications:
+            logger.info(
+                "RECON DAG: no modifications produced across strict + bridge + feeder phases",
+            )
+            return None
 
         # --- Diagnostic snapshot: DAG + modifications (gated behind D810_DIAG_SNAPSHOT=1) ---
         try:
