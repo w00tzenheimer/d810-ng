@@ -594,7 +594,6 @@ class HodurUnflattener(GenericUnflatteningRule):
                         gutted=gutted_serials,
                         claimed_sources=_claimed,
                     )
-                    diag_db.close()
             except Exception:
                 unflat_logger.debug(
                     "Diagnostic reachability snapshot failed (non-critical)",
@@ -699,7 +698,6 @@ class HodurUnflattener(GenericUnflatteningRule):
                     maturity="MMAT_GLBOPT1",
                     phase="post_pipeline",
                 )
-                _pl_conn.close()
         except Exception:
             unflat_logger.debug(
                 "post_pipeline diagnostic snapshot failed (non-critical)",

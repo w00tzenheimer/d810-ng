@@ -855,7 +855,6 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             maturity=_prev_mat_name,
                             phase="post_d810",
                         )
-                        _diag_conn.close()
                 except Exception:
                     pass  # diagnostic, never gates decompilation
 
@@ -882,7 +881,6 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         maturity=_new_mat_name,
                         phase="pre_d810",
                     )
-                    _diag_conn.close()
             except Exception:
                 pass  # diagnostic, never gates decompilation
 
@@ -1234,6 +1232,11 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             fn_name = idaapi.get_func_name(mba.entry_ea)
         prologue = f"{fn_name} @ {hex(mba.entry_ea)}"
         main_logger.info("Starting decompilation of function %s", prologue)
+        try:
+            from d810.core.diag import open_diag_session
+            open_diag_session(int(mba.entry_ea))
+        except Exception:
+            pass  # diagnostic, never gates decompilation
         self.callback(DecompilationEvent.STARTED)
         # self.manager.start_profiling()
         # self.manager.instruction_optimizer.reset_rule_usage_statistic()
@@ -1381,6 +1384,11 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
 
         @param ct: (control_graph_t *)"""
         main_logger.info("Structural analysis has been finished")
+        try:
+            from d810.core.diag import close_diag_session
+            close_diag_session()
+        except Exception:
+            pass  # diagnostic, never gates decompilation
         self.callback(DecompilationEvent.FINISHED)
         return 0
 

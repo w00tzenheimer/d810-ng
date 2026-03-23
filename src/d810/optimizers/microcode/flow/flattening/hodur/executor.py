@@ -395,7 +395,6 @@ class TransactionalExecutor:
                     maturity="MMAT_GLBOPT1",
                     phase="post_apply",
                 )
-                diag_db.close()
         except Exception:
             executor_logger.debug(
                 "Diagnostic snapshot failed (non-critical)", exc_info=True,
