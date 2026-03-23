@@ -537,9 +537,39 @@ class HodurUnflattener(GenericUnflatteningRule):
             # diagnostic BFS to track unreachability.)
             bst_serials = set(snapshot.bst_result.bst_node_blocks) | {snapshot.bst_dispatcher_serial}
             self._prune_unreachable_bst_blocks(bst_serials)
+
+            # Collect live corridor blocks from successfully applied
+            # pipeline modifications.  These are source and target serials
+            # that reconstruction (or any strategy) wired — they must
+            # survive Gut-and-Wire even when BFS from block 0 cannot
+            # reach them yet (e.g. corridor blocks whose only predecessor
+            # is a BST node that was just disconnected).
+            reconstruction_live: set[int] = set()
+            for frag, res in zip(pipeline, results):
+                if not res.success or res.edits_applied <= 0:
+                    continue
+                for mod in frag.modifications:
+                    for attr in (
+                        "from_serial", "new_target", "old_target",
+                        "goto_target", "block_serial", "source_block",
+                        "src_block", "source_serial", "via_pred",
+                        "conditional_target", "fallthrough_target",
+                        "pred_serial", "succ_serial",
+                    ):
+                        val = getattr(mod, attr, None)
+                        if isinstance(val, int):
+                            reconstruction_live.add(val)
+                    # DuplicateAndRedirect: per_pred_targets
+                    ppt = getattr(mod, "per_pred_targets", None)
+                    if ppt is not None:
+                        for _pred, _tgt in ppt:
+                            reconstruction_live.add(int(_pred))
+                            reconstruction_live.add(int(_tgt))
+
             dead_cleanup_applied = self._nop_unreachable_blocks_after_bst_cleanup(
                 dispatcher_serial=snapshot.bst_dispatcher_serial,
                 bst_serials=bst_serials,
+                reconstruction_live=reconstruction_live,
             )
             if dead_cleanup_applied > 0:
                 nb_changes += dead_cleanup_applied
@@ -1647,6 +1677,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         *,
         dispatcher_serial: int,
         bst_serials: set[int],
+        reconstruction_live: set[int] | None = None,
     ) -> int:
         """Gut-and-Wire soft-kill of unreachable blocks after BST cleanup.
 
@@ -1656,6 +1687,12 @@ class HodurUnflattener(GenericUnflatteningRule):
         passthroughs).  2-way conditional blocks are converted to 1-way by
         replacing the conditional tail with ``m_goto`` to the first successor.
         Hex-Rays' later maturity passes (MMAT_CALLS+) safely fold them out.
+
+        Blocks in *reconstruction_live* (source/target serials from applied
+        pipeline modifications) are protected: they and their BFS-forward
+        reachable successors are excluded from cleanup even when not reachable
+        from block 0.  This prevents Gut-and-Wire from destroying corridors
+        wired by the reconstruction strategy.
         """
         mba = self.mba
         if mba is None or mba.qty <= 1:
@@ -1682,6 +1719,36 @@ class HodurUnflattener(GenericUnflatteningRule):
             for serial in range(mba.qty)
             if serial not in visited and serial != stop_serial
         }
+
+        # Protect reconstruction-owned corridors: BFS forward from every
+        # live corridor block that ended up unreachable from block 0.
+        if reconstruction_live:
+            corridor_seeds = reconstruction_live & unreachable
+            if corridor_seeds:
+                corridor_visited: set[int] = set()
+                corridor_queue = list(corridor_seeds)
+                while corridor_queue:
+                    serial = corridor_queue.pop(0)
+                    if serial in corridor_visited or serial < 0 or serial >= mba.qty:
+                        continue
+                    corridor_visited.add(serial)
+                    blk = mba.get_mblock(serial)
+                    if blk is None:
+                        continue
+                    for i in range(blk.nsucc()):
+                        succ = blk.succ(i)
+                        if succ not in corridor_visited:
+                            corridor_queue.append(succ)
+                protected = corridor_visited & unreachable
+                if protected:
+                    unflat_logger.info(
+                        "GutAndWire: protecting %d reconstruction-owned corridor "
+                        "blocks from cleanup (seeds=%s)",
+                        len(protected),
+                        sorted(corridor_seeds)[:20],
+                    )
+                unreachable -= protected
+
         if not unreachable:
             unflat_logger.info(
                 "DeadBlockElimination: no unreachable live blocks after BST cleanup"
