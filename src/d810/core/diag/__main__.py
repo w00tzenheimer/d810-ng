@@ -6,6 +6,7 @@ Usage::
     python -m d810.core.diag var-writes --db path.sqlite3 0x7F0
     python -m d810.core.diag block --db path.sqlite3 206 --insns
     python -m d810.core.diag return-paths --db path.sqlite3
+    python -m d810.core.diag ea-trace --db path.sqlite3 0x1800134A5
 """
 from __future__ import annotations
 
@@ -122,6 +123,85 @@ def _format_return_paths(paths: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _ea_trace(conn: sqlite3.Connection, ea_values: list[int], exact: bool) -> str:
+    """Trace EA(s) across all snapshots and format output."""
+    lines: list[str] = []
+    for ea in ea_values:
+        ea_hex = f"0x{ea:X}"
+        if exact:
+            rows = conn.execute(
+                "SELECT s.id, s.label, b.serial, b.start_ea_hex, b.end_ea_hex,"
+                "       b.succs, b.preds, b.type_name "
+                "FROM blocks b "
+                "JOIN snapshots s ON b.snapshot_id = s.id "
+                "WHERE b.start_ea_hex = ? "
+                "ORDER BY s.id, b.serial",
+                (ea_hex,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT s.id, s.label, b.serial, b.start_ea_hex, b.end_ea_hex,"
+                "       b.succs, b.preds, b.type_name "
+                "FROM blocks b "
+                "JOIN snapshots s ON b.snapshot_id = s.id "
+                "WHERE ? BETWEEN b.start_ea_i64 AND b.end_ea_i64 - 1 "
+                "ORDER BY s.id, b.serial",
+                (ea,),
+            ).fetchall()
+        mode = "exact start_ea" if exact else "range containment"
+        lines.append(f"EA {ea_hex} across snapshots ({mode}):")
+        if not rows:
+            lines.append("  (not found in any snapshot)")
+        else:
+            # Collect all snapshot IDs present in results.
+            seen_snap_ids: set[int] = {r[0] for r in rows}
+            # Also find ALL snapshot IDs so we can report "(not found)".
+            all_snap_ids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT id FROM snapshots ORDER BY id"
+                ).fetchall()
+            ]
+            # Build a lookup from snap_id to its rows.
+            snap_rows: dict[int, list] = {}
+            for r in rows:
+                snap_rows.setdefault(r[0], []).append(r)
+            # Determine max label width for alignment.
+            label_widths = [len(r[1]) for r in rows]
+            all_labels = {
+                r[0]: r[1]
+                for r in conn.execute(
+                    "SELECT id, label FROM snapshots ORDER BY id"
+                ).fetchall()
+            }
+            for sid in all_snap_ids:
+                label_widths.append(len(all_labels.get(sid, "")))
+            max_label = max(label_widths) if label_widths else 0
+            max_snap_digits = len(str(max(all_snap_ids))) if all_snap_ids else 1
+
+            for sid in all_snap_ids:
+                label = all_labels.get(sid, "unknown")
+                if sid not in seen_snap_ids:
+                    lines.append(
+                        f"  snap {sid:>{max_snap_digits}} ({label:<{max_label}s})"
+                        f" : (not found)"
+                    )
+                else:
+                    for r in snap_rows[sid]:
+                        _, _, serial, s_ea, e_ea, succs, preds, tname = r
+                        lines.append(
+                            f"  snap {sid:>{max_snap_digits}} ({label:<{max_label}s})"
+                            f" : serial={serial:<4d}"
+                            f" [{s_ea}..{e_ea})"
+                            f" succs={succs:<12s}"
+                            f" preds={preds:<12s}"
+                            f" {tname}"
+                        )
+        if ea != ea_values[-1]:
+            lines.append("")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m d810.core.diag``."""
     # Common args shared by all subcommands via parents= mechanism.
@@ -155,6 +235,15 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("return-paths", parents=[common],
                    help="Show return path hop status")
 
+    p_ea = sub.add_parser(
+        "ea-trace", parents=[common],
+        help="Trace an EA across all snapshots (block lineage)",
+    )
+    p_ea.add_argument("eas", nargs="+", type=lambda x: int(x, 0),
+                      help="EA values in hex (e.g. 0x1800134A5)")
+    p_ea.add_argument("--exact", action="store_true",
+                      help="Match start_ea exactly (default: range containment)")
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -178,6 +267,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "return-paths":
         result = return_paths(conn, snap_id)
         print(_format_return_paths(result))
+    elif args.command == "ea-trace":
+        print(_ea_trace(conn, args.eas, args.exact))
 
     conn.close()
     return 0
