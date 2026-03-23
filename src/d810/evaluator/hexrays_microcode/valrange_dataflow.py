@@ -25,6 +25,43 @@ each successor is refined:
 This matches the internal ``sub_180130CC0`` logic discovered by reverse-
 engineering ``hexx64.dll``.
 
+TODO: precision improvements to close remaining gaps with IDA's output
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. **Overlapping register handling** -- hexx64 has
+   ``valranges_try_split_overlap``, ``valranges_split_and_update``,
+   ``valranges_update_overlapping`` (all named in the IDB at their
+   respective addresses).  These handle when a write to ``eax.4``
+   partially clobbers an existing ``rax.8`` range, or vice versa.
+   We currently use exact key matching, so a write to ``eax.4`` does
+   not affect a tracked ``rax.8``.  On x86-64 this matters for any
+   function that mixes 32-bit and 64-bit register operations.
+
+2. **m_add with OR sub-instruction pattern** -- hexx64 specifically
+   handles ``add (x | const), imm`` where the left operand is a
+   sub-instruction ``m_or``.  It evaluates the OR at abstract-
+   interpretation level, then adds the immediate.  This is the exact
+   MBA pattern OLLVM generates.  Our singleton propagation covers the
+   case when both OR operands resolve to constants, but not when one
+   is still a range.
+
+3. **Set-flag map intersection** -- hexx64 intersects the ``[0, 1]``
+   result of ``setz``/``setnz``/etc with the *existing* map entry
+   for the destination key, rather than just setting ``[0, 1]``.
+   This narrows dead comparison results.
+
+Not worth porting (kept here for documentation):
+
+- The three optimization passes (``opt_remove_useless_jx_valranges``,
+  ``opt_cmp64_valranges_jmp2``, ``apply_valranges_to_block``) are
+  consumers of valranges, not producers.  d810 has its own
+  optimization framework for that.
+- The ``valranges_tail`` lazy-evaluation caching -- our ``out_states``
+  dict is functionally equivalent, just computed differently.
+- The global-register subtraction in the kill list -- an IDA-internal
+  optimization detail about which registers are "global" (preserved
+  across calls).
+
 Usage::
 
     result = run_valrange_fixpoint(mba)
