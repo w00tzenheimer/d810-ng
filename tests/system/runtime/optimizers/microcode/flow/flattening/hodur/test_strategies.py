@@ -16,6 +16,8 @@ from d810.cfg.graph_modification import (
     DuplicateAndRedirect,
     EdgeRedirectViaPredSplit,
     NopInstructions,
+    PrivateTerminalSuffix,
+    PrivateTerminalSuffixGroup,
     RedirectBranch,
     RedirectGoto,
 )
@@ -9151,6 +9153,530 @@ def test_state_write_reconstruction_does_not_chase_closed_upstream_prefix_family
         "Closed upstream family should remain detached without external roots, "
         f"got: {fragment.modifications}"
     )
+
+
+def test_state_write_reconstruction_splits_distinct_terminal_families(
+    monkeypatch,
+):
+    mov = int(ida_hexrays.m_mov)
+    goto = int(ida_hexrays.m_goto)
+    mop_b = int(ida_hexrays.mop_b)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_r = int(ida_hexrays.mop_r)
+
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(1, int(ida_hexrays.BLT_2WAY), (10, 20), (), 0, 0x1000, ()),
+            10: BlockSnapshot(10, int(ida_hexrays.BLT_2WAY), (11, 12), (1,), 0, 0x1010, ()),
+            11: BlockSnapshot(
+                11,
+                int(ida_hexrays.BLT_1WAY),
+                (50,),
+                (10,),
+                0,
+                0x1110,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1110,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=8, value=1),
+                        d=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1114,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=50),
+                    ),
+                ),
+            ),
+            12: BlockSnapshot(12, int(ida_hexrays.BLT_0WAY), (), (10,), 0, 0x1120, ()),
+            20: BlockSnapshot(20, int(ida_hexrays.BLT_2WAY), (21, 22), (1,), 0, 0x2010, ()),
+            21: BlockSnapshot(
+                21,
+                int(ida_hexrays.BLT_1WAY),
+                (50,),
+                (20,),
+                0,
+                0x2110,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x2110,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=8, value=2),
+                        d=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x2114,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=50),
+                    ),
+                ),
+            ),
+            22: BlockSnapshot(22, int(ida_hexrays.BLT_0WAY), (), (20,), 0, 0x2120, ()),
+            50: BlockSnapshot(
+                50,
+                int(ida_hexrays.BLT_1WAY),
+                (60,),
+                (11, 21),
+                0,
+                0x3000,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x3000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                        d=MopSnapshot(t=mop_r, size=8, reg=0),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x3004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=60),
+                    ),
+                ),
+            ),
+            60: BlockSnapshot(60, int(ida_hexrays.BLT_0WAY), (), (50,), 0, 0x3010, ()),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+
+    family_a = _make_reconstruction_node(10, 0x11111111, 10, owned_blocks=(10, 11))
+    family_b = _make_reconstruction_node(20, 0x22222222, 20, owned_blocks=(20, 21))
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0xAAAAAAAA,
+        bst_node_blocks=(2,),
+        nodes=(family_a, family_b),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                source_key=family_a.key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="RETURN",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=10,
+                    branch_arm=0,
+                ),
+                ordered_path=(10, 11, 50, 60),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                source_key=family_b.key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="RETURN",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=20,
+                    branch_arm=0,
+                ),
+                ordered_path=(20, 21, 50, 60),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph, initial_state=0xAAAAAAAA)
+    )
+
+    assert fragment is not None
+    assert len(fragment.modifications) == 1
+    split_mod = fragment.modifications[0]
+    assert isinstance(split_mod, PrivateTerminalSuffix)
+    assert split_mod.anchor_serial in {11, 21}
+    assert split_mod.shared_entry_serial == 50
+    assert split_mod.return_block_serial == 60
+    assert split_mod.suffix_serials == (50, 60)
+
+
+def test_state_write_reconstruction_does_not_split_equivalent_terminal_families(
+    monkeypatch,
+):
+    mov = int(ida_hexrays.m_mov)
+    goto = int(ida_hexrays.m_goto)
+    mop_b = int(ida_hexrays.mop_b)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_r = int(ida_hexrays.mop_r)
+
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(1, int(ida_hexrays.BLT_2WAY), (10, 20), (), 0, 0x1000, ()),
+            10: BlockSnapshot(10, int(ida_hexrays.BLT_2WAY), (11, 12), (1,), 0, 0x1010, ()),
+            11: BlockSnapshot(
+                11,
+                int(ida_hexrays.BLT_1WAY),
+                (50,),
+                (10,),
+                0,
+                0x1110,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1110,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=8, value=1),
+                        d=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1114,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=50),
+                    ),
+                ),
+            ),
+            12: BlockSnapshot(12, int(ida_hexrays.BLT_0WAY), (), (10,), 0, 0x1120, ()),
+            20: BlockSnapshot(20, int(ida_hexrays.BLT_2WAY), (21, 22), (1,), 0, 0x2010, ()),
+            21: BlockSnapshot(
+                21,
+                int(ida_hexrays.BLT_1WAY),
+                (50,),
+                (20,),
+                0,
+                0x2110,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x2110,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=8, value=1),
+                        d=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x2114,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=50),
+                    ),
+                ),
+            ),
+            22: BlockSnapshot(22, int(ida_hexrays.BLT_0WAY), (), (20,), 0, 0x2120, ()),
+            50: BlockSnapshot(
+                50,
+                int(ida_hexrays.BLT_1WAY),
+                (60,),
+                (11, 21),
+                0,
+                0x3000,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x3000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                        d=MopSnapshot(t=mop_r, size=8, reg=0),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x3004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=60),
+                    ),
+                ),
+            ),
+            60: BlockSnapshot(60, int(ida_hexrays.BLT_0WAY), (), (50,), 0, 0x3010, ()),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+
+    family_a = _make_reconstruction_node(10, 0x11111111, 10, owned_blocks=(10, 11))
+    family_b = _make_reconstruction_node(20, 0x22222222, 20, owned_blocks=(20, 21))
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0xAAAAAAAA,
+        bst_node_blocks=(2,),
+        nodes=(family_a, family_b),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                source_key=family_a.key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="RETURN",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=10,
+                    branch_arm=0,
+                ),
+                ordered_path=(10, 11, 50, 60),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                source_key=family_b.key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="RETURN",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=20,
+                    branch_arm=0,
+                ),
+                ordered_path=(20, 21, 50, 60),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph, initial_state=0xAAAAAAAA)
+    )
+
+    assert fragment is None
+
+
+def test_state_write_reconstruction_terminal_split_coexists_with_late_entry_rescue(
+    monkeypatch,
+):
+    mov = int(ida_hexrays.m_mov)
+    goto = int(ida_hexrays.m_goto)
+    mop_b = int(ida_hexrays.mop_b)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_r = int(ida_hexrays.mop_r)
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_1WAY), (39,), (122,), 0, 0x2000, ()),
+            10: BlockSnapshot(10, int(ida_hexrays.BLT_2WAY), (68, 102), (), 0, 0x1000, ()),
+            68: BlockSnapshot(68, int(ida_hexrays.BLT_1WAY), (69,), (10,), 0, 0x1068, ()),
+            102: BlockSnapshot(102, int(ida_hexrays.BLT_1WAY), (69,), (10,), 0, 0x1102, ()),
+            69: BlockSnapshot(69, int(ida_hexrays.BLT_1WAY), (122,), (68, 102), 0, 0x1069, ()),
+            122: BlockSnapshot(122, int(ida_hexrays.BLT_1WAY), (2,), (69,), 0, 0x1122, ()),
+            39: BlockSnapshot(39, int(ida_hexrays.BLT_1WAY), (161,), (2,), 0, 0x2039, ()),
+            161: BlockSnapshot(161, int(ida_hexrays.BLT_2WAY), (162, 163), (39,), 0, 0x2161, ()),
+            162: BlockSnapshot(
+                162,
+                int(ida_hexrays.BLT_1WAY),
+                (350,),
+                (161,),
+                0,
+                0x2162,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x2162,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=8, value=1),
+                        d=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x2166,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=350),
+                    ),
+                ),
+            ),
+            163: BlockSnapshot(163, int(ida_hexrays.BLT_0WAY), (), (161,), 0, 0x2163, ()),
+            222: BlockSnapshot(222, int(ida_hexrays.BLT_2WAY), (223, 224), (), 0, 0x2222, ()),
+            223: BlockSnapshot(
+                223,
+                int(ida_hexrays.BLT_1WAY),
+                (350,),
+                (222,),
+                0,
+                0x2223,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x2223,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=8, value=2),
+                        d=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x2227,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=350),
+                    ),
+                ),
+            ),
+            224: BlockSnapshot(224, int(ida_hexrays.BLT_0WAY), (), (222,), 0, 0x2224, ()),
+            350: BlockSnapshot(
+                350,
+                int(ida_hexrays.BLT_1WAY),
+                (360,),
+                (162, 223),
+                0,
+                0x2350,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x2350,
+                        operands=(),
+                        l=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                        d=MopSnapshot(t=mop_r, size=8, reg=0),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x2354,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=360),
+                    ),
+                ),
+            ),
+            360: BlockSnapshot(360, int(ida_hexrays.BLT_0WAY), (), (350,), 0, 0x2360, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    frontier_69 = _make_reconstruction_node(69, 0x11111111, 69, owned_blocks=(69,))
+    frontier_122 = _make_reconstruction_node(122, 0x22222222, 122, owned_blocks=(122,))
+    island_entry = _make_reconstruction_node(39, 0x33333333, 39)
+    terminal_a = _make_reconstruction_node(161, 0x44444444, 161, owned_blocks=(161, 162))
+    terminal_b = _make_reconstruction_node(222, 0x55555555, 222, owned_blocks=(222, 223))
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(frontier_69, frontier_122, island_entry, terminal_a, terminal_b),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.UNKNOWN,
+                source_key=frontier_122.key,
+                target_key=terminal_b.key,
+                target_state=0x55555555,
+                target_entry_anchor=222,
+                target_label="target_222",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=122,
+                ),
+                ordered_path=(122,),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.UNKNOWN,
+                source_key=frontier_69.key,
+                target_key=terminal_a.key,
+                target_state=0x44444444,
+                target_entry_anchor=161,
+                target_label="target_161",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=69,
+                ),
+                ordered_path=(69,),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=island_entry.key,
+                target_key=terminal_a.key,
+                target_state=0x44444444,
+                target_entry_anchor=161,
+                target_label="target_161",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=39,
+                ),
+                ordered_path=(39,),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                source_key=terminal_a.key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="RETURN",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=161,
+                    branch_arm=0,
+                ),
+                ordered_path=(161, 162, 350, 360),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                source_key=terminal_b.key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="RETURN",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=222,
+                    branch_arm=0,
+                ),
+                ordered_path=(222, 223, 350, 360),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert fragment is not None
+    redirects = [m for m in fragment.modifications if isinstance(m, RedirectGoto)]
+    split_redirects = [
+        m for m in fragment.modifications if isinstance(m, EdgeRedirectViaPredSplit)
+    ]
+    terminal_splits = [
+        m
+        for m in fragment.modifications
+        if isinstance(m, (PrivateTerminalSuffix, PrivateTerminalSuffixGroup))
+    ]
+
+    assert any(
+        m.from_serial == 122 and m.old_target == 2 and m.new_target == 222
+        for m in redirects
+    ), f"Expected bridge redirect blk[122] -> blk[222], got: {fragment.modifications}"
+    assert any(
+        m.src_block == 69
+        and m.old_target == 122
+        and m.new_target == 39
+        and m.via_pred in {68, 102}
+        for m in split_redirects
+    ), f"Expected late split rescue blk[69] -> blk[39], got: {fragment.modifications}"
+    assert terminal_splits, (
+        "Expected terminal-family split after late rescue exposed both terminal families, "
+        f"got: {fragment.modifications}"
+    )
+    assert any(
+        getattr(m, "shared_entry_serial", None) == 350
+        and tuple(getattr(m, "suffix_serials", ()))[:1] == (350,)
+        and len(tuple(getattr(m, "suffix_serials", ()))) == 2
+        for m in terminal_splits
+    ), f"Expected shared terminal suffix [350, 360] to be privatized, got: {terminal_splits}"
 
 
 # ---------------------------------------------------------------------------

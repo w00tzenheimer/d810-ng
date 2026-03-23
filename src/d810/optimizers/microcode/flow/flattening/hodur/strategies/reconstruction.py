@@ -83,6 +83,22 @@ class EntryIslandRescueOption:
     via_pred: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class TerminalFamilyCandidate:
+    """One reachable projected terminal path that may need suffix privatization."""
+
+    edge: StateDagEdge
+    source_block: int
+    branch_arm: int | None
+    family_entry: int
+    path: tuple[int, ...]
+    stop_block: int
+    materializer_block: int | None
+    writer_block: int | None
+    value_family_signature: tuple[object, ...]
+    lineage_eas: tuple[int, ...]
+
+
 class StateWriteReconstructionStrategy:
     """Reconstruct proven semantic corridors from state-write horizons."""
 
@@ -956,6 +972,612 @@ class StateWriteReconstructionStrategy:
                 ),
                 best_score[0] if best_score is not None else 0,
             )
+
+        return emitted
+
+    @staticmethod
+    def _terminal_locator_key(mop: object | None) -> tuple[object, ...] | None:
+        if mop is None:
+            return None
+        mop_type = getattr(mop, "t", None)
+        if mop_type == getattr(ida_hexrays, "mop_S", None):
+            stkoff = getattr(mop, "stkoff", None)
+            if stkoff is None:
+                stack_ref = getattr(mop, "s", None)
+                stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
+            if stkoff is not None:
+                return ("stk", int(stkoff), int(getattr(mop, "size", 0) or 0))
+            return None
+        if mop_type == getattr(ida_hexrays, "mop_r", None):
+            reg = getattr(mop, "reg", None)
+            if reg is None:
+                reg = getattr(mop, "r", None)
+            if reg is not None:
+                return ("reg", int(reg), int(getattr(mop, "size", 0) or 0))
+            return None
+        return None
+
+    @classmethod
+    def _terminal_source_signature(cls, mop: object | None) -> tuple[object, ...]:
+        if mop is None:
+            return ("none",)
+
+        locator = cls._terminal_locator_key(mop)
+        if locator is not None:
+            return locator
+
+        mop_type = getattr(mop, "t", None)
+        if mop_type == getattr(ida_hexrays, "mop_n", None):
+            value = getattr(mop, "value", None)
+            if value is None:
+                nnn = getattr(mop, "nnn", None)
+                value = getattr(nnn, "value", None) if nnn is not None else None
+            if value is not None:
+                return ("const", int(value))
+            return ("const", None)
+
+        if mop_type == getattr(ida_hexrays, "mop_a", None):
+            return ("ptr", int(getattr(mop, "size", 0) or 0))
+        if mop_type == getattr(ida_hexrays, "mop_b", None):
+            block_ref = getattr(mop, "block_ref", None)
+            if block_ref is None:
+                block_ref = getattr(mop, "b", None)
+            return ("block", int(block_ref) if block_ref is not None else None)
+        return ("mop", int(mop_type) if mop_type is not None else None, int(getattr(mop, "size", 0) or 0))
+
+    @classmethod
+    def _terminal_write_signature(cls, insn: object) -> tuple[object, ...]:
+        return (
+            "op",
+            int(getattr(insn, "opcode", 0)),
+            "dst",
+            cls._terminal_locator_key(getattr(insn, "d", None))
+            or cls._terminal_source_signature(getattr(insn, "d", None)),
+            "src_l",
+            cls._terminal_source_signature(getattr(insn, "l", None)),
+            "src_r",
+            cls._terminal_source_signature(getattr(insn, "r", None)),
+        )
+
+    @staticmethod
+    def _insn_is_copy_like(insn: object) -> bool:
+        opcode = getattr(insn, "opcode", None)
+        return opcode in (
+            int(ida_hexrays.m_mov),
+            int(ida_hexrays.m_xdu),
+        )
+
+    @staticmethod
+    def _is_state_var_dest(insn: object, state_var_stkoff: int | None) -> bool:
+        if state_var_stkoff is None:
+            return False
+        dest = getattr(insn, "d", None)
+        if dest is None:
+            return False
+        if getattr(dest, "t", None) != getattr(ida_hexrays, "mop_S", None):
+            return False
+        stkoff = getattr(dest, "stkoff", None)
+        if stkoff is None:
+            stack_ref = getattr(dest, "s", None)
+            stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
+        return stkoff is not None and int(stkoff) == int(state_var_stkoff)
+
+    @staticmethod
+    def _resolved_operand_kind(op: object | None) -> tuple[object, ...]:
+        if op is None:
+            return ("none",)
+        return (
+            getattr(op, "t", None),
+            getattr(op, "stkoff", None),
+            getattr(op, "reg", None),
+            getattr(op, "size", None),
+            getattr(op, "value", None),
+        )
+
+    @classmethod
+    def _resolve_terminal_edge_entry(
+        cls,
+        edge: StateDagEdge,
+        *,
+        projected_flow_graph,
+        dispatcher_region: set[int],
+    ) -> int | None:
+        source_serial = int(edge.source_anchor.block_serial)
+        source_block = projected_flow_graph.get_block(source_serial)
+        if source_block is None:
+            return None
+
+        candidate_targets: list[int] = []
+        branch_arm = edge.source_anchor.branch_arm
+        if branch_arm is not None and 0 <= int(branch_arm) < source_block.nsucc:
+            candidate_targets.append(int(source_block.succs[int(branch_arm)]))
+        elif source_block.nsucc == 1:
+            candidate_targets.append(int(source_block.succs[0]))
+        else:
+            candidate_targets.extend(int(succ) for succ in source_block.succs)
+
+        for target in candidate_targets:
+            if target not in dispatcher_region:
+                return target
+        return None
+
+    @classmethod
+    def _collect_linear_terminal_path(
+        cls,
+        projected_flow_graph,
+        *,
+        start_block: int,
+        dispatcher_region: set[int],
+        limit: int = 64,
+    ) -> tuple[int, ...] | None:
+        path: list[int] = []
+        current = int(start_block)
+        visited: set[int] = set()
+
+        while len(path) < limit:
+            if current in visited or current in dispatcher_region:
+                return None
+            block = projected_flow_graph.get_block(current)
+            if block is None:
+                return None
+            visited.add(current)
+            path.append(current)
+            if block.nsucc == 0:
+                return tuple(path)
+            if block.nsucc != 1:
+                return None
+            current = int(block.succs[0])
+        return None
+
+    @classmethod
+    def _iter_path_insns(
+        cls,
+        projected_flow_graph,
+        path: tuple[int, ...],
+    ):
+        for block_serial in path:
+            block = projected_flow_graph.get_block(block_serial)
+            if block is None:
+                continue
+            for insn_index, insn in enumerate(block.insn_snapshots):
+                yield int(block_serial), int(insn_index), insn
+
+    @classmethod
+    def _find_last_terminal_write(
+        cls,
+        projected_flow_graph,
+        *,
+        path: tuple[int, ...],
+        state_var_stkoff: int | None,
+    ) -> tuple[int, int, object] | None:
+        for block_serial in reversed(path):
+            block = projected_flow_graph.get_block(block_serial)
+            if block is None:
+                continue
+            for insn_index in range(len(block.insn_snapshots) - 1, -1, -1):
+                insn = block.insn_snapshots[insn_index]
+                if getattr(insn, "opcode", None) == int(ida_hexrays.m_goto):
+                    continue
+                if getattr(insn, "d", None) is None:
+                    continue
+                if cls._is_state_var_dest(insn, state_var_stkoff):
+                    continue
+                return int(block_serial), int(insn_index), insn
+        return None
+
+    @classmethod
+    def _find_prev_terminal_write_to_locator(
+        cls,
+        projected_flow_graph,
+        *,
+        path: tuple[int, ...],
+        locator: tuple[object, ...],
+        before_block: int,
+        before_insn_index: int,
+        state_var_stkoff: int | None,
+    ) -> tuple[int, int, object] | None:
+        try:
+            before_path_index = path.index(int(before_block))
+        except ValueError:
+            return None
+
+        for path_index in range(before_path_index, -1, -1):
+            block_serial = int(path[path_index])
+            block = projected_flow_graph.get_block(block_serial)
+            if block is None:
+                continue
+            start_index = len(block.insn_snapshots) - 1
+            if path_index == before_path_index:
+                start_index = int(before_insn_index) - 1
+            for insn_index in range(start_index, -1, -1):
+                insn = block.insn_snapshots[insn_index]
+                if getattr(insn, "opcode", None) == int(ida_hexrays.m_goto):
+                    continue
+                if getattr(insn, "d", None) is None:
+                    continue
+                if cls._is_state_var_dest(insn, state_var_stkoff):
+                    continue
+                if cls._terminal_locator_key(getattr(insn, "d", None)) != locator:
+                    continue
+                return block_serial, int(insn_index), insn
+        return None
+
+    @classmethod
+    def _resolve_terminal_value_chain(
+        cls,
+        projected_flow_graph,
+        *,
+        path: tuple[int, ...],
+        state_var_stkoff: int | None,
+    ) -> tuple[tuple[int, int, object], ...]:
+        materializer = cls._find_last_terminal_write(
+            projected_flow_graph,
+            path=path,
+            state_var_stkoff=state_var_stkoff,
+        )
+        if materializer is None:
+            return ()
+
+        chain = [materializer]
+        current = materializer
+        visited_locators: set[tuple[object, ...]] = set()
+
+        while True:
+            _block_serial, _insn_index, insn = current
+            if not cls._insn_is_copy_like(insn):
+                break
+            locator = cls._terminal_locator_key(getattr(insn, "l", None))
+            if locator is None or locator in visited_locators:
+                break
+            visited_locators.add(locator)
+            previous = cls._find_prev_terminal_write_to_locator(
+                projected_flow_graph,
+                path=path,
+                locator=locator,
+                before_block=int(_block_serial),
+                before_insn_index=int(_insn_index),
+                state_var_stkoff=state_var_stkoff,
+            )
+            if previous is None:
+                break
+            chain.append(previous)
+            current = previous
+
+        chain.reverse()
+        return tuple(chain)
+
+    @classmethod
+    def _terminal_value_family_signature(
+        cls,
+        chain: tuple[tuple[int, int, object], ...],
+    ) -> tuple[object, ...]:
+        if not chain:
+            return ("unresolved_terminal_value",)
+        semantic_chain = tuple(
+            cls._terminal_write_signature(insn)
+            for _block_serial, _insn_index, insn in chain
+        )
+        return ("terminal_value_chain", semantic_chain)
+
+    @classmethod
+    def _collect_terminal_family_candidates(
+        cls,
+        dag: LinearizedStateDag,
+        *,
+        projected_flow_graph,
+        dispatcher_region: set[int],
+        reachable_blocks: set[int],
+        state_var_stkoff: int | None,
+        mba,
+    ) -> tuple[TerminalFamilyCandidate, ...]:
+        candidates: list[TerminalFamilyCandidate] = []
+        seen_keys: set[tuple[int, int | None, int, tuple[int, ...]]] = set()
+
+        for edge in dag.edges:
+            if edge.kind != SemanticEdgeKind.CONDITIONAL_RETURN:
+                continue
+
+            source_block = int(edge.source_anchor.block_serial)
+            if source_block not in reachable_blocks:
+                continue
+
+            family_entry = cls._resolve_terminal_edge_entry(
+                edge,
+                projected_flow_graph=projected_flow_graph,
+                dispatcher_region=dispatcher_region,
+            )
+            if family_entry is None or family_entry not in reachable_blocks:
+                continue
+
+            path = cls._collect_linear_terminal_path(
+                projected_flow_graph,
+                start_block=family_entry,
+                dispatcher_region=dispatcher_region,
+            )
+            if not path or len(path) < 2:
+                continue
+
+            stop_block = int(path[-1])
+            stop_snapshot = projected_flow_graph.get_block(stop_block)
+            if stop_snapshot is None or stop_snapshot.nsucc != 0:
+                continue
+
+            chain = cls._resolve_terminal_value_chain(
+                projected_flow_graph,
+                path=path,
+                state_var_stkoff=state_var_stkoff,
+            )
+            materializer_block = int(chain[-1][0]) if chain else None
+            writer_block = int(chain[0][0]) if chain else None
+            lineage_eas = tuple(int(getattr(insn, "ea", 0)) for _blk, _idx, insn in chain)
+            signature = cls._terminal_value_family_signature(chain)
+
+            candidate_key = (
+                source_block,
+                int(edge.source_anchor.branch_arm) if edge.source_anchor.branch_arm is not None else None,
+                family_entry,
+                path,
+            )
+            if candidate_key in seen_keys:
+                continue
+            seen_keys.add(candidate_key)
+
+            candidate = TerminalFamilyCandidate(
+                edge=edge,
+                source_block=source_block,
+                branch_arm=(
+                    int(edge.source_anchor.branch_arm)
+                    if edge.source_anchor.branch_arm is not None
+                    else None
+                ),
+                family_entry=family_entry,
+                path=path,
+                stop_block=stop_block,
+                materializer_block=materializer_block,
+                writer_block=writer_block,
+                value_family_signature=signature,
+                lineage_eas=lineage_eas,
+            )
+            candidates.append(candidate)
+            logger.info(
+                "RECON RETURN: terminal-family candidate src=%s%s family_entry=%s "
+                "writer=%s materializer=%s stop=%s signature=%s lineage=%s path=%s",
+                blk_label(mba, source_block),
+                (
+                    f".arm{candidate.branch_arm}"
+                    if candidate.branch_arm is not None
+                    else ""
+                ),
+                blk_label(mba, family_entry),
+                blk_label(mba, writer_block) if writer_block is not None else "None",
+                blk_label(mba, materializer_block) if materializer_block is not None else "None",
+                blk_label(mba, stop_block),
+                signature,
+                [hex(ea) for ea in lineage_eas],
+                path,
+            )
+
+        return tuple(candidates)
+
+    @classmethod
+    def _candidate_anchor_for_suffix(
+        cls,
+        candidate: TerminalFamilyCandidate,
+        *,
+        suffix_serials: tuple[int, ...],
+        projected_flow_graph,
+    ) -> int | None:
+        if candidate.path[-len(suffix_serials):] != suffix_serials:
+            return None
+        if len(candidate.path) > len(suffix_serials):
+            anchor_serial = int(candidate.path[-len(suffix_serials) - 1])
+        elif candidate.family_entry == suffix_serials[0]:
+            anchor_serial = int(candidate.source_block)
+        else:
+            return None
+
+        anchor_block = projected_flow_graph.get_block(anchor_serial)
+        if anchor_block is None or anchor_block.nsucc != 1:
+            return None
+        if int(anchor_block.succs[0]) != int(suffix_serials[0]):
+            return None
+        return anchor_serial
+
+    @classmethod
+    def _build_terminal_family_split_modification(
+        cls,
+        *,
+        builder: ModificationBuilder,
+        anchors: tuple[int, ...],
+        suffix_serials: tuple[int, ...],
+    ):
+        shared_entry = int(suffix_serials[0])
+        stop_block = int(suffix_serials[-1])
+        if len(anchors) == 1:
+            return builder.private_terminal_suffix(
+                anchor_serial=int(anchors[0]),
+                shared_entry_serial=shared_entry,
+                return_block_serial=stop_block,
+                suffix_serials=suffix_serials,
+                reason="terminal_family_split",
+            )
+        return builder.private_terminal_suffix_group(
+            anchors=anchors,
+            shared_entry_serial=shared_entry,
+            return_block_serial=stop_block,
+            suffix_serials=suffix_serials,
+            reason="terminal_family_split",
+        )
+
+    @classmethod
+    def _emit_terminal_family_splits(
+        cls,
+        dag: LinearizedStateDag,
+        *,
+        base_flow_graph,
+        projected_flow_graph,
+        builder: ModificationBuilder,
+        modifications: list,
+        dispatcher_region: set[int],
+        state_var_stkoff: int | None,
+        mba,
+    ) -> int:
+        reachable_blocks = cls._compute_reachable_blocks(
+            projected_flow_graph,
+            start_serial=getattr(projected_flow_graph, "entry_serial", None),
+        )
+        if not reachable_blocks:
+            return 0
+
+        candidates = cls._collect_terminal_family_candidates(
+            dag,
+            projected_flow_graph=projected_flow_graph,
+            dispatcher_region=dispatcher_region,
+            reachable_blocks=reachable_blocks,
+            state_var_stkoff=state_var_stkoff,
+            mba=mba,
+        )
+        if len(candidates) < 2:
+            return 0
+
+        baseline_reachable_count = len(reachable_blocks)
+        current_projected_flow_graph = projected_flow_graph
+        emitted = 0
+        used_anchors: set[int] = set()
+        used_suffix_blocks: set[int] = set()
+
+        suffix_groups: list[tuple[tuple[int, ...], list[TerminalFamilyCandidate]]] = []
+        groups_by_suffix: dict[tuple[int, ...], list[TerminalFamilyCandidate]] = {}
+        for candidate in candidates:
+            for suffix_len in range(2, len(candidate.path) + 1):
+                suffix = candidate.path[-suffix_len:]
+                groups_by_suffix.setdefault(suffix, []).append(candidate)
+
+        suffix_groups = sorted(
+            groups_by_suffix.items(),
+            key=lambda item: (
+                -len(item[0]),
+                -len({
+                    (
+                        int(c.source_block),
+                        c.branch_arm,
+                        int(c.family_entry),
+                        tuple(int(s) for s in c.path),
+                    )
+                    for c in item[1]
+                }),
+                int(item[0][0]),
+            ),
+        )
+
+        for suffix_serials, group_members in suffix_groups:
+            if any(serial in used_suffix_blocks for serial in suffix_serials):
+                continue
+
+            unique_members: dict[
+                tuple[int, int | None, int, tuple[int, ...]],
+                TerminalFamilyCandidate,
+            ] = {}
+            for candidate in group_members:
+                key = (
+                    int(candidate.source_block),
+                    candidate.branch_arm,
+                    int(candidate.family_entry),
+                    tuple(int(s) for s in candidate.path),
+                )
+                unique_members.setdefault(key, candidate)
+            members = tuple(unique_members.values())
+            if len(members) < 2:
+                continue
+
+            signature_buckets: defaultdict[tuple[object, ...], list[TerminalFamilyCandidate]] = defaultdict(list)
+            for candidate in members:
+                signature_buckets[candidate.value_family_signature].append(candidate)
+            if len(signature_buckets) < 2:
+                continue
+
+            sorted_buckets = sorted(
+                signature_buckets.items(),
+                key=lambda item: (
+                    -len(item[1]),
+                    repr(item[0]),
+                    min(
+                        candidate.lineage_eas[0]
+                        if candidate.lineage_eas
+                        else 0
+                        for candidate in item[1]
+                    ),
+                ),
+            )
+            primary_signature = sorted_buckets[0][0]
+
+            selected_anchors: list[int] = []
+            selected_candidates: list[TerminalFamilyCandidate] = []
+            for signature, bucket in sorted_buckets[1:]:
+                _ = signature
+                for candidate in bucket:
+                    anchor_serial = cls._candidate_anchor_for_suffix(
+                        candidate,
+                        suffix_serials=suffix_serials,
+                        projected_flow_graph=current_projected_flow_graph,
+                    )
+                    if anchor_serial is None or anchor_serial in used_anchors:
+                        continue
+                    selected_candidates.append(candidate)
+                    selected_anchors.append(int(anchor_serial))
+
+            if not selected_anchors:
+                continue
+
+            candidate_mod = cls._build_terminal_family_split_modification(
+                builder=builder,
+                anchors=tuple(selected_anchors),
+                suffix_serials=suffix_serials,
+            )
+
+            try:
+                patch_plan = compile_patch_plan(modifications + [candidate_mod], base_flow_graph)
+                candidate_projected = project_post_state(base_flow_graph, patch_plan)
+            except Exception:
+                continue
+
+            candidate_reachable = cls._compute_reachable_blocks(
+                candidate_projected,
+                start_serial=getattr(candidate_projected, "entry_serial", None),
+            )
+            if candidate_reachable is None or len(candidate_reachable) < baseline_reachable_count:
+                continue
+
+            modifications.append(candidate_mod)
+            current_projected_flow_graph = candidate_projected
+            emitted += 1
+            used_anchors.update(selected_anchors)
+            used_suffix_blocks.update(int(serial) for serial in suffix_serials)
+            logger.info(
+                "RECON RETURN: terminal-family split shared_entry=%s stop=%s anchors=%s keep_signature=%s",
+                blk_label(mba, int(suffix_serials[0])),
+                blk_label(mba, int(suffix_serials[-1])),
+                [blk_label(mba, anchor) for anchor in selected_anchors],
+                primary_signature,
+            )
+            for candidate in selected_candidates:
+                logger.info(
+                    "RECON RETURN: privatized family src=%s%s family_entry=%s "
+                    "shared_suffix_entry=%s writer=%s materializer=%s stop=%s signature=%s lineage=%s",
+                    blk_label(mba, candidate.source_block),
+                    (
+                        f".arm{candidate.branch_arm}"
+                        if candidate.branch_arm is not None
+                        else ""
+                    ),
+                    blk_label(mba, candidate.family_entry),
+                    blk_label(mba, int(suffix_serials[0])),
+                    blk_label(mba, candidate.writer_block) if candidate.writer_block is not None else "None",
+                    blk_label(mba, candidate.materializer_block) if candidate.materializer_block is not None else "None",
+                    blk_label(mba, candidate.stop_block),
+                    candidate.value_family_signature,
+                    [hex(ea) for ea in candidate.lineage_eas],
+                )
 
         return emitted
 
@@ -2928,6 +3550,7 @@ class StateWriteReconstructionStrategy:
             # Re-project to update residual preds and BST cleanup gate
             # ------------------------------------------------------------------
             all_extra_mods = bridge_mods + return_mods + feeder_mods + force_wire_mods
+            projected_flow_graph = flow_graph
             if all_extra_mods:
                 try:
                     patch_plan = compile_patch_plan(modifications, flow_graph)
@@ -2981,6 +3604,29 @@ class StateWriteReconstructionStrategy:
                         len(residual_dispatcher_preds),
                         [blk_label(mba, s) for s in residual_dispatcher_preds],
                     )
+
+            terminal_family_split_count = self._emit_terminal_family_splits(
+                dag,
+                base_flow_graph=flow_graph,
+                projected_flow_graph=projected_flow_graph,
+                builder=builder,
+                modifications=modifications,
+                dispatcher_region=dispatcher_region,
+                state_var_stkoff=state_var_stkoff,
+                mba=mba,
+            )
+            if terminal_family_split_count:
+                logger.info(
+                    "RECON RETURN: late terminal-family split emitted %d privatizations",
+                    terminal_family_split_count,
+                )
+                try:
+                    patch_plan = compile_patch_plan(modifications, flow_graph)
+                    projected_flow_graph = project_post_state(
+                        flow_graph, patch_plan,
+                    )
+                except Exception:
+                    projected_flow_graph = flow_graph
 
         # Final guard: if no modifications after all emission phases, return None.
         if not modifications:
