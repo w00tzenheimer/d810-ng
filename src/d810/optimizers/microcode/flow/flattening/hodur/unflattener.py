@@ -506,6 +506,32 @@ class HodurUnflattener(GenericUnflatteningRule):
                 "Skipping post-apply BST cleanup because unresolved non-BST dispatcher predecessors remain: %s",
                 bst_cleanup_blockers,
             )
+        # Accumulate live corridor blocks from ALL passes (before the
+        # cleanup conditional, so pass 0's modifications survive even
+        # when bst_cleanup_blockers prevents cleanup from running).
+        if not hasattr(self, "_reconstruction_live_blocks"):
+            self._reconstruction_live_blocks: set[int] = set()
+        for frag, res in zip(pipeline, results):
+            if not res.success or res.edits_applied <= 0:
+                continue
+            for mod in frag.modifications:
+                for attr in (
+                    "from_serial", "new_target",
+                    "goto_target", "block_serial", "source_block",
+                    "src_block", "source_serial", "via_pred",
+                    "conditional_target", "fallthrough_target",
+                    "pred_serial", "succ_serial",
+                ):
+                    val = getattr(mod, attr, None)
+                    if isinstance(val, int):
+                        self._reconstruction_live_blocks.add(val)
+                # DuplicateAndRedirect: per_pred_targets
+                ppt = getattr(mod, "per_pred_targets", None)
+                if ppt is not None:
+                    for _pred, _tgt in ppt:
+                        self._reconstruction_live_blocks.add(int(_pred))
+                        self._reconstruction_live_blocks.add(int(_tgt))
+
         if (
             not bst_cleanup_blockers
             and nb_changes > 0
@@ -537,38 +563,6 @@ class HodurUnflattener(GenericUnflatteningRule):
             # diagnostic BFS to track unreachability.)
             bst_serials = set(snapshot.bst_result.bst_node_blocks) | {snapshot.bst_dispatcher_serial}
             self._prune_unreachable_bst_blocks(bst_serials)
-
-            # Collect live corridor blocks from successfully applied
-            # pipeline modifications.  These are source and target serials
-            # that reconstruction (or any strategy) wired — they must
-            # survive Gut-and-Wire even when BFS from block 0 cannot
-            # reach them yet (e.g. corridor blocks whose only predecessor
-            # is a BST node that was just disconnected).
-            # Accumulate live corridor blocks across ALL passes
-            # (not just the current one).  Use instance variable so
-            # pass 0's modifications survive to pass 1's cleanup.
-            if not hasattr(self, "_reconstruction_live_blocks"):
-                self._reconstruction_live_blocks: set[int] = set()
-            for frag, res in zip(pipeline, results):
-                if not res.success or res.edits_applied <= 0:
-                    continue
-                for mod in frag.modifications:
-                    for attr in (
-                        "from_serial", "new_target",
-                        "goto_target", "block_serial", "source_block",
-                        "src_block", "source_serial", "via_pred",
-                        "conditional_target", "fallthrough_target",
-                        "pred_serial", "succ_serial",
-                    ):
-                        val = getattr(mod, attr, None)
-                        if isinstance(val, int):
-                            self._reconstruction_live_blocks.add(val)
-                    # DuplicateAndRedirect: per_pred_targets
-                    ppt = getattr(mod, "per_pred_targets", None)
-                    if ppt is not None:
-                        for _pred, _tgt in ppt:
-                            self._reconstruction_live_blocks.add(int(_pred))
-                            self._reconstruction_live_blocks.add(int(_tgt))
 
             # Remove dispatcher and BST from live set — they're cleanup targets
             self._reconstruction_live_blocks -= bst_serials
