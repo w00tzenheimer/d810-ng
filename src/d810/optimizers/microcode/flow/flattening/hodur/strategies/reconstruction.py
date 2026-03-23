@@ -1501,7 +1501,6 @@ class StateWriteReconstructionStrategy:
                     ))
 
                 snapshot_dag(diag_db, _early_snap_id, _early_dag_nodes, _early_dag_edges)
-                diag_db.close()
         except Exception:
             logger.warning(
                 "Early diagnostic DAG snapshot failed (non-critical)",
@@ -2629,7 +2628,6 @@ class StateWriteReconstructionStrategy:
                     ))
 
                 snapshot_modifications(diag_db, snap_id, mod_snapshots)
-                diag_db.close()
         except Exception:
             logger.warning(
                 "Diagnostic DAG/modifications snapshot failed (non-critical)",
