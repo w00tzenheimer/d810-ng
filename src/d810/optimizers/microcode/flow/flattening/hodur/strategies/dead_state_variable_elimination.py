@@ -929,14 +929,22 @@ class DeadStateVariableEliminationStrategy:
                         )
 
                     if non_const_count == 0:
+                        # All reaching defs are state constants, but the
+                        # instruction writes to a NON-state stack var (e.g.
+                        # the return slot).  NOPing it would destroy the
+                        # only definition of that destination on this path.
+                        # The reaching-def override must NOT apply when the
+                        # dest is a non-state stkvar — the "pure dispatcher
+                        # glue" reasoning only holds for the state var itself.
                         logger.info(
-                            "DSVE guard OVERRIDDEN for blk[%d]: all %d"
-                            " reaching defs are state constants"
-                            " (%d gutted, %d live)",
+                            "DSVE guard KEPT for blk[%d]: all %d reaching"
+                            " defs are state constants (%d gutted, %d live)"
+                            " but dest is non-state stkvar at off=0x%x",
                             use.block_serial, len(defs),
                             gutted_count, len(defs) - gutted_count,
+                            skip_tuple[1],
                         )
-                        return None  # Allow NOP
+                        return skip_tuple
 
                     logger.info(
                         "DSVE guard PRESERVED for blk[%d]: %d/%d defs"
