@@ -506,11 +506,16 @@ class DeferredGraphModifier:
     _optimizer_name: str = field(default="", init=False)
     _pass_id: int = field(default=0, init=False)
     _session_id: str = field(default="", init=False)
+    # Remap for block serials consumed by earlier mods (e.g., a
+    # BLOCK_DUPLICATE_AND_REDIRECT creates a block at the serial that
+    # a later EDGE_SPLIT_TRAMPOLINE expected to use).
+    _serial_remap: dict[int, int] = field(default_factory=dict, init=False)
 
     def reset(self) -> None:
         """Clear all queued modifications."""
         self.modifications.clear()
         self._applied = False
+        self._serial_remap.clear()
 
     def configure_events(
         self,
@@ -2521,8 +2526,35 @@ class DeferredGraphModifier:
 
         return None
 
+    def _resolve_serial(self, serial: int | None) -> int | None:
+        """Resolve a block serial through the drift remap."""
+        if serial is None:
+            return None
+        return self._serial_remap.get(serial, serial)
+
     def _apply_single(self, mod: GraphModification) -> bool:
         """Apply a single modification. Returns True on success."""
+        # Resolve serials through drift remap (e.g., a prior
+        # BLOCK_DUPLICATE_AND_REDIRECT consumed the expected serial).
+        if self._serial_remap:
+            remapped = False
+            for attr in ("block_serial", "new_target", "old_target",
+                         "via_pred", "src_block", "expected_serial",
+                         "final_target", "original_redirect_target"):
+                val = getattr(mod, attr, None)
+                if val is not None and val in self._serial_remap:
+                    new_val = self._serial_remap[val]
+                    try:
+                        setattr(mod, attr, new_val)
+                        remapped = True
+                    except (AttributeError, TypeError):
+                        pass
+            if remapped:
+                logger.info(
+                    "serial remap applied to mod %s (remap=%s)",
+                    mod.mod_type.name if hasattr(mod.mod_type, "name") else mod.mod_type,
+                    self._serial_remap,
+                )
         blk = self.mba.get_mblock(mod.block_serial)
         if blk is None:
             logger.warning("Block %d not found", mod.block_serial)
@@ -4552,12 +4584,14 @@ class DeferredGraphModifier:
                 verify=False,
             )
             if new_blk.serial != expected_serial:
-                logger.warning(
-                    "edge_split_trampoline: created blk[%d], expected blk[%d]",
+                logger.info(
+                    "edge_split_trampoline: created blk[%d], expected blk[%d] "
+                    "(serial drift from prior mod); recording remap",
                     new_blk.serial,
                     expected_serial,
                 )
-                return False
+                if expected_serial is not None:
+                    self._serial_remap[expected_serial] = new_blk.serial
             new_stop_serial = mba.qty - 1
             for pred_serial in old_stop_pred_serials:
                 pred_blk = mba.get_mblock(pred_serial)
