@@ -87,7 +87,7 @@ class EntryIslandRescueOption:
 class TerminalFamilyCandidate:
     """One reachable projected terminal path that may need suffix privatization."""
 
-    edge: StateDagEdge
+    edge: StateDagEdge | None
     source_block: int
     branch_arm: int | None
     family_entry: int
@@ -95,8 +95,36 @@ class TerminalFamilyCandidate:
     stop_block: int
     materializer_block: int | None
     writer_block: int | None
+    materializer_chain_blocks: tuple[int, ...]
     value_family_signature: tuple[object, ...]
     lineage_eas: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalFamilySeed:
+    """One projected terminal-arm seed inspected for suffix privatization."""
+
+    source_block: int
+    branch_arm: int | None
+    edge: StateDagEdge | None
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalFamilySeedProbe:
+    """One probed terminal-arm seed plus its pre-collection outcome."""
+
+    seed: TerminalFamilySeed
+    seed_origins: tuple[str, ...]
+    source_reachable: bool
+    source_nsucc: int | None
+    arm_target: int | None
+    arm_target_projected_only: bool
+    family_entry: int | None
+    family_entry_projected_only: bool
+    path: tuple[int, ...]
+    path_projected_only_blocks: tuple[int, ...]
+    stop_block: int | None
+    rejection_reason: str
 
 
 class StateWriteReconstructionStrategy:
@@ -975,6 +1003,188 @@ class StateWriteReconstructionStrategy:
 
         return emitted
 
+    @classmethod
+    def _emit_late_island_rescues(
+        cls,
+        dag: LinearizedStateDag,
+        *,
+        base_flow_graph,
+        projected_flow_graph,
+        builder: ModificationBuilder,
+        modifications: list,
+        dispatcher_region: set[int],
+        dispatcher=None,
+        mba,
+    ) -> int:
+        """Rescue unreachable handler bodies behind dead BST nodes.
+
+        After linearization kills the dispatcher, handler chains that were
+        only reachable through BST nodes become islands.  This method finds
+        such islands by looking *through* BST nodes for unreachable
+        non-dispatcher successors, then wires them from reachable blocks
+        identified via DAG edge paths or the IntervalDispatcher.
+        """
+        current_projected_flow_graph = projected_flow_graph
+        emitted = 0
+
+        while True:
+            reachable_blocks = cls._compute_reachable_blocks(
+                current_projected_flow_graph,
+                start_serial=getattr(
+                    current_projected_flow_graph, "entry_serial", None,
+                ),
+            )
+            if not reachable_blocks:
+                break
+
+            baseline_reachable_count = len(reachable_blocks)
+            claimed_sources, _claimed_targets = cls._collect_mod_claims(
+                modifications,
+            )
+            seen_options: set[tuple[int, int, int | None]] = set()
+            best_score: tuple[int, int, int, int, int] | None = None
+            best_option: EntryIslandRescueOption | None = None
+            best_modification = None
+            best_projected_flow_graph = None
+
+            for edge in dag.edges:
+                if edge.target_entry_anchor is None:
+                    continue
+                target_entry = int(edge.target_entry_anchor)
+                # Only consider edges whose target IS in dispatcher region
+                # (BST passthrough).
+                if target_entry not in dispatcher_region:
+                    continue
+
+                target_snapshot = current_projected_flow_graph.get_block(
+                    target_entry,
+                )
+                if target_snapshot is None:
+                    continue
+
+                for succ in sorted(int(s) for s in target_snapshot.succs):
+                    if succ in dispatcher_region or succ in reachable_blocks:
+                        continue
+                    # succ is unreachable non-dispatcher behind a BST node.
+
+                    source_block = cls._edge_reachable_frontier(
+                        edge,
+                        reachable_blocks=reachable_blocks,
+                        dispatcher_region=dispatcher_region,
+                    )
+                    if source_block is None:
+                        logger.info(
+                            "RECON DAG: late island rescue: no reachable "
+                            "frontier for BST passthrough blk[%d] -> "
+                            "blk[%d] (edge src=%s)",
+                            target_entry,
+                            succ,
+                            blk_label(
+                                mba,
+                                int(edge.source_anchor.block_serial),
+                            ),
+                        )
+                        continue
+
+                    for option in cls._entry_island_rescue_options(
+                        source_block,
+                        lifted_entry=succ,
+                        projected_flow_graph=current_projected_flow_graph,
+                        reachable_blocks=reachable_blocks,
+                        dispatcher_region=dispatcher_region,
+                        claimed_sources=claimed_sources,
+                    ):
+                        option_key = (
+                            int(option.source_block),
+                            int(option.lifted_entry),
+                            (
+                                int(option.via_pred)
+                                if option.via_pred is not None
+                                else None
+                            ),
+                        )
+                        if option_key in seen_options:
+                            continue
+                        seen_options.add(option_key)
+
+                        scored = cls._score_entry_island_rescue_option(
+                            option,
+                            base_flow_graph=base_flow_graph,
+                            builder=builder,
+                            modifications=modifications,
+                            baseline_reachable_count=baseline_reachable_count,
+                            baseline_reachable_blocks=reachable_blocks,
+                        )
+                        if scored is None:
+                            continue
+
+                        score, candidate_mod, candidate_projected = scored
+                        if best_score is not None and score <= best_score:
+                            continue
+                        best_score = score
+                        best_option = option
+                        best_modification = candidate_mod
+                        best_projected_flow_graph = candidate_projected
+
+            if (
+                best_option is None
+                or best_modification is None
+                or best_projected_flow_graph is None
+            ):
+                break
+
+            modifications.append(best_modification)
+            current_projected_flow_graph = best_projected_flow_graph
+            emitted += 1
+            logger.info(
+                "RECON DAG: late island rescue %s -> %s%s "
+                "via BST passthrough (delta=%+d)",
+                blk_label(mba, best_option.source_block),
+                blk_label(mba, best_option.lifted_entry),
+                (
+                    f" via_pred={blk_label(mba, best_option.via_pred)}"
+                    if best_option.via_pred is not None
+                    else ""
+                ),
+                best_score[0] if best_score is not None else 0,
+            )
+
+        # Diagnostic: if no rescue fired, dump dispatcher rows for
+        # unreachable non-dispatcher blocks with BST-only predecessors.
+        if emitted == 0 and dispatcher is not None:
+            reachable_blocks = cls._compute_reachable_blocks(
+                current_projected_flow_graph,
+                start_serial=getattr(
+                    current_projected_flow_graph, "entry_serial", None,
+                ),
+            ) or set()
+            for serial in sorted(int(s) for s in current_projected_flow_graph.blocks):
+                if serial in reachable_blocks or serial in dispatcher_region:
+                    continue
+                snap = current_projected_flow_graph.get_block(serial)
+                if snap is None:
+                    continue
+                preds = [int(p) for p in snap.preds]
+                if not preds or not all(p in dispatcher_region for p in preds):
+                    continue
+                # unreachable non-dispatcher with BST-only preds
+                rows_info = []
+                search_targets = {serial} | {int(p) for p in preds}
+                for row in getattr(dispatcher, "_rows", ()):
+                    if int(row.target) in search_targets:
+                        rows_info.append(
+                            f"[0x{row.lo:X}..0x{row.hi:X})->blk[{row.target}]"
+                        )
+                logger.info(
+                    "RECON DAG: late island rescue diagnostic: "
+                    "unreachable blk[%d] bst_preds=%s dispatcher_rows=[%s]",
+                    serial,
+                    preds,
+                    ", ".join(rows_info) if rows_info else "none",
+                )
+
+        return emitted
+
     @staticmethod
     def _terminal_locator_key(mop: object | None) -> tuple[object, ...] | None:
         if mop is None:
@@ -1075,20 +1285,19 @@ class StateWriteReconstructionStrategy:
         )
 
     @classmethod
-    def _resolve_terminal_edge_entry(
+    def _resolve_terminal_source_arm_entry(
         cls,
-        edge: StateDagEdge,
+        source_serial: int,
+        branch_arm: int | None,
         *,
         projected_flow_graph,
         dispatcher_region: set[int],
     ) -> int | None:
-        source_serial = int(edge.source_anchor.block_serial)
         source_block = projected_flow_graph.get_block(source_serial)
         if source_block is None:
             return None
 
         candidate_targets: list[int] = []
-        branch_arm = edge.source_anchor.branch_arm
         if branch_arm is not None and 0 <= int(branch_arm) < source_block.nsucc:
             candidate_targets.append(int(source_block.succs[int(branch_arm)]))
         elif source_block.nsucc == 1:
@@ -1100,6 +1309,220 @@ class StateWriteReconstructionStrategy:
             if target not in dispatcher_region:
                 return target
         return None
+
+    @staticmethod
+    def _is_projected_only_block(
+        block_serial: int,
+        *,
+        base_flow_graph,
+    ) -> bool:
+        return base_flow_graph.get_block(int(block_serial)) is None
+
+    @classmethod
+    def _probe_terminal_family_seed(
+        cls,
+        seed: TerminalFamilySeed,
+        *,
+        base_flow_graph,
+        projected_flow_graph,
+        dispatcher_region: set[int],
+        reachable_blocks: set[int],
+    ) -> TerminalFamilySeedProbe:
+        source_block = int(seed.source_block)
+        source_snapshot = projected_flow_graph.get_block(source_block)
+        source_reachable = source_block in reachable_blocks
+        source_nsucc = int(source_snapshot.nsucc) if source_snapshot is not None else None
+
+        arm_target: int | None = None
+        family_entry: int | None = None
+        path: tuple[int, ...] = ()
+        stop_block: int | None = None
+        rejection_reason = "accepted"
+
+        if source_snapshot is None:
+            rejection_reason = "source_missing"
+        elif not source_reachable:
+            rejection_reason = "source_unreachable"
+        else:
+            candidate_targets: list[int] = []
+            if seed.branch_arm is not None:
+                arm_index = int(seed.branch_arm)
+                if 0 <= arm_index < source_snapshot.nsucc:
+                    arm_target = int(source_snapshot.succs[arm_index])
+                    candidate_targets.append(arm_target)
+                else:
+                    rejection_reason = "arm_target_unresolved"
+            elif source_snapshot.nsucc == 1:
+                arm_target = int(source_snapshot.succs[0])
+                candidate_targets.append(arm_target)
+            else:
+                candidate_targets.extend(int(succ) for succ in source_snapshot.succs)
+                non_dispatcher_targets = [
+                    target for target in candidate_targets
+                    if target not in dispatcher_region
+                ]
+                if non_dispatcher_targets:
+                    arm_target = int(non_dispatcher_targets[0])
+
+            if rejection_reason == "accepted":
+                non_dispatcher_targets = [
+                    target for target in candidate_targets
+                    if target not in dispatcher_region
+                ]
+                if not non_dispatcher_targets:
+                    rejection_reason = "arm_target_dispatcher"
+                else:
+                    family_entry = int(non_dispatcher_targets[0])
+                    if family_entry not in reachable_blocks:
+                        rejection_reason = "family_entry_unreachable"
+                    else:
+                        path = cls._collect_linear_terminal_path(
+                            projected_flow_graph,
+                            start_block=family_entry,
+                            dispatcher_region=dispatcher_region,
+                        ) or ()
+                        if not path:
+                            rejection_reason = "terminal_path_non_linear"
+                        elif len(path) < 2:
+                            stop_block = int(path[-1])
+                            rejection_reason = "terminal_path_too_short"
+                        else:
+                            stop_block = int(path[-1])
+                            stop_snapshot = projected_flow_graph.get_block(stop_block)
+                            if stop_snapshot is None:
+                                rejection_reason = "stop_block_missing"
+                            elif stop_snapshot.nsucc != 0:
+                                rejection_reason = "stop_not_terminal"
+
+        if stop_block is None and path:
+            stop_block = int(path[-1])
+
+        arm_target_projected_only = (
+            arm_target is not None
+            and cls._is_projected_only_block(
+                arm_target,
+                base_flow_graph=base_flow_graph,
+            )
+        )
+        family_entry_projected_only = (
+            family_entry is not None
+            and cls._is_projected_only_block(
+                family_entry,
+                base_flow_graph=base_flow_graph,
+            )
+        )
+        path_projected_only_blocks = tuple(
+            int(block_serial)
+            for block_serial in path
+            if cls._is_projected_only_block(
+                int(block_serial),
+                base_flow_graph=base_flow_graph,
+            )
+        )
+        if (
+            rejection_reason == "terminal_path_non_linear"
+            and (
+                arm_target_projected_only
+                or family_entry_projected_only
+                or path_projected_only_blocks
+            )
+        ):
+            rejection_reason = "terminal_path_collapsed_into_projected_only"
+
+        return TerminalFamilySeedProbe(
+            seed=seed,
+            seed_origins=(),
+            source_reachable=source_reachable,
+            source_nsucc=source_nsucc,
+            arm_target=arm_target,
+            arm_target_projected_only=arm_target_projected_only,
+            family_entry=family_entry,
+            family_entry_projected_only=family_entry_projected_only,
+            path=path,
+            path_projected_only_blocks=path_projected_only_blocks,
+            stop_block=stop_block,
+            rejection_reason=rejection_reason,
+        )
+
+    @classmethod
+    def _log_source_unreachable_diagnostic(
+        cls,
+        source_serial: int,
+        *,
+        projected_flow_graph,
+        reachable_blocks: set[int],
+        dispatcher_region: set[int],
+        mba,
+    ) -> None:
+        """Log diagnostic context when a terminal-family seed source is unreachable."""
+        source_snap = projected_flow_graph.get_block(source_serial)
+        if source_snap is None:
+            logger.info(
+                "RECON RETURN: source_unreachable diagnostic %s: "
+                "not in projected flow graph",
+                blk_label(mba, source_serial),
+            )
+            return
+
+        preds = sorted(int(p) for p in source_snap.preds)
+        pred_info = []
+        for p in preds:
+            if p in reachable_blocks:
+                status = "reachable"
+            elif p in dispatcher_region:
+                status = "dispatcher"
+            else:
+                status = "unreachable"
+            pred_info.append(f"blk[{p}]={status}")
+
+        # BFS backward through non-dispatcher preds to map the island.
+        visited: set[int] = set()
+        queue: list[int] = [source_serial]
+        frontier: int | None = None
+        while queue and len(visited) < 64:
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            if current != source_serial and current in reachable_blocks:
+                frontier = current
+                break
+            snap = projected_flow_graph.get_block(current)
+            if snap is None:
+                continue
+            for pred in sorted(int(p) for p in snap.preds):
+                if pred not in visited and pred not in dispatcher_region:
+                    queue.append(pred)
+
+        island_blocks = sorted(visited - {source_serial})
+
+        logger.info(
+            "RECON RETURN: source_unreachable diagnostic %s "
+            "preds=[%s] nearest_reachable=%s island_blocks=%s",
+            blk_label(mba, source_serial),
+            ", ".join(pred_info),
+            blk_label(mba, frontier) if frontier is not None else "None",
+            [blk_label(mba, b) for b in island_blocks],
+        )
+
+    @classmethod
+    def _resolve_terminal_edge_entry(
+        cls,
+        edge: StateDagEdge,
+        *,
+        projected_flow_graph,
+        dispatcher_region: set[int],
+    ) -> int | None:
+        return cls._resolve_terminal_source_arm_entry(
+            int(edge.source_anchor.block_serial),
+            (
+                int(edge.source_anchor.branch_arm)
+                if edge.source_anchor.branch_arm is not None
+                else None
+            ),
+            projected_flow_graph=projected_flow_graph,
+            dispatcher_region=dispatcher_region,
+        )
 
     @classmethod
     def _collect_linear_terminal_path(
@@ -1260,10 +1683,171 @@ class StateWriteReconstructionStrategy:
         return ("terminal_value_chain", semantic_chain)
 
     @classmethod
+    def _terminal_candidate_key(
+        cls,
+        candidate: TerminalFamilyCandidate,
+    ) -> tuple[int, int | None, int, tuple[int, ...]]:
+        return (
+            int(candidate.source_block),
+            candidate.branch_arm,
+            int(candidate.family_entry),
+            tuple(int(s) for s in candidate.path),
+        )
+
+    @classmethod
+    def _candidate_shared_suffix_entries(
+        cls,
+        candidates: tuple[TerminalFamilyCandidate, ...],
+    ) -> dict[tuple[int, int | None, int, tuple[int, ...]], int]:
+        suffix_entries: dict[tuple[int, int | None, int, tuple[int, ...]], int] = {}
+        suffix_lengths: dict[tuple[int, int | None, int, tuple[int, ...]], int] = {}
+        groups_by_suffix: dict[tuple[int, ...], list[TerminalFamilyCandidate]] = {}
+
+        for candidate in candidates:
+            for suffix_len in range(2, len(candidate.path) + 1):
+                suffix = candidate.path[-suffix_len:]
+                groups_by_suffix.setdefault(suffix, []).append(candidate)
+
+        for suffix_serials, group_members in sorted(
+            groups_by_suffix.items(),
+            key=lambda item: (-len(item[0]), int(item[0][0])),
+        ):
+            unique_members: dict[
+                tuple[int, int | None, int, tuple[int, ...]],
+                TerminalFamilyCandidate,
+            ] = {}
+            for candidate in group_members:
+                unique_members.setdefault(cls._terminal_candidate_key(candidate), candidate)
+            if len(unique_members) < 2:
+                continue
+            for candidate_key in unique_members:
+                if len(suffix_serials) <= suffix_lengths.get(candidate_key, 0):
+                    continue
+                suffix_entries[candidate_key] = int(suffix_serials[0])
+                suffix_lengths[candidate_key] = len(suffix_serials)
+
+        return suffix_entries
+
+    @classmethod
+    def _seed_terminal_family_candidates(
+        cls,
+        dag: LinearizedStateDag,
+        *,
+        base_flow_graph,
+        projected_flow_graph,
+        dispatcher_region: set[int],
+        reachable_blocks: set[int],
+        mba,
+    ) -> tuple[TerminalFamilySeedProbe, ...]:
+        seeds_by_key: dict[tuple[int, int | None], TerminalFamilySeed] = {}
+        seed_origins: defaultdict[tuple[int, int | None], set[str]] = defaultdict(set)
+
+        for edge in dag.edges:
+            if edge.kind != SemanticEdgeKind.CONDITIONAL_RETURN:
+                continue
+            source_block = int(edge.source_anchor.block_serial)
+            branch_arm = (
+                int(edge.source_anchor.branch_arm)
+                if edge.source_anchor.branch_arm is not None
+                else None
+            )
+            seed_key = (source_block, branch_arm)
+            existing_seed = seeds_by_key.get(seed_key)
+            if existing_seed is None or existing_seed.edge is None:
+                seeds_by_key[seed_key] = TerminalFamilySeed(
+                    source_block=source_block,
+                    branch_arm=branch_arm,
+                    edge=edge,
+                )
+            seed_origins[seed_key].add("dag_edge")
+
+        for source_block in sorted(int(serial) for serial in projected_flow_graph.blocks):
+            if source_block in dispatcher_region:
+                continue
+            source_snapshot = projected_flow_graph.get_block(source_block)
+            if source_snapshot is None or source_snapshot.nsucc < 2:
+                continue
+            for branch_arm in range(int(source_snapshot.nsucc)):
+                seed_key = (int(source_block), int(branch_arm))
+                seeds_by_key.setdefault(
+                    seed_key,
+                    TerminalFamilySeed(
+                        source_block=int(source_block),
+                        branch_arm=int(branch_arm),
+                        edge=None,
+                    ),
+                )
+                seed_origins[seed_key].add("projected_cfg")
+
+        probes: list[TerminalFamilySeedProbe] = []
+        for seed in sorted(
+            seeds_by_key.values(),
+            key=lambda seed: (
+                int(seed.source_block),
+                -1 if seed.branch_arm is None else int(seed.branch_arm),
+            ),
+        ):
+            probe = cls._probe_terminal_family_seed(
+                seed,
+                base_flow_graph=base_flow_graph,
+                projected_flow_graph=projected_flow_graph,
+                dispatcher_region=dispatcher_region,
+                reachable_blocks=reachable_blocks,
+            )
+            probe = replace(
+                probe,
+                seed_origins=tuple(
+                    sorted(
+                        seed_origins[
+                            (
+                                int(seed.source_block),
+                                (
+                                    int(seed.branch_arm)
+                                    if seed.branch_arm is not None
+                                    else None
+                                ),
+                            )
+                        ]
+                    )
+                ),
+            )
+            logger.info(
+                "RECON RETURN: terminal-family seed src=%s%s origins=%s "
+                "source_reachable=%s source_nsucc=%s arm_target=%s arm_target_origin=%s "
+                "family_entry=%s family_entry_origin=%s projected_path=%s stop=%s "
+                "rejection=%s path=%s",
+                blk_label(mba, int(seed.source_block)),
+                f".arm{seed.branch_arm}" if seed.branch_arm is not None else "",
+                list(probe.seed_origins),
+                probe.source_reachable,
+                probe.source_nsucc,
+                blk_label(mba, probe.arm_target) if probe.arm_target is not None else "None",
+                "projected_only" if probe.arm_target_projected_only else "base",
+                blk_label(mba, probe.family_entry) if probe.family_entry is not None else "None",
+                "projected_only" if probe.family_entry_projected_only else "base",
+                [blk_label(mba, serial) for serial in probe.path_projected_only_blocks],
+                blk_label(mba, probe.stop_block) if probe.stop_block is not None else "None",
+                probe.rejection_reason,
+                probe.path,
+            )
+            if probe.rejection_reason == "source_unreachable":
+                cls._log_source_unreachable_diagnostic(
+                    int(seed.source_block),
+                    projected_flow_graph=projected_flow_graph,
+                    reachable_blocks=reachable_blocks,
+                    dispatcher_region=dispatcher_region,
+                    mba=mba,
+                )
+            probes.append(probe)
+
+        return tuple(probes)
+
+    @classmethod
     def _collect_terminal_family_candidates(
         cls,
         dag: LinearizedStateDag,
         *,
+        base_flow_graph,
         projected_flow_graph,
         dispatcher_region: set[int],
         reachable_blocks: set[int],
@@ -1272,35 +1856,23 @@ class StateWriteReconstructionStrategy:
     ) -> tuple[TerminalFamilyCandidate, ...]:
         candidates: list[TerminalFamilyCandidate] = []
         seen_keys: set[tuple[int, int | None, int, tuple[int, ...]]] = set()
+        seed_probes = cls._seed_terminal_family_candidates(
+            dag,
+            base_flow_graph=base_flow_graph,
+            projected_flow_graph=projected_flow_graph,
+            dispatcher_region=dispatcher_region,
+            reachable_blocks=reachable_blocks,
+            mba=mba,
+        )
 
-        for edge in dag.edges:
-            if edge.kind != SemanticEdgeKind.CONDITIONAL_RETURN:
+        for probe in seed_probes:
+            seed = probe.seed
+            if probe.rejection_reason != "accepted":
                 continue
-
-            source_block = int(edge.source_anchor.block_serial)
-            if source_block not in reachable_blocks:
-                continue
-
-            family_entry = cls._resolve_terminal_edge_entry(
-                edge,
-                projected_flow_graph=projected_flow_graph,
-                dispatcher_region=dispatcher_region,
-            )
-            if family_entry is None or family_entry not in reachable_blocks:
-                continue
-
-            path = cls._collect_linear_terminal_path(
-                projected_flow_graph,
-                start_block=family_entry,
-                dispatcher_region=dispatcher_region,
-            )
-            if not path or len(path) < 2:
-                continue
-
-            stop_block = int(path[-1])
-            stop_snapshot = projected_flow_graph.get_block(stop_block)
-            if stop_snapshot is None or stop_snapshot.nsucc != 0:
-                continue
+            source_block = int(seed.source_block)
+            family_entry = int(probe.family_entry)
+            path = tuple(int(serial) for serial in probe.path)
+            stop_block = int(probe.stop_block)
 
             chain = cls._resolve_terminal_value_chain(
                 projected_flow_graph,
@@ -1309,55 +1881,222 @@ class StateWriteReconstructionStrategy:
             )
             materializer_block = int(chain[-1][0]) if chain else None
             writer_block = int(chain[0][0]) if chain else None
+            materializer_chain_blocks = tuple(int(block_serial) for block_serial, _idx, _insn in chain)
             lineage_eas = tuple(int(getattr(insn, "ea", 0)) for _blk, _idx, insn in chain)
             signature = cls._terminal_value_family_signature(chain)
 
             candidate_key = (
                 source_block,
-                int(edge.source_anchor.branch_arm) if edge.source_anchor.branch_arm is not None else None,
+                int(seed.branch_arm) if seed.branch_arm is not None else None,
                 family_entry,
                 path,
             )
             if candidate_key in seen_keys:
+                logger.info(
+                    "RECON RETURN: terminal-family inspect src=%s%s family_entry=%s "
+                    "shared_suffix_entry=None writer=%s materializer=%s "
+                    "materializer_chain=%s stop=%s signature=%s rejection=%s "
+                    "path=%s lineage=%s",
+                    blk_label(mba, source_block),
+                    f".arm{seed.branch_arm}" if seed.branch_arm is not None else "",
+                    blk_label(mba, family_entry),
+                    blk_label(mba, writer_block) if writer_block is not None else "None",
+                    blk_label(mba, materializer_block) if materializer_block is not None else "None",
+                    [blk_label(mba, serial) for serial in materializer_chain_blocks],
+                    blk_label(mba, stop_block),
+                    signature,
+                    "duplicate_candidate",
+                    path,
+                    [hex(ea) for ea in lineage_eas],
+                )
                 continue
             seen_keys.add(candidate_key)
 
             candidate = TerminalFamilyCandidate(
-                edge=edge,
+                edge=seed.edge,
                 source_block=source_block,
-                branch_arm=(
-                    int(edge.source_anchor.branch_arm)
-                    if edge.source_anchor.branch_arm is not None
-                    else None
-                ),
+                branch_arm=int(seed.branch_arm) if seed.branch_arm is not None else None,
                 family_entry=family_entry,
                 path=path,
                 stop_block=stop_block,
                 materializer_block=materializer_block,
                 writer_block=writer_block,
+                materializer_chain_blocks=materializer_chain_blocks,
                 value_family_signature=signature,
                 lineage_eas=lineage_eas,
             )
             candidates.append(candidate)
+
+        candidate_suffix_entries = cls._candidate_shared_suffix_entries(tuple(candidates))
+        for candidate in candidates:
+            candidate_key = cls._terminal_candidate_key(candidate)
             logger.info(
-                "RECON RETURN: terminal-family candidate src=%s%s family_entry=%s "
-                "writer=%s materializer=%s stop=%s signature=%s lineage=%s path=%s",
-                blk_label(mba, source_block),
+                "RECON RETURN: terminal-family inspect src=%s%s family_entry=%s "
+                "shared_suffix_entry=%s writer=%s materializer=%s "
+                "materializer_chain=%s stop=%s signature=%s rejection=accepted "
+                "path=%s lineage=%s",
+                blk_label(mba, candidate.source_block),
                 (
                     f".arm{candidate.branch_arm}"
                     if candidate.branch_arm is not None
                     else ""
                 ),
-                blk_label(mba, family_entry),
-                blk_label(mba, writer_block) if writer_block is not None else "None",
-                blk_label(mba, materializer_block) if materializer_block is not None else "None",
-                blk_label(mba, stop_block),
-                signature,
-                [hex(ea) for ea in lineage_eas],
-                path,
+                blk_label(mba, candidate.family_entry),
+                (
+                    blk_label(mba, candidate_suffix_entries[candidate_key])
+                    if candidate_key in candidate_suffix_entries
+                    else "None"
+                ),
+                blk_label(mba, candidate.writer_block) if candidate.writer_block is not None else "None",
+                blk_label(mba, candidate.materializer_block) if candidate.materializer_block is not None else "None",
+                [blk_label(mba, serial) for serial in candidate.materializer_chain_blocks],
+                blk_label(mba, candidate.stop_block),
+                candidate.value_family_signature,
+                candidate.path,
+                [hex(ea) for ea in candidate.lineage_eas],
             )
 
         return tuple(candidates)
+
+    @classmethod
+    def _select_terminal_family_split(
+        cls,
+        candidates: tuple[TerminalFamilyCandidate, ...],
+        *,
+        base_flow_graph,
+        projected_flow_graph,
+        builder: ModificationBuilder,
+        modifications: list,
+        mba,
+    ):
+        current_reachable = cls._compute_reachable_blocks(
+            projected_flow_graph,
+            start_serial=getattr(projected_flow_graph, "entry_serial", None),
+        )
+        if not current_reachable:
+            return None
+
+        baseline_reachable_count = len(current_reachable)
+        groups_by_suffix: dict[tuple[int, ...], list[TerminalFamilyCandidate]] = {}
+        for candidate in candidates:
+            for suffix_len in range(2, len(candidate.path) + 1):
+                suffix = candidate.path[-suffix_len:]
+                groups_by_suffix.setdefault(suffix, []).append(candidate)
+
+        suffix_groups = sorted(
+            groups_by_suffix.items(),
+            key=lambda item: (
+                -len(item[0]),
+                -len({
+                    cls._terminal_candidate_key(c)
+                    for c in item[1]
+                }),
+                int(item[0][0]),
+            ),
+        )
+
+        for suffix_serials, group_members in suffix_groups:
+            unique_members: dict[
+                tuple[int, int | None, int, tuple[int, ...]],
+                TerminalFamilyCandidate,
+            ] = {}
+            for candidate in group_members:
+                unique_members.setdefault(cls._terminal_candidate_key(candidate), candidate)
+            members = tuple(unique_members.values())
+            if len(members) < 2:
+                continue
+
+            signature_buckets: defaultdict[tuple[object, ...], list[TerminalFamilyCandidate]] = defaultdict(list)
+            for candidate in members:
+                signature_buckets[candidate.value_family_signature].append(candidate)
+            if len(signature_buckets) < 2:
+                continue
+
+            sorted_buckets = sorted(
+                signature_buckets.items(),
+                key=lambda item: (
+                    -len(item[1]),
+                    repr(item[0]),
+                    min(
+                        candidate.lineage_eas[0]
+                        if candidate.lineage_eas
+                        else 0
+                        for candidate in item[1]
+                    ),
+                ),
+            )
+            primary_signature = sorted_buckets[0][0]
+
+            selected_anchors: list[int] = []
+            selected_candidates: list[TerminalFamilyCandidate] = []
+            for signature, bucket in sorted_buckets[1:]:
+                _ = signature
+                for candidate in bucket:
+                    anchor_serial = cls._candidate_anchor_for_suffix(
+                        candidate,
+                        suffix_serials=suffix_serials,
+                        projected_flow_graph=projected_flow_graph,
+                    )
+                    if anchor_serial is None or anchor_serial in selected_anchors:
+                        continue
+                    selected_candidates.append(candidate)
+                    selected_anchors.append(int(anchor_serial))
+
+            if not selected_anchors:
+                logger.info(
+                    "RECON RETURN: terminal-family split candidate shared_entry=%s stop=%s "
+                    "rejection=no_viable_anchor suffix=%s",
+                    blk_label(mba, int(suffix_serials[0])),
+                    blk_label(mba, int(suffix_serials[-1])),
+                    suffix_serials,
+                )
+                continue
+
+            candidate_mod = cls._build_terminal_family_split_modification(
+                builder=builder,
+                anchors=tuple(selected_anchors),
+                suffix_serials=suffix_serials,
+            )
+
+            try:
+                patch_plan = compile_patch_plan(modifications + [candidate_mod], base_flow_graph)
+                candidate_projected = project_post_state(base_flow_graph, patch_plan)
+            except Exception as exc:
+                logger.info(
+                    "RECON RETURN: terminal-family split candidate shared_entry=%s stop=%s "
+                    "rejection=projection_error error=%s",
+                    blk_label(mba, int(suffix_serials[0])),
+                    blk_label(mba, int(suffix_serials[-1])),
+                    exc,
+                )
+                continue
+
+            candidate_reachable = cls._compute_reachable_blocks(
+                candidate_projected,
+                start_serial=getattr(candidate_projected, "entry_serial", None),
+            )
+            if candidate_reachable is None or len(candidate_reachable) < baseline_reachable_count:
+                logger.info(
+                    "RECON RETURN: terminal-family split candidate shared_entry=%s stop=%s "
+                    "rejection=reachable_regression before=%d after=%s anchors=%s",
+                    blk_label(mba, int(suffix_serials[0])),
+                    blk_label(mba, int(suffix_serials[-1])),
+                    baseline_reachable_count,
+                    len(candidate_reachable) if candidate_reachable is not None else None,
+                    [blk_label(mba, anchor) for anchor in selected_anchors],
+                )
+                continue
+
+            return (
+                candidate_mod,
+                candidate_projected,
+                suffix_serials,
+                tuple(selected_anchors),
+                tuple(selected_candidates),
+                primary_signature,
+            )
+
+        return None
 
     @classmethod
     def _candidate_anchor_for_suffix(
@@ -1422,137 +2161,51 @@ class StateWriteReconstructionStrategy:
         state_var_stkoff: int | None,
         mba,
     ) -> int:
-        reachable_blocks = cls._compute_reachable_blocks(
-            projected_flow_graph,
-            start_serial=getattr(projected_flow_graph, "entry_serial", None),
-        )
-        if not reachable_blocks:
-            return 0
-
-        candidates = cls._collect_terminal_family_candidates(
-            dag,
-            projected_flow_graph=projected_flow_graph,
-            dispatcher_region=dispatcher_region,
-            reachable_blocks=reachable_blocks,
-            state_var_stkoff=state_var_stkoff,
-            mba=mba,
-        )
-        if len(candidates) < 2:
-            return 0
-
-        baseline_reachable_count = len(reachable_blocks)
         current_projected_flow_graph = projected_flow_graph
         emitted = 0
-        used_anchors: set[int] = set()
-        used_suffix_blocks: set[int] = set()
 
-        suffix_groups: list[tuple[tuple[int, ...], list[TerminalFamilyCandidate]]] = []
-        groups_by_suffix: dict[tuple[int, ...], list[TerminalFamilyCandidate]] = {}
-        for candidate in candidates:
-            for suffix_len in range(2, len(candidate.path) + 1):
-                suffix = candidate.path[-suffix_len:]
-                groups_by_suffix.setdefault(suffix, []).append(candidate)
-
-        suffix_groups = sorted(
-            groups_by_suffix.items(),
-            key=lambda item: (
-                -len(item[0]),
-                -len({
-                    (
-                        int(c.source_block),
-                        c.branch_arm,
-                        int(c.family_entry),
-                        tuple(int(s) for s in c.path),
-                    )
-                    for c in item[1]
-                }),
-                int(item[0][0]),
-            ),
-        )
-
-        for suffix_serials, group_members in suffix_groups:
-            if any(serial in used_suffix_blocks for serial in suffix_serials):
-                continue
-
-            unique_members: dict[
-                tuple[int, int | None, int, tuple[int, ...]],
-                TerminalFamilyCandidate,
-            ] = {}
-            for candidate in group_members:
-                key = (
-                    int(candidate.source_block),
-                    candidate.branch_arm,
-                    int(candidate.family_entry),
-                    tuple(int(s) for s in candidate.path),
-                )
-                unique_members.setdefault(key, candidate)
-            members = tuple(unique_members.values())
-            if len(members) < 2:
-                continue
-
-            signature_buckets: defaultdict[tuple[object, ...], list[TerminalFamilyCandidate]] = defaultdict(list)
-            for candidate in members:
-                signature_buckets[candidate.value_family_signature].append(candidate)
-            if len(signature_buckets) < 2:
-                continue
-
-            sorted_buckets = sorted(
-                signature_buckets.items(),
-                key=lambda item: (
-                    -len(item[1]),
-                    repr(item[0]),
-                    min(
-                        candidate.lineage_eas[0]
-                        if candidate.lineage_eas
-                        else 0
-                        for candidate in item[1]
-                    ),
-                ),
+        while True:
+            reachable_blocks = cls._compute_reachable_blocks(
+                current_projected_flow_graph,
+                start_serial=getattr(current_projected_flow_graph, "entry_serial", None),
             )
-            primary_signature = sorted_buckets[0][0]
+            if not reachable_blocks:
+                break
 
-            selected_anchors: list[int] = []
-            selected_candidates: list[TerminalFamilyCandidate] = []
-            for signature, bucket in sorted_buckets[1:]:
-                _ = signature
-                for candidate in bucket:
-                    anchor_serial = cls._candidate_anchor_for_suffix(
-                        candidate,
-                        suffix_serials=suffix_serials,
-                        projected_flow_graph=current_projected_flow_graph,
-                    )
-                    if anchor_serial is None or anchor_serial in used_anchors:
-                        continue
-                    selected_candidates.append(candidate)
-                    selected_anchors.append(int(anchor_serial))
+            candidates = cls._collect_terminal_family_candidates(
+                dag,
+                base_flow_graph=base_flow_graph,
+                projected_flow_graph=current_projected_flow_graph,
+                dispatcher_region=dispatcher_region,
+                reachable_blocks=reachable_blocks,
+                state_var_stkoff=state_var_stkoff,
+                mba=mba,
+            )
+            if len(candidates) < 2:
+                break
 
-            if not selected_anchors:
-                continue
-
-            candidate_mod = cls._build_terminal_family_split_modification(
+            selected = cls._select_terminal_family_split(
+                candidates,
+                base_flow_graph=base_flow_graph,
+                projected_flow_graph=current_projected_flow_graph,
                 builder=builder,
-                anchors=tuple(selected_anchors),
-                suffix_serials=suffix_serials,
+                modifications=modifications,
+                mba=mba,
             )
+            if selected is None:
+                break
 
-            try:
-                patch_plan = compile_patch_plan(modifications + [candidate_mod], base_flow_graph)
-                candidate_projected = project_post_state(base_flow_graph, patch_plan)
-            except Exception:
-                continue
-
-            candidate_reachable = cls._compute_reachable_blocks(
+            (
+                candidate_mod,
                 candidate_projected,
-                start_serial=getattr(candidate_projected, "entry_serial", None),
-            )
-            if candidate_reachable is None or len(candidate_reachable) < baseline_reachable_count:
-                continue
-
+                suffix_serials,
+                selected_anchors,
+                selected_candidates,
+                primary_signature,
+            ) = selected
             modifications.append(candidate_mod)
             current_projected_flow_graph = candidate_projected
             emitted += 1
-            used_anchors.update(selected_anchors)
-            used_suffix_blocks.update(int(serial) for serial in suffix_serials)
             logger.info(
                 "RECON RETURN: terminal-family split shared_entry=%s stop=%s anchors=%s keep_signature=%s",
                 blk_label(mba, int(suffix_serials[0])),
@@ -1563,7 +2216,8 @@ class StateWriteReconstructionStrategy:
             for candidate in selected_candidates:
                 logger.info(
                     "RECON RETURN: privatized family src=%s%s family_entry=%s "
-                    "shared_suffix_entry=%s writer=%s materializer=%s stop=%s signature=%s lineage=%s",
+                    "shared_suffix_entry=%s writer=%s materializer=%s "
+                    "materializer_chain=%s stop=%s signature=%s lineage=%s",
                     blk_label(mba, candidate.source_block),
                     (
                         f".arm{candidate.branch_arm}"
@@ -1574,6 +2228,7 @@ class StateWriteReconstructionStrategy:
                     blk_label(mba, int(suffix_serials[0])),
                     blk_label(mba, candidate.writer_block) if candidate.writer_block is not None else "None",
                     blk_label(mba, candidate.materializer_block) if candidate.materializer_block is not None else "None",
+                    [blk_label(mba, serial) for serial in candidate.materializer_chain_blocks],
                     blk_label(mba, candidate.stop_block),
                     candidate.value_family_signature,
                     [hex(ea) for ea in candidate.lineage_eas],
@@ -3604,6 +4259,31 @@ class StateWriteReconstructionStrategy:
                         len(residual_dispatcher_preds),
                         [blk_label(mba, s) for s in residual_dispatcher_preds],
                     )
+
+                # Late island rescue: reconnect handler bodies that are
+                # unreachable because they sit behind dead BST nodes.
+                late_island_rescue_count = self._emit_late_island_rescues(
+                    dag,
+                    base_flow_graph=flow_graph,
+                    projected_flow_graph=projected_flow_graph,
+                    builder=builder,
+                    modifications=modifications,
+                    dispatcher_region=dispatcher_region,
+                    dispatcher=getattr(bst_result, "dispatcher", None),
+                    mba=mba,
+                )
+                if late_island_rescue_count:
+                    logger.info(
+                        "RECON DAG: late island rescue emitted %d redirects",
+                        late_island_rescue_count,
+                    )
+                    try:
+                        patch_plan = compile_patch_plan(modifications, flow_graph)
+                        projected_flow_graph = project_post_state(
+                            flow_graph, patch_plan,
+                        )
+                    except Exception:
+                        projected_flow_graph = flow_graph
 
             terminal_family_split_count = self._emit_terminal_family_splits(
                 dag,

@@ -2158,6 +2158,60 @@ def _discover_supplemental_states(
     return supplemental_states, collapsed_target_anchors
 
 
+def _discover_shadowed_range_handlers(
+    dag: LinearizedStateDag,
+    dispatcher: IntervalDispatcher | None,
+    bst_node_blocks: set[int],
+    flow_graph: FlowGraph,
+    existing_states: set[int],
+) -> set[int]:
+    """Find IntervalDispatcher range targets that are live but not in the DAG.
+
+    When exact resolution picks a more specific handler for every concrete
+    state in a range, the range-backed handler block is never materialized
+    as a DAG node.  If the range block has real handler semantics (non-BST,
+    has outgoing dispatcher feeder), its range-start state should be
+    injected so the supplemental machinery can wire it.
+    """
+    if dispatcher is None:
+        return set()
+
+    dag_entry_anchors = {int(node.entry_anchor) for node in dag.nodes}
+    shadowed_states: set[int] = set()
+
+    for row in getattr(dispatcher, "_rows", ()):
+        target = int(row.target)
+        if target in bst_node_blocks:
+            continue
+        if target in dag_entry_anchors:
+            continue
+        # target is non-BST and not in the DAG — potentially shadowed.
+        # Check it exists in the flow graph and has real outgoing behavior
+        # (goes to dispatcher, meaning it's a handler body that writes
+        # a state and transitions, not a dead stub).
+        block = flow_graph.get_block(target)
+        if block is None:
+            continue
+        if block.nsucc < 1:
+            continue
+        # Use the range start as the synthetic state.
+        # Skip if a concrete state already covers this exact value.
+        synthetic_state = int(row.lo)
+        if synthetic_state in existing_states:
+            continue
+        shadowed_states.add(synthetic_state)
+        logger.info(
+            "DAG: shadowed range-backed handler blk[%d] "
+            "range=[0x%X..0x%X) not in DAG, injecting state 0x%X",
+            target,
+            int(row.lo),
+            int(row.hi),
+            synthetic_state,
+        )
+
+    return shadowed_states
+
+
 def build_live_linearized_state_dag_from_graph(
     flow_graph: FlowGraph,
     transition_result: TransitionResult,
@@ -2323,7 +2377,23 @@ def build_live_linearized_state_dag_from_graph(
         )
         pending_states = sorted(state for state in supplemental_states if state not in existing_states)
         if not pending_states:
-            return dag
+            # --- Shadowed range-backed handler retention ---
+            # Some IntervalDispatcher range targets are real handler bodies
+            # that exact resolution never visits (exact picks a more specific
+            # handler for every concrete state).  If such a target has a
+            # non-trivial body, inject its range-start state so the
+            # supplemental machinery materializes a DAG node for it.
+            shadowed = _discover_shadowed_range_handlers(
+                dag,
+                dispatcher,
+                set(report_with_supplemental.bst_node_blocks),
+                flow_graph,
+                existing_states,
+            )
+            if shadowed:
+                pending_states = sorted(shadowed - existing_states)
+            if not pending_states:
+                return dag
 
         supplemental_rows: list[TransitionRow] = []
         for state_value in pending_states:

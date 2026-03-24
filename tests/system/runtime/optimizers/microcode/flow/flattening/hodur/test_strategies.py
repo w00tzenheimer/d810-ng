@@ -5,7 +5,6 @@ UnflatteningStrategy protocol and have unique names, without requiring an
 IDA environment.
 """
 from __future__ import annotations
-
 from types import SimpleNamespace
 
 import ida_hexrays
@@ -9677,6 +9676,543 @@ def test_state_write_reconstruction_terminal_split_coexists_with_late_entry_resc
         and len(tuple(getattr(m, "suffix_serials", ()))) == 2
         for m in terminal_splits
     ), f"Expected shared terminal suffix [350, 360] to be privatized, got: {terminal_splits}"
+
+
+def test_state_write_reconstruction_discovers_projected_cfg_only_terminal_family(
+    monkeypatch,
+):
+    mov = int(ida_hexrays.m_mov)
+    goto = int(ida_hexrays.m_goto)
+    mop_b = int(ida_hexrays.mop_b)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_r = int(ida_hexrays.mop_r)
+
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(1, int(ida_hexrays.BLT_1WAY), (10,), (), 0, 0x1000, ()),
+            10: BlockSnapshot(10, int(ida_hexrays.BLT_2WAY), (11, 30), (1,), 0, 0x1010, ()),
+            11: BlockSnapshot(
+                11,
+                int(ida_hexrays.BLT_1WAY),
+                (70,),
+                (10,),
+                0,
+                0x1110,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1110,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=8, value=1),
+                        d=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1114,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=70),
+                    ),
+                ),
+            ),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_2WAY), (31, 32), (10,), 0, 0x3010, ()),
+            31: BlockSnapshot(
+                31,
+                int(ida_hexrays.BLT_1WAY),
+                (70,),
+                (30,),
+                0,
+                0x3110,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x3110,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=8, value=2),
+                        d=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x3114,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=70),
+                    ),
+                ),
+            ),
+            32: BlockSnapshot(32, int(ida_hexrays.BLT_0WAY), (), (30,), 0, 0x3120, ()),
+            70: BlockSnapshot(
+                70,
+                int(ida_hexrays.BLT_1WAY),
+                (80,),
+                (11, 31),
+                0,
+                0x7000,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x7000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                        d=MopSnapshot(t=mop_r, size=8, reg=0),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x7004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=80),
+                    ),
+                ),
+            ),
+            80: BlockSnapshot(80, int(ida_hexrays.BLT_0WAY), (), (70,), 0, 0x7010, ()),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+
+    family_a = _make_reconstruction_node(10, 0x11111111, 10, owned_blocks=(10, 11))
+    family_c = _make_reconstruction_node(30, 0x33333333, 30, owned_blocks=(30, 31))
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(family_a, family_c),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                source_key=family_a.key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="RETURN",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=10,
+                    branch_arm=0,
+                ),
+                ordered_path=(10, 11, 70, 80),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert fragment is not None
+    terminal_splits = [
+        m
+        for m in fragment.modifications
+        if isinstance(m, (PrivateTerminalSuffix, PrivateTerminalSuffixGroup))
+    ]
+
+    assert len(terminal_splits) == 1, (
+        "Expected a terminal-family split even though only one outer DAG "
+        f"conditional_return edge was present, got: {fragment.modifications}"
+    )
+    split_mod = terminal_splits[0]
+    assert isinstance(split_mod, PrivateTerminalSuffix)
+    assert split_mod.anchor_serial in {11, 31}
+    assert split_mod.shared_entry_serial == 70
+    assert split_mod.return_block_serial == 80
+    assert split_mod.suffix_serials == (70, 80)
+
+
+def test_state_write_reconstruction_recursively_rediscovers_terminal_families(
+    monkeypatch,
+):
+    mov = int(ida_hexrays.m_mov)
+    goto = int(ida_hexrays.m_goto)
+    mop_b = int(ida_hexrays.mop_b)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+    mop_r = int(ida_hexrays.mop_r)
+
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(1, int(ida_hexrays.BLT_1WAY), (10,), (), 0, 0x1000, ()),
+            10: BlockSnapshot(10, int(ida_hexrays.BLT_2WAY), (11, 20), (1,), 0, 0x1010, ()),
+            11: BlockSnapshot(
+                11,
+                int(ida_hexrays.BLT_1WAY),
+                (70,),
+                (10,),
+                0,
+                0x1110,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x1110,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=8, value=1),
+                        d=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x1114,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=70),
+                    ),
+                ),
+            ),
+            20: BlockSnapshot(20, int(ida_hexrays.BLT_2WAY), (21, 30), (10,), 0, 0x2010, ()),
+            21: BlockSnapshot(
+                21,
+                int(ida_hexrays.BLT_1WAY),
+                (60,),
+                (20,),
+                0,
+                0x2110,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x2110,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=8, value=2),
+                        d=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x2114,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=60),
+                    ),
+                ),
+            ),
+            30: BlockSnapshot(30, int(ida_hexrays.BLT_2WAY), (31, 32), (20,), 0, 0x3010, ()),
+            31: BlockSnapshot(
+                31,
+                int(ida_hexrays.BLT_1WAY),
+                (60,),
+                (30,),
+                0,
+                0x3110,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x3110,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=8, value=3),
+                        d=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x3114,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=60),
+                    ),
+                ),
+            ),
+            32: BlockSnapshot(32, int(ida_hexrays.BLT_0WAY), (), (30,), 0, 0x3120, ()),
+            60: BlockSnapshot(
+                60,
+                int(ida_hexrays.BLT_1WAY),
+                (70,),
+                (21, 31),
+                0,
+                0x6000,
+                (
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x6000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=70),
+                    ),
+                ),
+            ),
+            70: BlockSnapshot(
+                70,
+                int(ida_hexrays.BLT_1WAY),
+                (80,),
+                (11, 60),
+                0,
+                0x7000,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x7000,
+                        operands=(),
+                        l=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                        d=MopSnapshot(t=mop_r, size=8, reg=0),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x7004,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=80),
+                    ),
+                ),
+            ),
+            80: BlockSnapshot(80, int(ida_hexrays.BLT_0WAY), (), (70,), 0, 0x7010, ()),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+
+    family_a = _make_reconstruction_node(10, 0x11111111, 10, owned_blocks=(10, 11))
+    family_b = _make_reconstruction_node(20, 0x22222222, 20, owned_blocks=(20, 21))
+    family_c = _make_reconstruction_node(30, 0x33333333, 30, owned_blocks=(30, 31))
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(family_a, family_b, family_c),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                source_key=family_a.key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="RETURN",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=10,
+                    branch_arm=0,
+                ),
+                ordered_path=(10, 11, 70, 80),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                source_key=family_b.key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="RETURN",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=20,
+                    branch_arm=0,
+                ),
+                ordered_path=(20, 21, 60, 70, 80),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                source_key=family_c.key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="RETURN",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=30,
+                    branch_arm=0,
+                ),
+                ordered_path=(30, 31, 60, 70, 80),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+
+    fragment = StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert fragment is not None
+    terminal_splits = [
+        m
+        for m in fragment.modifications
+        if isinstance(m, (PrivateTerminalSuffix, PrivateTerminalSuffixGroup))
+    ]
+
+    assert len(terminal_splits) == 2, (
+        "Expected recursive re-discovery to emit both the deep [60, 70, 80] "
+        f"split and the exposed [70, 80] split, got: {fragment.modifications}"
+    )
+    assert {m.shared_entry_serial for m in terminal_splits} == {60, 70}
+    assert any(
+        tuple(m.suffix_serials) == (60, 70, 80) for m in terminal_splits
+    ), f"Expected the first split to privatize the deep suffix [60, 70, 80], got: {terminal_splits}"
+    assert any(
+        m.shared_entry_serial == 70
+        and len(tuple(m.suffix_serials)) == 2
+        and tuple(m.suffix_serials)[0] == 70
+        for m in terminal_splits
+    ), f"Expected the recursive split to privatize the exposed [70, stop] suffix, got: {terminal_splits}"
+
+
+def test_state_write_reconstruction_logs_terminal_seed_rejections(
+    monkeypatch,
+):
+    mov = int(ida_hexrays.m_mov)
+    goto = int(ida_hexrays.m_goto)
+    mop_b = int(ida_hexrays.mop_b)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_S = int(ida_hexrays.mop_S)
+
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(1, int(ida_hexrays.BLT_1WAY), (10,), (), 0, 0x1000, ()),
+            10: BlockSnapshot(10, int(ida_hexrays.BLT_2WAY), (11, 20), (1,), 0, 0x1010, ()),
+            11: BlockSnapshot(11, int(ida_hexrays.BLT_2WAY), (12, 13), (10,), 0, 0x1110, ()),
+            12: BlockSnapshot(12, int(ida_hexrays.BLT_0WAY), (), (11,), 0, 0x1210, ()),
+            13: BlockSnapshot(13, int(ida_hexrays.BLT_0WAY), (), (11,), 0, 0x1310, ()),
+            20: BlockSnapshot(
+                20,
+                int(ida_hexrays.BLT_1WAY),
+                (21,),
+                (10,),
+                0,
+                0x2010,
+                (
+                    InsnSnapshot(
+                        opcode=mov,
+                        ea=0x2010,
+                        operands=(),
+                        l=MopSnapshot(t=mop_n, size=8, value=2),
+                        d=MopSnapshot(t=mop_S, size=8, stkoff=0x80),
+                    ),
+                    InsnSnapshot(
+                        opcode=goto,
+                        ea=0x2014,
+                        operands=(),
+                        l=MopSnapshot(t=mop_b, size=4, block_ref=21),
+                    ),
+                ),
+            ),
+            21: BlockSnapshot(21, int(ida_hexrays.BLT_0WAY), (), (20,), 0, 0x2110, ()),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+
+    family_a = _make_reconstruction_node(10, 0x11111111, 10, owned_blocks=(10, 20))
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(family_a,),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                source_key=family_a.key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="RETURN",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=10,
+                    branch_arm=1,
+                ),
+                ordered_path=(10, 20, 21),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+    captured_messages: list[str] = []
+    original_info = reconstruction_module.logger.info
+
+    def _recording_info(message, *args, **kwargs):
+        rendered = message % args if args else str(message)
+        captured_messages.append(rendered)
+        return original_info(message, *args, **kwargs)
+
+    monkeypatch.setattr(reconstruction_module.logger, "info", _recording_info)
+
+    StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert any(
+        "RECON RETURN: terminal-family seed src=blk[10]@?.arm0" in message
+        and "rejection=terminal_path_non_linear" in message
+        for message in captured_messages
+    ), "Expected seed-stage logging for the non-linear terminal arm"
+    assert any(
+        "RECON RETURN: terminal-family seed src=blk[10]@?.arm1" in message
+        and "origins=['dag_edge', 'projected_cfg']" in message
+        for message in captured_messages
+    ), "Expected seed-stage logging to preserve the dag-edge source origin"
+
+
+def test_state_write_reconstruction_logs_unreachable_terminal_seed_sources(
+    monkeypatch,
+):
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(1, int(ida_hexrays.BLT_1WAY), (20,), (), 0, 0x1000, ()),
+            10: BlockSnapshot(10, int(ida_hexrays.BLT_2WAY), (11, 12), (), 0, 0x1010, ()),
+            11: BlockSnapshot(11, int(ida_hexrays.BLT_0WAY), (), (10,), 0, 0x1110, ()),
+            12: BlockSnapshot(12, int(ida_hexrays.BLT_0WAY), (), (10,), 0, 0x1210, ()),
+            20: BlockSnapshot(20, int(ida_hexrays.BLT_1WAY), (21,), (1,), 0, 0x2010, ()),
+            21: BlockSnapshot(21, int(ida_hexrays.BLT_0WAY), (), (20,), 0, 0x2110, ()),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+
+    family_a = _make_reconstruction_node(10, 0x11111111, 10, owned_blocks=(10, 11))
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(family_a,),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                source_key=family_a.key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="RETURN",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=10,
+                    branch_arm=0,
+                ),
+                ordered_path=(10, 11),
+            ),
+        ),
+        diagnostics=(),
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *args, **kwargs: dag,
+    )
+    captured_messages: list[str] = []
+    original_info = reconstruction_module.logger.info
+
+    def _recording_info(message, *args, **kwargs):
+        rendered = message % args if args else str(message)
+        captured_messages.append(rendered)
+        return original_info(message, *args, **kwargs)
+
+    monkeypatch.setattr(reconstruction_module.logger, "info", _recording_info)
+
+    StateWriteReconstructionStrategy().plan(
+        _make_reconstruction_snapshot(flow_graph)
+    )
+
+    assert any(
+        "RECON RETURN: terminal-family seed src=blk[10]@?.arm0" in message
+        and "rejection=source_unreachable" in message
+        for message in captured_messages
+    ), "Expected seed-stage logging for an unreachable terminal source"
 
 
 # ---------------------------------------------------------------------------
