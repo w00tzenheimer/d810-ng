@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, auto
 
 from d810.cfg.flowgraph import FlowGraph
@@ -576,6 +576,7 @@ def _build_state_resolver(
     report: DispatcherTransitionReport,
     transition_result: TransitionResult,
     dispatcher: IntervalDispatcher | None,
+    flow_graph: object | None = None,
 ) -> tuple[dict[int, int], Callable[[int], int | None]]:
     exact_state_to_handler = {
         row.state_const: row.handler_serial
@@ -584,9 +585,45 @@ def _build_state_resolver(
     }
     valid_handler_serials = {row.handler_serial for row in report.rows}
 
+    bst_block_set = set(report.bst_node_blocks)
+
     def resolve_handler(state_value: int) -> int | None:
         handler_serial = exact_state_to_handler.get(state_value)
         if handler_serial is not None:
+            # Validate: if the IntervalDispatcher routes this state to a
+            # different non-BST block, the exact match is stale — the BST
+            # intercepts at a higher level before reaching the exact handler.
+            if dispatcher is not None:
+                dispatcher_target = dispatcher.lookup(state_value)
+                if (
+                    dispatcher_target is not None
+                    and int(dispatcher_target) != handler_serial
+                    and int(dispatcher_target) != report.dispatcher_entry_serial
+                    and int(dispatcher_target) not in bst_block_set
+                ):
+                    # Guard: if the exact handler is a direct predecessor
+                    # of the dispatcher target (adjacent BST check → body),
+                    # the disagreement is normal — don't override.
+                    # Only override when they're in different subtrees
+                    # (the BST intercepts the state at a higher level).
+                    adjacent = False
+                    if flow_graph is not None:
+                        exact_blk = flow_graph.get_block(handler_serial)
+                        if exact_blk is not None:
+                            exact_succs = {
+                                int(s) for s in getattr(exact_blk, "succs", ())
+                            }
+                            adjacent = int(dispatcher_target) in exact_succs
+                    if not adjacent:
+                        logger.info(
+                            "DAG: exact-vs-dispatcher override: state 0x%X "
+                            "exact=blk[%d] dispatcher=blk[%d], "
+                            "preferring dispatcher",
+                            state_value & 0xFFFFFFFF,
+                            handler_serial,
+                            int(dispatcher_target),
+                        )
+                        return int(dispatcher_target)
             return handler_serial
         handler = transition_result.handlers.get(state_value)
         if handler is not None and handler.check_block in valid_handler_serials:
@@ -2164,6 +2201,8 @@ def _discover_shadowed_range_handlers(
     bst_node_blocks: set[int],
     flow_graph: FlowGraph,
     existing_states: set[int],
+    handler_paths_by_handler: dict[int, tuple] | None = None,
+    exact_state_to_handler: dict[int, int] | None = None,
 ) -> set[int]:
     """Find IntervalDispatcher range targets that are live but not in the DAG.
 
@@ -2172,6 +2211,10 @@ def _discover_shadowed_range_handlers(
     as a DAG node.  If the range block has real handler semantics (non-BST,
     has outgoing dispatcher feeder), its range-start state should be
     injected so the supplemental machinery can wire it.
+
+    Additionally, scans handler path evaluations for exit states that fall
+    in shadowed ranges but are NOT claimed by narrower exact families.
+    These become incoming-edge candidates for the range-backed node.
     """
     if dispatcher is None:
         return set()
@@ -2179,35 +2222,64 @@ def _discover_shadowed_range_handlers(
     dag_entry_anchors = {int(node.entry_anchor) for node in dag.nodes}
     shadowed_states: set[int] = set()
 
+    # Phase 1: identify shadowed range targets (nodes without DAG presence).
+    shadowed_ranges: list[tuple[int, int, int]] = []  # (lo, hi, target)
     for row in getattr(dispatcher, "_rows", ()):
         target = int(row.target)
         if target in bst_node_blocks:
             continue
         if target in dag_entry_anchors:
             continue
-        # target is non-BST and not in the DAG — potentially shadowed.
-        # Check it exists in the flow graph and has real outgoing behavior
-        # (goes to dispatcher, meaning it's a handler body that writes
-        # a state and transitions, not a dead stub).
         block = flow_graph.get_block(target)
         if block is None:
             continue
         if block.nsucc < 1:
             continue
-        # Use the range start as the synthetic state.
-        # Skip if a concrete state already covers this exact value.
+        shadowed_ranges.append((int(row.lo), int(row.hi), target))
         synthetic_state = int(row.lo)
-        if synthetic_state in existing_states:
-            continue
-        shadowed_states.add(synthetic_state)
-        logger.info(
-            "DAG: shadowed range-backed handler blk[%d] "
-            "range=[0x%X..0x%X) not in DAG, injecting state 0x%X",
-            target,
-            int(row.lo),
-            int(row.hi),
-            synthetic_state,
-        )
+        if synthetic_state not in existing_states:
+            shadowed_states.add(synthetic_state)
+            logger.info(
+                "DAG: shadowed range-backed handler blk[%d] "
+                "range=[0x%X..0x%X) not in DAG, injecting state 0x%X",
+                target,
+                int(row.lo),
+                int(row.hi),
+                synthetic_state,
+            )
+
+    if not shadowed_ranges:
+        return shadowed_states
+
+    # Phase 2: scan handler path evaluations for exit states that land in
+    # shadowed ranges but are NOT claimed by a narrower exact family.
+    # These states become incoming-edge candidates for the range node.
+    exact_map = exact_state_to_handler or {}
+    paths_map = handler_paths_by_handler or {}
+    for _handler_serial, paths in paths_map.items():
+        for path in paths:
+            final = getattr(path, "final_state", None)
+            if final is None:
+                continue
+            normalized = int(final) & 0xFFFFFFFF
+            if normalized in existing_states:
+                continue
+            if normalized in exact_map:
+                continue
+            # Check if this state falls in any shadowed range.
+            for lo, hi, target in shadowed_ranges:
+                if lo <= normalized < hi:
+                    shadowed_states.add(normalized)
+                    logger.info(
+                        "DAG: shadowed range incoming edge: "
+                        "exit state 0x%X -> blk[%d] "
+                        "range=[0x%X..0x%X) (not exact-claimed)",
+                        normalized,
+                        target,
+                        lo,
+                        hi,
+                    )
+                    break
 
     return shadowed_states
 
@@ -2248,6 +2320,48 @@ def build_live_linearized_state_dag_from_graph(
         bst_node_blocks=bst_node_blocks,
         diagnostics=diagnostics,
     )
+
+    # Validate report rows: when a row's handler_serial disagrees with the
+    # IntervalDispatcher AND the exact handler is not a direct predecessor
+    # of the dispatcher target, the exact handler is stale (the BST
+    # intercepts the state at a higher level).  Replace with the dispatcher
+    # target so downstream DAG edges use the correct handler.
+    if dispatcher is not None:
+        bst_set = set(bst_node_blocks)
+        patched_rows: list[TransitionRow] = []
+        for row in report.rows:
+            if row.state_const is None:
+                patched_rows.append(row)
+                continue
+            disp_target = dispatcher.lookup(row.state_const)
+            if (
+                disp_target is not None
+                and int(disp_target) != row.handler_serial
+                and int(disp_target) != dispatcher_entry_serial
+                and int(disp_target) not in bst_set
+            ):
+                exact_blk = flow_graph.get_block(row.handler_serial)
+                adjacent = False
+                if exact_blk is not None:
+                    exact_succs = {
+                        int(s) for s in getattr(exact_blk, "succs", ())
+                    }
+                    adjacent = int(disp_target) in exact_succs
+                if not adjacent:
+                    logger.info(
+                        "DAG: row handler override: state 0x%X "
+                        "exact=blk[%d] dispatcher=blk[%d]",
+                        row.state_const & 0xFFFFFFFF,
+                        row.handler_serial,
+                        int(disp_target),
+                    )
+                    patched_rows.append(
+                        replace(row, handler_serial=int(disp_target))
+                    )
+                    continue
+            patched_rows.append(row)
+        if len(patched_rows) == len(report.rows):
+            report = replace(report, rows=tuple(patched_rows))
 
     handler_paths_by_handler: dict[int, tuple[HandlerPathResult, ...]] = {}
     conditional_transitions_by_handler: dict[
@@ -2383,12 +2497,19 @@ def build_live_linearized_state_dag_from_graph(
             # handler for every concrete state).  If such a target has a
             # non-trivial body, inject its range-start state so the
             # supplemental machinery materializes a DAG node for it.
+            exact_map = {
+                int(row.state_const) & 0xFFFFFFFF: row.handler_serial
+                for row in report_with_supplemental.rows
+                if row.state_const is not None
+            }
             shadowed = _discover_shadowed_range_handlers(
                 dag,
                 dispatcher,
                 set(report_with_supplemental.bst_node_blocks),
                 flow_graph,
                 existing_states,
+                handler_paths_by_handler=handler_paths_by_handler,
+                exact_state_to_handler=exact_map,
             )
             if shadowed:
                 pending_states = sorted(shadowed - existing_states)
@@ -2845,7 +2966,9 @@ def build_linearized_state_dag_from_graph(
         paths_by_handler[handler_serial] = (*paths, synthetic_path)
 
     shared_blocks = _compute_shared_blocks(paths_by_handler)
-    _, resolve_handler = _build_state_resolver(report, transition_result, dispatcher)
+    _, resolve_handler = _build_state_resolver(
+        report, transition_result, dispatcher, flow_graph=flow_graph,
+    )
 
     nodes: list[StateDagNode] = []
     primary_node_by_handler: dict[int, StateDagNode] = {}

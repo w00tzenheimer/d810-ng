@@ -939,14 +939,35 @@ def evaluate_handler_paths(
             ):
                 final_val = stk_map.get(state_var_stkoff)
                 if final_val is not None:
-                    results.append(
-                        HandlerPathResult(
-                            exit_block=curr_serial,
-                            final_state=final_val & 0xFFFFFFFF,
-                            state_writes=cur_writes,
-                            ordered_path=list(ordered_path),
+                    # If the current state equals incoming (self-loop default
+                    # write), the shared suffix may overwrite it.  Continue
+                    # into the successor instead of terminating early.
+                    if (
+                        incoming_state is not None
+                        and (final_val & 0xFFFFFFFF) == (incoming_state & 0xFFFFFFFF)
+                        and succ_serial not in path_visited
+                        and succ_serial not in bst_node_blocks
+                    ):
+                        new_ordered = ordered_path + [succ_serial]
+                        queue.append(
+                            (
+                                succ_serial,
+                                dict(reg_map),
+                                dict(stk_map),
+                                path_visited,
+                                list(cur_writes),
+                                new_ordered,
+                            )
                         )
-                    )
+                    else:
+                        results.append(
+                            HandlerPathResult(
+                                exit_block=curr_serial,
+                                final_state=final_val & 0xFFFFFFFF,
+                                state_writes=cur_writes,
+                                ordered_path=list(ordered_path),
+                            )
+                        )
             elif succ_serial in bst_node_blocks:
                 final_val = stk_map.get(state_var_stkoff)
                 if final_val is not None:
