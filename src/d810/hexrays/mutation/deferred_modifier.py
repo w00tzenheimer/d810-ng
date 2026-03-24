@@ -3555,6 +3555,14 @@ class DeferredGraphModifier:
 
         # ---- Phase 2: Validate suffix topology ONCE ----
         for idx, suffix_serial in enumerate(suffix_serials):
+            if suffix_serial >= mba.qty:
+                logger.warning(
+                    "private_terminal_suffix_group: suffix blk[%d] out of range "
+                    "(mba.qty=%d)",
+                    suffix_serial,
+                    mba.qty,
+                )
+                return False
             suffix_blk = mba.get_mblock(suffix_serial)
             if suffix_blk is None:
                 logger.warning(

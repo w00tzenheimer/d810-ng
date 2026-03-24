@@ -2056,7 +2056,10 @@ class StateWriteReconstructionStrategy:
                 builder=builder,
                 anchors=tuple(selected_anchors),
                 suffix_serials=suffix_serials,
+                projected_flow_graph=projected_flow_graph,
             )
+            if candidate_mod is None:
+                continue
 
             try:
                 patch_plan = compile_patch_plan(modifications + [candidate_mod], base_flow_graph)
@@ -2129,9 +2132,37 @@ class StateWriteReconstructionStrategy:
         builder: ModificationBuilder,
         anchors: tuple[int, ...],
         suffix_serials: tuple[int, ...],
+        projected_flow_graph=None,
     ):
         shared_entry = int(suffix_serials[0])
         stop_block = int(suffix_serials[-1])
+        # Validate: suffix must still be a linear ... -> 0-way chain
+        # in the projected flow graph.  Prior modifications (corridor
+        # redirects, PTS from earlier iterations) may have changed the
+        # suffix topology.
+        if projected_flow_graph is not None:
+            for idx, serial in enumerate(suffix_serials):
+                blk = projected_flow_graph.get_block(serial)
+                if blk is None:
+                    logger.info(
+                        "PTS gate: suffix blk[%d] not in projected graph, skipping",
+                        serial,
+                    )
+                    return None
+                if idx < len(suffix_serials) - 1:
+                    if blk.nsucc != 1:
+                        logger.info(
+                            "PTS gate: interior suffix blk[%d] nsucc=%d, skipping",
+                            serial, blk.nsucc,
+                        )
+                        return None
+                else:
+                    if blk.nsucc != 0:
+                        logger.info(
+                            "PTS gate: final suffix blk[%d] nsucc=%d, skipping",
+                            serial, blk.nsucc,
+                        )
+                        return None
         if len(anchors) == 1:
             return builder.private_terminal_suffix(
                 anchor_serial=int(anchors[0]),
