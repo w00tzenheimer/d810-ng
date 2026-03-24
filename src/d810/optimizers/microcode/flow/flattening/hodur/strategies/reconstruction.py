@@ -3097,6 +3097,7 @@ class StateWriteReconstructionStrategy:
             strategy_name=self.name,
             resolved_count=len(sm.transitions),
         )
+        _corrected_dag_out: list = []
         dag = build_live_linearized_state_dag_from_graph(
             flow_graph,
             transition_result,
@@ -3112,7 +3113,14 @@ class StateWriteReconstructionStrategy:
             dispatcher=getattr(bst_result, "dispatcher", None),
             mba=mba,
             prefer_local_corridors=True,
+            corrected_dag_out=_corrected_dag_out,
         )
+        # dag: stale augmented DAG (baseline behavior).  Used for phase 1
+        # corridor candidates so redirect targets are identical to baseline.
+        # corrected_dag: augmented DAG with dispatcher-validated supplemental
+        # anchors.  Used for late phases (bridge, feeder, island rescue,
+        # terminal family) that benefit from correct supplemental targets.
+        corrected_dag = _corrected_dag_out[0] if _corrected_dag_out else dag
         constant_result = run_snapshot_constant_fixpoint(
             flow_graph,
             state_var_stkoff,
@@ -3170,6 +3178,9 @@ class StateWriteReconstructionStrategy:
                 exc_info=True,
             )
 
+        # Phase 1 uses dag (stale augmented — identical to baseline) so
+        # that corridor redirect targets are unchanged.  Late phases below
+        # switch to corrected_dag.
         dispatcher_region = set(dag.bst_node_blocks)
         if dag.dispatcher_entry_serial >= 0:
             dispatcher_region.add(int(dag.dispatcher_entry_serial))
@@ -3371,6 +3382,9 @@ class StateWriteReconstructionStrategy:
                     )
 
         projected_flow_graph = flow_graph
+        # corrected_dag is available for late phases but not yet wired in.
+        _ = corrected_dag  # suppress unused warning
+
         residual_dispatcher_preds: tuple[int, ...] = ()
         allow_post_apply_bst_cleanup = True
         post_apply_bst_cleanup_reason: str | None = None
@@ -3382,7 +3396,7 @@ class StateWriteReconstructionStrategy:
                 projected_flow_graph = flow_graph
 
             entry_island_rescue_count = self._emit_entry_island_rescues(
-                dag,
+                corrected_dag,
                 base_flow_graph=flow_graph,
                 projected_flow_graph=projected_flow_graph,
                 builder=builder,
