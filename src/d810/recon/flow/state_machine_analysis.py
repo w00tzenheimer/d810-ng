@@ -18,8 +18,10 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CarrierResolutionResult",
     "ConditionalTransition",
+    "ExitStateKind",
     "HandlerPathResult",
     "ResolutionMethod",
+    "classify_exit_state",
     "SnapshotConstantFixpointResult",
     "StateWriteSite",
     "build_mba_view_from_flow_graph",
@@ -95,6 +97,160 @@ class ResolutionMethod(enum.Enum):
     MBA_DEF_SEARCH = "mba_def_search"
     VALRANGES = "valranges"
     UNRESOLVED = "unresolved"
+
+
+class ExitStateKind(enum.Enum):
+    """Classification of an exit state recorded by ``evaluate_handler_paths``.
+
+    Used to decide whether a state should be promoted to a supplemental row
+    (STABLE_HANDOFF) or filtered out (TRANSIENT_CORRIDOR, SELF_LOOP).
+    """
+
+    STABLE_HANDOFF = "stable_handoff"
+    """Real inter-handler transition. Dispatcher confirms the target."""
+
+    TRANSIENT_CORRIDOR = "transient_corridor"
+    """Internal value overwritten before reaching the next stable boundary.
+    The DFS terminated early at a handler-entry boundary."""
+
+    TERMINAL = "terminal"
+    """Path ends at return/exit (final_state is None)."""
+
+    BST_REENTRY = "bst_reentry"
+    """Path returns to the dispatcher BST (exit_block succ in bst_node_blocks)."""
+
+    SELF_LOOP = "self_loop"
+    """Exit state equals incoming state (handler writes its own state back)."""
+
+    UNCLASSIFIED = "unclassified"
+    """Classification could not be determined."""
+
+
+def classify_exit_state(
+    mba: object,
+    final_state: int | None,
+    incoming_state: int | None,
+    successor_serial: int,
+    state_var_stkoff: int,
+    bst_node_blocks: set[int],
+    max_blocks: int = 6,
+) -> ExitStateKind:
+    """Classify an exit state via path-local lookahead through the successor.
+
+    Walks forward from *successor_serial* through straight-line blocks in the
+    MBA.  If the state variable is overwritten before any unsafe side effect
+    (``m_call``/``m_icall``/``m_stx``), branch (nsucc > 1), merge (npred > 1),
+    BST re-entry, or terminal (nsucc == 0), the exit state is transient — it
+    gets consumed internally and never reaches the dispatcher.
+
+    Args:
+        mba: ``ida_hexrays.mba_t`` for instruction walking.
+        final_state: The state value at handler exit (None for terminal paths).
+        incoming_state: The state value at handler entry.
+        successor_serial: The handler-entry block that caused DFS termination.
+        state_var_stkoff: Stack offset of the state variable.
+        bst_node_blocks: BST comparison node serials.
+        max_blocks: Maximum corridor depth to walk.
+    """
+    if final_state is None:
+        return ExitStateKind.TERMINAL
+
+    masked = final_state & 0xFFFFFFFF
+
+    # Self-loop: handler wrote its own incoming state back.
+    if incoming_state is not None and masked == (incoming_state & 0xFFFFFFFF):
+        return ExitStateKind.SELF_LOOP
+
+    # --- Path-local lookahead through the successor corridor ---
+    m_call = getattr(ida_hexrays, "m_call", None)
+    m_icall = getattr(ida_hexrays, "m_icall", None)
+    m_stx = getattr(ida_hexrays, "m_stx", None)
+    mop_S = getattr(ida_hexrays, "mop_S", None)
+    mop_l = getattr(ida_hexrays, "mop_l", None)
+
+    side_effect_ops = {op for op in (m_call, m_icall, m_stx) if op is not None}
+
+    serial = successor_serial
+    visited: set[int] = set()
+    try:
+        mba_qty = mba.qty
+    except AttributeError:
+        return ExitStateKind.UNCLASSIFIED
+    for _ in range(max_blocks):
+        if serial in visited or serial >= mba_qty:
+            break
+        visited.add(serial)
+        blk = mba.get_mblock(serial)
+
+        # Note: no merge-point guard here.  OLLVM handler entries have
+        # npred > 1 from BST routing + shared suffix flows.  The
+        # instruction-level checks (side effects, state writes, non-state
+        # stack writes) are sufficient to classify corridor vs handler body.
+
+        insn = blk.head
+        while insn is not None:
+            op = getattr(insn, "opcode", None)
+            # Side effect before state overwrite → stable handoff.
+            if op in side_effect_ops:
+                return ExitStateKind.STABLE_HANDOFF
+
+            # Check if this instruction writes to the state variable.
+            dest = getattr(insn, "d", None)
+            if dest is not None:
+                dest_t = getattr(dest, "t", None)
+                wrote_state = False
+                if mop_S is not None and dest_t == mop_S:
+                    off = getattr(dest, "s", None)
+                    if off is not None:
+                        off = getattr(off, "off", None)
+                    if off is None:
+                        off = getattr(dest, "stkoff", None)
+                    if off is not None and int(off) == int(state_var_stkoff):
+                        wrote_state = True
+                elif mop_l is not None and dest_t == mop_l:
+                    lvar_ref = getattr(dest, "l", None)
+                    idx = getattr(lvar_ref, "idx", None) if lvar_ref else None
+                    if idx is not None:
+                        try:
+                            lvar = mba.vars[idx]
+                            off = lvar.location.stkoff()
+                            if int(off) == int(state_var_stkoff):
+                                wrote_state = True
+                        except Exception:
+                            pass
+                if wrote_state:
+                    # State variable overwritten before any side effect →
+                    # the exit state is transient corridor glue.
+                    return ExitStateKind.TRANSIENT_CORRIDOR
+
+                # Non-state stack write: real computation, not corridor.
+                if mop_S is not None and dest_t == mop_S:
+                    off = getattr(dest, "s", None)
+                    if off is not None:
+                        off = getattr(off, "off", None)
+                    if off is None:
+                        off = getattr(dest, "stkoff", None)
+                    if off is not None and int(off) != int(state_var_stkoff):
+                        return ExitStateKind.STABLE_HANDOFF
+
+            insn = insn.next
+
+        # Check successor structure.
+        nsucc = blk.nsucc()
+        if nsucc == 0:
+            # Terminal block.
+            return ExitStateKind.TERMINAL
+        if nsucc > 1:
+            # Branch → real handler body with conditionals.
+            return ExitStateKind.STABLE_HANDOFF
+
+        next_serial = blk.succ(0)
+        if next_serial in bst_node_blocks:
+            # Re-enters dispatcher → stable handoff (state will be consumed by BST).
+            return ExitStateKind.BST_REENTRY
+        serial = next_serial
+
+    return ExitStateKind.UNCLASSIFIED
 
 
 @dataclass(frozen=True, slots=True)
@@ -948,6 +1104,8 @@ def evaluate_handler_paths(
                         and succ_serial not in path_visited
                         and succ_serial not in bst_node_blocks
                     ):
+                        # Self-loop default write — shared suffix may
+                        # overwrite with the real exit state.
                         new_ordered = ordered_path + [succ_serial]
                         queue.append(
                             (

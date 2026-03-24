@@ -12,7 +12,9 @@ from d810.core.typing import Callable, Mapping
 from d810.recon.flow.interval_map import IntervalDispatcher
 from d810.recon.flow.state_machine_analysis import (
     ConditionalTransition,
+    ExitStateKind,
     HandlerPathResult,
+    classify_exit_state,
     detect_conditional_transitions,
     evaluate_handler_paths,
 )
@@ -2119,34 +2121,147 @@ def _discover_supplemental_states(
     conds_by_handler: Mapping[int, tuple[ConditionalTransition, ...]],
     dag: LinearizedStateDag,
     flow_graph: FlowGraph,
+    dispatcher: "IntervalDispatcher | None" = None,
+    mba: object | None = None,
+    state_var_stkoff: int | None = None,
 ) -> tuple[set[int], dict[int, set[int]]]:
     existing_states = {
         row.state_const & 0xFFFFFFFF
         for row in report.rows
         if row.state_const is not None
     }
+    exact_state_to_handler = {
+        row.state_const: row.handler_serial
+        for row in report.rows
+        if row.state_const is not None
+    }
+    handler_entry_blocks = {row.handler_serial for row in report.rows}
+    bst_block_set = set(report.bst_node_blocks)
+    # Map handler serial → incoming state for classification.
+    handler_incoming_state = {
+        row.handler_serial: row.state_const
+        for row in report.rows
+        if row.state_const is not None
+    }
+
     supplemental_states: set[int] = set()
     collapsed_target_anchors: dict[int, set[int]] = {}
+    # Denylist: states whose handler entry is a transient corridor
+    # (state var overwritten before side effects in the entry's body).
+    # Built by scanning handler entries independently of the DFS, so it
+    # works even when DFS continuation consumes transient exits early.
+    transient_entry_blocks: set[int] = set()
+    if mba is not None and state_var_stkoff is not None:
+        for entry in handler_entry_blocks:
+            if entry in bst_block_set:
+                continue
+            kind = classify_exit_state(
+                mba=mba,
+                final_state=1,  # dummy non-None to skip TERMINAL check
+                incoming_state=None,
+                successor_serial=entry,
+                state_var_stkoff=state_var_stkoff,
+                bst_node_blocks=bst_block_set,
+            )
+            if kind == ExitStateKind.TRANSIENT_CORRIDOR:
+                transient_entry_blocks.add(entry)
+    transient_states: set[int] = set()
+    if transient_entry_blocks and dispatcher is not None:
+        # A state value is transient if the stale exact-match handler
+        # is a transient corridor entry.  Build the set by scanning
+        # all known exact-match state→handler mappings.
+        for row in report.rows:
+            if row.state_const is None:
+                continue
+            if row.handler_serial in transient_entry_blocks:
+                transient_states.add(row.state_const & 0xFFFFFFFF)
+        # Also check transition targets whose dispatcher resolution
+        # points to a transient entry.
+        for transition in transition_result.transitions:
+            sv = transition.to_state & 0xFFFFFFFF
+            if sv in existing_states:
+                continue
+            disp = dispatcher.lookup(sv)
+            if disp is not None and int(disp) in transient_entry_blocks:
+                transient_states.add(sv)
+    if transient_entry_blocks:
+        logger.info(
+            "transient corridor entries: %d blocks: %s",
+            len(transient_entry_blocks),
+            ", ".join("blk[%d]" % b for b in sorted(transient_entry_blocks)),
+        )
+    if transient_states:
+        logger.info(
+            "transient denylist: %d states: %s",
+            len(transient_states),
+            ", ".join("0x%X" % s for s in sorted(transient_states)),
+        )
 
-    for transition in transition_result.transitions:
-        state_value = transition.to_state & 0xFFFFFFFF
-        if state_value not in existing_states:
-            supplemental_states.add(state_value)
-
-    for paths in paths_by_handler.values():
+    for handler_serial, paths in paths_by_handler.items():
+        incoming = handler_incoming_state.get(handler_serial)
         for path in paths:
             if path.final_state is None:
                 continue
             state_value = path.final_state & 0xFFFFFFFF
             if state_value not in existing_states:
+                # Identify the successor to classify.  Prefer handler
+                # entry blocks (the DFS terminated there), but fall back
+                # to any non-BST, non-visited successor.
+                exit_blk = flow_graph.get_block(path.exit_block)
+                path_set = set(path.ordered_path) if path.ordered_path else set()
+                succ_serial: int | None = None
+                if exit_blk is not None:
+                    for s in exit_blk.succs:
+                        if s in handler_entry_blocks and s not in path_set:
+                            succ_serial = s
+                            break
+                    if succ_serial is None:
+                        for s in exit_blk.succs:
+                            if s not in bst_block_set and s not in path_set:
+                                succ_serial = s
+                                break
+                kind = ExitStateKind.UNCLASSIFIED
+                if mba is not None and state_var_stkoff is not None and succ_serial is not None:
+                    kind = classify_exit_state(
+                        mba=mba,
+                        final_state=path.final_state,
+                        incoming_state=incoming,
+                        successor_serial=succ_serial,
+                        state_var_stkoff=state_var_stkoff,
+                        bst_node_blocks=bst_block_set,
+                    )
+                logger.info(
+                    "supplemental classification: state 0x%X from handler blk[%d] "
+                    "exit_block=%d succ=%s → %s",
+                    state_value,
+                    handler_serial,
+                    path.exit_block,
+                    "blk[%d]" % succ_serial if succ_serial is not None else "None",
+                    kind.value,
+                )
+                if kind == ExitStateKind.TRANSIENT_CORRIDOR or state_value in transient_states:
+                    continue  # Do not promote transient states.
                 supplemental_states.add(state_value)
+
+    if transient_states:
+        logger.info(
+            "transient denylist: %d states: %s",
+            len(transient_states),
+            ", ".join("0x%X" % s for s in sorted(transient_states)),
+        )
+
+    # --- Phase 2: promote from transitions (filtered by denylist) ---
+    for transition in transition_result.transitions:
+        state_value = transition.to_state & 0xFFFFFFFF
+        if state_value not in existing_states and state_value not in transient_states:
+            supplemental_states.add(state_value)
 
     for conds in conds_by_handler.values():
         for cond in conds:
             if cond.is_terminal_no_write:
                 continue
             state_value = cond.target_state & 0xFFFFFFFF
-            if state_value not in existing_states:
+            if state_value not in existing_states and state_value not in transient_states:
                 supplemental_states.add(state_value)
 
     for edge in dag.edges:
@@ -2154,6 +2269,8 @@ def _discover_supplemental_states(
             continue
         state_value = edge.target_state & 0xFFFFFFFF
         if state_value in existing_states:
+            continue
+        if state_value in transient_states:
             continue
         if edge.target_key is not None and edge.target_key.state_const == state_value:
             continue
@@ -2299,8 +2416,16 @@ def build_live_linearized_state_dag_from_graph(
     dispatcher: IntervalDispatcher | None = None,
     mba: object | None = None,
     prefer_local_corridors: bool = False,
+    corrected_dag_out: list | None = None,
 ) -> LinearizedStateDag:
     """Build a live DAG from graph-backed analysis inputs.
+
+    When *corrected_dag_out* is a list, a second DAG is built after the
+    supplemental loop with dispatcher-validated supplemental anchors and
+    appended to it.  The returned DAG uses the original (possibly stale)
+    supplemental anchors — callers can use it for phase-1 corridor emission
+    (preserving baseline redirect targets) and switch to the corrected DAG
+    for late phases only.
 
     This is the shared semantic-graph builder for both recon dumping and
     strategy planning. When ``mba`` and ``state_var_stkoff`` are available,
@@ -2458,6 +2583,79 @@ def build_live_linearized_state_dag_from_graph(
         if conds:
             conditional_transitions_by_handler[row.handler_serial] = conds
 
+    def _maybe_build_corrected_dag(
+        rpt: DispatcherTransitionReport,
+    ) -> None:
+        """If corrected_dag_out is requested, rebuild DAG with dispatcher-
+        validated supplemental anchors and append to the output list."""
+        if corrected_dag_out is None or dispatcher is None:
+            logger.info(
+                "corrected_dag: skipped (corrected_dag_out=%s dispatcher=%s)",
+                "None" if corrected_dag_out is None else "list",
+                "None" if dispatcher is None else type(dispatcher).__name__,
+            )
+            return
+        bst_set = set(rpt.bst_node_blocks)
+        n_corrections = 0
+        corrected_rows: list[TransitionRow] = []
+        for row in rpt.rows:
+            if row.state_const is None:
+                corrected_rows.append(row)
+                continue
+            disp_target = dispatcher.lookup(row.state_const)
+            if (
+                disp_target is not None
+                and int(disp_target) != row.handler_serial
+                and int(disp_target) != rpt.dispatcher_entry_serial
+                and int(disp_target) not in bst_set
+            ):
+                exact_blk = flow_graph.get_block(row.handler_serial)
+                adjacent = False
+                if exact_blk is not None:
+                    exact_succs = {
+                        int(s) for s in getattr(exact_blk, "succs", ())
+                    }
+                    adjacent = int(disp_target) in exact_succs
+                if not adjacent:
+                    corrected_rows.append(
+                        replace(row, handler_serial=int(disp_target))
+                    )
+                    n_corrections += 1
+                    continue
+            corrected_rows.append(row)
+        logger.info(
+            "corrected_dag: checked %d rows, %d corrections",
+            len(rpt.rows), n_corrections,
+        )
+        if len(corrected_rows) != len(rpt.rows):
+            return  # safety — row count mismatch
+        if n_corrections == 0:
+            return
+        corrected_rpt = DispatcherTransitionReport(
+            dispatcher_entry_serial=rpt.dispatcher_entry_serial,
+            state_var_stkoff=rpt.state_var_stkoff,
+            state_var_lvar_idx=rpt.state_var_lvar_idx,
+            pre_header_serial=rpt.pre_header_serial,
+            initial_state=rpt.initial_state,
+            handler_state_map=rpt.handler_state_map,
+            handler_range_map=rpt.handler_range_map,
+            bst_node_blocks=rpt.bst_node_blocks,
+            rows=tuple(corrected_rows),
+            summary=_summarize_rows(tuple(corrected_rows)),
+            diagnostics=rpt.diagnostics,
+        )
+        corrected_dag_out.append(
+            build_linearized_state_dag_from_graph(
+                flow_graph,
+                corrected_rpt,
+                transition_result,
+                dispatcher=dispatcher,
+                handler_paths_by_handler=handler_paths_by_handler,
+                conditional_transitions_by_handler=conditional_transitions_by_handler,
+                prefer_local_corridors=prefer_local_corridors,
+            )
+        )
+
     report_with_supplemental = report
     dag = build_linearized_state_dag_from_graph(
         flow_graph,
@@ -2468,7 +2666,6 @@ def build_live_linearized_state_dag_from_graph(
         conditional_transitions_by_handler=conditional_transitions_by_handler,
         prefer_local_corridors=prefer_local_corridors,
     )
-
     while True:
         existing_states = {
             row.state_const & 0xFFFFFFFF
@@ -2488,6 +2685,9 @@ def build_live_linearized_state_dag_from_graph(
             conditional_transitions_by_handler,
             dag,
             flow_graph,
+            dispatcher=dispatcher,
+            mba=mba,
+            state_var_stkoff=state_var_stkoff,
         )
         pending_states = sorted(state for state in supplemental_states if state not in existing_states)
         if not pending_states:
@@ -2514,6 +2714,7 @@ def build_live_linearized_state_dag_from_graph(
             if shadowed:
                 pending_states = sorted(shadowed - existing_states)
             if not pending_states:
+                _maybe_build_corrected_dag(report_with_supplemental)
                 return dag
 
         supplemental_rows: list[TransitionRow] = []
@@ -2880,6 +3081,7 @@ def build_live_linearized_state_dag_from_graph(
             )
 
         if not supplemental_rows:
+            _maybe_build_corrected_dag(report_with_supplemental)
             return dag
 
         rows = tuple(
