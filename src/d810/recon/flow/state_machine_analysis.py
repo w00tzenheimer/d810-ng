@@ -1117,6 +1117,28 @@ def evaluate_handler_paths(
                                 new_ordered,
                             )
                         )
+                    elif (
+                        succ_serial not in path_visited
+                        and succ_serial not in bst_node_blocks
+                        and classify_exit_state(
+                            mba, final_val, incoming_state,
+                            succ_serial, state_var_stkoff,
+                            bst_node_blocks,
+                        ) == ExitStateKind.TRANSIENT_CORRIDOR
+                    ):
+                        # Transient corridor: successor overwrites state
+                        # before any side effect.  Continue DFS.
+                        new_ordered = ordered_path + [succ_serial]
+                        queue.append(
+                            (
+                                succ_serial,
+                                dict(reg_map),
+                                dict(stk_map),
+                                path_visited,
+                                list(cur_writes),
+                                new_ordered,
+                            )
+                        )
                     else:
                         results.append(
                             HandlerPathResult(
