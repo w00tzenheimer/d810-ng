@@ -307,6 +307,26 @@ class IDAIRTranslator:
             self._last_lowering_phase = "lowering"
             return 0
 
+        # Safety gate: tolerate_verify_failure is only valid for instruction-local
+        # NOP cleanup.  Reject any plan that contains block-creating, edge-changing,
+        # or redirect steps so this mode cannot silently bypass the verifier for
+        # structural mutations.
+        if self.tolerate_verify_failure:
+            _NOP_ONLY_ALLOWED = (PatchNopInstructions, PatchZeroStateWrite)
+            disallowed = [
+                type(s).__name__
+                for s in patch_plan.steps
+                if not isinstance(s, _NOP_ONLY_ALLOWED)
+            ]
+            if disallowed:
+                logger.error(
+                    "tolerate_verify_failure=True but plan contains non-NOP steps "
+                    "(%s); rejecting to prevent verifier bypass on structural edits",
+                    ", ".join(disallowed),
+                )
+                self._last_lowering_phase = "lowering"
+                return 0
+
         modifier = deferred_modifier.DeferredGraphModifier(mba)
 
         # Build effective post-apply hook: caller hook + contract check

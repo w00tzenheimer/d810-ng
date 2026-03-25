@@ -28,6 +28,7 @@ from d810.cfg.graph_modification import (
 from d810.cfg.plan import (
     PatchDuplicateBlock,
     PatchInsertBlock,
+    PatchNopInstructions,
     PatchPlan,
     PatchRedirectGoto,
     compile_patch_plan,
@@ -893,3 +894,80 @@ class TestIDAIntegration:
         assert len(remove_calls) == 1
         assert remove_calls[0] == ("remove_edge", 45, 2, "remove edge 45->2")
         assert count > 0
+
+
+class TestTolerateVerifyFailureGuard:
+    """Safety regressions for the tolerate_verify_failure NOP-only gate.
+
+    When tolerate_verify_failure=True:
+    - Plans containing only PatchNopInstructions must pass the step-type guard and
+      reach the modifier (the guard must NOT reject them).
+    - Plans containing any structural step (redirect, duplicate, insert, etc.) must
+      be rejected immediately by lower() — the guard must return 0 before the modifier
+      is even created.
+
+    These tests verify the guard stays active regardless of other refactoring.
+    Ticket: d81-3hdl (ExecutionPolicy redesign)
+    """
+
+    def test_cfg_edit_rejected_when_tolerate_set(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """lower() must return 0 for any non-NOP step when tolerate_verify_failure=True.
+
+        This ensures the escape hatch cannot be accidentally reused for structural
+        mutations (goto redirects, block creation, edge rewrites).
+        """
+        created: list = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module("d810.hexrays.mutation.deferred_modifier")
+        monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
+
+        backend = IDAIRTranslator()
+        backend.tolerate_verify_failure = True
+
+        # PatchRedirectGoto is a structural CFG edit — must be rejected.
+        plan = compile_patch_plan(
+            [RedirectGoto(from_serial=10, old_target=20, new_target=30)]
+        )
+        count = backend.lower(plan, object())
+
+        assert count == 0, "CFG-edit plan must be rejected when tolerate_verify_failure=True"
+        assert created == [], "Modifier must not be created when guard rejects the plan"
+
+    def test_nop_only_plan_passes_guard(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """lower() must not reject a NOP-only plan when tolerate_verify_failure=True.
+
+        The step-type guard must pass and reach the modifier, confirming the guard
+        does not over-reject legitimate cleanup plans.
+        """
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module("d810.hexrays.mutation.deferred_modifier")
+        monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
+
+        backend = IDAIRTranslator()
+        backend.tolerate_verify_failure = True
+
+        # PatchNopInstructions is the only allowed step type — must pass the guard.
+        nop_plan = PatchPlan(steps=(PatchNopInstructions(block_serial=7, insn_eas=(0xDEAD,)),))
+        backend.lower(nop_plan, object())
+
+        assert len(created) == 1, (
+            "NOP-only plan must not be rejected by the step-type guard; "
+            "modifier should have been created"
+        )
