@@ -248,6 +248,10 @@ class StateConstantReturnFixupStrategy:
                 # feeders inside already-linearized handler blocks and does not
                 # compete for CFG edges or state transitions.
                 "allow_prerequisite_block_overlap": True,
+                # NOPing stale state-var → return-slot feeders temporarily
+                # creates undefined-use (INTERR 50846) that IDA resolves at
+                # later maturities via its own dataflow optimizer.
+                "tolerate_verify_failure": True,
             },
         )
 

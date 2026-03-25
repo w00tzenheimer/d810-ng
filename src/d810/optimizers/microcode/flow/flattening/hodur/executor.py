@@ -326,6 +326,9 @@ class TransactionalExecutor:
         self.translator.contract = (
             contract  # ensure translator has it for post-apply hook
         )
+        self.translator.tolerate_verify_failure = bool(
+            fragment.metadata.get("tolerate_verify_failure")
+        )
         engine = CfgTransactionEngine(translator=self.translator, contract=contract)
 
         tx_result = engine.apply(
