@@ -220,6 +220,7 @@ class IDAIRTranslator:
         self.allow_legacy_block_creation = allow_legacy_block_creation
         self._contract = contract
         self._last_lowering_phase: str | None = None
+        self.tolerate_verify_failure: bool = False
 
     @property
     def contract(self) -> IDACfgContract | None:
@@ -332,14 +333,17 @@ class IDAIRTranslator:
         for step in patch_plan.steps:
             self._queue_patch_step(modifier, step)
 
-        # Apply all queued modifications with snapshot rollback enabled
+        # Apply all queued modifications with snapshot rollback enabled.
+        # When tolerate_verify_failure is set, disable rollback so the NOPs
+        # survive even if IDA's GLBOPT1 verifier complains (INTERR 50846).
+        enable_rollback = not self.tolerate_verify_failure
         result_count = modifier.apply(
             run_optimize_local=True,
             run_deep_cleaning=False,
-            verify_each_mod=verify_each_mod,
-            rollback_on_verify_failure=verify_each_mod,
+            verify_each_mod=verify_each_mod and enable_rollback,
+            rollback_on_verify_failure=verify_each_mod and enable_rollback,
             continue_on_verify_failure=verify_each_mod,
-            enable_snapshot_rollback=True,
+            enable_snapshot_rollback=enable_rollback,
             post_apply_hook=effective_hook,
         )
 
@@ -347,12 +351,19 @@ class IDAIRTranslator:
         # to stop by returning 0. A positive result with verify_failed=True
         # means rollback also failed - the MBA may be corrupted.
         if modifier.verify_failed:
-            logger.warning(
-                "DeferredGraphModifier.verify_failed is set after apply; "
-                "returning 0 to prevent pipeline from treating changes as successful"
-            )
-            self._last_lowering_phase = "native_verify"
-            return 0
+            if self.tolerate_verify_failure and result_count > 0:
+                logger.info(
+                    "DeferredGraphModifier.verify_failed is set after apply "
+                    "but tolerate_verify_failure=True; returning %d applied modifications",
+                    result_count,
+                )
+            else:
+                logger.warning(
+                    "DeferredGraphModifier.verify_failed is set after apply; "
+                    "returning 0 to prevent pipeline from treating changes as successful"
+                )
+                self._last_lowering_phase = "native_verify"
+                return 0
 
         return result_count
 

@@ -118,6 +118,7 @@ __all__ = [
 ALL_STRATEGIES: list[type] = [
     StateWriteReconstructionStrategy,
     HiddenHandlerClosureStrategy,
+    StateConstantReturnFixupStrategy,
     DeadStateVariableEliminationStrategy,
     # DISCRIMINATOR TEST: topo disabled
     # TopologicalSortStrategy,
