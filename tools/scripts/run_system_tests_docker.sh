@@ -246,9 +246,12 @@ SETUP_CMD="export $ENV_IDA $ENV_PYTHON && $IDA_VENV_PIP install -e .[dev] -q && 
 
 run_bash() {
   local inner="$1"
+  local extra_env=""
+  [ -n "${D810_BISECT_SKIP:-}" ] && extra_env="-e D810_BISECT_SKIP=$D810_BISECT_SKIP"
   docker run --rm \
     --memory "$DOCKER_MEMORY" \
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
+    $extra_env \
     $VOL_WORK \
     $VOL_LOGS \
     -w /work \
