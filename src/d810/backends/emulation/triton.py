@@ -18,8 +18,8 @@ except ImportError:
 class TritonEmulator:
     """Symbolic execution backend implemented with Triton."""
 
-    def __init__(self, arch: Architecture = Architecture.X86_64):
-        self.arch = arch
+    def __init__(self, arch: Architecture | str = Architecture.X86_64):
+        self.arch = self._coerce_arch(arch)
         self._triton: TritonContext | None = None
         self._init_triton()
 
@@ -65,6 +65,10 @@ class TritonEmulator:
         assert self._triton is not None
 
         try:
+            literal = expr_ast.evaluate()
+            if literal is not None:
+                return [int(literal)]
+
             values: list[int] = []
             ast_ctx = self._triton.getAstContext()
 
@@ -114,3 +118,17 @@ class TritonEmulator:
             logger.warning("Failed to initialize Triton: %s", e)
             self._triton = None
 
+    @staticmethod
+    def _coerce_arch(arch: Architecture | str) -> Architecture:
+        if isinstance(arch, Architecture):
+            return arch
+        if isinstance(arch, str):
+            arch_map = {
+                "x86": Architecture.X86,
+                "x86_64": Architecture.X86_64,
+                "x64": Architecture.X86_64,
+                "arm64": Architecture.ARM64,
+                "aarch64": Architecture.ARM64,
+            }
+            return arch_map.get(arch.lower(), Architecture.X86_64)
+        return Architecture.X86_64

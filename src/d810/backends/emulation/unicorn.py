@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import struct
 
-from d810.backends.emulation.common import Architecture, EmulationState, StateTransition, logger
+from d810.backends.emulation.common import (
+    Architecture,
+    BoundaryKind,
+    CorridorEvent,
+    CorridorEventKind,
+    CorridorTraceResult,
+    EmulationState,
+    StateTransition,
+    logger,
+)
 
 try:
     from unicorn import (
@@ -100,6 +109,7 @@ class UnicornEmulator:
 
         try:
             assert self._uc is not None
+            self._map_if_needed(start_addr, len(code))
             self._uc.mem_write(start_addr, code)
 
             if initial_regs:
@@ -189,6 +199,117 @@ class UnicornEmulator:
                     pass
 
         return transitions
+
+    def trace_corridor(
+        self,
+        code: bytes,
+        *,
+        code_base: int = CODE_BASE,
+        entry_addr: int = CODE_BASE,
+        state_var_offset: int | None = None,
+        initial_regs: dict[str, int] | None = None,
+        initial_mem: dict[int, bytes] | None = None,
+        initial_stack_values: dict[int, int] | None = None,
+        max_instructions: int | None = None,
+        watched_stack_offsets: tuple[int, ...] = (),
+    ) -> CorridorTraceResult:
+        """Trace a short corridor and emit coarse execution events.
+
+        This is intentionally lightweight and fail-open. It is suitable for
+        optional boundary classification but should not drive hard rewrites.
+        """
+        if not self.available:
+            return CorridorTraceResult(stopped=True, stop_reason="Unicorn not available")
+
+        max_ins = max_instructions or self.MAX_INSTRUCTIONS
+        self._instruction_count = 0
+        events: list[CorridorEvent] = []
+        state_write_seen = False
+
+        try:
+            assert self._uc is not None
+            self._map_if_needed(code_base, len(code))
+            self._uc.mem_write(code_base, code)
+
+            if initial_regs:
+                for reg_name, value in initial_regs.items():
+                    reg_id = self._reg_name_to_id(reg_name)
+                    if reg_id is not None:
+                        self._uc.reg_write(reg_id, value)
+
+            sp = None
+            if self.arch == Architecture.X86_64:
+                sp = self._uc.reg_read(UC_X86_REG_RSP)
+            elif self.arch == Architecture.X86:
+                sp = self._uc.reg_read(UC_X86_REG_ESP)
+            state_addr = sp + state_var_offset if sp is not None and state_var_offset is not None else None
+            watched_addrs = {
+                sp + offset: offset for offset in watched_stack_offsets
+            } if sp is not None else {}
+
+            if initial_mem:
+                for addr, data in initial_mem.items():
+                    self._map_if_needed(addr, len(data))
+                    self._uc.mem_write(addr, data)
+            if initial_stack_values and sp is not None:
+                pack_fmt = "<Q" if self.arch == Architecture.X86_64 else "<I"
+                pack_size = 8 if self.arch == Architecture.X86_64 else 4
+                for offset, value in initial_stack_values.items():
+                    addr = sp + offset
+                    data = struct.pack(pack_fmt, value)
+                    self._map_if_needed(addr, pack_size)
+                    self._uc.mem_write(addr, data)
+
+            def hook_code(uc, address, size, user_data):
+                nonlocal events
+                self._instruction_count += 1
+                events.append(CorridorEvent(CorridorEventKind.INSN, address, detail=f"size={size}"))
+                if self._instruction_count >= max_ins:
+                    events.append(CorridorEvent(CorridorEventKind.TERMINAL, address, detail="max_instructions"))
+                    uc.emu_stop()
+
+            def hook_mem_access(uc, access, address, size, value, user_data):
+                nonlocal state_write_seen, events
+                is_write = access == UC_MEM_WRITE
+                if not is_write:
+                    return
+                if state_addr is not None and address == state_addr:
+                    state_write_seen = True
+                    events.append(CorridorEvent(CorridorEventKind.STATE_WRITE, address, detail=f"size={size}", value=value))
+                elif address in watched_addrs:
+                    events.append(
+                        CorridorEvent(
+                            CorridorEventKind.WATCHED_STACK_WRITE,
+                            address,
+                            detail=f"stkoff={watched_addrs[address]} size={size}",
+                            value=value,
+                        )
+                    )
+
+            hook_code_handle = self._uc.hook_add(UC_HOOK_CODE, hook_code)
+            hook_mem_handle = self._uc.hook_add(
+                UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, hook_mem_access
+            )
+
+            end_addr = code_base + len(code)
+            self._uc.emu_start(entry_addr, end_addr, timeout=self.TIMEOUT_MS * 1000)
+            self._uc.hook_del(hook_code_handle)
+            self._uc.hook_del(hook_mem_handle)
+            return CorridorTraceResult(
+                events=tuple(events),
+                stopped=True,
+                stop_reason="completed",
+                state_write_seen=state_write_seen,
+            )
+        except Exception as e:
+            logger.debug("Corridor trace error: %s", e)
+            events.append(CorridorEvent(CorridorEventKind.ERROR, entry_addr, detail=str(e)))
+            return CorridorTraceResult(
+                events=tuple(events),
+                stopped=True,
+                stop_reason=str(e),
+                state_write_seen=state_write_seen,
+            )
 
     def _init_unicorn(self) -> None:
         if not UNICORN_AVAILABLE:
@@ -329,4 +450,3 @@ class UnicornEmulator:
                 self._uc.mem_map(start, end - start)
             except Exception:
                 pass
-
