@@ -2532,8 +2532,24 @@ class DeferredGraphModifier:
             return None
         return self._serial_remap.get(serial, serial)
 
+    # BISECT denylist: (block_serial, new_target) pairs to skip.
+    # Set via environment: D810_BISECT_SKIP="173:111,76:158"
+    _bisect_skip: set[tuple[int, int]] = field(default_factory=set, init=False)
+
     def _apply_single(self, mod: GraphModification) -> bool:
         """Apply a single modification. Returns True on success."""
+        # Bisect skip gate.
+        if not self._bisect_skip and os.environ.get("D810_BISECT_SKIP"):
+            for pair in os.environ["D810_BISECT_SKIP"].split(","):
+                parts = pair.strip().split(":")
+                if len(parts) == 2:
+                    self._bisect_skip.add((int(parts[0]), int(parts[1])))
+        if self._bisect_skip and (mod.block_serial, mod.new_target) in self._bisect_skip:
+            logger.info(
+                "BISECT: skipping mod block_serial=%d new_target=%d",
+                mod.block_serial, mod.new_target,
+            )
+            return True  # Pretend success to not abort batch.
         # Resolve serials through drift remap (e.g., a prior
         # BLOCK_DUPLICATE_AND_REDIRECT consumed the expected serial).
         if self._serial_remap:

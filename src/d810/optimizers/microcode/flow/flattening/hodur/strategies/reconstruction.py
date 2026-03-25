@@ -3754,18 +3754,42 @@ class StateWriteReconstructionStrategy:
                             if edge.kind == SemanticEdgeKind.UNKNOWN
                             else "1-way"
                         )
-                        feeder_mods.append(
-                            builder.goto_redirect(
-                                source_block=src_serial,
-                                target_block=target_entry,
-                                old_target=old_target,
+                        # Pred-scoped lowering: if the source block has
+                        # multiple predecessors, a whole-block goto_redirect
+                        # would over-merge families.  Use duplicate_and_redirect
+                        # to scope the redirect to the edge's predecessor only.
+                        proj_src = projected_flow_graph.get_block(src_serial)
+                        src_npred = len(proj_src.preds) if proj_src is not None else 0
+                        if src_npred > 1 and edge.ordered_path:
+                            # Use the last block in the ordered path before
+                            # the source as the predecessor.
+                            edge_pred = (
+                                int(edge.ordered_path[-2])
+                                if len(edge.ordered_path) >= 2
+                                else int(edge.ordered_path[-1])
                             )
-                        )
+                            feeder_mods.append(
+                                builder.duplicate_and_redirect(
+                                    source_block=src_serial,
+                                    per_pred_targets=[
+                                        (edge_pred, target_entry),
+                                    ],
+                                )
+                            )
+                            _feeder_tag += " pred-scoped"
+                        else:
+                            feeder_mods.append(
+                                builder.goto_redirect(
+                                    source_block=src_serial,
+                                    target_block=target_entry,
+                                    old_target=old_target,
+                                )
+                            )
                         claimed_sources.add(src_serial)
                         claimed_targets.add(target_entry)
                         logger.info(
-                            "RECON BRIDGE: feeder blk[%d] -> blk[%d] (%s)",
-                            src_serial, target_entry, _feeder_tag,
+                            "RECON BRIDGE: feeder blk[%d] -> blk[%d] (%s npred=%d)",
+                            src_serial, target_entry, _feeder_tag, src_npred,
                         )
                 elif src_block.nsucc == 2:
                     for arm in range(2):
