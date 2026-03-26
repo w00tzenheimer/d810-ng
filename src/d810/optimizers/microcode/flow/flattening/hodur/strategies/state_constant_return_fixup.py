@@ -251,7 +251,7 @@ class StateConstantReturnFixupStrategy:
                 # NOPing stale state-var → return-slot feeders temporarily
                 # creates undefined-use (INTERR 50846) that IDA resolves at
                 # later maturities via its own dataflow optimizer.
-                "tolerate_verify_failure": True,
+                "execution_policy": "nop_cleanup_relaxed",
             },
         )
 

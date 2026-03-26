@@ -15,8 +15,22 @@ allocation paths before mutating the backend state.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from enum import Enum
 
 from d810.core.typing import Union
+
+
+class ExecutionPolicy(str, Enum):
+    """Controls verification behaviour during plan lowering.
+
+    STRICT: Default. Full verification, rollback on failure.
+    NOP_CLEANUP_RELAXED: Only NOP-kind steps allowed. Tolerates transient
+        verify failure (INTERR 50846) without rollback. Used exclusively by
+        StateConstantReturnFixupStrategy for stale feeder cleanup.
+    """
+
+    STRICT = "strict"
+    NOP_CLEANUP_RELAXED = "nop_cleanup_relaxed"
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
@@ -385,6 +399,7 @@ class PatchPlan:
     new_blocks: tuple[PatchBlockSpec, ...] = ()
     relocation_map: PatchRelocationMap = field(default_factory=PatchRelocationMap)
     planner_modifications: tuple[GraphModification, ...] = ()
+    execution_policy: ExecutionPolicy = ExecutionPolicy.STRICT
 
     @property
     def concrete_operations(self) -> tuple[PatchOperation, ...]:
@@ -1083,6 +1098,7 @@ def _finalize_step(
 def compile_patch_plan(
     modifications: list[GraphModification],
     cfg: FlowGraph | None = None,
+    execution_policy: ExecutionPolicy = ExecutionPolicy.STRICT,
 ) -> PatchPlan:
     """Compile planner modifications into ordered PatchPlan steps."""
     allocator = _VirtualIdAllocator()
@@ -1412,6 +1428,7 @@ def compile_patch_plan(
         new_blocks=symbolic_specs,
         relocation_map=relocation_map,
         planner_modifications=tuple(modifications),
+        execution_policy=execution_policy,
     )
 
 
@@ -1423,6 +1440,7 @@ def ensure_patch_plan(lowering_input: LoweringInput) -> PatchPlan:
 
 
 __all__ = [
+    "ExecutionPolicy",
     "VirtualBlockId",
     "PatchBlockRef",
     "PatchEdgeRef",
