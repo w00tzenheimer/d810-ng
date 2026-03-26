@@ -18,8 +18,12 @@ from dataclasses import dataclass, replace
 import ida_hexrays
 
 from d810.cfg.flow.edit_simulator import project_post_state
-from d810.cfg.graph_modification import NopInstructions
-from d810.cfg.plan import compile_patch_plan
+from d810.cfg.graph_modification import (
+    NopInstructions,
+    PrivateTerminalSuffix,
+    PrivateTerminalSuffixGroup,
+)
+from d810.cfg.plan import compile_patch_plan, is_block_creating_modification
 from d810.core import logging
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
@@ -4452,6 +4456,27 @@ class StateWriteReconstructionStrategy:
                 "Diagnostic DAG/modifications snapshot failed (non-critical)",
                 exc_info=True,
             )
+
+        # Split fragment when block-creating ops and PTS share a batch.
+        # Block-creating ops (duplicate_and_redirect) shift serials, making
+        # PTS suffix serials stale by the time PTS executes.  Splitting lets
+        # PTS run against the settled graph after block creators are applied.
+        _PTS_TYPES = (PrivateTerminalSuffix, PrivateTerminalSuffixGroup)
+        pts_mods = [m for m in modifications if isinstance(m, _PTS_TYPES)]
+        has_block_creators = any(is_block_creating_modification(m) for m in modifications)
+
+        if pts_mods and has_block_creators:
+            # Drop PTS from this batch — block-creating ops shift serials,
+            # making suffix serials stale. PTS will be re-discovered on the
+            # next optimizer invocation when the planner runs against the
+            # settled post-creation flow graph with correct serials.
+            non_pts_mods = [m for m in modifications if not isinstance(m, _PTS_TYPES)]
+            logger.info(
+                "RECON: deferring %d PTS mods to next invocation "
+                "(block-creating ops would shift suffix serials)",
+                len(pts_mods),
+            )
+            modifications = non_pts_mods
 
         return PlanFragment(
             strategy_name=self.name,
