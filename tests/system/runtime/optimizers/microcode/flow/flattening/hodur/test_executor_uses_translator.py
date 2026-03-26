@@ -460,7 +460,7 @@ def test_executor_routes_through_transaction_engine(monkeypatch: pytest.MonkeyPa
     engine_apply_calls: list[dict] = []
     original_apply = CfgTransactionEngine.apply
 
-    def _tracking_apply(self, plan, *, pre_cfg, mba, post_apply_hook=None):
+    def _tracking_apply(self, plan, *, pre_cfg, mba, post_apply_hook=None, cumulative_pre_cfg=None):
         engine_apply_calls.append({"plan": plan, "pre_cfg": pre_cfg})
         return TransactionResult.ok(3)
 
@@ -504,7 +504,7 @@ def test_executor_premutation_failure_no_rollback(monkeypatch: pytest.MonkeyPatc
     )
     translator = _FakeTranslator(pre_cfg=cfg)
 
-    def _failing_apply(self, plan, *, pre_cfg, mba, post_apply_hook=None):
+    def _failing_apply(self, plan, *, pre_cfg, mba, post_apply_hook=None, cumulative_pre_cfg=None):
         return TransactionResult.failed(
             "projected_contract",
             RuntimeError("pred/succ mismatch on block 5"),
@@ -558,7 +558,7 @@ def test_execute_pipeline_stops_on_quarantine(monkeypatch: pytest.MonkeyPatch):
 
     execute_stage_calls: list[str] = []
 
-    def _mock_execute_stage(fragment: PlanFragment, total_handlers: int) -> StageResult:  # noqa: ARG001
+    def _mock_execute_stage(fragment: PlanFragment, total_handlers: int, cumulative_pre_cfg=None) -> StageResult:  # noqa: ARG001
         execute_stage_calls.append(fragment.strategy_name)
         return StageResult(
             strategy_name=fragment.strategy_name,
