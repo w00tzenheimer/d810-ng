@@ -24,6 +24,8 @@ from d810.core import logging
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
     ModificationBuilder,
+    derive_edge_predecessor,
+    requires_pred_scoped_lowering,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_DIRECT,
@@ -3754,20 +3756,12 @@ class StateWriteReconstructionStrategy:
                             if edge.kind == SemanticEdgeKind.UNKNOWN
                             else "1-way"
                         )
-                        # Pred-scoped lowering: if the source block has
-                        # multiple predecessors, a whole-block goto_redirect
-                        # would over-merge families.  Use duplicate_and_redirect
-                        # to scope the redirect to the edge's predecessor only.
                         proj_src = projected_flow_graph.get_block(src_serial)
                         src_npred = len(proj_src.preds) if proj_src is not None else 0
-                        if src_npred > 1 and edge.ordered_path:
-                            # Use the last block in the ordered path before
-                            # the source as the predecessor.
-                            edge_pred = (
-                                int(edge.ordered_path[-2])
-                                if len(edge.ordered_path) >= 2
-                                else int(edge.ordered_path[-1])
-                            )
+                        if requires_pred_scoped_lowering(
+                            src_serial, src_npred, edge.ordered_path
+                        ):
+                            edge_pred = derive_edge_predecessor(edge.ordered_path)
                             feeder_mods.append(
                                 builder.duplicate_and_redirect(
                                     source_block=src_serial,
