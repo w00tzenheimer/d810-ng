@@ -26,6 +26,7 @@ from d810.cfg.graph_modification import (
     RemoveEdge,
 )
 from d810.cfg.plan import (
+    ExecutionPolicy,
     PatchDuplicateBlock,
     PatchInsertBlock,
     PatchNopInstructions,
@@ -896,10 +897,10 @@ class TestIDAIntegration:
         assert count > 0
 
 
-class TestTolerateVerifyFailureGuard:
-    """Safety regressions for the tolerate_verify_failure NOP-only gate.
+class TestExecutionPolicyGuard:
+    """Safety regressions for the ExecutionPolicy NOP-only gate.
 
-    When tolerate_verify_failure=True:
+    When execution_policy=NOP_CLEANUP_RELAXED:
     - Plans containing only PatchNopInstructions must pass the step-type guard and
       reach the modifier (the guard must NOT reject them).
     - Plans containing any structural step (redirect, duplicate, insert, etc.) must
@@ -910,13 +911,13 @@ class TestTolerateVerifyFailureGuard:
     Ticket: d81-3hdl (ExecutionPolicy redesign)
     """
 
-    def test_cfg_edit_rejected_when_tolerate_set(
+    def test_cfg_edit_rejected_when_relaxed(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        """lower() must return 0 for any non-NOP step when tolerate_verify_failure=True.
+        """lower() must return 0 for any non-NOP step when policy is NOP_CLEANUP_RELAXED.
 
-        This ensures the escape hatch cannot be accidentally reused for structural
+        This ensures the relaxed policy cannot be accidentally reused for structural
         mutations (goto redirects, block creation, edge rewrites).
         """
         created: list = []
@@ -930,22 +931,22 @@ class TestTolerateVerifyFailureGuard:
         monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
 
         backend = IDAIRTranslator()
-        backend.tolerate_verify_failure = True
 
-        # PatchRedirectGoto is a structural CFG edit — must be rejected.
+        # PatchRedirectGoto is a structural CFG edit — must be rejected under relaxed policy.
         plan = compile_patch_plan(
-            [RedirectGoto(from_serial=10, old_target=20, new_target=30)]
+            [RedirectGoto(from_serial=10, old_target=20, new_target=30)],
+            execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
         )
         count = backend.lower(plan, object())
 
-        assert count == 0, "CFG-edit plan must be rejected when tolerate_verify_failure=True"
+        assert count == 0, "CFG-edit plan must be rejected when policy is NOP_CLEANUP_RELAXED"
         assert created == [], "Modifier must not be created when guard rejects the plan"
 
     def test_nop_only_plan_passes_guard(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        """lower() must not reject a NOP-only plan when tolerate_verify_failure=True.
+        """lower() must not reject a NOP-only plan when policy is NOP_CLEANUP_RELAXED.
 
         The step-type guard must pass and reach the modifier, confirming the guard
         does not over-reject legitimate cleanup plans.
@@ -961,10 +962,12 @@ class TestTolerateVerifyFailureGuard:
         monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
 
         backend = IDAIRTranslator()
-        backend.tolerate_verify_failure = True
 
         # PatchNopInstructions is the only allowed step type — must pass the guard.
-        nop_plan = PatchPlan(steps=(PatchNopInstructions(block_serial=7, insn_eas=(0xDEAD,)),))
+        nop_plan = PatchPlan(
+            steps=(PatchNopInstructions(block_serial=7, insn_eas=(0xDEAD,)),),
+            execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
+        )
         backend.lower(nop_plan, object())
 
         assert len(created) == 1, (

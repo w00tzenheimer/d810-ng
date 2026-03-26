@@ -46,7 +46,7 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
-from d810.cfg.plan import PatchEdgeSplitTrampoline, PatchPlan, compile_patch_plan
+from d810.cfg.plan import ExecutionPolicy, PatchEdgeSplitTrampoline, PatchPlan, compile_patch_plan
 from d810.core import logging
 from d810.evaluator.hexrays_microcode.terminal_return_proof import (
     prove_terminal_returns,
@@ -249,9 +249,16 @@ class TransactionalExecutor:
 
         gate_accounting = GateAccounting()
 
+        # Derive execution policy from fragment metadata — travels with the plan.
+        raw_policy = fragment.metadata.get("execution_policy")
+        if raw_policy == "nop_cleanup_relaxed":
+            execution_policy = ExecutionPolicy.NOP_CLEANUP_RELAXED
+        else:
+            execution_policy = ExecutionPolicy.STRICT
+
         pre_cfg = self.translator.lift(self.mba)
 
-        patch_plan_preview = compile_patch_plan(modifications, pre_cfg)
+        patch_plan_preview = compile_patch_plan(modifications, pre_cfg, execution_policy)
         modifications, patch_plan_preview, backend_removed = (
             self._filter_backend_unsupported_modifications(
                 pre_cfg,
@@ -325,9 +332,6 @@ class TransactionalExecutor:
         contract = self._get_cfg_contract()
         self.translator.contract = (
             contract  # ensure translator has it for post-apply hook
-        )
-        self.translator.tolerate_verify_failure = bool(
-            fragment.metadata.get("tolerate_verify_failure")
         )
         engine = CfgTransactionEngine(translator=self.translator, contract=contract)
 
@@ -585,7 +589,7 @@ class TransactionalExecutor:
         )
         return (
             filtered_modifications,
-            compile_patch_plan(filtered_modifications, pre_cfg),
+            compile_patch_plan(filtered_modifications, pre_cfg, patch_plan.execution_policy),
             removed_count,
         )
 
@@ -704,7 +708,7 @@ class TransactionalExecutor:
             )
         if filtered_modifications != modifications:
             modifications = filtered_modifications
-            patch_plan = compile_patch_plan(modifications, pre_cfg)
+            patch_plan = compile_patch_plan(modifications, pre_cfg, patch_plan.execution_policy)
             simulated_edits = sorted(
                 patch_plan_to_simulated_edits(patch_plan),
                 key=_preflight_simulated_priority,

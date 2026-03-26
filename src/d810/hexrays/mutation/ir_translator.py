@@ -28,6 +28,7 @@ from d810.cfg.graph_modification import (
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from d810.cfg.flowgraph import MopSnapshot as CfgMopSnapshot
 from d810.cfg.plan import (
+    ExecutionPolicy,
     LegacyBlockOperation,
     PatchConditionalRedirect,
     PatchConvertToGoto,
@@ -220,7 +221,6 @@ class IDAIRTranslator:
         self.allow_legacy_block_creation = allow_legacy_block_creation
         self._contract = contract
         self._last_lowering_phase: str | None = None
-        self.tolerate_verify_failure: bool = False
 
     @property
     def contract(self) -> IDACfgContract | None:
@@ -307,11 +307,14 @@ class IDAIRTranslator:
             self._last_lowering_phase = "lowering"
             return 0
 
-        # Safety gate: tolerate_verify_failure is only valid for instruction-local
-        # NOP cleanup.  Reject any plan that contains block-creating, edge-changing,
-        # or redirect steps so this mode cannot silently bypass the verifier for
-        # structural mutations.
-        if self.tolerate_verify_failure:
+        # Derive execution policy from the plan itself (not a translator flag).
+        relaxed = patch_plan.execution_policy == ExecutionPolicy.NOP_CLEANUP_RELAXED
+
+        # Safety gate: NOP_CLEANUP_RELAXED only permits instruction-local
+        # NOP cleanup.  Reject any plan containing block-creating, edge-changing,
+        # or redirect steps so relaxed mode cannot silently bypass the verifier
+        # for structural mutations.
+        if relaxed:
             _NOP_ONLY_ALLOWED = (PatchNopInstructions, PatchZeroStateWrite)
             disallowed = [
                 type(s).__name__
@@ -320,7 +323,7 @@ class IDAIRTranslator:
             ]
             if disallowed:
                 logger.error(
-                    "tolerate_verify_failure=True but plan contains non-NOP steps "
+                    "NOP_CLEANUP_RELAXED plan contains non-NOP steps "
                     "(%s); rejecting to prevent verifier bypass on structural edits",
                     ", ".join(disallowed),
                 )
@@ -354,9 +357,9 @@ class IDAIRTranslator:
             self._queue_patch_step(modifier, step)
 
         # Apply all queued modifications with snapshot rollback enabled.
-        # When tolerate_verify_failure is set, disable rollback so the NOPs
-        # survive even if IDA's GLBOPT1 verifier complains (INTERR 50846).
-        enable_rollback = not self.tolerate_verify_failure
+        # Under NOP_CLEANUP_RELAXED, disable rollback so the NOPs survive
+        # even if IDA's GLBOPT1 verifier complains (INTERR 50846).
+        enable_rollback = not relaxed
         result_count = modifier.apply(
             run_optimize_local=True,
             run_deep_cleaning=False,
@@ -371,10 +374,11 @@ class IDAIRTranslator:
         # to stop by returning 0. A positive result with verify_failed=True
         # means rollback also failed - the MBA may be corrupted.
         if modifier.verify_failed:
-            if self.tolerate_verify_failure and result_count > 0:
+            if relaxed and result_count > 0:
                 logger.info(
                     "DeferredGraphModifier.verify_failed is set after apply "
-                    "but tolerate_verify_failure=True; returning %d applied modifications",
+                    "but execution_policy=NOP_CLEANUP_RELAXED; "
+                    "returning %d applied modifications",
                     result_count,
                 )
             else:
