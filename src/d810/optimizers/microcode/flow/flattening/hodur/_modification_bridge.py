@@ -73,6 +73,13 @@ def _infer_old_target(
     return None
 
 
+from d810.cfg.lowering_scope import (  # noqa: E402 — re-export for backward compat
+    LoweringScope,
+    derive_edge_predecessor,
+    requires_pred_scoped_lowering,
+)
+
+
 @dataclass(frozen=True)
 class ModificationBuilder:
     """Construct GraphModification objects from strategy-local context."""
@@ -259,7 +266,10 @@ class ModificationBuilder:
 
 
 __all__ = [
+    "LoweringScope",
     "ModificationBuilder",
+    "derive_edge_predecessor",
+    "requires_pred_scoped_lowering",
     "snapshot_block_nsucc_map",
     "snapshot_block_succ_map",
 ]
