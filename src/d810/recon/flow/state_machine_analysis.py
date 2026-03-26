@@ -893,7 +893,7 @@ def resolve_exit_via_bst_default_snapshot(
                 )
                 return current_serial if current_serial != bst_default_serial else None
 
-        cmp_val = r_mop.nnn_value
+        cmp_val = getattr(r_mop, "nnn_value", None) or getattr(r_mop, "value", None)
         cond_taken = eval_bst_condition(tail.opcode, exit_state, cmp_val)
 
         if cond_taken:

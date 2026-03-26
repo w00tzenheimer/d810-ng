@@ -380,12 +380,13 @@ class TransactionalExecutor:
         changes = tx_result.applied_count
         self._total_changes += changes
 
-        executor_logger.info(
-            "POST-APPLY microcode dump (stage=%s, applied=%d):\n%s",
-            fragment.strategy_name,
-            changes,
-            "\n\n".join(mba_to_human_readable(self.mba)),
-        )
+        if hasattr(self.mba, "maturity"):
+            executor_logger.info(
+                "POST-APPLY microcode dump (stage=%s, applied=%d):\n%s",
+                fragment.strategy_name,
+                changes,
+                "\n\n".join(mba_to_human_readable(self.mba)),
+            )
 
         # --- Diagnostic snapshot (gated behind D810_DIAG_SNAPSHOT=1) ---
         try:

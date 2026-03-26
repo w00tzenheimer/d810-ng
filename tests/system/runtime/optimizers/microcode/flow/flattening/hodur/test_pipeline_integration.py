@@ -172,7 +172,7 @@ def test_fragments_planned_from_same_snapshot_execute_stably(monkeypatch):
     pipeline, _provenance = planner.compose_pipeline(planned_fragments, inputs=PlannerInputs(total_handlers=2))
     assert [fragment.strategy_name for fragment in pipeline] == ["first", "second"]
 
-    translator = _SequenceTranslator([pre_cfg, mid_cfg, mid_cfg, post_cfg])
+    translator = _SequenceTranslator([pre_cfg, mid_cfg, mid_cfg, mid_cfg, post_cfg, post_cfg])
     executor = TransactionalExecutor(mba=object(), translator=translator)
     results = executor.execute_pipeline(pipeline, total_handlers=2)
 

@@ -13,6 +13,22 @@ from __future__ import annotations
 
 import pytest
 
+@pytest.fixture
+def mba_fixture():
+    """Provide an mba_t from the first available function, or skip."""
+    try:
+        import idaapi
+        import idc
+        ea = idc.get_next_func(0)
+        if ea == idaapi.BADADDR:
+            pytest.skip("no functions in current IDB")
+        cfunc = idaapi.decompile(ea)
+        if cfunc is None:
+            pytest.skip("decompilation failed")
+        return cfunc.mba
+    except ImportError:
+        pytest.skip("IDA not available")
+
 from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.valrange_resolution import (
     ValrangeResolutionStrategy,
