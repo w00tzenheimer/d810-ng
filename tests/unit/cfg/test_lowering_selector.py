@@ -251,6 +251,34 @@ class TestSelectSharedFeederLowering:
         assert decision.kind == SharedFeederLoweringKind.PRED_EDGE_PEEL
         assert decision.reason == "peel_preferred_for_test"
 
+    def test_custom_scorer_can_reject_all_candidates(self):
+        class _RejectAllScorer:
+            def score(self, context, candidate):
+                assert context.source_serial == 14
+                return SharedFeederCandidateScore(
+                    accepted=False,
+                    score=0,
+                    reason=f"reject_{candidate.kind}",
+                )
+
+        decision = select_shared_feeder_lowering(
+            SharedFeederContext(
+                source_serial=14,
+                source_pred_count=2,
+                ordered_path=(12, 14),
+                via_pred_succs=(6, 14),
+                target_entry=16,
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                target_reaches_pred=False,
+            ),
+            scorer=_RejectAllScorer(),
+        )
+        assert not decision.accepted
+        assert decision.kind == SharedFeederLoweringKind.REJECTED
+        assert decision.via_pred == 12
+        assert decision.reason == "all_candidates_vetoed"
+
 
 class TestPlanSharedGroupDuplication:
     def test_single_candidate_keeps_old_target_for_other_pred(self):
