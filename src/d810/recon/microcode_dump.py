@@ -52,7 +52,13 @@ from d810.recon.flow.bst_analysis import (
     analyze_bst_dispatcher,
 )
 from d810.recon.flow.linearized_state_dag import (
+    BoundaryInlineMode,
+    LabelRenderMode,
+    ProgramCommentMode,
+    ProgramRenderStrategy,
+    RenderOrderStrategy,
     build_live_linearized_state_dag_from_graph,
+    render_linearized_state_program,
     render_linearized_state_dag,
     render_linearized_state_dag_dot,
 )
@@ -61,6 +67,7 @@ from d810.recon.flow.transition_report import (
     TransitionKind,
     build_dispatcher_transition_report,
 )
+from d810.recon.pseudocode_render import render_block
 
 # -----------------------------------------------------------------------------
 # Configuration & Logging
@@ -1161,6 +1168,8 @@ def dump_linearized_dag(
     mba: "idaapi.mbl_array_t",
     dispatcher_entry_serial: int,
     state_var_stkoff: Optional[int] = None,
+    *,
+    order_strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
 ) -> str:
     """Build and render the unified state-level DAG for a dispatcher."""
     dag = _build_live_linearized_state_dag(
@@ -1168,7 +1177,47 @@ def dump_linearized_dag(
         dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
     )
-    return render_linearized_state_dag(dag)
+    return render_linearized_state_dag(dag, order_strategy=order_strategy)
+
+
+def dump_linearized_program(
+    mba: "idaapi.mbl_array_t",
+    dispatcher_entry_serial: int,
+    state_var_stkoff: Optional[int] = None,
+    *,
+    order_strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
+    program_strategy: ProgramRenderStrategy = ProgramRenderStrategy.LOCAL_SEGMENT_COLLAPSING,
+    label_render_mode: LabelRenderMode = LabelRenderMode.STATE_FAMILY,
+    boundary_inline_mode: BoundaryInlineMode = BoundaryInlineMode.LABELS_ONLY,
+    comment_mode: ProgramCommentMode = ProgramCommentMode.DEBUG_METADATA,
+) -> str:
+    """Build and render the unified state DAG as a label-preserving program."""
+    dag = _build_live_linearized_state_dag(
+        mba,
+        dispatcher_entry_serial,
+        state_var_stkoff=state_var_stkoff,
+    )
+    block_payload_by_serial: Dict[int, Tuple[str, ...]] = {}
+    for block_serial in range(mba.qty):
+        try:
+            blk = mba.get_mblock(block_serial)
+        except Exception:
+            continue
+        if blk is None:
+            continue
+        try:
+            block_payload_by_serial[int(blk.serial)] = tuple(render_block(blk))
+        except Exception:
+            continue
+    return render_linearized_state_program(
+        dag,
+        order_strategy=order_strategy,
+        program_strategy=program_strategy,
+        label_render_mode=label_render_mode,
+        boundary_inline_mode=boundary_inline_mode,
+        comment_mode=comment_mode,
+        block_payload_by_serial=block_payload_by_serial,
+    )
 
 
 def dump_linearized_dag_dot(

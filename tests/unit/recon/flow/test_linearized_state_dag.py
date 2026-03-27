@@ -3,14 +3,20 @@ from __future__ import annotations
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.recon.flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.recon.flow.linearized_state_dag import (
+    BoundaryInlineMode,
+    LabelRenderMode,
     LinearizedStateDag,
     LocalSegmentKind,
     LocalEdgeKind,
+    ProgramCommentMode,
+    ProgramRenderStrategy,
+    RenderOrderStrategy,
     RedirectSourceKind,
     SemanticEdgeKind,
     StateDagEdge,
     StateDagNode,
     StateDagNodeKey,
+    StateLocalEdge,
     StateLocalSegment,
     StateNodeKind,
     StateRedirectAnchor,
@@ -20,6 +26,7 @@ from d810.recon.flow.linearized_state_dag import (
     _resolve_owner_family_fallback,
     build_live_linearized_state_dag_from_graph,
     build_linearized_state_dag_from_graph,
+    render_linearized_state_program,
     render_linearized_state_dag,
     render_linearized_state_dag_dot,
 )
@@ -256,6 +263,1285 @@ def test_branch_anchors_and_local_cfg_are_preserved() -> None:
     rendered = render_linearized_state_dag(dag)
     assert "src=blk[2].fallthrough -> 0x00000030 entry=blk[3]" in rendered
     assert "src=blk[2].taken -> 0x00000040 entry=blk[7]" in rendered
+
+
+def test_render_linearized_state_program_uses_state_labels_and_branch_pairs() -> None:
+    flow_graph = _make_branch_flow_graph()
+    transition_result = _make_branch_transition_result()
+    report = build_dispatcher_transition_report_from_graph(
+        flow_graph=flow_graph,
+        transition_result=transition_result,
+        dispatcher_entry_serial=5,
+    )
+    dag = build_linearized_state_dag_from_graph(
+        flow_graph,
+        report,
+        transition_result,
+        dispatcher=_AlwaysDispatcher(7),
+        handler_paths_by_handler={
+            2: (
+                HandlerPathResult(
+                    exit_block=3,
+                    final_state=0x30,
+                    state_writes=[(2, 0x1000)],
+                    ordered_path=[2, 3],
+                ),
+                HandlerPathResult(
+                    exit_block=7,
+                    final_state=0x40,
+                    state_writes=[(2, 0x1004)],
+                    ordered_path=[2, 7],
+                ),
+            ),
+        },
+        conditional_transitions_by_handler={
+            2: (
+                ConditionalTransition(
+                    handler_entry=2,
+                    branch_block=2,
+                    target_state=0x30,
+                    target_handler=3,
+                    state_write_block=2,
+                    state_write_ea=0x1000,
+                    branch_arm=0,
+                ),
+                ConditionalTransition(
+                    handler_entry=2,
+                    branch_block=2,
+                    target_state=0x40,
+                    target_handler=7,
+                    state_write_block=2,
+                    state_write_ea=0x1004,
+                    branch_arm=1,
+                ),
+            ),
+        },
+    )
+
+    rendered = render_linearized_state_program(dag)
+    assert "STATE_00000020:" in rendered
+    assert "STATE_00000030:" in rendered
+    assert "STATE_00000040:" in rendered
+    assert "if (/* blk[2].taken */)" in rendered
+    assert "goto STATE_00000040;" in rendered
+    assert "goto STATE_00000030;  // blk[2].fallthrough" in rendered
+
+
+def test_render_linearized_state_program_can_use_ida_block_serial_labels() -> None:
+    flow_graph = _make_branch_flow_graph()
+    transition_result = _make_branch_transition_result()
+    report = build_dispatcher_transition_report_from_graph(
+        flow_graph=flow_graph,
+        transition_result=transition_result,
+        dispatcher_entry_serial=5,
+    )
+    dag = build_linearized_state_dag_from_graph(
+        flow_graph,
+        report,
+        transition_result,
+        dispatcher=_AlwaysDispatcher(7),
+        handler_paths_by_handler={
+            2: (
+                HandlerPathResult(
+                    exit_block=3,
+                    final_state=0x30,
+                    state_writes=[(2, 0x1000)],
+                    ordered_path=[2, 3],
+                ),
+                HandlerPathResult(
+                    exit_block=7,
+                    final_state=0x40,
+                    state_writes=[(2, 0x1004)],
+                    ordered_path=[2, 7],
+                ),
+            ),
+        },
+        conditional_transitions_by_handler={
+            2: (
+                ConditionalTransition(
+                    handler_entry=2,
+                    branch_block=2,
+                    target_state=0x30,
+                    target_handler=3,
+                    state_write_block=2,
+                    state_write_ea=0x1000,
+                    branch_arm=0,
+                ),
+                ConditionalTransition(
+                    handler_entry=2,
+                    branch_block=2,
+                    target_state=0x40,
+                    target_handler=7,
+                    state_write_block=2,
+                    state_write_ea=0x1004,
+                    branch_arm=1,
+                ),
+            ),
+        },
+    )
+
+    rendered = render_linearized_state_program(
+        dag,
+        label_render_mode=LabelRenderMode.IDA_BLOCK_SERIAL,
+    )
+
+    assert "LABEL_2:" in rendered
+    assert "LABEL_3:" in rendered
+    assert "LABEL_7:" in rendered
+    assert "// state-family: STATE_00000020" in rendered
+    assert "// state-family: STATE_00000030" in rendered
+    assert "// state-family: STATE_00000040" in rendered
+    assert "goto LABEL_7;  /* STATE_00000040 */" in rendered
+    assert (
+        "goto LABEL_3;  /* STATE_00000030 */  // blk[2].fallthrough" in rendered
+    )
+    assert "STATE_00000020:" not in rendered
+
+
+def test_render_linearized_state_program_renders_fallback_and_exit_routine() -> None:
+    fallback_key = StateDagNodeKey(handler_serial=34, state_const=0x27EEEA11)
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x27EEEA11,
+        bst_node_blocks=(),
+        nodes=(
+            StateDagNode(
+                key=fallback_key,
+                kind=StateNodeKind.RANGE_BACKED,
+                state_label="0x27EEEA11_fallback",
+                handler_serial=34,
+                entry_anchor=34,
+                owned_blocks=(34, 35),
+                exclusive_blocks=(34,),
+                shared_suffix_blocks=(35,),
+                local_segments=(
+                    StateLocalSegment(
+                        segment_id="seg0",
+                        kind=LocalSegmentKind.STRAIGHT_LINE,
+                        blocks=(34, 35),
+                    ),
+                ),
+                local_edges=(),
+            ),
+        ),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.EXIT_ROUTINE,
+                source_key=fallback_key,
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="EXIT_ROUTINE",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=35,
+                ),
+                ordered_path=(34, 35),
+            ),
+        ),
+    )
+
+    rendered = render_linearized_state_program(dag)
+    assert "STATE_27EEEA11_fallback:" in rendered
+    assert "goto EXIT_ROUTINE;" in rendered
+    assert "EXIT_ROUTINE:" in rendered
+    assert "return result;" in rendered
+
+
+def test_render_linearized_state_program_disambiguates_colliding_labels() -> None:
+    source_key = StateDagNodeKey(handler_serial=10, state_const=0x11111111)
+    fallback_a_key = StateDagNodeKey(handler_serial=12, state_const=0x64AFC49D)
+    fallback_b_key = StateDagNodeKey(handler_serial=34, state_const=0x64AFC49D)
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(),
+        nodes=(
+            StateDagNode(
+                key=source_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x11111111",
+                handler_serial=10,
+                entry_anchor=10,
+                owned_blocks=(10,),
+                exclusive_blocks=(10,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+            StateDagNode(
+                key=fallback_a_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x64AFC49D_fallback",
+                handler_serial=12,
+                entry_anchor=12,
+                owned_blocks=(12,),
+                exclusive_blocks=(12,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+            StateDagNode(
+                key=fallback_b_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x64AFC49D_fallback",
+                handler_serial=34,
+                entry_anchor=34,
+                owned_blocks=(34, 35),
+                exclusive_blocks=(34, 35),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+        ),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=fallback_a_key,
+                target_state=0x64AFC49D,
+                target_entry_anchor=12,
+                target_label="0x64AFC49D_fallback",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=10,
+                    branch_arm=0,
+                ),
+                ordered_path=(10, 12),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=fallback_b_key,
+                target_state=0x64AFC49D,
+                target_entry_anchor=34,
+                target_label="0x64AFC49D_fallback",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=10,
+                    branch_arm=1,
+                ),
+                ordered_path=(10, 34),
+            ),
+        ),
+    )
+
+    rendered = render_linearized_state_program(dag)
+    label_a = "STATE_64AFC49D_fallback__blk12_h12_s64AFC49D"
+    label_b = "STATE_64AFC49D_fallback__blk34_h34_s64AFC49D"
+
+    assert rendered.count(f"{label_a}:") == 1
+    assert rendered.count(f"{label_b}:") == 1
+    assert f"goto {label_b};" in rendered
+    assert f"goto {label_a};  // blk[10].fallthrough" in rendered
+
+
+def test_render_linearized_state_program_explicitly_emits_local_segments() -> None:
+    node_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x20,
+        bst_node_blocks=(),
+        nodes=(
+            StateDagNode(
+                key=node_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000020",
+                handler_serial=20,
+                entry_anchor=20,
+                owned_blocks=(20, 21, 22),
+                exclusive_blocks=(20, 21, 22),
+                shared_suffix_blocks=(),
+                local_segments=(
+                    StateLocalSegment(
+                        segment_id="blk[20]",
+                        kind=LocalSegmentKind.BRANCH,
+                        blocks=(20,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[21]",
+                        kind=LocalSegmentKind.STRAIGHT_LINE,
+                        blocks=(21,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[22]",
+                        kind=LocalSegmentKind.GOTO_LABEL,
+                        blocks=(22,),
+                    ),
+                ),
+                local_edges=(
+                    StateLocalEdge(
+                        source_segment_id="blk[20]",
+                        target_segment_id="blk[21]",
+                        kind=LocalEdgeKind.FALLTHROUGH,
+                        branch_arm=0,
+                    ),
+                    StateLocalEdge(
+                        source_segment_id="blk[21]",
+                        target_segment_id="blk[22]",
+                        kind=LocalEdgeKind.GOTO,
+                    ),
+                ),
+            ),
+            StateDagNode(
+                key=StateDagNodeKey(handler_serial=30, state_const=0x30),
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000030",
+                handler_serial=30,
+                entry_anchor=30,
+                owned_blocks=(30,),
+                exclusive_blocks=(30,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+        ),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=node_key,
+                target_key=StateDagNodeKey(handler_serial=30, state_const=0x30),
+                target_state=0x30,
+                target_entry_anchor=30,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=20,
+                    branch_arm=1,
+                ),
+                ordered_path=(20, 30),
+            ),
+        ),
+    )
+
+    rendered = render_linearized_state_program(
+        dag,
+        program_strategy=ProgramRenderStrategy.LOCAL_SEGMENT_EXPLICIT,
+    )
+
+    assert "STATE_00000020:" in rendered
+    assert "goto STATE_00000020__blk_20;" in rendered
+    assert "STATE_00000020__blk_20:" in rendered
+    assert "STATE_00000020__blk_21:" in rendered
+    assert "STATE_00000020__blk_22:" in rendered
+    assert "goto STATE_00000030;" in rendered
+    assert "goto STATE_00000020__blk_21;  // blk[20].fallthrough" in rendered
+
+
+def test_render_linearized_state_program_selectively_collapses_local_corridors() -> None:
+    source_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
+    target_key = StateDagNodeKey(handler_serial=30, state_const=0x30)
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x20,
+        bst_node_blocks=(),
+        nodes=(
+            StateDagNode(
+                key=source_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000020",
+                handler_serial=20,
+                entry_anchor=20,
+                owned_blocks=(20, 21, 22, 23),
+                exclusive_blocks=(20, 21, 22, 23),
+                shared_suffix_blocks=(23,),
+                local_segments=(
+                    StateLocalSegment(
+                        segment_id="blk[20]",
+                        kind=LocalSegmentKind.BRANCH,
+                        blocks=(20,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[21]",
+                        kind=LocalSegmentKind.BRANCH,
+                        blocks=(21,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[22]",
+                        kind=LocalSegmentKind.STRAIGHT_LINE,
+                        blocks=(22,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[23]",
+                        kind=LocalSegmentKind.SHARED_SUFFIX,
+                        blocks=(23,),
+                    ),
+                ),
+                local_edges=(
+                    StateLocalEdge(
+                        source_segment_id="blk[20]",
+                        target_segment_id="blk[21]",
+                        kind=LocalEdgeKind.FALLTHROUGH,
+                        branch_arm=0,
+                    ),
+                    StateLocalEdge(
+                        source_segment_id="blk[21]",
+                        target_segment_id="blk[22]",
+                        kind=LocalEdgeKind.FALLTHROUGH,
+                        branch_arm=0,
+                    ),
+                    StateLocalEdge(
+                        source_segment_id="blk[21]",
+                        target_segment_id="blk[23]",
+                        kind=LocalEdgeKind.TAKEN,
+                        branch_arm=1,
+                    ),
+                    StateLocalEdge(
+                        source_segment_id="blk[22]",
+                        target_segment_id="blk[23]",
+                        kind=LocalEdgeKind.GOTO,
+                    ),
+                ),
+            ),
+            StateDagNode(
+                key=target_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000030",
+                handler_serial=30,
+                entry_anchor=30,
+                owned_blocks=(30,),
+                exclusive_blocks=(30,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+        ),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=target_key,
+                target_state=0x30,
+                target_entry_anchor=30,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=20,
+                    branch_arm=1,
+                ),
+                ordered_path=(20, 30),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_key,
+                target_key=target_key,
+                target_state=0x30,
+                target_entry_anchor=30,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=23,
+                ),
+                ordered_path=(23, 30),
+            ),
+        ),
+    )
+
+    rendered = render_linearized_state_program(
+        dag,
+        program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+    )
+
+    assert "STATE_00000020:" in rendered
+    assert "if (/* blk[20].taken */)" in rendered
+    assert "goto STATE_00000020__blk_23;" in rendered
+    assert "STATE_00000020__blk_23:" in rendered
+    assert "STATE_00000020__blk_21:" not in rendered
+    assert "STATE_00000020__blk_22:" not in rendered
+
+
+def test_render_linearized_state_program_inlines_one_boundary_level() -> None:
+    source_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
+    target_a_key = StateDagNodeKey(handler_serial=30, state_const=0x30)
+    target_b_key = StateDagNodeKey(handler_serial=40, state_const=0x40)
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x20,
+        bst_node_blocks=(),
+        nodes=(
+            StateDagNode(
+                key=source_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000020",
+                handler_serial=20,
+                entry_anchor=20,
+                owned_blocks=(20, 21),
+                exclusive_blocks=(20, 21),
+                shared_suffix_blocks=(),
+                local_segments=(
+                    StateLocalSegment(
+                        segment_id="blk[20]",
+                        kind=LocalSegmentKind.BRANCH,
+                        blocks=(20,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[21]",
+                        kind=LocalSegmentKind.BRANCH,
+                        blocks=(21,),
+                    ),
+                ),
+                local_edges=(
+                    StateLocalEdge(
+                        source_segment_id="blk[20]",
+                        target_segment_id="blk[21]",
+                        kind=LocalEdgeKind.FALLTHROUGH,
+                        branch_arm=0,
+                    ),
+                ),
+            ),
+            StateDagNode(
+                key=target_a_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000030",
+                handler_serial=30,
+                entry_anchor=30,
+                owned_blocks=(30,),
+                exclusive_blocks=(30,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+            StateDagNode(
+                key=target_b_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000040",
+                handler_serial=40,
+                entry_anchor=40,
+                owned_blocks=(40,),
+                exclusive_blocks=(40,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+        ),
+        edges=(
+                StateDagEdge(
+                    kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                    source_key=source_key,
+                    target_key=target_b_key,
+                    target_state=0x40,
+                    target_entry_anchor=40,
+                    target_label="0x00000040",
+                    source_anchor=StateRedirectAnchor(
+                        kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                        block_serial=21,
+                        branch_arm=1,
+                    ),
+                    ordered_path=(21, 40),
+                ),
+                StateDagEdge(
+                    kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                    source_key=source_key,
+                    target_key=target_a_key,
+                    target_state=0x30,
+                    target_entry_anchor=30,
+                    target_label="0x00000030",
+                    source_anchor=StateRedirectAnchor(
+                        kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                        block_serial=21,
+                        branch_arm=0,
+                    ),
+                    ordered_path=(21, 30),
+                ),
+            ),
+        )
+
+    rendered = render_linearized_state_program(
+        dag,
+        program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+        boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
+    )
+
+    assert "STATE_00000020__blk_21:" not in rendered
+    assert "if (/* blk[21].taken */)" in rendered
+    assert "goto STATE_00000040;" in rendered
+    assert "goto STATE_00000030;  // blk[21].fallthrough" in rendered
+
+
+def test_render_linearized_state_program_renders_block_payload_without_terminal_control() -> None:
+    source_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
+    target_key = StateDagNodeKey(handler_serial=30, state_const=0x30)
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x20,
+        bst_node_blocks=(),
+        nodes=(
+            StateDagNode(
+                key=source_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000020",
+                handler_serial=20,
+                entry_anchor=20,
+                owned_blocks=(20,),
+                exclusive_blocks=(20,),
+                shared_suffix_blocks=(),
+                local_segments=(
+                    StateLocalSegment(
+                        segment_id="blk[20]",
+                        kind=LocalSegmentKind.BRANCH,
+                        blocks=(20,),
+                    ),
+                ),
+                local_edges=(),
+            ),
+            StateDagNode(
+                key=target_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000030",
+                handler_serial=30,
+                entry_anchor=30,
+                owned_blocks=(30,),
+                exclusive_blocks=(30,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+        ),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=target_key,
+                target_state=0x30,
+                target_entry_anchor=30,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=20,
+                    branch_arm=1,
+                ),
+                ordered_path=(20, 30),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=target_key,
+                target_state=0x30,
+                target_entry_anchor=30,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=20,
+                    branch_arm=0,
+                ),
+                ordered_path=(20, 30),
+            ),
+        ),
+    )
+
+    rendered = render_linearized_state_program(
+        dag,
+        order_strategy=RenderOrderStrategy.SEMANTIC,
+        program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+        block_payload_by_serial={
+            20: (
+                "var_10 = var_20 + 1",
+                "if (var_10 == 0) goto LABEL_30",
+            ),
+        },
+    )
+
+    assert "var_10 = var_20 + 1" in rendered
+    assert "if (var_10 == 0) goto LABEL_30" not in rendered
+    assert "if (var_10 == 0)" in rendered
+    assert "goto STATE_00000030;  // blk[20].fallthrough" in rendered
+
+
+def test_render_linearized_state_program_structures_simple_collapsed_sidechain() -> None:
+    source_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
+    target_a_key = StateDagNodeKey(handler_serial=30, state_const=0x30)
+    target_b_key = StateDagNodeKey(handler_serial=40, state_const=0x40)
+    target_c_key = StateDagNodeKey(handler_serial=50, state_const=0x50)
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x20,
+        bst_node_blocks=(),
+        nodes=(
+            StateDagNode(
+                key=source_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000020",
+                handler_serial=20,
+                entry_anchor=20,
+                owned_blocks=(20, 21, 22),
+                exclusive_blocks=(20, 21, 22),
+                shared_suffix_blocks=(),
+                    local_segments=(
+                        StateLocalSegment(
+                            segment_id="blk[20]",
+                            kind=LocalSegmentKind.BRANCH,
+                            blocks=(20,),
+                        ),
+                        StateLocalSegment(
+                            segment_id="blk[21]",
+                            kind=LocalSegmentKind.BRANCH,
+                            blocks=(21,),
+                        ),
+                        StateLocalSegment(
+                            segment_id="blk[22]",
+                            kind=LocalSegmentKind.BRANCH,
+                            blocks=(22,),
+                        ),
+                        StateLocalSegment(
+                            segment_id="blk[23]",
+                            kind=LocalSegmentKind.STRAIGHT_LINE,
+                            blocks=(23,),
+                        ),
+                    ),
+                    local_edges=(
+                        StateLocalEdge(
+                            source_segment_id="blk[20]",
+                            target_segment_id="blk[21]",
+                            kind=LocalEdgeKind.FALLTHROUGH,
+                            branch_arm=0,
+                        ),
+                        StateLocalEdge(
+                            source_segment_id="blk[21]",
+                            target_segment_id="blk[22]",
+                            kind=LocalEdgeKind.TAKEN,
+                            branch_arm=1,
+                        ),
+                        StateLocalEdge(
+                            source_segment_id="blk[21]",
+                            target_segment_id="blk[23]",
+                            kind=LocalEdgeKind.FALLTHROUGH,
+                            branch_arm=0,
+                        ),
+                        StateLocalEdge(
+                            source_segment_id="blk[23]",
+                            target_segment_id="blk[22]",
+                            kind=LocalEdgeKind.GOTO,
+                        ),
+                ),
+            ),
+            StateDagNode(
+                key=target_a_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000030",
+                handler_serial=30,
+                entry_anchor=30,
+                owned_blocks=(30,),
+                exclusive_blocks=(30,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+            StateDagNode(
+                key=target_b_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000040",
+                handler_serial=40,
+                entry_anchor=40,
+                owned_blocks=(40,),
+                exclusive_blocks=(40,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+            StateDagNode(
+                key=target_c_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000050",
+                handler_serial=50,
+                entry_anchor=50,
+                owned_blocks=(50,),
+                exclusive_blocks=(50,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+        ),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=target_b_key,
+                target_state=0x40,
+                target_entry_anchor=40,
+                target_label="0x00000040",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=20,
+                    branch_arm=1,
+                ),
+                ordered_path=(20, 40),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=target_a_key,
+                target_state=0x30,
+                target_entry_anchor=30,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=22,
+                    branch_arm=0,
+                ),
+                ordered_path=(22, 30),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=target_c_key,
+                target_state=0x50,
+                target_entry_anchor=50,
+                target_label="0x00000050",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=22,
+                    branch_arm=1,
+                ),
+                ordered_path=(22, 50),
+            ),
+        ),
+    )
+
+    rendered = render_linearized_state_program(
+        dag,
+        program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+        boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
+        block_payload_by_serial={
+            20: (
+                "v0 = entry()",
+                "if (v0 == 0) goto LABEL_40",
+            ),
+            21: (
+                "v20 = call()",
+                "if (v20 >=u 0x20) goto LABEL_22",
+            ),
+            23: ("v20 = 0x20",),
+        },
+    )
+
+    assert "if (v20 <u 0x20)" in rendered
+    assert "v20 = 0x20" in rendered
+    assert "if (v20 >=u 0x20) goto LABEL_22" not in rendered
+
+
+def test_render_linearized_state_program_preserves_entry_corridor_payload_before_resolved_target() -> None:
+    source_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
+    target_key = StateDagNodeKey(handler_serial=30, state_const=0x30)
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x20,
+        bst_node_blocks=(),
+        nodes=(
+            StateDagNode(
+                key=source_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000020",
+                handler_serial=20,
+                entry_anchor=20,
+                owned_blocks=(20, 21),
+                exclusive_blocks=(20, 21),
+                shared_suffix_blocks=(21,),
+                local_segments=(
+                    StateLocalSegment(
+                        segment_id="blk[20]",
+                        kind=LocalSegmentKind.STRAIGHT_LINE,
+                        blocks=(20,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[21]",
+                        kind=LocalSegmentKind.SHARED_SUFFIX,
+                        blocks=(21,),
+                    ),
+                ),
+                local_edges=(
+                    StateLocalEdge(
+                        source_segment_id="blk[20]",
+                        target_segment_id="blk[21]",
+                        kind=LocalEdgeKind.SHARED_SUFFIX,
+                    ),
+                ),
+            ),
+            StateDagNode(
+                key=target_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000030",
+                handler_serial=30,
+                entry_anchor=30,
+                owned_blocks=(30,),
+                exclusive_blocks=(30,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+        ),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_key,
+                target_key=target_key,
+                target_state=0x30,
+                target_entry_anchor=30,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=21,
+                ),
+                ordered_path=(20, 21, 30),
+            ),
+        ),
+    )
+
+    rendered = render_linearized_state_program(
+        dag,
+        order_strategy=RenderOrderStrategy.SEMANTIC,
+        program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+        boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
+        block_payload_by_serial={
+            20: (
+                "v120 = setup(v193)",
+                "goto LABEL_21",
+            ),
+            21: (
+                "v119 = finish(v120)",
+                "goto LABEL_30",
+            ),
+        },
+    )
+
+    assert "v120 = setup(v193)" in rendered
+    assert "v119 = finish(v120)" in rendered
+    assert "goto STATE_00000030;" in rendered
+
+
+def test_render_linearized_state_program_emits_semantic_edge_tail_payload() -> None:
+    source_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
+    target_a_key = StateDagNodeKey(handler_serial=30, state_const=0x30)
+    target_b_key = StateDagNodeKey(handler_serial=40, state_const=0x40)
+    target_c_key = StateDagNodeKey(handler_serial=50, state_const=0x50)
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x20,
+        bst_node_blocks=(),
+        nodes=(
+            StateDagNode(
+                key=source_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000020",
+                handler_serial=20,
+                entry_anchor=20,
+                owned_blocks=(20, 21, 22, 23),
+                exclusive_blocks=(20, 21, 22, 23),
+                shared_suffix_blocks=(),
+                local_segments=(
+                    StateLocalSegment(
+                        segment_id="blk[20]",
+                        kind=LocalSegmentKind.BRANCH,
+                        blocks=(20,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[21]",
+                        kind=LocalSegmentKind.BRANCH,
+                        blocks=(21,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[22]",
+                        kind=LocalSegmentKind.STRAIGHT_LINE,
+                        blocks=(22,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[23]",
+                        kind=LocalSegmentKind.STRAIGHT_LINE,
+                        blocks=(23,),
+                    ),
+                ),
+                local_edges=(
+                    StateLocalEdge(
+                        source_segment_id="blk[20]",
+                        target_segment_id="blk[21]",
+                        kind=LocalEdgeKind.FALLTHROUGH,
+                        branch_arm=0,
+                    ),
+                    StateLocalEdge(
+                        source_segment_id="blk[21]",
+                        target_segment_id="blk[22]",
+                        kind=LocalEdgeKind.FALLTHROUGH,
+                        branch_arm=0,
+                    ),
+                    StateLocalEdge(
+                        source_segment_id="blk[21]",
+                        target_segment_id="blk[23]",
+                        kind=LocalEdgeKind.TAKEN,
+                        branch_arm=1,
+                    ),
+                ),
+            ),
+            StateDagNode(
+                key=target_a_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000030",
+                handler_serial=30,
+                entry_anchor=30,
+                owned_blocks=(30,),
+                exclusive_blocks=(30,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+            StateDagNode(
+                key=target_b_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000040",
+                handler_serial=40,
+                entry_anchor=40,
+                owned_blocks=(40,),
+                exclusive_blocks=(40,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+            StateDagNode(
+                key=target_c_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000050",
+                handler_serial=50,
+                entry_anchor=50,
+                owned_blocks=(50,),
+                exclusive_blocks=(50,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+        ),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=target_b_key,
+                target_state=0x40,
+                target_entry_anchor=40,
+                target_label="0x00000040",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=20,
+                    branch_arm=1,
+                ),
+                ordered_path=(20, 23),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=target_a_key,
+                target_state=0x30,
+                target_entry_anchor=30,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=21,
+                    branch_arm=1,
+                ),
+                ordered_path=(20, 21, 23),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=target_c_key,
+                target_state=0x50,
+                target_entry_anchor=50,
+                target_label="0x00000050",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=21,
+                    branch_arm=0,
+                ),
+                ordered_path=(20, 21, 22),
+            ),
+        ),
+    )
+
+    rendered = render_linearized_state_program(
+        dag,
+        order_strategy=RenderOrderStrategy.SEMANTIC,
+        program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+        boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
+        comment_mode=ProgramCommentMode.MINIMAL,
+        block_payload_by_serial={
+            20: (
+                "v0 = seed()",
+                "if (v0 == 0) goto LABEL_40",
+            ),
+            21: (
+                "v1 = compute()",
+                "if (v1 == 0) goto LABEL_50",
+            ),
+            22: ("v_tail = on_fallthrough()", "goto LABEL_50"),
+            23: ("v_tail = on_taken()", "goto LABEL_30"),
+        },
+    )
+
+    assert "v_tail = on_taken()" in rendered
+    assert "v_tail = on_fallthrough()" in rendered
+    assert "goto STATE_00000030;" in rendered
+    assert "goto STATE_00000050;" in rendered
+
+
+def test_render_linearized_state_program_minimal_comment_mode_hides_metadata_scaffolding() -> None:
+    source_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
+    target_key = StateDagNodeKey(handler_serial=30, state_const=0x30)
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x20,
+        bst_node_blocks=(),
+        nodes=(
+            StateDagNode(
+                key=source_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000020",
+                handler_serial=20,
+                entry_anchor=20,
+                owned_blocks=(20,),
+                exclusive_blocks=(20,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+            StateDagNode(
+                key=target_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000030",
+                handler_serial=30,
+                entry_anchor=30,
+                owned_blocks=(30,),
+                exclusive_blocks=(30,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+        ),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_key,
+                target_key=target_key,
+                target_state=0x30,
+                target_entry_anchor=30,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=20,
+                ),
+                ordered_path=(20, 30),
+            ),
+        ),
+    )
+
+    rendered = render_linearized_state_program(
+        dag,
+        order_strategy=RenderOrderStrategy.SEMANTIC,
+        program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+        boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
+        comment_mode=ProgramCommentMode.MINIMAL,
+        block_payload_by_serial={
+            20: (
+                "v120 = setup(v193)",
+                "goto LABEL_30",
+            ),
+        },
+    )
+
+    assert "v120 = setup(v193)" in rendered
+    assert "goto STATE_00000030;" in rendered
+    assert "// entry blk" not in rendered
+    assert "// blocks:" not in rendered
+    assert "// straight_line segment:" not in rendered
+
+
+def test_render_strategies_distinguish_catalog_from_semantic_order() -> None:
+    node_10 = StateDagNode(
+        key=StateDagNodeKey(handler_serial=10, state_const=0x10),
+        kind=StateNodeKind.EXACT,
+        state_label="0x00000010",
+        handler_serial=10,
+        entry_anchor=10,
+        owned_blocks=(10,),
+        exclusive_blocks=(10,),
+        shared_suffix_blocks=(),
+        local_segments=(),
+        local_edges=(),
+    )
+    node_05 = StateDagNode(
+        key=StateDagNodeKey(handler_serial=5, state_const=0x05),
+        kind=StateNodeKind.EXACT,
+        state_label="0x00000005",
+        handler_serial=5,
+        entry_anchor=5,
+        owned_blocks=(5,),
+        exclusive_blocks=(5,),
+        shared_suffix_blocks=(),
+        local_segments=(),
+        local_edges=(),
+    )
+    node_30 = StateDagNode(
+        key=StateDagNodeKey(handler_serial=30, state_const=0x30),
+        kind=StateNodeKind.EXACT,
+        state_label="0x00000030",
+        handler_serial=30,
+        entry_anchor=30,
+        owned_blocks=(30,),
+        exclusive_blocks=(30,),
+        shared_suffix_blocks=(),
+        local_segments=(),
+        local_edges=(),
+    )
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x10,
+        bst_node_blocks=(),
+        nodes=(node_10, node_05, node_30),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=node_10.key,
+                target_key=node_30.key,
+                target_state=0x30,
+                target_entry_anchor=30,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=10,
+                ),
+                ordered_path=(10, 30),
+            ),
+        ),
+    )
+
+    catalog = render_linearized_state_program(
+        dag,
+        order_strategy=RenderOrderStrategy.CATALOG,
+    )
+    semantic = render_linearized_state_program(
+        dag,
+        order_strategy=RenderOrderStrategy.SEMANTIC,
+    )
+
+    assert catalog.index("STATE_00000005:") < catalog.index("STATE_00000030:")
+    assert semantic.index("STATE_00000030:") < semantic.index("STATE_00000005:")
 
 
 def test_suppresses_dispatcher_root_alias_edge_when_concrete_prefix_exists() -> None:
