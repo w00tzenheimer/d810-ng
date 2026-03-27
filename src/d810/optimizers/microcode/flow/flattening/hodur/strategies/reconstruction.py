@@ -18,6 +18,11 @@ from dataclasses import dataclass, replace
 import ida_hexrays
 
 from d810.cfg.flow.edit_simulator import project_post_state
+from d810.cfg.entry_island_rescue import (
+    EntryIslandRescueOption,
+    build_entry_island_rescue_modification,
+    build_entry_island_rescue_options,
+)
 from d810.cfg.graph_modification import (
     NopInstructions,
     PrivateTerminalSuffix,
@@ -76,6 +81,7 @@ from d810.recon.flow.dag_index import (
     semantic_entry_anchors,
 )
 from d810.recon.flow.edge_metadata import edge_kind_name, make_edge_metadata
+from d810.recon.flow.entry_island import lift_target_entry_to_island_entry
 from d810.recon.flow.state_machine_analysis import (
     SnapshotConstantFixpointResult,
     StateWriteSite,
@@ -107,16 +113,6 @@ class ReconstructionCandidate:
     first_shared_block: int | None
     via_pred: int | None
     emission_mode: str
-
-
-@dataclass(frozen=True, slots=True)
-class EntryIslandRescueOption:
-    """One projected-CFG rescue candidate for an unreachable semantic entry island."""
-
-    source_block: int
-    lifted_entry: int
-    old_target: int
-    via_pred: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -602,25 +598,13 @@ class StateWriteReconstructionStrategy:
         reachable_blocks: set[int],
         dispatcher_region: set[int],
     ) -> int:
-        current = int(target_entry)
-        visited: set[int] = set()
-
-        while current not in visited:
-            visited.add(current)
-            candidates = sorted(
-                {
-                    int(edge.source_anchor.block_serial)
-                    for edge in incoming_by_target_entry.get(current, ())
-                    if int(edge.source_anchor.block_serial) in semantic_entry_anchors
-                    and int(edge.source_anchor.block_serial) not in dispatcher_region
-                    and int(edge.source_anchor.block_serial) not in reachable_blocks
-                }
-            )
-            if len(candidates) != 1:
-                break
-            current = candidates[0]
-
-        return current
+        return lift_target_entry_to_island_entry(
+            target_entry,
+            incoming_by_target_entry=incoming_by_target_entry,
+            semantic_entry_anchors=semantic_entry_anchors,
+            reachable_blocks=reachable_blocks,
+            dispatcher_region=dispatcher_region,
+        )
 
     @classmethod
     def _entry_island_rescue_options(
@@ -633,38 +617,14 @@ class StateWriteReconstructionStrategy:
         dispatcher_region: set[int],
         claimed_sources: set[int],
     ) -> tuple[EntryIslandRescueOption, ...]:
-        if source_block in claimed_sources:
-            return ()
-
-        source_snapshot = projected_flow_graph.get_block(source_block)
-        if source_snapshot is None or source_snapshot.nsucc != 1:
-            return ()
-
-        old_target = int(source_snapshot.succs[0])
-        if old_target == lifted_entry:
-            return ()
-
-        options = [
-            EntryIslandRescueOption(
-                source_block=source_block,
-                lifted_entry=lifted_entry,
-                old_target=old_target,
-            )
-        ]
-        for pred_serial in sorted(int(pred) for pred in source_snapshot.preds):
-            if pred_serial in dispatcher_region or pred_serial in claimed_sources:
-                continue
-            if pred_serial not in reachable_blocks:
-                continue
-            options.append(
-                EntryIslandRescueOption(
-                    source_block=source_block,
-                    lifted_entry=lifted_entry,
-                    old_target=old_target,
-                    via_pred=pred_serial,
-                )
-            )
-        return tuple(options)
+        return build_entry_island_rescue_options(
+            source_block,
+            lifted_entry=lifted_entry,
+            projected_flow_graph=projected_flow_graph,
+            reachable_blocks=reachable_blocks,
+            dispatcher_region=dispatcher_region,
+            claimed_sources=claimed_sources,
+        )
 
     @classmethod
     def _build_entry_island_rescue_modification(
@@ -673,18 +633,7 @@ class StateWriteReconstructionStrategy:
         *,
         builder: ModificationBuilder,
     ):
-        if option.via_pred is None:
-            return builder.goto_redirect(
-                source_block=option.source_block,
-                target_block=option.lifted_entry,
-                old_target=option.old_target,
-            )
-        return builder.edge_redirect(
-            source_block=option.source_block,
-            target_block=option.lifted_entry,
-            old_target=option.old_target,
-            via_pred=option.via_pred,
-        )
+        return build_entry_island_rescue_modification(option, builder=builder)
 
     @classmethod
     def _score_entry_island_rescue_option(
