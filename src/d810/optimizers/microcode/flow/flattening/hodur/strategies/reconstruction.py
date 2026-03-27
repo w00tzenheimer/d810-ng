@@ -23,6 +23,7 @@ from d810.cfg.graph_modification import (
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
 )
+from d810.cfg.mod_claims import collect_mod_claims
 from d810.cfg.lowering_selector import (
     SharedFeederContext,
     SharedFeederLoweringKind,
@@ -60,6 +61,10 @@ from d810.recon.flow.graph_reachability import (
     edge_reachable_frontier,
     graph_reaches_block,
     pick_deepest_rescue_frontier,
+)
+from d810.recon.flow.dag_index import (
+    incoming_edges_by_target_entry,
+    semantic_entry_anchors,
 )
 from d810.recon.flow.state_machine_analysis import (
     SnapshotConstantFixpointResult,
@@ -614,52 +619,19 @@ class StateWriteReconstructionStrategy:
 
     @staticmethod
     def _semantic_entry_anchors(dag: LinearizedStateDag) -> set[int]:
-        return {int(node.entry_anchor) for node in dag.nodes}
+        return semantic_entry_anchors(dag)
 
     @staticmethod
     def _incoming_edges_by_target_entry(
         dag: LinearizedStateDag,
     ) -> dict[int, tuple[StateDagEdge, ...]]:
-        incoming: defaultdict[int, list[StateDagEdge]] = defaultdict(list)
-        for edge in dag.edges:
-            if edge.target_entry_anchor is None:
-                continue
-            incoming[int(edge.target_entry_anchor)].append(edge)
-        return {
-            entry: tuple(edges)
-            for entry, edges in incoming.items()
-        }
+        return incoming_edges_by_target_entry(dag)
 
     @staticmethod
     def _collect_mod_claims(
         modifications: list,
     ) -> tuple[set[int], set[int]]:
-        claimed_sources: set[int] = set()
-        claimed_targets: set[int] = set()
-        for mod in modifications:
-            if hasattr(mod, "new_target"):
-                claimed_targets.add(int(mod.new_target))
-            if hasattr(mod, "goto_target"):
-                claimed_targets.add(int(mod.goto_target))
-            if hasattr(mod, "conditional_target"):
-                claimed_targets.add(int(mod.conditional_target))
-            if hasattr(mod, "fallthrough_target"):
-                claimed_targets.add(int(mod.fallthrough_target))
-            if hasattr(mod, "per_pred_targets"):
-                for pred_serial, target_serial in mod.per_pred_targets:
-                    claimed_sources.add(int(pred_serial))
-                    claimed_targets.add(int(target_serial))
-            if hasattr(mod, "from_serial"):
-                claimed_sources.add(int(mod.from_serial))
-            if hasattr(mod, "source_serial"):
-                claimed_sources.add(int(mod.source_serial))
-            if hasattr(mod, "source_block"):
-                claimed_sources.add(int(mod.source_block))
-            if hasattr(mod, "src_block"):
-                claimed_sources.add(int(mod.src_block))
-            if hasattr(mod, "block_serial"):
-                claimed_sources.add(int(mod.block_serial))
-        return claimed_sources, claimed_targets
+        return collect_mod_claims(modifications)
 
     @classmethod
     def _edge_reachable_frontier(
