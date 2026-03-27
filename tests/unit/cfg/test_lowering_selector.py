@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from d810.cfg.lowering_selector import (
+    PredecessorPeelContext,
+    SharedFeederContext,
     SharedFeederLoweringKind,
     can_peel_predecessor_edge,
     select_shared_feeder_lowering,
@@ -59,100 +61,116 @@ class TestTargetReachesSourceIgnoringBlocks:
 class TestCanPeelPredecessorEdge:
     def test_two_way_predecessor_can_be_peeled(self):
         assert can_peel_predecessor_edge(
+            PredecessorPeelContext(
             via_pred=12,
             via_pred_succs=(6, 14),
             source_block=14,
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=set(),
+            bst_node_blocks=frozenset(),
             target_reaches_pred=False,
+            )
         )
 
     def test_single_way_predecessor_cannot_be_peeled(self):
         assert not can_peel_predecessor_edge(
+            PredecessorPeelContext(
             via_pred=12,
             via_pred_succs=(14,),
             source_block=14,
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=set(),
+            bst_node_blocks=frozenset(),
             target_reaches_pred=False,
+            )
         )
 
     def test_same_other_successor_rejected(self):
         assert not can_peel_predecessor_edge(
+            PredecessorPeelContext(
             via_pred=12,
             via_pred_succs=(14, 16),
             source_block=14,
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=set(),
+            bst_node_blocks=frozenset(),
             target_reaches_pred=False,
+            )
         )
 
     def test_cycle_risk_rejected(self):
         assert not can_peel_predecessor_edge(
+            PredecessorPeelContext(
             via_pred=12,
             via_pred_succs=(6, 14),
             source_block=14,
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=set(),
+            bst_node_blocks=frozenset(),
             target_reaches_pred=True,
+            )
         )
 
 
 class TestSelectSharedFeederLowering:
     def test_single_pred_uses_block_goto(self):
         decision = select_shared_feeder_lowering(
+            SharedFeederContext(
             source_serial=14,
             source_pred_count=1,
             ordered_path=(12, 14),
             via_pred_succs=(6, 14),
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=set(),
+            bst_node_blocks=frozenset(),
             target_reaches_pred=False,
+            )
         )
         assert decision.kind == SharedFeederLoweringKind.BLOCK_GOTO
 
     def test_shared_source_defaults_to_clone_to_preserve_existing_behavior(self):
         decision = select_shared_feeder_lowering(
+            SharedFeederContext(
             source_serial=14,
             source_pred_count=2,
             ordered_path=(12, 14),
             via_pred_succs=(6, 14),
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=set(),
+            bst_node_blocks=frozenset(),
             target_reaches_pred=False,
+            )
         )
         assert decision.kind == SharedFeederLoweringKind.PRED_SCOPED_CLONE
         assert decision.via_pred == 12
 
     def test_shared_source_falls_back_to_clone_when_peel_unavailable(self):
         decision = select_shared_feeder_lowering(
+            SharedFeederContext(
             source_serial=32,
             source_pred_count=2,
             ordered_path=(30, 32),
             via_pred_succs=(32,),
             target_entry=34,
             dispatcher_serial=6,
-            bst_node_blocks=set(),
+            bst_node_blocks=frozenset(),
             target_reaches_pred=False,
+            )
         )
         assert decision.kind == SharedFeederLoweringKind.PRED_SCOPED_CLONE
         assert decision.via_pred == 30
 
     def test_shared_source_falls_back_to_clone_when_target_reaches_pred(self):
         decision = select_shared_feeder_lowering(
+            SharedFeederContext(
             source_serial=14,
             source_pred_count=2,
             ordered_path=(12, 14),
             via_pred_succs=(6, 14),
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=set(),
+            bst_node_blocks=frozenset(),
             target_reaches_pred=True,
+            )
         )
         assert decision.kind == SharedFeederLoweringKind.PRED_SCOPED_CLONE

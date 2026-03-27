@@ -24,12 +24,12 @@ from d810.cfg.graph_modification import (
     PrivateTerminalSuffixGroup,
 )
 from d810.cfg.lowering_selector import (
+    SharedFeederContext,
     SharedFeederLoweringKind,
     can_peel_predecessor_edge,
     select_shared_feeder_lowering,
     target_reaches_source_ignoring_blocks,
 )
-from d810.cfg.lowering_scope import derive_edge_predecessor
 from d810.cfg.plan import compile_patch_plan, is_block_creating_modification
 from d810.core import logging
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
@@ -3794,13 +3794,20 @@ class StateWriteReconstructionStrategy:
                         )
                         proj_src = projected_flow_graph.get_block(src_serial)
                         src_npred = len(proj_src.preds) if proj_src is not None else 0
-                        edge_pred = None
                         pred_succs: tuple[int, ...] = ()
-                        if edge.ordered_path:
-                            try:
-                                edge_pred = derive_edge_predecessor(edge.ordered_path)
-                            except ValueError:
-                                edge_pred = None
+                        feeder_context = SharedFeederContext(
+                            source_serial=src_serial,
+                            source_pred_count=src_npred,
+                            ordered_path=tuple(
+                                int(node) for node in (edge.ordered_path or ())
+                            ),
+                            via_pred_succs=(),
+                            target_entry=target_entry,
+                            dispatcher_serial=dispatcher_serial,
+                            bst_node_blocks=frozenset(_bst_set),
+                            target_reaches_pred=False,
+                        )
+                        edge_pred = feeder_context.via_pred
                         if edge_pred is not None:
                             pred_block = projected_flow_graph.get_block(edge_pred)
                             if pred_block is not None:
@@ -3818,14 +3825,16 @@ class StateWriteReconstructionStrategy:
                             else False
                         )
                         lowering = select_shared_feeder_lowering(
-                            source_serial=src_serial,
-                            source_pred_count=src_npred,
-                            ordered_path=edge.ordered_path,
-                            via_pred_succs=pred_succs,
-                            target_entry=target_entry,
-                            dispatcher_serial=dispatcher_serial,
-                            bst_node_blocks=_bst_set,
-                            target_reaches_pred=target_reaches_pred,
+                            SharedFeederContext(
+                                source_serial=feeder_context.source_serial,
+                                source_pred_count=feeder_context.source_pred_count,
+                                ordered_path=feeder_context.ordered_path,
+                                via_pred_succs=pred_succs,
+                                target_entry=feeder_context.target_entry,
+                                dispatcher_serial=feeder_context.dispatcher_serial,
+                                bst_node_blocks=feeder_context.bst_node_blocks,
+                                target_reaches_pred=target_reaches_pred,
+                            )
                         )
                         if lowering.kind == SharedFeederLoweringKind.PRED_SCOPED_CLONE:
                             feeder_mods.append(

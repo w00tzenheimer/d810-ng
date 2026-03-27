@@ -36,6 +36,54 @@ class SharedFeederLoweringDecision:
     reason: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class PredecessorPeelContext:
+    """Projected CFG facts needed to evaluate predecessor-edge peeling."""
+
+    via_pred: int | None
+    via_pred_succs: tuple[int, ...]
+    source_block: int
+    target_entry: int
+    dispatcher_serial: int
+    bst_node_blocks: frozenset[int]
+    target_reaches_pred: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SharedFeederContext:
+    """Structured recon -> cfg handoff for shared-feeder lowering selection."""
+
+    source_serial: int
+    source_pred_count: int
+    ordered_path: tuple[int, ...]
+    via_pred_succs: tuple[int, ...]
+    target_entry: int
+    dispatcher_serial: int
+    bst_node_blocks: frozenset[int]
+    target_reaches_pred: bool
+
+    @property
+    def via_pred(self) -> int | None:
+        if not self.ordered_path:
+            return None
+        try:
+            return derive_edge_predecessor(self.ordered_path)
+        except ValueError:
+            return None
+
+    @property
+    def peel_context(self) -> PredecessorPeelContext:
+        return PredecessorPeelContext(
+            via_pred=self.via_pred,
+            via_pred_succs=self.via_pred_succs,
+            source_block=self.source_serial,
+            target_entry=self.target_entry,
+            dispatcher_serial=self.dispatcher_serial,
+            bst_node_blocks=self.bst_node_blocks,
+            target_reaches_pred=self.target_reaches_pred,
+        )
+
+
 def target_reaches_source_ignoring_blocks(
     flow_graph: object,
     *,
@@ -73,45 +121,36 @@ def target_reaches_source_ignoring_blocks(
     return False
 
 
-def can_peel_predecessor_edge(
-    *,
-    via_pred: int | None,
-    via_pred_succs: tuple[int, ...],
-    source_block: int,
-    target_entry: int,
-    dispatcher_serial: int,
-    bst_node_blocks: set[int],
-    target_reaches_pred: bool,
-) -> bool:
+def can_peel_predecessor_edge(context: PredecessorPeelContext) -> bool:
     """Return True when a predecessor edge can be peeled instead of cloning."""
-    if via_pred is None:
+    if context.via_pred is None:
         return False
-    if len(via_pred_succs) != 2:
+    if len(context.via_pred_succs) != 2:
         return False
-    if source_block not in via_pred_succs:
+    if context.source_block not in context.via_pred_succs:
         return False
-    if target_entry in {dispatcher_serial, source_block, via_pred}:
+    if context.target_entry in {
+        context.dispatcher_serial,
+        context.source_block,
+        context.via_pred,
+    }:
         return False
-    if target_entry in bst_node_blocks:
+    if context.target_entry in context.bst_node_blocks:
         return False
-    other_succs = {int(succ) for succ in via_pred_succs if int(succ) != source_block}
-    if target_entry in other_succs:
+    other_succs = {
+        int(succ)
+        for succ in context.via_pred_succs
+        if int(succ) != context.source_block
+    }
+    if context.target_entry in other_succs:
         return False
-    if target_reaches_pred:
+    if context.target_reaches_pred:
         return False
     return True
 
 
 def select_shared_feeder_lowering(
-    *,
-    source_serial: int,
-    source_pred_count: int,
-    ordered_path: tuple[int, ...] | list[int] | None,
-    via_pred_succs: tuple[int, ...],
-    target_entry: int,
-    dispatcher_serial: int,
-    bst_node_blocks: set[int],
-    target_reaches_pred: bool,
+    context: SharedFeederContext,
 ) -> SharedFeederLoweringDecision:
     """Choose a lowering shape for a shared 1-way feeder redirect.
 
@@ -126,21 +165,26 @@ def select_shared_feeder_lowering(
     Hodur behavior for ``sub_7FFD`` while preserving the extracted seam for a
     future, separately-validated peel policy.
     """
-    if not requires_pred_scoped_lowering(source_serial, source_pred_count, ordered_path):
+    if not requires_pred_scoped_lowering(
+        context.source_serial,
+        context.source_pred_count,
+        context.ordered_path,
+    ):
         return SharedFeederLoweringDecision(
             kind=SharedFeederLoweringKind.BLOCK_GOTO,
             reason="source_not_shared",
         )
 
-    via_pred = derive_edge_predecessor(ordered_path or ())
     return SharedFeederLoweringDecision(
         kind=SharedFeederLoweringKind.PRED_SCOPED_CLONE,
-        via_pred=via_pred,
+        via_pred=context.via_pred,
         reason="shared_source_requires_clone",
     )
 
 
 __all__ = [
+    "PredecessorPeelContext",
+    "SharedFeederContext",
     "SharedFeederLoweringDecision",
     "SharedFeederLoweringKind",
     "can_peel_predecessor_edge",
