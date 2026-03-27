@@ -45,6 +45,10 @@ from d810.cfg.lowering_selector import (
     plan_shared_group_duplication,
     target_reaches_source_ignoring_blocks,
 )
+from d810.cfg.terminal_family_split import (
+    TerminalFamilySplitCandidate,
+    build_terminal_family_split_proposals,
+)
 from d810.cfg.plan import compile_patch_plan, is_block_creating_modification
 from d810.core import logging
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
@@ -1315,80 +1319,32 @@ class StateWriteReconstructionStrategy:
             return None
 
         baseline_reachable_count = len(current_reachable)
-        groups_by_suffix: dict[tuple[int, ...], list[TerminalFamilyCandidate]] = {}
-        for candidate in candidates:
-            for suffix_len in range(2, len(candidate.path) + 1):
-                suffix = candidate.path[-suffix_len:]
-                groups_by_suffix.setdefault(suffix, []).append(candidate)
-
-        suffix_groups = sorted(
-            groups_by_suffix.items(),
-            key=lambda item: (
-                -len(item[0]),
-                -len({
-                    cls._terminal_candidate_key(c)
-                    for c in item[1]
-                }),
-                int(item[0][0]),
-            ),
+        split_candidates = tuple(
+            TerminalFamilySplitCandidate(
+                source_block=int(candidate.source_block),
+                branch_arm=(
+                    int(candidate.branch_arm)
+                    if candidate.branch_arm is not None
+                    else None
+                ),
+                family_entry=int(candidate.family_entry),
+                path=tuple(int(s) for s in candidate.path),
+                value_family_signature=candidate.value_family_signature,
+                lineage_eas=tuple(int(ea) for ea in candidate.lineage_eas),
+            )
+            for candidate in candidates
         )
 
-        for suffix_serials, group_members in suffix_groups:
-            unique_members: dict[
-                tuple[int, int | None, int, tuple[int, ...]],
-                TerminalFamilyCandidate,
-            ] = {}
-            for candidate in group_members:
-                unique_members.setdefault(cls._terminal_candidate_key(candidate), candidate)
-            members = tuple(unique_members.values())
-            if len(members) < 2:
-                continue
-
-            signature_buckets: defaultdict[tuple[object, ...], list[TerminalFamilyCandidate]] = defaultdict(list)
-            for candidate in members:
-                signature_buckets[candidate.value_family_signature].append(candidate)
-            if len(signature_buckets) < 2:
-                continue
-
-            sorted_buckets = sorted(
-                signature_buckets.items(),
-                key=lambda item: (
-                    -len(item[1]),
-                    repr(item[0]),
-                    min(
-                        candidate.lineage_eas[0]
-                        if candidate.lineage_eas
-                        else 0
-                        for candidate in item[1]
-                    ),
-                ),
-            )
-            primary_signature = sorted_buckets[0][0]
-
-            selected_anchors: list[int] = []
-            selected_candidates: list[TerminalFamilyCandidate] = []
-            for signature, bucket in sorted_buckets[1:]:
-                _ = signature
-                for candidate in bucket:
-                    anchor_serial = cls._candidate_anchor_for_suffix(
-                        candidate,
-                        suffix_serials=suffix_serials,
-                        projected_flow_graph=projected_flow_graph,
-                    )
-                    if anchor_serial is None or anchor_serial in selected_anchors:
-                        continue
-                    selected_candidates.append(candidate)
-                    selected_anchors.append(int(anchor_serial))
-
-            if not selected_anchors:
-                logger.info(
-                    "RECON RETURN: terminal-family split candidate shared_entry=%s stop=%s "
-                    "rejection=no_viable_anchor suffix=%s",
-                    blk_label(mba, int(suffix_serials[0])),
-                    blk_label(mba, int(suffix_serials[-1])),
-                    suffix_serials,
-                )
-                continue
+        for proposal in build_terminal_family_split_proposals(
+            split_candidates,
+            projected_flow_graph=projected_flow_graph,
+        ):
+            suffix_serials = proposal.suffix_serials
+            selected_anchors = list(proposal.selected_anchors)
+            selected_candidates = [
+                candidates[index] for index in proposal.selected_candidate_indexes
+            ]
+            primary_signature = proposal.primary_signature
 
             candidate_mod = cls._build_terminal_family_split_modification(
                 builder=builder,
