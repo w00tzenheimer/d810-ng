@@ -5,8 +5,11 @@ from d810.cfg.lowering_selector import (
     SharedFeederCandidateScore,
     SharedFeederContext,
     SharedFeederLoweringKind,
+    SharedGroupCandidate,
+    SharedGroupContext,
     can_peel_predecessor_edge,
     enumerate_shared_feeder_candidates,
+    plan_shared_group_duplication,
     select_shared_feeder_lowering,
     target_reaches_source_ignoring_blocks,
 )
@@ -243,3 +246,74 @@ class TestSelectSharedFeederLowering:
         )
         assert decision.kind == SharedFeederLoweringKind.PRED_EDGE_PEEL
         assert decision.reason == "peel_preferred_for_test"
+
+
+class TestPlanSharedGroupDuplication:
+    def test_single_candidate_keeps_old_target_for_other_pred(self):
+        plan = plan_shared_group_duplication(
+            SharedGroupContext(
+                shared_block=10,
+                old_target=2,
+                shared_preds=(8, 9),
+                candidates=(SharedGroupCandidate(via_pred=8, target_entry=24),),
+            )
+        )
+        assert plan.accepted
+        assert plan.per_pred_targets == ((9, 2), (8, 24))
+
+    def test_single_candidate_rejects_when_no_keep_pred_exists(self):
+        plan = plan_shared_group_duplication(
+            SharedGroupContext(
+                shared_block=10,
+                old_target=2,
+                shared_preds=(8,),
+                candidates=(SharedGroupCandidate(via_pred=8, target_entry=24),),
+            )
+        )
+        assert not plan.accepted
+        assert plan.rejection_reason == "missing_keep_pred"
+
+    def test_two_candidate_group_keeps_explicit_old_target_when_present(self):
+        plan = plan_shared_group_duplication(
+            SharedGroupContext(
+                shared_block=10,
+                old_target=2,
+                shared_preds=(8, 9),
+                candidates=(
+                    SharedGroupCandidate(via_pred=8, target_entry=24),
+                    SharedGroupCandidate(via_pred=9, target_entry=2),
+                ),
+            )
+        )
+        assert plan.accepted
+        assert plan.per_pred_targets == ((9, 2), (8, 24))
+
+    def test_two_new_targets_preserves_both_candidates_without_fake_keep(self):
+        plan = plan_shared_group_duplication(
+            SharedGroupContext(
+                shared_block=10,
+                old_target=2,
+                shared_preds=(8, 9),
+                candidates=(
+                    SharedGroupCandidate(via_pred=8, target_entry=24),
+                    SharedGroupCandidate(via_pred=9, target_entry=30),
+                ),
+            )
+        )
+        assert plan.accepted
+        assert plan.per_pred_targets == ((8, 24), (9, 30))
+
+    def test_non_candidate_preds_require_multi_clone_rejection(self):
+        plan = plan_shared_group_duplication(
+            SharedGroupContext(
+                shared_block=10,
+                old_target=2,
+                shared_preds=(8, 9, 11),
+                candidates=(
+                    SharedGroupCandidate(via_pred=8, target_entry=24),
+                    SharedGroupCandidate(via_pred=9, target_entry=30),
+                ),
+            )
+        )
+        assert not plan.accepted
+        assert plan.rejection_reason == "shared_group_requires_multi_clone"
