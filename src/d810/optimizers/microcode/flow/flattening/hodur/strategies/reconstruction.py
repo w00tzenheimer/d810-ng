@@ -48,7 +48,7 @@ from d810.cfg.lowering_selector import (
 from d810.cfg.reconstruction_emission import plan_reconstruction_emission
 from d810.cfg.terminal_family_split import (
     TerminalFamilySplitCandidate,
-    build_terminal_family_split_proposals,
+    select_terminal_family_split,
 )
 from d810.cfg.plan import compile_patch_plan, is_block_creating_modification
 from d810.core import logging
@@ -1302,179 +1302,6 @@ class StateWriteReconstructionStrategy:
         return tuple(candidates)
 
     @classmethod
-    def _select_terminal_family_split(
-        cls,
-        candidates: tuple[TerminalFamilyCandidate, ...],
-        *,
-        base_flow_graph,
-        projected_flow_graph,
-        builder: ModificationBuilder,
-        modifications: list,
-        mba,
-    ):
-        current_reachable = cls._compute_reachable_blocks(
-            projected_flow_graph,
-            start_serial=getattr(projected_flow_graph, "entry_serial", None),
-        )
-        if not current_reachable:
-            return None
-
-        baseline_reachable_count = len(current_reachable)
-        split_candidates = tuple(
-            TerminalFamilySplitCandidate(
-                source_block=int(candidate.source_block),
-                branch_arm=(
-                    int(candidate.branch_arm)
-                    if candidate.branch_arm is not None
-                    else None
-                ),
-                family_entry=int(candidate.family_entry),
-                path=tuple(int(s) for s in candidate.path),
-                value_family_signature=candidate.value_family_signature,
-                lineage_eas=tuple(int(ea) for ea in candidate.lineage_eas),
-            )
-            for candidate in candidates
-        )
-
-        for proposal in build_terminal_family_split_proposals(
-            split_candidates,
-            projected_flow_graph=projected_flow_graph,
-        ):
-            suffix_serials = proposal.suffix_serials
-            selected_anchors = list(proposal.selected_anchors)
-            selected_candidates = [
-                candidates[index] for index in proposal.selected_candidate_indexes
-            ]
-            primary_signature = proposal.primary_signature
-
-            candidate_mod = cls._build_terminal_family_split_modification(
-                builder=builder,
-                anchors=tuple(selected_anchors),
-                suffix_serials=suffix_serials,
-                projected_flow_graph=projected_flow_graph,
-            )
-            if candidate_mod is None:
-                continue
-
-            try:
-                patch_plan = compile_patch_plan(modifications + [candidate_mod], base_flow_graph)
-                candidate_projected = project_post_state(base_flow_graph, patch_plan)
-            except Exception as exc:
-                logger.info(
-                    "RECON RETURN: terminal-family split candidate shared_entry=%s stop=%s "
-                    "rejection=projection_error error=%s",
-                    blk_label(mba, int(suffix_serials[0])),
-                    blk_label(mba, int(suffix_serials[-1])),
-                    exc,
-                )
-                continue
-
-            candidate_reachable = cls._compute_reachable_blocks(
-                candidate_projected,
-                start_serial=getattr(candidate_projected, "entry_serial", None),
-            )
-            if candidate_reachable is None or len(candidate_reachable) < baseline_reachable_count:
-                logger.info(
-                    "RECON RETURN: terminal-family split candidate shared_entry=%s stop=%s "
-                    "rejection=reachable_regression before=%d after=%s anchors=%s",
-                    blk_label(mba, int(suffix_serials[0])),
-                    blk_label(mba, int(suffix_serials[-1])),
-                    baseline_reachable_count,
-                    len(candidate_reachable) if candidate_reachable is not None else None,
-                    [blk_label(mba, anchor) for anchor in selected_anchors],
-                )
-                continue
-
-            return (
-                candidate_mod,
-                candidate_projected,
-                suffix_serials,
-                tuple(selected_anchors),
-                tuple(selected_candidates),
-                primary_signature,
-            )
-
-        return None
-
-    @classmethod
-    def _candidate_anchor_for_suffix(
-        cls,
-        candidate: TerminalFamilyCandidate,
-        *,
-        suffix_serials: tuple[int, ...],
-        projected_flow_graph,
-    ) -> int | None:
-        if candidate.path[-len(suffix_serials):] != suffix_serials:
-            return None
-        if len(candidate.path) > len(suffix_serials):
-            anchor_serial = int(candidate.path[-len(suffix_serials) - 1])
-        elif candidate.family_entry == suffix_serials[0]:
-            anchor_serial = int(candidate.source_block)
-        else:
-            return None
-
-        anchor_block = projected_flow_graph.get_block(anchor_serial)
-        if anchor_block is None or anchor_block.nsucc != 1:
-            return None
-        if int(anchor_block.succs[0]) != int(suffix_serials[0]):
-            return None
-        return anchor_serial
-
-    @classmethod
-    def _build_terminal_family_split_modification(
-        cls,
-        *,
-        builder: ModificationBuilder,
-        anchors: tuple[int, ...],
-        suffix_serials: tuple[int, ...],
-        projected_flow_graph=None,
-    ):
-        shared_entry = int(suffix_serials[0])
-        stop_block = int(suffix_serials[-1])
-        # Validate: suffix must still be a linear ... -> 0-way chain
-        # in the projected flow graph.  Prior modifications (corridor
-        # redirects, PTS from earlier iterations) may have changed the
-        # suffix topology.
-        if projected_flow_graph is not None:
-            for idx, serial in enumerate(suffix_serials):
-                blk = projected_flow_graph.get_block(serial)
-                if blk is None:
-                    logger.info(
-                        "PTS gate: suffix blk[%d] not in projected graph, skipping",
-                        serial,
-                    )
-                    return None
-                if idx < len(suffix_serials) - 1:
-                    if blk.nsucc != 1:
-                        logger.info(
-                            "PTS gate: interior suffix blk[%d] nsucc=%d, skipping",
-                            serial, blk.nsucc,
-                        )
-                        return None
-                else:
-                    if blk.nsucc != 0:
-                        logger.info(
-                            "PTS gate: final suffix blk[%d] nsucc=%d, skipping",
-                            serial, blk.nsucc,
-                        )
-                        return None
-        if len(anchors) == 1:
-            return builder.private_terminal_suffix(
-                anchor_serial=int(anchors[0]),
-                shared_entry_serial=shared_entry,
-                return_block_serial=stop_block,
-                suffix_serials=suffix_serials,
-                reason="terminal_family_split",
-            )
-        return builder.private_terminal_suffix_group(
-            anchors=anchors,
-            shared_entry_serial=shared_entry,
-            return_block_serial=stop_block,
-            suffix_serials=suffix_serials,
-            reason="terminal_family_split",
-        )
-
-    @classmethod
     def _emit_terminal_family_splits(
         cls,
         dag: LinearizedStateDag,
@@ -1510,25 +1337,43 @@ class StateWriteReconstructionStrategy:
             if len(candidates) < 2:
                 break
 
-            selected = cls._select_terminal_family_split(
-                candidates,
+            split_candidates = tuple(
+                TerminalFamilySplitCandidate(
+                    source_block=int(candidate.source_block),
+                    branch_arm=(
+                        int(candidate.branch_arm)
+                        if candidate.branch_arm is not None
+                        else None
+                    ),
+                    family_entry=int(candidate.family_entry),
+                    path=tuple(int(s) for s in candidate.path),
+                    value_family_signature=candidate.value_family_signature,
+                    lineage_eas=tuple(int(ea) for ea in candidate.lineage_eas),
+                )
+                for candidate in candidates
+            )
+            selected = select_terminal_family_split(
+                split_candidates,
                 base_flow_graph=base_flow_graph,
                 projected_flow_graph=current_projected_flow_graph,
                 builder=builder,
                 modifications=modifications,
-                mba=mba,
+                compute_reachable_blocks=lambda flow_graph: cls._compute_reachable_blocks(
+                    flow_graph,
+                    start_serial=getattr(flow_graph, "entry_serial", None),
+                ),
             )
             if selected is None:
                 break
 
-            (
-                candidate_mod,
-                candidate_projected,
-                suffix_serials,
-                selected_anchors,
-                selected_candidates,
-                primary_signature,
-            ) = selected
+            candidate_mod = selected.modification
+            candidate_projected = selected.projected_flow_graph
+            suffix_serials = selected.suffix_serials
+            selected_anchors = selected.selected_anchors
+            selected_candidates = tuple(
+                candidates[index] for index in selected.selected_candidate_indexes
+            )
+            primary_signature = selected.primary_signature
             modifications.append(candidate_mod)
             current_projected_flow_graph = candidate_projected
             emitted += 1
