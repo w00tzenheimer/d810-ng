@@ -5,9 +5,12 @@ from types import SimpleNamespace
 from d810.recon.flow.terminal_family import (
     TerminalFamilyCandidate,
     TerminalFamilySeed,
+    TerminalFamilySeedProbe,
+    build_terminal_family_candidates,
     candidate_shared_suffix_entries,
     probe_terminal_family_seed,
     resolve_terminal_source_arm_entry,
+    seed_terminal_family_probes,
 )
 
 
@@ -29,6 +32,11 @@ class _DummyFlowGraph:
 
     def get_block(self, serial: int):
         return self.blocks.get(int(serial))
+
+
+class _DummyDag:
+    def __init__(self, edges: tuple[object, ...]):
+        self.edges = edges
 
 
 class TestResolveTerminalSourceArmEntry:
@@ -110,3 +118,67 @@ class TestCandidateSharedSuffixEntries:
 
         assert shared[(10, None, 20, (20, 30, 40))] == 30
         assert shared[(11, None, 21, (21, 30, 40))] == 30
+
+
+class TestSeedTerminalFamilyProbes:
+    def test_collects_dag_and_projected_cfg_seed_origins(self):
+        flow_graph = _DummyFlowGraph({
+            40: ((12,), (90, 91)),
+            90: ((40,), ()),
+            91: ((40,), ()),
+        })
+        edge = SimpleNamespace(
+            kind=1,  # replaced below after import-time constant check
+            source_anchor=SimpleNamespace(block_serial=40, branch_arm=1),
+        )
+        from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
+
+        edge.kind = SemanticEdgeKind.CONDITIONAL_RETURN
+
+        probes = seed_terminal_family_probes(
+            _DummyDag((edge,)),
+            base_flow_graph=flow_graph,
+            projected_flow_graph=flow_graph,
+            dispatcher_region={6},
+            reachable_blocks={40, 90, 91},
+        )
+
+        by_key = {
+            (probe.seed.source_block, probe.seed.branch_arm): probe
+            for probe in probes
+        }
+        assert by_key[(40, 1)].seed_origins == ("dag_edge", "projected_cfg")
+        assert by_key[(40, 0)].seed_origins == ("projected_cfg",)
+
+
+class TestBuildTerminalFamilyCandidates:
+    def test_deduplicates_candidates_by_source_arm_and_path(self):
+        flow_graph = _DummyFlowGraph({
+            90: ((40,), (94,)),
+            94: ((90,), ()),
+        })
+        seed = TerminalFamilySeed(source_block=40, branch_arm=0, edge=None)
+        probe = TerminalFamilySeedProbe(
+            seed=seed,
+            seed_origins=("dag_edge",),
+            source_reachable=True,
+            source_nsucc=2,
+            arm_target=90,
+            arm_target_projected_only=False,
+            family_entry=90,
+            family_entry_projected_only=False,
+            path=(90, 94),
+            path_projected_only_blocks=(),
+            stop_block=94,
+            rejection_reason="accepted",
+        )
+
+        candidates = build_terminal_family_candidates(
+            (probe, probe),
+            projected_flow_graph=flow_graph,
+            state_var_stkoff=None,
+        )
+
+        assert len(candidates) == 1
+        assert candidates[0].family_entry == 90
+        assert candidates[0].path == (90, 94)

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import ida_hexrays
 
-from d810.recon.flow.linearized_state_dag import StateDagEdge
+from d810.recon.flow.linearized_state_dag import SemanticEdgeKind, StateDagEdge
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,6 +328,87 @@ def probe_terminal_family_seed(
     )
 
 
+def seed_terminal_family_probes(
+    dag,
+    *,
+    base_flow_graph,
+    projected_flow_graph,
+    dispatcher_region: set[int],
+    reachable_blocks: set[int],
+) -> tuple[TerminalFamilySeedProbe, ...]:
+    seeds_by_key: dict[tuple[int, int | None], TerminalFamilySeed] = {}
+    seed_origins: defaultdict[tuple[int, int | None], set[str]] = defaultdict(set)
+
+    for edge in dag.edges:
+        if edge.kind != SemanticEdgeKind.CONDITIONAL_RETURN:
+            continue
+        source_block = int(edge.source_anchor.block_serial)
+        branch_arm = (
+            int(edge.source_anchor.branch_arm)
+            if edge.source_anchor.branch_arm is not None
+            else None
+        )
+        seed_key = (source_block, branch_arm)
+        existing_seed = seeds_by_key.get(seed_key)
+        if existing_seed is None or existing_seed.edge is None:
+            seeds_by_key[seed_key] = TerminalFamilySeed(
+                source_block=source_block,
+                branch_arm=branch_arm,
+                edge=edge,
+            )
+        seed_origins[seed_key].add("dag_edge")
+
+    for source_block in sorted(int(serial) for serial in projected_flow_graph.blocks):
+        if source_block in dispatcher_region:
+            continue
+        source_snapshot = projected_flow_graph.get_block(source_block)
+        if source_snapshot is None or source_snapshot.nsucc < 2:
+            continue
+        for branch_arm in range(int(source_snapshot.nsucc)):
+            seed_key = (int(source_block), int(branch_arm))
+            seeds_by_key.setdefault(
+                seed_key,
+                TerminalFamilySeed(
+                    source_block=int(source_block),
+                    branch_arm=int(branch_arm),
+                    edge=None,
+                ),
+            )
+            seed_origins[seed_key].add("projected_cfg")
+
+    probes: list[TerminalFamilySeedProbe] = []
+    for seed in sorted(
+        seeds_by_key.values(),
+        key=lambda seed: (
+            int(seed.source_block),
+            -1 if seed.branch_arm is None else int(seed.branch_arm),
+        ),
+    ):
+        probe = probe_terminal_family_seed(
+            seed,
+            base_flow_graph=base_flow_graph,
+            projected_flow_graph=projected_flow_graph,
+            dispatcher_region=dispatcher_region,
+            reachable_blocks=reachable_blocks,
+        )
+        probe = replace(
+            probe,
+            seed_origins=tuple(
+                sorted(
+                    seed_origins[
+                        (
+                            int(seed.source_block),
+                            int(seed.branch_arm) if seed.branch_arm is not None else None,
+                        )
+                    ]
+                )
+            ),
+        )
+        probes.append(probe)
+
+    return tuple(probes)
+
+
 def resolve_terminal_edge_entry(
     edge: StateDagEdge,
     *,
@@ -503,10 +584,64 @@ def candidate_shared_suffix_entries(
     return suffix_entries
 
 
+def build_terminal_family_candidates(
+    seed_probes: tuple[TerminalFamilySeedProbe, ...],
+    *,
+    projected_flow_graph,
+    state_var_stkoff: int | None,
+) -> tuple[TerminalFamilyCandidate, ...]:
+    candidates: list[TerminalFamilyCandidate] = []
+    seen_keys: set[tuple[int, int | None, int, tuple[int, ...]]] = set()
+
+    for probe in seed_probes:
+        seed = probe.seed
+        if probe.rejection_reason != "accepted":
+            continue
+        source_block = int(seed.source_block)
+        family_entry = int(probe.family_entry)
+        path = tuple(int(serial) for serial in probe.path)
+        stop_block = int(probe.stop_block)
+
+        chain = resolve_terminal_value_chain(
+            projected_flow_graph,
+            path=path,
+            state_var_stkoff=state_var_stkoff,
+        )
+        materializer_block = int(chain[-1][0]) if chain else None
+        writer_block = int(chain[0][0]) if chain else None
+        materializer_chain_blocks = tuple(
+            int(block_serial) for block_serial, _idx, _insn in chain
+        )
+        lineage_eas = tuple(int(getattr(insn, "ea", 0)) for _blk, _idx, insn in chain)
+        signature = terminal_value_family_signature(chain)
+
+        candidate = TerminalFamilyCandidate(
+            edge=seed.edge,
+            source_block=source_block,
+            branch_arm=int(seed.branch_arm) if seed.branch_arm is not None else None,
+            family_entry=family_entry,
+            path=path,
+            stop_block=stop_block,
+            materializer_block=materializer_block,
+            writer_block=writer_block,
+            materializer_chain_blocks=materializer_chain_blocks,
+            value_family_signature=signature,
+            lineage_eas=lineage_eas,
+        )
+        candidate_key = terminal_candidate_key(candidate)
+        if candidate_key in seen_keys:
+            continue
+        seen_keys.add(candidate_key)
+        candidates.append(candidate)
+
+    return tuple(candidates)
+
+
 __all__ = [
     "TerminalFamilyCandidate",
     "TerminalFamilySeed",
     "TerminalFamilySeedProbe",
+    "build_terminal_family_candidates",
     "candidate_shared_suffix_entries",
     "collect_linear_terminal_path",
     "find_last_terminal_write",
@@ -518,6 +653,7 @@ __all__ = [
     "resolve_terminal_edge_entry",
     "resolve_terminal_source_arm_entry",
     "resolve_terminal_value_chain",
+    "seed_terminal_family_probes",
     "terminal_candidate_key",
     "terminal_locator_key",
     "terminal_source_signature",
