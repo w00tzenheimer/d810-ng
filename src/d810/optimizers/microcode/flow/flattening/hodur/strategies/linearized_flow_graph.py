@@ -21,19 +21,17 @@ from d810.cfg.graph_modification import (
 )
 from d810.cfg.lowering_selector import (
     PredecessorPeelContext,
-    can_peel_predecessor_edge,
     ResidualBranchAnchorContext,
     ResidualGotoHandoffContext,
     ResidualPredSplitContext,
     ResidualPrefixPeelContext,
-    plan_residual_branch_anchor_handoff,
-    plan_residual_prefix_peel,
     target_reaches_source_ignoring_blocks,
 )
 from d810.cfg.residual_handoff_planning import (
     ResidualGotoAttempt,
     ResidualHandoffMode,
     ResidualHandoffPlanningContext,
+    ResidualPrefixAttempt,
     ResidualPredSplitAttempt,
     plan_residual_handoff,
 )
@@ -4132,34 +4130,94 @@ class LinearizedFlowGraphStrategy:
                 succs,
             )
             prefix_redirected = False
+            prefix_attempts: list[ResidualPrefixAttempt] = []
             for edge, via_pred, prefix_target in cls._iter_residual_prefix_handoffs(
                 dag,
                 source_block=source_block,
                 bst_node_blocks=bst_node_blocks,
                 dispatcher=dispatcher,
             ):
-                if cls._emit_residual_branch_anchor_handoff(
-                    edge=edge,
-                    source_block=source_block,
-                    via_pred=via_pred,
-                    prefix_target=prefix_target,
-                    projected_flow_graph=projected_flow_graph,
+                source_anchor = edge.source_anchor
+                branch_source = source_anchor.block_serial
+                branch_block = projected_flow_graph.get_block(branch_source)
+                if branch_block is None:
+                    continue
+                branch_succs = tuple(int(succ) for succ in tuple(getattr(branch_block, "succs", ())))
+                old_target = cls._resolve_edge_old_target(
+                    branch_source,
+                    edge,
+                    builder,
                     bst_node_blocks=bst_node_blocks,
-                    dispatcher_serial=dispatcher_serial,
-                    builder=builder,
-                    modifications=modifications,
-                    owned_blocks=owned_blocks,
-                    owned_edges=owned_edges,
-                    owned_transitions=owned_transitions,
-                    emitted=emitted,
-                    claimed_2way=claimed_2way,
-                    ignored_blocks=ignored_blocks,
-                    residual_ignored_blocks=residual_ignored_blocks,
-                    mba=mba,
-                ):
+                    dispatcher_region=ignored_blocks,
+                )
+                prefix_attempts.append(
+                    ResidualPrefixAttempt(
+                        via_pred=int(via_pred),
+                        prefix_target=int(prefix_target),
+                        claimed_branch_target=claimed_2way.get((branch_source, old_target)),
+                        owned_transition=(
+                            (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
+                            if edge.source_key.state_const is not None and edge.target_state is not None
+                            else None
+                        ),
+                        edge_kind_name=edge.kind.name.lower(),
+                        branch_context=ResidualBranchAnchorContext(
+                            is_conditional_branch_source=(
+                                source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+                            ),
+                            branch_source=branch_source,
+                            source_block=source_block,
+                            via_pred=via_pred,
+                            prefix_target=prefix_target,
+                            branch_succs=branch_succs,
+                            old_target=old_target,
+                            ordered_path=tuple(int(node) for node in edge.ordered_path),
+                            dispatcher_serial=dispatcher_serial,
+                            bst_node_blocks=frozenset(bst_node_blocks),
+                            target_reaches_branch=cls._target_reaches_source_ignoring_blocks(
+                                projected_flow_graph,
+                                target_entry=prefix_target,
+                                source_block=branch_source,
+                                ignored_blocks=(residual_ignored_blocks | {source_block, via_pred}),
+                            ),
+                        ),
+                    )
+                )
+            prefix_decision = plan_residual_handoff(
+                ResidualHandoffPlanningContext(
+                    mode=ResidualHandoffMode.PREFIX,
+                    prefix_attempts=tuple(prefix_attempts),
+                )
+            )
+            if prefix_decision.accepted and prefix_decision.kind == ResidualHandoffMode.BRANCH_ANCHOR:
+                if not prefix_decision.already_claimed:
+                    modifications.append(
+                        builder.edge_redirect(
+                            source_block=int(prefix_decision.branch_source),
+                            target_block=int(prefix_decision.prefix_target),
+                            old_target=int(prefix_decision.old_target),
+                        )
+                    )
+                    claimed_2way[
+                        (int(prefix_decision.branch_source), int(prefix_decision.old_target))
+                    ] = int(prefix_decision.prefix_target)
+                    emitted.add((int(prefix_decision.branch_source), int(prefix_decision.prefix_target)))
+                    owned_blocks.add(int(prefix_decision.branch_source))
+                    owned_edges.add((int(prefix_decision.branch_source), int(prefix_decision.prefix_target)))
+                    if prefix_decision.owned_transition is not None:
+                        owned_transitions.add(prefix_decision.owned_transition)
+                    logger.info(
+                        "LFG DAG: residual branch handoff %s -> %s (bypassing %s -> %s via %s)",
+                        blk_label(mba, int(prefix_decision.branch_source)),
+                        blk_label(mba, int(prefix_decision.prefix_target)),
+                        blk_label(mba, int(prefix_decision.via_pred)),
+                        blk_label(mba, source_block),
+                        prefix_decision.edge_kind_name,
+                    )
                     redirected += 1
-                    prefix_redirected = True
-                    break
+                else:
+                    redirected += 1
+                prefix_redirected = True
             if prefix_redirected:
                 continue
             if handoff is None:
@@ -4410,34 +4468,13 @@ class LinearizedFlowGraphStrategy:
                 redirected += 1
                 continue
 
+            prefix_attempts = []
             for edge, via_pred, prefix_target in cls._iter_residual_prefix_handoffs(
                 dag,
                 source_block=source_block,
                 bst_node_blocks=bst_node_blocks,
                 dispatcher=dispatcher,
             ):
-                if cls._emit_residual_branch_anchor_handoff(
-                    edge=edge,
-                    source_block=source_block,
-                    via_pred=via_pred,
-                    prefix_target=prefix_target,
-                    projected_flow_graph=projected_flow_graph,
-                    bst_node_blocks=bst_node_blocks,
-                    dispatcher_serial=dispatcher_serial,
-                    builder=builder,
-                    modifications=modifications,
-                    owned_blocks=owned_blocks,
-                    owned_edges=owned_edges,
-                    owned_transitions=owned_transitions,
-                    emitted=emitted,
-                    claimed_2way=claimed_2way,
-                    ignored_blocks=ignored_blocks,
-                    residual_ignored_blocks=residual_ignored_blocks,
-                    mba=mba,
-                ):
-                    redirected += 1
-                    break
-
                 pred_block = projected_flow_graph.get_block(via_pred)
                 if pred_block is None:
                     continue
@@ -4457,45 +4494,113 @@ class LinearizedFlowGraphStrategy:
                     ),
                 )
                 prefix_key = (via_pred, source_block, prefix_target)
-                prefix_plan = plan_residual_prefix_peel(
-                    ResidualPrefixPeelContext(
-                        peel_context=peel_context,
-                        already_emitted=prefix_key in prefix_emitted,
-                        existing_target=claimed_1way.get(via_pred),
-                        prefix_target=prefix_target,
-                        via_pred_succ_count=len(pred_succs),
+                source_anchor = edge.source_anchor
+                branch_source = source_anchor.block_serial
+                branch_block = projected_flow_graph.get_block(branch_source)
+                branch_succs = (
+                    tuple(int(succ) for succ in tuple(getattr(branch_block, "succs", ())))
+                    if branch_block is not None
+                    else ()
+                )
+                old_target = cls._resolve_edge_old_target(
+                    branch_source,
+                    edge,
+                    builder,
+                    bst_node_blocks=bst_node_blocks,
+                    dispatcher_region=ignored_blocks,
+                )
+                prefix_attempts.append(
+                    ResidualPrefixAttempt(
+                        via_pred=int(via_pred),
+                        prefix_target=int(prefix_target),
+                        claimed_branch_target=claimed_2way.get((branch_source, old_target)),
+                        owned_transition=(
+                            (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
+                            if edge.source_key.state_const is not None and edge.target_state is not None
+                            else None
+                        ),
+                        edge_kind_name=edge.kind.name.lower(),
+                        branch_context=ResidualBranchAnchorContext(
+                            is_conditional_branch_source=(
+                                source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+                            ),
+                            branch_source=branch_source,
+                            source_block=source_block,
+                            via_pred=via_pred,
+                            prefix_target=prefix_target,
+                            branch_succs=branch_succs,
+                            old_target=old_target,
+                            ordered_path=tuple(int(node) for node in edge.ordered_path),
+                            dispatcher_serial=dispatcher_serial,
+                            bst_node_blocks=frozenset(bst_node_blocks),
+                            target_reaches_branch=cls._target_reaches_source_ignoring_blocks(
+                                projected_flow_graph,
+                                target_entry=prefix_target,
+                                source_block=branch_source,
+                                ignored_blocks=(residual_ignored_blocks | {source_block, via_pred}),
+                            ),
+                        ) if branch_block is not None else None,
+                        peel_context=ResidualPrefixPeelContext(
+                            peel_context=peel_context,
+                            already_emitted=prefix_key in prefix_emitted,
+                            existing_target=claimed_1way.get(via_pred),
+                            prefix_target=prefix_target,
+                            via_pred_succ_count=len(pred_succs),
+                        ),
                     )
                 )
-                if not prefix_plan.accepted:
-                    if prefix_plan.stop_iteration:
-                        break
-                    continue
-                modifications.append(
-                    builder.edge_redirect(
-                        source_block=via_pred,
-                        target_block=prefix_target,
-                        old_target=source_block,
-                    )
+            prefix_decision = plan_residual_handoff(
+                ResidualHandoffPlanningContext(
+                    mode=ResidualHandoffMode.PREFIX,
+                    prefix_attempts=tuple(prefix_attempts),
                 )
-                prefix_emitted.add(prefix_key)
-                emitted.add((via_pred, prefix_target))
-                owned_blocks.add(via_pred)
-                owned_edges.add((via_pred, prefix_target))
-                if edge.source_key.state_const is not None and edge.target_state is not None:
-                    owned_transitions.add(
-                        (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
+            )
+            if not prefix_decision.accepted:
+                continue
+            if prefix_decision.kind == ResidualHandoffMode.BRANCH_ANCHOR:
+                if not prefix_decision.already_claimed:
+                    modifications.append(
+                        builder.edge_redirect(
+                            source_block=int(prefix_decision.branch_source),
+                            target_block=int(prefix_decision.prefix_target),
+                            old_target=int(prefix_decision.old_target),
+                        )
                     )
-                if prefix_plan.claim_oneway_target is not None:
-                    claimed_1way[via_pred] = prefix_plan.claim_oneway_target
-                logger.info(
-                    "LFG DAG: residual prefix handoff %s -> %s (bypassing %s via %s)",
-                    blk_label(mba, via_pred),
-                    blk_label(mba, prefix_target),
-                    blk_label(mba, source_block),
-                    edge.kind.name.lower(),
-                )
+                    claimed_2way[
+                        (int(prefix_decision.branch_source), int(prefix_decision.old_target))
+                    ] = int(prefix_decision.prefix_target)
+                    emitted.add((int(prefix_decision.branch_source), int(prefix_decision.prefix_target)))
+                    owned_blocks.add(int(prefix_decision.branch_source))
+                    owned_edges.add((int(prefix_decision.branch_source), int(prefix_decision.prefix_target)))
+                    if prefix_decision.owned_transition is not None:
+                        owned_transitions.add(prefix_decision.owned_transition)
                 redirected += 1
-                break
+                continue
+            modifications.append(
+                builder.edge_redirect(
+                    source_block=int(prefix_decision.via_pred),
+                    target_block=int(prefix_decision.prefix_target),
+                    old_target=source_block,
+                )
+            )
+            prefix_key = (int(prefix_decision.via_pred), source_block, int(prefix_decision.prefix_target))
+            prefix_emitted.add(prefix_key)
+            emitted.add((int(prefix_decision.via_pred), int(prefix_decision.prefix_target)))
+            owned_blocks.add(int(prefix_decision.via_pred))
+            owned_edges.add((int(prefix_decision.via_pred), int(prefix_decision.prefix_target)))
+            if prefix_decision.owned_transition is not None:
+                owned_transitions.add(prefix_decision.owned_transition)
+            if prefix_decision.claim_oneway_target is not None:
+                claimed_1way[int(prefix_decision.via_pred)] = int(prefix_decision.claim_oneway_target)
+            logger.info(
+                "LFG DAG: residual prefix handoff %s -> %s (bypassing %s via %s)",
+                blk_label(mba, int(prefix_decision.via_pred)),
+                blk_label(mba, int(prefix_decision.prefix_target)),
+                blk_label(mba, source_block),
+                prefix_decision.edge_kind_name,
+            )
+            redirected += 1
+            continue
 
         return redirected
 
@@ -4527,7 +4632,6 @@ class LinearizedFlowGraphStrategy:
         if branch_block is None:
             return False
         branch_succs = tuple(int(succ) for succ in tuple(getattr(branch_block, "succs", ())))
-
         old_target = cls._resolve_edge_old_target(
             branch_source,
             edge,
@@ -4535,58 +4639,70 @@ class LinearizedFlowGraphStrategy:
             bst_node_blocks=bst_node_blocks,
             dispatcher_region=ignored_blocks,
         )
-        branch_plan = plan_residual_branch_anchor_handoff(
-            ResidualBranchAnchorContext(
-                is_conditional_branch_source=(
-                    source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
-                ),
-                branch_source=branch_source,
-                source_block=source_block,
-                via_pred=via_pred,
-                prefix_target=prefix_target,
-                branch_succs=branch_succs,
-                old_target=old_target,
-                ordered_path=tuple(int(node) for node in edge.ordered_path),
-                dispatcher_serial=dispatcher_serial,
-                bst_node_blocks=frozenset(bst_node_blocks),
-                target_reaches_branch=cls._target_reaches_source_ignoring_blocks(
-                    projected_flow_graph,
-                    target_entry=prefix_target,
-                    source_block=branch_source,
-                    ignored_blocks=(residual_ignored_blocks | {source_block, via_pred}),
+        decision = plan_residual_handoff(
+            ResidualHandoffPlanningContext(
+                mode=ResidualHandoffMode.PREFIX,
+                prefix_attempts=(
+                    ResidualPrefixAttempt(
+                        via_pred=int(via_pred),
+                        prefix_target=int(prefix_target),
+                        claimed_branch_target=claimed_2way.get((branch_source, old_target)),
+                        owned_transition=(
+                            (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
+                            if edge.source_key.state_const is not None and edge.target_state is not None
+                            else None
+                        ),
+                        edge_kind_name=edge.kind.name.lower(),
+                        branch_context=ResidualBranchAnchorContext(
+                            is_conditional_branch_source=(
+                                source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+                            ),
+                            branch_source=branch_source,
+                            source_block=source_block,
+                            via_pred=via_pred,
+                            prefix_target=prefix_target,
+                            branch_succs=branch_succs,
+                            old_target=old_target,
+                            ordered_path=tuple(int(node) for node in edge.ordered_path),
+                            dispatcher_serial=dispatcher_serial,
+                            bst_node_blocks=frozenset(bst_node_blocks),
+                            target_reaches_branch=cls._target_reaches_source_ignoring_blocks(
+                                projected_flow_graph,
+                                target_entry=prefix_target,
+                                source_block=branch_source,
+                                ignored_blocks=(residual_ignored_blocks | {source_block, via_pred}),
+                            ),
+                        ),
+                    ),
                 ),
             )
         )
-        if not branch_plan.accepted:
+        if not decision.accepted or decision.kind != ResidualHandoffMode.BRANCH_ANCHOR:
             return False
-
-        branch_key = (branch_plan.branch_source, branch_plan.old_target)
-        existing_target = claimed_2way.get(branch_key)
-        if existing_target is not None:
-            return existing_target == prefix_target
-
+        if decision.already_claimed:
+            return True
         modifications.append(
             builder.edge_redirect(
-                source_block=branch_plan.branch_source,
-                target_block=prefix_target,
-                old_target=branch_plan.old_target,
+                source_block=int(decision.branch_source),
+                target_block=int(decision.prefix_target),
+                old_target=int(decision.old_target),
             )
         )
-        claimed_2way[branch_key] = prefix_target
-        emitted.add((branch_plan.branch_source, prefix_target))
-        owned_blocks.add(branch_plan.branch_source)
-        owned_edges.add((branch_plan.branch_source, prefix_target))
-        if edge.source_key.state_const is not None and edge.target_state is not None:
-            owned_transitions.add(
-                (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
-            )
+        claimed_2way[(int(decision.branch_source), int(decision.old_target))] = int(
+            decision.prefix_target
+        )
+        emitted.add((int(decision.branch_source), int(decision.prefix_target)))
+        owned_blocks.add(int(decision.branch_source))
+        owned_edges.add((int(decision.branch_source), int(decision.prefix_target)))
+        if decision.owned_transition is not None:
+            owned_transitions.add(decision.owned_transition)
         logger.info(
             "LFG DAG: residual branch handoff %s -> %s (bypassing %s -> %s via %s)",
-            blk_label(mba, branch_plan.branch_source),
-            blk_label(mba, prefix_target),
-            blk_label(mba, via_pred),
+            blk_label(mba, int(decision.branch_source)),
+            blk_label(mba, int(decision.prefix_target)),
+            blk_label(mba, int(decision.via_pred)),
             blk_label(mba, source_block),
-            edge.kind.name.lower(),
+            decision.edge_kind_name,
         )
         return True
 
