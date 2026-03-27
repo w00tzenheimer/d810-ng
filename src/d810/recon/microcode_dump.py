@@ -67,7 +67,7 @@ from d810.recon.flow.transition_report import (
     TransitionKind,
     build_dispatcher_transition_report,
 )
-from d810.recon.pseudocode_render import render_block
+from d810.hexrays.utils.pseudocode_render import render_block
 
 # -----------------------------------------------------------------------------
 # Configuration & Logging

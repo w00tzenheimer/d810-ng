@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.recon.pseudocode_render import _format_memory_expr
+from d810.hexrays.utils.pseudocode_render import _format_memory_expr
 
 
 def test_format_memory_expr_elides_default_ds_segment() -> None:
