@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from d810.cfg.lowering_selector import (
+    PredecessorPeelContext,
+    ResidualBranchAnchorContext,
     ResidualGotoHandoffContext,
     ResidualPredSplitContext,
+    ResidualPrefixPeelContext,
 )
 from d810.cfg.residual_handoff_planning import (
     ResidualGotoAttempt,
     ResidualHandoffMode,
     ResidualHandoffPlanningContext,
+    ResidualPrefixAttempt,
     ResidualPredSplitAttempt,
     ResidualPredSplitSelection,
     plan_residual_handoff,
@@ -116,3 +120,80 @@ class TestPlanResidualHandoff:
         assert decision.kind == ResidualHandoffMode.GOTO
         assert decision.target_entry == 24
         assert decision.state_value == 0x1111
+
+    def test_selects_branch_anchor_prefix_handoff(self):
+        decision = plan_residual_handoff(
+            ResidualHandoffPlanningContext(
+                mode=ResidualHandoffMode.PREFIX,
+                prefix_attempts=(
+                    ResidualPrefixAttempt(
+                        via_pred=14,
+                        prefix_target=20,
+                        branch_context=ResidualBranchAnchorContext(
+                            is_conditional_branch_source=True,
+                            branch_source=12,
+                            source_block=18,
+                            via_pred=14,
+                            prefix_target=20,
+                            branch_succs=(18, 22),
+                            old_target=18,
+                            ordered_path=(12, 14, 18),
+                            dispatcher_serial=6,
+                            bst_node_blocks=frozenset(),
+                            target_reaches_branch=False,
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        assert decision.accepted
+        assert decision.kind == ResidualHandoffMode.BRANCH_ANCHOR
+        assert decision.branch_source == 12
+        assert decision.prefix_target == 20
+
+    def test_selects_prefix_peel_when_branch_anchor_rejects(self):
+        decision = plan_residual_handoff(
+            ResidualHandoffPlanningContext(
+                mode=ResidualHandoffMode.PREFIX,
+                prefix_attempts=(
+                    ResidualPrefixAttempt(
+                        via_pred=14,
+                        prefix_target=20,
+                        branch_context=ResidualBranchAnchorContext(
+                            is_conditional_branch_source=False,
+                            branch_source=12,
+                            source_block=18,
+                            via_pred=14,
+                            prefix_target=20,
+                            branch_succs=(18,),
+                            old_target=18,
+                            ordered_path=(12, 14, 18),
+                            dispatcher_serial=6,
+                            bst_node_blocks=frozenset(),
+                            target_reaches_branch=False,
+                        ),
+                        peel_context=ResidualPrefixPeelContext(
+                            peel_context=PredecessorPeelContext(
+                                via_pred=14,
+                                via_pred_succs=(18, 30),
+                                source_block=18,
+                                target_entry=20,
+                                dispatcher_serial=6,
+                                bst_node_blocks=frozenset(),
+                                target_reaches_pred=False,
+                            ),
+                            already_emitted=False,
+                            existing_target=None,
+                            prefix_target=20,
+                            via_pred_succ_count=2,
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        assert decision.accepted
+        assert decision.kind == ResidualHandoffMode.PREFIX_PEEL
+        assert decision.via_pred == 14
+        assert decision.prefix_target == 20
