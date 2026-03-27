@@ -77,10 +77,9 @@ from d810.recon.flow.dag_index import (
 from d810.recon.flow.state_machine_analysis import (
     SnapshotConstantFixpointResult,
     StateWriteSite,
-    find_last_state_write_site_on_path_snapshot,
-    find_state_write_sites_snapshot,
     run_snapshot_constant_fixpoint,
 )
+from d810.recon.flow.path_horizon import resolve_transition_path_horizon
 from d810.recon.flow.target_entry_resolution import resolve_edge_target_entry
 from d810.recon.flow.transition_builder import (
     TransitionResult,
@@ -2283,113 +2282,13 @@ class StateWriteReconstructionStrategy:
                 rejection_reason="missing_ordered_path",
             )
 
-        resolved: tuple[int, StateWriteSite] | None = None
-
-        # Fast path: use DFS-proven write site from DAG edge
-        if edge.last_write_site is not None:
-            write_block, write_ea = edge.last_write_site
-            path_set = set(ordered_path)
-            if write_block in path_set:
-                site = StateWriteSite(
-                    block_serial=write_block,
-                    state_value=(
-                        int(edge.target_state & 0xFFFFFFFF)
-                        if edge.target_state is not None
-                        else 0
-                    ),
-                    insn_ea=write_ea,
-                    insn_index=0,
-                )
-                resolved = (write_block, site)
-                logger.info(
-                    "RECON DAG: using DFS-proven write_site at blk[%d]:0x%x",
-                    write_block, write_ea,
-                )
-
-        if resolved is None:
-            resolved = find_last_state_write_site_on_path_snapshot(
-                flow_graph,
-                ordered_path,
-                state_var_stkoff,
-                in_stk_maps=constant_result.in_stk_maps,
-                in_reg_maps=constant_result.in_reg_maps,
-            )
-        if resolved is None and edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION:
-            # Fallback for CONDITIONAL_TRANSITION edges: the live DFS already
-            # proved this transition exists but the snapshot path evaluator
-            # could not re-derive the constant (e.g. MBA-computed values with
-            # mba=None).  Walk the path in reverse, first trying the per-block
-            # evaluator with fixpoint maps, then a raw destination scan.
-            for rev_idx, path_serial in enumerate(reversed(ordered_path)):
-                block_snap = flow_graph.get_block(path_serial)
-                if block_snap is None:
-                    continue
-                sites = find_state_write_sites_snapshot(
-                    flow_graph,
-                    path_serial,
-                    state_var_stkoff,
-                    initial_stk_map=constant_result.in_stk_maps.get(path_serial),
-                    initial_reg_map=constant_result.in_reg_maps.get(path_serial),
-                )
-                if sites:
-                    site = sites[-1]
-                    # Override state_value with DFS-proven target if the
-                    # snapshot evaluator resolved a different (stale) value.
-                    expected = int(edge.target_state & 0xFFFFFFFF)
-                    if int(site.state_value & 0xFFFFFFFF) != expected:
-                        site = replace(site, state_value=expected)
-                    resolved = (int(path_serial), site)
-                    logger.info(
-                        "RECON DAG: conditional fallback horizon at blk[%d] "
-                        "(DFS-trusted, per-block evaluator)",
-                        path_serial,
-                    )
-                    break
-            if resolved is None and edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION:
-                # Last resort: raw scan for any instruction writing to state
-                # var stkoff, trusting the DFS-proven target_state entirely.
-                MOP_S = 3
-                for rev_idx, path_serial in enumerate(reversed(ordered_path)):
-                    block_snap = flow_graph.get_block(path_serial)
-                    if block_snap is None:
-                        continue
-                    for insn_idx, insn in enumerate(
-                        reversed(block_snap.insn_snapshots)
-                    ):
-                        dest = getattr(insn, "d", None)
-                        if dest is None:
-                            continue
-                        if getattr(dest, "t", None) != MOP_S:
-                            continue
-                        dest_stkoff = getattr(dest, "stkoff", None)
-                        if dest_stkoff is None:
-                            s_ref = getattr(dest, "s", None)
-                            dest_stkoff = (
-                                getattr(s_ref, "off", None)
-                                if s_ref is not None
-                                else None
-                            )
-                        if dest_stkoff is not None and int(dest_stkoff) == int(
-                            state_var_stkoff
-                        ):
-                            actual_insn_idx = (
-                                len(block_snap.insn_snapshots) - 1 - insn_idx
-                            )
-                            site = StateWriteSite(
-                                block_serial=path_serial,
-                                state_value=int(edge.target_state & 0xFFFFFFFF),
-                                insn_ea=int(insn.ea),
-                                insn_index=actual_insn_idx,
-                            )
-                            resolved = (int(path_serial), site)
-                            logger.info(
-                                "RECON DAG: conditional fallback horizon at "
-                                "blk[%d] (DFS-trusted, raw dest scan)",
-                                path_serial,
-                            )
-                            break
-                    if resolved is not None:
-                        break
+        resolved = resolve_transition_path_horizon(
+            edge,
+            flow_graph=flow_graph,
+            ordered_path=ordered_path,
+            state_var_stkoff=state_var_stkoff,
+            constant_result=constant_result,
+        )
 
         if resolved is None:
             return None, cls._make_edge_metadata(
