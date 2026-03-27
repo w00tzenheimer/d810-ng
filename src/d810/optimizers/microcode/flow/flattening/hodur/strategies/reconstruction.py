@@ -27,6 +27,7 @@ from d810.cfg.mod_claims import collect_mod_claims
 from d810.cfg.shared_corridor import (
     first_boundary_index,
     first_shared_block_index,
+    is_backward_same_corridor_target,
     is_shared_block,
     resolve_old_target,
 )
@@ -74,6 +75,7 @@ from d810.recon.flow.dag_index import (
     resolve_target_node,
     semantic_entry_anchors,
 )
+from d810.recon.flow.edge_metadata import edge_kind_name, make_edge_metadata
 from d810.recon.flow.state_machine_analysis import (
     SnapshotConstantFixpointResult,
     StateWriteSite,
@@ -280,16 +282,6 @@ class StateWriteReconstructionStrategy:
                         break
         return artifact_blocks
 
-    @staticmethod
-    def _edge_kind_name(edge: StateDagEdge) -> str:
-        kind = getattr(edge.kind, "name", None)
-        return kind if isinstance(kind, str) else str(edge.kind)
-
-    @staticmethod
-    def _source_kind_name(edge: StateDagEdge) -> str:
-        kind = getattr(edge.source_anchor.kind, "name", None)
-        return kind if isinstance(kind, str) else str(edge.source_anchor.kind)
-
     @classmethod
     def _make_edge_metadata(
         cls,
@@ -303,39 +295,16 @@ class StateWriteReconstructionStrategy:
         emission_mode: str | None = None,
         rejection_reason: str | None = None,
     ) -> dict[str, int | str | None]:
-        return {
-            "edge_kind": cls._edge_kind_name(edge),
-            "source_kind": cls._source_kind_name(edge),
-            "source_block": int(edge.source_anchor.block_serial),
-            "branch_arm": (
-                int(edge.source_anchor.branch_arm)
-                if edge.source_anchor.branch_arm is not None
-                else None
-            ),
-            "target_state": (
-                int(edge.target_state & 0xFFFFFFFF)
-                if edge.target_state is not None
-                else None
-            ),
-            "target_entry_anchor": (
-                int(edge.target_entry_anchor)
-                if edge.target_entry_anchor is not None
-                else None
-            ),
-            "horizon_block": int(horizon_block) if horizon_block is not None else None,
-            "state_value": (
-                int(site.state_value & 0xFFFFFFFF)
-                if site is not None
-                else None
-            ),
-            "state_write_ea": int(site.insn_ea) if site is not None else None,
-            "first_shared_block": (
-                int(first_shared_block) if first_shared_block is not None else None
-            ),
-            "via_pred": int(via_pred) if via_pred is not None else None,
-            "emission_mode": emission_mode,
-            "rejection_reason": rejection_reason,
-        }
+        return make_edge_metadata(
+            edge,
+            horizon_block=horizon_block,
+            site=site,
+            target_entry=target_entry,
+            first_shared_block=first_shared_block,
+            via_pred=via_pred,
+            emission_mode=emission_mode,
+            rejection_reason=rejection_reason,
+        )
 
     @staticmethod
     def _node_maps(
@@ -2155,9 +2124,11 @@ class StateWriteReconstructionStrategy:
         rewrite_block: int,
         target_entry: int,
     ) -> bool:
-        if rewrite_block not in ordered_path or target_entry not in ordered_path:
-            return False
-        return ordered_path.index(target_entry) <= ordered_path.index(rewrite_block)
+        return is_backward_same_corridor_target(
+            ordered_path,
+            rewrite_block=rewrite_block,
+            target_entry=target_entry,
+        )
 
     @classmethod
     def _can_emit_direct(
@@ -2968,7 +2939,7 @@ class StateWriteReconstructionStrategy:
         raw_candidates: list[ReconstructionCandidate] = []
         rejected_metadata: list[dict[str, int | str | None]] = []
         edge_kind_counts = Counter(
-            self._edge_kind_name(e) for e in dag.edges
+            edge_kind_name(e) for e in dag.edges
         )
         logger.info(
             "RECON DAG: edge distribution: %s",

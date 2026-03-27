@@ -81,6 +81,19 @@ def first_boundary_index(
 __all__ = [
     "first_boundary_index",
     "first_shared_block_index",
+    "is_backward_same_corridor_target",
     "is_shared_block",
     "resolve_old_target",
 ]
+
+
+def is_backward_same_corridor_target(
+    ordered_path: tuple[int, ...],
+    *,
+    rewrite_block: int,
+    target_entry: int,
+) -> bool:
+    """Return whether a target points backward within the same ordered corridor."""
+    if rewrite_block not in ordered_path or target_entry not in ordered_path:
+        return False
+    return ordered_path.index(target_entry) <= ordered_path.index(rewrite_block)

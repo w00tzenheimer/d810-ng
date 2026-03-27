@@ -3,6 +3,7 @@ from __future__ import annotations
 from d810.cfg.shared_corridor import (
     first_boundary_index,
     first_shared_block_index,
+    is_backward_same_corridor_target,
     is_shared_block,
     resolve_old_target,
 )
@@ -83,4 +84,16 @@ class TestSharedCorridorQueries:
                 dispatcher_region=set(),
             )
             == 1
+        )
+
+    def test_backward_same_corridor_target_detects_backward_retarget(self):
+        assert is_backward_same_corridor_target(
+            (10, 14, 16, 20),
+            rewrite_block=16,
+            target_entry=14,
+        )
+        assert not is_backward_same_corridor_target(
+            (10, 14, 16, 20),
+            rewrite_block=14,
+            target_entry=20,
         )
