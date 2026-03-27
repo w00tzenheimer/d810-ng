@@ -1448,6 +1448,86 @@ def test_state_write_reconstruction_groups_multi_pred_shared_tail_duplication(
     } == {"duplicate_and_redirect"}
 
 
+def test_state_write_reconstruction_shared_group_two_new_targets_falls_back_to_duplication():
+    mba_blocks = [
+        _FakeMBAFlowBlock(2, [], preds=[10]),
+        _FakeMBAFlowBlock(8, [10, 40], preds=[]),
+        _FakeMBAFlowBlock(9, [10, 41], preds=[]),
+        _FakeMBAFlowBlock(10, [2], preds=[8, 9]),
+        _FakeMBAFlowBlock(24, [], preds=[]),
+        _FakeMBAFlowBlock(30, [], preds=[]),
+        _FakeMBAFlowBlock(40, [], preds=[8]),
+        _FakeMBAFlowBlock(41, [], preds=[9]),
+    ]
+    flow_graph = _FakeFlowGraph(mba_blocks)
+    fake_mba = _FakeMBA(blocks=mba_blocks)
+    builder = ModificationBuilder.from_snapshot(
+        SimpleNamespace(flow_graph=flow_graph, mba=fake_mba)
+    )
+
+    source_node = _make_reconstruction_node(8, 0x11111111, 8, owned_blocks=(8, 10))
+    left_target = _make_reconstruction_node(24, 0xAAAA0001, 24, label="left_target")
+    right_target = _make_reconstruction_node(30, 0xBBBB0002, 30, label="right_target")
+
+    def _candidate(via_pred: int, target_node: StateDagNode, state_value: int):
+        edge = StateDagEdge(
+            kind=SemanticEdgeKind.TRANSITION,
+            source_key=source_node.key,
+            target_key=target_node.key,
+            target_state=state_value,
+            target_entry_anchor=target_node.entry_anchor,
+            target_label=target_node.state_label,
+            source_anchor=StateRedirectAnchor(
+                kind=RedirectSourceKind.UNCONDITIONAL,
+                block_serial=10,
+            ),
+            ordered_path=(via_pred, 10),
+        )
+        return reconstruction_module.ReconstructionCandidate(
+            edge=edge,
+            horizon_block=10,
+            site=SimpleNamespace(state_value=state_value, insn_ea=0x1000 + via_pred),
+            target_entry=target_node.entry_anchor,
+            first_shared_block=10,
+            via_pred=via_pred,
+            emission_mode="shared_suffix",
+        )
+
+    modifications: list = []
+    accepted_metadata: list[dict[str, int | str | None]] = []
+    rejected_metadata: list[dict[str, int | str | None]] = []
+
+    emitted = StateWriteReconstructionStrategy._emit_shared_group(
+        10,
+        [
+            _candidate(8, left_target, 0xAAAA0001),
+            _candidate(9, right_target, 0xBBBB0002),
+        ],
+        flow_graph=flow_graph,
+        dispatcher_serial=2,
+        bst_node_blocks={2},
+        mba=fake_mba,
+        builder=builder,
+        modifications=modifications,
+        owned_blocks=set(),
+        owned_edges=set(),
+        accepted_metadata=accepted_metadata,
+        rejected_metadata=rejected_metadata,
+    )
+
+    assert emitted == 2
+    assert rejected_metadata == []
+    assert modifications == [
+        DuplicateAndRedirect(
+            source_serial=10,
+            per_pred_targets=((8, 24), (9, 30)),
+        )
+    ]
+    assert {site["emission_mode"] for site in accepted_metadata} == {
+        "duplicate_and_redirect"
+    }
+
+
 def test_state_write_reconstruction_groups_same_target_two_pred_shared_tail_duplication(
     monkeypatch,
 ):

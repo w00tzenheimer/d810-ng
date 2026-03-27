@@ -23,13 +23,18 @@ from d810.cfg.graph_modification import (
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
 )
+from d810.cfg.lowering_selector import (
+    SharedFeederLoweringKind,
+    can_peel_predecessor_edge,
+    select_shared_feeder_lowering,
+    target_reaches_source_ignoring_blocks,
+)
+from d810.cfg.lowering_scope import derive_edge_predecessor
 from d810.cfg.plan import compile_patch_plan, is_block_creating_modification
 from d810.core import logging
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
     ModificationBuilder,
-    derive_edge_predecessor,
-    requires_pred_scoped_lowering,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_DIRECT,
@@ -1734,6 +1739,7 @@ class StateWriteReconstructionStrategy:
 
         return suffix_entries
 
+
     @classmethod
     def _seed_terminal_family_candidates(
         cls,
@@ -2921,6 +2927,8 @@ class StateWriteReconstructionStrategy:
         candidates: list[ReconstructionCandidate],
         *,
         flow_graph,
+        dispatcher_serial: int,
+        bst_node_blocks: set[int],
         mba,
         builder: ModificationBuilder,
         modifications: list,
@@ -2991,6 +2999,21 @@ class StateWriteReconstructionStrategy:
             )
             return 0
 
+        if all(int(candidate.target_entry) == int(old_target) for candidate in ordered_candidates):
+            rejected_metadata.extend(
+                cls._make_edge_metadata(
+                    candidate.edge,
+                    horizon_block=candidate.horizon_block,
+                    site=candidate.site,
+                    target_entry=candidate.target_entry,
+                    first_shared_block=shared_block,
+                    via_pred=candidate.via_pred,
+                    rejection_reason="noop_or_missing_old_target",
+                )
+                for candidate in ordered_candidates
+            )
+            return 0
+
         shared_preds = tuple(int(pred) for pred in shared_snapshot.preds)
         candidate_preds = {int(candidate.via_pred) for candidate in ordered_candidates}
         non_candidate_preds = [
@@ -3045,16 +3068,18 @@ class StateWriteReconstructionStrategy:
             )
             return 0
         elif len(ordered_candidates) == 2:
-            keep_index = next(
-                (
-                    index
-                    for index, candidate in enumerate(ordered_candidates)
-                    if int(candidate.target_entry) == int(old_target)
-                ),
-                0,
-            )
-            first = ordered_candidates[keep_index]
-            second = ordered_candidates[1 - keep_index]
+            keep_indices = [
+                index
+                for index, candidate in enumerate(ordered_candidates)
+                if int(candidate.target_entry) == int(old_target)
+            ]
+            if len(keep_indices) == 1:
+                keep_index = keep_indices[0]
+                first = ordered_candidates[keep_index]
+                second = ordered_candidates[1 - keep_index]
+            else:
+                first = ordered_candidates[0]
+                second = ordered_candidates[1]
             per_pred_targets = [
                 (int(first.via_pred), int(first.target_entry)),
                 (int(second.via_pred), int(second.target_entry)),
@@ -3374,6 +3399,8 @@ class StateWriteReconstructionStrategy:
                 shared_block,
                 shared_groups[shared_block],
                 flow_graph=flow_graph,
+                dispatcher_serial=dispatcher_serial,
+                bst_node_blocks=dispatcher_region,
                 mba=mba,
                 builder=builder,
                 modifications=modifications,
@@ -3534,6 +3561,11 @@ class StateWriteReconstructionStrategy:
                     claimed_sources.add(int(mod.src_block))
                 if hasattr(mod, "block_serial"):
                     claimed_sources.add(int(mod.block_serial))
+            # Shared-group predecessor-edge peel preserves the shared source on
+            # its old target without emitting a direct modification for that
+            # source block. Carry strict-emitter ownership forward so bridge and
+            # feeder passes treat those sources as already handled.
+            claimed_sources.update(int(block_serial) for block_serial in owned_blocks)
 
             # Step 1b: Build suppressed source->target pairs from structural
             # rejections (e.g. backward_same_corridor_target) to prevent
@@ -3762,19 +3794,63 @@ class StateWriteReconstructionStrategy:
                         )
                         proj_src = projected_flow_graph.get_block(src_serial)
                         src_npred = len(proj_src.preds) if proj_src is not None else 0
-                        if requires_pred_scoped_lowering(
-                            src_serial, src_npred, edge.ordered_path
-                        ):
-                            edge_pred = derive_edge_predecessor(edge.ordered_path)
+                        edge_pred = None
+                        pred_succs: tuple[int, ...] = ()
+                        if edge.ordered_path:
+                            try:
+                                edge_pred = derive_edge_predecessor(edge.ordered_path)
+                            except ValueError:
+                                edge_pred = None
+                        if edge_pred is not None:
+                            pred_block = projected_flow_graph.get_block(edge_pred)
+                            if pred_block is not None:
+                                pred_succs = tuple(
+                                    int(succ) for succ in getattr(pred_block, "succs", ())
+                                )
+                        target_reaches_pred = (
+                            target_reaches_source_ignoring_blocks(
+                                projected_flow_graph,
+                                target_entry=target_entry,
+                                source_block=edge_pred,
+                                ignored_blocks=_bst_set | {dispatcher_serial, src_serial},
+                            )
+                            if edge_pred is not None
+                            else False
+                        )
+                        lowering = select_shared_feeder_lowering(
+                            source_serial=src_serial,
+                            source_pred_count=src_npred,
+                            ordered_path=edge.ordered_path,
+                            via_pred_succs=pred_succs,
+                            target_entry=target_entry,
+                            dispatcher_serial=dispatcher_serial,
+                            bst_node_blocks=_bst_set,
+                            target_reaches_pred=target_reaches_pred,
+                        )
+                        if lowering.kind == SharedFeederLoweringKind.PRED_SCOPED_CLONE:
                             feeder_mods.append(
                                 builder.duplicate_and_redirect(
                                     source_block=src_serial,
                                     per_pred_targets=[
-                                        (edge_pred, target_entry),
+                                        (lowering.via_pred, target_entry),
                                     ],
                                 )
                             )
                             _feeder_tag += " pred-scoped"
+                            claimed_sources.add(src_serial)
+                        elif (
+                            lowering.kind == SharedFeederLoweringKind.PRED_EDGE_PEEL
+                            and lowering.via_pred is not None
+                        ):
+                            feeder_mods.append(
+                                builder.edge_redirect(
+                                    source_block=lowering.via_pred,
+                                    target_block=target_entry,
+                                    old_target=src_serial,
+                                )
+                            )
+                            _feeder_tag += " pred-edge"
+                            claimed_sources.add(lowering.via_pred)
                         else:
                             feeder_mods.append(
                                 builder.goto_redirect(
@@ -3783,11 +3859,15 @@ class StateWriteReconstructionStrategy:
                                     old_target=old_target,
                                 )
                             )
-                        claimed_sources.add(src_serial)
+                            claimed_sources.add(src_serial)
                         claimed_targets.add(target_entry)
                         logger.info(
-                            "RECON BRIDGE: feeder blk[%d] -> blk[%d] (%s npred=%d)",
-                            src_serial, target_entry, _feeder_tag, src_npred,
+                            "RECON BRIDGE: feeder blk[%d] -> blk[%d] (%s npred=%d via_pred=%s)",
+                            src_serial,
+                            target_entry,
+                            _feeder_tag,
+                            src_npred,
+                            lowering.via_pred,
                         )
                 elif src_block.nsucc == 2:
                     for arm in range(2):
