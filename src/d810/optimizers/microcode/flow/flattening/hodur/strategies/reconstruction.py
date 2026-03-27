@@ -26,7 +26,10 @@ from d810.cfg.graph_modification import (
 from d810.cfg.lowering_selector import (
     SharedFeederContext,
     SharedFeederLoweringKind,
+    SharedGroupCandidate,
+    SharedGroupContext,
     select_shared_feeder_lowering,
+    plan_shared_group_duplication,
     target_reaches_source_ignoring_blocks,
 )
 from d810.cfg.plan import compile_patch_plan, is_block_creating_modification
@@ -3013,46 +3016,21 @@ class StateWriteReconstructionStrategy:
             )
             return 0
 
-        shared_preds = tuple(int(pred) for pred in shared_snapshot.preds)
-        candidate_preds = {int(candidate.via_pred) for candidate in ordered_candidates}
-        non_candidate_preds = [
-            pred for pred in shared_preds if pred not in candidate_preds
-        ]
-
-        per_pred_targets: list[tuple[int, int]]
-        if len(ordered_candidates) == 1:
-            candidate = ordered_candidates[0]
-            if candidate.target_entry == old_target:
-                rejected_metadata.append(
-                    cls._make_edge_metadata(
-                        candidate.edge,
-                        horizon_block=candidate.horizon_block,
-                        site=candidate.site,
-                        target_entry=candidate.target_entry,
-                        first_shared_block=shared_block,
-                        via_pred=candidate.via_pred,
-                        rejection_reason="noop_or_missing_old_target",
+        shared_group_plan = plan_shared_group_duplication(
+            SharedGroupContext(
+                shared_block=int(shared_block),
+                old_target=int(old_target),
+                shared_preds=tuple(int(pred) for pred in shared_snapshot.preds),
+                candidates=tuple(
+                    SharedGroupCandidate(
+                        via_pred=int(candidate.via_pred),
+                        target_entry=int(candidate.target_entry),
                     )
-                )
-                return 0
-            if not non_candidate_preds:
-                rejected_metadata.append(
-                    cls._make_edge_metadata(
-                        candidate.edge,
-                        horizon_block=candidate.horizon_block,
-                        site=candidate.site,
-                        target_entry=candidate.target_entry,
-                        first_shared_block=shared_block,
-                        via_pred=candidate.via_pred,
-                        rejection_reason="missing_keep_pred",
-                    )
-                )
-                return 0
-            per_pred_targets = [
-                (int(non_candidate_preds[0]), int(old_target)),
-                (int(candidate.via_pred), int(candidate.target_entry)),
-            ]
-        elif non_candidate_preds:
+                    for candidate in ordered_candidates
+                ),
+            )
+        )
+        if not shared_group_plan.accepted:
             rejected_metadata.extend(
                 cls._make_edge_metadata(
                     candidate.edge,
@@ -3061,42 +3039,12 @@ class StateWriteReconstructionStrategy:
                     target_entry=candidate.target_entry,
                     first_shared_block=shared_block,
                     via_pred=candidate.via_pred,
-                    rejection_reason="shared_group_requires_multi_clone",
+                    rejection_reason=shared_group_plan.rejection_reason,
                 )
                 for candidate in ordered_candidates
             )
             return 0
-        elif len(ordered_candidates) == 2:
-            keep_indices = [
-                index
-                for index, candidate in enumerate(ordered_candidates)
-                if int(candidate.target_entry) == int(old_target)
-            ]
-            if len(keep_indices) == 1:
-                keep_index = keep_indices[0]
-                first = ordered_candidates[keep_index]
-                second = ordered_candidates[1 - keep_index]
-            else:
-                first = ordered_candidates[0]
-                second = ordered_candidates[1]
-            per_pred_targets = [
-                (int(first.via_pred), int(first.target_entry)),
-                (int(second.via_pred), int(second.target_entry)),
-            ]
-        else:
-            rejected_metadata.extend(
-                cls._make_edge_metadata(
-                    candidate.edge,
-                    horizon_block=candidate.horizon_block,
-                    site=candidate.site,
-                    target_entry=candidate.target_entry,
-                    first_shared_block=shared_block,
-                    via_pred=candidate.via_pred,
-                    rejection_reason="shared_group_too_wide",
-                )
-                for candidate in ordered_candidates
-            )
-            return 0
+        per_pred_targets = list(shared_group_plan.per_pred_targets)
 
         modifications.append(
             builder.duplicate_and_redirect(

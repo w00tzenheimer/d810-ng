@@ -38,6 +38,33 @@ class SharedFeederLoweringDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class SharedGroupCandidate:
+    """One predecessor-owned target inside a shared-group rewrite."""
+
+    via_pred: int
+    target_entry: int
+
+
+@dataclass(frozen=True, slots=True)
+class SharedGroupContext:
+    """Structured planning input for shared-group duplicate-and-redirect."""
+
+    shared_block: int
+    old_target: int
+    shared_preds: tuple[int, ...]
+    candidates: tuple[SharedGroupCandidate, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SharedGroupDuplicationPlan:
+    """Planned duplicate-and-redirect layout for a shared group."""
+
+    accepted: bool
+    per_pred_targets: tuple[tuple[int, int], ...] = ()
+    rejection_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class SharedFeederLoweringCandidate:
     """One possible lowering shape for a shared-feeder redirect."""
 
@@ -217,6 +244,82 @@ def enumerate_shared_feeder_candidates(
     return tuple(candidates)
 
 
+def plan_shared_group_duplication(
+    context: SharedGroupContext,
+) -> SharedGroupDuplicationPlan:
+    """Plan the duplicate-and-redirect layout for a shared group.
+
+    This is a pure cfg-layer rewrite planner. Callers are responsible for
+    translating candidate-specific metadata and logging.
+    """
+    ordered_candidates = tuple(sorted(context.candidates, key=lambda c: c.via_pred))
+    old_target = int(context.old_target)
+    if all(int(candidate.target_entry) == old_target for candidate in ordered_candidates):
+        return SharedGroupDuplicationPlan(
+            accepted=False,
+            rejection_reason="noop_or_missing_old_target",
+        )
+
+    candidate_preds = {int(candidate.via_pred) for candidate in ordered_candidates}
+    non_candidate_preds = [
+        int(pred) for pred in context.shared_preds if int(pred) not in candidate_preds
+    ]
+
+    per_pred_targets: tuple[tuple[int, int], ...]
+    if len(ordered_candidates) == 1:
+        candidate = ordered_candidates[0]
+        if int(candidate.target_entry) == old_target:
+            return SharedGroupDuplicationPlan(
+                accepted=False,
+                rejection_reason="noop_or_missing_old_target",
+            )
+        if not non_candidate_preds:
+            return SharedGroupDuplicationPlan(
+                accepted=False,
+                rejection_reason="missing_keep_pred",
+            )
+        per_pred_targets = (
+            (int(non_candidate_preds[0]), old_target),
+            (int(candidate.via_pred), int(candidate.target_entry)),
+        )
+        return SharedGroupDuplicationPlan(
+            accepted=True,
+            per_pred_targets=per_pred_targets,
+        )
+
+    if non_candidate_preds:
+        return SharedGroupDuplicationPlan(
+            accepted=False,
+            rejection_reason="shared_group_requires_multi_clone",
+        )
+
+    if len(ordered_candidates) == 2:
+        keep_indices = [
+            index
+            for index, candidate in enumerate(ordered_candidates)
+            if int(candidate.target_entry) == old_target
+        ]
+        if len(keep_indices) == 1:
+            keep_index = keep_indices[0]
+            first = ordered_candidates[keep_index]
+            second = ordered_candidates[1 - keep_index]
+        else:
+            first, second = ordered_candidates
+        per_pred_targets = (
+            (int(first.via_pred), int(first.target_entry)),
+            (int(second.via_pred), int(second.target_entry)),
+        )
+        return SharedGroupDuplicationPlan(
+            accepted=True,
+            per_pred_targets=per_pred_targets,
+        )
+
+    return SharedGroupDuplicationPlan(
+        accepted=False,
+        rejection_reason="shared_group_too_wide",
+    )
+
+
 def _default_candidate_score(
     candidate: SharedFeederLoweringCandidate,
 ) -> SharedFeederCandidateScore:
@@ -307,8 +410,12 @@ __all__ = [
     "SharedFeederContext",
     "SharedFeederLoweringDecision",
     "SharedFeederLoweringKind",
+    "SharedGroupCandidate",
+    "SharedGroupContext",
+    "SharedGroupDuplicationPlan",
     "can_peel_predecessor_edge",
     "enumerate_shared_feeder_candidates",
+    "plan_shared_group_duplication",
     "select_shared_feeder_lowering",
     "target_reaches_source_ignoring_blocks",
 ]
