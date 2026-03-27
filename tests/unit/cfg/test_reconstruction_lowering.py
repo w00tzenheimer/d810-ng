@@ -3,10 +3,28 @@ from __future__ import annotations
 from d810.cfg.reconstruction_lowering import (
     plan_conditional_arm_emission,
     plan_direct_emission,
+    plan_passthrough_redirects,
     RedirectSpec,
     SharedGroupEmissionCandidate,
     plan_shared_group_emission,
 )
+
+
+class _DummyBlock:
+    def __init__(self, succs: tuple[int, ...]):
+        self.succs = succs
+        self.nsucc = len(succs)
+
+
+class _DummyFlowGraph:
+    def __init__(self, mapping: dict[int, tuple[int, ...]]):
+        self._mapping = {
+            int(k): _DummyBlock(tuple(int(v) for v in succs))
+            for k, succs in mapping.items()
+        }
+
+    def get_block(self, serial: int):
+        return self._mapping.get(int(serial))
 
 
 class TestPlanSharedGroupEmission:
@@ -98,4 +116,27 @@ class TestPlanConditionalArmEmission:
         assert plan.accepted
         assert plan.redirects == (
             RedirectSpec(source_block=14, target_block=18, old_target=6),
+        )
+
+
+class TestPlanPassthroughRedirects:
+    def test_collects_oneway_and_arm1_dispatcher_redirects(self):
+        flow_graph = _DummyFlowGraph({
+            10: (6,),
+            11: (20, 6),
+            12: (6, 21),
+            14: (30,),
+        })
+
+        redirects = plan_passthrough_redirects(
+            flow_graph=flow_graph,
+            ordered_path=(10, 11, 12, 14),
+            horizon_block=14,
+            dispatcher_serial=6,
+            current_state_entry=18,
+        )
+
+        assert redirects == (
+            RedirectSpec(source_block=10, target_block=18, old_target=6),
+            RedirectSpec(source_block=11, target_block=18, old_target=6),
         )
