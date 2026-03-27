@@ -3,6 +3,7 @@ from __future__ import annotations
 from d810.cfg.lowering_selector import (
     PredecessorPeelContext,
     ResidualBranchAnchorContext,
+    ResidualPrefixPeelContext,
     SharedFeederCandidateScore,
     SharedFeederContext,
     SharedFeederLoweringKind,
@@ -11,6 +12,7 @@ from d810.cfg.lowering_selector import (
     can_peel_predecessor_edge,
     enumerate_shared_feeder_candidates,
     plan_residual_branch_anchor_handoff,
+    plan_residual_prefix_peel,
     plan_shared_group_duplication,
     select_shared_feeder_lowering,
     target_reaches_source_ignoring_blocks,
@@ -398,3 +400,70 @@ class TestPlanResidualBranchAnchorHandoff:
         )
         assert not plan.accepted
         assert plan.rejection_reason == "cycle_risk"
+
+
+class TestPlanResidualPrefixPeel:
+    def _peel_context(self) -> PredecessorPeelContext:
+        return PredecessorPeelContext(
+            via_pred=12,
+            via_pred_succs=(6, 14),
+            source_block=14,
+            target_entry=16,
+            dispatcher_serial=6,
+            bst_node_blocks=frozenset(),
+            target_reaches_pred=False,
+        )
+
+    def test_accepts_legal_peel(self):
+        plan = plan_residual_prefix_peel(
+            ResidualPrefixPeelContext(
+                peel_context=self._peel_context(),
+                already_emitted=False,
+                existing_target=None,
+                prefix_target=16,
+                via_pred_succ_count=2,
+            )
+        )
+        assert plan.accepted
+        assert not plan.stop_iteration
+
+    def test_rejects_when_prefix_already_emitted(self):
+        plan = plan_residual_prefix_peel(
+            ResidualPrefixPeelContext(
+                peel_context=self._peel_context(),
+                already_emitted=True,
+                existing_target=None,
+                prefix_target=16,
+                via_pred_succ_count=2,
+            )
+        )
+        assert not plan.accepted
+        assert plan.rejection_reason == "prefix_already_emitted"
+
+    def test_single_successor_matching_existing_target_stops_iteration(self):
+        plan = plan_residual_prefix_peel(
+            ResidualPrefixPeelContext(
+                peel_context=self._peel_context(),
+                already_emitted=False,
+                existing_target=16,
+                prefix_target=16,
+                via_pred_succ_count=1,
+            )
+        )
+        assert not plan.accepted
+        assert plan.stop_iteration
+        assert plan.rejection_reason == "existing_target_matches_prefix"
+
+    def test_single_successor_conflict_rejects_without_stop(self):
+        plan = plan_residual_prefix_peel(
+            ResidualPrefixPeelContext(
+                peel_context=self._peel_context(),
+                already_emitted=False,
+                existing_target=20,
+                prefix_target=16,
+                via_pred_succ_count=1,
+            )
+        )
+        assert not plan.accepted
+        assert not plan.stop_iteration
+        assert plan.rejection_reason == "existing_target_conflicts"

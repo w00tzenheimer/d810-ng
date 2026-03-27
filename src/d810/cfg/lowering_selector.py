@@ -92,6 +92,27 @@ class ResidualBranchAnchorPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class ResidualPrefixPeelContext:
+    """Structured planning input for residual predecessor-edge peel rewrites."""
+
+    peel_context: PredecessorPeelContext
+    already_emitted: bool
+    existing_target: int | None
+    prefix_target: int
+    via_pred_succ_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ResidualPrefixPeelPlan:
+    """Planner result for a residual predecessor-edge peel."""
+
+    accepted: bool
+    stop_iteration: bool = False
+    claim_oneway_target: int | None = None
+    rejection_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class SharedFeederLoweringCandidate:
     """One possible lowering shape for a shared-feeder redirect."""
 
@@ -401,6 +422,42 @@ def plan_residual_branch_anchor_handoff(
     )
 
 
+def plan_residual_prefix_peel(
+    context: ResidualPrefixPeelContext,
+) -> ResidualPrefixPeelPlan:
+    """Plan a residual predecessor-edge peel using pure cfg facts."""
+    if not can_peel_predecessor_edge(context.peel_context):
+        return ResidualPrefixPeelPlan(
+            accepted=False,
+            rejection_reason="peel_not_legal",
+        )
+
+    if context.already_emitted:
+        return ResidualPrefixPeelPlan(
+            accepted=False,
+            rejection_reason="prefix_already_emitted",
+        )
+
+    if context.via_pred_succ_count == 1:
+        if context.existing_target is not None:
+            if context.existing_target == context.prefix_target:
+                return ResidualPrefixPeelPlan(
+                    accepted=False,
+                    stop_iteration=True,
+                    rejection_reason="existing_target_matches_prefix",
+                )
+            return ResidualPrefixPeelPlan(
+                accepted=False,
+                rejection_reason="existing_target_conflicts",
+            )
+        return ResidualPrefixPeelPlan(
+            accepted=True,
+            claim_oneway_target=context.prefix_target,
+        )
+
+    return ResidualPrefixPeelPlan(accepted=True)
+
+
 def _default_candidate_score(
     candidate: SharedFeederLoweringCandidate,
 ) -> SharedFeederCandidateScore:
@@ -496,10 +553,13 @@ __all__ = [
     "SharedGroupDuplicationPlan",
     "ResidualBranchAnchorContext",
     "ResidualBranchAnchorPlan",
+    "ResidualPrefixPeelContext",
+    "ResidualPrefixPeelPlan",
     "can_peel_predecessor_edge",
     "enumerate_shared_feeder_candidates",
     "plan_shared_group_duplication",
     "plan_residual_branch_anchor_handoff",
+    "plan_residual_prefix_peel",
     "select_shared_feeder_lowering",
     "target_reaches_source_ignoring_blocks",
 ]

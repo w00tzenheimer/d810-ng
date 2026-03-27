@@ -23,7 +23,9 @@ from d810.cfg.lowering_selector import (
     PredecessorPeelContext,
     can_peel_predecessor_edge,
     ResidualBranchAnchorContext,
+    ResidualPrefixPeelContext,
     plan_residual_branch_anchor_handoff,
+    plan_residual_prefix_peel,
 )
 from d810.cfg.plan import compile_patch_plan
 from d810.core import logging
@@ -4466,17 +4468,20 @@ class LinearizedFlowGraphStrategy:
                         ignored_blocks=residual_ignored_blocks | {source_block},
                     ),
                 )
-                if not can_peel_predecessor_edge(peel_context):
-                    continue
                 prefix_key = (via_pred, source_block, prefix_target)
-                if prefix_key in prefix_emitted:
+                prefix_plan = plan_residual_prefix_peel(
+                    ResidualPrefixPeelContext(
+                        peel_context=peel_context,
+                        already_emitted=prefix_key in prefix_emitted,
+                        existing_target=claimed_1way.get(via_pred),
+                        prefix_target=prefix_target,
+                        via_pred_succ_count=len(pred_succs),
+                    )
+                )
+                if not prefix_plan.accepted:
+                    if prefix_plan.stop_iteration:
+                        break
                     continue
-                if len(pred_succs) == 1:
-                    existing_target = claimed_1way.get(via_pred)
-                    if existing_target is not None:
-                        if existing_target == prefix_target:
-                            break
-                        continue
                 modifications.append(
                     builder.edge_redirect(
                         source_block=via_pred,
@@ -4492,8 +4497,8 @@ class LinearizedFlowGraphStrategy:
                     owned_transitions.add(
                         (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
                     )
-                if len(pred_succs) == 1:
-                    claimed_1way[via_pred] = prefix_target
+                if prefix_plan.claim_oneway_target is not None:
+                    claimed_1way[via_pred] = prefix_plan.claim_oneway_target
                 logger.info(
                     "LFG DAG: residual prefix handoff %s -> %s (bypassing %s via %s)",
                     blk_label(mba, via_pred),
