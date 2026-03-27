@@ -36,6 +36,11 @@ from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import
     ModificationBuilder,
 )
 from d810.recon.flow.bst_analysis import _forward_eval_insn, analyze_bst_dispatcher
+from d810.recon.flow.graph_reachability import (
+    collect_dispatcher_predecessors,
+    collect_residual_dispatcher_predecessors,
+    compute_reachable_blocks,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
@@ -1804,31 +1809,11 @@ class LinearizedFlowGraphStrategy:
         start_serial: int | None,
         limit: int = 4096,
     ) -> set[int] | None:
-        if start_serial is None:
-            return None
-        try:
-            start_block = flow_graph.get_block(start_serial)
-        except Exception:
-            start_block = None
-        if start_block is None:
-            return None
-
-        reachable: set[int] = set()
-        worklist: list[int] = [start_serial]
-        while worklist and len(reachable) < limit:
-            current = worklist.pop()
-            if current in reachable:
-                continue
-            reachable.add(current)
-            try:
-                succs = tuple(flow_graph.successors(current))
-            except Exception:
-                block = flow_graph.get_block(current)
-                succs = tuple(getattr(block, "succs", ())) if block is not None else ()
-            for succ in succs:
-                if succ not in reachable:
-                    worklist.append(int(succ))
-        return reachable
+        return compute_reachable_blocks(
+            flow_graph,
+            start_serial=start_serial,
+            limit=limit,
+        )
 
     @staticmethod
     def _collect_whole_redirect_source_blocks(modifications: list) -> set[int]:
@@ -1847,22 +1832,11 @@ class LinearizedFlowGraphStrategy:
         *,
         bst_node_blocks: set[int],
     ) -> tuple[int, ...]:
-        if dispatcher_serial < 0:
-            return ()
-
-        try:
-            dispatcher_block = flow_graph.get_block(dispatcher_serial)
-        except Exception:
-            dispatcher_block = None
-        if dispatcher_block is None:
-            return ()
-
-        residual: list[int] = []
-        for serial in sorted(tuple(getattr(dispatcher_block, "preds", ()))):
-            if serial == dispatcher_serial or serial in bst_node_blocks:
-                continue
-            residual.append(int(serial))
-        return tuple(residual)
+        return collect_dispatcher_predecessors(
+            flow_graph,
+            dispatcher_serial,
+            bst_node_blocks=bst_node_blocks,
+        )
 
     @staticmethod
     def _collect_residual_dispatcher_predecessors(
@@ -1872,20 +1846,11 @@ class LinearizedFlowGraphStrategy:
         bst_node_blocks: set[int],
         reachable_from_serial: int | None = None,
     ) -> tuple[int, ...]:
-        residual = LinearizedFlowGraphStrategy._collect_dispatcher_predecessors(
+        return collect_residual_dispatcher_predecessors(
             flow_graph,
             dispatcher_serial,
             bst_node_blocks=bst_node_blocks,
-        )
-        reachable_blocks = LinearizedFlowGraphStrategy._compute_reachable_blocks(
-            flow_graph,
-            start_serial=reachable_from_serial,
-        )
-        if reachable_blocks is None:
-            return residual
-        return tuple(
-            serial for serial in residual
-            if serial in reachable_blocks
+            reachable_from_serial=reachable_from_serial,
         )
 
     @staticmethod
