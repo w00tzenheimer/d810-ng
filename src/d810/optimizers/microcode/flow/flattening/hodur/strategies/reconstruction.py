@@ -45,6 +45,7 @@ from d810.cfg.lowering_selector import (
     plan_shared_group_duplication,
     target_reaches_source_ignoring_blocks,
 )
+from d810.cfg.reconstruction_emission import plan_reconstruction_emission
 from d810.cfg.terminal_family_split import (
     TerminalFamilySplitCandidate,
     build_terminal_family_split_proposals,
@@ -1575,92 +1576,6 @@ class StateWriteReconstructionStrategy:
         )
 
     @classmethod
-    def _can_emit_direct(
-        cls,
-        edge: StateDagEdge,
-        flow_graph,
-        ordered_path: tuple[int, ...],
-        *,
-        horizon_index: int,
-        site: StateWriteSite,
-        shared_suffix_blocks: set[int],
-        dispatcher_region: set[int],
-    ) -> bool:
-        horizon_block = int(ordered_path[horizon_index])
-        block = flow_graph.get_block(horizon_block)
-        if block is None or block.nsucc != 1 or block.npred > 1:
-            return False
-        if cls._is_shared_block(
-            flow_graph,
-            horizon_block,
-            shared_suffix_blocks=shared_suffix_blocks,
-        ):
-            return False
-        if (
-            edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION
-            and horizon_block == int(edge.source_anchor.block_serial)
-        ):
-            return False
-
-        boundary_index = cls._first_boundary_index(
-            flow_graph,
-            ordered_path,
-            start_index=horizon_index + 1,
-            shared_suffix_blocks=shared_suffix_blocks,
-            dispatcher_region=dispatcher_region,
-        )
-        end_index = len(ordered_path) if boundary_index is None else boundary_index
-        for index in range(horizon_index + 1, end_index):
-            block_serial = int(ordered_path[index])
-            curr = flow_graph.get_block(block_serial)
-            if curr is None or curr.nsucc != 1 or curr.npred != 1:
-                return False
-            if cls._is_shared_block(
-                flow_graph,
-                block_serial,
-                shared_suffix_blocks=shared_suffix_blocks,
-            ):
-                return False
-        return True
-
-    @classmethod
-    def _can_emit_conditional_arm(
-        cls,
-        edge: StateDagEdge,
-        flow_graph,
-        ordered_path: tuple[int, ...],
-        *,
-        horizon_index: int,
-        site: StateWriteSite,
-        dispatcher_serial: int,
-    ) -> bool:
-        """Accept conditional transition edges where horizon is the branch block.
-
-        Unlike _can_emit_direct (which requires nsucc==1), this accepts 2-way
-        blocks. The Jcc stays alive; we redirect specific arms.
-        """
-        if edge.kind != SemanticEdgeKind.CONDITIONAL_TRANSITION:
-            return False
-
-        horizon_block = ordered_path[horizon_index]
-        if horizon_block != int(edge.source_anchor.block_serial):
-            return False
-
-        block = flow_graph.get_block(horizon_block)
-        if block is None or block.nsucc != 2:
-            return False
-
-        branch_arm = edge.source_anchor.branch_arm
-        if branch_arm is None:
-            return False
-
-        logger.info(
-            "RECON DAG: conditional_arm candidate: horizon=%d, branch_arm=%d",
-            horizon_block, branch_arm,
-        )
-        return True
-
-    @classmethod
     def _build_candidate(
         cls,
         edge: StateDagEdge,
@@ -1761,53 +1676,59 @@ class StateWriteReconstructionStrategy:
                 rejection_reason="horizon_not_on_path",
             )
 
-        first_shared_index = cls._first_shared_block_index(
+        emission_decision = plan_reconstruction_emission(
             flow_graph,
             ordered_path,
-            start_index=horizon_index,
+            horizon_block=int(horizon_block),
+            source_anchor_block=int(edge.source_anchor.block_serial),
+            source_branch_arm=(
+                int(edge.source_anchor.branch_arm)
+                if edge.source_anchor.branch_arm is not None
+                else None
+            ),
+            is_conditional_transition=(
+                edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION
+            ),
             shared_suffix_blocks=shared_suffix_blocks,
             dispatcher_region=dispatcher_region,
-        )
-        first_shared_block = (
-            int(ordered_path[first_shared_index])
-            if first_shared_index is not None
-            else None
+            has_unsafe_trailing_insns=bool(site.unsafe_trailing_insn_eas),
         )
 
-        if cls._can_emit_direct(
-            edge,
-            flow_graph,
-            ordered_path,
-            horizon_index=horizon_index,
-            site=site,
-            shared_suffix_blocks=shared_suffix_blocks,
-            dispatcher_region=dispatcher_region,
-        ):
+        if not emission_decision.accepted:
+            return None, cls._make_edge_metadata(
+                edge,
+                horizon_block=horizon_block,
+                site=site,
+                target_entry=target_entry,
+                first_shared_block=emission_decision.first_shared_block,
+                via_pred=emission_decision.via_pred,
+                rejection_reason=emission_decision.rejection_reason,
+            )
+
+        if emission_decision.emission_mode == "direct":
             return (
                 ReconstructionCandidate(
                     edge=edge,
                     horizon_block=int(horizon_block),
                     site=site,
                     target_entry=int(target_entry),
-                    first_shared_block=first_shared_block,
+                    first_shared_block=emission_decision.first_shared_block,
                     via_pred=None,
                     emission_mode="direct",
                 ),
                 None,
             )
 
-        if cls._can_emit_conditional_arm(
-            edge,
-            flow_graph,
-            ordered_path,
-            horizon_index=horizon_index,
-            site=site,
-            dispatcher_serial=dispatcher_serial,
-        ):
+        if emission_decision.emission_mode == "conditional_arm":
+            logger.info(
+                "RECON DAG: conditional_arm candidate: horizon=%d, branch_arm=%d",
+                int(horizon_block),
+                int(edge.source_anchor.branch_arm),
+            )
             return (
                 ReconstructionCandidate(
                     edge=edge,
-                    horizon_block=int(ordered_path[horizon_index]),
+                    horizon_block=int(horizon_block),
                     site=site,
                     target_entry=int(target_entry),
                     first_shared_block=None,
@@ -1817,50 +1738,14 @@ class StateWriteReconstructionStrategy:
                 None,
             )
 
-        if first_shared_index is None:
-            rejection_reason = (
-                "blocked_side_effects"
-                if site.unsafe_trailing_insn_eas
-                else "no_shared_rewrite_site"
-            )
-            return None, cls._make_edge_metadata(
-                edge,
-                horizon_block=horizon_block,
-                site=site,
-                target_entry=target_entry,
-                rejection_reason=rejection_reason,
-            )
-
-        via_pred = (
-            int(ordered_path[first_shared_index - 1])
-            if first_shared_index > 0
-            else None
-        )
-        shared_block = int(ordered_path[first_shared_index])
-        shared_snapshot = flow_graph.get_block(shared_block)
-        if (
-            via_pred is None
-            or shared_snapshot is None
-            or via_pred not in tuple(shared_snapshot.preds)
-        ):
-            return None, cls._make_edge_metadata(
-                edge,
-                horizon_block=horizon_block,
-                site=site,
-                target_entry=target_entry,
-                first_shared_block=shared_block,
-                via_pred=via_pred,
-                rejection_reason="missing_via_pred",
-            )
-
         return (
             ReconstructionCandidate(
                 edge=edge,
                 horizon_block=int(horizon_block),
                 site=site,
                 target_entry=int(target_entry),
-                first_shared_block=shared_block,
-                via_pred=int(via_pred),
+                first_shared_block=emission_decision.first_shared_block,
+                via_pred=int(emission_decision.via_pred),
                 emission_mode="pred_split",
             ),
             None,
