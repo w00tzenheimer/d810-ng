@@ -23,8 +23,12 @@ from d810.cfg.lowering_selector import (
     PredecessorPeelContext,
     can_peel_predecessor_edge,
     ResidualBranchAnchorContext,
+    ResidualGotoHandoffContext,
+    ResidualPredSplitContext,
     ResidualPrefixPeelContext,
     plan_residual_branch_anchor_handoff,
+    plan_residual_goto_handoff,
+    plan_residual_pred_split,
     plan_residual_prefix_peel,
     target_reaches_source_ignoring_blocks,
 )
@@ -4155,8 +4159,6 @@ class LinearizedFlowGraphStrategy:
                 continue
             if handoff is None:
                 for via_pred in current_preds:
-                    if not cls._is_valid_pred_split_pair(source_block, via_pred, builder):
-                        continue
                     pred_handoff = None
                     if source_has_state_write:
                         pred_handoff = cls._resolve_synthesized_handoff_target(
@@ -4228,22 +4230,30 @@ class LinearizedFlowGraphStrategy:
                     if pred_handoff is None:
                         continue
                     state_value, target_entry = pred_handoff
-                    if (
-                        target_entry == source_block
-                        or target_entry == dispatcher_serial
-                        or target_entry in bst_node_blocks
-                    ):
-                        continue
-                    if cls._pred_split_target_reaches_via_pred(
-                        projected_flow_graph,
-                        target_entry=target_entry,
-                        via_pred=via_pred,
-                        source_block=source_block,
-                        ignored_blocks=residual_ignored_blocks,
-                    ):
-                        continue
                     emit_key = (source_block, via_pred, target_entry)
-                    if emit_key in pred_split_emitted:
+                    pred_split_plan = plan_residual_pred_split(
+                        ResidualPredSplitContext(
+                            source_block=source_block,
+                            via_pred=via_pred,
+                            target_entry=target_entry,
+                            dispatcher_serial=dispatcher_serial,
+                            bst_node_blocks=frozenset(bst_node_blocks),
+                            valid_pair=cls._is_valid_pred_split_pair(
+                                source_block,
+                                via_pred,
+                                builder,
+                            ),
+                            target_reaches_via_pred=cls._pred_split_target_reaches_via_pred(
+                                projected_flow_graph,
+                                target_entry=target_entry,
+                                via_pred=via_pred,
+                                source_block=source_block,
+                                ignored_blocks=residual_ignored_blocks,
+                            ),
+                            already_emitted=emit_key in pred_split_emitted,
+                        )
+                    )
+                    if not pred_split_plan.accepted:
                         continue
                     modifications.append(
                         builder.edge_redirect(
@@ -4268,12 +4278,6 @@ class LinearizedFlowGraphStrategy:
                 continue
 
             state_value, target_entry = handoff
-            if (
-                target_entry == source_block
-                or target_entry == dispatcher_serial
-                or target_entry in bst_node_blocks
-            ):
-                continue
 
             allow_family_fallback_tail = cls._can_rewrite_shared_suffix_family_fallback(
                 dag,
@@ -4284,10 +4288,39 @@ class LinearizedFlowGraphStrategy:
                 flow_graph=projected_flow_graph,
             )
 
-            if cls._is_shared_suffix_conditional_tail(
-                dag,
-                source_block=source_block,
-            ) and not allow_family_fallback_tail:
+            goto_plan = plan_residual_goto_handoff(
+                ResidualGotoHandoffContext(
+                    source_block=source_block,
+                    target_entry=target_entry,
+                    dispatcher_serial=dispatcher_serial,
+                    bst_node_blocks=frozenset(bst_node_blocks),
+                    allow_family_fallback_tail=allow_family_fallback_tail,
+                    is_shared_suffix_conditional_tail=cls._is_shared_suffix_conditional_tail(
+                        dag,
+                        source_block=source_block,
+                    ),
+                    has_prior_branch_cut=cls._has_prior_branch_cut_for_state(
+                        dag,
+                        source_block=source_block,
+                        state_value=state_value,
+                        bst_node_blocks=bst_node_blocks,
+                        dispatcher=dispatcher,
+                    ),
+                    target_reaches_source=cls._target_reaches_source_ignoring_blocks(
+                        projected_flow_graph,
+                        target_entry=target_entry,
+                        source_block=source_block,
+                        ignored_blocks=residual_ignored_blocks,
+                    ),
+                    already_emitted=(source_block, target_entry) in emitted,
+                    live_oneway_noop=cls._is_live_oneway_noop(
+                        source_block,
+                        target_entry,
+                        builder,
+                    ),
+                )
+            )
+            if not goto_plan.accepted and goto_plan.rejection_reason == "shared_suffix_conditional_tail":
                 logger.info(
                     "LFG DAG: residual handoff %s -> %s suppressed because %s is a shared-suffix tail of an earlier conditional corridor",
                     blk_label(mba, source_block),
@@ -4295,14 +4328,7 @@ class LinearizedFlowGraphStrategy:
                     blk_label(mba, source_block),
                 )
                 continue
-
-            if cls._has_prior_branch_cut_for_state(
-                dag,
-                source_block=source_block,
-                state_value=state_value,
-                bst_node_blocks=bst_node_blocks,
-                dispatcher=dispatcher,
-            ) and not allow_family_fallback_tail:
+            if not goto_plan.accepted and goto_plan.rejection_reason == "prior_branch_cut":
                 logger.info(
                     "LFG DAG: residual handoff %s -> %s suppressed because an earlier conditional corridor already owns state 0x%X",
                     blk_label(mba, source_block),
@@ -4310,34 +4336,26 @@ class LinearizedFlowGraphStrategy:
                     state_value,
                 )
                 continue
-
-            if cls._target_reaches_source_ignoring_blocks(
-                projected_flow_graph,
-                target_entry=target_entry,
-                source_block=source_block,
-                ignored_blocks=residual_ignored_blocks,
-            ):
+            if not goto_plan.accepted and goto_plan.rejection_reason == "cycle_risk":
                 logger.info(
                     "LFG DAG: residual handoff %s -> %s still forms a non-dispatcher cycle, skipping",
                     blk_label(mba, source_block),
                     blk_label(mba, target_entry),
                 )
-            else:
-                emit_key = (source_block, target_entry)
-                if emit_key in emitted:
-                    continue
-                if cls._is_live_oneway_noop(
-                    source_block,
-                    target_entry,
-                    builder,
-                ):
-                    logger.info(
-                        "LFG DAG: residual handoff %s already targets %s, skipping live no-op",
-                        blk_label(mba, source_block),
-                        blk_label(mba, target_entry),
-                    )
-                    continue
-
+                continue
+            if not goto_plan.accepted and goto_plan.rejection_reason == "live_oneway_noop":
+                logger.info(
+                    "LFG DAG: residual handoff %s already targets %s, skipping live no-op",
+                    blk_label(mba, source_block),
+                    blk_label(mba, target_entry),
+                )
+                continue
+            if not goto_plan.accepted and goto_plan.rejection_reason in {
+                "invalid_target",
+                "handoff_already_emitted",
+            }:
+                continue
+            if goto_plan.accepted:
                 modifications.append(
                     builder.goto_redirect(
                         source_block=source_block,
@@ -4346,7 +4364,7 @@ class LinearizedFlowGraphStrategy:
                     )
                 )
                 claimed_1way[source_block] = target_entry
-                emitted.add(emit_key)
+                emitted.add((source_block, target_entry))
                 owned_blocks.add(source_block)
                 owned_edges.add((source_block, target_entry))
                 logger.info(

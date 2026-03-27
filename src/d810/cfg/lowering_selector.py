@@ -115,6 +115,52 @@ class ResidualPrefixPeelPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class ResidualPredSplitContext:
+    """Structured planning input for residual predecessor-split rewrites."""
+
+    source_block: int
+    via_pred: int
+    target_entry: int
+    dispatcher_serial: int
+    bst_node_blocks: frozenset[int]
+    valid_pair: bool
+    target_reaches_via_pred: bool
+    already_emitted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ResidualPredSplitPlan:
+    """Planner result for a residual predecessor-split rewrite."""
+
+    accepted: bool
+    rejection_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ResidualGotoHandoffContext:
+    """Structured planning input for residual one-way goto handoffs."""
+
+    source_block: int
+    target_entry: int
+    dispatcher_serial: int
+    bst_node_blocks: frozenset[int]
+    allow_family_fallback_tail: bool
+    is_shared_suffix_conditional_tail: bool
+    has_prior_branch_cut: bool
+    target_reaches_source: bool
+    already_emitted: bool
+    live_oneway_noop: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ResidualGotoHandoffPlan:
+    """Planner result for a residual one-way goto handoff."""
+
+    accepted: bool
+    rejection_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class SharedFeederLoweringCandidate:
     """One possible lowering shape for a shared-feeder redirect."""
 
@@ -452,10 +498,83 @@ def plan_residual_prefix_peel(
                 accepted=False,
                 rejection_reason="existing_target_conflicts",
             )
-        return ResidualPrefixPeelPlan(
-            accepted=True,
-            claim_oneway_target=context.prefix_target,
+    return ResidualPrefixPeelPlan(
+        accepted=True,
+        claim_oneway_target=context.prefix_target,
+    )
+
+
+def plan_residual_pred_split(
+    context: ResidualPredSplitContext,
+) -> ResidualPredSplitPlan:
+    if not context.valid_pair:
+        return ResidualPredSplitPlan(
+            accepted=False,
+            rejection_reason="invalid_pred_split_pair",
         )
+    if (
+        context.target_entry == context.source_block
+        or context.target_entry == context.dispatcher_serial
+        or context.target_entry in context.bst_node_blocks
+    ):
+        return ResidualPredSplitPlan(
+            accepted=False,
+            rejection_reason="invalid_target",
+        )
+    if context.target_reaches_via_pred:
+        return ResidualPredSplitPlan(
+            accepted=False,
+            rejection_reason="cycle_risk",
+        )
+    if context.already_emitted:
+        return ResidualPredSplitPlan(
+            accepted=False,
+            rejection_reason="pred_split_already_emitted",
+        )
+    return ResidualPredSplitPlan(accepted=True)
+
+
+def plan_residual_goto_handoff(
+    context: ResidualGotoHandoffContext,
+) -> ResidualGotoHandoffPlan:
+    if (
+        context.target_entry == context.source_block
+        or context.target_entry == context.dispatcher_serial
+        or context.target_entry in context.bst_node_blocks
+    ):
+        return ResidualGotoHandoffPlan(
+            accepted=False,
+            rejection_reason="invalid_target",
+        )
+    if (
+        context.is_shared_suffix_conditional_tail
+        and not context.allow_family_fallback_tail
+    ):
+        return ResidualGotoHandoffPlan(
+            accepted=False,
+            rejection_reason="shared_suffix_conditional_tail",
+        )
+    if context.has_prior_branch_cut and not context.allow_family_fallback_tail:
+        return ResidualGotoHandoffPlan(
+            accepted=False,
+            rejection_reason="prior_branch_cut",
+        )
+    if context.target_reaches_source:
+        return ResidualGotoHandoffPlan(
+            accepted=False,
+            rejection_reason="cycle_risk",
+        )
+    if context.already_emitted:
+        return ResidualGotoHandoffPlan(
+            accepted=False,
+            rejection_reason="handoff_already_emitted",
+        )
+    if context.live_oneway_noop:
+        return ResidualGotoHandoffPlan(
+            accepted=False,
+            rejection_reason="live_oneway_noop",
+        )
+    return ResidualGotoHandoffPlan(accepted=True)
 
     return ResidualPrefixPeelPlan(accepted=True)
 
@@ -557,12 +676,18 @@ __all__ = [
     "SharedGroupDuplicationPlan",
     "ResidualBranchAnchorContext",
     "ResidualBranchAnchorPlan",
+    "ResidualGotoHandoffContext",
+    "ResidualGotoHandoffPlan",
+    "ResidualPredSplitContext",
+    "ResidualPredSplitPlan",
     "ResidualPrefixPeelContext",
     "ResidualPrefixPeelPlan",
     "can_peel_predecessor_edge",
     "enumerate_shared_feeder_candidates",
     "plan_shared_group_duplication",
     "plan_residual_branch_anchor_handoff",
+    "plan_residual_goto_handoff",
+    "plan_residual_pred_split",
     "plan_residual_prefix_peel",
     "select_shared_feeder_lowering",
     "target_reaches_source_ignoring_blocks",
