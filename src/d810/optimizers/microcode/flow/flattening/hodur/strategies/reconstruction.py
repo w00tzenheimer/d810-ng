@@ -24,6 +24,12 @@ from d810.cfg.graph_modification import (
     PrivateTerminalSuffixGroup,
 )
 from d810.cfg.mod_claims import collect_mod_claims
+from d810.cfg.shared_corridor import (
+    first_boundary_index,
+    first_shared_block_index,
+    is_shared_block,
+    resolve_old_target,
+)
 from d810.cfg.lowering_selector import (
     SharedFeederContext,
     SharedFeederLoweringKind,
@@ -501,18 +507,7 @@ class StateWriteReconstructionStrategy:
         source_block: int,
         ordered_path: tuple[int, ...],
     ) -> int | None:
-        block = flow_graph.get_block(source_block)
-        if block is None:
-            return None
-        if source_block in ordered_path:
-            idx = ordered_path.index(source_block)
-            if idx + 1 < len(ordered_path):
-                next_block = int(ordered_path[idx + 1])
-                if next_block in tuple(block.succs):
-                    return next_block
-        if block.nsucc == 1:
-            return int(block.succs[0])
-        return None
+        return resolve_old_target(flow_graph, source_block, ordered_path)
 
     @staticmethod
     def _is_shared_block(
@@ -521,10 +516,11 @@ class StateWriteReconstructionStrategy:
         *,
         shared_suffix_blocks: set[int],
     ) -> bool:
-        if block_serial in shared_suffix_blocks:
-            return True
-        block = flow_graph.get_block(block_serial)
-        return bool(block is not None and block.npred > 1)
+        return is_shared_block(
+            flow_graph,
+            block_serial,
+            shared_suffix_blocks=shared_suffix_blocks,
+        )
 
     @classmethod
     def _first_shared_block_index(
@@ -536,17 +532,13 @@ class StateWriteReconstructionStrategy:
         shared_suffix_blocks: set[int],
         dispatcher_region: set[int],
     ) -> int | None:
-        for index in range(start_index, len(ordered_path)):
-            block_serial = int(ordered_path[index])
-            if block_serial in dispatcher_region:
-                continue
-            if cls._is_shared_block(
-                flow_graph,
-                block_serial,
-                shared_suffix_blocks=shared_suffix_blocks,
-            ):
-                return index
-        return None
+        return first_shared_block_index(
+            flow_graph,
+            ordered_path,
+            start_index=start_index,
+            shared_suffix_blocks=shared_suffix_blocks,
+            dispatcher_region=dispatcher_region,
+        )
 
     @classmethod
     def _first_boundary_index(
@@ -558,15 +550,13 @@ class StateWriteReconstructionStrategy:
         shared_suffix_blocks: set[int],
         dispatcher_region: set[int],
     ) -> int | None:
-        for index in range(start_index, len(ordered_path)):
-            block_serial = int(ordered_path[index])
-            if block_serial in dispatcher_region or cls._is_shared_block(
-                flow_graph,
-                block_serial,
-                shared_suffix_blocks=shared_suffix_blocks,
-            ):
-                return index
-        return None
+        return first_boundary_index(
+            flow_graph,
+            ordered_path,
+            start_index=start_index,
+            shared_suffix_blocks=shared_suffix_blocks,
+            dispatcher_region=dispatcher_region,
+        )
 
     @staticmethod
     def _compute_reachable_blocks(
