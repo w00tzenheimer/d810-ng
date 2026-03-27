@@ -42,7 +42,11 @@ from d810.cfg.lowering_selector import (
     select_shared_feeder_lowering,
     target_reaches_source_ignoring_blocks,
 )
-from d810.cfg.reconstruction_emission import plan_reconstruction_emission
+from d810.cfg.reconstruction_planning import (
+    ReconstructionEmissionMode,
+    ReconstructionPlanningContext,
+    plan_reconstruction_candidate,
+)
 from d810.cfg.reconstruction_lowering import (
     plan_conditional_arm_emission,
     plan_direct_emission,
@@ -1525,50 +1529,53 @@ class StateWriteReconstructionStrategy:
                 rejection_reason="horizon_not_on_path",
             )
 
-        emission_decision = plan_reconstruction_emission(
+        planning_decision = plan_reconstruction_candidate(
             flow_graph,
-            ordered_path,
-            horizon_block=int(horizon_block),
-            source_anchor_block=int(edge.source_anchor.block_serial),
-            source_branch_arm=(
-                int(edge.source_anchor.branch_arm)
-                if edge.source_anchor.branch_arm is not None
-                else None
+            ReconstructionPlanningContext(
+                ordered_path=ordered_path,
+                horizon_block=int(horizon_block),
+                target_entry=int(target_entry),
+                source_anchor_block=int(edge.source_anchor.block_serial),
+                source_branch_arm=(
+                    int(edge.source_anchor.branch_arm)
+                    if edge.source_anchor.branch_arm is not None
+                    else None
+                ),
+                is_conditional_transition=(
+                    edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION
+                ),
+                shared_suffix_blocks=frozenset(int(block) for block in shared_suffix_blocks),
+                dispatcher_region=frozenset(int(block) for block in dispatcher_region),
+                has_unsafe_trailing_insns=bool(site.unsafe_trailing_insn_eas),
             ),
-            is_conditional_transition=(
-                edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION
-            ),
-            shared_suffix_blocks=shared_suffix_blocks,
-            dispatcher_region=dispatcher_region,
-            has_unsafe_trailing_insns=bool(site.unsafe_trailing_insn_eas),
         )
 
-        if not emission_decision.accepted:
+        if not planning_decision.accepted:
             return None, cls._make_edge_metadata(
                 edge,
                 horizon_block=horizon_block,
                 site=site,
                 target_entry=target_entry,
-                first_shared_block=emission_decision.first_shared_block,
-                via_pred=emission_decision.via_pred,
-                rejection_reason=emission_decision.rejection_reason,
+                first_shared_block=planning_decision.first_shared_block,
+                via_pred=planning_decision.via_pred,
+                rejection_reason=planning_decision.rejection_reason,
             )
 
-        if emission_decision.emission_mode == "direct":
+        if planning_decision.emission_mode == ReconstructionEmissionMode.DIRECT:
             return (
                 ReconstructionCandidate(
                     edge=edge,
                     horizon_block=int(horizon_block),
                     site=site,
                     target_entry=int(target_entry),
-                    first_shared_block=emission_decision.first_shared_block,
+                    first_shared_block=planning_decision.first_shared_block,
                     via_pred=None,
                     emission_mode="direct",
                 ),
                 None,
             )
 
-        if emission_decision.emission_mode == "conditional_arm":
+        if planning_decision.emission_mode == ReconstructionEmissionMode.CONDITIONAL_ARM:
             logger.info(
                 "RECON DAG: conditional_arm candidate: horizon=%d, branch_arm=%d",
                 int(horizon_block),
@@ -1593,8 +1600,8 @@ class StateWriteReconstructionStrategy:
                 horizon_block=int(horizon_block),
                 site=site,
                 target_entry=int(target_entry),
-                first_shared_block=emission_decision.first_shared_block,
-                via_pred=int(emission_decision.via_pred),
+                first_shared_block=planning_decision.first_shared_block,
+                via_pred=int(planning_decision.via_pred),
                 emission_mode="pred_split",
             ),
             None,
