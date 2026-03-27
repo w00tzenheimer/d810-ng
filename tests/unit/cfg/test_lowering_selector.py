@@ -3,6 +3,8 @@ from __future__ import annotations
 from d810.cfg.lowering_selector import (
     PredecessorPeelContext,
     ResidualBranchAnchorContext,
+    ResidualGotoHandoffContext,
+    ResidualPredSplitContext,
     ResidualPrefixPeelContext,
     SharedFeederCandidateScore,
     SharedFeederContext,
@@ -12,6 +14,8 @@ from d810.cfg.lowering_selector import (
     can_peel_predecessor_edge,
     enumerate_shared_feeder_candidates,
     plan_residual_branch_anchor_handoff,
+    plan_residual_goto_handoff,
+    plan_residual_pred_split,
     plan_residual_prefix_peel,
     plan_shared_group_duplication,
     select_shared_feeder_lowering,
@@ -495,3 +499,107 @@ class TestPlanResidualPrefixPeel:
         assert not plan.accepted
         assert not plan.stop_iteration
         assert plan.rejection_reason == "existing_target_conflicts"
+
+
+class TestPlanResidualPredSplit:
+    def test_accepts_legal_pred_split(self):
+        plan = plan_residual_pred_split(
+            ResidualPredSplitContext(
+                source_block=14,
+                via_pred=12,
+                target_entry=16,
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                valid_pair=True,
+                target_reaches_via_pred=False,
+                already_emitted=False,
+            )
+        )
+        assert plan.accepted
+
+    def test_rejects_invalid_target(self):
+        plan = plan_residual_pred_split(
+            ResidualPredSplitContext(
+                source_block=14,
+                via_pred=12,
+                target_entry=6,
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                valid_pair=True,
+                target_reaches_via_pred=False,
+                already_emitted=False,
+            )
+        )
+        assert not plan.accepted
+        assert plan.rejection_reason == "invalid_target"
+
+    def test_rejects_cycle_risk(self):
+        plan = plan_residual_pred_split(
+            ResidualPredSplitContext(
+                source_block=14,
+                via_pred=12,
+                target_entry=16,
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                valid_pair=True,
+                target_reaches_via_pred=True,
+                already_emitted=False,
+            )
+        )
+        assert not plan.accepted
+        assert plan.rejection_reason == "cycle_risk"
+
+
+class TestPlanResidualGotoHandoff:
+    def test_accepts_legal_goto_handoff(self):
+        plan = plan_residual_goto_handoff(
+            ResidualGotoHandoffContext(
+                source_block=14,
+                target_entry=16,
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                allow_family_fallback_tail=False,
+                is_shared_suffix_conditional_tail=False,
+                has_prior_branch_cut=False,
+                target_reaches_source=False,
+                already_emitted=False,
+                live_oneway_noop=False,
+            )
+        )
+        assert plan.accepted
+
+    def test_rejects_shared_suffix_tail_without_fallback(self):
+        plan = plan_residual_goto_handoff(
+            ResidualGotoHandoffContext(
+                source_block=14,
+                target_entry=16,
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                allow_family_fallback_tail=False,
+                is_shared_suffix_conditional_tail=True,
+                has_prior_branch_cut=False,
+                target_reaches_source=False,
+                already_emitted=False,
+                live_oneway_noop=False,
+            )
+        )
+        assert not plan.accepted
+        assert plan.rejection_reason == "shared_suffix_conditional_tail"
+
+    def test_rejects_live_oneway_noop(self):
+        plan = plan_residual_goto_handoff(
+            ResidualGotoHandoffContext(
+                source_block=14,
+                target_entry=16,
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                allow_family_fallback_tail=False,
+                is_shared_suffix_conditional_tail=False,
+                has_prior_branch_cut=False,
+                target_reaches_source=False,
+                already_emitted=False,
+                live_oneway_noop=True,
+            )
+        )
+        assert not plan.accepted
+        assert plan.rejection_reason == "live_oneway_noop"
