@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
+from d810.core.typing import Callable
+from d810.cfg.flow.edit_simulator import project_post_state
+from d810.cfg.plan import compile_patch_plan
+
 
 @dataclass(frozen=True, slots=True)
 class TerminalFamilySplitCandidate:
@@ -16,6 +20,16 @@ class TerminalFamilySplitCandidate:
 
 @dataclass(frozen=True, slots=True)
 class TerminalFamilySplitProposal:
+    suffix_serials: tuple[int, ...]
+    selected_candidate_indexes: tuple[int, ...]
+    selected_anchors: tuple[int, ...]
+    primary_signature: tuple[object, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalFamilySplitSelection:
+    modification: object
+    projected_flow_graph: object
     suffix_serials: tuple[int, ...]
     selected_candidate_indexes: tuple[int, ...]
     selected_anchors: tuple[int, ...]
@@ -140,8 +154,97 @@ def build_terminal_family_split_proposals(
     return tuple(proposals)
 
 
+def build_terminal_family_split_modification(
+    *,
+    builder,
+    anchors: tuple[int, ...],
+    suffix_serials: tuple[int, ...],
+    projected_flow_graph=None,
+):
+    shared_entry = int(suffix_serials[0])
+    stop_block = int(suffix_serials[-1])
+    if projected_flow_graph is not None:
+        for idx, serial in enumerate(suffix_serials):
+            blk = projected_flow_graph.get_block(serial)
+            if blk is None:
+                return None
+            if idx < len(suffix_serials) - 1:
+                if blk.nsucc != 1:
+                    return None
+            elif blk.nsucc != 0:
+                return None
+    if len(anchors) == 1:
+        return builder.private_terminal_suffix(
+            anchor_serial=int(anchors[0]),
+            shared_entry_serial=shared_entry,
+            return_block_serial=stop_block,
+            suffix_serials=suffix_serials,
+            reason="terminal_family_split",
+        )
+    return builder.private_terminal_suffix_group(
+        anchors=anchors,
+        shared_entry_serial=shared_entry,
+        return_block_serial=stop_block,
+        suffix_serials=suffix_serials,
+        reason="terminal_family_split",
+    )
+
+
+def select_terminal_family_split(
+    candidates: tuple[TerminalFamilySplitCandidate, ...],
+    *,
+    base_flow_graph,
+    projected_flow_graph,
+    builder,
+    modifications: list,
+    compute_reachable_blocks: Callable[[object], set[int] | None],
+) -> TerminalFamilySplitSelection | None:
+    current_reachable = compute_reachable_blocks(projected_flow_graph)
+    if not current_reachable:
+        return None
+
+    baseline_reachable_count = len(current_reachable)
+
+    for proposal in build_terminal_family_split_proposals(
+        candidates,
+        projected_flow_graph=projected_flow_graph,
+    ):
+        candidate_mod = build_terminal_family_split_modification(
+            builder=builder,
+            anchors=proposal.selected_anchors,
+            suffix_serials=proposal.suffix_serials,
+            projected_flow_graph=projected_flow_graph,
+        )
+        if candidate_mod is None:
+            continue
+
+        try:
+            patch_plan = compile_patch_plan(modifications + [candidate_mod], base_flow_graph)
+            candidate_projected = project_post_state(base_flow_graph, patch_plan)
+        except Exception:
+            continue
+
+        candidate_reachable = compute_reachable_blocks(candidate_projected)
+        if candidate_reachable is None or len(candidate_reachable) < baseline_reachable_count:
+            continue
+
+        return TerminalFamilySplitSelection(
+            modification=candidate_mod,
+            projected_flow_graph=candidate_projected,
+            suffix_serials=proposal.suffix_serials,
+            selected_candidate_indexes=proposal.selected_candidate_indexes,
+            selected_anchors=proposal.selected_anchors,
+            primary_signature=proposal.primary_signature,
+        )
+
+    return None
+
+
 __all__ = [
     "TerminalFamilySplitCandidate",
     "TerminalFamilySplitProposal",
+    "TerminalFamilySplitSelection",
+    "build_terminal_family_split_modification",
     "build_terminal_family_split_proposals",
+    "select_terminal_family_split",
 ]

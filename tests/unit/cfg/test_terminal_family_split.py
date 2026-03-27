@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import d810.cfg.terminal_family_split as split_mod
 from d810.cfg.terminal_family_split import (
     TerminalFamilySplitCandidate,
+    build_terminal_family_split_modification,
     build_terminal_family_split_proposals,
+    select_terminal_family_split,
 )
 
 
@@ -18,9 +21,48 @@ class _DummyFlowGraph:
             int(k): _DummyBlock(tuple(int(v) for v in succs))
             for k, succs in mapping.items()
         }
+        self.entry_serial = min(self._mapping) if self._mapping else None
 
     def get_block(self, serial: int):
         return self._mapping.get(int(serial))
+
+
+class _DummyBuilder:
+    def private_terminal_suffix(
+        self,
+        *,
+        anchor_serial: int,
+        shared_entry_serial: int,
+        return_block_serial: int,
+        suffix_serials: tuple[int, ...],
+        reason: str,
+    ):
+        return (
+            "pts",
+            int(anchor_serial),
+            int(shared_entry_serial),
+            int(return_block_serial),
+            tuple(int(s) for s in suffix_serials),
+            reason,
+        )
+
+    def private_terminal_suffix_group(
+        self,
+        *,
+        anchors: tuple[int, ...],
+        shared_entry_serial: int,
+        return_block_serial: int,
+        suffix_serials: tuple[int, ...],
+        reason: str,
+    ):
+        return (
+            "ptsg",
+            tuple(int(a) for a in anchors),
+            int(shared_entry_serial),
+            int(return_block_serial),
+            tuple(int(s) for s in suffix_serials),
+            reason,
+        )
 
 
 class TestBuildTerminalFamilySplitProposals:
@@ -71,3 +113,73 @@ class TestBuildTerminalFamilySplitProposals:
         assert build_expected.selected_candidate_indexes == (1,)
         assert build_expected.selected_anchors == (21,)
         assert build_expected.primary_signature == ("keep",)
+
+
+class TestBuildTerminalFamilySplitModification:
+    def test_rejects_non_terminal_suffix_in_projected_graph(self):
+        flow_graph = _DummyFlowGraph({
+            30: (40,),
+            40: (50,),
+            50: (),
+        })
+
+        modification = build_terminal_family_split_modification(
+            builder=_DummyBuilder(),
+            anchors=(21,),
+            suffix_serials=(30, 40),
+            projected_flow_graph=flow_graph,
+        )
+
+        assert modification is None
+
+
+class TestSelectTerminalFamilySplit:
+    def test_returns_first_projectable_proposal(self):
+        candidates = (
+            TerminalFamilySplitCandidate(
+                source_block=10,
+                branch_arm=None,
+                family_entry=20,
+                path=(20, 30, 40),
+                value_family_signature=("keep",),
+                lineage_eas=(0x1000,),
+            ),
+            TerminalFamilySplitCandidate(
+                source_block=11,
+                branch_arm=None,
+                family_entry=21,
+                path=(21, 30, 40),
+                value_family_signature=("split",),
+                lineage_eas=(0x2000,),
+            ),
+        )
+        base_flow_graph = _DummyFlowGraph({
+            20: (30,),
+            21: (30,),
+            30: (40,),
+            40: (),
+        })
+        projected_flow_graph = base_flow_graph
+
+        original_compile = split_mod.compile_patch_plan
+        original_project = split_mod.project_post_state
+        try:
+            split_mod.compile_patch_plan = lambda mods, _cfg: tuple(mods)
+            split_mod.project_post_state = lambda _cfg, _plan: projected_flow_graph
+
+            selection = select_terminal_family_split(
+                candidates,
+                base_flow_graph=base_flow_graph,
+                projected_flow_graph=projected_flow_graph,
+                builder=_DummyBuilder(),
+                modifications=[],
+                compute_reachable_blocks=lambda fg: set(fg._mapping),
+            )
+        finally:
+            split_mod.compile_patch_plan = original_compile
+            split_mod.project_post_state = original_project
+
+        assert selection is not None
+        assert selection.selected_candidate_indexes == (1,)
+        assert selection.selected_anchors == (21,)
+        assert selection.suffix_serials == (30, 40)
