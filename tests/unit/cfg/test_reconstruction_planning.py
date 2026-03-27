@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from d810.cfg.reconstruction_planning import (
     ReconstructionEmissionMode,
+    ReconstructionLoweringContext,
+    ReconstructionLoweringKind,
     ReconstructionPlanningContext,
     plan_reconstruction_candidate,
+    plan_reconstruction_lowering,
 )
+from d810.cfg.reconstruction_lowering import RedirectSpec, SharedGroupEmissionCandidate
 
 
 class _DummyBlock:
@@ -120,3 +124,45 @@ class TestPlanReconstructionCandidate:
         assert not decision.accepted
         assert decision.target_entry == 24
         assert decision.rejection_reason == "blocked_side_effects"
+
+
+class TestPlanReconstructionLowering:
+    def test_dispatches_direct_lowering(self):
+        decision = plan_reconstruction_lowering(
+            flow_graph=None,
+            context=ReconstructionLoweringContext(
+                kind=ReconstructionLoweringKind.DIRECT,
+                target_entry=16,
+                old_target=6,
+                horizon_block=14,
+            ),
+        )
+
+        assert decision.accepted
+        assert decision.kind == ReconstructionLoweringKind.DIRECT
+        assert decision.redirects == (
+            RedirectSpec(source_block=14, target_block=16, old_target=6),
+        )
+
+    def test_dispatches_shared_group_lowering(self):
+        decision = plan_reconstruction_lowering(
+            flow_graph=None,
+            context=ReconstructionLoweringContext(
+                kind=ReconstructionLoweringKind.SHARED_GROUP,
+                shared_block=10,
+                shared_preds=(8, 9),
+                old_target=2,
+                shared_candidates=(
+                    SharedGroupEmissionCandidate(via_pred=9, target_entry=2),
+                    SharedGroupEmissionCandidate(via_pred=8, target_entry=24),
+                ),
+            ),
+        )
+
+        assert decision.accepted
+        assert decision.kind == ReconstructionLoweringKind.SHARED_GROUP
+        assert decision.ordered_candidates == (
+            SharedGroupEmissionCandidate(via_pred=8, target_entry=24),
+            SharedGroupEmissionCandidate(via_pred=9, target_entry=2),
+        )
+        assert decision.per_pred_targets == ((9, 2), (8, 24))

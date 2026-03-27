@@ -44,15 +44,14 @@ from d810.cfg.lowering_selector import (
 )
 from d810.cfg.reconstruction_planning import (
     ReconstructionEmissionMode,
+    ReconstructionLoweringContext,
+    ReconstructionLoweringKind,
     ReconstructionPlanningContext,
     plan_reconstruction_candidate,
+    plan_reconstruction_lowering,
 )
 from d810.cfg.reconstruction_lowering import (
-    plan_conditional_arm_emission,
-    plan_direct_emission,
-    plan_passthrough_redirects,
     SharedGroupEmissionCandidate,
-    plan_shared_group_emission,
 )
 from d810.cfg.terminal_family_split import (
     TerminalFamilySplitCandidate,
@@ -1645,11 +1644,16 @@ class StateWriteReconstructionStrategy:
             candidate.horizon_block,
             ordered_path,
         )
-        direct_plan = plan_direct_emission(
-            old_target=old_target,
-            target_entry=int(candidate.target_entry),
+        lowering_decision = plan_reconstruction_lowering(
+            flow_graph=flow_graph,
+            context=ReconstructionLoweringContext(
+                kind=ReconstructionLoweringKind.DIRECT,
+                target_entry=int(candidate.target_entry),
+                old_target=(int(old_target) if old_target is not None else None),
+                horizon_block=int(candidate.horizon_block),
+            ),
         )
-        if not direct_plan.accepted:
+        if not lowering_decision.accepted:
             rejected_metadata.append(
                 cls._make_edge_metadata(
                     candidate.edge,
@@ -1672,9 +1676,9 @@ class StateWriteReconstructionStrategy:
         # )
         modifications.append(
             builder.goto_redirect(
-                source_block=candidate.horizon_block,
-                target_block=candidate.target_entry,
-                old_target=int(direct_plan.old_target),
+                source_block=int(lowering_decision.redirects[0].source_block),
+                target_block=int(lowering_decision.redirects[0].target_block),
+                old_target=int(lowering_decision.redirects[0].old_target),
             )
         )
         owned_blocks.add(int(candidate.horizon_block))
@@ -1733,17 +1737,23 @@ class StateWriteReconstructionStrategy:
             if source_node is not None and edge.source_key.state_const is not None:
                 current_entry = source_node.entry_anchor
 
-        arm_plan = plan_conditional_arm_emission(
-            horizon_block=int(horizon_block),
-            block_succs=tuple(int(succ) for succ in block.succs),
-            branch_arm=int(branch_arm),
-            target_entry=int(candidate.target_entry),
-            dispatcher_serial=int(dispatcher_serial),
-            current_entry=(int(current_entry) if current_entry is not None else None),
+        lowering_decision = plan_reconstruction_lowering(
+            flow_graph=flow_graph,
+            context=ReconstructionLoweringContext(
+                kind=ReconstructionLoweringKind.CONDITIONAL_ARM,
+                target_entry=int(candidate.target_entry),
+                horizon_block=int(horizon_block),
+                block_succs=tuple(int(succ) for succ in block.succs),
+                branch_arm=int(branch_arm),
+                dispatcher_serial=int(dispatcher_serial),
+                current_entry=(
+                    int(current_entry) if current_entry is not None else None
+                ),
+            ),
         )
-        if not arm_plan.accepted:
+        if not lowering_decision.accepted:
             return modifications, 0
-        for redirect in arm_plan.redirects:
+        for redirect in lowering_decision.redirects:
             modifications.append(
                 builder.edge_redirect(
                     source_block=int(redirect.source_block),
@@ -1772,17 +1782,20 @@ class StateWriteReconstructionStrategy:
         state variable.  For 1-way blocks this emits a goto redirect; for 2-way
         blocks with arm=1 pointing to the dispatcher it emits an edge redirect.
         """
-        redirects = plan_passthrough_redirects(
+        lowering_decision = plan_reconstruction_lowering(
             flow_graph=flow_graph,
-            ordered_path=tuple(int(serial) for serial in candidate.edge.ordered_path),
-            horizon_block=int(candidate.horizon_block),
-            dispatcher_serial=int(dispatcher_serial),
-            current_state_entry=(
-                int(current_state_entry) if current_state_entry is not None else None
+            context=ReconstructionLoweringContext(
+                kind=ReconstructionLoweringKind.PASSTHROUGH,
+                ordered_path=tuple(int(serial) for serial in candidate.edge.ordered_path),
+                horizon_block=int(candidate.horizon_block),
+                dispatcher_serial=int(dispatcher_serial),
+                current_entry=(
+                    int(current_state_entry) if current_state_entry is not None else None
+                ),
             ),
         )
         modifications: list = []
-        for redirect in redirects:
+        for redirect in lowering_decision.redirects:
             block = flow_graph.get_block(int(redirect.source_block))
             if block is None:
                 continue
@@ -1842,20 +1855,24 @@ class StateWriteReconstructionStrategy:
             shared_block,
             tuple(int(serial) for serial in candidates[0].edge.ordered_path),
         )
-        shared_group_plan = plan_shared_group_emission(
-            shared_block=int(shared_block),
-            shared_preds=tuple(int(pred) for pred in shared_snapshot.preds),
-            old_target=(int(old_target) if old_target is not None else None),
-            candidates=tuple(
-                SharedGroupEmissionCandidate(
-                    via_pred=int(candidate.via_pred),
-                    target_entry=int(candidate.target_entry),
-                )
-                for candidate in candidates
-                if candidate.via_pred is not None
+        lowering_decision = plan_reconstruction_lowering(
+            flow_graph=flow_graph,
+            context=ReconstructionLoweringContext(
+                kind=ReconstructionLoweringKind.SHARED_GROUP,
+                shared_block=int(shared_block),
+                shared_preds=tuple(int(pred) for pred in shared_snapshot.preds),
+                old_target=(int(old_target) if old_target is not None else None),
+                shared_candidates=tuple(
+                    SharedGroupEmissionCandidate(
+                        via_pred=int(candidate.via_pred),
+                        target_entry=int(candidate.target_entry),
+                    )
+                    for candidate in candidates
+                    if candidate.via_pred is not None
+                ),
             ),
         )
-        if not shared_group_plan.accepted:
+        if not lowering_decision.accepted:
             ordered_candidates = tuple(
                 candidate
                 for candidate in candidates
@@ -1869,7 +1886,7 @@ class StateWriteReconstructionStrategy:
                     target_entry=candidate.target_entry,
                     first_shared_block=shared_block,
                     via_pred=candidate.via_pred,
-                    rejection_reason=shared_group_plan.rejection_reason,
+                    rejection_reason=lowering_decision.rejection_reason,
                 )
                 for candidate in ordered_candidates
             )
@@ -1881,9 +1898,9 @@ class StateWriteReconstructionStrategy:
         }
         ordered_candidates = [
             by_pred[int(candidate.via_pred)]
-            for candidate in shared_group_plan.ordered_candidates
+            for candidate in lowering_decision.ordered_candidates
         ]
-        per_pred_targets = list(shared_group_plan.per_pred_targets)
+        per_pred_targets = list(lowering_decision.per_pred_targets)
 
         modifications.append(
             builder.duplicate_and_redirect(
