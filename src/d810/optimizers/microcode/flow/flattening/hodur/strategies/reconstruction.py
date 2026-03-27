@@ -44,6 +44,8 @@ from d810.cfg.lowering_selector import (
 )
 from d810.cfg.reconstruction_emission import plan_reconstruction_emission
 from d810.cfg.reconstruction_lowering import (
+    plan_conditional_arm_emission,
+    plan_direct_emission,
     SharedGroupEmissionCandidate,
     plan_shared_group_emission,
 )
@@ -1635,7 +1637,11 @@ class StateWriteReconstructionStrategy:
             candidate.horizon_block,
             ordered_path,
         )
-        if old_target is None or old_target == candidate.target_entry:
+        direct_plan = plan_direct_emission(
+            old_target=old_target,
+            target_entry=int(candidate.target_entry),
+        )
+        if not direct_plan.accepted:
             rejected_metadata.append(
                 cls._make_edge_metadata(
                     candidate.edge,
@@ -1660,7 +1666,7 @@ class StateWriteReconstructionStrategy:
             builder.goto_redirect(
                 source_block=candidate.horizon_block,
                 target_block=candidate.target_entry,
-                old_target=old_target,
+                old_target=int(direct_plan.old_target),
             )
         )
         owned_blocks.add(int(candidate.horizon_block))
@@ -1711,69 +1717,33 @@ class StateWriteReconstructionStrategy:
         #     )
         # )
 
-        transition_arm_target = int(block.succs[branch_arm])
-        other_arm = 1 - branch_arm
-        other_arm_target = int(block.succs[other_arm])
-        both_arms_to_dispatcher = (
-            transition_arm_target == dispatcher_serial
-            and other_arm_target == dispatcher_serial
-        )
-
         # Resolve current state entry for passthrough arm
         current_entry: int | None = None
-        if other_arm_target == dispatcher_serial:
+        other_arm = 1 - branch_arm
+        if 0 <= other_arm < block.nsucc and int(block.succs[other_arm]) == dispatcher_serial:
             source_node = node_by_key.get(edge.source_key)
             if source_node is not None and edge.source_key.state_const is not None:
                 current_entry = source_node.entry_anchor
 
-        if both_arms_to_dispatcher:
-            # Both arms go to dispatcher -- cannot use edge_redirect (would
-            # redirect both via old_target match). Handle by arm index.
-            # RedirectBranch only modifies arm=1.
-            if branch_arm == 1:
-                modifications.append(
-                    builder.edge_redirect(
-                        source_block=horizon_block,
-                        target_block=candidate.target_entry,
-                        old_target=dispatcher_serial,
-                    )
+        arm_plan = plan_conditional_arm_emission(
+            horizon_block=int(horizon_block),
+            block_succs=tuple(int(succ) for succ in block.succs),
+            branch_arm=int(branch_arm),
+            target_entry=int(candidate.target_entry),
+            dispatcher_serial=int(dispatcher_serial),
+            current_entry=(int(current_entry) if current_entry is not None else None),
+        )
+        if not arm_plan.accepted:
+            return modifications, 0
+        for redirect in arm_plan.redirects:
+            modifications.append(
+                builder.edge_redirect(
+                    source_block=int(redirect.source_block),
+                    target_block=int(redirect.target_block),
+                    old_target=int(redirect.old_target),
                 )
-                count += 1
-                # Passthrough is arm=0 -- left as residual
-            else:
-                # branch_arm == 0: transition is fallthrough, passthrough is arm=1
-                if current_entry is not None:
-                    modifications.append(
-                        builder.edge_redirect(
-                            source_block=horizon_block,
-                            target_block=current_entry,
-                            old_target=dispatcher_serial,
-                        )
-                    )
-                    count += 1
-                # Transition is arm=0 -- left as residual
-        else:
-            # Normal case: at most one arm targets dispatcher.
-            if transition_arm_target == dispatcher_serial:
-                modifications.append(
-                    builder.edge_redirect(
-                        source_block=horizon_block,
-                        target_block=candidate.target_entry,
-                        old_target=dispatcher_serial,
-                    )
-                )
-                count += 1
-
-            if other_arm_target == dispatcher_serial and current_entry is not None:
-                if other_arm == 1:
-                    modifications.append(
-                        builder.edge_redirect(
-                            source_block=horizon_block,
-                            target_block=current_entry,
-                            old_target=dispatcher_serial,
-                        )
-                    )
-                    count += 1
+            )
+            count += 1
 
         return modifications, count
 
