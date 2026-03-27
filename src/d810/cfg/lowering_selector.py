@@ -26,12 +26,14 @@ class SharedFeederLoweringKind:
     BLOCK_GOTO = "block_goto"
     PRED_EDGE_PEEL = "pred_edge_peel"
     PRED_SCOPED_CLONE = "pred_scoped_clone"
+    REJECTED = "rejected"
 
 
 @dataclass(frozen=True, slots=True)
 class SharedFeederLoweringDecision:
     """Decision returned by :func:`select_shared_feeder_lowering`."""
 
+    accepted: bool
     kind: str
     via_pred: int | None = None
     reason: str = ""
@@ -528,12 +530,14 @@ def select_shared_feeder_lowering(
 
     if best_candidate is None:
         return SharedFeederLoweringDecision(
-            kind=SharedFeederLoweringKind.PRED_SCOPED_CLONE,
+            accepted=False,
+            kind=SharedFeederLoweringKind.REJECTED,
             via_pred=context.via_pred,
-            reason="shared_source_requires_clone",
+            reason="all_candidates_vetoed",
         )
 
     return SharedFeederLoweringDecision(
+        accepted=True,
         kind=best_candidate.kind,
         via_pred=best_candidate.via_pred,
         reason=best_candidate.reason,

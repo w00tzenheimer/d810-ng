@@ -3783,6 +3783,14 @@ class StateWriteReconstructionStrategy:
                                 target_reaches_pred=target_reaches_pred,
                             )
                         )
+                        if not lowering.accepted:
+                            logger.info(
+                                "RECON BRIDGE: feeder blk[%d] -> blk[%d] rejected (%s)",
+                                src_serial,
+                                target_entry,
+                                lowering.reason,
+                            )
+                            continue
                         if lowering.kind == SharedFeederLoweringKind.PRED_SCOPED_CLONE:
                             feeder_mods.append(
                                 builder.duplicate_and_redirect(
