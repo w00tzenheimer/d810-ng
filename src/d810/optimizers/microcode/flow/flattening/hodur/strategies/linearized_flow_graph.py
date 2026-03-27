@@ -26,6 +26,7 @@ from d810.cfg.lowering_selector import (
     ResidualPrefixPeelContext,
     plan_residual_branch_anchor_handoff,
     plan_residual_prefix_peel,
+    target_reaches_source_ignoring_blocks,
 )
 from d810.cfg.plan import compile_patch_plan
 from d810.core import logging
@@ -3804,26 +3805,13 @@ class LinearizedFlowGraphStrategy:
         source_block: int,
         limit: int = 256,
     ) -> bool:
-        if target_entry == source_block:
-            return True
-        worklist: list[int] = [target_entry]
-        seen: set[int] = set()
-        while worklist and len(seen) < limit:
-            current = worklist.pop()
-            if current in seen:
-                continue
-            seen.add(current)
-            if current == source_block:
-                return True
-            try:
-                succs = tuple(flow_graph.successors(current))
-            except Exception:
-                block = flow_graph.get_block(current)
-                succs = tuple(getattr(block, "succs", ())) if block is not None else ()
-            for succ in succs:
-                if succ not in seen:
-                    worklist.append(int(succ))
-        return False
+        return target_reaches_source_ignoring_blocks(
+            flow_graph,
+            target_entry=target_entry,
+            source_block=source_block,
+            ignored_blocks=set(),
+            limit=limit,
+        )
 
     @staticmethod
     def _target_reaches_source_ignoring_blocks(
@@ -3834,28 +3822,13 @@ class LinearizedFlowGraphStrategy:
         ignored_blocks: set[int],
         limit: int = 256,
     ) -> bool:
-        if target_entry == source_block:
-            return True
-        worklist: list[int] = [target_entry]
-        seen: set[int] = set()
-        while worklist and len(seen) < limit:
-            current = worklist.pop()
-            if current in seen:
-                continue
-            seen.add(current)
-            if current == source_block:
-                return True
-            try:
-                succs = tuple(flow_graph.successors(current))
-            except Exception:
-                block = flow_graph.get_block(current)
-                succs = tuple(getattr(block, "succs", ())) if block is not None else ()
-            for succ in succs:
-                if succ in ignored_blocks:
-                    continue
-                if succ not in seen:
-                    worklist.append(int(succ))
-        return False
+        return target_reaches_source_ignoring_blocks(
+            flow_graph,
+            target_entry=target_entry,
+            source_block=source_block,
+            ignored_blocks=ignored_blocks,
+            limit=limit,
+        )
 
     @classmethod
     def _has_prior_branch_cut_for_state(
