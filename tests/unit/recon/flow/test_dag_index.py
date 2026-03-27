@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from d810.recon.flow.dag_index import (
+    build_dag_node_maps,
     incoming_edges_by_target_entry,
+    resolve_target_node,
     semantic_entry_anchors,
 )
 from d810.recon.flow.linearized_state_dag import (
@@ -85,3 +87,73 @@ class TestDagIndex:
         grouped = incoming_edges_by_target_entry(dag)
         assert grouped[24] == (edge_a, edge_b)
         assert grouped[30] == (edge_c,)
+
+    def test_build_dag_node_maps_indexes_nodes_edges_and_entries(self):
+        node_a = _node(entry=24, handler=24, state=0x11)
+        node_b = _node(entry=30, handler=30, state=0x22)
+        edge = _edge(source=24, target_entry=30, target_state=0x22)
+        dag = LinearizedStateDag(
+            dispatcher_entry_serial=2,
+            state_var_stkoff=0x3C,
+            pre_header_serial=None,
+            initial_state=None,
+            bst_node_blocks=(),
+            nodes=(node_a, node_b),
+            edges=(edge,),
+            diagnostics=(),
+        )
+
+        maps = build_dag_node_maps(dag)
+
+        assert maps.node_by_key[node_a.key] == node_a
+        assert maps.outgoing_by_key[edge.source_key] == (edge,)
+        assert maps.nodes_by_entry_anchor[30] == (node_b,)
+
+    def test_resolve_target_node_prefers_explicit_key_then_unique_entry_anchor(self):
+        node_a = _node(entry=24, handler=24, state=0x11)
+        node_b = _node(entry=30, handler=30, state=0x22)
+        dag = LinearizedStateDag(
+            dispatcher_entry_serial=2,
+            state_var_stkoff=0x3C,
+            pre_header_serial=None,
+            initial_state=None,
+            bst_node_blocks=(),
+            nodes=(node_a, node_b),
+            edges=(),
+            diagnostics=(),
+        )
+        maps = build_dag_node_maps(dag)
+
+        explicit = _edge(source=24, target_entry=30, target_state=0x22)
+        assert (
+            resolve_target_node(
+                explicit,
+                node_by_key=maps.node_by_key,
+                nodes_by_entry_anchor=maps.nodes_by_entry_anchor,
+            )
+            == node_b
+        )
+
+        fallback = StateDagEdge(
+            kind=SemanticEdgeKind.TRANSITION,
+            source_key=node_a.key,
+            target_key=None,
+            target_state=0x22,
+            target_entry_anchor=30,
+            target_label=hex(0x22),
+            source_anchor=StateRedirectAnchor(
+                kind=RedirectSourceKind.EXIT_BLOCK,
+                block_serial=24,
+                branch_arm=None,
+            ),
+            ordered_path=(24, 30),
+            last_write_site=None,
+        )
+        assert (
+            resolve_target_node(
+                fallback,
+                node_by_key=maps.node_by_key,
+                nodes_by_entry_anchor=maps.nodes_by_entry_anchor,
+            )
+            == node_b
+        )
