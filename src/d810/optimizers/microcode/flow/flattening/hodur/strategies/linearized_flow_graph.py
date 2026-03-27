@@ -19,6 +19,7 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
+from d810.cfg.lowering_selector import can_peel_predecessor_edge
 from d810.cfg.plan import compile_patch_plan
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
@@ -4446,17 +4447,19 @@ class LinearizedFlowGraphStrategy:
                 if pred_block is None:
                     continue
                 pred_succs = tuple(getattr(pred_block, "succs", ()))
-                if source_block not in pred_succs:
-                    continue
-                if prefix_target in {dispatcher_serial, source_block, via_pred}:
-                    continue
-                if prefix_target in bst_node_blocks:
-                    continue
-                if cls._target_reaches_source_ignoring_blocks(
-                    projected_flow_graph,
+                if not can_peel_predecessor_edge(
+                    via_pred=via_pred,
+                    via_pred_succs=tuple(int(succ) for succ in pred_succs),
+                    source_block=source_block,
                     target_entry=prefix_target,
-                    source_block=via_pred,
-                    ignored_blocks=residual_ignored_blocks | {source_block},
+                    dispatcher_serial=dispatcher_serial,
+                    bst_node_blocks=bst_node_blocks,
+                    target_reaches_pred=cls._target_reaches_source_ignoring_blocks(
+                        projected_flow_graph,
+                        target_entry=prefix_target,
+                        source_block=via_pred,
+                        ignored_blocks=residual_ignored_blocks | {source_block},
+                    ),
                 ):
                     continue
                 prefix_key = (via_pred, source_block, prefix_target)
