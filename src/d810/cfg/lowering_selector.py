@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core.typing import Protocol
 from d810.cfg.lowering_scope import derive_edge_predecessor, requires_pred_scoped_lowering
 
 
@@ -34,6 +35,38 @@ class SharedFeederLoweringDecision:
     kind: str
     via_pred: int | None = None
     reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SharedFeederLoweringCandidate:
+    """One possible lowering shape for a shared-feeder redirect."""
+
+    kind: str
+    via_pred: int | None = None
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SharedFeederCandidateScore:
+    """Score attached to a lowering candidate.
+
+    Lower scores are preferred. ``accepted=False`` vetoes the candidate.
+    """
+
+    accepted: bool
+    score: int
+    reason: str = ""
+
+
+class SharedFeederCandidateScorerProtocol(Protocol):
+    """Optional scorer hook implemented by higher-level validation layers."""
+
+    def score(
+        self,
+        context: "SharedFeederContext",
+        candidate: SharedFeederLoweringCandidate,
+    ) -> SharedFeederCandidateScore:
+        """Return an additive score or veto for ``candidate``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,8 +182,71 @@ def can_peel_predecessor_edge(context: PredecessorPeelContext) -> bool:
     return True
 
 
+def enumerate_shared_feeder_candidates(
+    context: SharedFeederContext,
+) -> tuple[SharedFeederLoweringCandidate, ...]:
+    """Enumerate legal lowering candidates for a shared-feeder rewrite."""
+    if not requires_pred_scoped_lowering(
+        context.source_serial,
+        context.source_pred_count,
+        context.ordered_path,
+    ):
+        return (
+            SharedFeederLoweringCandidate(
+                kind=SharedFeederLoweringKind.BLOCK_GOTO,
+                reason="source_not_shared",
+            ),
+        )
+
+    candidates: list[SharedFeederLoweringCandidate] = []
+    if can_peel_predecessor_edge(context.peel_context):
+        candidates.append(
+            SharedFeederLoweringCandidate(
+                kind=SharedFeederLoweringKind.PRED_EDGE_PEEL,
+                via_pred=context.via_pred,
+                reason="shared_source_peel_available",
+            )
+        )
+    candidates.append(
+        SharedFeederLoweringCandidate(
+            kind=SharedFeederLoweringKind.PRED_SCOPED_CLONE,
+            via_pred=context.via_pred,
+            reason="shared_source_requires_clone",
+        )
+    )
+    return tuple(candidates)
+
+
+def _default_candidate_score(
+    candidate: SharedFeederLoweringCandidate,
+) -> SharedFeederCandidateScore:
+    """Behavior-preserving default policy for shared-feeder lowering.
+
+    This refactor branch keeps predecessor-edge peel disabled by default even
+    when it is legal. That preserves the trusted ``sub_7FFD`` output while the
+    selector grows evaluator-backed proof hooks in later commits.
+    """
+    if candidate.kind == SharedFeederLoweringKind.BLOCK_GOTO:
+        return SharedFeederCandidateScore(accepted=True, score=0, reason="direct")
+    if candidate.kind == SharedFeederLoweringKind.PRED_SCOPED_CLONE:
+        return SharedFeederCandidateScore(accepted=True, score=100, reason="clone")
+    if candidate.kind == SharedFeederLoweringKind.PRED_EDGE_PEEL:
+        return SharedFeederCandidateScore(
+            accepted=True,
+            score=1000,
+            reason="policy_disabled_pending_evaluator",
+        )
+    return SharedFeederCandidateScore(
+        accepted=False,
+        score=10_000,
+        reason="unknown_candidate_kind",
+    )
+
+
 def select_shared_feeder_lowering(
     context: SharedFeederContext,
+    *,
+    scorer: SharedFeederCandidateScorerProtocol | None = None,
 ) -> SharedFeederLoweringDecision:
     """Choose a lowering shape for a shared 1-way feeder redirect.
 
@@ -165,29 +261,54 @@ def select_shared_feeder_lowering(
     Hodur behavior for ``sub_7FFD`` while preserving the extracted seam for a
     future, separately-validated peel policy.
     """
-    if not requires_pred_scoped_lowering(
-        context.source_serial,
-        context.source_pred_count,
-        context.ordered_path,
-    ):
+    best_candidate: SharedFeederLoweringCandidate | None = None
+    best_score: tuple[int, str] | None = None
+    for candidate in enumerate_shared_feeder_candidates(context):
+        base_score = _default_candidate_score(candidate)
+        if not base_score.accepted:
+            continue
+        total_score = base_score.score
+        final_reason = candidate.reason
+        if scorer is not None:
+            extra_score = scorer.score(context, candidate)
+            if not extra_score.accepted:
+                continue
+            total_score += extra_score.score
+            if extra_score.reason:
+                final_reason = extra_score.reason
+        rank = (total_score, candidate.kind)
+        if best_score is None or rank < best_score:
+            best_score = rank
+            best_candidate = SharedFeederLoweringCandidate(
+                kind=candidate.kind,
+                via_pred=candidate.via_pred,
+                reason=final_reason,
+            )
+
+    if best_candidate is None:
         return SharedFeederLoweringDecision(
-            kind=SharedFeederLoweringKind.BLOCK_GOTO,
-            reason="source_not_shared",
+            kind=SharedFeederLoweringKind.PRED_SCOPED_CLONE,
+            via_pred=context.via_pred,
+            reason="shared_source_requires_clone",
         )
 
     return SharedFeederLoweringDecision(
-        kind=SharedFeederLoweringKind.PRED_SCOPED_CLONE,
-        via_pred=context.via_pred,
-        reason="shared_source_requires_clone",
+        kind=best_candidate.kind,
+        via_pred=best_candidate.via_pred,
+        reason=best_candidate.reason,
     )
 
 
 __all__ = [
     "PredecessorPeelContext",
+    "SharedFeederCandidateScore",
+    "SharedFeederCandidateScorerProtocol",
+    "SharedFeederLoweringCandidate",
     "SharedFeederContext",
     "SharedFeederLoweringDecision",
     "SharedFeederLoweringKind",
     "can_peel_predecessor_edge",
+    "enumerate_shared_feeder_candidates",
     "select_shared_feeder_lowering",
     "target_reaches_source_ignoring_blocks",
 ]

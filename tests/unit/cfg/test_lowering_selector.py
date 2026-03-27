@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from d810.cfg.lowering_selector import (
     PredecessorPeelContext,
+    SharedFeederCandidateScore,
     SharedFeederContext,
     SharedFeederLoweringKind,
     can_peel_predecessor_edge,
+    enumerate_shared_feeder_candidates,
     select_shared_feeder_lowering,
     target_reaches_source_ignoring_blocks,
 )
@@ -174,3 +176,70 @@ class TestSelectSharedFeederLowering:
             )
         )
         assert decision.kind == SharedFeederLoweringKind.PRED_SCOPED_CLONE
+
+    def test_shared_source_enumerates_peel_and_clone_candidates(self):
+        candidates = enumerate_shared_feeder_candidates(
+            SharedFeederContext(
+                source_serial=14,
+                source_pred_count=2,
+                ordered_path=(12, 14),
+                via_pred_succs=(6, 14),
+                target_entry=16,
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                target_reaches_pred=False,
+            )
+        )
+        assert [candidate.kind for candidate in candidates] == [
+            SharedFeederLoweringKind.PRED_EDGE_PEEL,
+            SharedFeederLoweringKind.PRED_SCOPED_CLONE,
+        ]
+
+    def test_default_selector_still_prefers_clone_while_peel_is_disabled(self):
+        decision = select_shared_feeder_lowering(
+            SharedFeederContext(
+                source_serial=14,
+                source_pred_count=2,
+                ordered_path=(12, 14),
+                via_pred_succs=(6, 14),
+                target_entry=16,
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                target_reaches_pred=False,
+            )
+        )
+        assert decision.kind == SharedFeederLoweringKind.PRED_SCOPED_CLONE
+
+    def test_custom_scorer_can_veto_clone_and_enable_peel(self):
+        class _TestScorer:
+            def score(self, context, candidate):
+                assert context.source_serial == 14
+                if candidate.kind == SharedFeederLoweringKind.PRED_SCOPED_CLONE:
+                    return SharedFeederCandidateScore(
+                        accepted=False,
+                        score=0,
+                        reason="clone_rejected_for_test",
+                    )
+                if candidate.kind == SharedFeederLoweringKind.PRED_EDGE_PEEL:
+                    return SharedFeederCandidateScore(
+                        accepted=True,
+                        score=-2000,
+                        reason="peel_preferred_for_test",
+                    )
+                return SharedFeederCandidateScore(accepted=True, score=0)
+
+        decision = select_shared_feeder_lowering(
+            SharedFeederContext(
+                source_serial=14,
+                source_pred_count=2,
+                ordered_path=(12, 14),
+                via_pred_succs=(6, 14),
+                target_entry=16,
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                target_reaches_pred=False,
+            ),
+            scorer=_TestScorer(),
+        )
+        assert decision.kind == SharedFeederLoweringKind.PRED_EDGE_PEEL
+        assert decision.reason == "peel_preferred_for_test"
