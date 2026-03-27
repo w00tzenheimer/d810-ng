@@ -39,13 +39,14 @@ from d810.cfg.shared_corridor import (
 from d810.cfg.lowering_selector import (
     SharedFeederContext,
     SharedFeederLoweringKind,
-    SharedGroupCandidate,
-    SharedGroupContext,
     select_shared_feeder_lowering,
-    plan_shared_group_duplication,
     target_reaches_source_ignoring_blocks,
 )
 from d810.cfg.reconstruction_emission import plan_reconstruction_emission
+from d810.cfg.reconstruction_lowering import (
+    SharedGroupEmissionCandidate,
+    plan_shared_group_emission,
+)
 from d810.cfg.terminal_family_split import (
     TerminalFamilySplitCandidate,
     select_terminal_family_split,
@@ -1867,82 +1868,30 @@ class StateWriteReconstructionStrategy:
             )
             return 0
 
-        by_pred: dict[int, ReconstructionCandidate] = {}
-        for candidate in candidates:
-            assert candidate.via_pred is not None
-            existing = by_pred.get(candidate.via_pred)
-            if existing is None:
-                by_pred[candidate.via_pred] = candidate
-                continue
-            if existing.target_entry == candidate.target_entry:
-                continue
-            rejected_metadata.append(
-                cls._make_edge_metadata(
-                    candidate.edge,
-                    horizon_block=candidate.horizon_block,
-                    site=candidate.site,
-                    target_entry=candidate.target_entry,
-                    first_shared_block=shared_block,
-                    via_pred=candidate.via_pred,
-                    rejection_reason="shared_block_conflict",
-                )
-            )
-            return 0
-
-        if not by_pred:
-            return 0
-
-        ordered_candidates = [by_pred[pred] for pred in sorted(by_pred)]
         old_target = cls._resolve_old_target(
             flow_graph,
             shared_block,
-            tuple(int(serial) for serial in ordered_candidates[0].edge.ordered_path),
+            tuple(int(serial) for serial in candidates[0].edge.ordered_path),
         )
-        if old_target is None:
-            rejected_metadata.extend(
-                cls._make_edge_metadata(
-                    candidate.edge,
-                    horizon_block=candidate.horizon_block,
-                    site=candidate.site,
-                    target_entry=candidate.target_entry,
-                    first_shared_block=shared_block,
-                    via_pred=candidate.via_pred,
-                    rejection_reason="missing_old_target",
+        shared_group_plan = plan_shared_group_emission(
+            shared_block=int(shared_block),
+            shared_preds=tuple(int(pred) for pred in shared_snapshot.preds),
+            old_target=(int(old_target) if old_target is not None else None),
+            candidates=tuple(
+                SharedGroupEmissionCandidate(
+                    via_pred=int(candidate.via_pred),
+                    target_entry=int(candidate.target_entry),
                 )
-                for candidate in ordered_candidates
-            )
-            return 0
-
-        if all(int(candidate.target_entry) == int(old_target) for candidate in ordered_candidates):
-            rejected_metadata.extend(
-                cls._make_edge_metadata(
-                    candidate.edge,
-                    horizon_block=candidate.horizon_block,
-                    site=candidate.site,
-                    target_entry=candidate.target_entry,
-                    first_shared_block=shared_block,
-                    via_pred=candidate.via_pred,
-                    rejection_reason="noop_or_missing_old_target",
-                )
-                for candidate in ordered_candidates
-            )
-            return 0
-
-        shared_group_plan = plan_shared_group_duplication(
-            SharedGroupContext(
-                shared_block=int(shared_block),
-                old_target=int(old_target),
-                shared_preds=tuple(int(pred) for pred in shared_snapshot.preds),
-                candidates=tuple(
-                    SharedGroupCandidate(
-                        via_pred=int(candidate.via_pred),
-                        target_entry=int(candidate.target_entry),
-                    )
-                    for candidate in ordered_candidates
-                ),
-            )
+                for candidate in candidates
+                if candidate.via_pred is not None
+            ),
         )
         if not shared_group_plan.accepted:
+            ordered_candidates = tuple(
+                candidate
+                for candidate in candidates
+                if candidate.via_pred is not None
+            )
             rejected_metadata.extend(
                 cls._make_edge_metadata(
                     candidate.edge,
@@ -1956,6 +1905,15 @@ class StateWriteReconstructionStrategy:
                 for candidate in ordered_candidates
             )
             return 0
+        by_pred = {
+            int(candidate.via_pred): candidate
+            for candidate in candidates
+            if candidate.via_pred is not None
+        }
+        ordered_candidates = [
+            by_pred[int(candidate.via_pred)]
+            for candidate in shared_group_plan.ordered_candidates
+        ]
         per_pred_targets = list(shared_group_plan.per_pred_targets)
 
         modifications.append(
