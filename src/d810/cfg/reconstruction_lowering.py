@@ -23,6 +23,27 @@ class SharedGroupEmissionPlan:
     rejection_reason: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class RedirectSpec:
+    source_block: int
+    target_block: int
+    old_target: int
+
+
+@dataclass(frozen=True, slots=True)
+class DirectEmissionPlan:
+    accepted: bool
+    old_target: int | None = None
+    rejection_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalArmEmissionPlan:
+    accepted: bool
+    redirects: tuple[RedirectSpec, ...] = ()
+    rejection_reason: str = ""
+
+
 def plan_shared_group_emission(
     *,
     shared_block: int,
@@ -92,8 +113,107 @@ def plan_shared_group_emission(
     )
 
 
+def plan_direct_emission(
+    *,
+    old_target: int | None,
+    target_entry: int,
+) -> DirectEmissionPlan:
+    if old_target is None or int(old_target) == int(target_entry):
+        return DirectEmissionPlan(
+            accepted=False,
+            old_target=old_target,
+            rejection_reason="noop_or_missing_old_target",
+        )
+    return DirectEmissionPlan(
+        accepted=True,
+        old_target=int(old_target),
+    )
+
+
+def plan_conditional_arm_emission(
+    *,
+    horizon_block: int,
+    block_succs: tuple[int, ...],
+    branch_arm: int,
+    target_entry: int,
+    dispatcher_serial: int,
+    current_entry: int | None,
+) -> ConditionalArmEmissionPlan:
+    if branch_arm < 0 or branch_arm >= len(block_succs):
+        return ConditionalArmEmissionPlan(
+            accepted=False,
+            rejection_reason="branch_arm_out_of_range",
+        )
+
+    transition_arm_target = int(block_succs[branch_arm])
+    other_arm = 1 - branch_arm
+    if other_arm < 0 or other_arm >= len(block_succs):
+        return ConditionalArmEmissionPlan(
+            accepted=False,
+            rejection_reason="unsupported_branch_shape",
+        )
+    other_arm_target = int(block_succs[other_arm])
+    redirects: list[RedirectSpec] = []
+
+    both_arms_to_dispatcher = (
+        transition_arm_target == dispatcher_serial
+        and other_arm_target == dispatcher_serial
+    )
+    if both_arms_to_dispatcher:
+        if branch_arm == 1:
+            redirects.append(
+                RedirectSpec(
+                    source_block=int(horizon_block),
+                    target_block=int(target_entry),
+                    old_target=int(dispatcher_serial),
+                )
+            )
+        elif current_entry is not None:
+            redirects.append(
+                RedirectSpec(
+                    source_block=int(horizon_block),
+                    target_block=int(current_entry),
+                    old_target=int(dispatcher_serial),
+                )
+            )
+        return ConditionalArmEmissionPlan(
+            accepted=True,
+            redirects=tuple(redirects),
+        )
+
+    if transition_arm_target == dispatcher_serial:
+        redirects.append(
+            RedirectSpec(
+                source_block=int(horizon_block),
+                target_block=int(target_entry),
+                old_target=int(dispatcher_serial),
+            )
+        )
+    if (
+        other_arm_target == dispatcher_serial
+        and current_entry is not None
+        and other_arm == 1
+    ):
+        redirects.append(
+            RedirectSpec(
+                source_block=int(horizon_block),
+                target_block=int(current_entry),
+                old_target=int(dispatcher_serial),
+            )
+        )
+    return ConditionalArmEmissionPlan(
+        accepted=True,
+        redirects=tuple(redirects),
+    )
+
+
 __all__ = [
+    "ConditionalArmEmissionPlan",
+    "DirectEmissionPlan",
+    "RedirectSpec",
     "SharedGroupEmissionCandidate",
     "SharedGroupEmissionPlan",
+    "plan_conditional_arm_emission",
+    "plan_direct_emission",
     "plan_shared_group_emission",
 ]
