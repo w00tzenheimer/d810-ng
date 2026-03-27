@@ -31,10 +31,18 @@ import idc
 from d810.optimizers.microcode.flow.flattening.hodur.diagnostics import (
     build_terminal_return_valrange_report_from_store,
 )
+from d810.recon.flow.linearized_state_dag import (
+    BoundaryInlineMode,
+    LabelRenderMode,
+    ProgramCommentMode,
+    ProgramRenderStrategy,
+    RenderOrderStrategy,
+)
 from d810.recon.microcode_dump import (
     dump_dispatcher_tree,
     dump_function_microcode,
     dump_linearized_dag,
+    dump_linearized_program,
     dump_linearized_dag_dot,
     dump_state_machine_graph,
     mba_to_human_readable,
@@ -411,6 +419,92 @@ class TestDumpFunctionPseudocode:
                                 print("=" * 88)
                             except Exception as e:
                                 print(f"\n[linearized DAG dump failed: {e}]")
+                            try:
+                                linearized_program = dump_linearized_program(
+                                    mba,
+                                    dispatcher_serial,
+                                    state_var_stkoff=hodur_stkoff,
+                                )
+                                print(f"\n--- LINEARIZED PROGRAM ({mba_source}) ---")
+                                print(linearized_program)
+                                print("=" * 88)
+                            except Exception as e:
+                                print(f"\n[linearized program dump failed: {e}]")
+                            try:
+                                semantic_program = dump_linearized_program(
+                                    mba,
+                                    dispatcher_serial,
+                                    state_var_stkoff=hodur_stkoff,
+                                    order_strategy=RenderOrderStrategy.SEMANTIC,
+                                )
+                                print(
+                                    f"\n--- LINEARIZED PROGRAM SEMANTIC ({mba_source}) ---"
+                                )
+                                print(semantic_program)
+                                print("=" * 88)
+                            except Exception as e:
+                                print(
+                                    f"\n[linearized semantic program dump failed: {e}]"
+                                )
+                            try:
+                                semantic_boundary_program = dump_linearized_program(
+                                    mba,
+                                    dispatcher_serial,
+                                    state_var_stkoff=hodur_stkoff,
+                                    order_strategy=RenderOrderStrategy.SEMANTIC,
+                                    program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+                                    boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
+                                )
+                                print(
+                                    f"\n--- LINEARIZED PROGRAM SEMANTIC LOCAL BOUNDARIES ({mba_source}) ---"
+                                )
+                                print(semantic_boundary_program)
+                                print("=" * 88)
+                            except Exception as e:
+                                print(
+                                    "\n[linearized semantic local-boundary program dump failed: "
+                                    f"{e}]"
+                                )
+                            try:
+                                reference_like_program = dump_linearized_program(
+                                    mba,
+                                    dispatcher_serial,
+                                    state_var_stkoff=hodur_stkoff,
+                                    order_strategy=RenderOrderStrategy.SEMANTIC,
+                                    program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+                                    boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
+                                    comment_mode=ProgramCommentMode.MINIMAL,
+                                )
+                                print(
+                                    f"\n--- LINEARIZED PROGRAM SEMANTIC REFERENCE-LIKE ({mba_source}) ---"
+                                )
+                                print(reference_like_program)
+                                print("=" * 88)
+                            except Exception as e:
+                                print(
+                                    "\n[linearized semantic reference-like program dump failed: "
+                                    f"{e}]"
+                                )
+                            try:
+                                ida_label_program = dump_linearized_program(
+                                    mba,
+                                    dispatcher_serial,
+                                    state_var_stkoff=hodur_stkoff,
+                                    order_strategy=RenderOrderStrategy.SEMANTIC,
+                                    program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+                                    label_render_mode=LabelRenderMode.IDA_BLOCK_SERIAL,
+                                    boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
+                                )
+                                print(
+                                    f"\n--- LINEARIZED PROGRAM SEMANTIC LOCAL BOUNDARIES IDA LABELS ({mba_source}) ---"
+                                )
+                                print(ida_label_program)
+                                print("=" * 88)
+                            except Exception as e:
+                                print(
+                                    "\n[linearized semantic local-boundary program dump with IDA labels failed: "
+                                    f"{e}]"
+                                )
                             try:
                                 dag_dot_dir = os.environ.get(
                                     "D810_DUMP_DIR", "/work/.tmp"

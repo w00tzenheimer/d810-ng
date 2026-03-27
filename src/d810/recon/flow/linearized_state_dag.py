@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, replace
 from enum import Enum, auto
+import re
 
 from d810.cfg.flowgraph import FlowGraph
 from d810.core import logging
 from d810.core.typing import Callable, Mapping
 from d810.recon.flow.interval_map import IntervalDispatcher
+from d810.recon.flow.dispatch_region import DispatchRegionDetector
 from d810.recon.flow.state_machine_analysis import (
     ConditionalTransition,
     ExitStateKind,
@@ -30,6 +32,13 @@ from d810.recon.flow.transition_report import (
 )
 
 logger = logging.getLogger("D810.recon.flow.linearized_state_dag", logging.INFO)
+
+_SIMPLE_CONST_ASSIGN_RE = re.compile(r"^\s*.+?=\s*(0x[0-9A-F]+)\s*$")
+_SIMPLE_COMPARE_RE = re.compile(
+    r"^\s*(?P<lhs>.+?)\s+"
+    r"(?P<op>==|!=|>=u|<=u|>u|<u|>=s|<=s|>s|<s)\s+"
+    r"(?P<rhs>.+?)\s*$"
+)
 
 
 class StateNodeKind(Enum):
@@ -77,6 +86,42 @@ class SemanticEdgeKind(Enum):
     CONDITIONAL_RETURN = auto()
     EXIT_ROUTINE = auto()
     UNKNOWN = auto()
+
+
+class RenderOrderStrategy(str, Enum):
+    """Textual rendering order for state-family dumps."""
+
+    CATALOG = "catalog"
+    SEMANTIC = "semantic"
+
+
+class ProgramRenderStrategy(str, Enum):
+    """How much local segment structure to preserve in program rendering."""
+
+    LOCAL_SEGMENT_COLLAPSING = "local_segment_collapsing"
+    LOCAL_SEGMENT_EXPLICIT = "local_segment_explicit"
+    LOCAL_BOUNDARY_SELECTIVE = "local_boundary_selective"
+
+
+class ProgramCommentMode(Enum):
+    """How much renderer metadata is emitted alongside program text."""
+
+    DEBUG_METADATA = auto()
+    MINIMAL = auto()
+
+
+class LabelRenderMode(Enum):
+    """How top-level program labels are rendered."""
+
+    STATE_FAMILY = auto()
+    IDA_BLOCK_SERIAL = auto()
+
+
+class BoundaryInlineMode(Enum):
+    """How aggressively visible local boundary nodes are inlined."""
+
+    LABELS_ONLY = auto()
+    INLINE_SINGLE_LEVEL = auto()
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +191,16 @@ class StateDagEdge:
     source_anchor: StateRedirectAnchor
     ordered_path: tuple[int, ...]
     last_write_site: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProgramLabel:
+    """Rendered label metadata for one state-family node."""
+
+    rendered: str
+    base: str
+    entry_anchor: int
+    label_num: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3730,6 +3785,301 @@ def _node_sort_key(node: StateDagNode) -> tuple[int, int, int]:
     return (state_rank, range_rank, node.handler_serial)
 
 
+def _resolve_start_key(dag: LinearizedStateDag) -> StateDagNodeKey | None:
+    start_key: StateDagNodeKey | None = None
+    if dag.initial_state is not None:
+        for node in dag.nodes:
+            if node.key.state_const == dag.initial_state:
+                start_key = node.key
+                break
+        if start_key is None:
+            for node in dag.nodes:
+                lo = node.key.range_lo
+                hi = node.key.range_hi
+                if lo is None or hi is None:
+                    continue
+                if lo <= dag.initial_state <= hi:
+                    start_key = node.key
+                    break
+    return start_key
+
+
+def _catalog_render_order(dag: LinearizedStateDag) -> tuple[StateDagNodeKey, ...]:
+    """Return the existing catalog-style textual order.
+
+    This is not a semantic traversal order. It seeds the initial-state node
+    first, then appends every remaining node in hex/range-sorted order, and
+    only uses edge discovery to avoid duplicates while draining that queue.
+    The result is useful as a stable inventory, but it does not resemble the
+    original linearized program order.
+    """
+    start_key = _resolve_start_key(dag)
+
+    queue: deque[StateDagNodeKey] = deque()
+    visited: set[StateDagNodeKey] = set()
+    if start_key is not None:
+        queue.append(start_key)
+        visited.add(start_key)
+
+    for node in sorted(dag.nodes, key=_node_sort_key):
+        if node.key not in visited:
+            queue.append(node.key)
+            visited.add(node.key)
+
+    ordered: list[StateDagNodeKey] = []
+    rendered: set[StateDagNodeKey] = set()
+    edges_by_source: dict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
+    for edge in dag.edges:
+        edges_by_source[edge.source_key].append(edge)
+
+    while queue:
+        node_key = queue.popleft()
+        if node_key in rendered:
+            continue
+        rendered.add(node_key)
+        ordered.append(node_key)
+        outgoing = sorted(
+            edges_by_source.get(node_key, ()),
+            key=lambda edge: (
+                edge.kind.value,
+                edge.target_state if edge.target_state is not None else 0xFFFFFFFF,
+                (
+                    edge.target_entry_anchor
+                    if edge.target_entry_anchor is not None
+                    else 0xFFFFFFFF
+                ),
+            ),
+        )
+        for edge in outgoing:
+            if edge.target_key is not None and edge.target_key not in rendered:
+                queue.append(edge.target_key)
+
+    return tuple(ordered)
+
+
+def _is_fallback_state_label(label: str) -> bool:
+    return "_fallback" in label
+
+
+def _semantic_node_sort_key(
+    key: StateDagNodeKey,
+    node_by_key: Mapping[StateDagNodeKey, StateDagNode],
+) -> tuple[int, int, int]:
+    node = node_by_key[key]
+    fallback_rank = 1 if _is_fallback_state_label(node.state_label) else 0
+    return (fallback_rank, *_node_sort_key(node))
+
+
+def _semantic_edge_sort_key(
+    edge: StateDagEdge,
+    *,
+    node_by_key: Mapping[StateDagNodeKey, StateDagNode],
+    component_by_key: Mapping[StateDagNodeKey, int],
+) -> tuple[int, int, int, int, int, int]:
+    same_component = (
+        0
+        if edge.target_key is not None
+        and component_by_key.get(edge.target_key) == component_by_key.get(edge.source_key)
+        else 1
+    )
+    kind_rank = {
+        SemanticEdgeKind.TRANSITION: 0,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION: 1,
+        SemanticEdgeKind.CONDITIONAL_RETURN: 2,
+        SemanticEdgeKind.EXIT_ROUTINE: 3,
+        SemanticEdgeKind.UNKNOWN: 4,
+    }[edge.kind]
+    source_kind_rank = {
+        RedirectSourceKind.UNCONDITIONAL: 0,
+        RedirectSourceKind.CONDITIONAL_BRANCH: 1,
+        RedirectSourceKind.EXIT_BLOCK: 2,
+    }[edge.source_anchor.kind]
+    branch_rank = (
+        edge.source_anchor.branch_arm
+        if edge.source_anchor.branch_arm is not None
+        else -1
+    )
+    target_label = edge.target_label
+    if edge.target_key is not None and edge.target_key in node_by_key:
+        target_label = node_by_key[edge.target_key].state_label
+    fallback_rank = 1 if target_label and _is_fallback_state_label(target_label) else 0
+    target_state_rank = edge.target_state if edge.target_state is not None else 0xFFFFFFFF
+    entry_rank = edge.target_entry_anchor if edge.target_entry_anchor is not None else 0xFFFFFFFF
+    return (
+        same_component,
+        kind_rank,
+        source_kind_rank,
+        branch_rank,
+        fallback_rank,
+        min(target_state_rank, entry_rank),
+    )
+
+
+def _semantic_render_order(dag: LinearizedStateDag) -> tuple[StateDagNodeKey, ...]:
+    """Return a program-like semantic traversal order.
+
+    This traversal starts from the initial state, condenses strongly-connected
+    components so loop regions stay contiguous, then walks the condensed graph
+    depth-first using edge-local priority: primary/non-fallback transitions
+    first, fallback siblings later, and unreachable leftovers last.
+    """
+    node_by_key = {node.key: node for node in dag.nodes}
+    edges_by_source: dict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
+    for edge in dag.edges:
+        edges_by_source[edge.source_key].append(edge)
+
+    key_to_idx = {key: idx for idx, key in enumerate(node_by_key)}
+    idx_to_key = {idx: key for key, idx in key_to_idx.items()}
+    adj: dict[int, tuple[int, ...]] = {}
+    for key in node_by_key:
+        succs = tuple(
+            key_to_idx[edge.target_key]
+            for edge in edges_by_source.get(key, ())
+            if edge.target_key is not None
+        )
+        adj[key_to_idx[key]] = succs
+
+    sccs = DispatchRegionDetector.tarjan_scc(adj)
+    component_by_key: dict[StateDagNodeKey, int] = {}
+    nodes_by_component: dict[int, list[StateDagNodeKey]] = defaultdict(list)
+    for comp_idx, scc in enumerate(sccs):
+        for idx in scc:
+            key = idx_to_key[idx]
+            component_by_key[key] = comp_idx
+            nodes_by_component[comp_idx].append(key)
+
+    start_key = _resolve_start_key(dag)
+    start_component = (
+        component_by_key[start_key]
+        if start_key is not None and start_key in component_by_key
+        else None
+    )
+
+    ordered: list[StateDagNodeKey] = []
+    visited_nodes: set[StateDagNodeKey] = set()
+    visited_components: set[int] = set()
+
+    def visit_component(comp_idx: int, seed_key: StateDagNodeKey | None = None) -> None:
+        if comp_idx in visited_components:
+            return
+        visited_components.add(comp_idx)
+
+        component_nodes = nodes_by_component.get(comp_idx, [])
+        if not component_nodes:
+            return
+
+        next_components: list[int] = []
+        cross_component_seed: dict[int, StateDagNodeKey] = {}
+
+        def record_next_component(edge: StateDagEdge) -> None:
+            if edge.target_key is None:
+                return
+            target_comp = component_by_key[edge.target_key]
+            if target_comp == comp_idx:
+                return
+            if target_comp not in cross_component_seed:
+                cross_component_seed[target_comp] = edge.target_key
+            if target_comp not in next_components:
+                next_components.append(target_comp)
+
+        def visit_node(node_key: StateDagNodeKey) -> None:
+            if node_key in visited_nodes:
+                return
+            visited_nodes.add(node_key)
+            ordered.append(node_key)
+            outgoing = sorted(
+                edges_by_source.get(node_key, ()),
+                key=lambda edge: _semantic_edge_sort_key(
+                    edge,
+                    node_by_key=node_by_key,
+                    component_by_key=component_by_key,
+                ),
+            )
+            for edge in outgoing:
+                if edge.target_key is None:
+                    continue
+                target_comp = component_by_key[edge.target_key]
+                if target_comp == comp_idx:
+                    visit_node(edge.target_key)
+                else:
+                    record_next_component(edge)
+
+        seed_order: list[StateDagNodeKey] = []
+        if seed_key is not None and seed_key in component_nodes:
+            seed_order.append(seed_key)
+        for key in sorted(
+            component_nodes,
+            key=lambda item: _semantic_node_sort_key(item, node_by_key),
+        ):
+            if key not in seed_order:
+                seed_order.append(key)
+
+        for key in seed_order:
+            visit_node(key)
+
+        remaining_successors = sorted(
+            (
+                succ
+                for succ in {
+                    component_by_key[edge.target_key]
+                    for key in component_nodes
+                    for edge in edges_by_source.get(key, ())
+                    if edge.target_key is not None
+                    and component_by_key[edge.target_key] != comp_idx
+                }
+                if succ not in next_components
+            ),
+            key=lambda succ: _semantic_node_sort_key(
+                cross_component_seed.get(
+                    succ,
+                    min(
+                        nodes_by_component[succ],
+                        key=lambda item: _semantic_node_sort_key(item, node_by_key),
+                    ),
+                ),
+                node_by_key,
+            ),
+        )
+        for succ in remaining_successors:
+            next_components.append(succ)
+
+        for succ in next_components:
+            visit_component(succ, cross_component_seed.get(succ))
+
+    if start_component is not None:
+        visit_component(start_component, start_key)
+
+    for comp_idx in sorted(
+        nodes_by_component,
+        key=lambda comp: _semantic_node_sort_key(
+            min(
+                nodes_by_component[comp],
+                key=lambda item: _semantic_node_sort_key(item, node_by_key),
+            ),
+            node_by_key,
+        ),
+    ):
+        if comp_idx in visited_components:
+            continue
+        seed = min(
+            nodes_by_component[comp_idx],
+            key=lambda item: _semantic_node_sort_key(item, node_by_key),
+        )
+        visit_component(comp_idx, seed)
+
+    return tuple(ordered)
+
+
+def _render_order(
+    dag: LinearizedStateDag,
+    *,
+    strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
+) -> tuple[StateDagNodeKey, ...]:
+    if strategy == RenderOrderStrategy.SEMANTIC:
+        return _semantic_render_order(dag)
+    return _catalog_render_order(dag)
+
+
 def _dot_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
@@ -3910,40 +4260,17 @@ def render_linearized_state_dag_dot(
     return "\n".join(lines)
 
 
-def render_linearized_state_dag(dag: LinearizedStateDag) -> str:
+def render_linearized_state_dag(
+    dag: LinearizedStateDag,
+    *,
+    order_strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
+) -> str:
     """Render a human-readable dump of a state-level DAG."""
     lines: list[str] = []
     node_by_key = {node.key: node for node in dag.nodes}
     edges_by_source: dict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
     for edge in dag.edges:
         edges_by_source[edge.source_key].append(edge)
-
-    start_key: StateDagNodeKey | None = None
-    if dag.initial_state is not None:
-        for node in dag.nodes:
-            if node.key.state_const == dag.initial_state:
-                start_key = node.key
-                break
-        if start_key is None:
-            for node in dag.nodes:
-                lo = node.key.range_lo
-                hi = node.key.range_hi
-                if lo is None or hi is None:
-                    continue
-                if lo <= dag.initial_state <= hi:
-                    start_key = node.key
-                    break
-
-    queue: deque[StateDagNodeKey] = deque()
-    visited: set[StateDagNodeKey] = set()
-    if start_key is not None:
-        queue.append(start_key)
-        visited.add(start_key)
-
-    for node in sorted(dag.nodes, key=_node_sort_key):
-        if node.key not in visited:
-            queue.append(node.key)
-            visited.add(node.key)
 
     lines.append(
         "=== LINEARIZED STATE DAG ==="
@@ -3953,14 +4280,9 @@ def render_linearized_state_dag(dag: LinearizedStateDag) -> str:
     lines.append("")
 
     step_index = 0
-    rendered: set[StateDagNodeKey] = set()
     edge_counts: Counter[SemanticEdgeKind] = Counter()
 
-    while queue:
-        node_key = queue.popleft()
-        if node_key in rendered:
-            continue
-        rendered.add(node_key)
+    for node_key in _unique_render_keys(_render_order(dag, strategy=order_strategy)):
         node = node_by_key[node_key]
         lines.append(
             f"[{step_index}] {node.state_label} -> entry blk[{node.entry_anchor}] "
@@ -4001,8 +4323,6 @@ def render_linearized_state_dag(dag: LinearizedStateDag) -> str:
                 f"    edge {edge.kind.name.lower()} src={_format_anchor(edge.source_anchor)}"
                 f" -> {_format_edge_target(edge)}{target_entry}{path_suffix}"
             )
-            if edge.target_key is not None and edge.target_key not in rendered:
-                queue.append(edge.target_key)
         lines.append("")
         step_index += 1
 
@@ -4020,10 +4340,1721 @@ def render_linearized_state_dag(dag: LinearizedStateDag) -> str:
     return "\n".join(lines)
 
 
+def _unique_render_keys(
+    ordered_keys: tuple[StateDagNodeKey, ...],
+) -> tuple[StateDagNodeKey, ...]:
+    seen: set[StateDagNodeKey] = set()
+    unique: list[StateDagNodeKey] = []
+    for key in ordered_keys:
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(key)
+    return tuple(unique)
+
+
+def _state_family_program_base_label(raw_label: str) -> str:
+    if raw_label == "EXIT_ROUTINE":
+        return raw_label
+    if raw_label.startswith("0x"):
+        if "_fallback" in raw_label:
+            base, suffix = raw_label.split("_", 1)
+            return f"STATE_{base[2:]}_{suffix}"
+        return f"STATE_{raw_label[2:]}"
+    return raw_label.replace(" ", "_")
+
+
+def _program_label_base_for_node(
+    node: StateDagNode,
+    label_render_mode: LabelRenderMode,
+) -> str:
+    if label_render_mode == LabelRenderMode.IDA_BLOCK_SERIAL:
+        return f"LABEL_{node.entry_anchor}"
+    return _state_family_program_base_label(node.state_label)
+
+
+def _program_label_base_for_edge(
+    edge: StateDagEdge,
+    label_render_mode: LabelRenderMode,
+) -> str:
+    if edge.kind == SemanticEdgeKind.EXIT_ROUTINE:
+        return "EXIT_ROUTINE"
+    if label_render_mode == LabelRenderMode.IDA_BLOCK_SERIAL:
+        if edge.target_entry_anchor is not None:
+            return f"LABEL_{edge.target_entry_anchor}"
+        if edge.target_key is not None:
+            return f"LABEL_{edge.target_key.handler_serial}"
+    if edge.target_label:
+        return _state_family_program_base_label(edge.target_label)
+    if edge.target_state is not None:
+        return _state_family_program_base_label(f"0x{edge.target_state:08X}")
+    return "EXIT_ROUTINE"
+
+
+def _state_family_annotation(node: StateDagNode) -> str:
+    return _state_family_program_base_label(node.state_label)
+
+
+def _program_node_collision_sort_key(
+    node: StateDagNode,
+) -> tuple[int, int, int, int, int]:
+    return (
+        node.entry_anchor,
+        node.handler_serial,
+        node.key.state_const if node.key.state_const is not None else 0xFFFFFFFF,
+        node.key.range_lo if node.key.range_lo is not None else 0xFFFFFFFF,
+        node.key.range_hi if node.key.range_hi is not None else 0xFFFFFFFF,
+    )
+
+
+def _program_node_disambiguator(node: StateDagNode) -> str:
+    parts = [f"blk{node.entry_anchor}", f"h{node.handler_serial}"]
+    if node.key.state_const is not None:
+        parts.append(f"s{node.key.state_const:08X}")
+    if node.key.range_lo is not None or node.key.range_hi is not None:
+        lo = node.key.range_lo if node.key.range_lo is not None else 0
+        hi = node.key.range_hi if node.key.range_hi is not None else 0
+        parts.append(f"r{lo:08X}_{hi:08X}")
+    return "__" + "_".join(parts)
+
+
+def _build_program_labels(
+    dag: LinearizedStateDag,
+    label_render_mode: LabelRenderMode = LabelRenderMode.STATE_FAMILY,
+) -> tuple[
+    dict[StateDagNodeKey, ProgramLabel],
+    dict[str, tuple[ProgramLabel, ...]],
+    dict[tuple[str, int], tuple[ProgramLabel, ...]],
+]:
+    node_by_key = {node.key: node for node in dag.nodes}
+    keys_by_base: dict[str, list[StateDagNodeKey]] = defaultdict(list)
+    for node in dag.nodes:
+        keys_by_base[_program_label_base_for_node(node, label_render_mode)].append(
+            node.key
+        )
+
+    label_by_key: dict[StateDagNodeKey, ProgramLabel] = {}
+    labels_by_base: dict[str, tuple[ProgramLabel, ...]] = {}
+    labels_by_base_and_entry: dict[tuple[str, int], tuple[ProgramLabel, ...]] = {}
+
+    for base, keys in keys_by_base.items():
+        ordered_keys = sorted(
+            keys,
+            key=lambda key: _program_node_collision_sort_key(node_by_key[key]),
+        )
+        labels_for_base: list[ProgramLabel] = []
+        labels_for_entry: defaultdict[int, list[ProgramLabel]] = defaultdict(list)
+        for index, key in enumerate(ordered_keys, start=1):
+            node = node_by_key[key]
+            rendered = base
+            if len(ordered_keys) > 1:
+                if label_render_mode == LabelRenderMode.IDA_BLOCK_SERIAL:
+                    rendered = f"{base}__{index}"
+                else:
+                    rendered = f"{base}{_program_node_disambiguator(node)}"
+            label = ProgramLabel(
+                rendered=rendered,
+                base=base,
+                entry_anchor=node.entry_anchor,
+                label_num=(
+                    node.entry_anchor
+                    if label_render_mode == LabelRenderMode.IDA_BLOCK_SERIAL
+                    else None
+                ),
+            )
+            label_by_key[key] = label
+            labels_for_base.append(label)
+            labels_for_entry[node.entry_anchor].append(label)
+        labels_by_base[base] = tuple(labels_for_base)
+        for entry_anchor, labels in labels_for_entry.items():
+            labels_by_base_and_entry[(base, entry_anchor)] = tuple(labels)
+
+    return label_by_key, labels_by_base, labels_by_base_and_entry
+
+
+def _program_target_label(
+    edge: StateDagEdge,
+    node_by_key: Mapping[StateDagNodeKey, StateDagNode],
+    label_by_key: Mapping[StateDagNodeKey, ProgramLabel],
+    labels_by_base: Mapping[str, tuple[ProgramLabel, ...]],
+    labels_by_base_and_entry: Mapping[tuple[str, int], tuple[ProgramLabel, ...]],
+    label_render_mode: LabelRenderMode,
+) -> str:
+    if edge.target_key is not None:
+        target_label = label_by_key.get(edge.target_key)
+        if target_label is not None:
+            return target_label.rendered
+        target_node = node_by_key.get(edge.target_key)
+        if target_node is not None:
+            base = _program_label_base_for_node(target_node, label_render_mode)
+            labels = labels_by_base.get(base, ())
+            if len(labels) == 1:
+                return labels[0].rendered
+    base = _program_label_base_for_edge(edge, label_render_mode)
+    if edge.target_label or edge.target_state is not None:
+        if edge.target_entry_anchor is not None:
+            labels = labels_by_base_and_entry.get((base, edge.target_entry_anchor), ())
+            if len(labels) == 1:
+                return labels[0].rendered
+        labels = labels_by_base.get(base, ())
+        if len(labels) == 1:
+            return labels[0].rendered
+        return base
+    return "EXIT_ROUTINE"
+
+
+def _program_action(
+    edge: StateDagEdge,
+    node_by_key: Mapping[StateDagNodeKey, StateDagNode],
+    label_by_key: Mapping[StateDagNodeKey, ProgramLabel],
+    labels_by_base: Mapping[str, tuple[ProgramLabel, ...]],
+    labels_by_base_and_entry: Mapping[tuple[str, int], tuple[ProgramLabel, ...]],
+    label_render_mode: LabelRenderMode,
+) -> str:
+    if edge.kind == SemanticEdgeKind.CONDITIONAL_RETURN:
+        return "return result;"
+    if edge.kind == SemanticEdgeKind.EXIT_ROUTINE:
+        return "goto EXIT_ROUTINE;"
+    target = _program_target_label(
+        edge,
+        node_by_key,
+        label_by_key,
+        labels_by_base,
+        labels_by_base_and_entry,
+        label_render_mode,
+    )
+    if label_render_mode == LabelRenderMode.IDA_BLOCK_SERIAL:
+        annotation = _program_label_base_for_edge(
+            edge,
+            LabelRenderMode.STATE_FAMILY,
+        )
+        return f"goto {target};  /* {annotation} */"
+    return (
+        "goto "
+        f"{target};"
+    )
+
+
+def _emit_program_state_family_comment(
+    lines: list[str],
+    node: StateDagNode,
+    *,
+    label_render_mode: LabelRenderMode,
+    comment_mode: ProgramCommentMode,
+) -> None:
+    if comment_mode == ProgramCommentMode.MINIMAL:
+        return
+    if label_render_mode != LabelRenderMode.IDA_BLOCK_SERIAL:
+        return
+    lines.append(f"    // state-family: {_state_family_annotation(node)}")
+
+
+def _negate_condition_text(condition: str) -> str:
+    match = _SIMPLE_COMPARE_RE.match(condition)
+    if match is None:
+        return f"!({condition})"
+    op = match.group("op")
+    negated_op = {
+        "==": "!=",
+        "!=": "==",
+        "<u": ">=u",
+        "<=u": ">u",
+        ">u": "<=u",
+        ">=u": "<u",
+        "<s": ">=s",
+        "<=s": ">s",
+        ">s": "<=s",
+        ">=s": "<s",
+    }.get(op)
+    if negated_op is None:
+        return f"!({condition})"
+    return f"{match.group('lhs')} {negated_op} {match.group('rhs')}"
+
+
+def _is_terminal_control_rendered_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("/* assert */ "):
+        stripped = stripped[len("/* assert */ ") :].lstrip()
+    return (
+        stripped.startswith("goto ")
+        or stripped.startswith("if (")
+        or stripped.startswith("return")
+        or stripped.startswith("switch(")
+    )
+
+
+def _prune_terminal_control_lines(
+    rendered_lines: tuple[str, ...],
+) -> tuple[str, ...]:
+    pruned = list(rendered_lines)
+    while pruned and _is_terminal_control_rendered_line(pruned[-1]):
+        pruned.pop()
+    return tuple(pruned)
+
+
+def _prune_transition_state_write_lines(
+    rendered_lines: tuple[str, ...],
+    *,
+    transition_state_values: set[int],
+) -> tuple[str, ...]:
+    if not transition_state_values:
+        return rendered_lines
+    pruned = list(rendered_lines)
+    while pruned:
+        match = _SIMPLE_CONST_ASSIGN_RE.match(pruned[-1].strip())
+        if match is None:
+            break
+        try:
+            value = int(match.group(1), 16)
+        except ValueError:
+            break
+        if value not in transition_state_values:
+            break
+        pruned.pop()
+    return tuple(pruned)
+
+
+def _emit_block_payload_lines(
+    out_lines: list[str],
+    *,
+    blocks: tuple[int, ...],
+    indent: str,
+    block_payload_by_serial: Mapping[int, tuple[str, ...]] | None,
+    transition_state_values: set[int] | None = None,
+) -> None:
+    if not block_payload_by_serial:
+        return
+    for block_serial in blocks:
+        payload_lines = tuple(block_payload_by_serial.get(block_serial, ()))
+        payload_lines = _prune_terminal_control_lines(payload_lines)
+        payload_lines = _prune_transition_state_write_lines(
+            payload_lines,
+            transition_state_values=transition_state_values or set(),
+        )
+        for payload_line in payload_lines:
+            if payload_line.strip():
+                out_lines.append(f"{indent}{payload_line}")
+
+
+def _sanitize_segment_suffix(segment_id: str) -> str:
+    sanitized = []
+    for char in segment_id:
+        if char.isalnum():
+            sanitized.append(char)
+        else:
+            sanitized.append("_")
+    text = "".join(sanitized).strip("_")
+    return text or "segment"
+
+
+def _find_entry_segment_id(node: StateDagNode) -> str | None:
+    for segment in node.local_segments:
+        if node.entry_anchor in segment.blocks:
+            return segment.segment_id
+    if node.local_segments:
+        return node.local_segments[0].segment_id
+    return None
+
+
+def _build_program_segment_labels(
+    node: StateDagNode,
+    node_label: str,
+) -> dict[str, str]:
+    return {
+        segment.segment_id: f"{node_label}__{_sanitize_segment_suffix(segment.segment_id)}"
+        for segment in node.local_segments
+    }
+
+
+def _local_segment_sort_key(segment: StateLocalSegment) -> tuple[int, int, str]:
+    first_block = segment.blocks[0] if segment.blocks else 0xFFFFFFFF
+    return (first_block, segment.kind.value, segment.segment_id)
+
+
+def _local_segment_render_order(node: StateDagNode) -> tuple[str, ...]:
+    if not node.local_segments:
+        return ()
+
+    segment_by_id = {segment.segment_id: segment for segment in node.local_segments}
+    local_edges_by_source: dict[str, list[StateLocalEdge]] = defaultdict(list)
+    for edge in node.local_edges:
+        local_edges_by_source[edge.source_segment_id].append(edge)
+
+    ordered: list[str] = []
+    visited: set[str] = set()
+
+    def visit(segment_id: str) -> None:
+        if segment_id in visited or segment_id not in segment_by_id:
+            return
+        visited.add(segment_id)
+        ordered.append(segment_id)
+        outgoing = sorted(
+            local_edges_by_source.get(segment_id, ()),
+            key=lambda edge: (
+                edge.branch_arm if edge.branch_arm is not None else -1,
+                edge.kind.value,
+                edge.target_segment_id,
+            ),
+        )
+        for edge in outgoing:
+            visit(edge.target_segment_id)
+
+    entry_segment_id = _find_entry_segment_id(node)
+    if entry_segment_id is not None:
+        visit(entry_segment_id)
+
+    for segment in sorted(node.local_segments, key=_local_segment_sort_key):
+        visit(segment.segment_id)
+
+    return tuple(ordered)
+
+
+def _render_segment_edge_action(
+    edge: StateDagEdge,
+    *,
+    node_by_key: Mapping[StateDagNodeKey, StateDagNode],
+    label_by_key: Mapping[StateDagNodeKey, ProgramLabel],
+    labels_by_base: Mapping[str, tuple[ProgramLabel, ...]],
+    labels_by_base_and_entry: Mapping[tuple[str, int], tuple[ProgramLabel, ...]],
+    label_render_mode: LabelRenderMode,
+) -> str:
+    return _program_action(
+        edge,
+        node_by_key,
+        label_by_key,
+        labels_by_base,
+        labels_by_base_and_entry,
+        label_render_mode,
+    )
+
+
+def _render_explicit_local_segment_program(
+    dag: LinearizedStateDag,
+    *,
+    order_strategy: RenderOrderStrategy,
+    label_render_mode: LabelRenderMode,
+    block_payload_by_serial: Mapping[int, tuple[str, ...]] | None = None,
+) -> str:
+    lines: list[str] = []
+    node_by_key = {node.key: node for node in dag.nodes}
+    label_by_key, labels_by_base, labels_by_base_and_entry = _build_program_labels(
+        dag,
+        label_render_mode=label_render_mode,
+    )
+    edges_by_source: dict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
+    for edge in dag.edges:
+        edges_by_source[edge.source_key].append(edge)
+
+    def _edge_target_states(edges: tuple[StateDagEdge, ...] | list[StateDagEdge]) -> set[int]:
+        return {
+            edge.target_state & 0xFFFFFFFF
+            for edge in edges
+            if edge.target_state is not None
+        }
+
+    ordered_keys = _unique_render_keys(_render_order(dag, strategy=order_strategy))
+    lines.append(
+        "=== LINEARIZED STATE PROGRAM ==="
+        if dag.initial_state is None
+        else f"=== LINEARIZED STATE PROGRAM (starting from 0x{dag.initial_state:08X}) ==="
+    )
+    lines.append("")
+
+    emitted_exit_routine = False
+    for node_key in ordered_keys:
+        node = node_by_key[node_key]
+        node_label = label_by_key[node_key].rendered
+        lines.append(f"{node_label}:")
+        _emit_program_state_family_comment(
+            lines,
+            node,
+            label_render_mode=label_render_mode,
+            comment_mode=ProgramCommentMode.DEBUG_METADATA,
+        )
+        lines.append(f"    // entry blk[{node.entry_anchor}] [{node.kind.name.lower()}]")
+        if node.owned_blocks:
+            owned = ", ".join(f"blk[{blk}]" for blk in node.owned_blocks)
+            lines.append(f"    // blocks: {owned}")
+        if node.shared_suffix_blocks:
+            shared = ", ".join(f"blk[{blk}]" for blk in node.shared_suffix_blocks)
+            lines.append(f"    // shared-suffix: {shared}")
+
+        if not node.local_segments:
+            outgoing = sorted(
+                edges_by_source.get(node_key, ()),
+                key=lambda edge: (
+                    edge.source_anchor.block_serial,
+                    edge.source_anchor.kind.value,
+                    (
+                        edge.source_anchor.branch_arm
+                        if edge.source_anchor.branch_arm is not None
+                        else -1
+                    ),
+                    edge.kind.value,
+                    edge.target_state if edge.target_state is not None else 0xFFFFFFFF,
+                ),
+            )
+            _emit_block_payload_lines(
+                lines,
+                blocks=node.owned_blocks,
+                indent="    ",
+                block_payload_by_serial=block_payload_by_serial,
+                transition_state_values=_edge_target_states(outgoing),
+            )
+            if not outgoing:
+                lines.append("    // no outgoing semantic edges")
+                lines.append("")
+                continue
+            for edge in outgoing:
+                if edge.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                    emitted_exit_routine = True
+                lines.append(
+                    "    "
+                    f"{_render_segment_edge_action(edge, node_by_key=node_by_key, label_by_key=label_by_key, labels_by_base=labels_by_base, labels_by_base_and_entry=labels_by_base_and_entry, label_render_mode=label_render_mode)}  "
+                    f"// {_format_anchor(edge.source_anchor)} {edge.kind.name.lower()}"
+                )
+            lines.append("")
+            continue
+
+        segment_labels = _build_program_segment_labels(node, node_label)
+        entry_segment_id = _find_entry_segment_id(node)
+        if entry_segment_id is not None:
+            lines.append(f"    goto {segment_labels[entry_segment_id]};")
+        else:
+            lines.append("    // no entry local segment")
+        lines.append("")
+
+        local_edges_by_source: dict[str, list[StateLocalEdge]] = defaultdict(list)
+        for edge in node.local_edges:
+            local_edges_by_source[edge.source_segment_id].append(edge)
+
+        semantic_edges_by_segment: dict[str, list[StateDagEdge]] = defaultdict(list)
+        for edge in edges_by_source.get(node_key, ()):
+            for segment in node.local_segments:
+                if edge.source_anchor.block_serial in segment.blocks:
+                    semantic_edges_by_segment[segment.segment_id].append(edge)
+                    break
+
+        segment_by_id = {segment.segment_id: segment for segment in node.local_segments}
+        for segment_id in _local_segment_render_order(node):
+            segment = segment_by_id[segment_id]
+            lines.append(f"{segment_labels[segment_id]}:")
+            blocks = ", ".join(f"blk[{blk}]" for blk in segment.blocks)
+            lines.append(
+                f"    // {segment.kind.name.lower()} segment: {segment.segment_id}"
+                + (f" ({blocks})" if blocks else "")
+            )
+
+            semantic_edges = sorted(
+                semantic_edges_by_segment.get(segment_id, ()),
+                key=lambda edge: (
+                    edge.source_anchor.block_serial,
+                    edge.source_anchor.kind.value,
+                    edge.source_anchor.branch_arm
+                    if edge.source_anchor.branch_arm is not None
+                    else -1,
+                    edge.kind.value,
+                ),
+            )
+            local_edges = sorted(
+                local_edges_by_source.get(segment_id, ()),
+                key=lambda edge: (
+                    edge.branch_arm if edge.branch_arm is not None else -1,
+                    edge.kind.value,
+                    edge.target_segment_id,
+                ),
+            )
+            _emit_block_payload_lines(
+                lines,
+                blocks=segment.blocks,
+                indent="    ",
+                block_payload_by_serial=block_payload_by_serial,
+                transition_state_values=_edge_target_states(semantic_edges),
+            )
+
+            semantic_branch_by_arm: dict[int, StateDagEdge] = {}
+            semantic_passthrough: list[StateDagEdge] = []
+            for edge in semantic_edges:
+                if (
+                    edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+                    and edge.source_anchor.branch_arm is not None
+                ):
+                    semantic_branch_by_arm[edge.source_anchor.branch_arm] = edge
+                else:
+                    semantic_passthrough.append(edge)
+
+            local_branch_by_arm: dict[int, StateLocalEdge] = {}
+            local_passthrough: list[StateLocalEdge] = []
+            for edge in local_edges:
+                if edge.branch_arm is not None:
+                    local_branch_by_arm[edge.branch_arm] = edge
+                else:
+                    local_passthrough.append(edge)
+
+            if semantic_passthrough:
+                local_passthrough = []
+
+            taken_semantic = semantic_branch_by_arm.get(1)
+            fallthrough_semantic = semantic_branch_by_arm.get(0)
+            taken_local = local_branch_by_arm.get(1)
+            fallthrough_local = local_branch_by_arm.get(0)
+
+            if taken_semantic is not None or fallthrough_semantic is not None:
+                if taken_semantic is not None:
+                    if taken_semantic.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                        emitted_exit_routine = True
+                    lines.append(
+                        f"    if (/* blk[{taken_semantic.source_anchor.block_serial}].taken */)"
+                    )
+                    lines.append(
+                        "        "
+                        f"{_render_segment_edge_action(taken_semantic, node_by_key=node_by_key, label_by_key=label_by_key, labels_by_base=labels_by_base, labels_by_base_and_entry=labels_by_base_and_entry, label_render_mode=label_render_mode)}"
+                    )
+                elif taken_local is not None:
+                    lines.append(f"    if (/* {segment.segment_id}.taken */)")
+                    lines.append(
+                        f"        goto {segment_labels[taken_local.target_segment_id]};"
+                    )
+
+                if fallthrough_semantic is not None:
+                    if fallthrough_semantic.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                        emitted_exit_routine = True
+                    lines.append(
+                        "    "
+                        f"{_render_segment_edge_action(fallthrough_semantic, node_by_key=node_by_key, label_by_key=label_by_key, labels_by_base=labels_by_base, labels_by_base_and_entry=labels_by_base_and_entry, label_render_mode=label_render_mode)}"
+                        f"  // blk[{fallthrough_semantic.source_anchor.block_serial}].fallthrough"
+                    )
+                elif fallthrough_local is not None:
+                    lines.append(
+                        f"    goto {segment_labels[fallthrough_local.target_segment_id]};  // {segment.segment_id}.fallthrough"
+                    )
+            elif taken_local is not None and fallthrough_local is not None:
+                lines.append(f"    if (/* {segment.segment_id}.taken */)")
+                lines.append(
+                    f"        goto {segment_labels[taken_local.target_segment_id]};"
+                )
+                lines.append(
+                    f"    goto {segment_labels[fallthrough_local.target_segment_id]};  // {segment.segment_id}.fallthrough"
+                )
+
+            for edge in semantic_passthrough:
+                if edge.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                    emitted_exit_routine = True
+                lines.append(
+                    "    "
+                    f"{_render_segment_edge_action(edge, node_by_key=node_by_key, label_by_key=label_by_key, labels_by_base=labels_by_base, labels_by_base_and_entry=labels_by_base_and_entry, label_render_mode=label_render_mode)}  "
+                    f"// {_format_anchor(edge.source_anchor)} {edge.kind.name.lower()}"
+                )
+
+            for edge in local_passthrough:
+                lines.append(
+                    f"    goto {segment_labels[edge.target_segment_id]};  "
+                    f"// {edge.source_segment_id} {edge.kind.name.lower()}"
+                )
+
+            if not (
+                taken_semantic
+                or fallthrough_semantic
+                or taken_local
+                or fallthrough_local
+                or semantic_passthrough
+                or local_passthrough
+            ):
+                lines.append("    // no local or semantic exits")
+            lines.append("")
+
+    if emitted_exit_routine:
+        lines.append("EXIT_ROUTINE:")
+        lines.append("    return result;")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _render_selective_local_boundary_program(
+    dag: LinearizedStateDag,
+    *,
+    order_strategy: RenderOrderStrategy,
+    boundary_inline_mode: BoundaryInlineMode,
+    label_render_mode: LabelRenderMode,
+    comment_mode: ProgramCommentMode,
+    block_payload_by_serial: Mapping[int, tuple[str, ...]] | None = None,
+) -> str:
+    lines: list[str] = []
+    node_by_key = {node.key: node for node in dag.nodes}
+    label_by_key, labels_by_base, labels_by_base_and_entry = _build_program_labels(
+        dag,
+        label_render_mode=label_render_mode,
+    )
+    edges_by_source: dict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
+    for edge in dag.edges:
+        edges_by_source[edge.source_key].append(edge)
+
+    def emit_debug_comment(indent: str, text: str) -> None:
+        if comment_mode == ProgramCommentMode.DEBUG_METADATA:
+            lines.append(f"{indent}{text}")
+
+    def debug_suffix(text: str) -> str:
+        return text if comment_mode == ProgramCommentMode.DEBUG_METADATA else ""
+
+    def with_optional_comment(action: str, comment: str = "") -> str:
+        return f"{action}  {comment}" if comment else action
+
+    def _edge_target_states(edges: tuple[StateDagEdge, ...] | list[StateDagEdge]) -> set[int]:
+        return {
+            edge.target_state & 0xFFFFFFFF
+            for edge in edges
+            if edge.target_state is not None
+        }
+
+    ordered_keys = _unique_render_keys(_render_order(dag, strategy=order_strategy))
+    lines.append(
+        "=== LINEARIZED STATE PROGRAM ==="
+        if dag.initial_state is None
+        else f"=== LINEARIZED STATE PROGRAM (starting from 0x{dag.initial_state:08X}) ==="
+    )
+    lines.append("")
+
+    emitted_exit_routine = False
+    for node_key in ordered_keys:
+        node = node_by_key[node_key]
+        node_label = label_by_key[node_key].rendered
+        lines.append(f"{node_label}:")
+        _emit_program_state_family_comment(
+            lines,
+            node,
+            label_render_mode=label_render_mode,
+            comment_mode=comment_mode,
+        )
+        emit_debug_comment("    ", f"// entry blk[{node.entry_anchor}] [{node.kind.name.lower()}]")
+        if node.owned_blocks:
+            owned = ", ".join(f"blk[{blk}]" for blk in node.owned_blocks)
+            emit_debug_comment("    ", f"// blocks: {owned}")
+        if node.shared_suffix_blocks:
+            shared = ", ".join(f"blk[{blk}]" for blk in node.shared_suffix_blocks)
+            emit_debug_comment("    ", f"// shared-suffix: {shared}")
+
+        if not node.local_segments:
+            outgoing = sorted(
+                edges_by_source.get(node_key, ()),
+                key=lambda edge: (
+                    edge.source_anchor.block_serial,
+                    edge.source_anchor.kind.value,
+                    (
+                        edge.source_anchor.branch_arm
+                        if edge.source_anchor.branch_arm is not None
+                        else -1
+                    ),
+                    edge.kind.value,
+                    edge.target_state if edge.target_state is not None else 0xFFFFFFFF,
+                ),
+            )
+            _emit_block_payload_lines(
+                lines,
+                blocks=node.owned_blocks,
+                indent="    ",
+                block_payload_by_serial=block_payload_by_serial,
+                transition_state_values=_edge_target_states(outgoing),
+            )
+            if not outgoing:
+                emit_debug_comment("    ", "// no outgoing semantic edges")
+                lines.append("")
+                continue
+            for edge in outgoing:
+                if edge.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                    emitted_exit_routine = True
+                comment = (
+                    f"{_format_anchor(edge.source_anchor)} {edge.kind.name.lower()}"
+                    if comment_mode == ProgramCommentMode.DEBUG_METADATA
+                    else ""
+                )
+                lines.append(
+                    "    "
+                    + with_optional_comment(
+                        _render_segment_edge_action(
+                            edge,
+                            node_by_key=node_by_key,
+                            label_by_key=label_by_key,
+                            labels_by_base=labels_by_base,
+                            labels_by_base_and_entry=labels_by_base_and_entry,
+                            label_render_mode=label_render_mode,
+                        ),
+                        f"// {comment}" if comment else "",
+                    )
+                )
+            lines.append("")
+            continue
+
+        segment_by_id = {segment.segment_id: segment for segment in node.local_segments}
+        segment_labels = _build_program_segment_labels(node, node_label)
+        segment_id_by_label = {label: segment_id for segment_id, label in segment_labels.items()}
+        entry_segment_id = _find_entry_segment_id(node)
+
+        local_edges_by_source: dict[str, list[StateLocalEdge]] = defaultdict(list)
+        local_incoming_count: Counter[str] = Counter()
+        local_incoming_by_target: dict[str, list[StateLocalEdge]] = defaultdict(list)
+        for edge in node.local_edges:
+            local_edges_by_source[edge.source_segment_id].append(edge)
+            local_incoming_count[edge.target_segment_id] += 1
+            local_incoming_by_target[edge.target_segment_id].append(edge)
+
+        semantic_edges_by_segment: dict[str, list[StateDagEdge]] = defaultdict(list)
+        for edge in edges_by_source.get(node_key, ()):
+            for segment in node.local_segments:
+                if edge.source_anchor.block_serial in segment.blocks:
+                    semantic_edges_by_segment[segment.segment_id].append(edge)
+                    break
+
+        resolved_target_cache: dict[str, tuple[str, str | None, tuple[str, ...]]] = {}
+        branch_meaning_cache: dict[str, bool] = {}
+
+        def branch_arms(segment_id: str) -> dict[int, StateLocalEdge]:
+            return {
+                edge.branch_arm: edge
+                for edge in local_edges_by_source.get(segment_id, ())
+                if edge.branch_arm is not None
+            }
+
+        def _edge_signature(edge: StateDagEdge) -> tuple[str, str]:
+            return (
+                edge.kind.name,
+                _render_segment_edge_action(
+                    edge,
+                    node_by_key=node_by_key,
+                    label_by_key=label_by_key,
+                    labels_by_base=labels_by_base,
+                    labels_by_base_and_entry=labels_by_base_and_entry,
+                    label_render_mode=label_render_mode,
+                ),
+            )
+
+        def segment_is_meaningful(segment_id: str, stack: tuple[str, ...] = ()) -> bool:
+            if segment_id in branch_meaning_cache:
+                return branch_meaning_cache[segment_id]
+            if segment_id in stack:
+                return True
+            segment = segment_by_id[segment_id]
+            if semantic_edges_by_segment.get(segment_id):
+                branch_meaning_cache[segment_id] = True
+                return True
+            if segment.kind in (
+                LocalSegmentKind.JOIN,
+                LocalSegmentKind.SHARED_SUFFIX,
+                LocalSegmentKind.TERMINAL_SUFFIX,
+            ):
+                branch_meaning_cache[segment_id] = True
+                return True
+            if local_incoming_count.get(segment_id, 0) > 1:
+                branch_meaning_cache[segment_id] = True
+                return True
+
+            arms = branch_arms(segment_id)
+            if len(arms) >= 2:
+                outcomes = {
+                    arm: resolve_target(edge.target_segment_id, stack + (segment_id,))
+                    for arm, edge in arms.items()
+                }
+                signatures = {
+                    (outcome_kind, target_label)
+                    for outcome_kind, target_label, _collapsed_chain in outcomes.values()
+                }
+                meaningful = len(signatures) > 1
+                branch_meaning_cache[segment_id] = meaningful
+                return meaningful
+
+            branch_meaning_cache[segment_id] = False
+            return False
+
+        def resolve_target(
+            segment_id: str,
+            stack: tuple[str, ...] = (),
+        ) -> tuple[str, str | None, tuple[str, ...]]:
+            if segment_id in resolved_target_cache and not stack:
+                return resolved_target_cache[segment_id]
+            if segment_id in stack:
+                result = ("segment", segment_labels.get(segment_id), (segment_id,))
+                if not stack:
+                    resolved_target_cache[segment_id] = result
+                return result
+            if segment_is_meaningful(segment_id, stack):
+                result = ("segment", segment_labels[segment_id], ())
+                if not stack:
+                    resolved_target_cache[segment_id] = result
+                return result
+
+            semantic_edges = semantic_edges_by_segment.get(segment_id, ())
+            if semantic_edges:
+                edge = sorted(
+                    semantic_edges,
+                    key=lambda item: (
+                        item.source_anchor.block_serial,
+                        item.source_anchor.kind.value,
+                        item.kind.value,
+                    ),
+                )[0]
+                result = (
+                    "semantic",
+                    _render_segment_edge_action(
+                        edge,
+                        node_by_key=node_by_key,
+                        label_by_key=label_by_key,
+                        labels_by_base=labels_by_base,
+                        labels_by_base_and_entry=labels_by_base_and_entry,
+                        label_render_mode=label_render_mode,
+                    ),
+                    (),
+                )
+                if not stack:
+                    resolved_target_cache[segment_id] = result
+                return result
+
+            local_edges = sorted(
+                local_edges_by_source.get(segment_id, ()),
+                key=lambda edge: (
+                    edge.branch_arm if edge.branch_arm is not None else -1,
+                    edge.kind.value,
+                    edge.target_segment_id,
+                ),
+            )
+            if not local_edges:
+                result = ("deadend", None, (segment_id,))
+                if not stack:
+                    resolved_target_cache[segment_id] = result
+                return result
+
+            next_edge = local_edges[0]
+            outcome_kind, target_label, collapsed_chain = resolve_target(
+                next_edge.target_segment_id,
+                stack + (segment_id,),
+            )
+            result = (outcome_kind, target_label, (segment_id,) + collapsed_chain)
+            if not stack:
+                resolved_target_cache[segment_id] = result
+            return result
+
+        def _collapse_comment(collapsed_chain: tuple[str, ...]) -> str:
+            if comment_mode != ProgramCommentMode.DEBUG_METADATA:
+                return ""
+            if not collapsed_chain:
+                return ""
+            blocks: list[str] = []
+            seen_blocks: set[int] = set()
+            for collapsed_id in collapsed_chain:
+                segment = segment_by_id.get(collapsed_id)
+                if segment is None:
+                    continue
+                for block in segment.blocks:
+                    if block in seen_blocks:
+                        continue
+                    seen_blocks.add(block)
+                    blocks.append(f"blk[{block}]")
+            if not blocks:
+                return ""
+            return "  // via " + ", ".join(blocks)
+
+        def _emit_collapsed_chain_payload(
+            collapsed_chain: tuple[str, ...],
+            *,
+            indent: str,
+        ) -> bool:
+            emitted = False
+            if not block_payload_by_serial:
+                return emitted
+            for collapsed_id in collapsed_chain:
+                segment = segment_by_id.get(collapsed_id)
+                if segment is None:
+                    continue
+                before = len(lines)
+                _emit_block_payload_lines(
+                    lines,
+                    blocks=segment.blocks,
+                    indent=indent,
+                    block_payload_by_serial=block_payload_by_serial,
+                )
+                emitted = emitted or len(lines) > before
+            return emitted
+
+        def _extract_terminal_if_condition(segment_id: str) -> str | None:
+            if not block_payload_by_serial:
+                return None
+            segment = segment_by_id.get(segment_id)
+            if segment is None:
+                return None
+            for block_serial in reversed(segment.blocks):
+                for raw_line in reversed(tuple(block_payload_by_serial.get(block_serial, ()))):
+                    stripped = raw_line.strip()
+                    if not stripped:
+                        continue
+                    if stripped.startswith("/* assert */ "):
+                        stripped = stripped[len("/* assert */ ") :].lstrip()
+                    if stripped.startswith("if (") and ") goto " in stripped:
+                        return stripped[len("if (") : stripped.index(") goto ")]
+                    if not _is_terminal_control_rendered_line(stripped):
+                        break
+            return None
+
+        def _emit_structured_collapsed_chain_to_boundary(
+            collapsed_chain: tuple[str, ...],
+            *,
+            final_segment_id: str,
+            indent: str,
+        ) -> bool:
+            if not collapsed_chain or not block_payload_by_serial:
+                return False
+            first_segment_id = collapsed_chain[0]
+            remaining_chain = collapsed_chain[1:]
+            if not remaining_chain:
+                return False
+            first_segment = segment_by_id.get(first_segment_id)
+            if first_segment is None or first_segment.kind != LocalSegmentKind.BRANCH:
+                return False
+
+            arms = branch_arms(first_segment_id)
+            taken_edge = arms.get(1)
+            fallthrough_edge = arms.get(0)
+            if taken_edge is None or fallthrough_edge is None:
+                return False
+
+            def _resolves_to_final(segment_id: str) -> bool:
+                outcome_kind, target_label, _ = resolve_target(segment_id)
+                if outcome_kind != "segment" or target_label is None:
+                    return False
+                return segment_id_by_label.get(target_label) == final_segment_id
+
+            next_segment_id = remaining_chain[0]
+            taken_is_next = taken_edge.target_segment_id == next_segment_id
+            fallthrough_is_next = fallthrough_edge.target_segment_id == next_segment_id
+            taken_is_final = _resolves_to_final(taken_edge.target_segment_id)
+            fallthrough_is_final = _resolves_to_final(fallthrough_edge.target_segment_id)
+
+            if not (
+                (taken_is_next and fallthrough_is_final)
+                or (fallthrough_is_next and taken_is_final)
+            ):
+                return False
+
+            condition = _extract_terminal_if_condition(first_segment_id)
+            if not condition:
+                return False
+
+            _emit_block_payload_lines(
+                lines,
+                blocks=first_segment.blocks,
+                indent=indent,
+                block_payload_by_serial=block_payload_by_serial,
+                transition_state_values=set(),
+            )
+
+            if taken_is_next and fallthrough_is_final:
+                guard = condition
+            else:
+                guard = _negate_condition_text(condition)
+
+            lines.append(f"{indent}if ({guard})")
+            lines.append(f"{indent}{{")
+            _emit_collapsed_chain_payload(
+                remaining_chain,
+                indent=f"{indent}    ",
+            )
+            lines.append(f"{indent}}}")
+            return True
+
+        def _render_local_destination(
+            segment_id: str,
+        ) -> tuple[str, str, tuple[str, ...]]:
+            outcome_kind, target_label, collapsed_chain = resolve_target(segment_id)
+            comment = _collapse_comment(collapsed_chain)
+            if outcome_kind in {"segment", "semantic"} and target_label is not None:
+                return (f"goto {target_label};", comment, collapsed_chain)
+            return ("// local dead-end", comment, collapsed_chain)
+
+        owned_block_set = set(node.owned_blocks)
+
+        def _semantic_edge_tail_blocks(
+            edge: StateDagEdge,
+            *,
+            current_segment: StateLocalSegment,
+        ) -> tuple[int, ...]:
+            if not edge.ordered_path:
+                return ()
+            tail_blocks: list[int] = []
+            saw_source = False
+            seen_blocks: set[int] = set(current_segment.blocks)
+            for block_serial in edge.ordered_path:
+                if not saw_source:
+                    if block_serial == edge.source_anchor.block_serial:
+                        saw_source = True
+                    continue
+                if block_serial in seen_blocks:
+                    continue
+                if block_serial not in owned_block_set:
+                    continue
+                seen_blocks.add(block_serial)
+                tail_blocks.append(block_serial)
+            return tuple(tail_blocks)
+
+        def _emit_semantic_edge_tail_payload(
+            edge: StateDagEdge,
+            *,
+            current_segment: StateLocalSegment,
+            indent: str,
+        ) -> bool:
+            tail_blocks = _semantic_edge_tail_blocks(edge, current_segment=current_segment)
+            if not tail_blocks:
+                return False
+            before = len(lines)
+            _emit_block_payload_lines(
+                lines,
+                blocks=tail_blocks,
+                indent=indent,
+                block_payload_by_serial=block_payload_by_serial,
+                transition_state_values=_edge_target_states((edge,)),
+            )
+            return len(lines) > before
+
+        def segment_is_trivial_leaf(segment_id: str) -> bool:
+            if semantic_edges_by_segment.get(segment_id):
+                return False
+            if local_edges_by_source.get(segment_id):
+                return False
+            segment = segment_by_id[segment_id]
+            return segment.kind in (
+                LocalSegmentKind.SHARED_SUFFIX,
+                LocalSegmentKind.TERMINAL_SUFFIX,
+            )
+
+        visible_segments = [
+            segment_id
+            for segment_id in _local_segment_render_order(node)
+            if (
+                segment_id != entry_segment_id
+                and segment_is_meaningful(segment_id)
+                and not segment_is_trivial_leaf(segment_id)
+            )
+        ]
+        inlined_segments: set[str] = set()
+        visible_parent_cache: dict[str, frozenset[str]] = {}
+
+        def visible_parent_boundaries(
+            segment_id: str,
+            stack: tuple[str, ...] = (),
+        ) -> frozenset[str]:
+            if segment_id in visible_parent_cache and not stack:
+                return visible_parent_cache[segment_id]
+            if segment_id in stack:
+                return frozenset({segment_id})
+
+            visible_parents: set[str] = set()
+            for edge in local_incoming_by_target.get(segment_id, ()):
+                source_segment_id = edge.source_segment_id
+                if (
+                    source_segment_id == entry_segment_id
+                    or segment_is_meaningful(source_segment_id)
+                ):
+                    visible_parents.add(source_segment_id)
+                    continue
+                visible_parents.update(
+                    visible_parent_boundaries(
+                        source_segment_id,
+                        stack + (segment_id,),
+                    )
+                )
+
+            result = frozenset(visible_parents)
+            if not stack:
+                visible_parent_cache[segment_id] = result
+            return result
+
+        def can_inline_boundary_target(segment_id: str) -> bool:
+            if boundary_inline_mode != BoundaryInlineMode.INLINE_SINGLE_LEVEL:
+                return False
+            if segment_id == entry_segment_id or segment_id in inlined_segments:
+                return False
+            if segment_id not in visible_segments:
+                return False
+            if len(visible_parent_boundaries(segment_id)) > 1:
+                return False
+            return True
+
+        def maybe_inline_boundary(
+            target_segment_id: str,
+            *,
+            indent: str,
+            collapsed_comment: str,
+            allow_inline: bool,
+        ) -> bool:
+            if not allow_inline:
+                return False
+            outcome_kind, target_label, _collapsed_chain = resolve_target(target_segment_id)
+            resolved_segment_id = (
+                segment_id_by_label.get(target_label)
+                if outcome_kind == "segment" and target_label is not None
+                else None
+            )
+            if resolved_segment_id is None or not can_inline_boundary_target(
+                resolved_segment_id
+            ):
+                return False
+            inlined_segments.add(resolved_segment_id)
+            emitted_payload = _emit_structured_collapsed_chain_to_boundary(
+                _collapsed_chain,
+                final_segment_id=resolved_segment_id,
+                indent=indent,
+            )
+            if not emitted_payload:
+                emitted_payload = _emit_collapsed_chain_payload(
+                    _collapsed_chain,
+                    indent=indent,
+                )
+            if collapsed_comment and not emitted_payload:
+                lines.append(f"{indent}{collapsed_comment}")
+            render_boundary_body(
+                resolved_segment_id,
+                indent=indent,
+                allow_inline=False,
+            )
+            return True
+
+        def render_boundary_body(
+            segment_id: str,
+            *,
+            indent: str,
+            allow_inline: bool,
+        ) -> None:
+            nonlocal emitted_exit_routine
+            segment = segment_by_id[segment_id]
+            blocks = ", ".join(f"blk[{blk}]" for blk in segment.blocks)
+            if comment_mode == ProgramCommentMode.DEBUG_METADATA:
+                lines.append(
+                    f"{indent}// {segment.kind.name.lower()} segment: {segment.segment_id}"
+                    + (f" ({blocks})" if blocks else "")
+                )
+
+            semantic_edges = sorted(
+                semantic_edges_by_segment.get(segment_id, ()),
+                key=lambda edge: (
+                    edge.source_anchor.block_serial,
+                    edge.source_anchor.kind.value,
+                    edge.source_anchor.branch_arm
+                    if edge.source_anchor.branch_arm is not None
+                    else -1,
+                    edge.kind.value,
+                ),
+            )
+            local_edges = sorted(
+                local_edges_by_source.get(segment_id, ()),
+                key=lambda edge: (
+                    edge.branch_arm if edge.branch_arm is not None else -1,
+                    edge.kind.value,
+                    edge.target_segment_id,
+                ),
+            )
+            _emit_block_payload_lines(
+                lines,
+                blocks=segment.blocks,
+                indent=indent,
+                block_payload_by_serial=block_payload_by_serial,
+                transition_state_values=_edge_target_states(semantic_edges),
+            )
+            segment_condition = _extract_terminal_if_condition(segment_id)
+
+            semantic_branch_by_arm: dict[int, StateDagEdge] = {}
+            semantic_passthrough: list[StateDagEdge] = []
+            for edge in semantic_edges:
+                if (
+                    edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+                    and edge.source_anchor.branch_arm is not None
+                ):
+                    semantic_branch_by_arm[edge.source_anchor.branch_arm] = edge
+                else:
+                    semantic_passthrough.append(edge)
+
+            local_branch_by_arm: dict[int, StateLocalEdge] = {}
+            local_passthrough: list[StateLocalEdge] = []
+            for edge in local_edges:
+                if edge.branch_arm is not None:
+                    local_branch_by_arm[edge.branch_arm] = edge
+                else:
+                    local_passthrough.append(edge)
+
+            taken_semantic = semantic_branch_by_arm.get(1)
+            fallthrough_semantic = semantic_branch_by_arm.get(0)
+            taken_local = local_branch_by_arm.get(1)
+            fallthrough_local = local_branch_by_arm.get(0)
+
+            if semantic_passthrough:
+                local_passthrough = []
+            elif (
+                taken_semantic is not None
+                or fallthrough_semantic is not None
+                or taken_local is not None
+                or fallthrough_local is not None
+            ):
+                local_passthrough = [
+                    edge
+                    for edge in local_passthrough
+                    if edge.kind not in (LocalEdgeKind.SHARED_SUFFIX, LocalEdgeKind.TERMINAL)
+                ]
+
+            if taken_semantic is not None or fallthrough_semantic is not None:
+                if taken_semantic is not None:
+                    if taken_semantic.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                        emitted_exit_routine = True
+                    lines.append(
+                        f"{indent}if ({segment_condition or f'/* blk[{taken_semantic.source_anchor.block_serial}].taken */'})"
+                    )
+                    _emit_semantic_edge_tail_payload(
+                        taken_semantic,
+                        current_segment=segment,
+                        indent=f"{indent}    ",
+                    )
+                    lines.append(
+                        f"{indent}    "
+                        f"{_render_segment_edge_action(taken_semantic, node_by_key=node_by_key, label_by_key=label_by_key, labels_by_base=labels_by_base, labels_by_base_and_entry=labels_by_base_and_entry, label_render_mode=label_render_mode)}"
+                    )
+                elif taken_local is not None:
+                    action, comment, _collapsed_chain = _render_local_destination(
+                        taken_local.target_segment_id
+                    )
+                    lines.append(
+                        f"{indent}if ({segment_condition or f'/* {segment.segment_id}.taken */'})"
+                    )
+                    if not maybe_inline_boundary(
+                        taken_local.target_segment_id,
+                        indent=f"{indent}    ",
+                        collapsed_comment=comment,
+                        allow_inline=allow_inline,
+                    ):
+                        emitted_payload = _emit_collapsed_chain_payload(
+                            _collapsed_chain,
+                            indent=f"{indent}    ",
+                        )
+                        lines.append(
+                            f"{indent}    {action}{'' if emitted_payload else comment}"
+                        )
+
+                if fallthrough_semantic is not None:
+                    if fallthrough_semantic.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                        emitted_exit_routine = True
+                    _emit_semantic_edge_tail_payload(
+                        fallthrough_semantic,
+                        current_segment=segment,
+                        indent=indent,
+                    )
+                    lines.append(
+                        f"{indent}"
+                        + with_optional_comment(
+                            _render_segment_edge_action(
+                                fallthrough_semantic,
+                                node_by_key=node_by_key,
+                                label_by_key=label_by_key,
+                                labels_by_base=labels_by_base,
+                                labels_by_base_and_entry=labels_by_base_and_entry,
+                                label_render_mode=label_render_mode,
+                            ),
+                            debug_suffix(
+                                f"// blk[{fallthrough_semantic.source_anchor.block_serial}].fallthrough"
+                            ),
+                        )
+                    )
+                elif fallthrough_local is not None:
+                    action, comment, _collapsed_chain = _render_local_destination(
+                        fallthrough_local.target_segment_id
+                    )
+                    inline_comment = comment or debug_suffix(
+                        f"// {segment.segment_id}.fallthrough"
+                    )
+                    if not maybe_inline_boundary(
+                        fallthrough_local.target_segment_id,
+                        indent=indent,
+                        collapsed_comment=inline_comment,
+                        allow_inline=allow_inline,
+                    ):
+                        emitted_payload = _emit_collapsed_chain_payload(
+                            _collapsed_chain,
+                            indent=indent,
+                        )
+                        lines.append(
+                            f"{indent}{action}{'' if emitted_payload else (comment or debug_suffix(f'  // {segment.segment_id}.fallthrough'))}"
+                        )
+            elif taken_local is not None and fallthrough_local is not None:
+                taken_action, taken_comment, taken_chain = _render_local_destination(
+                    taken_local.target_segment_id
+                )
+                fallthrough_action, fallthrough_comment, fallthrough_chain = _render_local_destination(
+                    fallthrough_local.target_segment_id
+                )
+                lines.append(
+                    f"{indent}if ({segment_condition or f'/* {segment.segment_id}.taken */'})"
+                )
+                if not maybe_inline_boundary(
+                    taken_local.target_segment_id,
+                    indent=f"{indent}    ",
+                    collapsed_comment=taken_comment,
+                    allow_inline=allow_inline,
+                ):
+                    taken_emitted_payload = _emit_collapsed_chain_payload(
+                        taken_chain,
+                        indent=f"{indent}    ",
+                    )
+                    lines.append(
+                        f"{indent}    {taken_action}{'' if taken_emitted_payload else taken_comment}"
+                    )
+                if not maybe_inline_boundary(
+                    fallthrough_local.target_segment_id,
+                    indent=indent,
+                    collapsed_comment=fallthrough_comment
+                    or debug_suffix(f"// {segment.segment_id}.fallthrough"),
+                    allow_inline=allow_inline,
+                ):
+                    fallthrough_emitted_payload = _emit_collapsed_chain_payload(
+                        fallthrough_chain,
+                        indent=indent,
+                    )
+                    lines.append(
+                        f"{indent}{fallthrough_action}{'' if fallthrough_emitted_payload else (fallthrough_comment or debug_suffix(f'  // {segment.segment_id}.fallthrough'))}"
+                    )
+
+            for edge in semantic_passthrough:
+                if edge.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                    emitted_exit_routine = True
+                _emit_semantic_edge_tail_payload(
+                    edge,
+                    current_segment=segment,
+                    indent=indent,
+                )
+                lines.append(
+                    f"{indent}"
+                    + with_optional_comment(
+                        _render_segment_edge_action(
+                            edge,
+                            node_by_key=node_by_key,
+                            label_by_key=label_by_key,
+                            labels_by_base=labels_by_base,
+                            labels_by_base_and_entry=labels_by_base_and_entry,
+                            label_render_mode=label_render_mode,
+                        ),
+                        debug_suffix(
+                            f"// {_format_anchor(edge.source_anchor)} {edge.kind.name.lower()}"
+                        ),
+                    )
+                )
+
+            for edge in local_passthrough:
+                action, comment, _collapsed_chain = _render_local_destination(
+                    edge.target_segment_id
+                )
+                if maybe_inline_boundary(
+                    edge.target_segment_id,
+                    indent=indent,
+                    collapsed_comment=comment
+                    or debug_suffix(
+                        f"// {edge.source_segment_id} {edge.kind.name.lower()}"
+                    ),
+                    allow_inline=allow_inline,
+                ):
+                    continue
+                emitted_payload = _emit_collapsed_chain_payload(
+                    _collapsed_chain,
+                    indent=indent,
+                )
+                lines.append(
+                    f"{indent}{action}{'' if emitted_payload else (comment or debug_suffix(f'  // {edge.source_segment_id} {edge.kind.name.lower()}'))}"
+                )
+
+            if not (
+                taken_semantic
+                or fallthrough_semantic
+                or taken_local
+                or fallthrough_local
+                or semantic_passthrough
+                or local_passthrough
+            ):
+                emit_debug_comment(indent, "// no local or semantic exits")
+
+        if entry_segment_id is None:
+            emit_debug_comment("    ", "// no entry local segment")
+            lines.append("")
+            continue
+
+        if segment_is_meaningful(entry_segment_id):
+            render_boundary_body(
+                entry_segment_id,
+                indent="    ",
+                allow_inline=True,
+            )
+        else:
+            outcome_kind, target_label, collapsed_chain = resolve_target(entry_segment_id)
+            entry_comment = _collapse_comment(collapsed_chain)
+            target_segment_id = (
+                segment_id_by_label.get(target_label)
+                if outcome_kind == "segment" and target_label is not None
+                else None
+            )
+            emitted_payload = False
+            if (
+                target_segment_id is not None
+                and can_inline_boundary_target(target_segment_id)
+            ):
+                inlined_segments.add(target_segment_id)
+                emitted_payload = _emit_structured_collapsed_chain_to_boundary(
+                    collapsed_chain,
+                    final_segment_id=target_segment_id,
+                    indent="    ",
+                )
+                if not emitted_payload:
+                    emitted_payload = _emit_collapsed_chain_payload(
+                        collapsed_chain,
+                        indent="    ",
+                    )
+                if entry_comment and not emitted_payload:
+                    emit_debug_comment("    ", entry_comment)
+                render_boundary_body(
+                    target_segment_id,
+                    indent="    ",
+                    allow_inline=False,
+                )
+            elif outcome_kind in {"segment", "semantic"} and target_label is not None:
+                emitted_payload = _emit_collapsed_chain_payload(
+                    collapsed_chain,
+                    indent="    ",
+                )
+                lines.append(f"    goto {target_label};{'' if emitted_payload else entry_comment}")
+            else:
+                emitted_payload = _emit_collapsed_chain_payload(
+                    collapsed_chain,
+                    indent="    ",
+                )
+                if not emitted_payload or comment_mode == ProgramCommentMode.DEBUG_METADATA:
+                    lines.append(f"    // local dead-end{'' if emitted_payload else entry_comment}")
+        lines.append("")
+
+        for segment_id in visible_segments:
+            if segment_id in inlined_segments:
+                continue
+            lines.append(f"{segment_labels[segment_id]}:")
+            render_boundary_body(
+                segment_id,
+                indent="    ",
+                allow_inline=False,
+            )
+            lines.append("")
+
+    if emitted_exit_routine:
+        lines.append("EXIT_ROUTINE:")
+        lines.append("    return result;")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _render_collapsed_linearized_state_program(
+    dag: LinearizedStateDag,
+    *,
+    order_strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
+    label_render_mode: LabelRenderMode = LabelRenderMode.STATE_FAMILY,
+    block_payload_by_serial: Mapping[int, tuple[str, ...]] | None = None,
+) -> str:
+    """Render the state DAG as a label-preserving linearized program.
+
+    This intentionally preserves explicit state-family labels and semantic
+    redirects instead of asking Hex-Rays to rediscover a structured CFG from
+    later graph rewrites.
+    """
+    lines: list[str] = []
+    node_by_key = {node.key: node for node in dag.nodes}
+    label_by_key, labels_by_base, labels_by_base_and_entry = _build_program_labels(
+        dag,
+        label_render_mode=label_render_mode,
+    )
+    edges_by_source: dict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
+    for edge in dag.edges:
+        edges_by_source[edge.source_key].append(edge)
+
+    def _edge_target_states(edges: tuple[StateDagEdge, ...] | list[StateDagEdge]) -> set[int]:
+        return {
+            edge.target_state & 0xFFFFFFFF
+            for edge in edges
+            if edge.target_state is not None
+        }
+
+    ordered_keys = _unique_render_keys(_render_order(dag, strategy=order_strategy))
+    lines.append(
+        "=== LINEARIZED STATE PROGRAM ==="
+        if dag.initial_state is None
+        else f"=== LINEARIZED STATE PROGRAM (starting from 0x{dag.initial_state:08X}) ==="
+    )
+    lines.append("")
+
+    emitted_exit_routine = False
+    for node_key in ordered_keys:
+        node = node_by_key[node_key]
+        lines.append(f"{label_by_key[node_key].rendered}:")
+        _emit_program_state_family_comment(
+            lines,
+            node,
+            label_render_mode=label_render_mode,
+            comment_mode=ProgramCommentMode.DEBUG_METADATA,
+        )
+        lines.append(
+            f"    // entry blk[{node.entry_anchor}] [{node.kind.name.lower()}]"
+        )
+        if node.owned_blocks:
+            owned = ", ".join(f"blk[{blk}]" for blk in node.owned_blocks)
+            lines.append(f"    // blocks: {owned}")
+        if node.shared_suffix_blocks:
+            shared = ", ".join(f"blk[{blk}]" for blk in node.shared_suffix_blocks)
+            lines.append(f"    // shared-suffix: {shared}")
+        if node.local_edges:
+            local_cfg = ", ".join(_format_local_edge(edge) for edge in node.local_edges)
+            lines.append(f"    // local-cfg: {local_cfg}")
+        outgoing = sorted(
+            edges_by_source.get(node_key, ()),
+            key=lambda edge: (
+                edge.source_anchor.block_serial,
+                edge.source_anchor.kind.value,
+                (
+                    edge.source_anchor.branch_arm
+                    if edge.source_anchor.branch_arm is not None
+                    else -1
+                ),
+                edge.kind.value,
+                edge.target_state if edge.target_state is not None else 0xFFFFFFFF,
+            ),
+        )
+        _emit_block_payload_lines(
+            lines,
+            blocks=node.owned_blocks,
+            indent="    ",
+            block_payload_by_serial=block_payload_by_serial,
+            transition_state_values=_edge_target_states(outgoing),
+        )
+        if not outgoing:
+            lines.append("    // no outgoing semantic edges")
+            lines.append("")
+            continue
+
+        branch_groups: dict[int, dict[int, StateDagEdge]] = defaultdict(dict)
+        passthrough_edges: list[StateDagEdge] = []
+        for edge in outgoing:
+            anchor = edge.source_anchor
+            if (
+                anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+                and anchor.branch_arm is not None
+            ):
+                branch_groups[anchor.block_serial][anchor.branch_arm] = edge
+            else:
+                passthrough_edges.append(edge)
+
+        for edge in passthrough_edges:
+            if edge.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                emitted_exit_routine = True
+            lines.append(
+                "    "
+                f"{_program_action(edge, node_by_key, label_by_key, labels_by_base, labels_by_base_and_entry, label_render_mode)}  "
+                f"// {_format_anchor(edge.source_anchor)} {edge.kind.name.lower()}"
+            )
+
+        for block_serial in sorted(branch_groups):
+            arms = branch_groups[block_serial]
+            taken_edge = arms.get(1)
+            fallthrough_edge = arms.get(0)
+            if taken_edge is not None and fallthrough_edge is not None:
+                if taken_edge.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                    emitted_exit_routine = True
+                if fallthrough_edge.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                    emitted_exit_routine = True
+                lines.append(f"    if (/* blk[{block_serial}].taken */)")
+                lines.append(
+                    "        "
+                    f"{_program_action(taken_edge, node_by_key, label_by_key, labels_by_base, labels_by_base_and_entry, label_render_mode)}"
+                )
+                lines.append(
+                    "    "
+                    f"{_program_action(fallthrough_edge, node_by_key, label_by_key, labels_by_base, labels_by_base_and_entry, label_render_mode)}  "
+                    f"// blk[{block_serial}].fallthrough"
+                )
+                continue
+
+            for arm, edge in sorted(arms.items()):
+                if edge.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                    emitted_exit_routine = True
+                arm_name = "fallthrough" if arm == 0 else "taken"
+                lines.append(f"    if (/* blk[{block_serial}].{arm_name} */)")
+                lines.append(
+                    "        "
+                    f"{_program_action(edge, node_by_key, label_by_key, labels_by_base, labels_by_base_and_entry, label_render_mode)}"
+                )
+
+        lines.append("")
+
+    if emitted_exit_routine:
+        lines.append("EXIT_ROUTINE:")
+        lines.append("    return result;")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def render_linearized_state_program(
+    dag: LinearizedStateDag,
+    *,
+    order_strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
+    program_strategy: ProgramRenderStrategy = ProgramRenderStrategy.LOCAL_SEGMENT_COLLAPSING,
+    label_render_mode: LabelRenderMode = LabelRenderMode.STATE_FAMILY,
+    boundary_inline_mode: BoundaryInlineMode = BoundaryInlineMode.LABELS_ONLY,
+    comment_mode: ProgramCommentMode = ProgramCommentMode.DEBUG_METADATA,
+    block_payload_by_serial: Mapping[int, tuple[str, ...]] | None = None,
+) -> str:
+    """Render the state DAG as a label-preserving linearized program.
+
+    ``LOCAL_SEGMENT_COLLAPSING`` preserves family labels and semantic exits while
+    collapsing the intra-family local segment graph into comments.
+
+    ``LOCAL_SEGMENT_EXPLICIT`` keeps the same family ordering but emits local
+    segment sublabels and intra-family gotos so corridor structure remains
+    visible for debugging.
+
+    ``LOCAL_BOUNDARY_SELECTIVE`` keeps semantic family order but only emits
+    local sublabels for meaningful local boundary points. Straight-line corridor
+    chains are collapsed back into direct gotos.
+    """
+    if program_strategy == ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE:
+        return _render_selective_local_boundary_program(
+            dag,
+            order_strategy=order_strategy,
+            boundary_inline_mode=boundary_inline_mode,
+            label_render_mode=label_render_mode,
+            comment_mode=comment_mode,
+            block_payload_by_serial=block_payload_by_serial,
+        )
+    if program_strategy == ProgramRenderStrategy.LOCAL_SEGMENT_EXPLICIT:
+        return _render_explicit_local_segment_program(
+            dag,
+            order_strategy=order_strategy,
+            label_render_mode=label_render_mode,
+            block_payload_by_serial=block_payload_by_serial,
+        )
+    return _render_collapsed_linearized_state_program(
+        dag,
+        order_strategy=order_strategy,
+        label_render_mode=label_render_mode,
+        block_payload_by_serial=block_payload_by_serial,
+    )
+
+
 __all__ = [
+    "BoundaryInlineMode",
     "LinearizedStateDag",
+    "LabelRenderMode",
     "LocalEdgeKind",
     "LocalSegmentKind",
+    "ProgramCommentMode",
+    "ProgramLabel",
+    "ProgramRenderStrategy",
+    "RenderOrderStrategy",
     "RedirectSourceKind",
     "SemanticEdgeKind",
     "StateDagEdge",
@@ -4035,6 +6066,7 @@ __all__ = [
     "StateRedirectAnchor",
     "build_live_linearized_state_dag_from_graph",
     "build_linearized_state_dag_from_graph",
+    "render_linearized_state_program",
     "render_linearized_state_dag",
     "render_linearized_state_dag_dot",
 ]
