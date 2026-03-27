@@ -81,6 +81,7 @@ from d810.recon.flow.state_machine_analysis import (
     find_state_write_sites_snapshot,
     run_snapshot_constant_fixpoint,
 )
+from d810.recon.flow.target_entry_resolution import resolve_edge_target_entry
 from d810.recon.flow.transition_builder import (
     TransitionResult,
     _get_state_var_stkoff,
@@ -408,54 +409,23 @@ class StateWriteReconstructionStrategy:
         nodes_by_entry_anchor: dict[int, tuple[StateDagNode, ...]],
         dispatcher_region: set[int],
     ) -> tuple[int | None, str | None]:
-        target_entry = edge.target_entry_anchor
-        if target_entry is None:
-            return None, "missing_target_entry"
-        target_entry = int(target_entry)
-        if target_entry in dispatcher_region:
-            # The handler's entry_anchor is in the dispatcher/BST region.
-            # This often happens when handler_range_map has a catch-all
-            # entry with handler_serial=dispatcher, causing resolve_handler()
-            # to return the dispatcher node.
-            #
-            # Strategy: first try non-BST blocks from the target node,
-            # then fall back to finding another node with the same
-            # target_state but a non-dispatcher handler_serial.
-            target_node = node_by_key.get(edge.target_key)
-            resolved_non_bst: int | None = None
-
-            # Tier 1: check target node's own blocks
-            if target_node is not None:
-                candidate_blocks: list[int] = [int(target_node.entry_anchor)]
-                candidate_blocks.extend(int(b) for b in target_node.exclusive_blocks)
-                candidate_blocks.extend(int(b) for b in target_node.owned_blocks)
-                candidate_blocks.extend(int(b) for b in target_node.shared_suffix_blocks)
-                for candidate in candidate_blocks:
-                    if candidate not in dispatcher_region:
-                        resolved_non_bst = candidate
-                        break
-
-            # Tier 2: look up another node with the same state_const
-            # but a non-dispatcher handler_serial
-            if resolved_non_bst is None and edge.target_state is not None:
-                for key, node in node_by_key.items():
-                    if (
-                        key.state_const == edge.target_state
-                        and int(node.entry_anchor) not in dispatcher_region
-                    ):
-                        resolved_non_bst = int(node.entry_anchor)
-                        break
-
-            if resolved_non_bst is not None:
-                target_entry = resolved_non_bst
-                logger.info(
-                    "RECON DAG: dispatcher_target_entry resolved non-BST "
-                    "entry blk[%d] (original blk[%d] in dispatcher region)",
-                    target_entry,
-                    int(edge.target_entry_anchor),
-                )
-            else:
-                return None, "dispatcher_target_entry"
+        resolution = resolve_edge_target_entry(
+            edge,
+            node_by_key=node_by_key,
+            dispatcher_region=dispatcher_region,
+        )
+        if (
+            resolution.target_entry is not None
+            and resolution.original_dispatcher_entry is not None
+        ):
+            logger.info(
+                "RECON DAG: dispatcher_target_entry resolved non-BST "
+                "entry blk[%d] (original blk[%d] in dispatcher region)",
+                resolution.target_entry,
+                resolution.original_dispatcher_entry,
+            )
+        if resolution.target_entry is None:
+            return None, resolution.rejection_reason
 
         # DISABLED: relay collapsing causes handler orphaning — wire to immediate target.
         # The relay-following loop below would chase chains A->B->C and collapse
@@ -498,8 +468,7 @@ class StateWriteReconstructionStrategy:
         #         node_by_key=node_by_key,
         #         nodes_by_entry_anchor=nodes_by_entry_anchor,
         #     )
-
-        return target_entry, None
+        return resolution.target_entry, None
 
     @staticmethod
     def _resolve_old_target(
