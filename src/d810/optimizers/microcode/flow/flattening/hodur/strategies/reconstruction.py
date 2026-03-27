@@ -2928,6 +2928,7 @@ class StateWriteReconstructionStrategy:
         owned_edges: set[tuple[int, int]],
         accepted_metadata: list[dict[str, int | str | None]],
         rejected_metadata: list[dict[str, int | str | None]],
+        force_clone: bool = False,
     ) -> int:
         shared_snapshot = flow_graph.get_block(shared_block)
         if shared_snapshot is None:
@@ -3074,28 +3075,71 @@ class StateWriteReconstructionStrategy:
             )
             return 0
 
-        modifications.append(
-            builder.duplicate_and_redirect(
-                source_block=shared_block,
-                per_pred_targets=per_pred_targets,
+        # Try per-pred edge redirect to avoid clone blocks that can create
+        # irreducible graphs.  The caller verifies projected reachability
+        # and falls back to DuplicateAndRedirect if handlers go unreachable.
+        can_redirect_per_pred = True
+        pred_redirects: list[tuple[int, int, str]] = []
+        for pred, target in per_pred_targets:
+            pred_snap = flow_graph.get_block(pred)
+            if pred_snap is None:
+                can_redirect_per_pred = False
+                break
+            if pred_snap.nsucc == 1:
+                pred_redirects.append((pred, target, "goto"))
+            elif pred_snap.nsucc == 2 and shared_block in tuple(pred_snap.succs):
+                pred_redirects.append((pred, target, "branch"))
+            else:
+                can_redirect_per_pred = False
+                break
+
+        if can_redirect_per_pred and not force_clone:
+            for pred, target, kind in pred_redirects:
+                if kind == "goto":
+                    modifications.append(
+                        builder.goto_redirect(source_block=pred, target_block=target)
+                    )
+                else:
+                    modifications.append(
+                        builder.edge_redirect(
+                            source_block=pred, target_block=target, old_target=shared_block,
+                        )
+                    )
+            modifications.append(
+                builder.goto_redirect(
+                    source_block=shared_block,
+                    target_block=per_pred_targets[0][1],
+                    old_target=old_target,
+                )
             )
-        )
+            emission_mode = "per_pred_redirect"
+            logger.info(
+                "RECON DAG: per-pred-redirect %s preds=%s (clone avoided)",
+                blk_label(mba, shared_block),
+                [(blk_label(mba, p), blk_label(mba, t)) for p, t, _ in pred_redirects],
+            )
+        else:
+            modifications.append(
+                builder.duplicate_and_redirect(
+                    source_block=shared_block,
+                    per_pred_targets=per_pred_targets,
+                )
+            )
+            emission_mode = "duplicate_and_redirect"
+            logger.info(
+                "RECON DAG: duplicate-and-redirect %s preds=%s",
+                blk_label(mba, shared_block),
+                [(blk_label(mba, p), blk_label(mba, t)) for p, t in per_pred_targets],
+            )
+
         owned_blocks.add(int(shared_block))
         for _, target_entry in per_pred_targets:
             owned_edges.add((int(shared_block), int(target_entry)))
         for candidate in ordered_candidates:
             cls._record_accept(
                 accepted_metadata,
-                replace(candidate, emission_mode="duplicate_and_redirect"),
+                replace(candidate, emission_mode=emission_mode),
             )
-        logger.info(
-            "RECON DAG: duplicate-and-redirect %s preds=%s",
-            blk_label(mba, shared_block),
-            [
-                (blk_label(mba, pred), blk_label(mba, target))
-                for pred, target in per_pred_targets
-            ],
-        )
         return len(ordered_candidates)
 
     def is_applicable(self, snapshot) -> bool:
@@ -4456,6 +4500,85 @@ class StateWriteReconstructionStrategy:
                 "Diagnostic DAG/modifications snapshot failed (non-critical)",
                 exc_info=True,
             )
+
+        # Projected reachability check: verify that per-pred redirect didn't
+        # make handler entries unreachable.  If any are unreachable, rebuild
+        # ALL shared groups with force_clone=True (DuplicateAndRedirect).
+        has_per_pred = any(
+            site.get("emission_mode") == "per_pred_redirect"
+            for site in accepted_metadata
+        )
+        if has_per_pred and modifications and shared_groups:
+            try:
+                check_plan = compile_patch_plan(modifications, flow_graph)
+                check_cfg = project_post_state(flow_graph, check_plan)
+                check_reachable = self._compute_reachable_blocks(
+                    check_cfg,
+                    start_serial=getattr(check_cfg, "entry_serial", None),
+                )
+                handler_entries = {int(n.entry_anchor) for n in dag.nodes}
+                unreachable_handlers = handler_entries - check_reachable
+                if unreachable_handlers:
+                    logger.info(
+                        "RECON: per-pred redirect made %d handler entries unreachable: %s "
+                        "— falling back to DuplicateAndRedirect for all shared groups",
+                        len(unreachable_handlers),
+                        sorted(unreachable_handlers)[:10],
+                    )
+                    # Remove only the per-pred redirect mods (identified by
+                    # emission_mode in accepted_metadata) and re-emit those
+                    # shared groups with force_clone.  Keep all other mods
+                    # (direct, conditional, bridge, feeder) intact.
+                    from d810.cfg.graph_modification import (
+                        RedirectGoto,
+                        RedirectBranch,
+                    )
+                    # Collect the shared block serials that used per-pred
+                    per_pred_shared = {
+                        int(site.get("first_shared_block", -1))
+                        for site in accepted_metadata
+                        if site.get("emission_mode") == "per_pred_redirect"
+                    }
+                    per_pred_shared.discard(-1)
+                    # Collect the pred serials involved in per-pred redirects
+                    per_pred_preds: set[int] = set()
+                    for sb in per_pred_shared:
+                        if sb in shared_groups:
+                            for cand in shared_groups[sb]:
+                                if cand.via_pred is not None:
+                                    per_pred_preds.add(int(cand.via_pred))
+                    # Strip: remove mods where from_serial is a per-pred pred
+                    # or the shared block itself
+                    strip_serials = per_pred_shared | per_pred_preds
+                    modifications[:] = [
+                        m for m in modifications
+                        if not (
+                            isinstance(m, (RedirectGoto, RedirectBranch))
+                            and getattr(m, "from_serial", None) in strip_serials
+                        )
+                    ]
+                    # Remove per-pred entries from accepted_metadata
+                    accepted_metadata[:] = [
+                        s for s in accepted_metadata
+                        if s.get("emission_mode") != "per_pred_redirect"
+                    ]
+                    # Re-emit with force_clone
+                    for sb in sorted(per_pred_shared):
+                        if sb in shared_groups:
+                            self._emit_shared_group(
+                                sb, shared_groups[sb],
+                                flow_graph=flow_graph, mba=mba, builder=builder,
+                                modifications=modifications,
+                                owned_blocks=owned_blocks, owned_edges=owned_edges,
+                                accepted_metadata=accepted_metadata,
+                                rejected_metadata=rejected_metadata,
+                                force_clone=True,
+                            )
+            except Exception:
+                logger.debug(
+                    "Projected reachability check failed (non-critical)",
+                    exc_info=True,
+                )
 
         # Split fragment when block-creating ops and PTS share a batch.
         # Block-creating ops (duplicate_and_redirect) shift serials, making
