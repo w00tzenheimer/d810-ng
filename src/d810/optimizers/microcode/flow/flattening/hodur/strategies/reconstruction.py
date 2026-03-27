@@ -63,7 +63,9 @@ from d810.recon.flow.graph_reachability import (
     pick_deepest_rescue_frontier,
 )
 from d810.recon.flow.dag_index import (
+    build_dag_node_maps,
     incoming_edges_by_target_entry,
+    resolve_target_node,
     semantic_entry_anchors,
 )
 from d810.recon.flow.state_machine_analysis import (
@@ -337,17 +339,11 @@ class StateWriteReconstructionStrategy:
         dict[StateDagNodeKey, tuple[StateDagEdge, ...]],
         dict[int, tuple[StateDagNode, ...]],
     ]:
-        node_by_key = {node.key: node for node in dag.nodes}
-        outgoing_by_key: defaultdict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
-        nodes_by_entry_anchor: defaultdict[int, list[StateDagNode]] = defaultdict(list)
-        for node in dag.nodes:
-            nodes_by_entry_anchor[int(node.entry_anchor)].append(node)
-        for dag_edge in dag.edges:
-            outgoing_by_key[dag_edge.source_key].append(dag_edge)
+        maps = build_dag_node_maps(dag)
         return (
-            node_by_key,
-            {key: tuple(edges) for key, edges in outgoing_by_key.items()},
-            {anchor: tuple(nodes) for anchor, nodes in nodes_by_entry_anchor.items()},
+            maps.node_by_key,
+            maps.outgoing_by_key,
+            maps.nodes_by_entry_anchor,
         )
 
     @staticmethod
@@ -357,14 +353,11 @@ class StateWriteReconstructionStrategy:
         node_by_key: dict[StateDagNodeKey, StateDagNode],
         nodes_by_entry_anchor: dict[int, tuple[StateDagNode, ...]],
     ) -> StateDagNode | None:
-        if edge.target_key is not None:
-            return node_by_key.get(edge.target_key)
-        if edge.target_entry_anchor is None:
-            return None
-        candidates = nodes_by_entry_anchor.get(int(edge.target_entry_anchor), ())
-        if len(candidates) != 1:
-            return None
-        return candidates[0]
+        return resolve_target_node(
+            edge,
+            node_by_key=node_by_key,
+            nodes_by_entry_anchor=nodes_by_entry_anchor,
+        )
 
     @classmethod
     def _select_single_relay_edge(

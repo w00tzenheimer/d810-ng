@@ -41,6 +41,7 @@ from d810.recon.flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
     compute_reachable_blocks,
 )
+from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
@@ -2765,8 +2766,7 @@ class LinearizedFlowGraphStrategy:
             if target_entry is not None and target_entry not in bst_node_blocks
             else None
         )
-        node_by_key = {node.key: node for node in dag.nodes}
-        target_node = node_by_key.get(edge.target_key) if edge.target_key is not None else None
+        target_node = build_dag_node_maps(dag).node_by_key.get(edge.target_key) if edge.target_key is not None else None
         labeled_entry = None
         if edge.target_label:
             labeled_matches = [
@@ -4996,8 +4996,7 @@ class LinearizedFlowGraphStrategy:
         mba: object,
         dispatcher: object | None = None,
     ) -> bool:
-        node_by_key = {node.key: node for node in dag.nodes}
-        target_node = node_by_key.get(edge.target_key) if edge.target_key is not None else None
+        target_node = build_dag_node_maps(dag).node_by_key.get(edge.target_key) if edge.target_key is not None else None
         target_entry = cls._resolve_effective_target_entry(
             dag,
             edge,
