@@ -207,6 +207,50 @@ def plan_conditional_arm_emission(
     )
 
 
+def plan_passthrough_redirects(
+    *,
+    flow_graph,
+    ordered_path: tuple[int, ...],
+    horizon_block: int,
+    dispatcher_serial: int,
+    current_state_entry: int | None,
+) -> tuple[RedirectSpec, ...]:
+    if current_state_entry is None:
+        return ()
+
+    redirects: list[RedirectSpec] = []
+    for serial in ordered_path:
+        if int(serial) == int(horizon_block):
+            continue
+
+        block = flow_graph.get_block(int(serial))
+        if block is None:
+            continue
+
+        if block.nsucc == 1:
+            if int(block.succs[0]) == int(dispatcher_serial):
+                redirects.append(
+                    RedirectSpec(
+                        source_block=int(serial),
+                        target_block=int(current_state_entry),
+                        old_target=int(dispatcher_serial),
+                    )
+                )
+        elif block.nsucc == 2:
+            for arm in (0, 1):
+                if int(block.succs[arm]) == int(dispatcher_serial):
+                    if arm == 1:
+                        redirects.append(
+                            RedirectSpec(
+                                source_block=int(serial),
+                                target_block=int(current_state_entry),
+                                old_target=int(dispatcher_serial),
+                            )
+                        )
+                    break
+    return tuple(redirects)
+
+
 __all__ = [
     "ConditionalArmEmissionPlan",
     "DirectEmissionPlan",
@@ -215,5 +259,6 @@ __all__ = [
     "SharedGroupEmissionPlan",
     "plan_conditional_arm_emission",
     "plan_direct_emission",
+    "plan_passthrough_redirects",
     "plan_shared_group_emission",
 ]

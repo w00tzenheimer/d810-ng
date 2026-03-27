@@ -46,6 +46,7 @@ from d810.cfg.reconstruction_emission import plan_reconstruction_emission
 from d810.cfg.reconstruction_lowering import (
     plan_conditional_arm_emission,
     plan_direct_emission,
+    plan_passthrough_redirects,
     SharedGroupEmissionCandidate,
     plan_shared_group_emission,
 )
@@ -1764,45 +1765,36 @@ class StateWriteReconstructionStrategy:
         state variable.  For 1-way blocks this emits a goto redirect; for 2-way
         blocks with arm=1 pointing to the dispatcher it emits an edge redirect.
         """
-        if current_state_entry is None:
-            return []
-
+        redirects = plan_passthrough_redirects(
+            flow_graph=flow_graph,
+            ordered_path=tuple(int(serial) for serial in candidate.edge.ordered_path),
+            horizon_block=int(candidate.horizon_block),
+            dispatcher_serial=int(dispatcher_serial),
+            current_state_entry=(
+                int(current_state_entry) if current_state_entry is not None else None
+            ),
+        )
         modifications: list = []
-        edge = candidate.edge
-        ordered_path = tuple(int(serial) for serial in edge.ordered_path)
-
-        for serial in ordered_path:
-            if serial == candidate.horizon_block:
-                continue  # horizon handled by main emission
-
-            block = flow_graph.get_block(serial)
+        for redirect in redirects:
+            block = flow_graph.get_block(int(redirect.source_block))
             if block is None:
                 continue
-
             if block.nsucc == 1:
-                if int(block.succs[0]) == dispatcher_serial:
-                    modifications.append(
-                        builder.goto_redirect(
-                            source_block=serial,
-                            target_block=current_state_entry,
-                            old_target=dispatcher_serial,
-                        )
+                modifications.append(
+                    builder.goto_redirect(
+                        source_block=int(redirect.source_block),
+                        target_block=int(redirect.target_block),
+                        old_target=int(redirect.old_target),
                     )
+                )
             elif block.nsucc == 2:
-                for arm in (0, 1):
-                    if int(block.succs[arm]) == dispatcher_serial:
-                        # RedirectBranch only handles arm=1
-                        if arm == 1:
-                            modifications.append(
-                                builder.edge_redirect(
-                                    source_block=serial,
-                                    target_block=current_state_entry,
-                                    old_target=dispatcher_serial,
-                                )
-                            )
-                        # arm=0: left as residual (fallthrough limitation)
-                        break
-
+                modifications.append(
+                    builder.edge_redirect(
+                        source_block=int(redirect.source_block),
+                        target_block=int(redirect.target_block),
+                        old_target=int(redirect.old_target),
+                    )
+                )
         return modifications
 
     @classmethod
