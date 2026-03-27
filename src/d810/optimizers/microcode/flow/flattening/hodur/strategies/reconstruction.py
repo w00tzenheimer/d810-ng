@@ -92,6 +92,7 @@ from d810.recon.flow.terminal_family import (
     TerminalFamilyCandidate,
     TerminalFamilySeed,
     TerminalFamilySeedProbe,
+    build_terminal_family_candidates,
     candidate_shared_suffix_entries,
     collect_linear_terminal_path,
     find_last_terminal_write,
@@ -103,6 +104,7 @@ from d810.recon.flow.terminal_family import (
     resolve_terminal_edge_entry,
     resolve_terminal_source_arm_entry,
     resolve_terminal_value_chain,
+    seed_terminal_family_probes,
     terminal_candidate_key,
     terminal_locator_key,
     terminal_source_signature,
@@ -1197,78 +1199,15 @@ class StateWriteReconstructionStrategy:
         reachable_blocks: set[int],
         mba,
     ) -> tuple[TerminalFamilySeedProbe, ...]:
-        seeds_by_key: dict[tuple[int, int | None], TerminalFamilySeed] = {}
-        seed_origins: defaultdict[tuple[int, int | None], set[str]] = defaultdict(set)
-
-        for edge in dag.edges:
-            if edge.kind != SemanticEdgeKind.CONDITIONAL_RETURN:
-                continue
-            source_block = int(edge.source_anchor.block_serial)
-            branch_arm = (
-                int(edge.source_anchor.branch_arm)
-                if edge.source_anchor.branch_arm is not None
-                else None
-            )
-            seed_key = (source_block, branch_arm)
-            existing_seed = seeds_by_key.get(seed_key)
-            if existing_seed is None or existing_seed.edge is None:
-                seeds_by_key[seed_key] = TerminalFamilySeed(
-                    source_block=source_block,
-                    branch_arm=branch_arm,
-                    edge=edge,
-                )
-            seed_origins[seed_key].add("dag_edge")
-
-        for source_block in sorted(int(serial) for serial in projected_flow_graph.blocks):
-            if source_block in dispatcher_region:
-                continue
-            source_snapshot = projected_flow_graph.get_block(source_block)
-            if source_snapshot is None or source_snapshot.nsucc < 2:
-                continue
-            for branch_arm in range(int(source_snapshot.nsucc)):
-                seed_key = (int(source_block), int(branch_arm))
-                seeds_by_key.setdefault(
-                    seed_key,
-                    TerminalFamilySeed(
-                        source_block=int(source_block),
-                        branch_arm=int(branch_arm),
-                        edge=None,
-                    ),
-                )
-                seed_origins[seed_key].add("projected_cfg")
-
-        probes: list[TerminalFamilySeedProbe] = []
-        for seed in sorted(
-            seeds_by_key.values(),
-            key=lambda seed: (
-                int(seed.source_block),
-                -1 if seed.branch_arm is None else int(seed.branch_arm),
-            ),
-        ):
-            probe = cls._probe_terminal_family_seed(
-                seed,
-                base_flow_graph=base_flow_graph,
-                projected_flow_graph=projected_flow_graph,
-                dispatcher_region=dispatcher_region,
-                reachable_blocks=reachable_blocks,
-            )
-            probe = replace(
-                probe,
-                seed_origins=tuple(
-                    sorted(
-                        seed_origins[
-                            (
-                                int(seed.source_block),
-                                (
-                                    int(seed.branch_arm)
-                                    if seed.branch_arm is not None
-                                    else None
-                                ),
-                            )
-                        ]
-                    )
-                ),
-            )
+        probes = seed_terminal_family_probes(
+            dag,
+            base_flow_graph=base_flow_graph,
+            projected_flow_graph=projected_flow_graph,
+            dispatcher_region=dispatcher_region,
+            reachable_blocks=reachable_blocks,
+        )
+        for probe in probes:
+            seed = probe.seed
             logger.info(
                 "RECON RETURN: terminal-family seed src=%s%s origins=%s "
                 "source_reachable=%s source_nsucc=%s arm_target=%s arm_target_origin=%s "
@@ -1287,7 +1226,7 @@ class StateWriteReconstructionStrategy:
                 blk_label(mba, probe.stop_block) if probe.stop_block is not None else "None",
                 probe.rejection_reason,
                 probe.path,
-            )
+                )
             if probe.rejection_reason == "source_unreachable":
                 cls._log_source_unreachable_diagnostic(
                     int(seed.source_block),
@@ -1296,9 +1235,7 @@ class StateWriteReconstructionStrategy:
                     dispatcher_region=dispatcher_region,
                     mba=mba,
                 )
-            probes.append(probe)
-
-        return tuple(probes)
+        return probes
 
     @classmethod
     def _collect_terminal_family_candidates(
@@ -1312,8 +1249,6 @@ class StateWriteReconstructionStrategy:
         state_var_stkoff: int | None,
         mba,
     ) -> tuple[TerminalFamilyCandidate, ...]:
-        candidates: list[TerminalFamilyCandidate] = []
-        seen_keys: set[tuple[int, int | None, int, tuple[int, ...]]] = set()
         seed_probes = cls._seed_terminal_family_candidates(
             dag,
             base_flow_graph=base_flow_graph,
@@ -1322,68 +1257,13 @@ class StateWriteReconstructionStrategy:
             reachable_blocks=reachable_blocks,
             mba=mba,
         )
-
-        for probe in seed_probes:
-            seed = probe.seed
-            if probe.rejection_reason != "accepted":
-                continue
-            source_block = int(seed.source_block)
-            family_entry = int(probe.family_entry)
-            path = tuple(int(serial) for serial in probe.path)
-            stop_block = int(probe.stop_block)
-
-            chain = cls._resolve_terminal_value_chain(
-                projected_flow_graph,
-                path=path,
+        candidates = list(
+            build_terminal_family_candidates(
+                seed_probes,
+                projected_flow_graph=projected_flow_graph,
                 state_var_stkoff=state_var_stkoff,
             )
-            materializer_block = int(chain[-1][0]) if chain else None
-            writer_block = int(chain[0][0]) if chain else None
-            materializer_chain_blocks = tuple(int(block_serial) for block_serial, _idx, _insn in chain)
-            lineage_eas = tuple(int(getattr(insn, "ea", 0)) for _blk, _idx, insn in chain)
-            signature = cls._terminal_value_family_signature(chain)
-
-            candidate_key = (
-                source_block,
-                int(seed.branch_arm) if seed.branch_arm is not None else None,
-                family_entry,
-                path,
-            )
-            if candidate_key in seen_keys:
-                logger.info(
-                    "RECON RETURN: terminal-family inspect src=%s%s family_entry=%s "
-                    "shared_suffix_entry=None writer=%s materializer=%s "
-                    "materializer_chain=%s stop=%s signature=%s rejection=%s "
-                    "path=%s lineage=%s",
-                    blk_label(mba, source_block),
-                    f".arm{seed.branch_arm}" if seed.branch_arm is not None else "",
-                    blk_label(mba, family_entry),
-                    blk_label(mba, writer_block) if writer_block is not None else "None",
-                    blk_label(mba, materializer_block) if materializer_block is not None else "None",
-                    [blk_label(mba, serial) for serial in materializer_chain_blocks],
-                    blk_label(mba, stop_block),
-                    signature,
-                    "duplicate_candidate",
-                    path,
-                    [hex(ea) for ea in lineage_eas],
-                )
-                continue
-            seen_keys.add(candidate_key)
-
-            candidate = TerminalFamilyCandidate(
-                edge=seed.edge,
-                source_block=source_block,
-                branch_arm=int(seed.branch_arm) if seed.branch_arm is not None else None,
-                family_entry=family_entry,
-                path=path,
-                stop_block=stop_block,
-                materializer_block=materializer_block,
-                writer_block=writer_block,
-                materializer_chain_blocks=materializer_chain_blocks,
-                value_family_signature=signature,
-                lineage_eas=lineage_eas,
-            )
-            candidates.append(candidate)
+        )
 
         candidate_suffix_entries = cls._candidate_shared_suffix_entries(tuple(candidates))
         for candidate in candidates:
