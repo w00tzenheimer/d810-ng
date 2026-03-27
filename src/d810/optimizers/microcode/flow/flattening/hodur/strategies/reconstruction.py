@@ -26,7 +26,6 @@ from d810.cfg.graph_modification import (
 from d810.cfg.lowering_selector import (
     SharedFeederContext,
     SharedFeederLoweringKind,
-    can_peel_predecessor_edge,
     select_shared_feeder_lowering,
     target_reaches_source_ignoring_blocks,
 )
