@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from d810.cfg.lowering_selector import (
     PredecessorPeelContext,
+    ResidualBranchAnchorContext,
     SharedFeederCandidateScore,
     SharedFeederContext,
     SharedFeederLoweringKind,
@@ -9,6 +10,7 @@ from d810.cfg.lowering_selector import (
     SharedGroupContext,
     can_peel_predecessor_edge,
     enumerate_shared_feeder_candidates,
+    plan_residual_branch_anchor_handoff,
     plan_shared_group_duplication,
     select_shared_feeder_lowering,
     target_reaches_source_ignoring_blocks,
@@ -317,3 +319,82 @@ class TestPlanSharedGroupDuplication:
         )
         assert not plan.accepted
         assert plan.rejection_reason == "shared_group_requires_multi_clone"
+
+
+class TestPlanResidualBranchAnchorHandoff:
+    def test_accepts_valid_branch_anchor_handoff(self):
+        plan = plan_residual_branch_anchor_handoff(
+            ResidualBranchAnchorContext(
+                is_conditional_branch_source=True,
+                branch_source=12,
+                source_block=14,
+                via_pred=10,
+                prefix_target=16,
+                branch_succs=(8, 14),
+                old_target=14,
+                ordered_path=(12, 14, 15),
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                target_reaches_branch=False,
+            )
+        )
+        assert plan.accepted
+        assert plan.branch_source == 12
+        assert plan.old_target == 14
+
+    def test_rejects_non_branch_anchor(self):
+        plan = plan_residual_branch_anchor_handoff(
+            ResidualBranchAnchorContext(
+                is_conditional_branch_source=False,
+                branch_source=12,
+                source_block=14,
+                via_pred=10,
+                prefix_target=16,
+                branch_succs=(8, 14),
+                old_target=14,
+                ordered_path=(12, 14, 15),
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                target_reaches_branch=False,
+            )
+        )
+        assert not plan.accepted
+        assert plan.rejection_reason == "anchor_not_conditional_branch"
+
+    def test_rejects_collision_with_other_branch_arm(self):
+        plan = plan_residual_branch_anchor_handoff(
+            ResidualBranchAnchorContext(
+                is_conditional_branch_source=True,
+                branch_source=12,
+                source_block=14,
+                via_pred=10,
+                prefix_target=8,
+                branch_succs=(8, 14),
+                old_target=14,
+                ordered_path=(12, 14, 15),
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                target_reaches_branch=False,
+            )
+        )
+        assert not plan.accepted
+        assert plan.rejection_reason == "other_arm_collision"
+
+    def test_rejects_cycle_risk(self):
+        plan = plan_residual_branch_anchor_handoff(
+            ResidualBranchAnchorContext(
+                is_conditional_branch_source=True,
+                branch_source=12,
+                source_block=14,
+                via_pred=10,
+                prefix_target=16,
+                branch_succs=(8, 14),
+                old_target=14,
+                ordered_path=(12, 14, 15),
+                dispatcher_serial=6,
+                bst_node_blocks=frozenset(),
+                target_reaches_branch=True,
+            )
+        )
+        assert not plan.accepted
+        assert plan.rejection_reason == "cycle_risk"

@@ -65,6 +65,33 @@ class SharedGroupDuplicationPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class ResidualBranchAnchorContext:
+    """Structured planning input for residual branch-anchor handoff rewrites."""
+
+    is_conditional_branch_source: bool
+    branch_source: int | None
+    source_block: int
+    via_pred: int
+    prefix_target: int
+    branch_succs: tuple[int, ...]
+    old_target: int | None
+    ordered_path: tuple[int, ...]
+    dispatcher_serial: int
+    bst_node_blocks: frozenset[int]
+    target_reaches_branch: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ResidualBranchAnchorPlan:
+    """Planner result for a residual branch-anchor handoff."""
+
+    accepted: bool
+    branch_source: int | None = None
+    old_target: int | None = None
+    rejection_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class SharedFeederLoweringCandidate:
     """One possible lowering shape for a shared-feeder redirect."""
 
@@ -320,6 +347,60 @@ def plan_shared_group_duplication(
     )
 
 
+def plan_residual_branch_anchor_handoff(
+    context: ResidualBranchAnchorContext,
+) -> ResidualBranchAnchorPlan:
+    """Plan a residual branch-anchor handoff without touching live MBA state."""
+    if (
+        not context.is_conditional_branch_source
+        or context.branch_source is None
+        or context.branch_source in {context.source_block, context.via_pred}
+    ):
+        return ResidualBranchAnchorPlan(
+            accepted=False,
+            rejection_reason="anchor_not_conditional_branch",
+        )
+
+    if len(context.branch_succs) != 2:
+        return ResidualBranchAnchorPlan(
+            accepted=False,
+            rejection_reason="branch_not_two_way",
+        )
+
+    if (
+        context.old_target is None
+        or context.old_target == context.prefix_target
+        or context.old_target not in context.ordered_path
+        or context.prefix_target in {context.dispatcher_serial, context.branch_source}
+        or context.prefix_target in context.bst_node_blocks
+    ):
+        return ResidualBranchAnchorPlan(
+            accepted=False,
+            rejection_reason="invalid_branch_target",
+        )
+
+    other_succs = {
+        int(succ) for succ in context.branch_succs if int(succ) != context.old_target
+    }
+    if context.prefix_target in other_succs:
+        return ResidualBranchAnchorPlan(
+            accepted=False,
+            rejection_reason="other_arm_collision",
+        )
+
+    if context.target_reaches_branch:
+        return ResidualBranchAnchorPlan(
+            accepted=False,
+            rejection_reason="cycle_risk",
+        )
+
+    return ResidualBranchAnchorPlan(
+        accepted=True,
+        branch_source=context.branch_source,
+        old_target=context.old_target,
+    )
+
+
 def _default_candidate_score(
     candidate: SharedFeederLoweringCandidate,
 ) -> SharedFeederCandidateScore:
@@ -413,9 +494,12 @@ __all__ = [
     "SharedGroupCandidate",
     "SharedGroupContext",
     "SharedGroupDuplicationPlan",
+    "ResidualBranchAnchorContext",
+    "ResidualBranchAnchorPlan",
     "can_peel_predecessor_edge",
     "enumerate_shared_feeder_candidates",
     "plan_shared_group_duplication",
+    "plan_residual_branch_anchor_handoff",
     "select_shared_feeder_lowering",
     "target_reaches_source_ignoring_blocks",
 ]
