@@ -8,6 +8,7 @@ import ida_hexrays
 
 from d810.recon.flow.bst_analysis import resolve_via_bst_walk
 from d810.recon.flow.bst_model import resolve_target_via_bst
+from d810.recon.flow.state_machine_analysis import evaluate_handler_paths
 from d810.recon.flow.transition_builder import _get_state_var_stkoff
 
 
@@ -20,6 +21,17 @@ class ExitTransitionCandidate:
     target_entry: int
     exit_state_value: int | None
     discovery_kind: str
+
+
+@dataclass(frozen=True, slots=True)
+class BstDefaultTransitionCandidate:
+    """One discovered redirect candidate from BST-default path evaluation."""
+
+    handler_state: int
+    handler_entry: int
+    from_block: int
+    target_entry: int
+    final_state: int
 
 
 def resolve_state_var_stkoff(
@@ -204,8 +216,64 @@ def collect_exit_transition_candidates(
     return tuple(candidates)
 
 
+def collect_bst_default_transition_candidates(
+    snapshot: object,
+    *,
+    sm: object,
+    bst_result: object,
+    handler_state_map: dict[int, int],
+    bst_node_blocks: set[int],
+) -> tuple[BstDefaultTransitionCandidate, ...]:
+    """Collect raw BST-default transition candidates via handler-path eval."""
+    mba = getattr(snapshot, "mba", None)
+    if mba is None:
+        return ()
+
+    stkoff = resolve_state_var_stkoff(
+        detector=getattr(snapshot, "detector", None),
+        state_var=getattr(sm, "state_var", None),
+    )
+    if stkoff is None:
+        return ()
+
+    handler_entry_blocks: set[int] = set(handler_state_map.values())
+    candidates: list[BstDefaultTransitionCandidate] = []
+    for handler_state, handler_entry in handler_state_map.items():
+        paths = evaluate_handler_paths(
+            mba=mba,
+            entry_serial=handler_entry,
+            incoming_state=handler_state,
+            bst_node_blocks=bst_node_blocks,
+            state_var_stkoff=stkoff,
+            handler_entry_blocks=handler_entry_blocks,
+        )
+
+        for path_result in paths:
+            if path_result.final_state is None:
+                continue
+
+            final_state = path_result.final_state & 0xFFFFFFFF
+            from_block = path_result.exit_block
+            target_entry = resolve_target_via_bst(bst_result, final_state)
+            if target_entry is None or from_block == target_entry:
+                continue
+            candidates.append(
+                BstDefaultTransitionCandidate(
+                    handler_state=handler_state,
+                    handler_entry=handler_entry,
+                    from_block=from_block,
+                    target_entry=int(target_entry),
+                    final_state=final_state,
+                )
+            )
+
+    return tuple(candidates)
+
+
 __all__ = [
+    "BstDefaultTransitionCandidate",
     "ExitTransitionCandidate",
+    "collect_bst_default_transition_candidates",
     "collect_exit_transition_candidates",
     "resolve_state_var_stkoff",
 ]

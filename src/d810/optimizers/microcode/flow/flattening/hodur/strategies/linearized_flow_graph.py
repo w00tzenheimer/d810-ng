@@ -50,6 +50,7 @@ from d810.recon.flow.graph_reachability import (
 )
 from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.exit_transition_discovery import (
+    collect_bst_default_transition_candidates,
     collect_exit_transition_candidates,
 )
 from d810.recon.flow.residual_handoff_discovery import (
@@ -4607,27 +4608,6 @@ class LinearizedFlowGraphStrategy:
         if mba is None:
             return 0
 
-        # Resolve state variable stkoff (same pattern as _resolve_exit_states).
-        stkoff: int | None = None
-        detector = snapshot.detector
-        if detector is not None:
-            try:
-                stkoff = _get_state_var_stkoff(detector)
-            except Exception:
-                pass
-        if stkoff is None and sm.state_var is not None:
-            try:
-                if sm.state_var.t == ida_hexrays.mop_S:
-                    stkoff = sm.state_var.s.off
-            except Exception:
-                pass
-
-        if stkoff is None:
-            logger.info(
-                "LFG BST-default: cannot resolve state_var stkoff, skipping"
-            )
-            return 0
-
         # Compute the set of handler entry serials already targeted by
         # an emitted redirect.  These are the *targets* (second element)
         # of each emitted (from_block, to_block) pair.
@@ -4662,140 +4642,127 @@ class LinearizedFlowGraphStrategy:
             sorted(uncovered_entries),
         )
 
-        # Build the set of handler entry blocks for the DFS boundary guard.
-        handler_entry_blocks: set[int] = set(handler_state_map.values())
+        raw_candidates = collect_bst_default_transition_candidates(
+            snapshot,
+            sm=sm,
+            bst_result=bst_result,
+            handler_state_map=handler_state_map,
+            bst_node_blocks=bst_node_blocks,
+        )
+        if not raw_candidates:
+            logger.info(
+                "LFG BST-default: no raw candidates discovered, skipping"
+            )
+            return 0
 
         resolved_count = 0
 
-        for handler_state, handler_entry in handler_state_map.items():
-            # Run DFS forward evaluation from this handler.
-            paths = evaluate_handler_paths(
-                mba=mba,
-                entry_serial=handler_entry,
-                incoming_state=handler_state,
-                bst_node_blocks=bst_node_blocks,
-                state_var_stkoff=stkoff,
-                handler_entry_blocks=handler_entry_blocks,
-            )
+        for candidate in raw_candidates:
+            handler_state = candidate.handler_state
+            handler_entry = candidate.handler_entry
+            from_block = candidate.from_block
+            target_entry = candidate.target_entry
+            final_state = candidate.final_state
 
-            for path_result in paths:
-                if path_result.final_state is None:
-                    continue
+            # Only interested in transitions to uncovered entries.
+            if target_entry not in uncovered_entries:
+                continue
 
-                final_state = path_result.final_state & 0xFFFFFFFF
-                from_block = path_result.exit_block
+            # Deduplicate.
+            emit_key = (from_block, target_entry)
+            if emit_key in emitted:
+                continue
+            emitted.add(emit_key)
 
-                # Resolve the final state to a handler entry serial.
-                target_entry = resolve_target_via_bst(
-                    bst_result, final_state,
+            # Don't redirect from a block that's already committed
+            # to redirect to a covered handler.
+            source_serial = from_block
+            if source_serial in owned_blocks:
+                continue
+
+            # Emit the redirect (same pattern as main loop).
+            from_nsucc = builder.block_nsucc_map.get(from_block, 1)
+
+            if from_nsucc == 2:
+                bst_old_target: int | None = None
+                from_succs = builder.block_succ_map.get(
+                    from_block, (),
                 )
-                if target_entry is None:
-                    continue
-
-                # Only interested in transitions to uncovered entries.
-                if target_entry not in uncovered_entries:
-                    continue
-
-                # Skip self-loop redirects.
-                if from_block == target_entry:
-                    continue
-
-                # Deduplicate.
-                emit_key = (from_block, target_entry)
-                if emit_key in emitted:
-                    continue
-                emitted.add(emit_key)
-
-                # Don't redirect from a block that's already committed
-                # to redirect to a covered handler.
-                source_serial = from_block
-                if source_serial in owned_blocks:
-                    continue
-
-                # Emit the redirect (same pattern as main loop).
-                from_nsucc = builder.block_nsucc_map.get(from_block, 1)
-
-                if from_nsucc == 2:
-                    bst_old_target: int | None = None
-                    from_succs = builder.block_succ_map.get(
-                        from_block, (),
-                    )
+                for succ_serial in from_succs:
+                    if succ_serial in bst_node_blocks:
+                        bst_old_target = succ_serial
+                        break
+                if bst_old_target is None:
                     for succ_serial in from_succs:
-                        if succ_serial in bst_node_blocks:
+                        if succ_serial not in owned_blocks:
                             bst_old_target = succ_serial
                             break
-                    if bst_old_target is None:
-                        for succ_serial in from_succs:
-                            if succ_serial not in owned_blocks:
-                                bst_old_target = succ_serial
-                                break
-                    if bst_old_target is None:
-                        for succ_serial in from_succs:
-                            if succ_serial in dispatcher_region:
-                                bst_old_target = succ_serial
-                                break
-                    if bst_old_target is None:
-                        for succ_serial in from_succs:
-                            if succ_serial != target_entry:
-                                bst_old_target = succ_serial
-                                break
+                if bst_old_target is None:
+                    for succ_serial in from_succs:
+                        if succ_serial in dispatcher_region:
+                            bst_old_target = succ_serial
+                            break
+                if bst_old_target is None:
+                    for succ_serial in from_succs:
+                        if succ_serial != target_entry:
+                            bst_old_target = succ_serial
+                            break
 
-                    if bst_old_target is None:
+                if bst_old_target is None:
+                    logger.info(
+                        "LFG BST-default: cannot determine old_target "
+                        "for 2-way %s, skipping",
+                        blk_label(mba, from_block),
+                    )
+                    continue
+
+                mod = builder.edge_redirect(
+                    source_block=from_block,
+                    target_block=target_entry,
+                    old_target=bst_old_target,
+                )
+            else:
+                # 1-way: check for shared tail conflict.
+                if from_block in claimed_1way:
+                    first_target = claimed_1way[from_block]
+                    if first_target != target_entry:
                         logger.info(
-                            "LFG BST-default: cannot determine old_target "
-                            "for 2-way %s, skipping",
+                            "LFG BST-default: CONFLICT on 1-way "
+                            "%s: already -> %s, skipping "
+                            "-> %s",
                             blk_label(mba, from_block),
+                            blk_label(mba, first_target),
+                            blk_label(mba, target_entry),
                         )
                         continue
-
-                    mod = builder.edge_redirect(
-                        source_block=from_block,
-                        target_block=target_entry,
-                        old_target=bst_old_target,
-                    )
-                else:
-                    # 1-way: check for shared tail conflict.
-                    if from_block in claimed_1way:
-                        first_target = claimed_1way[from_block]
-                        if first_target != target_entry:
-                            logger.info(
-                                "LFG BST-default: CONFLICT on 1-way "
-                                "%s: already -> %s, skipping "
-                                "-> %s",
-                                blk_label(mba, from_block),
-                                blk_label(mba, first_target),
-                                blk_label(mba, target_entry),
-                            )
-                            continue
-                        else:
-                            continue  # already emitted
-                    mod = builder.goto_redirect(
-                        source_block=from_block,
-                        target_block=target_entry,
-                    )
-                    claimed_1way[from_block] = target_entry
-
-                modifications.append(mod)
-                owned_edges.add((from_block, target_entry))
-                owned_transitions.add((handler_state, final_state))
-                resolved_count += 1
-
-                # Mark this entry as covered so subsequent iterations
-                # don't re-discover the same target.
-                uncovered_entries.discard(target_entry)
-
-                logger.info(
-                    "LFG BST-default: discovered transition "
-                    "handler 0x%X %s -> state 0x%X -> "
-                    "handler %s (from_block=%s)",
-                    handler_state,
-                    blk_label(mba, handler_entry),
-                    final_state,
-                    blk_label(mba, target_entry),
-                    blk_label(mba, from_block),
+                    else:
+                        continue  # already emitted
+                mod = builder.goto_redirect(
+                    source_block=from_block,
+                    target_block=target_entry,
                 )
+                claimed_1way[from_block] = target_entry
 
-            # Early exit: all uncovered entries now covered.
+            modifications.append(mod)
+            owned_edges.add((from_block, target_entry))
+            owned_transitions.add((handler_state, final_state))
+            resolved_count += 1
+
+            # Mark this entry as covered so subsequent iterations
+            # don't re-discover the same target.
+            uncovered_entries.discard(target_entry)
+
+            logger.info(
+                "LFG BST-default: discovered transition "
+                "handler 0x%X %s -> state 0x%X -> "
+                "handler %s (from_block=%s)",
+                handler_state,
+                blk_label(mba, handler_entry),
+                final_state,
+                blk_label(mba, target_entry),
+                blk_label(mba, from_block),
+            )
+
             if not uncovered_entries:
                 break
 
