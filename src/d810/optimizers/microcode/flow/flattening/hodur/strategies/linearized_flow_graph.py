@@ -13,6 +13,10 @@ from __future__ import annotations
 import ida_hexrays
 
 from d810.cfg.flow.edit_simulator import project_post_state
+from d810.cfg.exit_transition_planning import (
+    ExitRedirectAttempt,
+    plan_exit_redirects,
+)
 from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.graph_modification import (
     ConvertToGoto,
@@ -3725,121 +3729,93 @@ class LinearizedFlowGraphStrategy:
         if not candidates:
             return 0
 
+        selection = plan_exit_redirects(
+            tuple(
+                ExitRedirectAttempt(
+                    source_block=int(candidate.from_block),
+                    target_entry=int(candidate.target_entry),
+                    state_value=int(candidate.state_value),
+                    exit_state_value=(
+                        int(candidate.exit_state_value)
+                        if candidate.exit_state_value is not None
+                        else None
+                    ),
+                    discovery_kind=str(candidate.discovery_kind),
+                )
+                for candidate in candidates
+            ),
+            block_nsucc_map=builder.block_nsucc_map,
+            block_succ_map=builder.block_succ_map,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher_region=dispatcher_region,
+            owned_blocks=owned_blocks,
+            emitted=emitted,
+            claimed_1way=claimed_1way,
+        )
+
+        emitted.clear()
+        emitted.update(selection.emitted)
+        claimed_1way.clear()
+        claimed_1way.update(selection.claimed_1way)
+
         resolved_count = 0
-        for candidate in candidates:
-            state_val = int(candidate.state_value)
-            from_block = int(candidate.from_block)
-            target_entry = int(candidate.target_entry)
-            emit_key = (from_block, target_entry)
-            if emit_key in emitted:
-                continue
-            emitted.add(emit_key)
-
-            from_nsucc = builder.block_nsucc_map.get(from_block, 1)
-            if from_nsucc == 2:
-                bst_old_target: int | None = None
-                from_succs = builder.block_succ_map.get(from_block, ())
-                for succ_serial in from_succs:
-                    if succ_serial in bst_node_blocks:
-                        bst_old_target = succ_serial
-                        break
-                if bst_old_target is None:
-                    for succ_serial in from_succs:
-                        if succ_serial not in owned_blocks:
-                            bst_old_target = succ_serial
-                            break
-                if bst_old_target is None:
-                    for succ_serial in from_succs:
-                        if succ_serial in dispatcher_region:
-                            bst_old_target = succ_serial
-                            break
-                if bst_old_target is None:
-                    for succ_serial in from_succs:
-                        if succ_serial != target_entry:
-                            bst_old_target = succ_serial
-                            break
-
-                if bst_old_target is None:
-                    logger.info(
-                        "LFG EXIT: state 0x%X: cannot determine old_target for 2-way %s, skipping",
-                        state_val,
-                        blk_label(mba, from_block),
-                    )
-                    continue
-
+        for decision in selection.accepted:
+            if decision.redirect_kind == "edge":
+                assert decision.old_target is not None
                 modifications.append(
                     builder.edge_redirect(
-                        source_block=from_block,
-                        target_block=target_entry,
-                        old_target=bst_old_target,
+                        source_block=int(decision.source_block),
+                        target_block=int(decision.target_entry),
+                        old_target=int(decision.old_target),
                     )
                 )
-                owned_edges.add((from_block, target_entry))
-                resolved_count += 1
-                if candidate.discovery_kind == "bst_walk":
+            else:
+                modifications.append(
+                    builder.goto_redirect(
+                        source_block=int(decision.source_block),
+                        target_block=int(decision.target_entry),
+                    )
+                )
+            owned_edges.add((int(decision.source_block), int(decision.target_entry)))
+            if decision.exit_state_value is not None:
+                owned_transitions.add(
+                    (int(decision.state_value), int(decision.exit_state_value))
+                )
+            resolved_count += 1
+
+            if decision.discovery_kind == "bst_walk":
+                if decision.redirect_kind == "edge":
                     logger.info(
                         "LFG EXIT: BST walk resolved state 0x%X: %s -> %s (2-way, old_target=%s)",
-                        state_val,
-                        blk_label(mba, from_block),
-                        blk_label(mba, target_entry),
-                        blk_label(mba, bst_old_target),
+                        int(decision.state_value),
+                        blk_label(mba, int(decision.source_block)),
+                        blk_label(mba, int(decision.target_entry)),
+                        blk_label(mba, int(decision.old_target)),
                     )
                 else:
                     logger.info(
-                        "LFG EXIT: resolved state 0x%X: %s -> %s (exit value 0x%X, 2-way)",
-                        state_val,
-                        blk_label(mba, from_block),
-                        blk_label(mba, target_entry),
-                        int(candidate.exit_state_value or 0),
+                        "LFG EXIT: BST walk resolved state 0x%X: %s -> %s (1-way)",
+                        int(decision.state_value),
+                        blk_label(mba, int(decision.source_block)),
+                        blk_label(mba, int(decision.target_entry)),
                     )
-                continue
-
-            if from_block in claimed_1way:
-                first_target = claimed_1way[from_block]
-                if first_target != target_entry:
-                    if candidate.discovery_kind == "bst_walk":
-                        logger.info(
-                            "LFG EXIT: BST walk CONFLICT on 1-way %s: already -> %s, skipping -> %s",
-                            blk_label(mba, from_block),
-                            blk_label(mba, first_target),
-                            blk_label(mba, target_entry),
-                        )
-                    else:
-                        logger.info(
-                            "LFG EXIT: CONFLICT on 1-way %s: already -> %s, skipping -> %s",
-                            blk_label(mba, from_block),
-                            blk_label(mba, first_target),
-                            blk_label(mba, target_entry),
-                        )
-                continue
-
-            claimed_1way[from_block] = target_entry
-            modifications.append(
-                builder.goto_redirect(
-                    source_block=from_block,
-                    target_block=target_entry,
-                )
-            )
-            owned_edges.add((from_block, target_entry))
-            if candidate.exit_state_value is not None:
-                owned_transitions.add((state_val, int(candidate.exit_state_value)))
-            resolved_count += 1
-
-            if candidate.discovery_kind == "bst_walk":
-                logger.info(
-                    "LFG EXIT: BST walk resolved state 0x%X: %s -> %s (1-way)",
-                    state_val,
-                    blk_label(mba, from_block),
-                    blk_label(mba, target_entry),
-                )
             else:
-                logger.info(
-                    "LFG EXIT: resolved state 0x%X: %s -> %s (exit value 0x%X)",
-                    state_val,
-                    blk_label(mba, from_block),
-                    blk_label(mba, target_entry),
-                    int(candidate.exit_state_value or 0),
-                )
+                if decision.redirect_kind == "edge":
+                    logger.info(
+                        "LFG EXIT: resolved state 0x%X: %s -> %s (exit value 0x%X, 2-way)",
+                        int(decision.state_value),
+                        blk_label(mba, int(decision.source_block)),
+                        blk_label(mba, int(decision.target_entry)),
+                        int(decision.exit_state_value or 0),
+                    )
+                else:
+                    logger.info(
+                        "LFG EXIT: resolved state 0x%X: %s -> %s (exit value 0x%X)",
+                        int(decision.state_value),
+                        blk_label(mba, int(decision.source_block)),
+                        blk_label(mba, int(decision.target_entry)),
+                        int(decision.exit_state_value or 0),
+                    )
 
         logger.info(
             "LFG: resolved %d EXIT states via handler_state_map",
@@ -3936,112 +3912,68 @@ class LinearizedFlowGraphStrategy:
             )
             return 0
 
-        resolved_count = 0
-
-        for candidate in raw_candidates:
-            handler_state = candidate.handler_state
-            handler_entry = candidate.handler_entry
-            from_block = candidate.from_block
-            target_entry = candidate.target_entry
-            final_state = candidate.final_state
-
-            # Only interested in transitions to uncovered entries.
-            if target_entry not in uncovered_entries:
-                continue
-
-            # Deduplicate.
-            emit_key = (from_block, target_entry)
-            if emit_key in emitted:
-                continue
-            emitted.add(emit_key)
-
-            # Don't redirect from a block that's already committed
-            # to redirect to a covered handler.
-            source_serial = from_block
-            if source_serial in owned_blocks:
-                continue
-
-            # Emit the redirect (same pattern as main loop).
-            from_nsucc = builder.block_nsucc_map.get(from_block, 1)
-
-            if from_nsucc == 2:
-                bst_old_target: int | None = None
-                from_succs = builder.block_succ_map.get(
-                    from_block, (),
+        selection = plan_exit_redirects(
+            tuple(
+                ExitRedirectAttempt(
+                    source_block=int(candidate.from_block),
+                    target_entry=int(candidate.target_entry),
+                    state_value=int(candidate.handler_state),
+                    exit_state_value=int(candidate.final_state),
+                    handler_entry=int(candidate.handler_entry),
+                    discovery_kind="bst_default",
                 )
-                for succ_serial in from_succs:
-                    if succ_serial in bst_node_blocks:
-                        bst_old_target = succ_serial
-                        break
-                if bst_old_target is None:
-                    for succ_serial in from_succs:
-                        if succ_serial not in owned_blocks:
-                            bst_old_target = succ_serial
-                            break
-                if bst_old_target is None:
-                    for succ_serial in from_succs:
-                        if succ_serial in dispatcher_region:
-                            bst_old_target = succ_serial
-                            break
-                if bst_old_target is None:
-                    for succ_serial in from_succs:
-                        if succ_serial != target_entry:
-                            bst_old_target = succ_serial
-                            break
+                for candidate in raw_candidates
+            ),
+            block_nsucc_map=builder.block_nsucc_map,
+            block_succ_map=builder.block_succ_map,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher_region=dispatcher_region,
+            owned_blocks=owned_blocks,
+            emitted=emitted,
+            claimed_1way=claimed_1way,
+            target_allowlist=uncovered_entries,
+            skip_owned_sources=True,
+        )
 
-                if bst_old_target is None:
-                    logger.info(
-                        "LFG BST-default: cannot determine old_target "
-                        "for 2-way %s, skipping",
-                        blk_label(mba, from_block),
+        emitted.clear()
+        emitted.update(selection.emitted)
+        claimed_1way.clear()
+        claimed_1way.update(selection.claimed_1way)
+        uncovered_entries = set(selection.remaining_targets or ())
+
+        resolved_count = 0
+        for decision in selection.accepted:
+            if decision.redirect_kind == "edge":
+                assert decision.old_target is not None
+                modifications.append(
+                    builder.edge_redirect(
+                        source_block=int(decision.source_block),
+                        target_block=int(decision.target_entry),
+                        old_target=int(decision.old_target),
                     )
-                    continue
-
-                mod = builder.edge_redirect(
-                    source_block=from_block,
-                    target_block=target_entry,
-                    old_target=bst_old_target,
                 )
             else:
-                # 1-way: check for shared tail conflict.
-                if from_block in claimed_1way:
-                    first_target = claimed_1way[from_block]
-                    if first_target != target_entry:
-                        logger.info(
-                            "LFG BST-default: CONFLICT on 1-way "
-                            "%s: already -> %s, skipping "
-                            "-> %s",
-                            blk_label(mba, from_block),
-                            blk_label(mba, first_target),
-                            blk_label(mba, target_entry),
-                        )
-                        continue
-                    else:
-                        continue  # already emitted
-                mod = builder.goto_redirect(
-                    source_block=from_block,
-                    target_block=target_entry,
+                modifications.append(
+                    builder.goto_redirect(
+                        source_block=int(decision.source_block),
+                        target_block=int(decision.target_entry),
+                    )
                 )
-                claimed_1way[from_block] = target_entry
-
-            modifications.append(mod)
-            owned_edges.add((from_block, target_entry))
-            owned_transitions.add((handler_state, final_state))
+            owned_edges.add((int(decision.source_block), int(decision.target_entry)))
+            owned_transitions.add(
+                (int(decision.state_value), int(decision.exit_state_value or 0))
+            )
             resolved_count += 1
-
-            # Mark this entry as covered so subsequent iterations
-            # don't re-discover the same target.
-            uncovered_entries.discard(target_entry)
 
             logger.info(
                 "LFG BST-default: discovered transition "
                 "handler 0x%X %s -> state 0x%X -> "
                 "handler %s (from_block=%s)",
-                handler_state,
-                blk_label(mba, handler_entry),
-                final_state,
-                blk_label(mba, target_entry),
-                blk_label(mba, from_block),
+                int(decision.state_value),
+                blk_label(mba, int(decision.handler_entry or -1)),
+                int(decision.exit_state_value or 0),
+                blk_label(mba, int(decision.target_entry)),
+                blk_label(mba, int(decision.source_block)),
             )
 
             if not uncovered_entries:
