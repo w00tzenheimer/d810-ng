@@ -199,7 +199,7 @@ class LinearizedFlowGraphStrategy:
         func_ea = mba.entry_ea
         maturity = mba.maturity
         key = (func_ea, maturity)
-        residual_preds = cls._collect_residual_dispatcher_predecessors(
+        residual_preds = collect_residual_dispatcher_predecessors(
             flow_graph,
             snapshot.bst_dispatcher_serial,
             bst_node_blocks=set(
@@ -207,7 +207,7 @@ class LinearizedFlowGraphStrategy:
             ),
             reachable_from_serial=getattr(flow_graph, "entry_serial", None),
         )
-        raw_residual_preds = cls._collect_dispatcher_predecessors(
+        raw_residual_preds = collect_dispatcher_predecessors(
             flow_graph,
             snapshot.bst_dispatcher_serial,
             bst_node_blocks=set(
@@ -698,7 +698,7 @@ class LinearizedFlowGraphStrategy:
             dag_final_flow_graph = dag_current_flow_graph
 
         if dag_final_flow_graph is not None:
-            dag_residual_dispatcher_preds = self._collect_residual_dispatcher_predecessors(
+            dag_residual_dispatcher_preds = collect_residual_dispatcher_predecessors(
                 dag_final_flow_graph,
                 snapshot.bst_dispatcher_serial,
                 bst_node_blocks=dag_bst_node_blocks,
@@ -730,7 +730,7 @@ class LinearizedFlowGraphStrategy:
                 if dag_residual_redirect_count:
                     dag_patch_plan = compile_patch_plan(dag_modifications, flow_graph)
                     dag_final_flow_graph = project_post_state(flow_graph, dag_patch_plan)
-                dag_residual_dispatcher_preds = self._collect_residual_dispatcher_predecessors(
+                dag_residual_dispatcher_preds = collect_residual_dispatcher_predecessors(
                     dag_final_flow_graph,
                     snapshot.bst_dispatcher_serial,
                     bst_node_blocks=dag_bst_node_blocks,
@@ -1808,7 +1808,7 @@ class LinearizedFlowGraphStrategy:
             return []
         stop_serial = int(original_stop_serial)
         entry_serial = getattr(projected_flow_graph, "entry_serial", None)
-        reachable_blocks = LinearizedFlowGraphStrategy._compute_reachable_blocks(
+        reachable_blocks = compute_reachable_blocks(
             projected_flow_graph,
             start_serial=entry_serial,
         )
@@ -1847,19 +1847,6 @@ class LinearizedFlowGraphStrategy:
         return filtered
 
     @staticmethod
-    def _compute_reachable_blocks(
-        flow_graph: object,
-        *,
-        start_serial: int | None,
-        limit: int = 4096,
-    ) -> set[int] | None:
-        return compute_reachable_blocks(
-            flow_graph,
-            start_serial=start_serial,
-            limit=limit,
-        )
-
-    @staticmethod
     def _collect_whole_redirect_source_blocks(modifications: list) -> set[int]:
         redirected_blocks: set[int] = set()
         for modification in modifications:
@@ -1868,34 +1855,6 @@ class LinearizedFlowGraphStrategy:
             elif isinstance(modification, ConvertToGoto):
                 redirected_blocks.add(int(modification.block_serial))
         return redirected_blocks
-
-    @staticmethod
-    def _collect_dispatcher_predecessors(
-        flow_graph: object,
-        dispatcher_serial: int,
-        *,
-        bst_node_blocks: set[int],
-    ) -> tuple[int, ...]:
-        return collect_dispatcher_predecessors(
-            flow_graph,
-            dispatcher_serial,
-            bst_node_blocks=bst_node_blocks,
-        )
-
-    @staticmethod
-    def _collect_residual_dispatcher_predecessors(
-        flow_graph: object,
-        dispatcher_serial: int,
-        *,
-        bst_node_blocks: set[int],
-        reachable_from_serial: int | None = None,
-    ) -> tuple[int, ...]:
-        return collect_residual_dispatcher_predecessors(
-            flow_graph,
-            dispatcher_serial,
-            bst_node_blocks=bst_node_blocks,
-            reachable_from_serial=reachable_from_serial,
-        )
 
     @staticmethod
     def _edge_priority(edge: StateDagEdge) -> int:
@@ -2256,13 +2215,13 @@ class LinearizedFlowGraphStrategy:
                 if (
                     d is not None
                     and d.t == ida_hexrays.mop_S
-                    and LinearizedFlowGraphStrategy._mop_stkoff(d) == state_var_stkoff
+                    and mop_stkoff(d) == state_var_stkoff
                     and l is not None
                     and l.t == ida_hexrays.mop_n
                 ):
                     try:
                         resolved = dispatcher_lookup(
-                            LinearizedFlowGraphStrategy._mop_const_value(l)
+                            mop_const_value(l)
                         )
                     except Exception:
                         resolved = None
@@ -2270,82 +2229,6 @@ class LinearizedFlowGraphStrategy:
                         resolved_targets.add(int(resolved))
             insn = insn.next
         return resolved_targets == {target_entry}
-
-    @classmethod
-    def _resolve_immediate_handoff_target(
-        cls,
-        dag: LinearizedStateDag,
-        mba: object,
-        block_serial: int,
-        *,
-        state_var_stkoff: int | None,
-        bst_node_blocks: set[int],
-        dispatcher_lookup: object | None,
-        dispatcher: object | None = None,
-    ) -> tuple[int, int] | None:
-        return resolve_immediate_handoff_target(
-            dag,
-            mba,
-            block_serial,
-            state_var_stkoff=state_var_stkoff,
-            bst_node_blocks=bst_node_blocks,
-            dispatcher_lookup=dispatcher_lookup,
-            dispatcher=dispatcher,
-        )
-
-    @classmethod
-    def _resolve_projected_snapshot_handoff_target(
-        cls,
-        dag: LinearizedStateDag,
-        flow_graph: object,
-        block_serial: int,
-        *,
-        state_var_stkoff: int | None,
-        bst_node_blocks: set[int],
-        dispatcher: object | None,
-    ) -> tuple[int, int] | None:
-        return resolve_projected_snapshot_handoff_target(
-            dag,
-            flow_graph,
-            block_serial,
-            state_var_stkoff=state_var_stkoff,
-            bst_node_blocks=bst_node_blocks,
-            dispatcher=dispatcher,
-        )
-
-    @classmethod
-    def _resolve_assignment_map_handoff_target(
-        cls,
-        dag: LinearizedStateDag,
-        state_machine: DispatcherStateMachine | None,
-        block_serial: int,
-        *,
-        bst_node_blocks: set[int],
-        dispatcher: object | None,
-    ) -> tuple[int, int] | None:
-        return resolve_assignment_map_handoff_target(
-            dag,
-            state_machine,
-            block_serial,
-            bst_node_blocks=bst_node_blocks,
-            dispatcher=dispatcher,
-        )
-
-    @staticmethod
-    def _iter_live_block_insns(block: object):
-        return iter_live_block_insns(block)
-
-    @staticmethod
-    def _mop_stkoff(mop: object | None) -> int | None:
-        return mop_stkoff(mop)
-
-    @staticmethod
-    def _mop_const_value(mop: object | None) -> int | None:
-        return mop_const_value(mop)
-
-    @staticmethod
-    def _is_state_var_dest(dest: object | None, state_var_stkoff: int) -> bool:
-        return is_state_var_dest(dest, state_var_stkoff)
 
     @classmethod
     def _resolve_singleton_state_write_value(
@@ -2364,36 +2247,6 @@ class LinearizedFlowGraphStrategy:
             block_serial,
             state_var_stkoff=state_var_stkoff,
             resolve_state_via_valranges=resolve_state_via_valranges,
-        )
-
-    @classmethod
-    def _block_has_state_var_write(
-        cls,
-        mba: object,
-        block_serial: int,
-        *,
-        state_var_stkoff: int | None,
-    ) -> bool:
-        return block_has_state_var_write(
-            mba,
-            block_serial,
-            state_var_stkoff=state_var_stkoff,
-        )
-
-    @classmethod
-    def _resolve_evaluated_handoff_state_via_pred(
-        cls,
-        mba: object,
-        *,
-        via_pred: int,
-        source_block: int,
-        state_var_stkoff: int | None,
-    ) -> int | None:
-        return resolve_evaluated_handoff_state_via_pred(
-            mba,
-            via_pred=via_pred,
-            source_block=source_block,
-            state_var_stkoff=state_var_stkoff,
         )
 
     @classmethod
@@ -2467,7 +2320,7 @@ class LinearizedFlowGraphStrategy:
         ignored_blocks.add(dispatcher_serial)
         pred_split_emitted: set[tuple[int, int, int]] = set()
         prefix_emitted: set[tuple[int, int, int]] = set()
-        residual_preds = cls._collect_residual_dispatcher_predecessors(
+        residual_preds = collect_residual_dispatcher_predecessors(
             projected_flow_graph,
             dispatcher_serial,
             bst_node_blocks=bst_node_blocks,
