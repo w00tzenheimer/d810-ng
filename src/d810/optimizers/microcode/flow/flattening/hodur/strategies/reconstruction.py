@@ -99,7 +99,12 @@ from d810.recon.flow.state_machine_analysis import (
     StateWriteSite,
     run_snapshot_constant_fixpoint,
 )
-from d810.recon.flow.path_horizon import resolve_transition_path_horizon
+from d810.recon.flow.reconstruction_discovery import (
+    classify_artifact_return_blocks,
+    collect_shared_suffix_blocks,
+    discover_reconstruction_candidate_seed,
+    resolve_state_var_stkoff,
+)
 from d810.recon.flow.terminal_family import (
     TerminalFamilyCandidate,
     TerminalFamilySeed,
@@ -124,10 +129,7 @@ from d810.recon.flow.terminal_family_collection import (
     collect_terminal_family_candidates,
 )
 from d810.recon.flow.target_entry_resolution import resolve_edge_target_entry
-from d810.recon.flow.transition_builder import (
-    TransitionResult,
-    _get_state_var_stkoff,
-)
+from d810.recon.flow.transition_builder import TransitionResult
 
 logger = logging.getLogger(
     "D810.hodur.strategy.state_write_reconstruction",
@@ -165,28 +167,14 @@ class StateWriteReconstructionStrategy:
 
     @staticmethod
     def _resolve_state_var_stkoff(snapshot, state_machine) -> int | None:
-        detector = getattr(snapshot, "detector", None)
-        if detector is not None:
-            stkoff = _get_state_var_stkoff(detector)
-            if stkoff is not None:
-                return int(stkoff)
-
-        state_var = getattr(state_machine, "state_var", None)
-        if state_var is None:
-            return None
-        if getattr(state_var, "t", None) == getattr(ida_hexrays, "mop_S", None):
-            s = getattr(state_var, "s", None)
-            off = getattr(s, "off", None) if s is not None else None
-            if off is not None:
-                return int(off)
-        return None
+        return resolve_state_var_stkoff(
+            detector=getattr(snapshot, "detector", None),
+            state_var=getattr(state_machine, "state_var", None),
+        )
 
     @staticmethod
     def _shared_suffix_blocks(dag: LinearizedStateDag) -> set[int]:
-        shared_blocks: set[int] = set()
-        for node in dag.nodes:
-            shared_blocks.update(int(serial) for serial in node.shared_suffix_blocks)
-        return shared_blocks
+        return collect_shared_suffix_blocks(dag)
 
     @staticmethod
     def _classify_artifact_return_blocks(
@@ -194,80 +182,11 @@ class StateWriteReconstructionStrategy:
         state_var_stkoff: int,
         state_constants: set[int],
     ) -> set[int]:
-        """Identify blocks that are m_xdu/m_mov artifacts writing state var to return slot.
-
-        Artifact blocks zero-extend or move the dead state variable into the
-        return slot (a different stack variable).  These blocks should be
-        bypassed during Return Path Wiring because they propagate the
-        obfuscation state constant into the decompiled return value.
-
-        The classifier looks for two patterns:
-
-        1. **m_xdu artifact**: ``m_xdu  state_var -> other_stkvar`` where
-           src.stkoff == state_var_stkoff and dest.stkoff != state_var_stkoff.
-        2. **m_mov const artifact**: ``m_mov  #state_const -> stkvar`` where
-           the immediate value is a known state constant.
-
-        Args:
-            flow_graph: Snapshot flow graph with block/instruction data.
-            state_var_stkoff: Stack offset of the dispatcher state variable.
-            state_constants: Set of known state constant values.
-
-        Returns:
-            Set of block serials classified as artifact return blocks.
-        """
-        MOP_N = int(ida_hexrays.mop_n)
-        MOP_S = int(ida_hexrays.mop_S)
-        m_xdu = int(ida_hexrays.m_xdu)
-        m_mov = int(ida_hexrays.m_mov)
-
-        artifact_blocks: set[int] = set()
-        for serial, blk in flow_graph.blocks.items():
-            for insn in blk.insn_snapshots:
-                # Diagnostic: log first instruction of target blocks
-                if serial in (27, 41, 47, 71, 207) and insn is blk.insn_snapshots[0]:
-                    logger.info(
-                        "RECON RETURN: classify blk[%d] insn0: "
-                        "opcode=%s l.t=%s l.stkoff=%s d.t=%s d.stkoff=%s",
-                        serial, insn.opcode,
-                        getattr(getattr(insn, "l", None), "t", "?"),
-                        getattr(getattr(insn, "l", None), "stkoff", "?"),
-                        getattr(getattr(insn, "d", None), "t", "?"),
-                        getattr(getattr(insn, "d", None), "stkoff", "?"),
-                    )
-                # Pattern 1: m_xdu with src=state_var, dest=other stkvar
-                if insn.opcode == m_xdu:
-                    l_op = insn.l
-                    d_op = insn.d
-                    if (
-                        l_op is not None
-                        and d_op is not None
-                        and getattr(l_op, "t", None) == MOP_S
-                        and getattr(d_op, "t", None) == MOP_S
-                        and getattr(l_op, "stkoff", None) is not None
-                        and getattr(d_op, "stkoff", None) is not None
-                        and int(l_op.stkoff) == state_var_stkoff
-                        and int(d_op.stkoff) != state_var_stkoff
-                    ):
-                        artifact_blocks.add(serial)
-                        break
-                # Pattern 2: m_mov with imm state constant to stkvar
-                if insn.opcode == m_mov:
-                    l_op = insn.l
-                    d_op = insn.d
-                    if (
-                        l_op is not None
-                        and d_op is not None
-                        and getattr(l_op, "t", None) == MOP_N
-                        and getattr(d_op, "t", None) == MOP_S
-                        and getattr(l_op, "value", None) is not None
-                        and getattr(d_op, "stkoff", None) is not None
-                        and int(d_op.stkoff) != state_var_stkoff
-                        and (int(l_op.value) & 0xFFFFFFFF) in state_constants
-                    ):
-                        artifact_blocks.add(serial)
-                        break
-        return artifact_blocks
+        return classify_artifact_return_blocks(
+            flow_graph,
+            state_var_stkoff=state_var_stkoff,
+            state_constants=state_constants,
+        )
 
     @classmethod
     def _make_edge_metadata(
@@ -1424,50 +1343,29 @@ class StateWriteReconstructionStrategy:
             )
 
         ordered_path = tuple(int(serial) for serial in edge.ordered_path)
-        if not ordered_path:
-            return None, cls._make_edge_metadata(
-                edge,
-                rejection_reason="missing_ordered_path",
-            )
-
-        resolved = resolve_transition_path_horizon(
-            edge,
-            flow_graph=flow_graph,
-            ordered_path=ordered_path,
-            state_var_stkoff=state_var_stkoff,
-            constant_result=constant_result,
-        )
-
-        if resolved is None:
-            return None, cls._make_edge_metadata(
-                edge,
-                rejection_reason="missing_path_horizon",
-            )
-
-        horizon_block, site = resolved
-        expected_state = int(edge.target_state & 0xFFFFFFFF)
-        if int(site.state_value & 0xFFFFFFFF) != expected_state:
-            return None, cls._make_edge_metadata(
-                edge,
-                horizon_block=horizon_block,
-                site=site,
-                rejection_reason="state_mismatch",
-            )
-
-        target_entry, target_entry_rejection = cls._resolve_edge_target_entry(
+        seed, seed_rejection = discover_reconstruction_candidate_seed(
             edge,
             flow_graph=flow_graph,
             node_by_key=node_by_key,
-            outgoing_by_key=outgoing_by_key,
-            nodes_by_entry_anchor=nodes_by_entry_anchor,
+            state_var_stkoff=state_var_stkoff,
+            constant_result=constant_result,
             dispatcher_region=dispatcher_region,
         )
-        if target_entry is None:
+        if seed is None:
             return None, cls._make_edge_metadata(
                 edge,
-                horizon_block=horizon_block,
-                site=site,
-                rejection_reason=target_entry_rejection or "missing_target_entry",
+                rejection_reason=seed_rejection,
+            )
+
+        horizon_block = seed.horizon_block
+        site = seed.site
+        target_entry = seed.target_entry
+        if seed.original_dispatcher_entry is not None:
+            logger.info(
+                "RECON DAG: dispatcher_target_entry resolved non-BST "
+                "entry blk[%d] (original blk[%d] in dispatcher region)",
+                target_entry,
+                seed.original_dispatcher_entry,
             )
 
         if cls._is_backward_same_corridor_target(
