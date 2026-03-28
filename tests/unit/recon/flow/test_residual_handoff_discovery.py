@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ida_hexrays
+
 from types import SimpleNamespace
 
 from d810.recon.flow.linearized_state_dag import (
@@ -14,8 +16,11 @@ from d810.recon.flow.linearized_state_dag import (
 from d810.recon.flow.residual_handoff_discovery import (
     dispatcher_exact_state_target,
     dispatcher_has_exact_state_row,
+    resolve_assignment_map_handoff_target,
+    resolve_immediate_handoff_target,
     resolve_nonexact_dispatch_target,
     resolve_path_lead_entry_from_node,
+    resolve_projected_snapshot_handoff_target,
     resolve_projected_path_tail_target,
     resolve_redirect_safe_entry_from_node,
     resolve_redirect_safe_target_entry,
@@ -76,6 +81,19 @@ def _edge(
 
 def _dag(nodes: tuple[StateDagNode, ...], edges: tuple[StateDagEdge, ...]):
     return SimpleNamespace(nodes=nodes, edges=edges)
+
+
+class _DummyMblock:
+    def __init__(self, head: object | None):
+        self.head = head
+
+
+class _DummyMba:
+    def __init__(self, blocks: dict[int, _DummyMblock]):
+        self._blocks = blocks
+
+    def get_mblock(self, serial: int):
+        return self._blocks.get(int(serial))
 
 
 class TestDispatcherExactRows:
@@ -227,6 +245,81 @@ class TestResidualTargetDiscovery:
                 source_block=10,
                 bst_node_blocks={2, 6},
                 predecessor_hints=(8,),
+            )
+            == (0x33, 24)
+        )
+
+    def test_resolves_assignment_map_handoff_target(self) -> None:
+        target = _node(entry=24, handler=24, state=0x33)
+        dag = _dag((target,), ())
+        state_machine = SimpleNamespace(
+            assignment_map={
+                10: (
+                    SimpleNamespace(
+                        opcode=ida_hexrays.m_mov,
+                        l=SimpleNamespace(
+                            t=ida_hexrays.mop_n,
+                            nnn=SimpleNamespace(value=0x33),
+                        ),
+                    ),
+                )
+            }
+        )
+        dispatcher = SimpleNamespace(
+            _rows=(SimpleNamespace(lo=0x33, hi=0x34, target=2),),
+        )
+
+        assert (
+            resolve_assignment_map_handoff_target(
+                dag,
+                state_machine,
+                10,
+                bst_node_blocks={2, 6},
+                dispatcher=dispatcher,
+            )
+            == (0x33, 24)
+        )
+
+    def test_resolves_immediate_and_projected_snapshot_handoff_targets(self) -> None:
+        target = _node(entry=24, handler=24, state=0x33)
+        dag = _dag((target,), ())
+        dispatcher = SimpleNamespace(
+            _rows=(SimpleNamespace(lo=0x33, hi=0x34, target=2),),
+        )
+        insn = SimpleNamespace(
+            opcode=ida_hexrays.m_mov,
+            d=SimpleNamespace(t=ida_hexrays.mop_S, stkoff=0x88),
+            l=SimpleNamespace(
+                t=ida_hexrays.mop_n,
+                nnn=SimpleNamespace(value=0x33),
+            ),
+            next=None,
+        )
+        mba = _DummyMba({10: _DummyMblock(insn)})
+        flow_graph = SimpleNamespace(
+            get_block=lambda serial: SimpleNamespace(insn_snapshots=(insn,)) if serial == 10 else None
+        )
+
+        assert (
+            resolve_immediate_handoff_target(
+                dag,
+                mba,
+                10,
+                state_var_stkoff=0x88,
+                bst_node_blocks={2, 6},
+                dispatcher_lookup=None,
+                dispatcher=dispatcher,
+            )
+            == (0x33, 24)
+        )
+        assert (
+            resolve_projected_snapshot_handoff_target(
+                dag,
+                flow_graph,
+                10,
+                state_var_stkoff=0x88,
+                bst_node_blocks={2, 6},
+                dispatcher=dispatcher,
             )
             == (0x33, 24)
         )

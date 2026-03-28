@@ -6,6 +6,9 @@ dispatcher handoffs without choosing or applying any lowering policy.
 
 from __future__ import annotations
 
+import ida_hexrays
+
+from d810.recon.flow.bst_analysis import _forward_eval_insn
 from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
@@ -906,23 +909,551 @@ def iter_residual_prefix_handoffs(
     return [(edge, via_pred, target_entry) for _, edge, via_pred, target_entry in candidates]
 
 
+def iter_live_block_insns(block: object):
+    """Yield live mblock instructions with a defensive loop bound."""
+    insn = getattr(block, "head", None)
+    seen = 0
+    while insn is not None and seen < 4096:
+        yield insn
+        insn = getattr(insn, "next", None)
+        seen += 1
+
+
+def mop_stkoff(mop: object | None) -> int | None:
+    """Extract a stack offset from a live or snapshotted mop-like object."""
+    if mop is None:
+        return None
+    stack_ref = getattr(mop, "s", None)
+    if stack_ref is not None:
+        off = getattr(stack_ref, "off", None)
+        if callable(off):
+            try:
+                off = off()
+            except Exception:
+                off = None
+        if off is not None:
+            return int(off)
+    stkoff = getattr(mop, "stkoff", None)
+    if callable(stkoff):
+        try:
+            stkoff = stkoff()
+        except Exception:
+            stkoff = None
+    if stkoff is not None:
+        return int(stkoff)
+    return None
+
+
+def mop_const_value(mop: object | None) -> int | None:
+    """Extract an integer literal from a live or snapshotted mop-like object."""
+    if mop is None:
+        return None
+    nnn = getattr(mop, "nnn", None)
+    if nnn is not None:
+        value = getattr(nnn, "value", None)
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                value = None
+        if value is not None:
+            return int(value)
+    value = getattr(mop, "value", None)
+    if callable(value):
+        try:
+            value = value()
+        except Exception:
+            value = None
+    if value is not None:
+        return int(value)
+    return None
+
+
+def is_state_var_dest(dest: object | None, state_var_stkoff: int) -> bool:
+    """Return whether ``dest`` writes the tracked state stack slot."""
+    if dest is None:
+        return False
+    if getattr(dest, "t", None) != ida_hexrays.mop_S:
+        return False
+    return mop_stkoff(dest) == state_var_stkoff
+
+
+def resolve_singleton_state_write_value(
+    mba: object,
+    block_serial: int,
+    *,
+    state_var_stkoff: int | None,
+    resolve_state_via_valranges: object | None = None,
+) -> int | None:
+    """Resolve a single concrete state value written in ``block_serial``."""
+    if mba is None or state_var_stkoff is None:
+        return None
+    try:
+        block = mba.get_mblock(block_serial)
+    except Exception:
+        return None
+    if block is None:
+        return None
+
+    resolved_values: set[int] = set()
+    stk_map: dict[int, int] = {}
+    reg_map: dict[int, int] = {}
+    state_write_seen = False
+    for insn in iter_live_block_insns(block):
+        dest = getattr(insn, "d", None)
+        state_dest = is_state_var_dest(dest, state_var_stkoff)
+        if state_dest:
+            state_write_seen = True
+            if insn.opcode == ida_hexrays.m_mov:
+                source = getattr(insn, "l", None)
+                value = mop_const_value(source)
+                if value is not None:
+                    resolved_values.add(value & 0xFFFFFFFF)
+                    continue
+        try:
+            resolved = _forward_eval_insn(
+                insn,
+                stk_map,
+                reg_map,
+                state_var_stkoff,
+                mba=mba,
+            )
+        except Exception:
+            resolved = None
+        if state_dest and resolved is not None:
+            resolved_values.add(int(resolved) & 0xFFFFFFFF)
+            continue
+        if not state_dest:
+            continue
+        if not hasattr(dest, "s") or not hasattr(mba, "vars"):
+            continue
+        if not callable(resolve_state_via_valranges):
+            continue
+        try:
+            resolved = resolve_state_via_valranges(block, dest, insn)
+        except Exception:
+            resolved = None
+        if resolved is not None:
+            resolved_values.add(int(resolved) & 0xFFFFFFFF)
+
+    if not state_write_seen:
+        return None
+    if len(resolved_values) != 1:
+        return None
+    return next(iter(resolved_values))
+
+
+def block_has_state_var_write(
+    mba: object,
+    block_serial: int,
+    *,
+    state_var_stkoff: int | None,
+) -> bool:
+    """Return whether ``block_serial`` writes the tracked state variable."""
+    if mba is None or state_var_stkoff is None:
+        return False
+    try:
+        block = mba.get_mblock(block_serial)
+    except Exception:
+        return False
+    if block is None:
+        return False
+
+    for insn in iter_live_block_insns(block):
+        if is_state_var_dest(getattr(insn, "d", None), state_var_stkoff):
+            return True
+    return False
+
+
+def resolve_evaluated_handoff_state_via_pred(
+    mba: object,
+    *,
+    via_pred: int,
+    source_block: int,
+    state_var_stkoff: int | None,
+) -> int | None:
+    """Forward-evaluate the state value across ``via_pred -> source_block``."""
+    if mba is None or state_var_stkoff is None:
+        return None
+    try:
+        pred_blk = mba.get_mblock(via_pred)
+        src_blk = mba.get_mblock(source_block)
+    except Exception:
+        return None
+    if pred_blk is None or src_blk is None:
+        return None
+
+    stk_map: dict[int, int] = {}
+    reg_map: dict[int, int] = {}
+    final_value: int | None = None
+    for blk in (pred_blk, src_blk):
+        for insn in iter_live_block_insns(blk):
+            try:
+                resolved = _forward_eval_insn(
+                    insn,
+                    stk_map,
+                    reg_map,
+                    state_var_stkoff,
+                    mba=mba,
+                )
+            except Exception:
+                resolved = None
+            if resolved is not None:
+                final_value = int(resolved) & 0xFFFFFFFF
+    if final_value is not None:
+        return final_value
+    resolved = stk_map.get(state_var_stkoff)
+    if resolved is None:
+        return None
+    return int(resolved) & 0xFFFFFFFF
+
+
+def resolve_immediate_handoff_target(
+    dag: LinearizedStateDag,
+    mba: object,
+    block_serial: int,
+    *,
+    state_var_stkoff: int | None,
+    bst_node_blocks: set[int],
+    dispatcher_lookup: object | None,
+    dispatcher: object | None = None,
+) -> tuple[int, int] | None:
+    """Resolve an immediate local state write as a semantic handoff target."""
+    if mba is None or state_var_stkoff is None:
+        return None
+    try:
+        block = mba.get_mblock(block_serial)
+    except Exception:
+        return None
+    if block is None:
+        return None
+
+    written_states: set[int] = set()
+    for insn in iter_live_block_insns(block):
+        if insn.opcode == ida_hexrays.m_mov:
+            d = insn.d
+            l = insn.l
+            if (
+                d is not None
+                and d.t == ida_hexrays.mop_S
+                and mop_stkoff(d) == state_var_stkoff
+                and l is not None
+                and l.t == ida_hexrays.mop_n
+            ):
+                value = mop_const_value(l)
+                if value is not None:
+                    written_states.add(int(value) & 0xFFFFFFFF)
+
+    if len(written_states) != 1:
+        return None
+
+    state_value = next(iter(written_states))
+    exact_dispatcher_target = dispatcher_exact_state_target(
+        state_value,
+        dispatcher=dispatcher,
+    )
+    if exact_dispatcher_target == block_serial:
+        return None
+    direct_entry = resolve_dag_entry_for_state(
+        dag,
+        state_value,
+        bst_node_blocks=bst_node_blocks,
+    )
+    exact_dispatcher_row = dispatcher_has_exact_state_row(
+        state_value,
+        dispatcher=dispatcher,
+    )
+    if dispatcher is not None and exact_dispatcher_row and direct_entry == block_serial:
+        return None
+    if exact_dispatcher_row:
+        if direct_entry is None or direct_entry == block_serial:
+            return None
+        return (state_value, direct_entry)
+
+    normalized_alias_target = resolve_normalized_alias_entry_for_state(
+        dag,
+        state_value,
+        source_block=block_serial,
+        bst_node_blocks=bst_node_blocks,
+    )
+    nonexact_target = resolve_nonexact_dispatch_target(
+        dag,
+        state_value,
+        source_block=block_serial,
+        bst_node_blocks=bst_node_blocks,
+        dispatcher=dispatcher,
+        dispatcher_lookup=dispatcher_lookup,
+    )
+    contextual_target = resolve_contextual_dag_entry_for_state(
+        dag,
+        state_value,
+        source_block=block_serial,
+        bst_node_blocks=bst_node_blocks,
+    )
+    target_entry = direct_entry or nonexact_target or normalized_alias_target or contextual_target
+    if target_entry is None or target_entry == block_serial:
+        return None
+    return (state_value, target_entry)
+
+
+def resolve_projected_snapshot_handoff_target(
+    dag: LinearizedStateDag,
+    flow_graph: object,
+    block_serial: int,
+    *,
+    state_var_stkoff: int | None,
+    bst_node_blocks: set[int],
+    dispatcher: object | None,
+) -> tuple[int, int] | None:
+    """Resolve a projected insn snapshot handoff target."""
+    if flow_graph is None or state_var_stkoff is None:
+        return None
+    try:
+        block = flow_graph.get_block(block_serial)
+    except Exception:
+        return None
+    if block is None:
+        return None
+
+    written_states: set[int] = set()
+    for insn in tuple(getattr(block, "insn_snapshots", ())):
+        if getattr(insn, "opcode", None) != ida_hexrays.m_mov:
+            continue
+        dest = getattr(insn, "d", None)
+        src = getattr(insn, "l", None)
+        if not is_state_var_dest(dest, state_var_stkoff):
+            continue
+        value = mop_const_value(src)
+        if value is None:
+            return None
+        written_states.add(int(value) & 0xFFFFFFFF)
+
+    if len(written_states) != 1:
+        return None
+
+    state_value = next(iter(written_states))
+    exact_dispatcher_target = dispatcher_exact_state_target(
+        state_value,
+        dispatcher=dispatcher,
+    )
+    if exact_dispatcher_target == block_serial:
+        return None
+    direct_entry = resolve_dag_entry_for_state(
+        dag,
+        state_value,
+        bst_node_blocks=bst_node_blocks,
+    )
+    if dispatcher_has_exact_state_row(state_value, dispatcher=dispatcher):
+        if direct_entry is None or direct_entry == block_serial:
+            return None
+        return (state_value, direct_entry)
+    return None
+
+
+def resolve_assignment_map_handoff_target(
+    dag: LinearizedStateDag,
+    state_machine: object | None,
+    block_serial: int,
+    *,
+    bst_node_blocks: set[int],
+    dispatcher: object | None,
+) -> tuple[int, int] | None:
+    """Resolve a handoff target from the state machine assignment map."""
+    if state_machine is None:
+        return None
+    assignment_map = getattr(state_machine, "assignment_map", None) or {}
+    insns = assignment_map.get(block_serial)
+    if not insns:
+        return None
+
+    state_value: int | None = None
+    for insn in insns:
+        if getattr(insn, "opcode", None) != ida_hexrays.m_mov:
+            continue
+        src = getattr(insn, "l", None)
+        if src is None or getattr(src, "t", None) != ida_hexrays.mop_n:
+            continue
+        try:
+            value = int(src.nnn.value) & 0xFFFFFFFF
+        except Exception:
+            value = mop_const_value(src)
+            if value is not None:
+                value &= 0xFFFFFFFF
+        if value is None:
+            continue
+        if state_value is None:
+            state_value = value
+        elif state_value != value:
+            return None
+
+    if state_value is None:
+        return None
+
+    exact_dispatcher_target = dispatcher_exact_state_target(
+        state_value,
+        dispatcher=dispatcher,
+    )
+    if exact_dispatcher_target == block_serial:
+        return None
+    direct_entry = resolve_dag_entry_for_state(
+        dag,
+        state_value,
+        bst_node_blocks=bst_node_blocks,
+    )
+    if dispatcher_has_exact_state_row(state_value, dispatcher=dispatcher):
+        if direct_entry is None or direct_entry == block_serial:
+            return None
+        return (state_value, direct_entry)
+    return None
+
+
+def resolve_synthesized_handoff_target(
+    dag: LinearizedStateDag,
+    mba: object,
+    block_serial: int,
+    *,
+    state_var_stkoff: int | None,
+    bst_node_blocks: set[int],
+    dispatcher: object | None,
+    via_pred: int | None = None,
+    resolve_state_via_valranges: object | None = None,
+) -> tuple[int, int] | None:
+    """Synthesize a residual handoff target from forward-evaluated state writes."""
+    state_value = resolve_singleton_state_write_value(
+        mba,
+        block_serial,
+        state_var_stkoff=state_var_stkoff,
+        resolve_state_via_valranges=resolve_state_via_valranges,
+    )
+    if state_value is None and via_pred is not None:
+        state_value = resolve_evaluated_handoff_state_via_pred(
+            mba,
+            via_pred=via_pred,
+            source_block=block_serial,
+            state_var_stkoff=state_var_stkoff,
+        )
+    if state_value is None:
+        return None
+    exact_dispatcher_target = dispatcher_exact_state_target(
+        state_value,
+        dispatcher=dispatcher,
+    )
+    if exact_dispatcher_target == block_serial:
+        return None
+    direct_entry = resolve_dag_entry_for_state(
+        dag,
+        state_value,
+        bst_node_blocks=bst_node_blocks,
+    )
+    exact_dispatcher_row = dispatcher_has_exact_state_row(
+        state_value,
+        dispatcher=dispatcher,
+    )
+    if exact_dispatcher_row:
+        if direct_entry is None or direct_entry == block_serial:
+            return None
+        return (state_value, direct_entry)
+    contextual_source = via_pred if via_pred is not None else block_serial
+    target_entry = resolve_contextual_dag_entry_for_state(
+        dag,
+        state_value,
+        source_block=contextual_source,
+        bst_node_blocks=bst_node_blocks,
+    )
+    normalized_alias_target = resolve_normalized_alias_entry_for_state(
+        dag,
+        state_value,
+        source_block=contextual_source,
+        bst_node_blocks=bst_node_blocks,
+    )
+    if normalized_alias_target is not None:
+        target_entry = normalized_alias_target
+    if target_entry is not None and via_pred is not None and target_entry == via_pred:
+        fallback_target = resolve_loopback_alias_fallback_entry(
+            dag,
+            state_value,
+            source_block=block_serial,
+            via_pred=via_pred,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher=dispatcher,
+        )
+        if fallback_target is not None:
+            target_entry = fallback_target
+    if target_entry is not None and target_entry != block_serial:
+        return (state_value, target_entry)
+
+    if dispatcher is None or state_has_semantic_support(dag, state_value):
+        target_entry = resolve_dag_entry_for_state(
+            dag,
+            state_value,
+            bst_node_blocks=bst_node_blocks,
+        )
+        if target_entry is not None and target_entry != block_serial:
+            return (state_value, target_entry)
+
+    cover_fallback_entry = resolve_cover_fallback_entry_for_state(
+        dag,
+        state_value,
+        source_block=contextual_source,
+        bst_node_blocks=bst_node_blocks,
+        dispatcher=dispatcher,
+    )
+    if cover_fallback_entry is not None and cover_fallback_entry != block_serial:
+        return (state_value, cover_fallback_entry)
+
+    owner_entry = resolve_owner_semantic_entry_for_blocks(
+        dag,
+        anchor_candidates=((contextual_source,) if via_pred is not None else (block_serial,)),
+        source_block=block_serial,
+        bst_node_blocks=bst_node_blocks,
+    )
+    if owner_entry is not None and owner_entry != block_serial:
+        return (state_value, owner_entry)
+
+    if dispatcher is not None and not state_has_semantic_support(dag, state_value):
+        return None
+
+    target_entry = resolve_nonexact_dispatch_target(
+        dag,
+        state_value,
+        source_block=block_serial,
+        bst_node_blocks=bst_node_blocks,
+        dispatcher=dispatcher,
+        dispatcher_lookup=(getattr(dispatcher, "lookup", None) if dispatcher is not None else None),
+    )
+    if target_entry is not None:
+        return (state_value, target_entry)
+    return None
+
+
 __all__ = [
     "dispatcher_exact_state_target",
     "dispatcher_has_exact_state_row",
+    "block_has_state_var_write",
     "is_raw_state_label",
+    "is_state_var_dest",
     "iter_residual_prefix_handoffs",
+    "iter_live_block_insns",
+    "mop_const_value",
+    "mop_stkoff",
+    "resolve_assignment_map_handoff_target",
     "resolve_path_lead_entry_from_node",
     "resolve_contextual_dag_entry_for_state",
     "resolve_cover_fallback_entry_for_state",
     "resolve_dag_entry_for_state",
+    "resolve_evaluated_handoff_state_via_pred",
+    "resolve_immediate_handoff_target",
     "resolve_loopback_alias_fallback_entry",
     "resolve_nonexact_dispatch_target",
     "resolve_nonlocal_state_entry",
     "resolve_normalized_alias_entry_for_state",
     "resolve_owner_family_fallback_entry",
     "resolve_owner_semantic_entry_for_blocks",
+    "resolve_projected_snapshot_handoff_target",
     "resolve_projected_path_tail_target",
     "resolve_redirect_safe_entry_from_node",
     "resolve_redirect_safe_target_entry",
+    "resolve_singleton_state_write_value",
+    "resolve_synthesized_handoff_target",
     "state_has_semantic_support",
 ]
