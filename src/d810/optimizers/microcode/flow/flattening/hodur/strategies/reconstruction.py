@@ -18,10 +18,9 @@ from dataclasses import dataclass, replace
 import ida_hexrays
 
 from d810.cfg.flow.edit_simulator import project_post_state
-from d810.cfg.entry_island_rescue import (
-    EntryIslandRescueOption,
-    build_entry_island_rescue_modification,
-    build_entry_island_rescue_options,
+from d810.cfg.entry_island_rescue_planning import (
+    EntryIslandRescuePlanningSeed,
+    select_entry_island_rescue,
 )
 from d810.cfg.graph_modification import (
     NopInstructions,
@@ -82,18 +81,16 @@ from d810.recon.flow.graph_reachability import (
     collect_dispatcher_predecessors,
     collect_residual_dispatcher_predecessors,
     compute_reachable_blocks,
-    edge_reachable_frontier,
     graph_reaches_block,
     pick_deepest_rescue_frontier,
 )
-from d810.recon.flow.dag_index import (
-    build_dag_node_maps,
-    incoming_edges_by_target_entry,
-    resolve_target_node,
-    semantic_entry_anchors,
-)
+from d810.recon.flow.dag_index import build_dag_node_maps, resolve_target_node
 from d810.recon.flow.edge_metadata import edge_kind_name, make_edge_metadata
-from d810.recon.flow.entry_island import lift_target_entry_to_island_entry
+from d810.recon.flow.entry_island_rescue_discovery import (
+    collect_entry_island_rescue_seeds,
+    collect_late_entry_island_diagnostics,
+    collect_late_entry_island_rescue_seeds,
+)
 from d810.recon.flow.state_machine_analysis import (
     SnapshotConstantFixpointResult,
     StateWriteSite,
@@ -443,37 +440,6 @@ class StateWriteReconstructionStrategy:
             reachable_from_serial=reachable_from_serial,
         )
 
-    @staticmethod
-    def _semantic_entry_anchors(dag: LinearizedStateDag) -> set[int]:
-        return semantic_entry_anchors(dag)
-
-    @staticmethod
-    def _incoming_edges_by_target_entry(
-        dag: LinearizedStateDag,
-    ) -> dict[int, tuple[StateDagEdge, ...]]:
-        return incoming_edges_by_target_entry(dag)
-
-    @staticmethod
-    def _collect_mod_claims(
-        modifications: list,
-    ) -> tuple[set[int], set[int]]:
-        return collect_mod_claims(modifications)
-
-    @classmethod
-    def _edge_reachable_frontier(
-        cls,
-        edge: StateDagEdge,
-        *,
-        reachable_blocks: set[int],
-        dispatcher_region: set[int],
-    ) -> int | None:
-        return edge_reachable_frontier(
-            ordered_path=tuple(int(serial) for serial in edge.ordered_path),
-            source_block=int(edge.source_anchor.block_serial),
-            reachable_blocks=reachable_blocks,
-            dispatcher_region=dispatcher_region,
-        )
-
     @classmethod
     def _graph_reaches_block(
         cls,
@@ -499,101 +465,6 @@ class StateWriteReconstructionStrategy:
         return pick_deepest_rescue_frontier(flow_graph, candidates)
 
     @classmethod
-    def _lift_target_entry_to_island_entry(
-        cls,
-        target_entry: int,
-        *,
-        incoming_by_target_entry: dict[int, tuple[StateDagEdge, ...]],
-        semantic_entry_anchors: set[int],
-        reachable_blocks: set[int],
-        dispatcher_region: set[int],
-    ) -> int:
-        return lift_target_entry_to_island_entry(
-            target_entry,
-            incoming_by_target_entry=incoming_by_target_entry,
-            semantic_entry_anchors=semantic_entry_anchors,
-            reachable_blocks=reachable_blocks,
-            dispatcher_region=dispatcher_region,
-        )
-
-    @classmethod
-    def _entry_island_rescue_options(
-        cls,
-        source_block: int,
-        *,
-        lifted_entry: int,
-        projected_flow_graph,
-        reachable_blocks: set[int],
-        dispatcher_region: set[int],
-        claimed_sources: set[int],
-    ) -> tuple[EntryIslandRescueOption, ...]:
-        return build_entry_island_rescue_options(
-            source_block,
-            lifted_entry=lifted_entry,
-            projected_flow_graph=projected_flow_graph,
-            reachable_blocks=reachable_blocks,
-            dispatcher_region=dispatcher_region,
-            claimed_sources=claimed_sources,
-        )
-
-    @classmethod
-    def _build_entry_island_rescue_modification(
-        cls,
-        option: EntryIslandRescueOption,
-        *,
-        builder: ModificationBuilder,
-    ):
-        return build_entry_island_rescue_modification(option, builder=builder)
-
-    @classmethod
-    def _score_entry_island_rescue_option(
-        cls,
-        option: EntryIslandRescueOption,
-        *,
-        base_flow_graph,
-        builder: ModificationBuilder,
-        modifications: list,
-        baseline_reachable_count: int,
-        baseline_reachable_blocks: set[int],
-    ) -> tuple[tuple[int, int, int, int, int], object, object] | None:
-        candidate_mod = cls._build_entry_island_rescue_modification(
-            option,
-            builder=builder,
-        )
-
-        try:
-            patch_plan = compile_patch_plan(modifications + [candidate_mod], base_flow_graph)
-            projected_flow_graph = project_post_state(base_flow_graph, patch_plan)
-        except Exception:
-            return None
-
-        reachable_blocks = cls._compute_reachable_blocks(
-            projected_flow_graph,
-            start_serial=getattr(projected_flow_graph, "entry_serial", None),
-        )
-        if not reachable_blocks or option.lifted_entry not in reachable_blocks:
-            return None
-
-        reachable_count_delta = len(reachable_blocks) - baseline_reachable_count
-        if reachable_count_delta < 0:
-            return None
-
-        preserved_old_target = 1 if (
-            option.old_target in baseline_reachable_blocks
-            and option.old_target in reachable_blocks
-        ) else 0
-        mode_rank = 1 if option.via_pred is None else 0
-        via_rank = int(option.via_pred) if option.via_pred is not None else -1
-        score = (
-            reachable_count_delta,
-            preserved_old_target,
-            mode_rank,
-            int(option.source_block),
-            via_rank,
-        )
-        return score, candidate_mod, projected_flow_graph
-
-    @classmethod
     def _emit_entry_island_rescues(
         cls,
         dag: LinearizedStateDag,
@@ -605,8 +476,6 @@ class StateWriteReconstructionStrategy:
         dispatcher_region: set[int],
         mba,
     ) -> int:
-        semantic_entry_anchors = cls._semantic_entry_anchors(dag) - dispatcher_region
-        incoming_by_target_entry = cls._incoming_edges_by_target_entry(dag)
         current_projected_flow_graph = projected_flow_graph
         emitted = 0
 
@@ -618,95 +487,54 @@ class StateWriteReconstructionStrategy:
             if not reachable_blocks:
                 break
 
-            baseline_reachable_count = len(reachable_blocks)
-            claimed_sources, claimed_targets = cls._collect_mod_claims(modifications)
-            seen_options: set[tuple[int, int, int | None]] = set()
-            best_score: tuple[int, int, int, int, int] | None = None
-            best_option: EntryIslandRescueOption | None = None
-            best_modification = None
-            best_projected_flow_graph = None
-
-            for edge in dag.edges:
-                if edge.target_entry_anchor is None:
-                    continue
-                target_entry = int(edge.target_entry_anchor)
-                if target_entry in dispatcher_region:
-                    continue
-
-                lifted_entry = cls._lift_target_entry_to_island_entry(
-                    target_entry,
-                    incoming_by_target_entry=incoming_by_target_entry,
-                    semantic_entry_anchors=semantic_entry_anchors,
-                    reachable_blocks=reachable_blocks,
-                    dispatcher_region=dispatcher_region,
+            claimed_sources, claimed_targets = collect_mod_claims(modifications)
+            seeds = tuple(
+                EntryIslandRescuePlanningSeed(
+                    source_block=int(seed.source_block),
+                    lifted_entry=int(seed.lifted_entry),
                 )
-                if (
-                    lifted_entry in dispatcher_region
-                    or lifted_entry in reachable_blocks
-                    or lifted_entry in claimed_targets
-                ):
-                    continue
-
-                source_block = cls._edge_reachable_frontier(
-                    edge,
+                for seed in collect_entry_island_rescue_seeds(
+                    dag,
                     reachable_blocks=reachable_blocks,
                     dispatcher_region=dispatcher_region,
+                    claimed_targets=claimed_targets,
                 )
-                if source_block is None:
-                    continue
-
-                for option in cls._entry_island_rescue_options(
-                    source_block,
-                    lifted_entry=lifted_entry,
-                    projected_flow_graph=current_projected_flow_graph,
-                    reachable_blocks=reachable_blocks,
-                    dispatcher_region=dispatcher_region,
-                    claimed_sources=claimed_sources,
-                ):
-                    option_key = (
-                        int(option.source_block),
-                        int(option.lifted_entry),
-                        int(option.via_pred) if option.via_pred is not None else None,
-                    )
-                    if option_key in seen_options:
-                        continue
-                    seen_options.add(option_key)
-
-                    scored = cls._score_entry_island_rescue_option(
-                        option,
-                        base_flow_graph=base_flow_graph,
-                        builder=builder,
-                        modifications=modifications,
-                        baseline_reachable_count=baseline_reachable_count,
-                        baseline_reachable_blocks=reachable_blocks,
-                    )
-                    if scored is None:
-                        continue
-
-                    score, candidate_mod, candidate_projected = scored
-                    if best_score is not None and score <= best_score:
-                        continue
-                    best_score = score
-                    best_option = option
-                    best_modification = candidate_mod
-                    best_projected_flow_graph = candidate_projected
-
-            if best_option is None or best_modification is None or best_projected_flow_graph is None:
+            )
+            selection = select_entry_island_rescue(
+                seeds=seeds,
+                current_projected_flow_graph=current_projected_flow_graph,
+                base_flow_graph=base_flow_graph,
+                builder=builder,
+                modifications=modifications,
+                reachable_blocks=reachable_blocks,
+                dispatcher_region=dispatcher_region,
+                claimed_sources=claimed_sources,
+                compute_reachable_blocks=lambda flow_graph: cls._compute_reachable_blocks(
+                    flow_graph,
+                    start_serial=getattr(flow_graph, "entry_serial", None),
+                ),
+            )
+            if (
+                not selection.accepted
+                or selection.option is None
+                or selection.modification is None
+                or selection.projected_flow_graph is None
+            ):
                 break
 
-            modifications.append(best_modification)
-            current_projected_flow_graph = best_projected_flow_graph
+            modifications.append(selection.modification)
+            current_projected_flow_graph = selection.projected_flow_graph
             emitted += 1
             logger.info(
                 "RECON DAG: entry-island rescue %s -> %s%s (delta=%+d)",
-                blk_label(mba, best_option.source_block),
-                blk_label(mba, best_option.lifted_entry),
+                blk_label(mba, selection.option.source_block),
+                blk_label(mba, selection.option.lifted_entry),
                 (
-                    f" via_pred={blk_label(mba, best_option.via_pred)}"
-                    if best_option.via_pred is not None
+                    f" via_pred={blk_label(mba, selection.option.via_pred)}"
+                    if selection.option.via_pred is not None
                     else ""
                 ),
-                best_score[0] if best_score is not None else 0,
+                selection.score[0] if selection.score is not None else 0,
             )
 
         return emitted
@@ -745,116 +573,66 @@ class StateWriteReconstructionStrategy:
             if not reachable_blocks:
                 break
 
-            baseline_reachable_count = len(reachable_blocks)
-            claimed_sources, _claimed_targets = cls._collect_mod_claims(
-                modifications,
+            claimed_sources, _claimed_targets = collect_mod_claims(modifications)
+            late_seeds = collect_late_entry_island_rescue_seeds(
+                dag,
+                projected_flow_graph=current_projected_flow_graph,
+                reachable_blocks=reachable_blocks,
+                dispatcher_region=dispatcher_region,
             )
-            seen_options: set[tuple[int, int, int | None]] = set()
-            best_score: tuple[int, int, int, int, int] | None = None
-            best_option: EntryIslandRescueOption | None = None
-            best_modification = None
-            best_projected_flow_graph = None
-
-            for edge in dag.edges:
-                if edge.target_entry_anchor is None:
-                    continue
-                target_entry = int(edge.target_entry_anchor)
-                # Only consider edges whose target IS in dispatcher region
-                # (BST passthrough).
-                if target_entry not in dispatcher_region:
-                    continue
-
-                target_snapshot = current_projected_flow_graph.get_block(
-                    target_entry,
-                )
-                if target_snapshot is None:
-                    continue
-
-                for succ in sorted(int(s) for s in target_snapshot.succs):
-                    if succ in dispatcher_region or succ in reachable_blocks:
-                        continue
-                    # succ is unreachable non-dispatcher behind a BST node.
-
-                    source_block = cls._edge_reachable_frontier(
-                        edge,
-                        reachable_blocks=reachable_blocks,
-                        dispatcher_region=dispatcher_region,
+            for seed in late_seeds:
+                if seed.source_block is None:
+                    logger.info(
+                        "RECON DAG: late island rescue: no reachable "
+                        "frontier for BST passthrough blk[%d] -> "
+                        "blk[%d] (edge src=%s)",
+                        seed.passthrough_block,
+                        seed.lifted_entry,
+                        blk_label(mba, seed.edge_source_block),
                     )
-                    if source_block is None:
-                        logger.info(
-                            "RECON DAG: late island rescue: no reachable "
-                            "frontier for BST passthrough blk[%d] -> "
-                            "blk[%d] (edge src=%s)",
-                            target_entry,
-                            succ,
-                            blk_label(
-                                mba,
-                                int(edge.source_anchor.block_serial),
-                            ),
-                        )
-                        continue
-
-                    for option in cls._entry_island_rescue_options(
-                        source_block,
-                        lifted_entry=succ,
-                        projected_flow_graph=current_projected_flow_graph,
-                        reachable_blocks=reachable_blocks,
-                        dispatcher_region=dispatcher_region,
-                        claimed_sources=claimed_sources,
-                    ):
-                        option_key = (
-                            int(option.source_block),
-                            int(option.lifted_entry),
-                            (
-                                int(option.via_pred)
-                                if option.via_pred is not None
-                                else None
-                            ),
-                        )
-                        if option_key in seen_options:
-                            continue
-                        seen_options.add(option_key)
-
-                        scored = cls._score_entry_island_rescue_option(
-                            option,
-                            base_flow_graph=base_flow_graph,
-                            builder=builder,
-                            modifications=modifications,
-                            baseline_reachable_count=baseline_reachable_count,
-                            baseline_reachable_blocks=reachable_blocks,
-                        )
-                        if scored is None:
-                            continue
-
-                        score, candidate_mod, candidate_projected = scored
-                        if best_score is not None and score <= best_score:
-                            continue
-                        best_score = score
-                        best_option = option
-                        best_modification = candidate_mod
-                        best_projected_flow_graph = candidate_projected
-
+            selection = select_entry_island_rescue(
+                seeds=tuple(
+                    EntryIslandRescuePlanningSeed(
+                        source_block=int(seed.source_block),
+                        lifted_entry=int(seed.lifted_entry),
+                    )
+                    for seed in late_seeds
+                    if seed.source_block is not None
+                ),
+                current_projected_flow_graph=current_projected_flow_graph,
+                base_flow_graph=base_flow_graph,
+                builder=builder,
+                modifications=modifications,
+                reachable_blocks=reachable_blocks,
+                dispatcher_region=dispatcher_region,
+                claimed_sources=claimed_sources,
+                compute_reachable_blocks=lambda flow_graph: cls._compute_reachable_blocks(
+                    flow_graph,
+                    start_serial=getattr(flow_graph, "entry_serial", None),
+                ),
+            )
             if (
-                best_option is None
-                or best_modification is None
-                or best_projected_flow_graph is None
+                not selection.accepted
+                or selection.option is None
+                or selection.modification is None
+                or selection.projected_flow_graph is None
             ):
                 break
 
-            modifications.append(best_modification)
-            current_projected_flow_graph = best_projected_flow_graph
+            modifications.append(selection.modification)
+            current_projected_flow_graph = selection.projected_flow_graph
             emitted += 1
             logger.info(
                 "RECON DAG: late island rescue %s -> %s%s "
                 "via BST passthrough (delta=%+d)",
-                blk_label(mba, best_option.source_block),
-                blk_label(mba, best_option.lifted_entry),
+                blk_label(mba, selection.option.source_block),
+                blk_label(mba, selection.option.lifted_entry),
                 (
-                    f" via_pred={blk_label(mba, best_option.via_pred)}"
-                    if best_option.via_pred is not None
+                    f" via_pred={blk_label(mba, selection.option.via_pred)}"
+                    if selection.option.via_pred is not None
                     else ""
                 ),
-                best_score[0] if best_score is not None else 0,
+                selection.score[0] if selection.score is not None else 0,
             )
 
         # Diagnostic: if no rescue fired, dump dispatcher rows for
@@ -866,29 +644,22 @@ class StateWriteReconstructionStrategy:
                     current_projected_flow_graph, "entry_serial", None,
                 ),
             ) or set()
-            for serial in sorted(int(s) for s in current_projected_flow_graph.blocks):
-                if serial in reachable_blocks or serial in dispatcher_region:
-                    continue
-                snap = current_projected_flow_graph.get_block(serial)
-                if snap is None:
-                    continue
-                preds = [int(p) for p in snap.preds]
-                if not preds or not all(p in dispatcher_region for p in preds):
-                    continue
-                # unreachable non-dispatcher with BST-only preds
-                rows_info = []
-                search_targets = {serial} | {int(p) for p in preds}
-                for row in getattr(dispatcher, "_rows", ()):
-                    if int(row.target) in search_targets:
-                        rows_info.append(
-                            f"[0x{row.lo:X}..0x{row.hi:X})->blk[{row.target}]"
-                        )
+            for diagnostic in collect_late_entry_island_diagnostics(
+                current_projected_flow_graph,
+                reachable_blocks=reachable_blocks,
+                dispatcher_region=dispatcher_region,
+                dispatcher=dispatcher,
+            ):
                 logger.info(
                     "RECON DAG: late island rescue diagnostic: "
                     "unreachable blk[%d] bst_preds=%s dispatcher_rows=[%s]",
-                    serial,
-                    preds,
-                    ", ".join(rows_info) if rows_info else "none",
+                    diagnostic.block_serial,
+                    list(diagnostic.bst_preds),
+                    (
+                        ", ".join(diagnostic.dispatcher_rows)
+                        if diagnostic.dispatcher_rows
+                        else "none"
+                    ),
                 )
 
         return emitted
